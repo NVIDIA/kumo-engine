@@ -323,6 +323,40 @@ fn decode_batch_to_arrow_preserves_requested_projection_order() {
 }
 
 #[test]
+fn null_row_decodes_every_column_as_null() {
+    let types = [
+        IngestedType::Int64,
+        IngestedType::Bool,
+        IngestedType::String,
+        IngestedType::Float32,
+        IngestedType::Int64,
+    ];
+    let cols: Vec<RowPackColumn> = types
+        .iter()
+        .enumerate()
+        .map(|(i, &logical_type)| RowPackColumn {
+            name: format!("c{i}"),
+            logical_type,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        })
+        .collect();
+    let ctx = RowPackContextBuilder::new(cols, RowPackConfig::default())
+        .finish()
+        .unwrap();
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+
+    let nulls = vec![ValueRef::Null; types.len()];
+    assert_eq!(decoder.null_row(), encode_row(&encoder, &nulls));
+    let batch = decoder
+        .decode_batch_to_arrow(&[decoder.null_row()], &[0, 1, 2, 3, 4])
+        .unwrap();
+    assert!(batch.columns().iter().all(|c| c.null_count() == 1));
+}
+
+#[test]
 fn timestamp_nanos_roundtrip() {
     let ctx = RowPackContext {
         version: ROWPACK_VERSION,

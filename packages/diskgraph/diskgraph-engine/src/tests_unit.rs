@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::engine::{DiskGraphEngine, ShardHandle};
-use crate::output::OutputHandler;
+use crate::output::{InMemoryOutput, OutputHandler};
 use crate::state::SamplingState;
 use diskgraph_core::dataset::DatasetId;
 use diskgraph_core::metadata::{DatasetMetadata, NodeShardMetadata, NodeTypeMetadata};
@@ -1376,6 +1376,7 @@ fn build_sort_key_shard(
     let (ctx, node_data) = trivial_node_rowpack();
     let mut adjacency = vec![Vec::new(); max_node as usize + 1];
     adjacency[0] = entries.to_vec();
+    let node_data = vec![node_data.as_slice(); adjacency.len()];
     let (reader, layout) = write_adjacency_shard(dir, &adjacency, key_bits, &node_data);
     (reader, layout, ctx)
 }
@@ -1403,12 +1404,13 @@ fn trivial_node_rowpack() -> (diskgraph_rowpack::RowPackContext, Vec<u8>) {
 }
 
 /// Writes one shard whose node `i` has the `(dst, sort_key)` entries in
-/// `adjacency[i]` (rel 0, 8-bit dst ids, at most 63 nodes).
+/// `adjacency[i]` and the node data `node_data[i]` (rel 0, 8-bit dst ids, at
+/// most 63 nodes).
 fn write_adjacency_shard(
     dir: &std::path::Path,
     adjacency: &[Vec<(u8, u64)>],
     key_bits: u8,
-    node_data: &[u8],
+    node_data: &[&[u8]],
 ) -> (ShardReader, RelationLayout) {
     let entry_bytes = 1 + key_bits as usize / 8;
     let layout = RelationLayout {
@@ -1423,7 +1425,7 @@ fn write_adjacency_shard(
     // Each node block: [count u8][len u16][entry_bytes*count edge bytes][node_data].
     let mut f = File::create(dir.join(EDGES_FILENAME)).unwrap();
     let mut lens = Vec::new();
-    for entries in adjacency {
+    for (entries, node_data) in adjacency.iter().zip(node_data) {
         let edge_bytes: Vec<u8> = entries
             .iter()
             .flat_map(|&(dst, sort_key)| {
@@ -2635,6 +2637,7 @@ fn per_seed_recording_matches_legacy_recording() {
     let n = 41u8;
     let adjacency = random_adjacency(&mut rng, n);
     let (ctx, node_data) = trivial_node_rowpack();
+    let node_data = vec![node_data.as_slice(); adjacency.len()];
     let (reader, _) = write_adjacency_shard(dir.path(), &adjacency, 16, &node_data);
     let reader = Arc::new(reader);
     let mut sampler = DiskGraphEngine::new(
@@ -2680,6 +2683,7 @@ fn per_seed_recording_matches_legacy_recording_across_seed_types() {
     let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(12);
     let n = 41u8;
     let (ctx, node_data) = trivial_node_rowpack();
+    let node_data = vec![node_data.as_slice(); n as usize];
     let dirs = [TempDir::new().unwrap(), TempDir::new().unwrap()];
     let readers: Vec<Arc<ShardReader>> = dirs
         .iter()
@@ -2781,4 +2785,84 @@ fn repeated_runs_give_identical_output() {
         assert_eq!(runs[0].2.len(), if fused { 2 } else { 0 });
         assert!(runs.iter().all(|r| *r == runs[0]), "fused={fused}");
     }
+}
+
+/// Node 0 links to nodes 1 and 2; node 1 has the empty node data that ingest
+/// stores for a row over the node-data limit.
+fn empty_node_data_graph(dir: &std::path::Path) -> DiskGraphEngine {
+    let (ctx, node_data) = trivial_node_rowpack();
+    let adjacency = vec![vec![(1, 0), (2, 0)], vec![], vec![]];
+    let (reader, _) = write_adjacency_shard(dir, &adjacency, 16, &[&node_data, &[], &node_data]);
+    DiskGraphEngine::new(
+        [(
+            "User".to_string(),
+            vec![ShardHandle {
+                reader: Arc::new(reader),
+                min_id: 0,
+                max_id: 2,
+            }],
+        )]
+        .into(),
+        [(
+            0,
+            (
+                "Connects".to_string(),
+                "User".to_string(),
+                "User".to_string(),
+            ),
+        )]
+        .into(),
+        [(0usize, SortKeyDecoder::new(&temporal_sortkey_meta()))].into(),
+        [("User".to_string(), RowPackDecoder::new(ctx).unwrap())].into(),
+        None,
+        diskgraph_core::time::TimeUnit::Seconds,
+        Some(42),
+        Some(1),
+    )
+}
+
+fn feat_0_values(batch: &arrow_array::RecordBatch) -> Vec<Option<i64>> {
+    batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::Int64Array>()
+        .unwrap()
+        .iter()
+        .collect()
+}
+
+#[test]
+fn test_fetch_features_empty_node_data_is_null() {
+    let dir = TempDir::new().unwrap();
+    let sampler = empty_node_data_graph(dir.path());
+    for (ids, expected) in [
+        (vec![1], vec![None]),
+        (vec![0, 1, 2, 1], vec![Some(7), None, Some(7), None]),
+    ] {
+        let mut output = InMemoryOutput::new();
+        sampler
+            .fetch_features_for_type(0, &ids, &["feat_0".to_string()], &mut output)
+            .unwrap();
+        assert_eq!(feat_0_values(&output.feature_batches[0]), expected);
+    }
+}
+
+#[test]
+fn test_fused_sampling_empty_node_data_is_null() {
+    let dir = TempDir::new().unwrap();
+    let sampler = empty_node_data_graph(dir.path());
+    let mut req = make_sampling_request(vec![0], vec![10]);
+    req.flags.fused_feature_fetching = true;
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = InMemoryOutput::new();
+    sampler.sample(&req, &mut state, &mut output).unwrap();
+
+    let ids: Vec<u64> = state.type_states[&0]
+        .nodes
+        .iter()
+        .map(|n| n.global_id)
+        .collect();
+    let values: Vec<Option<i64>> = ids.iter().map(|&id| (id != 1).then_some(7)).collect();
+    assert_eq!(ids.len(), 3);
+    assert_eq!(feat_0_values(&output.fused_batches[0].1), values);
 }

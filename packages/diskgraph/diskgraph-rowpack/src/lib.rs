@@ -5220,6 +5220,7 @@ pub struct RowPackDecoder {
     ctx: RowPackContext,
     dict_values: Vec<Option<Vec<Vec<u8>>>>,
     clock: TimeUnit,
+    null_row: Vec<u8>,
 }
 
 pub struct RowPackDecodeScratch {
@@ -5270,10 +5271,12 @@ impl RowPackDecoder {
                 _ => dict_values.push(None),
             }
         }
+        let null_row = vec![0; (ctx.columns.len() * 2).div_ceil(8)];
         Ok(Self {
             ctx,
             dict_values,
             clock: TimeUnit::Seconds,
+            null_row,
         })
     }
 
@@ -5288,6 +5291,10 @@ impl RowPackDecoder {
 
     pub fn context(&self) -> &RowPackContext {
         &self.ctx
+    }
+
+    pub fn null_row(&self) -> &[u8] {
+        &self.null_row
     }
 
     pub fn decode_msgpack(&self, row: &[u8]) -> Result<Vec<u8>> {
