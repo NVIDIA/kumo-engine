@@ -850,8 +850,8 @@ class DiskGraphSource:
 
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = None if cutoff is None else self._diskgraph.cutoff_ticks(cutoff, self._clock)
-        directory = encoder.tokenizer_dir(ticks, self._clock)
-        path = Path(self._index, "col_stats", directory, "tokenizer.json")
+        name = encoder.tokenizer_file(ticks, self._clock)
+        path = Path(self._index, "col_stats", name)
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -861,7 +861,7 @@ class DiskGraphSource:
                 intact = False
             if not intact:
                 raise ValueError(f"{path} is not a valid tokenizer file; delete it to retrain")
-            return tokenizer, directory
+            return tokenizer, name
         tokenizer = self._diskgraph.train_tokenizer(
             self._index,
             encoder.columns,
@@ -884,7 +884,7 @@ class DiskGraphSource:
         ) as temporary:
             temporary.write(json.dumps(document) + "\n")
         Path(temporary.name).replace(path)
-        return tokenizer, directory
+        return tokenizer, name
 
     def fit_graph_fields(
         self,

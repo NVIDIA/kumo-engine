@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import random
-import shutil
 from dataclasses import replace
 
 import pyarrow as pa
@@ -65,10 +64,10 @@ def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engi
             with plan.materialize(_requests(), fit_split="train") as task:
                 assert _tokenizer(task) == expected
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
-        texts = tmp_path.glob("index/col_stats/text-*/tokenizer.json")
+        texts = tmp_path.glob("index/col_stats/*/*.text-*.tokenizer.json")
         published.append({path: path.stat().st_mtime_ns for path in texts})
     if engine_name == "diskgraph":
-        assert any(name.startswith("text-") for name in statistics["col_stats"])
+        assert any(".text-" in name for name in statistics["col_stats"])
         assert published[0] == published[1]
         (path,) = published[0]
         assert json.loads(path.read_text())["tokenizer"] == expected
@@ -127,9 +126,9 @@ def test_the_index_trains_the_tokenizer_python_trains_on_every_thread_count(tmp_
     expected = train_text(TEXT, [[value for value in values if value is not None]])
     for threads in (1, 4):
         source = DiskGraphSource(index, schema, num_threads=threads)
-        tokenizer, directory = source.column_text(encoder, None)
+        tokenizer, name = source.column_text(encoder, None)
         assert tokenizer == expected
-        shutil.rmtree(tmp_path / "index" / "col_stats" / directory)
+        (tmp_path / "index" / "col_stats" / name).unlink()
 
 
 def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):

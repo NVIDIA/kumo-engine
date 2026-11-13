@@ -98,16 +98,16 @@ class TableColumnEncoder:
         stype = "categorical" if isinstance(self.config, Vocabulary) else "numerical"
         return tuple((table, column, stype) for table, column in self.columns)
 
-    def tokenizer_dir(self, cutoff: int | None, unit: str) -> str:
+    def tokenizer_file(self, ticks: int | None, unit: str) -> str:
         settings = [
-            cutoff,
-            unit,
             self.config.vocabulary_size,
             self.config.min_frequency,
             self.columns,
             TEXT_RECIPE,
         ]
-        return "text-" + hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+        digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
+        table, column = self.columns[0]
+        return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
 
 
 def stats_request(
