@@ -3,20 +3,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use ahash::AHashMap;
 use anyhow::{anyhow, ensure, Result};
 use arrow::array::Array;
-use arrow::compute::filter_record_batch;
+use arrow::compute::kernels::length::length;
+use arrow::compute::{cast, filter_record_batch};
 use arrow_array::cast::AsArray;
-use arrow_array::types::UInt64Type;
+use arrow_array::types::{Int64Type, UInt64Type};
 use arrow_array::{ArrayRef, Int64Array};
+use arrow_schema::DataType;
 use compact_str::CompactString;
 use diskgraph_core::time::convert_trunc;
 use diskgraph_ingest::column_scan::{
-    at_cutoff, create_times, decode_chunk, node_chunks, stored_tables,
+    at_cutoff, create_times, decode_chunk, node_chunks, stored_tables, StoredTable,
 };
 use diskgraph_ingest::cutoff_col_stats::CutoffColStatsRequest;
 use diskgraph_ingest::graph_config::{read_persisted_config, ColumnSpec, IngestedType};
@@ -290,6 +295,141 @@ pub fn train_tokenizer(
     .map_err(|e| map_anyhow_err(anyhow!(e)))
 }
 
+/// Each node's token count over `columns` of `table`: one per scalar, a list's elements, and a
+/// string's pieces under its tokenizer JSON, saturated to `u16`. Written to `path` as one
+/// little-endian `u16` per node ID, 0 for a node stored without data.
+#[pyfunction]
+#[pyo3(signature = (index_dir, table, columns, path, *, num_threads=None))]
+pub fn token_lengths(
+    py: Python<'_>,
+    index_dir: &str,
+    table: &str,
+    columns: Vec<(String, Option<String>)>,
+    path: &str,
+    num_threads: Option<usize>,
+) -> PyResult<()> {
+    if num_threads == Some(0) {
+        return Err(DiskgraphConfigError::new_err(
+            "num_threads must be positive",
+        ));
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads.unwrap_or(0))
+        .build()
+        .map_err(|e| map_anyhow_err(e.into()))?;
+    let (mut tables, _) = stored_tables(Path::new(index_dir), &HashSet::from([table.to_string()]))
+        .map_err(map_anyhow_err)?;
+    let stored = tables.remove(table).expect("opened table");
+    let mut decoded = Vec::new();
+    let mut tokenizers = Vec::new();
+    for (column, tokenizer) in columns {
+        let index = stored
+            .columns
+            .iter()
+            .position(|(name, _)| *name == column)
+            .ok_or_else(|| {
+                DiskgraphConfigError::new_err(format!("index has no column {table}.{column}"))
+            })?;
+        let kind = stored.columns[index].1;
+        if tokenizer.is_some() && kind != diskgraph_rowpack::IngestedType::String {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "column {table}.{column} holds {kind:?} values, not strings"
+            )));
+        }
+        decoded.push(index);
+        tokenizers.push(
+            tokenizer
+                .map(|json| Tokenizer::from_str(&json))
+                .transpose()
+                .map_err(|e| DiskgraphConfigError::new_err(format!("invalid tokenizer: {e}")))?,
+        );
+    }
+    let mut chunks: Vec<_> = node_chunks(&stored.reader, TEXT_CHUNK_NODES)
+        .map(|chunk| {
+            let (first, _) = stored
+                .reader
+                .shard_id_range(chunk.0)
+                .expect("a stored shard");
+            (first + chunk.1, chunk)
+        })
+        .collect();
+    chunks.sort_unstable();
+    let path = Path::new(path);
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}", uuid::Uuid::new_v4().simple()));
+    let mut file = BufWriter::new(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| map_anyhow_err(e.into()))?,
+    );
+    let written = (|| -> PyResult<()> {
+        let mut next = 0;
+        for window in chunks.chunks(TEXT_WINDOW_CHUNKS) {
+            let lengths = py
+                .detach(|| {
+                    pool.install(|| {
+                        window
+                            .par_iter()
+                            .map(|&(_, chunk)| chunk_lengths(&stored, chunk, &decoded, &tokenizers))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                })
+                .map_err(map_anyhow_err)?;
+            for (&(first, _), lengths) in window.iter().zip(lengths) {
+                let zeros = std::iter::repeat_n(0, (first - next) as usize);
+                for length in zeros.chain(lengths.iter().copied()) {
+                    file.write_all(&u16::to_le_bytes(length))?;
+                }
+                next = first + lengths.len() as u64;
+            }
+            py.check_signals()?;
+        }
+        file.flush()?;
+        file.get_ref().sync_all()?;
+        Ok(fs::rename(&temporary, path)?)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
+}
+
+fn chunk_lengths(
+    stored: &StoredTable,
+    chunk: (usize, u64, u64),
+    decoded: &[usize],
+    tokenizers: &[Option<Tokenizer>],
+) -> Result<Vec<u16>> {
+    let (nodes, batch) = decode_chunk(&stored.reader, chunk, decoded)?;
+    let mut totals = vec![0u64; batch.num_rows()];
+    for (column, tokenizer) in batch.columns().iter().zip(tokenizers) {
+        match (tokenizer, column.data_type()) {
+            (Some(tokenizer), _) => {
+                for (total, value) in totals.iter_mut().zip(column.as_string::<i64>()) {
+                    if let Some(value) = value {
+                        let pieces = tokenizer.encode_fast(value, true).map_err(|e| anyhow!(e))?;
+                        *total += pieces.len() as u64;
+                    }
+                }
+            }
+            (None, DataType::List(_) | DataType::LargeList(_)) => {
+                let counts = cast(&length(column)?, &DataType::Int64)?;
+                for (total, count) in totals.iter_mut().zip(counts.as_primitive::<Int64Type>()) {
+                    *total += count.unwrap_or(0) as u64;
+                }
+            }
+            (None, _) => totals.iter_mut().for_each(|total| *total += 1),
+        }
+    }
+    let mut lengths = vec![0; (chunk.2 - chunk.1) as usize];
+    for (node, total) in nodes.into_iter().zip(totals) {
+        lengths[(node - chunk.1) as usize] = total.min(u16::MAX.into()) as u16;
+    }
+    Ok(lengths)
+}
+
 /// `value` in index clock `from` as ticks of index clock `to`, truncated.
 #[pyfunction]
 pub fn convert_ticks(value: i64, from: &str, to: &str) -> PyResult<i64> {
@@ -301,5 +441,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(convert_ticks, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
+    m.add_function(wrap_pyfunction!(token_lengths, m)?)?;
     m.add("TOKENIZER_TRAINER", TOKENIZER_TRAINER)
 }
