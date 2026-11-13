@@ -1475,7 +1475,9 @@ def test_diskgraph_reads_parquet_anchor_tables_with_external_labels(tmp_path: Pa
     )
     with api.prepare(contract, parquet, engine) as plan:
         from_table = plan.materialize(anchors, fit_split="train")
-        from_requests = plan.materialize(requests, fit_split="train")
+        # Compare loading with one frozen state. Materialized columns use the
+        # shared statistics fitter; request-only fitting retains its row recipe.
+        from_requests = plan.materialize(requests, fitted=from_table.fitted_state)
         assert from_table.fitted_state == from_requests.fitted_state
         assert from_table.count("train") == 2 and from_table.count("test") == 1
         for output_format in ("inspectable", "model"):
