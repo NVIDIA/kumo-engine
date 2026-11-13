@@ -22,7 +22,7 @@ def _ingest(data_dir: pathlib.Path, out: pathlib.Path, threads: int, shards: int
 
     diskgraph.ingest(
         config_json=json.dumps({
-            "dataset_name": "scan",
+            "dataset_name": "text",
             "num_shards": shards,
             "timestamp_unit": "seconds",
             "tables": [
@@ -45,12 +45,12 @@ def _ingest(data_dir: pathlib.Path, out: pathlib.Path, threads: int, shards: int
 @pytest.fixture(scope="module")
 def data_dir(tmp_path_factory) -> pathlib.Path:
     rng = random.Random(0)
-    root = tmp_path_factory.mktemp("scan_data")
+    root = tmp_path_factory.mktemp("text_data")
     ids = list(range(2_000))
     ts = [T0 + rng.randrange(-1_000, 1_000) for _ in ids]
-    ts[1:3] = [CUTOFF, CUTOFF + 1]
+    ts[1:4] = [CUTOFF, CUTOFF + 1, None]
     body = [None if i % 9 == 0 else f"doc {i} " + "é" * (i % 5) for i in ids]
-    body[1:3] = ["at #", "after %"]
+    body[1:4] = ["at #", "after %", "never &"]
     pq.write_table(pa.table({
         "id": pa.array(ids, pa.int64()),
         "ts": pa.array(ts, pa.timestamp("s")),
@@ -82,7 +82,7 @@ def test_tokenizer_learns_the_rows_counted_at_the_cutoff(indexes):
                    for index in indexes.values() for threads in (1, 4)}
         assert len(trained) == 1
         vocab = json.loads(trained.pop())["model"]["vocab"]
-        assert {c for c in "#%" if c in vocab} == seen
+        assert {c for c in "#%&" if c in vocab} == seen
 
 
 def test_tokenizer_counts_every_row_of_a_table_without_a_create_time(indexes):
@@ -90,10 +90,11 @@ def test_tokenizer_counts_every_row_of_a_table_without_a_create_time(indexes):
     assert _train(indexes[4, 3], T0 - 10_000, both) == _train(indexes[4, 3], None, both[1:])
 
 
-def test_tokenizer_rejects_non_string_columns(indexes):
-    with pytest.raises(Exception, match="not strings"):
+def test_tokenizer_refuses_unknown_and_non_string_columns(indexes):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="not strings"):
         _train(indexes[1, 1], None, [("docs", "n")])
-    with pytest.raises(Exception, match="no column"):
-        _train(indexes[1, 1], None, [("docs", "missing")])
-    with pytest.raises(Exception, match="num_threads must be positive"):
+    for missing in [("docs", "missing"), ("missing", "body")]:
+        with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
+            _train(indexes[1, 1], None, [missing])
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="num_threads must be positive"):
         _train(indexes[1, 1], None, num_threads=0)

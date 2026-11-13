@@ -27,8 +27,9 @@ of the table's rows created at or before the encoder cutoff: by default the
 latest anchor time `fit_split` selects, or `Plan.materialize(encoder_cutoff=...)`,
 where `None` reads every row. `Vocabulary` uses its category counts (exact for
 the first million distinct values it meets), `ZScore` its mean and standard
-deviation, and `Buckets` cuts interpolated from its t-digest. `Text` has
-DiskGraph train its tokenizer on the column's values over those rows.
+deviation, and `Buckets` cuts interpolated from its t-digest. `Text` trains its
+tokenizer on the column's values over those rows: inside DiskGraph on the
+DiskGraph engine, and with `tokenizers` in Python on the in-memory engine.
 
 A missing value is never zero or an unseen category: it keeps its own validity
 bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)

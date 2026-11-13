@@ -9,8 +9,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import tempfile
+import os
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
@@ -879,11 +880,12 @@ class DiskGraphSource:
             "sha256": hashlib.sha256(tokenizer.encode()).hexdigest(),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w", dir=path.parent, prefix=".tokenizer.", delete=False
-        ) as temporary:
-            temporary.write(json.dumps(document) + "\n")
-        Path(temporary.name).replace(path)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
+        with open(temporary, "x") as file:
+            file.write(json.dumps(document) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        temporary.replace(path)
         return tokenizer, name
 
     def fit_graph_fields(

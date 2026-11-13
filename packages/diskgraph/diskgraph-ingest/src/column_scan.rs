@@ -78,14 +78,12 @@ pub fn at_cutoff(times: Option<&[Option<i64>]>, rows: usize, cutoff: Option<i64>
     }
 }
 
-/// A node table's reader, its stored columns, and the position of its create time.
 pub struct StoredTable {
     pub reader: Arc<TableReader>,
     pub columns: Vec<(String, IngestedType)>,
     pub create_time: Option<usize>,
 }
 
-/// The named node tables of an index, and the index clock.
 pub fn stored_tables(
     index_dir: &Path,
     names: &HashSet<String>,

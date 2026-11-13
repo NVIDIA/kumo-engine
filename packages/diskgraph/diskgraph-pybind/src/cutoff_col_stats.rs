@@ -33,6 +33,7 @@ use crate::{map_anyhow_err, DiskgraphConfigError};
 const CHUNK_NODES: u64 = 1 << 16;
 const TEXT_CHUNK_NODES: u64 = 1 << 10;
 const TEXT_WINDOW_CHUNKS: usize = 1 << 10;
+const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2";
 
 type WordCounts = AHashMap<CompactString, u64>;
 
@@ -130,8 +131,6 @@ pub fn cutoff_col_stats(
     .map_err(map_anyhow_err)
 }
 
-/// How often each byte-level word occurs in string columns' non-null values over the rows counted
-/// at `cutoff`.
 fn word_counts(
     py: Python<'_>,
     index_dir: &Path,
@@ -140,6 +139,23 @@ fn word_counts(
     pool: &rayon::ThreadPool,
     pre_tokenizer: &ByteLevel,
 ) -> PyResult<WordCounts> {
+    let config = read_persisted_config(index_dir).map_err(map_anyhow_err)?;
+    for (table, column) in columns {
+        let spec = config
+            .tables
+            .iter()
+            .find(|spec| spec.name == *table)
+            .and_then(|spec| spec.columns.iter().find(|spec| spec.name == *column))
+            .ok_or_else(|| {
+                DiskgraphConfigError::new_err(format!("index has no column {table}.{column}"))
+            })?;
+        if spec.ingested_dtype != IngestedType::String {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "column {table}.{column} holds {:?} values, not strings",
+                spec.ingested_dtype
+            )));
+        }
+    }
     let names = columns.iter().map(|(table, _)| table.clone()).collect();
     let (tables, clock) = stored_tables(index_dir, &names).map_err(map_anyhow_err)?;
     let scans = columns
@@ -150,12 +166,9 @@ fn word_counts(
                 .columns
                 .iter()
                 .position(|(name, _)| name == column)
-                .ok_or_else(|| anyhow!("table {table} has no column {column}"))?;
-            let kind = stored.columns[index].1;
-            ensure!(
-                kind == diskgraph_rowpack::IngestedType::String,
-                "column {table}.{column} holds {kind:?} values, not strings"
-            );
+                .ok_or_else(|| {
+                    anyhow!("table {table} stores other columns than its config lists")
+                })?;
             let decoded: Vec<usize> = std::iter::once(index).chain(stored.create_time).collect();
             Ok((stored, decoded))
         })
@@ -289,5 +302,6 @@ pub fn cutoff_ticks(seconds: i64, unit: &str) -> PyResult<i64> {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(cutoff_ticks, m)?)?;
-    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)
+    m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
+    m.add("TOKENIZER_TRAINER", TOKENIZER_TRAINER)
 }

@@ -183,9 +183,10 @@ Fitting keeps the column statistics of encoders over stored columns in
 `col_stats/`, so it needs the index directory to be writable. Each encoder
 cutoff has one directory there, with a `<table>.col_stats.json` file per table.
 A later fit at the same cutoff computes only the columns and statistics those
-files lack, and adds them. A `Text` encoder's tokenizer is kept beside them as
-`<table>.<column>.text-<settings>.tokenizer.json`. Ingest computes them for the cutoffs in
-`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`.
+files lack, and adds them. Ingest computes the statistics for the cutoffs in
+`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and kept beside them as
+`<table>.<column>.text-<settings>.tokenizer.json`.
 Its manifest records the schema, the files and their resolved types. If the
 manifest doesn't match the dataset and schema you pass, `prepare` refuses the
 index rather than reusing it, and it never overwrites it. The shard count isn't
