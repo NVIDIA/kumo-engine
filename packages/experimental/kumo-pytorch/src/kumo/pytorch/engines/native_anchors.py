@@ -17,6 +17,7 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,21 @@ from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
 from kumo.pytorch.materialization import _diskgraph_dtype
+
+
+def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
+    """Decode a timestamp timezone once, rather than once per Arrow scalar."""
+    if values.null_count == len(values):
+        return [None] * len(values)
+    if not pa.types.is_timestamp(dtype) or dtype.tz is None:
+        return values.cast(dtype).to_pylist()
+    # Let Arrow resolve its supported named/fixed-offset timezones. A scalar in
+    # seconds avoids an optional pandas conversion just to obtain the timezone.
+    tz = pa.scalar(0, type=pa.timestamp("s", tz=dtype.tz)).as_py().tzinfo
+    return [
+        value.replace(tzinfo=UTC).astimezone(tz) if value is not None else None
+        for value in values.cast(pa.timestamp(dtype.unit)).to_pylist()
+    ]
 
 
 class NativeAnchors:
@@ -322,7 +338,9 @@ class NativeAnchors:
             *getattr(bound, "targets", {}).values(),
         }
         metadata = {
-            name: columns[name].to_pylist() for name in table.metadata if name not in internal
+            name: _column_values(pa, columns[name], columns[name].type)
+            for name in table.metadata
+            if name not in internal
         }
         return ModelSourceBatch(
             sample_ids=tuple(columns[table.sample_id].to_pylist())
@@ -350,7 +368,7 @@ class NativeAnchors:
             ),
         )
 
-    def _model_batches(
+    def _typed_batches(
         self,
         assembler,
         stage,
@@ -365,6 +383,7 @@ class NativeAnchors:
         rank,
         world_size,
         drop_last,
+        output_format,
     ):
         """One native iterator call per batch; no request objects or re-batching."""
         from dataclasses import replace
@@ -374,7 +393,8 @@ class NativeAnchors:
         from kumo.pytorch.engines.diskgraph import _TemporalPlanCompiler
         from kumo.pytorch.task import _padding_sample_ids, _surface_padding
 
-        assembler._validate_model_contract()
+        if output_format == "model":
+            assembler._validate_model_contract()
         source = self._source
         sample = assembler._model_sample
         orders = {}
@@ -488,6 +508,8 @@ class NativeAnchors:
                     },
                 )
                 yield _surface_padding(
+                    # For graphs, model=True selects typed source buffers; Raw
+                    # fields keep the same Arrow representation as inspection.
                     assembler._collate(values, epoch=epoch, seed=seed, model=True)
                 )
 
@@ -504,7 +526,7 @@ class NativeAnchors:
                     for value in values
                 ]
             else:
-                columns[name] = values.cast(self._types[name]).to_pylist()
+                columns[name] = _column_values(pa, values, self._types[name])
         original_positions = data["anchor_position"].to_pylist()
         table = self._table
         return [
@@ -615,6 +637,33 @@ class NativeAnchors:
             self._extension.cleanup()
             self._temporary.cleanup()
 
+    def _can_batch_inspectable_graph(self, assembler):
+        """Use typed buffers only when no other inspectable contract is needed."""
+        from kumo.pytorch.contract.batch import Graph
+
+        sample = assembler.sample
+        return (
+            len(assembler._prepared_inputs) == 1
+            and all(
+                isinstance(prepared.spec.representation, Graph)
+                for prepared in assembler._prepared_inputs.values()
+            )
+            and "split" not in self._table.metadata
+            and not any(
+                (
+                    sample.entity_values,
+                    sample.dated_entity_values,
+                    sample.events,
+                    sample.current_events,
+                    sample.targets,
+                    sample.candidate_sets,
+                    sample.entity.filters,
+                    sample.entity.available_from,
+                    assembler.spec.targets,
+                )
+            )
+        )
+
     def batches(
         self,
         assembler: Any,
@@ -714,12 +763,22 @@ class NativeAnchors:
                     "projections": fields,
                 }
         stages = self._selection(selection)
-        if output_format == "model" and fixed and assembler._source is self._source:
+        # Preserve mixed-stage ordering and validation outside graph-only contracts.
+        inspectable_graph = (
+            output_format == "inspectable"
+            and len(stages) == 1
+            and self._can_batch_inspectable_graph(assembler)
+        )
+        if (
+            (output_format == "model" or inspectable_graph)
+            and fixed
+            and assembler._source is self._source
+        ):
             for value in self._sample.entity_values.values():
                 if isinstance(value, Field) and not value.path:
                     projections[self._sample.entity.table].append(value.column)
             for stage in stages:
-                yield from self._model_batches(
+                yield from self._typed_batches(
                     assembler,
                     stage,
                     plan=plan,
@@ -732,6 +791,7 @@ class NativeAnchors:
                     rank=rank,
                     world_size=world_size,
                     drop_last=policy.drop_last if drop_last is None else drop_last,
+                    output_format=output_format,
                 )
             return
 
