@@ -15,7 +15,10 @@ from tests.test_preview import _equal
 diskgraph = pytest.importorskip("diskgraph")
 
 
-@pytest.mark.parametrize("row_kind", ["columns", "composite", "tokens", "text_tokens"])
+@pytest.mark.parametrize(
+    "row_kind",
+    ["columns", "composite", "tokens", "text_tokens", "constant_columns", "constant_tokens"],
+)
 @pytest.mark.parametrize("packed", [False, True])
 def test_native_planning_without_event_primary_key(
     history_data, tmp_path, monkeypatch, row_kind, packed
@@ -35,7 +38,7 @@ def test_native_planning_without_event_primary_key(
             for table in schema.tables
         ),
     )
-    tokens = row_kind in {"tokens", "text_tokens"}
+    tokens = row_kind in {"tokens", "text_tokens", "constant_tokens"}
     encoding = api.Vocabulary()
     if row_kind == "text_tokens":
         tokenizer = Tokenizer(
@@ -47,7 +50,12 @@ def test_native_planning_without_event_primary_key(
         api.EntitySpec("users"),
         events={
             "history": api.EventSpec(
-                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"kind": api.Field("kind")}
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)),
+                {
+                    "kind": api.Constant("constant", api.DType("string"))
+                    if row_kind.startswith("constant")
+                    else api.Field("kind")
+                },
             )
         },
     )
