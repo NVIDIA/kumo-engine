@@ -294,14 +294,14 @@ def test_training_row_digest_preserves_column_types(dtype):
 @pytest.mark.parametrize('fault', ['nan', 'bundle', 'registry', 'epochs'])
 def test_local_fit_tracking_rejects_incomplete_evidence(fault):
     run = SimpleNamespace(info=SimpleNamespace(status='FINISHED'),
-                          data=SimpleNamespace(params={'kumo.bundle_id': 'b'}))
+                          data=SimpleNamespace(tags={'kumo.bundle_id': 'b'}))
     history = {'train/loss': [(0, 1.0), (1, 0.5)]}
     registered = SimpleNamespace(tags={'kumo_bundle_id': 'b'})
     runner.local_fit_record(run, history, registered, 'b')
     if fault == 'nan':
         history['train/loss'][1] = (1, float('nan'))
     elif fault == 'bundle':
-        run.data.params.clear()
+        run.data.tags.clear()
     elif fault == 'registry':
         registered.tags.clear()
     else:
