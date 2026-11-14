@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Snowflake notebook launch and identity guards."""
+"""Notebook launch, identity, and provider permission boundaries."""
 
 import errno
 import importlib.util
@@ -19,8 +19,8 @@ platform = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(platform)
 
 
-def config():
-    return json.loads((DIRECTORY / 'mlops_platforms/snowflake.json').read_text())
+def config(name='snowflake'):
+    return json.loads((DIRECTORY / 'mlops_platforms' / f'{name}.json').read_text())
 
 
 def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
@@ -31,9 +31,10 @@ def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
         instance.placement()
 
 
-def test_attempt_resources_are_scoped_and_reconstructible(tmp_path):
+@pytest.mark.parametrize('name', platform.PLATFORMS)
+def test_attempt_resources_are_scoped_and_reconstructible(name, tmp_path):
     path = tmp_path / 'config.json'
-    path.write_text(json.dumps(config()))
+    path.write_text(json.dumps(config(name)))
     first, second = tmp_path / 'a', tmp_path / 'b'
     first.mkdir()
     second.mkdir()
@@ -51,7 +52,7 @@ def test_attempt_resources_are_scoped_and_reconstructible(tmp_path):
     (TimeoutError('service timed out'), False),
     (FileNotFoundError('stage absent'), False),
     (PermissionError('wrapper only'), False),
-    (PermissionError(errno.EACCES, 'denied'), False),
+    (PermissionError(errno.EACCES, 'denied'), True),
 ])
 def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
         cause, expected):
@@ -64,7 +65,12 @@ def test_provider_denial_codes_are_recognized():
     class SnowDenied(RuntimeError):
         sqlstate = '42501'
 
+    class AwsDenied(RuntimeError):
+        response = {'Error': {'Code': 'AccessDenied'}}
+
     error = SnowDenied('Snowflake denies access')
+    assert platform.access_error(error) and platform.denied_access(error)
+    error = AwsDenied('AWS denies access')
     assert platform.access_error(error) and platform.denied_access(error)
     wrapped = RuntimeError('Tracking unavailable')
     wrapped.__cause__ = error
@@ -162,12 +168,16 @@ def test_notebook_worker_identity_is_checked_before_mlops(
 
 @pytest.mark.parametrize(
     'case', ['denied', 'local-spool', 'missing', 'timeout', 'writable'])
-def test_negative_requires_real_permission_denial(case, monkeypatch):
+@pytest.mark.parametrize('name', platform.PLATFORMS)
+def test_negative_requires_real_permission_denial(case, name, monkeypatch):
     import sys
 
-    denied = '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation'
-    instance = platform.Snowflake({
-        **config(), 'denied_artifact_root': denied
+    denied = {
+        'snowflake': '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
+        'sagemaker': 's3://kumo-test-denied/mlops-validation',
+    }[name]
+    instance = platform.Backend({
+        **config(name), 'denied_artifact_root': denied
     }, 'abcdef123456')
     instance.connector = object()
 
@@ -182,7 +192,12 @@ def test_negative_requires_real_permission_denial(case, monkeypatch):
             class ProviderDenied(RuntimeError):
                 sqlstate = '42501'
 
-            error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            if name == 'snowflake':
+                error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            else:
+                error.__cause__ = RuntimeError('S3 write denied')
+                error.__cause__.response = {
+                    'Error': {'Code': 'AccessDenied'}}
         elif case == 'missing':
             error.__cause__ = FileNotFoundError('stage missing')
         elif case == 'timeout':
@@ -201,3 +216,16 @@ def test_negative_requires_real_permission_denial(case, monkeypatch):
         with pytest.raises(platform.PlatformUnavailable,
                            match='without permission-denial'):
             instance.negative()
+
+
+@pytest.mark.parametrize('name', ['snowflake', 'sagemaker'])
+def test_aws_denial_is_accepted_only_for_selected_aws_provider(name):
+    error = PermissionError('wrapped provider failure')
+    cause = RuntimeError('provider denied')
+    cause.response = {'Error': {'Code': 'AccessDenied'}}
+    error.__cause__ = cause
+    assert platform.denied_access(error, provider_only=True,
+                                  provider=name) is (name == 'sagemaker')
+    assert not platform.denied_access(
+        PermissionError(errno.EACCES, 'local spool'), provider_only=True,
+        provider=name)

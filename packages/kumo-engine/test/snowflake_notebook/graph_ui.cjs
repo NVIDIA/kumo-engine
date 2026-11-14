@@ -43,14 +43,10 @@ async function captureElement(
 }
 
 async function hoverTooltip(page, graph, svg, table, column) {
-  const row = await svg
-    .locator(`[data-kumo-table="${table}"][data-kumo-column="${column}"]`)
-    .boundingBox();
-  requireThat(
-    row && row.width > 0 && row.height > 0,
-    "Tooltip row is not rendered",
+  const row = svg.locator(
+    `[data-kumo-table="${table}"][data-kumo-column="${column}"]`,
   );
-  await page.mouse.move(row.x + row.width / 2, row.y + row.height / 2);
+  await row.hover({ timeout: 10000 });
   const tooltip = graph.getByRole("tooltip");
   const deadline = Date.now() + 5000;
   do {
@@ -71,10 +67,11 @@ function displayedSample(value) {
     : value;
 }
 
-async function widgets(page) {
+async function widgets(page, scope = null) {
   const found = [];
-  for (const frame of page.frames()) {
-    const views = frame.locator(".kumo-widget.kumo-graph");
+  const roots = scope ? [scope] : page.frames().map(frame => ({ root: frame, frame }));
+  for (const { root, frame } of roots) {
+    const views = root.locator(".kumo-widget.kumo-graph");
     for (let index = 0; index < (await views.count()); index++)
       found.push({ graph: views.nth(index), frame });
   }
@@ -89,9 +86,10 @@ async function check(
   controls = true,
   interactive = true,
   allowed = async () => true,
+  scope = null,
 ) {
   requireThat(
-    receipt.status === "passed" && receipt.runtime.workspace === true,
+    receipt.status === "passed" && (receipt.runtime.workspace === true || receipt.runtime.notebook === true),
     "Kernel graph checks did not pass in a Workspace",
   );
   requireThat(
@@ -107,7 +105,7 @@ async function check(
   let views;
   const deadline = Date.now() + 60000;
   do {
-    views = await widgets(page);
+    views = await widgets(page, scope);
     if (views.length === 2) break;
     await page.waitForTimeout(500);
   } while (Date.now() < deadline);
@@ -117,7 +115,7 @@ async function check(
   );
   const results = [];
   for (const [index, { graph, frame }] of views.entries()) {
-    const owner = await frame.frameElement();
+    const owner = frame.parentFrame() ? await frame.frameElement() : graph;
     await owner.evaluate((element) =>
       element.scrollIntoView({ block: "center", behavior: "instant" }),
     );
@@ -301,10 +299,10 @@ async function check(
   return results;
 }
 
-async function checkSaved(page, receipt, output, allowed = async () => true) {
+async function checkSaved(page, receipt, output, allowed = async () => true, scope = null) {
   const deadline = Date.now() + 60000;
   do {
-    const views = await widgets(page);
+    const views = await widgets(page, scope);
     if (
       views.length === 2 &&
       (
@@ -330,12 +328,14 @@ async function checkSaved(page, receipt, output, allowed = async () => true) {
           false,
           false,
           allowed,
+          scope,
         ),
       };
     }
     const images = [];
-    for (const frame of page.frames()) {
-      const candidates = frame.getByRole("img", {
+    const roots = scope ? [scope.root] : page.frames();
+    for (const root of roots) {
+      const candidates = root.getByRole("img", {
         name: "Table relationships",
         exact: true,
       });

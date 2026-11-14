@@ -886,7 +886,8 @@ def run(args):
     execution_started = False
     try:
         if getattr(args, 'platform_config', None) is not None:
-            platform_helpers().prepare(root, args.platform_config)
+            platform_helpers().prepare(root, args.platform_config,
+                                       attempt=getattr(args, 'attempt', None))
             report['platform_helpers_sha256'] = digest(
                 Path(__file__).with_name('wheel_mlops_platform.py'))
         profile = platform_backend(root)
@@ -983,9 +984,9 @@ def run(args):
     return 0 if report['status'] == 'passed' else 1
 
 
-def execute(command, cwd, log, timeout):
+def execute(command, cwd, log, timeout, *, env=None):
     """Bound each worker and its training/prediction descendants."""
-    with subprocess.Popen(command, cwd=cwd, stdout=log,
+    with subprocess.Popen(command, cwd=cwd, stdout=log, env=env,
                           stderr=subprocess.STDOUT,
                           start_new_session=True) as process:
         try:
@@ -1014,6 +1015,7 @@ def main(argv=None):
     parser.add_argument('--output-dir', required=True, type=Path)
     parser.add_argument('--wheel', required=True, type=Path)
     parser.add_argument('--expected-version', required=True)
+    parser.add_argument('--attempt', help=argparse.SUPPRESS)
     parser.add_argument('--phase-timeout', type=int, default=600)
     parser.add_argument('--platform-config', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--execute-platform', action='store_true',
