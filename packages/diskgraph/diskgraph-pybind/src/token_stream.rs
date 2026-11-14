@@ -12,6 +12,96 @@ use pyo3::prelude::*;
 
 use crate::DiskgraphConfigError;
 
+/// Same clipping policy for planning and token delivery, without token IDs.
+fn clipped_range(
+    first: usize,
+    end: usize,
+    budget: usize,
+    keep_last: bool,
+    boundary: bool,
+    start: &impl Fn(usize) -> usize,
+) -> (usize, usize) {
+    let total = start(end);
+    if total <= budget {
+        return (0, total);
+    }
+    // Binary search logical event starts without allocating one entry per event.
+    // Token packing can represent billions of empty logical events sparsely.
+    let partition = |predicate: &dyn Fn(usize) -> bool| {
+        let (mut lo, mut hi) = (first, end + 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if predicate(start(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    };
+    if keep_last {
+        let limit = total - budget;
+        let candidate = start(partition(&|v| v < limit));
+        (
+            if boundary && candidate != total {
+                candidate
+            } else {
+                limit
+            },
+            total,
+        )
+    } else {
+        let candidate = start(partition(&|v| v <= budget) - 1);
+        (
+            0,
+            if boundary && candidate != 0 {
+                candidate
+            } else {
+                budget
+            },
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn packed_length(
+    events: &[usize],
+    maximum: usize,
+    keep_last: bool,
+    boundary: bool,
+    separator: bool,
+    between: bool,
+    before: bool,
+    after: bool,
+) -> Result<usize, String> {
+    let reserved = usize::from(before) + usize::from(after);
+    if maximum <= reserved {
+        return Err("token budget must leave room beyond markers".into());
+    }
+    let mut starts = Vec::with_capacity(events.len() + 1);
+    starts.push(0usize);
+    for (i, &tokens) in events.iter().enumerate() {
+        let extra = usize::from(separator && !(between && i + 1 == events.len()));
+        starts.push(
+            starts
+                .last()
+                .unwrap()
+                .checked_add(tokens)
+                .and_then(|v| v.checked_add(extra))
+                .ok_or("token length overflow")?,
+        );
+    }
+    let (lo, hi) = clipped_range(
+        0,
+        events.len(),
+        maximum - reserved,
+        keep_last,
+        boundary,
+        &|i| starts[i],
+    );
+    Ok(hi - lo + reserved)
+}
+
 fn pack(
     offsets: &[i64],
     parts: &[(Int64Array, Int64Array)],
@@ -81,34 +171,7 @@ fn pack(
             }
             low
         };
-        let (mut lo, mut hi) = (0, start(end));
-        if hi - lo > budget {
-            if keep_last {
-                let limit = hi - budget;
-                lo = if event_boundary {
-                    let candidate = start(partition(&|v| v < limit));
-                    if candidate == hi {
-                        limit
-                    } else {
-                        candidate
-                    }
-                } else {
-                    limit
-                };
-            } else {
-                let limit = lo + budget;
-                hi = if event_boundary {
-                    let candidate = start(partition(&|v| v <= limit) - 1);
-                    if candidate == lo {
-                        limit
-                    } else {
-                        candidate
-                    }
-                } else {
-                    limit
-                };
-            }
-        }
+        let (lo, hi) = clipped_range(first, end, budget, keep_last, event_boundary, &start);
         result.extend(bos);
         let mut position = lo;
         let mut event = partition(&|v| v <= lo) - 1;
