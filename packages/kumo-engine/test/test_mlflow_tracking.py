@@ -983,3 +983,22 @@ def test_kumo_describes_an_unused_experiment_and_refreshes_its_own_text():
             if experiment.name != 'Default'} == {
         'new': _EXPERIMENT_NOTE, 'mine': 'Mine.', 'used': None,
         'stale': _EXPERIMENT_NOTE, 'older': _EXPERIMENT_NOTE}
+
+
+def test_databricks_volume_input_is_logged_as_a_volume_not_delta(monkeypatch):
+    from mlflow.data.uc_volume_dataset_source import UCVolumeDatasetSource
+
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    def unexpected_probe(self):
+        pytest.fail('Logging Volume metadata must not resolve ambient source credentials')
+
+    monkeypatch.setattr(UCVolumeDatasetSource, '_verify_uc_path_is_valid', unexpected_probe)
+    location = '/Volumes/main/sales/input/train'
+    replay(MlflowTracking(log_system_metrics=False), summaries=[
+        Dataset('volume_rows', dict(connector='DATABRICKS', location=location,
+                                    version='listing-digest', version_kind='listing'),
+                {}, {}, 'source table')])
+    item, = _fit_run().inputs.dataset_inputs
+    assert item.dataset.source_type == 'uc_volume'
+    assert json.loads(item.dataset.source) == {'path': location}

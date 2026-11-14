@@ -231,3 +231,26 @@ def test_an_occupied_volume_directory_is_refused_before_scoring(tmp_path):
                                        write_mode=mode)
     sink.preflight_write_files(SimpleNamespace(), f'{ROOT}/other/')
     sink.preflight_write_files(SimpleNamespace(), 'main.ml.scores')
+
+
+def test_artifact_stat_does_not_list_sibling_metadata():
+    fs, volume = filesystem({ROOT + '/file': b'data'})
+
+    def no_listing(path):
+        pytest.fail('An artifact file stat must not enumerate siblings')
+
+    volume.list_directory_contents = no_listing
+    assert fs.get_file_info(ROOT + '/file').size == 4
+
+
+def test_source_identity_refreshes_the_layout_used_for_reading():
+    from kumo_databricks.volume import VolumeSourceHandler
+    path = ROOT + '/rows.parquet'
+    physical = path + '.chunks/generation/00000'
+    volume = FakeVolume({physical: b'old', path + '.chunks/generation/_SUCCESS': b''})
+    handler = VolumeSourceHandler(FakeWorkspaceClient(volume))
+    assert handler._layout(path) == [(physical, 3)]
+    volume.objects[path] = b'new'
+    handler.object_identity(path)
+    with handler.open_input_file(path) as source:
+        assert source.read() == b'new'
