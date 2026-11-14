@@ -41,7 +41,7 @@ Notebooks and Python scripts for training, prediction and model reuse.
 
 | Workflow | Requirements |
 | --- | --- |
-| Local Kumo Engine | Linux, supported GPU compute, local SSD scratch storage, and `kumo-engine` with the example's extras. |
+| Local Kumo Engine | Linux and `kumo-engine` with the example's extras; the local Engine notebooks use CPU and writable local scratch storage. |
 | Direct Structured Data Models | `structured-data-models` plus the example's dependencies; follow its Python and CPU/GPU requirements. |
 | Client inference | `structured-data-models-client`, an existing model endpoint, and access credentials. |
 | Databricks or Snowflake | The specified runtime, credentials and source-data access. Databricks setup cells install packages and restart Python. |

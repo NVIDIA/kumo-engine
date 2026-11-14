@@ -1,0 +1,1031 @@
+{
+  "check": "license",
+  "missing_metadata": [],
+  "missing_metadata_count": 0,
+  "osrb_review": [
+    {
+      "license": "LicenseRef-NVIDIA-Proprietary",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cublas-cu12",
+      "package": "nvidia-cublas-cu12==12.9.3.13",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.3.13"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cuda-nvrtc-cu12",
+      "package": "nvidia-cuda-nvrtc-cu12==12.9.86",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.86"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cuda-runtime-cu12",
+      "package": "nvidia-cuda-runtime-cu12==12.9.79",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.79"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-curand-cu12",
+      "package": "nvidia-curand-cu12==10.3.10.19",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "10.3.10.19"
+    }
+  ],
+  "osrb_review_count": 4,
+  "packages": [
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "Jinja2",
+      "package": "Jinja2==3.1.6",
+      "version": "3.1.6"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "Mako",
+      "package": "Mako==1.4.3",
+      "version": "1.4.3"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "Markdown",
+      "package": "Markdown==3.11.3",
+      "version": "3.11.3"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "MarkupSafe",
+      "package": "MarkupSafe==3.0.4",
+      "version": "3.0.4"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "PyYAML",
+      "package": "PyYAML==6.0.3",
+      "version": "6.0.3"
+    },
+    {
+      "license": "BSD-2-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "Pygments",
+      "package": "Pygments==2.21.0",
+      "version": "2.21.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "SQLAlchemy",
+      "package": "SQLAlchemy==2.1.8",
+      "version": "2.1.8"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "Werkzeug",
+      "package": "Werkzeug==3.1.9",
+      "version": "3.1.9"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "absl-py",
+      "package": "absl-py==2.5.1",
+      "version": "2.5.1"
+    },
+    {
+      "license": "Python Software Foundation License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "aiohappyeyeballs",
+      "package": "aiohappyeyeballs==2.7.1",
+      "version": "2.7.1"
+    },
+    {
+      "license": "Apache-2.0 AND MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "aiohttp",
+      "package": "aiohttp==3.14.5",
+      "version": "3.14.5"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "aiosignal",
+      "package": "aiosignal==1.4.0",
+      "version": "1.4.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "alembic",
+      "package": "alembic==1.20.1",
+      "version": "1.20.1"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "annotated-types",
+      "package": "annotated-types==0.8.0",
+      "version": "0.8.0"
+    },
+    {
+      "license": "BSD",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "antlr4-python3-runtime",
+      "package": "antlr4-python3-runtime==4.9.3",
+      "version": "4.9.3"
+    },
+    {
+      "license": "Apache 2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "asttokens",
+      "package": "asttokens==3.0.2",
+      "version": "3.0.2"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "attrs",
+      "package": "attrs==26.1.0",
+      "version": "26.1.0"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "beautifulsoup4",
+      "package": "beautifulsoup4==4.15.0",
+      "version": "4.15.0"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "bleach",
+      "package": "bleach==6.4.0",
+      "version": "6.4.0"
+    },
+    {
+      "license": "Mozilla Public License 2.0 (MPL 2.0)",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "certifi",
+      "package": "certifi==2026.10.23",
+      "version": "2026.10.23"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "charset-normalizer",
+      "package": "charset-normalizer==3.5.2",
+      "version": "3.5.2"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "cloudpickle",
+      "package": "cloudpickle==3.1.2",
+      "version": "3.1.2"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "colorlog",
+      "package": "colorlog==6.12.0",
+      "version": "6.12.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "comm",
+      "package": "comm==0.2.3",
+      "version": "0.2.3"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "contourpy",
+      "package": "contourpy==1.4.0",
+      "version": "1.4.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "cycler",
+      "package": "cycler==0.12.1",
+      "version": "0.12.1"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "debugpy",
+      "package": "debugpy==1.8.22",
+      "version": "1.8.22"
+    },
+    {
+      "license": "Python Software Foundation License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "defusedxml",
+      "package": "defusedxml==0.7.1",
+      "version": "0.7.1"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "executing",
+      "package": "executing==2.3.0",
+      "version": "2.3.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "faiss-gpu",
+      "package": "faiss-gpu==1.14.3",
+      "version": "1.14.3"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "fastjsonschema",
+      "package": "fastjsonschema==2.22.3",
+      "version": "2.22.3"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "filelock",
+      "package": "filelock==4.2.9",
+      "version": "4.2.9"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "fonttools",
+      "package": "fonttools==4.68.0",
+      "version": "4.68.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "frozenlist",
+      "package": "frozenlist==1.8.0",
+      "version": "1.8.0"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "fsspec",
+      "package": "fsspec==2026.9.0",
+      "version": "2026.9.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "grpcio",
+      "package": "grpcio==1.85.1",
+      "version": "1.85.1"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "idna",
+      "package": "idna==3.20",
+      "version": "3.20"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "iniconfig",
+      "package": "iniconfig==2.3.1",
+      "version": "2.3.1"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "ipykernel",
+      "package": "ipykernel==7.4.0",
+      "version": "7.4.0"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "ipython",
+      "package": "ipython==9.18.1",
+      "version": "9.18.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "ipython_pygments_lexers",
+      "package": "ipython_pygments_lexers==1.1.1",
+      "version": "1.1.1"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jedi",
+      "package": "jedi==0.20.1",
+      "version": "0.20.1"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "joblib",
+      "package": "joblib==1.6.0",
+      "version": "1.6.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jsonschema",
+      "package": "jsonschema==4.26.0",
+      "version": "4.26.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jsonschema-specifications",
+      "package": "jsonschema-specifications==2025.9.1",
+      "version": "2025.9.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jupyter_client",
+      "package": "jupyter_client==8.10.0",
+      "version": "8.10.0"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jupyter_core",
+      "package": "jupyter_core==5.9.1",
+      "version": "5.9.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "jupyterlab_pygments",
+      "package": "jupyterlab_pygments==0.3.0",
+      "version": "0.3.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "kiwisolver",
+      "package": "kiwisolver==1.5.1",
+      "version": "1.5.1"
+    },
+    {
+      "license": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT AND Unicode-3.0 AND Zlib",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "kumo-engine",
+      "package": "kumo-engine==1.0.0.dev0+b840a3ed",
+      "version": "1.0.0.dev0+b840a3ed"
+    },
+    {
+      "license": "Apache-2.0 AND PDDL-1.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "kumo-glove-6b-50d",
+      "package": "kumo-glove-6b-50d==1.0.0",
+      "version": "1.0.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "lightning-utilities",
+      "package": "lightning-utilities==0.15.3",
+      "version": "0.15.3"
+    },
+    {
+      "license": "Python Software Foundation License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "matplotlib",
+      "package": "matplotlib==3.11.2",
+      "version": "3.11.2"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "matplotlib-inline",
+      "package": "matplotlib-inline==0.2.2",
+      "version": "0.2.2"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "mistune",
+      "package": "mistune==3.4.0",
+      "version": "3.4.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "mpmath",
+      "package": "mpmath==1.3.0",
+      "version": "1.3.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "multidict",
+      "package": "multidict==7.2.1",
+      "version": "7.2.1"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "narwhals",
+      "package": "narwhals==2.28.0",
+      "version": "2.28.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nbclient",
+      "package": "nbclient==0.11.0",
+      "version": "0.11.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nbconvert",
+      "package": "nbconvert==7.17.2",
+      "version": "7.17.2"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nbformat",
+      "package": "nbformat==5.11.1",
+      "version": "5.11.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nest-asyncio2",
+      "package": "nest-asyncio2==1.7.4",
+      "version": "1.7.4"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "networkx",
+      "package": "networkx==3.7",
+      "version": "3.7"
+    },
+    {
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "numpy",
+      "package": "numpy==2.5.4",
+      "version": "2.5.4"
+    },
+    {
+      "license": "LicenseRef-NVIDIA-Proprietary",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cublas-cu12",
+      "package": "nvidia-cublas-cu12==12.9.3.13",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.3.13"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cuda-nvrtc-cu12",
+      "package": "nvidia-cuda-nvrtc-cu12==12.9.86",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.86"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-cuda-runtime-cu12",
+      "package": "nvidia-cuda-runtime-cu12==12.9.79",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "12.9.79"
+    },
+    {
+      "license": "Other/Proprietary License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "nvidia-curand-cu12",
+      "package": "nvidia-curand-cu12==10.3.10.19",
+      "review_reasons": [
+        "license_requires_osrb_review"
+      ],
+      "version": "10.3.10.19"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "optuna",
+      "package": "optuna==4.9.0",
+      "version": "4.9.0"
+    },
+    {
+      "license": "Apache-2.0 OR BSD-2-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "packaging",
+      "package": "packaging==26.3",
+      "version": "26.3"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pandas",
+      "package": "pandas==2.3.3",
+      "version": "2.3.3"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pandocfilters",
+      "package": "pandocfilters==1.5.1",
+      "version": "1.5.1"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "parso",
+      "package": "parso==0.8.7",
+      "version": "0.8.7"
+    },
+    {
+      "license": "ISC License (ISCL)",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pexpect",
+      "package": "pexpect==4.9.0",
+      "version": "4.9.0"
+    },
+    {
+      "license": "MIT-CMU",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pillow",
+      "package": "pillow==13.0.0",
+      "version": "13.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "platformdirs",
+      "package": "platformdirs==4.14.5",
+      "version": "4.14.5"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pluggy",
+      "package": "pluggy==1.7.0",
+      "version": "1.7.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "prompt_toolkit",
+      "package": "prompt_toolkit==3.0.53",
+      "version": "3.0.53"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "propcache",
+      "package": "propcache==0.5.4",
+      "version": "0.5.4"
+    },
+    {
+      "license": "3-Clause BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "protobuf",
+      "package": "protobuf==7.36.2",
+      "version": "7.36.2"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "psutil",
+      "package": "psutil==7.2.2",
+      "version": "7.2.2"
+    },
+    {
+      "license": "ISC License (ISCL)",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "ptyprocess",
+      "package": "ptyprocess==0.7.0",
+      "version": "0.7.0"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pure_eval",
+      "package": "pure_eval==0.2.4",
+      "version": "0.2.4"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pyarrow",
+      "package": "pyarrow==24.0.0",
+      "version": "24.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pydantic",
+      "package": "pydantic==2.14.3",
+      "version": "2.14.3"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pydantic_core",
+      "package": "pydantic_core==2.50.4",
+      "version": "2.50.4"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pyparsing",
+      "package": "pyparsing==3.3.3",
+      "version": "3.3.3"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pytest",
+      "package": "pytest==9.2.0",
+      "version": "9.2.0"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "python-dateutil",
+      "package": "python-dateutil==4.0.0",
+      "version": "4.0.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pytorch-frame",
+      "package": "pytorch-frame==0.3.0",
+      "version": "0.3.0"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pytorch-lightning",
+      "package": "pytorch-lightning==2.6.6",
+      "version": "2.6.6"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pytz",
+      "package": "pytz==2026.6",
+      "version": "2026.6"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "pyzmq",
+      "package": "pyzmq==27.3.0",
+      "version": "27.3.0"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "referencing",
+      "package": "referencing==0.37.0",
+      "version": "0.37.0"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "requests",
+      "package": "requests==2.34.2",
+      "version": "2.34.2"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "rpds-py",
+      "package": "rpds-py==2026.9.1",
+      "version": "2026.9.1"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "scikit-learn",
+      "package": "scikit-learn==1.9.1",
+      "version": "1.9.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "scipy",
+      "package": "scipy==1.18.1",
+      "version": "1.18.1"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "soupsieve",
+      "package": "soupsieve==4.0.1",
+      "version": "4.0.1"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "sqlglot",
+      "package": "sqlglot==30.17.0",
+      "version": "30.17.0"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "stack-data",
+      "package": "stack-data==0.6.3",
+      "version": "0.6.3"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "sympy",
+      "package": "sympy==1.14.0",
+      "version": "1.14.0"
+    },
+    {
+      "license": "MIT License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tabulate",
+      "package": "tabulate==0.8.10",
+      "version": "0.8.10"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tensorboard",
+      "package": "tensorboard==2.21.0",
+      "version": "2.21.0"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tensorboard-data-server",
+      "package": "tensorboard-data-server==0.7.2",
+      "version": "0.7.2"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "threadpoolctl",
+      "package": "threadpoolctl==3.8.0",
+      "version": "3.8.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tinycss2",
+      "package": "tinycss2==1.5.1",
+      "version": "1.5.1"
+    },
+    {
+      "license": "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT AND Zlib",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "torch",
+      "package": "torch==2.15.0+cpu",
+      "version": "2.15.0+cpu"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "torch-geometric",
+      "package": "torch-geometric==2.8.1",
+      "version": "2.8.1"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "torchmetrics",
+      "package": "torchmetrics==1.8.1",
+      "version": "1.8.1"
+    },
+    {
+      "license": "Apache Software License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tornado",
+      "package": "tornado==6.6",
+      "version": "6.6"
+    },
+    {
+      "license": "MPL-2.0 AND MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tqdm",
+      "package": "tqdm==4.70.1",
+      "version": "4.70.1"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "traitlets",
+      "package": "traitlets==5.16.1",
+      "version": "5.16.1"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "typing-inspection",
+      "package": "typing-inspection==0.4.5",
+      "version": "0.4.5"
+    },
+    {
+      "license": "PSF-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "typing_extensions",
+      "package": "typing_extensions==4.16.0",
+      "version": "4.16.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "tzdata",
+      "package": "tzdata==2026.6",
+      "version": "2026.6"
+    },
+    {
+      "license": "MIT",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "urllib3",
+      "package": "urllib3==2.8.0",
+      "version": "2.8.0"
+    },
+    {
+      "license": "BSD License",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "webencodings",
+      "package": "webencodings==0.6.1",
+      "version": "0.6.1"
+    },
+    {
+      "license": "BSD-2-Clause",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "xxhash",
+      "package": "xxhash==4.1.0",
+      "version": "4.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "license_classifiers": [],
+      "license_expression": null,
+      "name": "yarl",
+      "package": "yarl==1.25.1",
+      "version": "1.25.1"
+    }
+  ],
+  "reason": "license_requires_osrb_review",
+  "result": "warn",
+  "timestamp": "2026-11-09T19:22:46Z",
+  "tool": "pip-licenses",
+  "total_packages": 120
+}

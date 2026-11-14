@@ -178,3 +178,7 @@ pytest-of-*/
 
 # Built by packages/kumo-engine/setup.py from agent-skills/; ships in the wheel.
 packages/kumo-engine/kumo/engine/_skills/
+
+# Local advisory security tooling and per-developer scan history.
+.plc/tools/
+plc-evidence.jsonl

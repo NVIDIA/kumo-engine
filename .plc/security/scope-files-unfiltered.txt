@@ -1,0 +1,10 @@
+.plc/tools/notebook-source/local_kumo_engine_custom_training_table.py
+.plc/tools/notebook-source/local_kumo_engine_graph_visualization_preview.py
+.plc/tools/notebook-source/local_kumo_engine_static_and_temporal_queries.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_appointment_attendance.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_content_format_preferences.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_money_muling_detection.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_product_category.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_product_recommendations.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_product_tags.py
+.plc/tools/notebook-source/local_kumo_engine_synthetic_transaction_screening.py
