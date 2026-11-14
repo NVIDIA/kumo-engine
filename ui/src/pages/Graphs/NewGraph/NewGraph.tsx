@@ -154,11 +154,10 @@ const NewGraph: React.FC = () => {
      *  Function that makes an API call for Edit graph
      */
     const editGraph = useCallback(async () => {
-        const gfc: GraphFlowInfo = { ...graphFlowInfo };
         setLoading(true);
         try {
             const { graphId } = await createGraph(
-                gfc,
+                graphFlowInfo,
                 groups,
                 handleError,
                 true
@@ -167,7 +166,7 @@ const NewGraph: React.FC = () => {
                 setLoading(false);
 
                 if (isValid(graphId)) {
-                    navigate(projectPaths.Graphs + gfc.name);
+                    navigate(projectPaths.Graphs + graphFlowInfo.name);
                 }
             }
         } catch (error) {

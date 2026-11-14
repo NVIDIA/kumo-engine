@@ -145,6 +145,52 @@ describe("DuplicateGraphPage", () => {
         }); //Previous page
     });
 
+    it("Should send an unchanged duplicate through create without renaming, show the server error, and stay on the page", async () => {
+        const graphInfo = duplicateGraphInfo();
+        const original = expectedGraphDetailResponse().graph;
+        mockLocationStateValue({
+            flow_type: FlowType.DUPLICATE,
+            name: graphInfo?.name,
+            jsGraph: graphInfo
+        });
+        await renderDuplicateGraphPage();
+        await pageLoadTest();
+        await waitFor(() => {
+            expect(screen.getByPlaceholderText("name")).toHaveValue(
+                "ltv_graph_copy"
+            );
+        });
+
+        await findAndClickButtonByRole("Next");
+        await executeGraphCreationFlow(
+            {
+                col_groups: original?.col_groups?.map(({ columns }) => ({
+                    columns
+                })),
+                tables: original?.tables
+            } as GraphDefinition,
+            async () => {
+                await userEvent.click(screen.getByText("Save"));
+            },
+            {
+                createWithInvalid: true,
+                validName: "ltv_graph_copy",
+                forceRename: false
+            }
+        );
+
+        expect(mockAxiosInstance.post).not.toHaveBeenCalledWith(
+            "v1/graphs/",
+            expect.anything(),
+            expect.objectContaining({
+                params: expect.objectContaining({ force_rename: true })
+            })
+        );
+        expect(mockUseNavigate).not.toHaveBeenCalledWith(
+            `${getProjectPath("project-tests").Graphs}ltv_graph_copy`
+        );
+    });
+
     it("Should successfully duplicate the graph and handle validation errors (failure, invalid data)", async () => {
         const graphInfo = duplicateGraphInfo();
         mockLocationStateValue({
