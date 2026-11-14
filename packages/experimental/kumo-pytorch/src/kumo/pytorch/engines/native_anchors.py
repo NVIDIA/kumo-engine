@@ -164,11 +164,15 @@ class NativeAnchors:
                                 str(stage["path"])
                             )
                         stage = by_split[split_name]
-                        selected = data.filter(
+                        mask = (
                             pc.is_null(split) if split_name is None else pc.equal(split, split_name)
                         )
+                        selected = data.filter(mask)
                         writers[split_name].write_batch(selected.to_batches()[0])
                         stage["count"] += len(selected)
+                        if table.as_of_time is not None:
+                            # One scalar per Parquet batch, so `latest_time` never reads anchors.
+                            stage.setdefault("latest", []).append(pc.max(times.filter(mask)))
                     position += batch.num_rows
         finally:
             for writer in writers.values():
@@ -257,6 +261,20 @@ class NativeAnchors:
 
     def count(self, selection: Any = ALL_ANCHORS) -> int:
         return sum(stage["count"] for stage in self._selection(selection))
+
+    def latest_time(self, selection: Any = ALL_ANCHORS) -> Any:
+        """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
+        stages = [stage for stage in self._selection(selection) if stage["count"]]
+        if not stages:
+            raise ValueError("no anchors selected")
+        if self._table.as_of_time is None:
+            return 0
+        pa, dtype = self._pa, self._types[self._table.as_of_time]
+        maxima = pa.concat_arrays(
+            [pa.repeat(value, 1).cast(dtype) for stage in stages for value in stage["latest"]]
+        )
+        # Convert like `_requests` so the value and its type match the requests'.
+        return _arrow_values(pa.repeat(self._pc.max(maxima), 1))[0]
 
     def _iter(
         self,
