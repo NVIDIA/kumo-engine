@@ -10,6 +10,7 @@ candidate wheel.
 | Engine lifecycle | Train/register two versions; reload in fresh processes; predict by version and alias; move the alias; verify tracking, lineage, prediction IDs/schema, drift and evaluation after labels arrive. Includes real denied artifact access; incomplete-artifact checks currently run only in the local profile. |
 | Lifecycle UI | Open the retained lifecycle's runs and model versions in Snowsight; verify status, metrics and epoch history. Reuses existing results without training again. |
 | Notebook graph UI | Render the shared PR172 adtech fixture in a Snowflake notebook; verify schema, relationships, tooltips and controls; reopen saved outputs after kernel shutdown; verify SVG/PDF/Markdown exports. Default display must read no source data, and exports must exclude sample values. |
+| Explanation displays, saved outputs and exports | Local Jupyter check using producer-schema fixtures: gradient and class-selected cohort displays, saved notebook MIME outputs after kernel shutdown, fresh-kernel loading of retained diagnostics, and PNG/SVG/PDF exports. Snowsight execution is not yet covered. |
 
 These resource names are deliberate test-only allowlist entries, not production
 resources. Keep the browser bot limited to this role and test resources because
@@ -21,8 +22,36 @@ The graph scenario runs without training.
 
 Current gaps: full epoch history in model exports, independently verified
 nonzero drift sensitivity, and interruption of an active remote writer.
-Explanations unavailable on main are outside the graph scenario. A successful
-engine or graph check alone does not establish full qualification.
+Explanations have a separate local check below. They are outside the managed
+graph scenario. A successful engine or graph check alone does not establish
+full qualification.
+
+## Local explanation check
+
+In an environment with this checkout's Engine and core packages, install the
+local notebook test prerequisites (`nbclient`, `nbformat`, `nbconvert`,
+`ipykernel`, `Pillow`, `pypdf`, and Matplotlib), then run:
+
+```sh
+python packages/kumo-engine/test/snowflake_notebook/explanation_local.py \
+  --output-dir /tmp/snowflake-explanations-new-attempt
+```
+
+The output directory must not exist. This command starts two local kernels and
+stops each before checking its saved notebook. It compares the retained plot
+outputs across kernels and checks table-qualified gradient labels, recorded
+scores including zero, explicit cohort class selection, targets, population
+shares, and readable figure exports. Model-only loading must raise an
+availability error instead of fabricating a plot. Open `initial.html` or
+`fresh-kernel.html` to inspect the saved displays without a running kernel.
+
+The fixture uses shared CSV/JSON writers and schemas; it does not train or
+establish released-artifact compatibility. These are static Matplotlib plots,
+not interactive explanation graphs. Model bundles omit explanation artifacts,
+so the retained run is tested separately. See the
+[explanation API](../../packages/kumo-engine/explainability.md).
+No credentials, Snowflake resources, workflow dispatches or staged uploads are
+used. This check does not verify Snowsight rendering or persistence.
 
 ## Setup
 
