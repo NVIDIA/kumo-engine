@@ -7,7 +7,6 @@ import os
 import time
 
 import torch
-from kumo_core.accelerator import mps_supported
 from kumo_core.job_config import TrialStatus
 from kumo_core.types import TaskType
 
@@ -42,11 +41,8 @@ def check_gpu_ready(
     if require_gpu is None:
         require_gpu = os.environ.get('KUMO_REQUIRE_GPU',
                                      '').strip().lower() in ('1', 'true', 'yes')
-    # MPS before macOS 15 aborts the process, so Kumo does not count it as a
-    # GPU there: KUMO_REQUIRE_GPU then fails instead of training on the CPU.
-    device_type = ('cuda' if torch.cuda.is_available() else 'mps' if
-                   (torch.backends.mps.is_available() and mps_supported())
-                   else None)
+    device_type = ('cuda' if torch.cuda.is_available() else
+                   'mps' if torch.backends.mps.is_available() else None)
     if device_type is None:
         if require_gpu:
             # A GPU deployment that has lost its GPU must FAIL LOUDLY, not
@@ -54,10 +50,6 @@ def check_gpu_ready(
             # job still reports success). GPU loss commonly follows a
             # cgroup/daemon event (systemd reload, apt upgrade, docker
             # hiccup) or a driver desync.
-            if torch.backends.mps.is_available():
-                raise RuntimeError(
-                    "GPU required (KUMO_REQUIRE_GPU), but Apple MPS requires "
-                    "macOS 15 or later; refusing to fall back to CPU.")
             raise RuntimeError(
                 "GPU required (KUMO_REQUIRE_GPU) but no CUDA or MPS device is "
                 "available — refusing to silently fall back to CPU. Verify "

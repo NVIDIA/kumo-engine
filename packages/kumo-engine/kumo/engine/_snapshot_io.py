@@ -498,9 +498,7 @@ def _allocate(staging: Path, files: List[Tuple[str, int]]) -> None:
         try:
             if size and hasattr(os, 'posix_fallocate'):
                 os.posix_fallocate(fd, 0, size)
-            elif size:
-                # macOS has no posix_fallocate. The free-space check above
-                # already ran, so set the final size without reserving it.
+            elif size:  # macOS has no posix_fallocate.
                 os.ftruncate(fd, size)
         finally:
             os.close(fd)

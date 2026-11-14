@@ -270,10 +270,9 @@ jobs:
 
   platform-qualification:
     needs: [build]
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
+    # Native Windows builds fail on main. Qualify the wheels that were built.
+    if: ${{ !cancelled() && needs.build.result != 'skipped' }}
+    permissions: {contents: read, id-token: write}
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
 
   attach-to-release:

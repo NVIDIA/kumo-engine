@@ -275,12 +275,7 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     path = WORKFLOW.parent / 'kumo-engine-platform-smoke.yml'
     workflow = yaml.safe_load(path.read_text())
     # PyYAML's YAML 1.1 parser interprets the GitHub Actions `on` key as True.
-    # The build calls it with no inputs. A manual run names an earlier build
-    # run and its commit, to qualify wheels that run already uploaded.
-    assert workflow[True]['workflow_call'] is None
-    inputs = workflow[True]['workflow_dispatch']['inputs']
-    assert set(inputs) == {'wheel_run_id', 'wheel_sha'}
-    assert all(spec['required'] for spec in inputs.values())
+    assert workflow[True] == {'workflow_call': None}
     job = workflow['jobs']['smoke']
     matrix = job['strategy']['matrix']
     assert set(matrix['python']) == {'3.11', '3.12', '3.13', '3.14'}
@@ -295,31 +290,12 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     download = next(step for step in job['steps']
                     if step.get('uses', '').startswith(
                         'actions/download-artifact@'))
-    # A workflow_call defines no inputs, so both fall back to the current
-    # build run and commit. Only a manual run can name an earlier build, and
-    # the release build never qualifies a stale artifact.
     assert download['with'] == {
         'name': ('kumo-engine-wheel-${{ matrix.target.artifact }}-'
-                 '${{ inputs.wheel_sha || github.sha }}'),
+                 '${{ github.sha }}'),
         'path': '${{ runner.temp }}/platform-wheel/artifacts',
-        'run-id': '${{ inputs.wheel_run_id || github.run_id }}',
-        'github-token': '${{ github.token }}',
     }
-    # The reload qualification reads the GPU smoke's private fixture with the
-    # same environment-scoped role, and keeps fixture predictions on the runner.
-    assert caller['permissions']['id-token'] == 'write'
-    reload = workflow['jobs']['reload']
-    assert reload['environment']['name'] == 'gha-kumo-workflow-tests'
-    assert reload['permissions']['id-token'] == 'write'
-    steps = {step.get('name'): step for step in reload['steps']}
-    fixture = steps['Download the pinned PR172 inputs of the eight tasks']
-    assert 'pr172/inputs.json' in fixture['run']
-    assert "hexdigest() != spec['sha256']" in fixture['run']
-    run = steps['Clean install, then train, reload and compare in new processes']
-    assert 'unset ACTIONS_ID_TOKEN_REQUEST_URL' in run['run']
-    assert '--data-dir "$RUNNER_TEMP/reload-inputs"' in run['run']
-    assert 'wheel_gpu_smoke.py' in run['run']
-    upload = next(step for step in reload['steps']
-                  if step.get('uses', '').startswith('actions/upload-artifact@'))
-    assert '!${{ runner.temp }}/reload/results/**/*.parquet' in upload['with'][
-        'path']
+    # Supplying another run or token here could accidentally qualify a stale
+    # artifact while publishing the current build.
+    assert 'run-id' not in download['with']
+    assert 'github-token' not in download['with']

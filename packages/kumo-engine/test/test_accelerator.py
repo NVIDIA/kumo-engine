@@ -3,14 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import platform
 
 import pandas as pd
 import pytest
-from kumo_core import accelerator as acc
 from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine.trainer.trainer import UnsupportedAcceleratorError
 
 
 @pytest.mark.parametrize('accelerator', ['cuda', 'tpu', '', None, 1])
@@ -19,26 +20,18 @@ def test_invalid_accelerator_fails_at_construction(accelerator):
         Trainer(ModelPlan(), accelerator=accelerator)
 
 
-def macos(monkeypatch, release):
-    # Patch only the host lookup; the rest of the process stays on Linux.
-    monkeypatch.setattr(acc, '_macos_release', lambda: release)
-    monkeypatch.setattr(acc, '_warned_auto_cpu', False)
-
-
-@pytest.mark.parametrize('accelerator', ['mps', 'gpu'])
-def test_mps_before_macos_15_fails_at_construction(monkeypatch, accelerator):
-    macos(monkeypatch, '14.7.1')
-    with pytest.raises(acc.UnsupportedAcceleratorError,
-                       match='requires macOS 15 or later'):
-        Trainer(ModelPlan(), accelerator=accelerator)
-
-
-@pytest.mark.parametrize('release', ['15.0', '26.1'])
-@pytest.mark.parametrize('accelerator', ['mps', 'gpu', 'auto', 'cpu'])
-def test_macos_15_keeps_every_accelerator(monkeypatch, release, accelerator):
-    macos(monkeypatch, release)
-    assert Trainer(ModelPlan(),
-                   accelerator=accelerator)._accelerator == (accelerator)
+@pytest.mark.parametrize('release, accelerator, fails',
+                         [('14.7.1', 'mps', True), ('14.7.1', 'gpu', True),
+                          ('14.7.1', 'auto', False), ('14.7.1', 'cpu', False),
+                          ('15.0', 'mps', False), ('', 'gpu', False)])
+def test_mps_needs_macos_15(monkeypatch, release, accelerator, fails):
+    monkeypatch.setattr(platform, 'mac_ver', lambda: (release, ('', ) * 3, ''))
+    if fails:
+        with pytest.raises(UnsupportedAcceleratorError, match='macOS 15'):
+            Trainer(ModelPlan(), accelerator=accelerator)
+    else:
+        trainer = Trainer(ModelPlan(), accelerator=accelerator)
+        assert trainer._accelerator == accelerator
 
 
 def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
@@ -50,26 +43,20 @@ def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):
     assert os.environ['KUMO_ACCELERATOR'] == 'mps'
 
 
-@pytest.mark.parametrize('num_workers,choice', [(1, 'cpu'), (2, 'cpu'),
-                                                (1, 'auto')])
+@pytest.mark.parametrize('num_workers', [1, 2])
 def test_cpu_fit_refit_reload_and_predict_override_environment(
-        tmp_path, monkeypatch, num_workers, choice):
-    # On macOS 14, accelerator='auto' must train on the CPU even when a
-    # device is visible, because MPS aborts the process there.
-    if choice == 'auto':
-        macos(monkeypatch, '14.7.1')
+        tmp_path, monkeypatch, num_workers):
     import torch
     from kumo_core.train.trainer import Trainer as CoreTrainer
 
     import kumo.engine as kumo
 
-    devices, choices = [], []
+    devices = []
     original = CoreTrainer.create_pl_trainer
 
     def create_pl_trainer(self):
         original(self)
         devices.append(self.pl_trainer.strategy.root_device.type)
-        choices.append(self.accelerator)
 
     monkeypatch.setattr(CoreTrainer, 'create_pl_trainer', create_pl_trainer)
     monkeypatch.setenv('KUMO_ACCELERATOR', 'mps')
@@ -98,12 +85,12 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
         plan.optimization.min_steps_per_epoch = 2
         plan.optimization.max_steps_per_epoch = 2
         plan.model_architecture.channels = [8]
-        trainer = Trainer(plan, accelerator=choice)
+        trainer = Trainer(plan, accelerator='cpu')
         result = trainer.fit(query.generate_training_table(snapshot),
                              snapshot=snapshot)
         assert len(devices) >= 2
         fit_count = len(devices)
-        restored = Trainer.load(result.bundle_dir, accelerator=choice)
+        restored = Trainer.load(result.bundle_dir, accelerator='cpu')
         prediction = restored.predict(
             query.generate_prediction_table(snapshot), snapshot=snapshot,
             binary_classification_threshold=0.5, num_workers=num_workers)
@@ -112,6 +99,5 @@ def test_cpu_fit_refit_reload_and_predict_override_environment(
         if num_workers == 1:
             assert len(devices) > fit_count
         assert set(devices) == {'cpu'}
-        assert set(choices) == {'cpu'}
     finally:
         kumo.configure(scratch_dir=previous)

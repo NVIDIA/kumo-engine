@@ -32,7 +32,6 @@ from torch_frame.data import MultiEmbeddingTensor, MultiNestedTensor
 from torch_geometric.sampler.base import NumNeighbors, SubgraphType
 from torch_geometric.typing import EdgeType, EdgeTypeStr
 
-from kumo_core.accelerator import resolve_accelerator
 from kumo_core.callbacks import (
     CudaOOMHandler,
     EarlyStopping,
@@ -668,8 +667,7 @@ class Trainer(PortableConfigMixin):
         # `torch.nn.functional`
         self.loss = loss
         self.binary_threshold = binary_threshold
-        # Reject MPS on macOS < 15 before Lightning places any MPS kernel.
-        self.accelerator = resolve_accelerator(accelerator)
+        self.accelerator = accelerator
         self.kwargs = kwargs
 
         # Allow Trainer instance to be created with deferred initialization via

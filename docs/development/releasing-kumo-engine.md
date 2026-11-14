@@ -125,50 +125,28 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
-   - runs the fresh-process reload qualification on each supported desktop
-     configuration with Python 3.11–3.14. Linux x86-64 and WSL2 x86-64 run on
-     CPU and CUDA. Linux ARM64 runs on CPU. macOS 15 and 26 on Apple Silicon run
-     on CPU. The cases are the eight tasks of the GPU wheel smoke
-     (`wheel_gpu_smoke.py`) on its PR172 fixture data. Both checks share one
-     task definition. For each task, a producer process trains, exports the
-     model and the snapshot, and saves its predictions. The job then deletes the
-     producer scratch, caches, temp files, and source data. A new consumer
-     process loads only the exports and predicts without training. Entities,
-     anchor timestamps, classes or items, and forecast steps must match the
-     saved inputs exactly. Scores must match within the absolute tolerance
-     `0.0001` on CPU and MPS. CUDA uses `0.005`, the GPU smoke's reload bound,
-     because CUDA kernels are not bit-reproducible. Labels or ranks can change
-     only between tied scores. A CUDA or MPS row passes only with training and
-     prediction batches observed on that device, and MPS link rows need Faiss
-     Metal search. The job uploads the wheel hash, model and snapshot file
-     hashes, logs, and per-case results. A report job lists every configuration
-     and case. If a configuration has no evidence, the report marks it
-     UNVERIFIED and fails. If an unrelated build target fails and skips this
-     step, run `kumo-engine-platform-smoke.yml` by hand with that build run's ID
-     and commit. See
-     [`desktop_reload_qualification.py`](../../packages/kumo-engine/test/desktop_reload_qualification.py).
-   - needs evidence from Apple Silicon Macs for two rows: macOS 14 on CPU,
-     on bare metal or in a macOS 14 VM, and macOS 15 on MPS on bare metal.
-     macOS 14 is the supported floor, and hosted runners no longer offer it.
-     MPS requires macOS 15 or later, because the supported PyTorch calls
-     Metal APIs that macOS 14 does not have. On macOS 14, the
-     `unavailable_device` check requests MPS. If the consumer fails with
-     `UnsupportedAcceleratorError`, the check passes. Any other result fails
-     it. Hosted macOS runners are VMs without a Metal device, so they cannot
-     run MPS. The CI report covers the hosted rows only. On each Mac, install
-     the macOS wheel from the same build run in a clean environment. Download
-     the object that
-     [`inputs.json`](../../packages/kumo-engine/test/pr172/inputs.json) names
-     with AWS credentials that can read it, check its SHA-256, and extract
-     it. Then run `desktop_reload_qualification.py run` next to
-     `wheel_gpu_smoke.py` for each Python version. Pass the extracted root as
-     `--data-dir` and its `graphs.json` as `--graph-metadata`. Also pass
-     `--negative-checks`, the candidate commit as `--commit`, and the label
-     `macos-<major>-<device>-py<version>`. Build the full matrix with
-     `desktop_reload_qualification.py report --commit <candidate commit>`.
-     Pass one `--evidence-dir` for the CI results and one for each Mac. The
-     report marks a missing row UNVERIFIED, fails a row that names another
-     commit, and checks that each row ran on its labeled platform.
+   - runs `desktop_reload_qualification.py` on the `binary` and `static_link`
+     tasks with Python 3.12 in the `reload` job: Linux x86-64 and WSL2 on CPU
+     and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on CPU. A producer
+     process trains, exports the model and snapshot, and predicts. The job
+     ends it and deletes its files. A new process loads the exports and
+     predicts, and the predictions must match. `reload-report` fails unless
+     every CI row passes.
+   - needs two Mac rows that a person runs with Python 3.12: macOS 14 on CPU
+     (a VM is enough) and macOS 15 on MPS (bare metal). Install the macOS
+     wheel of the same build run in a clean venv. Download the object that
+     `packages/kumo-engine/test/pr172/inputs.json` names, make sure that its
+     SHA-256 equals the `sha256` in that file, and extract it. In a folder
+     outside the checkout with `desktop_reload_qualification.py` and
+     `wheel_gpu_smoke.py`, run
+     `python -I desktop_reload_qualification.py run --wheel <wheel> --device <cpu|mps> --data-dir <inputs> --output-dir <dir> --commit <sha>`.
+     Set `<sha>` to the full 40-character commit SHA of the build run. Use a
+     new `<dir>` for each attempt, and keep the failed ones. The report counts
+     the newest run of each row. Save `uv pip freeze` in `<dir>`. Then
+     download the run's `engine-wheel-reload-*` artifacts and run
+     `python -I desktop_reload_qualification.py report <CI dir> <Mac dirs>`.
+     MPS on macOS 26 is not run, because hosted macOS runners are VMs without
+     MPS. CUDA on Linux ARM64 is not run, because no ARM64 GPU runner exists.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.

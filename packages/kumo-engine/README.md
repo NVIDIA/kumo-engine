@@ -20,7 +20,7 @@ pip install kumo-engine
 | Python | CPython 3.11 or later |
 | Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
-| GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU (macOS 15 or later). |
+| GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
 
 The base package reads and writes local CSV and Parquet files. Optional extras add connectors and additional features; combine them as needed, for example `pip install "kumo-engine[snowflake,text]"`.
@@ -37,7 +37,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 | `mlflow` | MLflow run tracking and model registry |
 | `sagemaker` | SageMaker managed MLflow |
 
-Kumo Engine trains on an NVIDIA GPU or an Apple silicon GPU when one is available, and on the CPU otherwise. To choose the device, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`. The Apple silicon GPU (MPS) requires macOS 15 or later. On macOS 14, Kumo Engine trains on the CPU, and `accelerator="mps"` or `"gpu"` raises `UnsupportedAcceleratorError`.
+Kumo Engine trains on an NVIDIA GPU or an Apple silicon GPU when one is available, and on the CPU otherwise. To choose the device, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
 Recommendation tasks use Faiss for retrieval. On Linux x86-64 and macOS, `pip install kumo-engine` installs Faiss as a dependency. On Linux ARM64, Faiss is optional, and other tasks run without it. To run recommendation tasks there, install CPU Faiss with `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`, or follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md) to build GPU Faiss. The guide also covers CUDA training on ARM64.
 

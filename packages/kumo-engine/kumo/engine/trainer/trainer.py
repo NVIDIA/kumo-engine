@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import shutil
 import time
 import warnings
@@ -32,7 +33,6 @@ from typing import (
 )
 
 import pandas as pd
-from kumo_core.accelerator import resolve_accelerator
 from kumo_core.artifacts import PROVENANCE_FILE, bundle_task_options
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.evaluation_counts import (
@@ -1072,6 +1072,10 @@ def _no_lightning_tip(record: logging.LogRecord) -> bool:
     return not str(record.msg).startswith('💡 Tip')
 
 
+class UnsupportedAcceleratorError(ValueError):
+    """This host cannot run the requested accelerator."""
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1083,9 +1087,7 @@ class Trainer:
         embedding_models: the word-embedding models for text columns, by
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
-            ``gpu``, or ``mps``. Applies to training and prediction. Apple MPS
-            requires macOS 15 or later. On an earlier macOS, ``mps`` and ``gpu``
-            raise ``UnsupportedAcceleratorError`` and ``auto`` uses the CPU.
+            ``gpu``, or ``mps``. Applies to training and prediction.
     """
     def __init__(
         self,
@@ -1097,8 +1099,14 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
-        # Fail before any work when this host cannot run the accelerator.
-        resolve_accelerator(accelerator)
+        # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
+        # process before macOS 15.
+        release = platform.mac_ver()[0]
+        if accelerator in ('gpu', 'mps') and release and int(
+                release.split('.')[0]) < 15:
+            raise UnsupportedAcceleratorError(
+                f'accelerator={accelerator!r} needs macOS 15 or later, but '
+                f"this Mac runs macOS {release}. Use accelerator='cpu'.")
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models

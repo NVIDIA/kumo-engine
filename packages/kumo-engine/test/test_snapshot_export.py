@@ -90,8 +90,11 @@ def _load(exports, location, **kwargs):
     return GraphSnapshot.load_from_connector(exports, path=location, **kwargs)
 
 
+@pytest.mark.parametrize('fallocate', [True, False])
 def test_export_load_round_trip_relocates_and_is_reused(
-        tmp_path, scratch, graph, exports, monkeypatch):
+        tmp_path, scratch, graph, exports, monkeypatch, fallocate):
+    if not fallocate:  # As on macOS, which has no posix_fallocate.
+        monkeypatch.delattr(os, 'posix_fallocate', raising=False)
     monkeypatch.setattr(snapshot_io, '_CHUNK', 1024)
     monkeypatch.setattr(snapshot_io, '_RANGE_BYTES', 4096)
     snapshot = graph.snapshot()
@@ -545,20 +548,6 @@ def test_load_explains_an_index_the_installed_diskgraph_cannot_open(
     scratch('gpu')
     with pytest.raises(RuntimeError, match='exported by kumo-engine 0.0.1'):
         _load(exports, location)
-
-
-def test_load_works_without_posix_fallocate(tmp_path, scratch, graph, exports,
-                                            monkeypatch):
-    # macOS has no os.posix_fallocate; loading must still restore the index.
-    snapshot = graph.snapshot()
-    location, exported = _export(snapshot, exports, tmp_path)
-    shutil.rmtree(tmp_path / 'cpu')
-    scratch('mac')
-    monkeypatch.delattr(os, 'posix_fallocate', raising=False)
-    loaded = _load(exports, location)
-    assert loaded.id == snapshot.id
-    assert _index_files(loaded.index_path) == _index_files(
-        _generation(exported) / 'index')
 
 
 @pytest.mark.parametrize('scheme', ['s3', 'gs'])
