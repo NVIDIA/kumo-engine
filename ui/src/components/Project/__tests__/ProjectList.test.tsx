@@ -2,7 +2,10 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { removeFromLocalStorage } from "@kumo-ai/kumo-ui-catalog";
+import {
+    removeFromLocalStorage,
+    storeToLocalStorage
+} from "@kumo-ai/kumo-ui-catalog";
 import { QueryClient } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -24,6 +27,7 @@ import { getStoredSelectedProjectId } from "utils/storage";
 import ProjectList, { ProjectListProps } from "../ProjectList";
 
 import {
+    mockArchivedProject,
     mockProjectsData,
     setProjectsResponseType
 } from "./MockFunctions/ProjectList.mock";
@@ -167,6 +171,15 @@ describe("ProjectList", () => {
             shouldBeHidden: [] as string[]
         },
         {
+            description: "selected group includes an archived project",
+            projectsResponseType: testResponseType.ARCHIVED,
+            shouldBeVisible: [
+                mockProjectsData[0].display_name!,
+                mockProjectsData[1].display_name!
+            ],
+            shouldBeHidden: [mockArchivedProject.display_name!]
+        },
+        {
             description: "selected group has no projects",
             projectsResponseType: testResponseType.EMPTY,
             shouldBeVisible: [] as string[],
@@ -192,6 +205,25 @@ describe("ProjectList", () => {
             });
         }
     );
+
+    it("Should hide an archived project even when it is the stored selection", async () => {
+        storeToLocalStorage(
+            storageKeys.selectedProject,
+            mockArchivedProject.id
+        );
+        setProjectsResponseType(testResponseType.ARCHIVED);
+        await renderProjectList();
+        await selectGroup();
+
+        await waitFor(() =>
+            expect(
+                screen.getByText(mockProjectsData[0].display_name!)
+            ).toBeInTheDocument()
+        );
+        expect(
+            screen.queryByText(mockArchivedProject.display_name!)
+        ).not.toBeInTheDocument();
+    });
 
     it("Should filter rows by search input", async () => {
         await renderProjectList();

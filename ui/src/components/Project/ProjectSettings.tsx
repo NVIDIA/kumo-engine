@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import Spacer from "react-spacer";
 
@@ -21,12 +21,16 @@ import {
     TooltipContent,
     TooltipTrigger
 } from "@kumo-ai/kumo-ui-catalog";
+import { ProjectDBEntry, ProjectStatus } from "gen/v0/types";
+import { useUserDetails } from "stores/userStore";
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
 import Validation from "components/Validation/Validation";
 
+import { useAdminInfo } from "hooks/auth/admin";
 import { useKumoGroups } from "hooks/groups/groups";
 import {
+    useArchiveProject,
     useProject,
     useProjectId,
     useUpdateProject
@@ -34,6 +38,8 @@ import {
 import { useAutoResizeTextarea } from "hooks/utils/useAutoResizeTextarea";
 import { useValidationState } from "hooks/validation/validation";
 
+import { DEFAULT_GROUP_ID, DEFAULT_PROJECT_ID } from "utils/Constants";
+import { openProject } from "utils/navigator";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
 import ProjectNameInput from "./NameInput/ProjectNameInput";
@@ -46,6 +52,16 @@ const formatDate = (dateStr?: string) => {
     return formatToShortLocalDateString(dateStr);
 };
 
+const canArchiveProject = (
+    project: ProjectDBEntry | null,
+    userId: string | undefined,
+    isAdmin: boolean
+): boolean =>
+    !!project &&
+    project.id !== DEFAULT_PROJECT_ID &&
+    project.status !== ProjectStatus.ARCHIVED &&
+    (isAdmin || project.created_by === userId);
+
 const ProjectSettings = () => {
     const projectId = useProjectId();
     const [loading, setLoading] = useState(false);
@@ -56,6 +72,9 @@ const ProjectSettings = () => {
         handleError
     );
     const { updateProject } = useUpdateProject(handleError, setLoading);
+    const { archiveProject } = useArchiveProject(handleError, setLoading);
+    const userDetails = useUserDetails();
+    const { isAdmin } = useAdminInfo();
     const { groups } = useKumoGroups();
     const groupName =
         groups.find((g) => g.id === project?.group_id)?.display_name ?? "—";
@@ -64,7 +83,6 @@ const ProjectSettings = () => {
     const [projectNameError, setProjectNameError] = useState("");
     const [userHasEditedName, setUserHasEditedName] = useState(false);
     const [description, setDescription] = useState("");
-    // const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
     const navigate = useNavigate();
     const [radioValue, setRadioValue] = useState("Share");
 
@@ -123,6 +141,35 @@ const ProjectSettings = () => {
         });
     };
 
+    const canArchive = canArchiveProject(project, userDetails.user_id, isAdmin);
+
+    const onArchiveClick = () => {
+        clearErrors();
+        dialogRef.current?.toggleDialog(
+            "Archive project",
+            `Archive "${project?.display_name}"? New resources and jobs can't be created in an archived project. This can't be undone.`,
+            {},
+            false,
+            "Archive",
+            "destructive"
+        );
+    };
+
+    const archiveInFlightRef = useRef(false);
+
+    const onArchiveConfirm = async () => {
+        if (!projectId || archiveInFlightRef.current) return;
+        archiveInFlightRef.current = true;
+        dialogRef.current?.toggleDialog();
+        try {
+            if (await archiveProject(projectId)) {
+                openProject(navigate, DEFAULT_PROJECT_ID, DEFAULT_GROUP_ID);
+            }
+        } finally {
+            archiveInFlightRef.current = false;
+        }
+    };
+
     return (
         <>
             <div className="flex items-center justify-between">
@@ -159,6 +206,7 @@ const ProjectSettings = () => {
                 alert={alert}
                 ctaMsgs={null}
                 dialogRef={dialogRef}
+                onDialogConfirm={onArchiveConfirm}
                 hideWarnings={() => {}}
                 clearErrors={clearErrors}
             />
@@ -272,6 +320,33 @@ const ProjectSettings = () => {
                 cardClassName={"px-0 pb-0"}
                 titleSize="md"
             />
+            {canArchive && (
+                <>
+                    <Spacer height={32} />
+                    <div
+                        data-testid="archive-project-section"
+                        className="flex items-center justify-between gap-4 max-w-300 border-t border-border-primary pt-6">
+                        <div>
+                            <Label className="font-medium text-base text-title-primary leading-5">
+                                Archive project
+                            </Label>
+                            <p className="text-sm text-title-secondary leading-5 mt-1">
+                                Archived projects are hidden from the project
+                                picker and can't accept new resources or jobs.
+                            </p>
+                        </div>
+                        <Button
+                            id="archive-project"
+                            variant="destructive"
+                            size="sm"
+                            className="rounded-sm px-4 py-2 h-9 text-base leading-5"
+                            disabled={loading}
+                            onClick={onArchiveClick}>
+                            Archive project
+                        </Button>
+                    </div>
+                </>
+            )}
         </>
     );
 };
