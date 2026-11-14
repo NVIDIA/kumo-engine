@@ -27,11 +27,26 @@ class InMemoryEngine:
     The tests use it too. It is not meant for real data or production use; use
     `DiskGraphEngine` for that. It evaluates the sampling rules with plain Python
     scans. Stored values keep their
-    declared types, and primary keys must be unique and non-NULL. Equal-time graph
-    neighbors at a fanout limit are ordered by the ``repr`` of their primary keys.
+    declared types, and declared primary keys must be unique and non-NULL.
+    Equal-time graph neighbors at a fanout limit are ordered by the ``repr`` of
+    their primary keys, or by source occurrence ordinal for a keyless table.
     """
 
     name = "in_memory"
+
+    @staticmethod
+    def check_contract(contract):
+        """Refuse declared subsecond clocks, which this reference cannot retain."""
+        return tuple(
+            ValidationIssue(
+                f"schema.tables.{table.name}.columns.{name}",
+                "the in-memory reference currently uses whole-second clocks",
+                "use DiskGraphEngine for declared millisecond, microsecond or nanosecond precision",
+            )
+            for table in contract.schema.tables
+            for name, dtype in table.columns.items()
+            if dtype.name == "timestamp" and dtype.unit != "s"
+        )
 
     @staticmethod
     def check_sources(sources: Mapping[str, TableSource], path: str) -> tuple[ValidationIssue, ...]:

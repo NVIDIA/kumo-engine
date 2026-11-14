@@ -11,6 +11,7 @@ as sets keyed by ``sample_id``. A failing case is written as a repro file.
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import random
@@ -99,8 +100,12 @@ from kumo.pytorch.api import (
     check,
     prepare,
 )
+from kumo.pytorch.column_stats import table_column_encoders
+from kumo.pytorch.contract.batch.encodings import Buckets
 from kumo.pytorch.contract.sample import BuiltSample
+from kumo.pytorch.contract.schema import table_clock
 from kumo.pytorch.data.model import ModelSourceBatch
+from kumo.pytorch.data.records import cutoff_to_epoch
 
 Answer = dict[str, dict[str, Scalar]]
 #: One delivered row: sample ID, padding flag, and each numeric field as (valid, value).
@@ -119,6 +124,11 @@ SUMMATION_DEPENDENT = frozenset(
 #: floor for results near zero.
 #: Everything else is exact.
 MOMENT_TOLERANCE = 1e-12
+#: Allowed discrepancy: Buckets cuts over stored columns are t-digest quantiles, and
+#: the digest depends on how the index splits the rows into shards. Each engine's cut
+#: lies within 1.5 ranks of the exact quantile (tests/test_column_stats.py), so two
+#: engines' cuts lie within 3 ranks of each other.
+BUCKET_RANKS = 3
 
 
 # -- Running a case ----------------------------------------------------------
@@ -682,6 +692,48 @@ def _instrument(engine: Engine, epochs: list[Counter[str]]) -> Callable[..., obj
                 return built
 
             setattr(source, model_method, counted_model)
+        build_batch = getattr(source, "build_model_batch", None)
+        if build_batch is not None:
+
+            def counted_batch(spec, runtime, anchors, compiled):
+                built = build_batch(spec, runtime, anchors, compiled)
+                work = epochs[-1]
+                work["build_calls"] += 1
+                work["requests"] += len(anchors.sample_ids)
+                profile = getattr(source, "last_temporal_profile", None) or {}
+                for name, value in profile.get("native_stats", {}).items():
+                    work[f"native.{name}"] += int(value)
+                return built
+
+            source.build_model_batch = counted_batch
+        binder = getattr(source, "bind_materialized_values", None)
+        if binder is not None:
+
+            def bound_values(*args, **kwargs):
+                bound = binder(*args, **kwargs)
+                # copy.copy preserves instance-patched closures that are bound
+                # to the old source. Rebind native work to this task view; the
+                # reference methods already delegate through the counted source.
+                bound.build = build.__func__.__get__(bound, type(bound))
+                if build_model is not None:
+                    setattr(bound, model_method, build_model.__func__.__get__(bound, type(bound)))
+                if build_batch is not None:
+                    native = build_batch.__func__.__get__(bound, type(bound))
+
+                    def counted_bound(spec, runtime, anchors, compiled):
+                        built = native(spec, runtime, anchors, compiled)
+                        work = epochs[-1]
+                        work["build_calls"] += 1
+                        work["requests"] += len(anchors.sample_ids)
+                        profile = getattr(bound, "last_temporal_profile", None) or {}
+                        for name, value in profile.get("native_stats", {}).items():
+                            work[f"native.{name}"] += int(value)
+                        return built
+
+                    bound.build_model_batch = counted_bound
+                return bound
+
+            source.bind_materialized_values = bound_values
         return source
 
     return opened
@@ -992,19 +1044,17 @@ def anchor_splits(case: GeneratedCase, engine: str, position: int) -> None:
     """Split selection from an anchor table: names, unions and the null split.
 
     Each selection counts and serves exactly its anchors, in table order when
-    not shuffled, with the same samples as one pass; DiskGraph's shuffled order
-    equals the reference's.
+    not shuffled, with the same samples as one pass. Shuffled order must be
+    repeatable within each engine; the contract allows engines different orders.
     """
 
     rows = split_anchor_rows(case)
-    orders: dict[str, list[list[str]]] = {}
     engines = (engine, "in_memory") if engine != "in_memory" else (engine,)
     for name in engines:
         with _anchored(case, name, anchor_rows=rows) as (dataset, engine_object, anchors):
             with prepare(case.contract, dataset, engine_object) as plan:
                 task = plan.materialize(anchors, fit_split=ALL_ANCHORS)
                 whole = {row[0]: row[2] for row in _delivered(list(task.batches(batch_size=1)))}
-                orders[name] = []
                 for selection in SELECTIONS:
                     expected = selected(rows, selection)
                     shown = (
@@ -1024,8 +1074,11 @@ def anchor_splits(case: GeneratedCase, engine: str, position: int) -> None:
                         all(row[2] == whole[row[0]] for row in served), f"{label}: samples differ"
                     )
                     shuffled = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
-                    orders[name].append([row[0] for row in _delivered(list(shuffled))])
-    _require(orders[engine] == orders[engines[-1]], f"{engine} shuffles splits differently")
+                    first = [row[0] for row in _delivered(list(shuffled))]
+                    repeated = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
+                    second = [row[0] for row in _delivered(list(repeated))]
+                    _require(sorted(first) == sorted(expected), f"{label}: shuffled anchors differ")
+                    _require(first == second, f"{label}: shuffle is not repeatable")
 
 
 def root_availability(case: GeneratedCase, engine: str, position: int) -> None:
@@ -1097,14 +1150,40 @@ def fitted_state(case: GeneratedCase, engine: str, position: int) -> None:
         except PropertyFailure as error:
             failures.append(str(error))
             continue
-        differences = state_differences(
-            fitted_structure(states["in_memory"]),
-            fitted_structure(states[engine]),
-            MOMENT_TOLERANCE,
-        )
+        reference, actual = fitted_structure(states["in_memory"]), fitted_structure(states[engine])
+        for identity, values in _bucket_values(case, contract).items():
+            cuts = [state["encoders"][identity]["boundaries"] for state in (reference, actual)]
+            ranks = [[bisect.bisect_left(values, cut) for cut in side] for side in cuts]
+            if len(ranks[0]) == len(ranks[1]) and all(
+                abs(left - right) <= BUCKET_RANKS for left, right in zip(*ranks, strict=True)
+            ):
+                actual["encoders"][identity]["boundaries"] = cuts[0]
+        differences = state_differences(reference, actual, MOMENT_TOLERANCE)
         if differences:
             failures.append(f"{label}: fitted state differs:\n  " + "\n  ".join(differences[:8]))
     _require(not failures, "\n".join(failures))
+
+
+def _bucket_values(case: GeneratedCase, contract: DataLoaderSpec) -> dict[str, list]:
+    """The sorted values each Buckets encoder over stored columns fits on."""
+
+    cutoff = (
+        max(cutoff_to_epoch(request.as_of_time) for request in case.requests)
+        if contract.requires_anchor_time
+        else None
+    )
+    clocks = {table.name: table_clock(table) for table in contract.schema.tables}
+    return {
+        identity: sorted(
+            row[column]
+            for table, column in encoder.columns
+            for row in case.tables[table]
+            if row[column] is not None
+            and (cutoff is None or clocks[table] is None or row[clocks[table]] <= cutoff)
+        )
+        for identity, encoder in table_column_encoders(contract).items()
+        if isinstance(encoder.config, Buckets)
+    }
 
 
 def _recording(engine: Engine, inputs: Answer) -> Callable[..., object]:

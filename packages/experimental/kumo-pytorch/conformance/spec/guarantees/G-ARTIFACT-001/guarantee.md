@@ -43,14 +43,12 @@ The artifact is the only on-disk form of fitted state.
   declares, must serialize back to it exactly, and each ID space must number
   exactly the IDs its members produce;
 - a file that disagrees with the contract and fitted state, named with its
-  field: a length summary in `fitted-state.json` other than the manifest's, or
-  present or missing against the contract's `Batching.length_input`; target
-  state in it for other targets than the contract's fitted ones; a
-  manifest other than the one the contract and fitted state give, or a
-  `task.json` whose output schema or recomputable fingerprints (contract,
-  inputs, input and target state, output schema, task) differ from theirs. The
-  dataset and anchors fingerprints can't be recomputed without data and are
-  taken as written.
+  field: target state in `fitted-state.json` for other targets than the
+  contract's fitted ones; a manifest other than the one the contract and
+  fitted state give, or a `task.json` whose output schema or recomputable
+  fingerprints (contract, inputs, input and target state, output schema,
+  task) differ from theirs. The dataset and anchors fingerprints can't be
+  recomputed without data and are taken as written.
 
 The digests catch files not written together or edited independently; they are
 not a signature against deliberate tampering. The `fit` record in

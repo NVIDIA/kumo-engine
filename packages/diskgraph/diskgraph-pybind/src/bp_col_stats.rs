@@ -28,10 +28,15 @@ use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
 };
 use diskgraph_core::time::{convert_ceil, TimeUnit};
-use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
+use diskgraph_ingest::col_stats::{
+    bytes_hex, write_col_stats, ColStatsTable, FileColStats, StatSet, TableCategoryCounts,
+};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
-use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
+use diskgraph_rowpack::{
+    decimal_i128_to_f64, decimal_i256_to_f64, format_decimal_i128, format_decimal_i256,
+    ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats,
+};
 
 use crate::exact_quantiles::{exact_quantiles, Column, GATHER};
 
@@ -64,7 +69,7 @@ struct TimestampHistogramSpec {
 }
 
 #[derive(Clone, Copy, Default)]
-struct IntegerRange {
+pub(crate) struct IntegerRange {
     min: Option<i64>,
     max: Option<i64>,
 }
@@ -88,6 +93,7 @@ impl IntegerRange {
 #[derive(Clone, Debug)]
 pub struct ColStatsOptions {
     pub summary_stats_by_class: bool,
+    pub stat_sets: Option<Vec<StatSet>>,
     pub histograms: bool,
     /// Statistics of each column's maximum per run of equal key values.
     pub max_per: Vec<String>,
@@ -100,6 +106,7 @@ impl Default for ColStatsOptions {
     fn default() -> Self {
         Self {
             summary_stats_by_class: true,
+            stat_sets: None,
             histograms: true,
             max_per: Vec::new(),
             fixed_edges: HashMap::new(),
@@ -290,7 +297,11 @@ fn runs_batch(columns: &[ColumnSpec], arrays: Vec<ArrayRef>) -> Result<RecordBat
     Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)?)
 }
 
-fn runs_to_batch(columns: &[ColumnSpec], types: &[DataType], runs: &[RunMax]) -> Result<RecordBatch> {
+fn runs_to_batch(
+    columns: &[ColumnSpec],
+    types: &[DataType],
+    runs: &[RunMax],
+) -> Result<RecordBatch> {
     let arrays = (0..columns.len())
         .map(|col| {
             let parts: Vec<ArrayRef> = runs
@@ -302,7 +313,9 @@ fn runs_to_batch(columns: &[ColumnSpec], types: &[DataType], runs: &[RunMax]) ->
                         .unwrap_or_else(|| new_null_array(&types[col], 1))
                 })
                 .collect();
-            Ok(concat(&parts.iter().map(|a| a.as_ref()).collect::<Vec<_>>())?)
+            Ok(concat(
+                &parts.iter().map(|a| a.as_ref()).collect::<Vec<_>>(),
+            )?)
         })
         .collect::<Result<Vec<_>>>()?;
     runs_batch(columns, arrays)
@@ -407,6 +420,9 @@ fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
         | IngestedType::Bool
         | IngestedType::String
         | IngestedType::Bytes
+        | IngestedType::Date
+        | IngestedType::Decimal128
+        | IngestedType::Decimal256
         | IngestedType::Timestamp
         | IngestedType::Float32Array
         | IngestedType::Float64Array
@@ -732,15 +748,6 @@ fn numerical_value(access: &RowAccess<'_>, idx: usize, col: &ColumnSpec) -> Resu
     }
 }
 
-fn bytes_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(value, "{byte:02x}").expect("write to string");
-    }
-    value
-}
-
 fn categorical_value(
     access: &mut RowAccess<'_>,
     idx: usize,
@@ -937,7 +944,7 @@ fn accumulate_distributions_for_row_group(
 
 /// Feed one name-resolved Arrow column into a stats observer through the same
 /// checked normalization layer used by ingestion.
-fn drive_from_arrow_column<O: ColumnValueObserver>(
+pub(crate) fn drive_from_arrow_column<O: ColumnValueObserver>(
     col_idx: usize,
     array: &arrow_array::ArrayRef,
     col: &ColumnSpec,
@@ -957,17 +964,28 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                 .is_some()
         } else {
             match col.ingested_dtype {
+                IngestedType::UInt64 => {
+                    access_or_parse_failure(access.get_uint64(0), col_idx, observer)
+                        .map(|value| {
+                            if let (Some(range), Ok(value)) =
+                                (integer_range.as_deref_mut(), i64::try_from(value))
+                            {
+                                range.observe(value);
+                            }
+                            observer.observe_u64(col_idx, value)
+                        })
+                        .is_some()
+                }
                 IngestedType::Int64
                 | IngestedType::Int32
                 | IngestedType::Int16
                 | IngestedType::Int8
-                | IngestedType::UInt64
                 | IngestedType::UInt32
                 | IngestedType::UInt16
                 | IngestedType::UInt8 => {
-                    if let Some(value) = integer_or_parse_failure(
-                        &access, array, col, col_idx, observer,
-                    )? {
+                    if let Some(value) =
+                        integer_or_parse_failure(&access, array, col, col_idx, observer)?
+                    {
                         if let Some(range) = integer_range.as_deref_mut() {
                             range.observe(value);
                         }
@@ -1005,6 +1023,33 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                 IngestedType::Timestamp => {
                     access_or_parse_failure(timestamp_ticks(&access, col), col_idx, observer)
                         .map(|value| observer.observe_timestamp(col_idx, value))
+                        .is_some()
+                }
+                IngestedType::Date => {
+                    access_or_parse_failure(access.get_date(0), col_idx, observer)
+                        .map(|days| observer.observe_i64(col_idx, days.into()))
+                        .is_some()
+                }
+                IngestedType::Decimal128 => {
+                    let scale = col.scale.unwrap_or(0);
+                    access_or_parse_failure(access.get_decimal128(0), col_idx, observer)
+                        .map(|v| {
+                            let value = decimal_i128_to_f64(v, scale);
+                            observer
+                                .observe_decimal(col_idx, value, &|| format_decimal_i128(v, scale))
+                        })
+                        .is_some()
+                }
+                IngestedType::Decimal256 => {
+                    let scale = col.scale.unwrap_or(0);
+                    access_or_parse_failure(access.get_decimal256(0), col_idx, observer)
+                        .map(|v| {
+                            let decimal = arrow::datatypes::i256::from_le_bytes(v);
+                            let value = decimal_i256_to_f64(decimal, scale).unwrap_or(f64::NAN);
+                            observer.observe_decimal(col_idx, value, &|| {
+                                format_decimal_i256(decimal, scale)
+                            })
+                        })
                         .is_some()
                 }
                 IngestedType::Float32Array
@@ -1239,7 +1284,10 @@ fn accumulate_parquet_col_stats<'a>(
     if max_categories == 0 {
         bail!("category count limit must be greater than zero");
     }
-    let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
+    let stypes: Vec<StatSet> = options
+        .stat_sets
+        .clone()
+        .unwrap_or_else(|| columns.iter().map(|c| c.semantic_type.into()).collect());
     for col in columns {
         validate_stats_dtype(col)?;
     }
@@ -1286,17 +1334,19 @@ fn accumulate_parquet_col_stats<'a>(
         bail!("max_per needs numerical columns and no histograms or by-class summaries");
     }
     let fixed = fixed_histograms(columns, options)?;
-    let sink = || StatsSink {
-        columns,
-        integer_spec_indices: &integer_spec_indices,
-        score_class,
-        clock: options.clock,
-        stats: (
-            FileColStats::new_with_categories(columns, Arc::clone(&table_cat)),
-            ByClassStats::new(),
-            vec![IntegerRange::default(); integer_spec_indices.len()],
-            fixed.clone(),
-        ),
+    let sink = || -> Result<StatsSink<'_>> {
+        Ok(StatsSink {
+            columns,
+            integer_spec_indices: &integer_spec_indices,
+            score_class,
+            clock: options.clock,
+            stats: (
+                FileColStats::new_with_stat_sets(columns, &stypes, Arc::clone(&table_cat))?,
+                ByClassStats::new(),
+                vec![IntegerRange::default(); integer_spec_indices.len()],
+                fixed.clone(),
+            ),
+        })
     };
     let merge = |total: &mut RowGroupStats,
                  (mut partial, partial_by_class, partial_ranges, partial_fixed): RowGroupStats| {
@@ -1313,14 +1363,14 @@ fn accumulate_parquet_col_stats<'a>(
         }
     };
 
-    let mut total = sink();
+    let mut total = sink()?;
     if !work.is_empty() {
         // Merged in a fixed order, so the result never depends on scheduling.
         let chunk = work.len().div_ceil(64);
         let chunks = work
             .par_chunks(chunk)
             .map(|items| {
-                let mut out = sink();
+                let mut out = sink()?;
                 let mut edges = Vec::new();
                 for &(pi, rg) in items {
                     edges.push(stats_for_row_group(
@@ -1345,11 +1395,17 @@ fn accumulate_parquet_col_stats<'a>(
             let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(parquet_paths[0])?)?;
             columns
                 .iter()
-                .map(|col| Ok(builder.schema().field_with_name(&col.name)?.data_type().clone()))
+                .map(|col| {
+                    Ok(builder
+                        .schema()
+                        .field_with_name(&col.name)?
+                        .data_type()
+                        .clone())
+                })
                 .collect::<Result<Vec<_>>>()?
         };
         if let Some(batch) = stitch_runs(columns, &types, edges)? {
-            let mut boundary = sink();
+            let mut boundary = sink()?;
             boundary.drive(&batch)?;
             boundary.stats.0.flush_categories();
             merge(&mut total.stats, boundary.stats);
@@ -1417,7 +1473,12 @@ pub fn compute_parquet_col_stats_with_options(
     for (idx, histogram) in &run.fixed {
         let count = histogram.counts.iter().sum::<u64>();
         full.insert(
-            kumo_key(&columns[*idx].name, "kumo.numerical", "FIXED_HISTOGRAM", false),
+            kumo_key(
+                &columns[*idx].name,
+                "kumo.numerical",
+                "FIXED_HISTOGRAM",
+                false,
+            ),
             kumo_entry(histogram.to_json(), false, data_version, count),
         );
     }
@@ -1709,18 +1770,58 @@ fn build_summary_stats_by_class(
     ))
 }
 
+/// Write the existing ingestion ColumnStats document from selected Parquet
+/// rows, using the same bounded Parquet scan, StatSet collectors and publisher.
+pub(crate) fn write_parquet_column_stats(
+    paths: &[&Path],
+    columns: &[ColumnSpec],
+    stat_sets: Vec<StatSet>,
+    quantiles: Vec<f64>,
+    output: &Path,
+    clock: TimeUnit,
+) -> Result<()> {
+    let options = ColStatsOptions {
+        stat_sets: Some(stat_sets),
+        summary_stats_by_class: false,
+        histograms: false,
+        clock,
+        ..ColStatsOptions::default()
+    };
+    let (acc, categories, _) = accumulate_parquet_col_stats(
+        paths,
+        columns,
+        diskgraph_core::accumulators::MAX_CATEGORIES,
+        &options,
+    )?;
+    write_col_stats(
+        &diskgraph_ingest::io::OutputTarget::parse(
+            &output.to_string_lossy(),
+            diskgraph_ingest::io::Dest::Local,
+        )?,
+        vec![ColStatsTable {
+            name: "anchors".into(),
+            stats: acc.with_quantiles(quantiles),
+            column_names: columns.iter().map(|c| c.name.clone()).collect(),
+            ingested_types: columns.iter().map(|c| c.ingested_dtype.clone()).collect(),
+            table_cat: Some(categories),
+            text_sample_stats: None,
+            data_version: None,
+        }],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use std::sync::Arc as StdArc;
 
+    use arrow::datatypes::i256;
     use arrow_array::builder::{Float64Builder, ListBuilder};
     use arrow_array::{
         ArrayRef, Date32Array, Decimal128Array, Decimal256Array, Float32Array, Float64Array, Int32Array,
         Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampSecondArray,
     };
-    use arrow::datatypes::i256;
     use arrow_schema::{DataType, Field, Schema};
     use diskgraph_core::accumulators::MAX_CATEGORIES;
     use diskgraph_ingest::graph_config::SemanticType;
@@ -2712,14 +2813,22 @@ mod tests {
         .unwrap();
         write_parquet(
             &path,
-            Schema::new(vec![Field::new("wide_int", DataType::Decimal128(38, 0), true)]),
+            Schema::new(vec![Field::new(
+                "wide_int",
+                DataType::Decimal128(38, 0),
+                true,
+            )]),
             vec![StdArc::new(values) as ArrayRef],
             1,
         );
 
         let (full, _) = stats(
             &[path.as_path()],
-            &[col("wide_int", IngestedType::Int64, SemanticType::Numerical)],
+            &[col(
+                "wide_int",
+                IngestedType::Int64,
+                SemanticType::Numerical,
+            )],
         )
         .unwrap();
 
@@ -2819,7 +2928,11 @@ mod tests {
             );
             let error = stats(
                 &[path.as_path()],
-                &[col("wide_int", IngestedType::Int64, SemanticType::Numerical)],
+                &[col(
+                    "wide_int",
+                    IngestedType::Int64,
+                    SemanticType::Numerical,
+                )],
             )
             .unwrap_err();
 
@@ -3006,8 +3119,9 @@ mod tests {
                 Field::new("CLASS", DataType::Utf8, false),
             ]),
             vec![
-                StdArc::new(Float64Array::from_iter_values((0..n).map(|i| (i % 97) as f64 / 97.0)))
-                    as ArrayRef,
+                StdArc::new(Float64Array::from_iter_values(
+                    (0..n).map(|i| (i % 97) as f64 / 97.0),
+                )) as ArrayRef,
                 StdArc::new(StringArray::from_iter_values(
                     (0..n).map(|i| format!("c{}", (i * i) % 50)),
                 )) as ArrayRef,

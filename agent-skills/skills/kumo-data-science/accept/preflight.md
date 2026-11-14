@@ -84,8 +84,8 @@ ORDER BY TABLE_NAME, ORDINAL_POSITION;
 
 In order of preference, first match wins:
 1. A declared primary key, where the source declares any (the adapter's preflight shows how to
-   read them; files and object stores declare none). It is probed like rules 2-4 (under rule 5),
-   because a declared key is not necessarily an enforced one.
+   read them; files and object stores declare none). Declared is not enforced: it is probed
+   before use (**Probe every key the proposal uses**, below).
 2. `<TABLE_STEM>_ID`, where the stem is the table name without a `_DIM` / `_PROFILE` / `_EVENTS`
    suffix, singular or plural (`CUSTOMER_ID` in `CUSTOMERS`, `PAGE_VIEW_ID` in `PAGE_VIEW_EVENTS`).
 3. A column named `ROW_ID`, `ID`, or `EVENT_ID`.
@@ -117,12 +117,6 @@ In order of preference, first match wins:
    fails it is a link, not a key (`CUSTOMER_ID` in `CUSTOMER_EVENTS`); go on to the next rule.
    If the probe cannot run, the rule's pick is `[inferred, unverified]`, as here.
 
-   Run it on a rule 1 key as well. Snowflake, BigQuery and Databricks record a declared primary
-   key without enforcing it, so declared does not mean unique. A declared key that fails is
-   reported with its counts — `<TABLE>.<COL>: declared primary key, N rows, N_DISTINCT distinct,
-   N_NON_NULL non-null` — and not used; go on to the next rule. If the probe cannot run, the
-   declared key is `[inferred, unverified]`.
-
 6. Otherwise preflight **inferred no primary key**. Report that as its own line and treat the
    table as keyless unless corrected. A keyless table may be an edge *source*, but not an
    `Edge.dst_table` and not the `FOR EACH` entity. Do not conclude from this failure alone that
@@ -131,9 +125,17 @@ In order of preference, first match wins:
    unique in the rows you can see is not a declared key, and a child table may hold several rows
    per parent.
 
-Rules 1-4, once the probe passes, establish a key and name it `[inferred]`. Rule 5
-never establishes one: it proposes a
-survivor as `[inferred, unverified]`. Until the user confirms it, the table is treated exactly as
+Rules 1-4 establish a key and name it `[inferred]` (rules 2-4 once their probe passes). Rule 5
+never establishes one: it proposes a survivor as `[inferred, unverified]`.
+
+**Probe every key the proposal uses**, not only rule-5 candidates. A declared key (rule 1) or a
+`[supplied]` key that will be an edge destination or the `FOR EACH` entity gets the same read-only
+probe; rules 2-4 picks already had it. Snowflake, BigQuery and Databricks record a declared
+primary key without enforcing it, so declared does not mean unique. If `N_DISTINCT < N_NON_NULL`
+or `N_NON_NULL < N`, keep it in the proposal with the counts and list it under `Not found` —
+"`orders.order_id`: 792 repeated values, 0 nulls" — because Kumo keeps one row per key and drops
+the rest without failing. The user decides: a different key, or the source fixed upstream. The
+agent does not deduplicate or filter. Until the user confirms it, the table is treated exactly as
 keyless — usable as an edge source, but not as an edge destination and not as the `FOR EACH`
 entity. Confirmation is what lifts that restriction, not the existence of a candidate.
 
@@ -230,7 +232,7 @@ format.
 
 - Prepare, transform, aggregate or materialize **model inputs** — joining, cleaning,
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
-  solely as evidence for the proposal: row, distinct and null counts for a candidate key. Its
+  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
   result is reported and then discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.

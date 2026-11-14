@@ -17,6 +17,7 @@ from kumo.pytorch.contract.batch import (
     Batching,
     BatchSpec,
     Buckets,
+    Columns,
     Composite,
     Encode,
     EventsOf,
@@ -307,7 +308,7 @@ def test_grouped_token_budget_counts_materialized_token_slots(packed):
     assert all(batch.inputs["history"]["value_ids"].numel() <= budget for batch in batches)
 
 
-def test_single_grouped_history_exceeding_padding_budget_refuses_at_fitting():
+def test_single_grouped_history_exceeding_padding_budget_is_refused():
     contract = _contract()
     history = contract.batch.inputs["history"]
     history = replace(
@@ -325,8 +326,9 @@ def test_single_grouped_history_exceeding_padding_budget_refuses_at_fitting():
             batching=Batching(max_tokens=5, length_input="history"),
         ),
     )
+    plan, requests = _plan(contract)
     with pytest.raises(ValueError, match="exceeds.*max_tokens"):
-        _plan(contract)
+        next(plan.batches(requests))
 
 
 def test_columns_field_ids_distinguish_declared_nulls_from_padding():
@@ -361,6 +363,75 @@ def test_columns_field_ids_distinguish_declared_nulls_from_padding():
     assert currency["valid"].tolist() == [[True, False, True], [False, False, False]]
     assert currency["field_ids"].tolist() == [[5, 5, 5], [0, 0, 0]]
     assert currency["field_valid"].tolist() == [[True, True, True], [False, False, False]]
+
+
+@pytest.mark.parametrize(("field_space", "field_pad"), [("tokens", 5), ("field_tokens", 7)])
+def test_columns_pad_with_declared_value_and_field_ids(field_space, field_pad):
+    contract = _contract()
+    history = contract.batch.inputs["history"]
+    history = replace(
+        history,
+        representation=replace(history.representation, row=Columns(), field_space=field_space),
+        layout=Padded(),
+    )
+    spaces = {
+        "tokens": IdSpace(
+            specials={"pad": "pad", "unknown": "unknown", "missing": "missing", "mask": "mask"},
+            special_ids={"pad": 5, "unknown": 1, "missing": 2, "mask": 3},
+        )
+    }
+    if field_space != "tokens":
+        spaces[field_space] = IdSpace(specials={"pad": "pad"}, special_ids={"pad": field_pad})
+    contract = replace(
+        contract,
+        batch=replace(contract.batch, inputs={"history": history}, id_spaces=spaces),
+    )
+    plan, requests = _plan(contract)
+    output = next(plan.batches(requests, batch_size=2)).inputs["history"]
+    for name in ("amount", "currency"):
+        assert output[name]["values"][1].tolist() == [5, 5, 5]
+        assert output[name]["field_ids"][1].tolist() == [field_pad] * 3
+        assert output[name]["valid"][1].tolist() == [False] * 3
+        assert output[name]["field_valid"][1].tolist() == [False] * 3
+    currency = output["currency"]
+    assert currency["values"][0, 1].item() == 2  # A real NULL uses the missing role.
+    assert not currency["valid"][0, 1]
+    assert currency["field_valid"][0, 1]
+
+
+def test_columns_field_ids_use_pad_for_sources_without_the_field():
+    contract = _contract()
+    payments = contract.sample.events["payments"]
+    refunds = replace(payments, fields={"amount": payments.fields["amount"]})
+    history = contract.batch.inputs["history"]
+    history = replace(
+        history,
+        source=EventSource(events=("payments", "refunds")),
+        representation=replace(history.representation, row=Columns(), field_space="tokens"),
+        layout=Padded(),
+    )
+    spaces = {
+        "tokens": IdSpace(
+            specials={"pad": "pad", "unknown": "unknown", "missing": "missing", "mask": "mask"},
+            special_ids={"pad": 5, "unknown": 1, "missing": 2, "mask": 3},
+        )
+    }
+    contract = replace(
+        contract,
+        sample=replace(contract.sample, events={"payments": payments, "refunds": refunds}),
+        batch=replace(contract.batch, inputs={"history": history}, id_spaces=spaces),
+    )
+    plan, requests = _plan(contract)
+    output = next(plan.batches(requests, batch_size=2)).inputs["history"]
+    currency = output["currency"]
+    owned = currency["field_valid"][0]
+    assert owned.tolist().count(True) == 3
+    assert owned.tolist().count(False) == 3
+    ids = currency["field_ids"][0]
+    assert ids[~owned].tolist() == [5] * 3
+    assert len(set(ids[owned].tolist())) == 1
+    assert ids[owned][0].item() != 5
+    assert output["amount"]["field_valid"][0].all()
 
 
 @pytest.mark.parametrize(

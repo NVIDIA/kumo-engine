@@ -11,11 +11,12 @@ import json
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from kumo.pytorch.column_stats import StatRequest, stats_request
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
@@ -73,6 +74,7 @@ def ensure_diskgraph_index(
     num_threads: int | None = None,
     dataset_name: str = "default",
     if_missing: bool = True,
+    column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -80,6 +82,7 @@ def ensure_diskgraph_index(
     schema and PK/FK relations with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
+    An ingest also computes ``column_stats``: requests at cutoffs in epoch nanoseconds.
     """
 
     if num_shards <= 0:
@@ -108,6 +111,20 @@ def ensure_diskgraph_index(
         dataset_name=dataset_name,
     )
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
+    stats_options = {}
+    if column_stats is not None:
+        requests, cutoffs = column_stats
+        clock = config.get("timestamp_unit", "seconds")
+        ticks = list(
+            dict.fromkeys(
+                None
+                if cutoff is None
+                else diskgraph.convert_ticks(cutoff, "nanoseconds", clock, rounding="floor")
+                for cutoff in cutoffs
+            )
+        )
+        request = stats_request(requests, ticks, clock)
+        stats_options = {"cutoff_col_stats": json.dumps(request)}
     started = time.perf_counter()
     thread_options = (
         {}
@@ -127,6 +144,7 @@ def ensure_diskgraph_index(
             str(build),
             col_stats=False,
             cat_count_strategy="none",
+            **stats_options,
             **thread_options,
         )
         elapsed = time.perf_counter() - started
@@ -244,7 +262,7 @@ def _compile_diskgraph_config(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}"
                     )
-                if resolved != declared:
+                if resolved != declared and not (resolved.name == declared.name == "timestamp"):
                     raise ValueError(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}; supply matching typed data"
@@ -256,10 +274,11 @@ def _compile_diskgraph_config(
                 {"name": name, **_diskgraph_dtype(pa, dtype.to_arrow())}
                 for name, dtype in sorted(table.columns.items())
             ],
-            "primary_key": table.primary_key,
             "source": {"type": "parquet", "paths": paths},
             "fkeys": [],
         }
+        if table.primary_key is not None:
+            configs[table.name]["primary_key"] = table.primary_key
         clock = table_clock(table)
         if clock is not None:
             configs[table.name]["create_time"] = clock
@@ -299,6 +318,25 @@ def _compile_diskgraph_config(
             "tables": [configs[name] for name in sorted(configs)],
             "num_shards": num_shards,
             "edge_format": "binary",
+            # Keep declared event precision in the shared graph clock. Whole-
+            # second schemas retain the historical seconds default.
+            "timestamp_unit": {
+                "s": "seconds",
+                "ms": "milliseconds",
+                "us": "microseconds",
+                "ns": "nanoseconds",
+            }[
+                max(
+                    (
+                        dtype.unit
+                        for table in schema.tables
+                        for dtype in table.columns.values()
+                        if dtype.name == "timestamp"
+                    ),
+                    key={"s": 0, "ms": 1, "us": 2, "ns": 3}.get,
+                    default="s",
+                )
+            ],
         },
         relation_mapping,
         source_types,

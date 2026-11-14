@@ -28,7 +28,7 @@ kumo-pytorch doesn't provide the following:
   strings.
 - UUID and IP address types.
 - Fitted calculations other than the encoders, and choosing or weighting which
-  observations an encoder is fitted on.
+  observations an encoder is fitted on, other than `fit_split` and `encoder_cutoff`.
 - Updating a saved artifact, or reusing only part of one.
 - Online serving infrastructure, such as deployment, routing and row lookup.
 - Indexes spread over several machines. The rank and world-size arguments split
@@ -96,11 +96,16 @@ whole-second UTC timestamps, and decimal128/256. Arrays and structs are not
 supported scalar column declarations. Every table names its time column (its
 clock) or declares `NON_TEMPORAL`.
 
-Entity and candidate lookup use the chosen table's primary key. Relations join
+Entity and candidate lookup require the chosen table's declared primary key.
+Other tables may set `primary_key=None`; identical source rows remain separate
+occurrences. Their internal IDs and equal-time order are local to the index,
+so tied limits can select different rows after a rebuild or in a serving subset.
+Relations join
 one column on each side; composite keys and arbitrary join predicates are not
 expressible. DiskGraph applies its native ingestion rules: rows it rejects,
 such as rows with a NULL clock, are dropped, and building the index reports how
-many were dropped. The in-memory engine requires unique, non-NULL primary keys.
+many were dropped. The in-memory test engine requires declared primary keys to
+be unique and non-NULL.
 
 A column's type doesn't choose its encoding; you do. Values keep their declared
 type: kumo-pytorch won't turn numbers into strings, parse numeric strings, or
@@ -110,17 +115,20 @@ or infinity; encoders that require finite observations reject them.
 
 ## Time
 
-- Timestamps normalize to whole-second UTC instants. Stored subsecond values are
-  rounded toward positive infinity, including negative epochs. Anchor
-  (`as_of_time`) times round toward negative infinity, so a later event in the
-  same second is never history. Naïve datetimes mean UTC.
+- Stored timestamps round toward positive infinity to their declared tick.
+  Anchor (`as_of_time`) times round downward to the graph clock, including
+  negative epochs. This preserves the reference engine's existing causal
+  boundary; the reference engine remains seconds-only.
+  Naïve datetimes mean UTC. Integer anchors are epoch seconds; integer timestamp
+  field values use their declared ticks. Use typed timestamps for subsecond anchors.
 - Windows use `(start, stop]`, measured in seconds from each anchor: the start
   is excluded and the stop is included.
   Historical context stops at or before zero; generated targets start at or
   after zero.
 - A current event (`SampleSpec.current_events`) is the event stored at the
   anchor's own second, so its window must be exactly `(-1, 0]` with `limit=1`.
-- Equal-time merged events sort by component name and primary key.
+- Equal-time merged events sort by component name and primary key, or by local
+  internal identity for a keyless table.
 - Calendar calculations use UTC. `EventTimeDelta` is anchor minus event time,
   in its declared unit; it is not relative to the latest event.
 - Graph sampling needs a time column both to filter neighbors by time
@@ -274,9 +282,11 @@ support current events, dated values or candidate sets yet.
 
 ## Fitting, saved state, and batching
 
-Only the selected fit anchors contribute observations. Shared input encoders
-collect observations from each selected input use; selecting overlapping data
-in several inputs can contribute it several times. External or generated
+Encoders over computed values learn only from the selected fit anchors. Shared
+input encoders collect observations from each selected input use; selecting
+overlapping data in several inputs can contribute it several times. Encoders
+over stored columns instead learn from each table row created at or before the
+encoder cutoff, once per column. External or generated
 labels do not silently enter a shared input vocabulary.
 
 An artifact doesn't include a copy of your data. `Artifact.load` reloads an artifact written by this version; one whose

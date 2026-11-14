@@ -35,7 +35,7 @@ names its clock or declares `NON_TEMPORAL`.
 ```python
 class TableSpec(
     name: str,
-    primary_key: str,
+    primary_key: str | None,
     columns: Mapping[str, DType | None] | None = None,
     *,
     time_column: str | NonTemporal,
@@ -68,7 +68,7 @@ types with concrete ones, so a saved contract records them.
 **Parameters**
 
 - `name`: table name, as referenced by relations and specs.
-- `primary_key`: column uniquely identifying each row; must be non-null and unique, and must appear in `columns`.
+- `primary_key`: column uniquely identifying each row, or `None` for a keyless table. A declared key must be non-null, unique, and included in `columns`. Entity tables require a declared key.
 - `columns`: selected columns and stored types. Omit to discover columns from Parquet metadata; use None for an individual inferred type.
 - `time_column`: the column ordering this table's rows, or `NON_TEMPORAL`. Keyword-only and required.
 
@@ -144,7 +144,7 @@ The stored scalar type, independent of its eventual model encoding.
 
 Supported names: `bool`; `int8`, `int16`, `int32`, `int64`;
 `uint8`, `uint16`, `uint32`, `uint64`; `float32`, `float64`;
-`string`, `bytes`; `date32`; `timestamp` (`unit="s"`,
+`string`, `bytes`; `date32`; `timestamp` (`unit="s"|"ms"|"us"|"ns"`,
 `timezone="UTC"`); `decimal128` (precision up to 38) and `decimal256`
 (precision up to 76), which require `precision` and `scale`. No
 parameters are accepted for other families. Arrays, lists and structs are
@@ -155,12 +155,19 @@ never converted. Numeric strings are not parsed, numbers are not
 stringified, integers are not booleans, and decimals are not rounded to fit;
 integer bounds and decimal precision/scale are checked.
 
-Timestamps are whole-second UTC instants. Finer physical units round toward
-positive infinity, including before 1970; timezone metadata does not change
-the instant, and a naive `datetime` means UTC. Anchor times
-(`SampleRequest.as_of_time`) instead round toward negative infinity, so an
-event later in the anchor's second is never history. `date32` stays a
-date.
+Timestamp precision is declared explicitly. Stored datetimes round upward
+to the declared tick, matching typed DG ingestion. Values requiring sub-
+microsecond precision normalize to an Arrow TimestampScalar, so pandas is
+not required. Other timestamps normalize to UTC datetimes.
+
+Anchor times instead round downward to the graph clock, preserving the
+no-future-event boundary before 1970 too. Plain integer anchors are epoch seconds on every
+clock; integer timestamp *field values* use that field's declared ticks.
+Thus an epoch-ms integer is not an epoch-ms anchor: supply a datetime or a
+typed Arrow timestamp. Physical Parquet timestamp units may differ from
+the declared storage unit; native ingestion converts them to the graph
+clock. The finest declared timestamp unit across all tables selects that
+clock, including columns not used by a particular task.
 
 **Raises**
 

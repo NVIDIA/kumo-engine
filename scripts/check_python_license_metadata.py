@@ -82,6 +82,8 @@ DISTRIBUTIONS = (
     DistributionSpec("packages/kumo-sdk/pyproject.toml", "kumoai-studio",
                      ("LICENSE", "THIRD-PARTY.txt"),
                      notice_artifacts=("kumo-sdk-bundled-source", )),
+    DistributionSpec("packages/kumo-settings/pyproject.toml", "kumo-settings",
+                     ("LICENSE", )),
     DistributionSpec("packages/kumo-snowflake/pyproject.toml", "kumo-snowflake",
                      ("LICENSE", )),
     DistributionSpec("packages/kumo-engine/pyproject.toml", "kumo-engine",

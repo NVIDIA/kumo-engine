@@ -12,7 +12,7 @@ use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::time::{convert_trunc, TimeUnit};
 use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
-use diskgraph_index::layout::{EdgeListView, RelationSegment};
+use diskgraph_index::layout::RelationSegment;
 use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
 use rayon::prelude::*;
@@ -1276,6 +1276,132 @@ impl DiskGraphEngine {
     /// point to seed at the seed namespace, seed-src edges still get
     /// dropped at the output layer.
     #[allow(clippy::too_many_arguments)]
+    fn sample_runtime_graph(
+        &self,
+        request: &BatchSamplingRequest,
+        name: &str,
+        seed_src_rel_ids: std::collections::HashSet<u16>,
+        rel_id_to_names: HashMap<u16, (String, String, String)>,
+        seed_type_ids: std::collections::HashSet<usize>,
+        projection: Arc<ResolvedProjection>,
+        cutoff: Option<&NodeCutoff<'_>>,
+    ) -> Result<crate::output::RuntimeBatch> {
+        let mut state = SamplingState::default();
+        let mut output = crate::output::RuntimeBatchOutput::new(
+            name,
+            seed_src_rel_ids,
+            rel_id_to_names,
+            self.id_to_node_type.clone(),
+            // Exclude ALL stage seed namespaces (current + sibling stages) from
+            // emitted topology (they're storage types, not model node types) —
+            // symmetric with the seed-src edge filtering above.
+            seed_type_ids,
+        );
+        self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
+        output.finalize(&state)?;
+
+        // 7b. Non-fused path: the sampler doesn't fetch features inline, so
+        // `raw_features` would be empty. Fetch them post-sampling per visited
+        // type — produces the same dict shape as the fused path. The fused
+        // path already populated `raw_features` via `handle_fused_features`
+        // during sampling; we skip the post-fetch in that case to avoid
+        // duplicate batches.
+        if !request.flags.fused_feature_fetching {
+            for (type_id, type_state) in &state.type_states {
+                if self
+                    .node_decoders
+                    .get(*type_id)
+                    .and_then(|d| d.as_ref())
+                    .is_none()
+                {
+                    continue;
+                }
+                // The caller consumes NO column of this type: skip BEFORE
+                // `set_namespace`, so no `raw_features` block is emitted for it
+                // at all. The type still appears in the emitted topology --
+                // this declines a type's features, never its participation in
+                // the graph.
+                if projection.skips(*type_id) {
+                    continue;
+                }
+                let node_ids: Vec<u64> = type_state.nodes.iter().map(|n| n.global_id).collect();
+                if node_ids.is_empty() {
+                    continue;
+                }
+                let type_name = match self.id_to_node_type.get(*type_id) {
+                    Some(n) => n.clone(),
+                    None => continue,
+                };
+                output.set_namespace(type_name);
+                // Feature projection pushdown: only the columns the caller says
+                // it will consume. `None` => select all (pre-pushdown behavior).
+                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
+                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
+            }
+        }
+
+        Ok(output.into_runtime_batch())
+    }
+
+    /// Sample another neighborhood for an already resolved native anchor batch.
+    /// Task labels/root resolution are not repeated and no iterator is advanced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sample_runtime_neighborhood(
+        &self,
+        stage_table: &str,
+        root_type: &str,
+        task: &crate::output::TaskBag,
+        name: &str,
+        plan: &SamplingPlan,
+        flags: &SamplingFlags,
+        projection: Arc<ResolvedProjection>,
+    ) -> Result<crate::output::RuntimeBatch> {
+        let prefix = format!("{}/", stage_table.split('/').next().unwrap_or(""));
+        let seed_type_ids = self
+            .id_to_node_type
+            .iter()
+            .enumerate()
+            .filter(|(_, table)| table.starts_with(&prefix))
+            .map(|(id, _)| id)
+            .collect();
+        let relations = self
+            .id_to_rel_name
+            .iter()
+            .enumerate()
+            .map(|(id, relation)| {
+                (
+                    id as u16,
+                    (
+                        self.id_to_node_type[self.relation_src_type[id]].clone(),
+                        relation.clone(),
+                        self.id_to_node_type[self.relation_info[id]].clone(),
+                    ),
+                )
+            })
+            .collect();
+        let request = BatchSamplingRequest {
+            dataset_id: diskgraph_core::dataset::DatasetId::nil(),
+            seed_nodes: HashMap::from([(root_type.into(), task.seed_node_ids.clone())]),
+            seed_timestamps: task
+                .seed_timestamps
+                .as_ref()
+                .map(|times| HashMap::from([(root_type.into(), times.clone())])),
+            seed_timestamp_unit: self.timestamp_unit,
+            plan: plan.clone(),
+            flags: flags.clone(),
+        };
+        self.sample_runtime_graph(
+            &request,
+            name,
+            Default::default(),
+            relations,
+            seed_type_ids,
+            projection,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn sample_runtime_batch(
         &self,
         reader: &diskgraph_index::graph::GraphIndexReader,
@@ -1306,7 +1432,7 @@ impl DiskGraphEngine {
         // keeps every existing caller and test working unchanged.
         projection: Option<Arc<ResolvedProjection>>,
     ) -> Result<crate::output::RuntimeBatch> {
-        use crate::output::{InMemoryOutput, OutputHandler, RuntimeBatchOutput};
+        use crate::output::InMemoryOutput;
         use std::collections::HashSet;
 
         let cutoff = pseudo_time.map(|f| self.node_cutoff(f)).transpose()?;
@@ -1680,56 +1806,15 @@ impl DiskGraphEngine {
             flags: flags.clone(),
         };
 
-        // 7. Sample + collate.
-        let mut state = SamplingState::default();
-        let mut output = RuntimeBatchOutput::new(
+        let mut runtime_batch = self.sample_runtime_graph(
+            &request,
             "main",
             seed_src_rel_ids,
             rel_id_to_names,
-            self.id_to_node_type.clone(),
-            // Exclude ALL stage seed namespaces (current + sibling stages) from
-            // emitted topology (they're storage types, not model node types) —
-            // symmetric with the seed-src edge filtering above.
             seed_type_ids,
-        );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
-        output.finalize(&state)?;
-
-        // 7b. Non-fused path: the sampler doesn't fetch features inline, so
-        // `raw_features` would be empty. Fetch them post-sampling per visited
-        // type — produces the same dict shape as the fused path. The fused
-        // path already populated `raw_features` via `handle_fused_features`
-        // during sampling; we skip the post-fetch in that case to avoid
-        // duplicate batches.
-        if !flags.fused_feature_fetching {
-            for (type_id, type_state) in &state.type_states {
-                if self.node_decoders.get(*type_id).and_then(|d| d.as_ref()).is_none() {
-                    continue;
-                }
-                // The caller consumes NO column of this type: skip BEFORE
-                // `set_namespace`, so no `raw_features` block is emitted for it
-                // at all. The type still appears in the emitted topology --
-                // this declines a type's features, never its participation in
-                // the graph.
-                if projection.skips(*type_id) {
-                    continue;
-                }
-                let node_ids: Vec<u64> =
-                    type_state.nodes.iter().map(|n| n.global_id).collect();
-                if node_ids.is_empty() {
-                    continue;
-                }
-                let type_name = match self.id_to_node_type.get(*type_id) {
-                    Some(n) => n.clone(),
-                    None => continue,
-                };
-                output.set_namespace(type_name);
-                // Feature projection pushdown: only the columns the caller says
-                // it will consume. `None` => select all (pre-pushdown behavior).
-                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
-                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
-            }
-        }
+            projection,
+            cutoff.as_ref(),
+        )?;
 
         // 8. Stitch task fields. Project the seed rowpack RecordBatch into:
         //   - `task.target` ← `TARGET*` columns only. Adapter consumes this
@@ -1741,7 +1826,6 @@ impl DiskGraphEngine {
         //     `hetero[train_table_name].tf`. Empty today for PQ plans (no
         //     extra cols in the schema) but the bucket is correctly
         //     addressed for the moment tt-ng emits FEAT*/LAG_FEAT*.
-        let mut runtime_batch = output.into_runtime_batch();
         runtime_batch.task.input_ids = (0..batch_row_ids.len() as u32).collect();
         runtime_batch.task.tt_stage_node_ids = batch_row_ids.to_vec();
         // We populate seed_node_ids with the primary entity IDs to satisfy the
@@ -2278,42 +2362,17 @@ impl DiskGraphEngine {
         Ok(())
     }
 
-    /// Feature fetching from an EdgeListView, used in fused mode
-    fn accumulate_features_from_view(
-        &self,
-        type_id: usize,
-        type_state: &mut crate::state::TypeState,
-        scratch: &mut RowPackDecodeScratch,
-        edges_view: &EdgeListView,
-        output: &mut impl OutputHandler,
-    ) -> Result<()> {
-        let decoder = self
-            .node_decoders
-            .get(type_id)
-            .and_then(|d| d.as_ref())
-            .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
-
-        self.accumulate_features_from_view_internal(
-            type_id, type_state, scratch, decoder, edges_view, output,
-        )
-    }
-
-    /// Reused for fused mode feature fetching for both non-leaf and leaf nodes.
-    /// Non-leaf nodes EdgeListView is accessed as part of sampling. Leaf nodes
-    /// requires a separate access to EdgeListView given their IDs.
-    fn accumulate_features_from_view_internal(
+    /// Decode feature bytes for both frontier and leaf nodes in fused mode.
+    fn accumulate_features_from_data(
         &self,
         type_id: usize,
         type_state: &mut crate::state::TypeState,
         scratch: &mut RowPackDecodeScratch,
         decoder: &RowPackDecoder,
-        edges_view: &EdgeListView,
+        node_data: Option<&[u8]>,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        if let Some(data) = edges_view
-            .node_data()
-            .map_err(|e| EngineError::DataCorruption(e.to_string()))?
-        {
+        if let Some(data) = node_data {
             let context = decoder.context();
             // Drop reserved columns (e.g. WEIGHT) from features via a per-column
             // mask; `flush_fused_features` projects the flush schema to the same
@@ -2391,12 +2450,14 @@ impl DiskGraphEngine {
                 .edges_for_node(local_id)
                 .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
-            self.accumulate_features_from_view_internal(
+            self.accumulate_features_from_data(
                 type_id,
                 type_state,
                 scratch,
                 decoder,
-                &edges_view,
+                edges_view
+                    .node_data()
+                    .map_err(|e| EngineError::DataCorruption(e.to_string()))?,
                 output,
             )?;
         }
@@ -2549,7 +2610,7 @@ impl DiskGraphEngine {
         })?;
 
         // Reserved columns (WEIGHT) were dropped from the builders/mask in
-        // `accumulate_features_from_view_internal`, so project the schema to
+        // `accumulate_features_from_data`, so project the schema to
         // the same non-reserved columns to keep field count == array count.
         let keep: Vec<usize> = full_schema
             .fields()
@@ -2886,6 +2947,14 @@ impl DiskGraphEngine {
                     continue;
                 }
 
+                let decoder = self
+                    .node_decoders
+                    .get(src_type_id)
+                    .and_then(|d| d.as_ref())
+                    .ok_or_else(|| {
+                        EngineError::Internal(format!("no decoder for type {}", src_type_id))
+                    })?;
+
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
@@ -2896,20 +2965,23 @@ impl DiskGraphEngine {
                         .edges_for_node(local_id)
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
+                    let (segments, node_data) = edges_view
+                        .parse()
+                        .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
+
                     // FETCH SOURCE FEATURES (Locality)
                     {
                         let scratch = &mut state.decode_scratch;
                         let type_state = state.type_states.get_mut(&src_type_id).unwrap();
-                        self.accumulate_features_from_view(
+                        self.accumulate_features_from_data(
                             src_type_id,
                             type_state,
                             scratch,
-                            &edges_view,
+                            decoder,
+                            node_data,
                             output,
                         )?;
                     }
-
-                    let segments = edges_view.relation_segments().unwrap_or_default();
 
                     self.process_node_relations(
                         layer_idx,

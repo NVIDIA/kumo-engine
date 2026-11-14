@@ -2,8 +2,12 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from unittest.mock import Mock
+
 import pytest
+from antlr4.error.Errors import NoViableAltException
 from kumoapi.typing import AggregationType, TimeUnit
+from kumopql.parser.error_translator import Antlr4SyntaxError, ErrorTranslator
 from kumopql.parser.parser import PQLParser
 
 
@@ -149,6 +153,20 @@ def test_errors(parser: PQLParser) -> None:
 
     with pytest.raises(ValueError, match='Input Mismatch, got \'<EOF>\''):
         parser.to_lisp_tree('PREDICT table.value FOR EACH entity.id WHERE')
+
+    for rule in ('condition', 'aggregation'):
+        recognizer = Mock(ruleNames=[rule])
+        error = NoViableAltException(recognizer)
+        error.deadEndConfigs = [Mock(alt=0)]
+        syntax_error = Antlr4SyntaxError(recognizer, Mock(text='invalid'), 1, 0,
+                                         'invalid syntax', error, 0, [])
+        message = ErrorTranslator()._handleNoViableAltException(syntax_error)[0]
+        assert (
+            'https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/'
+            'kumo-studio-guide-coming-soon/preliminary-documentation/'
+            'train-model/predictive-query/pquery-structure'
+        ) in message
+        assert 'docs.kumo.ai' not in message
 
 
 @pytest.mark.parametrize('query_string, error_regex', [

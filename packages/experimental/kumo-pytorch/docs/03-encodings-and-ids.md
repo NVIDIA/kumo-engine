@@ -20,10 +20,31 @@ column's type or the input's container.
 | `Vocabulary()` or `Vocabulary(values=...)` | Any scalar dtype | One whole-value category ID |
 | `Text(vocabulary_size=...)` | Strings | Variable-length byte-level BPE piece IDs |
 
-Learned encoders fit on the training examples only. A missing value is never
-zero or an unseen category: it keeps its own validity bit (columns) or a
-reserved missing ID (categories). [The API reference](api/encodings.md) lists
-every option.
+Learned encoders fit on the training examples only, except a `Vocabulary`,
+`ZScore`, `Buckets(bins=...)` or `Text` whose every use reads a stored column (an
+entity, event or graph node field). Those fit on DiskGraph's column statistics
+of the table's rows created at or before the encoder cutoff: by default the
+latest anchor time `fit_split` selects, or `Plan.materialize(encoder_cutoff=...)`,
+where `None` reads every row. `Vocabulary` uses its category counts (exact for
+the first million distinct values it meets), `ZScore` its mean and standard
+deviation, and `Buckets` cuts interpolated from its t-digest. `Text` trains its
+tokenizer on the column's values over those rows: inside DiskGraph on the
+DiskGraph engine, and with `tokenizers` in Python on the in-memory engine.
+
+Materialized scalar features and labels use the same statistics collectors over
+selected training anchors. Their learned bucket cuts use t-digest quantiles;
+request-only fitting uses raw-row quantiles. Independently fitted cuts can
+therefore differ within the approximation contract. Reuse one fitted state
+when identical bucket assignments are needed across anchor input forms.
+
+Computed scalar encoders used by `Tokens(missing="skip_event")` retain sample
+fitting to respect the input's row eligibility. Direct graph-column statistics
+keep their existing ingestion population. Custom sources without graph statistics
+retain their sample-fitting fallback while using available materialized statistics.
+
+A missing value is never zero or an unseen category: it keeps its own validity
+bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
+lists every option.
 
 ## Private and shared encoders
 
@@ -187,6 +208,25 @@ Here's what the numbers show:
 - Field-name IDs identify declared fields, not the letters of their names. A
   field keeps its field ID across inputs that use the same dictionary, even
   when its value encoders differ.
+
+## Choosing special IDs
+
+By default a space numbers its special roles for you, starting at 0, and
+ordinary entries follow. If your model expects particular numbers, such as
+`pad` at 0 and `mask` at 1, declare every role's final ID with `special_ids`:
+
+```python
+chosen = api.IdSpace(
+    specials={"pad": "[PAD]", "mask": "[MASK]", "unknown": "[UNK]", "missing": "[MISSING]"},
+    special_ids={"pad": 0, "mask": 1, "unknown": 2, "missing": 5},
+)
+```
+
+Give an ID to every declared role or to none. IDs are distinct integers from 0
+to 65,535. Ordinary entries start after the largest one, and the numbers in
+between (3 and 4 here) stay reserved, so the space's size counts them. Because
+`special_ids` is part of the contract, changing it changes the contract's
+fingerprint.
 
 ## Reusing fitted state
 
