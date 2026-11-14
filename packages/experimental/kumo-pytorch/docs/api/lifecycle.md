@@ -252,6 +252,7 @@ Plan.materialize(
     fitted: FittedState | None = None,
     inference: bool | None = None,
     encoder_cutoff: str | int | datetime | date | None = LATEST_ANCHOR,
+    values: Any = None,
 ) -> Task
 ```
 

@@ -2126,6 +2126,7 @@ dependencies = [
 name = "diskgraph-train-table"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "arrow-array",
  "arrow-schema",
  "arrow-select",
@@ -2133,11 +2134,13 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "diskgraph-core",
+ "diskgraph-engine",
  "diskgraph-index",
  "diskgraph-ingest",
  "diskgraph-rowpack",
  "parquet",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",

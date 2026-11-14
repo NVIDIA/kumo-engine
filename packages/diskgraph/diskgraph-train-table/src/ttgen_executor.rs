@@ -25,8 +25,8 @@ use diskgraph_core::accumulators::{
 use diskgraph_core::time::{dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
+#[cfg(test)]
 use parquet::arrow::ArrowWriter;
-use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
 
 use crate::manifest::{
@@ -35,8 +35,7 @@ use crate::manifest::{
     TT_MANIFEST_VERSION, TT_PARQUET_FORMAT,
 };
 use crate::parquet_dataset::{
-    first_tt_dataset_schema, ordered_tt_dataset_parts, part_name, TT_DATASET_DIR, TT_PART_MAX_ROWS,
-    TT_PART_ROW_GROUP_ROWS,
+    first_tt_dataset_schema, ordered_tt_dataset_parts, TT_DATASET_DIR, TT_PART_MAX_ROWS,
 };
 use crate::pass_b::{run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut, STAGE_TABLE_NAMES};
 use crate::route::{per_link_output_schema, LinkAssigner};
@@ -176,54 +175,9 @@ fn write_tt_dataset(
     dataset_path: &Path,
     max_rows_per_part: usize,
 ) -> TTGenResult<u64> {
-    if max_rows_per_part == 0 {
-        return Err(TTGenError::InvalidPlan(
-            "training table max rows per part must be positive".to_string(),
-        ));
-    }
-    std::fs::create_dir(dataset_path)?;
-
-    let properties = WriterProperties::builder()
-        .set_max_row_group_row_count(Some(TT_PART_ROW_GROUP_ROWS))
-        .build();
-    let mut writer: Option<ArrowWriter<File>> = None;
-    let mut part_index = 0usize;
-    let mut rows_in_part = 0usize;
-    let mut total_rows = 0u64;
-
-    for batch in receiver.iter() {
-        let mut batch_offset = 0usize;
-        while batch_offset < batch.num_rows() {
-            if rows_in_part == max_rows_per_part {
-                writer
-                    .take()
-                    .expect("non-empty part has a writer")
-                    .close()?;
-                part_index += 1;
-                rows_in_part = 0;
-            }
-            if writer.is_none() {
-                let file = File::create(dataset_path.join(part_name(part_index)))?;
-                writer = Some(ArrowWriter::try_new(
-                    file,
-                    batch.schema(),
-                    Some(properties.clone()),
-                )?);
-            }
-            let rows = (batch.num_rows() - batch_offset).min(max_rows_per_part - rows_in_part);
-            writer
-                .as_mut()
-                .expect("writer was initialized")
-                .write(&batch.slice(batch_offset, rows))?;
-            batch_offset += rows;
-            rows_in_part += rows;
-            total_rows += rows as u64;
-        }
-    }
-    if let Some(writer) = writer {
-        writer.close()?;
-    }
-    Ok(total_rows)
+    let mut writer = crate::parquet_dataset::ParquetDatasetWriter::new(dataset_path, max_rows_per_part)?;
+    for batch in receiver.iter() { writer.write(&batch)?; }
+    writer.close()
 }
 
 fn train_table_parts(

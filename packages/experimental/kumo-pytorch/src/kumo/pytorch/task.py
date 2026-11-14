@@ -324,8 +324,28 @@ class Task:
         drop_last: bool | None,
         output_format: Literal["inspectable", "model"] = "inspectable",
     ) -> Iterator[Batch]:
+        anchors = self._anchors
+        view = getattr(anchors, "iteration_anchors", None)
+        if callable(view):
+            anchors = view(selection, shuffle=shuffle)
+        native = getattr(anchors, "batches", None)
+        if callable(native):
+            yield from native(
+                self._assembler,
+                selection,
+                chunk=chunk,
+                batch_size=batch_size,
+                epoch=epoch,
+                seed=seed,
+                shuffle=shuffle,
+                rank=rank,
+                world_size=world_size,
+                drop_last=drop_last,
+                output_format=output_format,
+            )
+            return
         positions = padded_positions(
-            self._anchors.order(
+            anchors.order(
                 selection,
                 seed=seed,
                 epoch=epoch,
@@ -333,7 +353,7 @@ class Task:
                 rank=rank,
                 world_size=world_size,
             ),
-            count=self._anchors.count(selection),
+            count=anchors.count(selection),
             world_size=world_size,
         )
         pending = _chunks(positions, chunk)
@@ -341,7 +361,7 @@ class Task:
         while current is not None:
             following = next(pending, None)
             requests = _mark_padding(
-                self._anchors.fetch(selection, [position for position, _ in current]),
+                anchors.fetch(selection, [position for position, _ in current]),
                 [padding for _, padding in current],
             )
             for batch in self._assembler.batches(
@@ -475,23 +495,32 @@ def _mark_padding(
     the suffix past caller IDs and earlier padding IDs in this request chunk.
     """
 
-    used_ids = {request.sample_id for request in requests}
-    marked = []
-    for index, (request, is_padding) in enumerate(zip(requests, padding, strict=True)):
+    ids = _padding_sample_ids([request.sample_id for request in requests], padding)
+    return [
+        dataclass_replace(
+            request, sample_id=sample_id, metadata={**request.metadata, PADDING_KEY: True}
+        )
+        if is_padding
+        else request
+        for request, is_padding, sample_id in zip(requests, padding, ids, strict=True)
+    ]
+
+
+def _padding_sample_ids(sample_ids, padding):
+    """Share collision-safe padding identities between row and columnar batches."""
+    used_ids = set(sample_ids)
+    result = []
+    for index, (original, is_padding) in enumerate(zip(sample_ids, padding, strict=True)):
+        sample_id = original
         if is_padding:
             suffix = index
-            sample_id = f"{request.sample_id}#padding{suffix}"
+            sample_id = f"{original}#padding{suffix}"
             while sample_id in used_ids:
                 suffix += 1
-                sample_id = f"{request.sample_id}#padding{suffix}"
+                sample_id = f"{original}#padding{suffix}"
             used_ids.add(sample_id)
-            request = dataclass_replace(
-                request,
-                sample_id=sample_id,
-                metadata={**request.metadata, PADDING_KEY: True},
-            )
-        marked.append(request)
-    return marked
+        result.append(sample_id)
+    return tuple(result)
 
 
 def _surface_padding(batch: Batch) -> Batch:

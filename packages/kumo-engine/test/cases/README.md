@@ -36,12 +36,16 @@ References compare node and edge counts, training-table checks and metric bands.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
+If all three outputs agree, every prediction must still cover the exact sampled entity/anchor population.
+Results record requested, scored and skipped counts for materialization and for each prediction output. These held-out cases require zero skipped rows. A population error names the failing prediction and its counts.
+Forecast coordinates include the entity, original anchor and horizon column resolved from the scoring snapshot's graph metadata. Every sampled anchor must return each `FORECAST` horizon, so forecast output counts are horizon rows.
 AUROC and AP, including their variants, use an absolute band of 0.03.
 Other metrics, including MAE and RMSE, use `abs(current - reference) <= abs(reference) * tolerance`, with a relative tolerance of 25%.
 At 10B and 25B, payments and fraud use one experiment, one epoch and balanced training sampling at batch 64.
 `majority_sampling_ratio=[1.0]` and `weight_mode=[WeightMode.SAMPLE]` affect training only.
 Every case and scale uses fixed validation and test budgets of 1,000 steps each.
-Payments and fraud remain at every scale. Non-finite metrics fail. Correct inadequate label support in the dataset before regenerating its reference after review.
+Payments and fraud remain at every scale. References and fitted results require finite `val_<metric>` and `test_<metric>` for every configured metric. A reference without them fails before ingest.
+Missing required metrics and any non-finite returned metric fail. Correct inadequate label support in the dataset before regenerating its reference after review.
 `training_table.splits.<split>.positive_rows` records whole-split positives, not measured positives in the capped evaluation prefix.
 Results also record hardware, elapsed time and sampled peak RAM, GPU memory and scratch growth. CI requires the declared instance type and matching reference hardware. Timings do not gate results.
 Outside CI, the declared instance type does not restrict the host. Local comparisons without instance metadata retain their existing behavior.

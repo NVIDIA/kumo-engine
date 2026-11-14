@@ -33,11 +33,13 @@ def _tags(key):
     return None if key % 5 == 0 else ["t"] * (key % 4)
 
 
-def _expected(key):
-    """Words of the body and elements of the tags, 0 for NULL."""
+def _expected(key, empty):
+    """Words of the body, at least `empty` when present, and elements of the tags, 0 for NULL."""
     if key == NO_DATA:
         return 0
-    return min(len((_body(key) or "").split()) + len(_tags(key) or []), 65_535)
+    body = _body(key)
+    words = 0 if body is None else max(len(body.split()), empty)
+    return min(words + len(_tags(key) or []), 65_534)
 
 
 @pytest.fixture(scope="module")
@@ -74,27 +76,41 @@ def index(tmp_path_factory) -> str:
     return str(root / "index")
 
 
-def test_each_node_counts_its_list_elements_and_pieces(index, tmp_path):
+def _lengths(index, path, *, empty=0, required=(), threads=None):
+    diskgraph.token_lengths(index, "docs", [("body", WORDS, empty), ("tags", None, 0)], str(path),
+                            required=list(required), num_threads=threads)
+    return np.memmap(path, dtype="<u2", mode="r").tolist()
+
+
+@pytest.mark.parametrize("empty", (0, 1))
+def test_each_node_counts_its_list_elements_and_pieces(index, tmp_path, empty):
     nodes = diskgraph.SamplerEngine(index).lookup_node_ids("docs", pa.array(range(ROWS), pa.int64()))
     expected = np.zeros(ROWS, dtype="<u2")
-    expected[nodes] = [_expected(key) for key in range(ROWS)]
-    assert expected[nodes[NO_DATA]] == 0 and expected[nodes[SATURATED]] == 65_535
-    path = tmp_path / "docs.lengths.bin"
+    expected[nodes] = [_expected(key, empty) for key in range(ROWS)]
+    assert expected[nodes[NO_DATA]] == 0 and expected[nodes[SATURATED]] == 65_534
     for threads in (1, 4):
-        diskgraph.token_lengths(index, "docs", [("body", WORDS), ("tags", None)], str(path),
-                                num_threads=threads)
-        assert np.memmap(path, dtype="<u2", mode="r").tolist() == expected.tolist()
+        lengths = _lengths(index, tmp_path / "docs.lengths.bin", empty=empty, threads=threads)
+        assert lengths == expected.tolist()
     assert [p.name for p in tmp_path.iterdir()] == ["docs.lengths.bin"]
+
+
+def test_a_null_in_a_required_column_marks_the_node_dropped(index, tmp_path):
+    nodes = diskgraph.SamplerEngine(index).lookup_node_ids("docs", pa.array(range(ROWS), pa.int64()))
+    expected = np.zeros(ROWS, dtype="<u2")
+    expected[nodes] = [0xFFFF if key % 2 else _expected(key, 0) for key in range(ROWS)]
+    assert _lengths(index, tmp_path / "docs.lengths.bin", required=["n"]) == expected.tolist()
 
 
 def test_token_lengths_refuses_unknown_fixed_cost_and_non_string_columns(index, tmp_path):
     path = str(tmp_path / "docs.lengths.bin")
     with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
-        diskgraph.token_lengths(index, "docs", [("missing", None)], path)
+        diskgraph.token_lengths(index, "docs", [("missing", None, 0)], path)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="no column"):
+        diskgraph.token_lengths(index, "docs", [], path, required=["missing"])
     for column in ("n", "vec"):
         with pytest.raises(diskgraph.DiskgraphConfigError, match="fixed token cost"):
-            diskgraph.token_lengths(index, "docs", [(column, None)], path)
+            diskgraph.token_lengths(index, "docs", [(column, None, 0)], path)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="not strings"):
-        diskgraph.token_lengths(index, "docs", [("n", WORDS)], path)
+        diskgraph.token_lengths(index, "docs", [("n", WORDS, 0)], path)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="num_threads must be positive"):
-        diskgraph.token_lengths(index, "docs", [("tags", None)], path, num_threads=0)
+        diskgraph.token_lengths(index, "docs", [("tags", None, 0)], path, num_threads=0)

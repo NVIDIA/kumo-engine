@@ -65,29 +65,40 @@ def test_model_retrieval_uses_input_limit_without_mutating_sample(keep, order):
     assert bounded.events["orders"].rows == sample.events["orders"].rows
 
 
-@pytest.mark.parametrize(
-    "case", ["unbounded", "shared", "merged", "merged_consumer", "explicit", "descending"]
-)
-def test_ambiguous_or_already_bounded_requests_are_not_rewritten(case):
+@pytest.mark.parametrize("case", ["unbounded", "shared", "explicit"])
+def test_unbounded_or_explicit_membership_is_not_rewritten(case):
     sample = _sample()
     inputs = {"history": _input()}
     if case == "unbounded":
         inputs["history"] = _input(limit=None)
     elif case == "shared":
         inputs["all"] = _input(limit=None)
-    elif case in {"merged", "merged_consumer"}:
+    else:
+        sample = replace(sample, events={"orders": replace(sample.events["orders"], limit=4)})
+    assert assembly._model_retrieval_sample(sample, api.BatchSpec(inputs)) == sample
+
+
+@pytest.mark.parametrize("case", ["merged", "merged_consumer", "descending"])
+def test_model_cap_reaches_merged_reused_and_descending_components(case):
+    sample = _sample()
+    inputs = {"history": _input()}
+    if case in {"merged", "merged_consumer"}:
         sample = replace(sample, events={**sample.events, "other": sample.events["orders"]})
         inputs["merged"] = _input(("orders", "other"))
         if case == "merged":
             del inputs["history"]
-    elif case in {"explicit", "descending"}:
-        event = replace(
-            sample.events["orders"],
-            **({"limit": 4} if case == "explicit" else {"order": "descending"}),
+    else:
+        sample = replace(
+            sample, events={"orders": replace(sample.events["orders"], order="descending")}
         )
-        sample = replace(sample, events={"orders": event})
     bounded = assembly._model_retrieval_sample(sample, api.BatchSpec(inputs))
-    assert bounded == sample
+    assert {event.limit for event in bounded.events.values()} == {2}
+    assert {event.order for event in bounded.events.values()} == {"descending"}
+    assert {event.limit for event in sample.events.values()} == {None}
+    assert bounded.targets == sample.targets
+    assert {name: event.rows for name, event in bounded.events.items()} == {
+        name: event.rows for name, event in sample.events.items()
+    }
 
 
 @pytest.fixture(scope="module")
