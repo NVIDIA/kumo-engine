@@ -109,6 +109,8 @@ describe("DuplicateGraphPage", () => {
             const saveGraph = screen.getByText("Save");
             await userEvent.click(saveGraph);
         };
+        vi.mocked(mockAxiosInstance.post).mockClear();
+        mockUseNavigate.mockClear();
 
         await executeGraphCreationFlow(args, clickSubmitButton, {
             validateWithFailure: options.validateWithFailure,
@@ -145,7 +147,7 @@ describe("DuplicateGraphPage", () => {
         }); //Previous page
     });
 
-    it("Should send an unchanged duplicate through create without renaming, show the server error, and stay on the page", async () => {
+    it("Should send an unchanged duplicate through create without force_rename and stay on the page when creation fails", async () => {
         const graphInfo = duplicateGraphInfo();
         const original = expectedGraphDetailResponse().graph;
         mockLocationStateValue({
