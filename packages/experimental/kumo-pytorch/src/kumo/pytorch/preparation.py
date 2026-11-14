@@ -353,6 +353,7 @@ class Plan:
                     cutoff,
                     exclude=() if input_state is None else input_state.encoders,
                     chosen=chosen,
+                    anchors=task_anchors,
                 )
             )
             reused = {} if fitted is None else fitted.fit
@@ -424,6 +425,7 @@ class Plan:
         *,
         exclude=(),
         chosen=None,
+        anchors: AnchorTask | None = None,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
         column_text = getattr(source, "column_text", None)
@@ -445,11 +447,15 @@ class Plan:
         }
         if not encoders or not fitting:
             return {}, {}
-        latest = (
-            cutoff_nanos(max(request.as_of_time for chunk in _chunks(fitting) for request in chunk))
-            if self.contract.requires_anchor_time
-            else None
-        )
+        latest = None
+        if self.contract.requires_anchor_time:
+            # Anchor tasks that record their latest time spare building every fitting request.
+            latest_time = getattr(anchors, "latest_time", None)
+            latest = cutoff_nanos(
+                latest_time(chosen)
+                if latest_time is not None
+                else max(request.as_of_time for chunk in _chunks(fitting) for request in chunk)
+            )
         if cutoff is LATEST_ANCHOR:
             cutoff = latest
         elif latest is not None and (cutoff is None or cutoff > latest):
