@@ -78,7 +78,7 @@ pub struct RelationLayout {
 /// copying data out.
 pub struct EdgeListView<'a> {
     pub raw: &'a [u8],
-    pub layouts: std::sync::Arc<Vec<RelationLayout>>,
+    pub layouts: &'a [RelationLayout],
     pub has_node_data: bool,
     pub node_data_len_bytes: u8,
 }
@@ -492,22 +492,21 @@ mod record_walk_tests {
 
     #[test]
     fn segments_and_features_share_record_validation() {
+        let layouts: Vec<RelationLayout> = [1, 2]
+            .into_iter()
+            .enumerate()
+            .map(|(i, entry_bytes)| RelationLayout {
+                relation_id: i as u16,
+                dst_bits: 8,
+                dest_sort_key_bits: None,
+                entry_bytes,
+                dst_mask: 255,
+                dest_sort_key_mask: None,
+            })
+            .collect();
         let mut view = EdgeListView {
             raw: &[],
-            layouts: std::sync::Arc::new(
-                [1, 2]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, entry_bytes)| RelationLayout {
-                        relation_id: i as u16,
-                        dst_bits: 8,
-                        dest_sort_key_bits: None,
-                        entry_bytes,
-                        dst_mask: 255,
-                        dest_sort_key_mask: None,
-                    })
-                    .collect(),
-            ),
+            layouts: &layouts,
             has_node_data: true,
             node_data_len_bytes: 2,
         };

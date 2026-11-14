@@ -120,7 +120,7 @@ impl ShardReader {
         let raw = &self.edges[start_byte..end_byte];
         Ok(EdgeListView {
             raw,
-            layouts: self.layouts.clone(),
+            layouts: self.layouts.as_slice(),
             has_node_data: self.has_node_data,
             node_data_len_bytes: self.header.node_data_len_bytes,
         })
