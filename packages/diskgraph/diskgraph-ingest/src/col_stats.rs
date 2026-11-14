@@ -1008,13 +1008,12 @@ impl FileColStats {
                             if let Some(ref col_shared) = shared.columns[col_idx] {
                                 col_shared.merge_local_batch(inner);
                             }
+                            // Replace the local HashMap to free bucket arrays.
+                            // The FileColStats will sit in an unbounded channel
+                            // until all files complete — retaining capacity across
+                            // 19K+ files would consume 100+ GB.
+                            *inner = LocalColumnCounts::with_capacity(0);
                         }
-                        // Drop the local HashMap entirely to free bucket arrays.
-                        // After merging to shared, local counts are never reused
-                        // and the FileColStats will sit in an unbounded channel
-                        // until all files complete — retaining capacity across
-                        // 19K+ files would consume 100+ GB.
-                        *local = None;
                     }
                 }
             }
@@ -1026,8 +1025,8 @@ impl FileColStats {
                                 let snap = col_shared.merge_local_batch_graduation(inner);
                                 self.grad_snapshots[col_idx] = Some(snap);
                             }
+                            *inner = LocalColumnCounts::with_capacity(0);
                         }
-                        *local = None;
                     }
                 }
             }

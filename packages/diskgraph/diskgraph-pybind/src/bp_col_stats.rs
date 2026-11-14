@@ -2123,6 +2123,29 @@ mod tests {
     }
 
     #[test]
+    fn more_row_groups_than_workers_count_every_category() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("predictions.parquet");
+        let class = (0..2_000).map(|i| ["A", "A", "A", "A", "A", "B", "B", "B", "C", "C"][i % 10]);
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("CLASS", DataType::Utf8, false)]),
+            vec![StdArc::new(StringArray::from_iter_values(class)) as ArrayRef],
+            10,
+        );
+        let columns = vec![col(
+            "CLASS",
+            IngestedType::String,
+            SemanticType::Categorical,
+        )];
+        let (full, _) = stats(&[path.as_path()], &columns).unwrap();
+        assert_eq!(
+            val(&full, "CLASS__kumo.categorical__CATEGORY_COUNTS__False"),
+            json!([["A", 1000], ["B", 600], ["C", 400]])
+        );
+    }
+
+    #[test]
     fn warehouse_physical_types_produce_distributions() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("warehouse.parquet");
