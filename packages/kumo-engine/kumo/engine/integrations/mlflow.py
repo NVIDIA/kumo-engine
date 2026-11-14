@@ -1479,11 +1479,26 @@ def _no_serving_check(record: logging.LogRecord) -> bool:
         'Failed to validate serving input example')
 
 
+class _VolumeDatasetSource:
+    """Serialize Volume lineage without opening an ambient Databricks session."""
+    def __init__(self, path: str):
+        self.path = path
+
+    @staticmethod
+    def _get_source_type() -> str:
+        return 'uc_volume'
+
+    def to_json(self) -> str:
+        return json.dumps({'path': self.path})
+
+
 def _dataset_source(entry: Mapping[str, Optional[str]]) -> Any:
     connector = (entry.get('connector') or '').upper()
     location = entry.get('location')
     if not location or location.startswith('sql:'):
         return None
+    if connector == 'DATABRICKS' and location.startswith('/Volumes/'):
+        return _VolumeDatasetSource(location)
     if connector == 'DATABRICKS':
         delta = import_provider('mlflow.data.delta_dataset_source', 'mlflow')
         parts = re.findall(r'`((?:[^`]|``)*)`', location)

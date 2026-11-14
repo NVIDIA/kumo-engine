@@ -8,7 +8,6 @@ import runpy
 import subprocess
 import sys
 import tomllib
-import types
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
@@ -281,11 +280,12 @@ def test_merged_module_reports_bundle_version(tmp_path, monkeypatch):
 @pytest.mark.parametrize('extra', ['', 'cpu'])
 def test_engine_faiss_platform_selection_survives_merge(
         tmp_path, monkeypatch, platform, machine, expected, extra):
+    import setuptools
     from packaging.requirements import Requirement
 
     setup_kwargs = {}
-    monkeypatch.setitem(sys.modules, 'setuptools', types.SimpleNamespace(
-        setup=lambda **kwargs: setup_kwargs.update(kwargs)))
+    monkeypatch.setattr(setuptools, 'setup',
+                        lambda **kwargs: setup_kwargs.update(kwargs))
     runpy.run_path(str(REPO_ROOT / 'packages/kumo-engine/setup.py'))
     engine = COMPONENTS['kumo-engine']
     provider_requirements = [
@@ -803,3 +803,56 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         assert 'Requires-Dist: torch-scatter' not in metadata
     assert next(output.glob('*.whl')).name == (
         f'kumo_engine-{version}-{native_tag}.whl')
+
+
+def test_real_engine_build_keeps_mlflow_clients_out_of_data_only_extra(
+        tmp_path, monkeypatch):
+    import shutil
+
+    from packaging.requirements import Requirement
+
+    source = REPO_ROOT / 'packages/kumo-engine'
+    project = tmp_path / 'engine-source'
+    for name in ('pyproject.toml', 'setup.py', 'README.md',
+                 'kumo/engine/_version.py'):
+        target = project / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, target)
+    # Build real authored metadata through the same setuptools backend as release builds.
+    built = tmp_path / 'built'
+    built.mkdir()
+    result = subprocess.run([
+        sys.executable, '-c',
+        'import setuptools.build_meta as b; b.build_wheel(' + repr(str(built)) +
+        ')'
+    ], cwd=project, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    with ZipFile(next(built.glob('*.whl'))) as wheel:
+        metadata = BytesParser().parsebytes(
+            wheel.read(
+                next(name for name in wheel.namelist()
+                     if name.endswith('/METADATA'))))
+    monkeypatch.setitem(
+        COMPONENTS, 'kumo-engine', {
+            **COMPONENTS['kumo-engine'],
+            'requires':
+            metadata.get_all('Requires-Dist'),
+            'extras':
+            metadata.get_all('Provides-Extra'),
+        })
+    # The merger also needs stubs for providers present in the real metadata.
+    for name in ('kumo-bigquery', 'kumo-gcs'):
+        monkeypatch.setitem(COMPONENTS, name, {'requires': ['kumo-core==1.0']})
+    result = _merge(tmp_path, list(COMPONENTS))
+    assert result.returncode == 0, result.stderr
+    merged, _, _ = _read_wheel(tmp_path)
+    requirements = [
+        Requirement(value) for value in merged.get_all('Requires-Dist')
+    ]
+    mlflow = [value for value in requirements if value.name == 'mlflow-skinny']
+    assert mlflow
+    assert not any(
+        value.marker.evaluate({'extra': 'databricks'}) for value in mlflow)
+    assert all(not value.extras for value in mlflow)
+    assert any(value.marker.evaluate({'extra': 'mlflow'}) for value in mlflow)
+    assert not any(value.marker.evaluate({'extra': ''}) for value in mlflow)

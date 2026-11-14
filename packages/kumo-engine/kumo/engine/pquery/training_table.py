@@ -133,8 +133,10 @@ class TrainingTable:
                             snapshot: GraphSnapshot) -> "TrainingTable":
         r"""Load a table written by :meth:`export` against ``snapshot``.
 
-        A folder must be a complete export (with ``_SUCCESS``); load other
-        folders with :meth:`from_source_table`.
+        Artifact folders must be complete exports (with ``_SUCCESS``).
+        Paths relative to an MLOps root load stored exports, even when the root
+        is on a Volume. Direct Volume source paths use the connector's scoped
+        source reader and also accept plain Parquet folders.
         """
         import shutil
 
@@ -144,11 +146,12 @@ class TrainingTable:
         from kumo.engine.connector import FileConnector
         from kumo.engine.trainer.trainer import _fetch_dir, fetch_parquet
 
+        stored_export = isinstance(connector, MLOps)
         location = (connector.root.uri(path.lstrip('/'))
-                    if isinstance(connector, MLOps) else path)
+                    if stored_export else path)
         connector, path = on_root(connector, path)
         spec = TrainingTableSpec(split_col='SPLIT')
-        stored = _stored_parts(connector, path)
+        stored = _stored_parts(connector, path, exported=stored_export)
         if stored is None:
             return cls.from_source_table(connector[path], spec, pq=pquery,
                                          snapshot=snapshot)
@@ -370,13 +373,19 @@ class TrainingTable:
             source_table=source, source_version=version, started=started)
 
 
-def _stored_parts(connector: Any,
-                  path: str) -> Optional[Tuple[Any, str, List[Any]]]:
+def _stored_parts(connector: Any, path: str, *,
+                  exported: bool = False) -> Optional[Tuple[Any, str, List[Any]]]:
+    from kumoapi.data_source import DataSourceType
     from pyarrow.fs import FileType
 
     from kumo.engine.connector import file_store
     from kumo.engine.trainer.trainer import _require_success
 
+    if (not exported
+            and getattr(connector, 'source_type', None) == DataSourceType.DATABRICKS
+            and path.startswith('/Volumes/')
+            and getattr(connector, 'source_backend', None) is not None):
+        return None  # The source backend validates scope, layout and schemas.
     store = file_store(connector, path)
     if store is None:
         return None

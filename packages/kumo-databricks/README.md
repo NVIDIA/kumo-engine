@@ -86,6 +86,26 @@ trainer.predict(prediction_table, snapshot=snapshot, output_config=PredictionOut
 
 For an MLOps artifact root on a volume, see `packages/kumo-engine/docs/mlops.md`.
 
+`TrainingTable.load_from_connector` and custom sources can ingest Parquet files or
+folders below a Volume root through the shared filesystem reader. Plain source
+folders do not need an export completion marker. Volume sources support streamed
+reads only; `require_staged=True` is unsupported. Nested directories must form a
+Parquet Hive layout. Read Delta tables through their SQL table name, rather than
+through a Volume path. Paths must use
+the connector's catalog and schema; a bare Volume root is rejected. SQL table
+introspection (`get_columns`, `get_sample`, `get_table_config`) requires a SQL table
+and reports an explicit error for Volume paths.
+
+Source versions include file paths, sizes and modification timestamps supplied
+by the Files API. Same-size rewrites with changed timestamps invalidate versions;
+reads reject changes observed before completion. Hidden files are excluded from
+both ingestion and version calculation. These metadata checks cannot detect
+rewrites that preserve every metadata field and are not a transactional snapshot.
+
+Data-only installs use `kumo-engine[databricks]`; Unity Catalog model registration
+and loading also require `kumo-engine[databricks,mlflow]`. For Unity Catalog artifacts outside Databricks, also select `s3`, `adls`, or
+`gcs` for the artifact storage used by the workspace.
+
 A file written with a known size (bundle files, exported Parquet parts) is one
 object up to 4 GiB, readable directly by Spark and other tools. A larger one
 streams into `<name>.chunks/<generation>/00000`, `00001`, ... (4 GiB each,

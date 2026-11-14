@@ -17,6 +17,9 @@ reader's.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import replace
 from typing import List, Mapping, Optional
 
 from databricks.sql.client import Connection
@@ -31,8 +34,19 @@ from kumo_core.sources.backend import (
     select_columns,
     source_columns,
 )
-from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
+from kumo_core.sources.errors import (
+    PermanentSourceError,
+    SourceError,
+    SourceNotFoundError,
+    TransientSourceError,
+)
+from kumo_core.sources.identity import SourceVersion
 from kumo_core.sources.layout import staging_dir
+from kumo_core.sources.object_store import (
+    ObjectStoreSourceReader,
+    _arrow_errors,
+    require_no_sql,
+)
 from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.types import ReadMode
 from kumo_databricks import sql as dbx_sql
@@ -40,6 +54,7 @@ from kumo_databricks.catalog import table_names
 from kumo_databricks.session import _DatabricksSessions, _target_config
 from kumo_databricks.source import DatabricksSourceReader
 from kumo_databricks.types import dtype_for
+from kumo_databricks.volume import VolumeSourceHandler, is_volume_path
 from kumoapi.data_source import DataSourceType
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
 from kumoapi.source_table import (
@@ -50,6 +65,80 @@ from kumoapi.source_table import (
     SourceTableListResponse,
 )
 from kumoapi.typing import Dtype
+
+
+class _VolumeReader(ObjectStoreSourceReader):
+    def resolve(self, table):
+        from kumo_core.sources import layout
+        from pyarrow.fs import FileType
+
+        if table.rstrip('/') != self.root:
+            raise ValueError(
+                'Volume reader path differs from its scoped source')
+        if '_resolved' in self.__dict__:
+            return self.__dict__['_resolved']
+        with _arrow_errors(table):
+            try:
+                info = layout.locate(self.filesystem, self.root, '')
+            except SourceNotFoundError as error:
+                raise SourceNotFoundError(
+                    f'Volume source {table} does not exist', table=table) from error
+            path = info.path
+            kind = layout.PARQUET
+            if info.type == FileType.Directory:
+                paths = layout.scan(self.filesystem, path)
+                if self.filesystem.handler.has_directory(path + '/_delta_log'):
+                    raise PermanentSourceError(
+                        f'{table} is a Delta table; read it through its SQL table name',
+                        table=table)
+                if not paths:
+                    raise PermanentSourceError(
+                        f'Reading {table} returned no rows', table=table)
+                kind = layout.classify(
+                    path, [p for p in paths if not layout.is_hidden(p)], table)
+                path = path.rstrip('/') + '/'
+            if kind != layout.PARQUET:
+                raise PermanentSourceError(
+                    f'{table} must contain Parquet files', table=table)
+            self.__dict__['_resolved'] = (path, kind)
+            return path, kind
+
+    def _objects(self, table, path, *args, **kwargs):
+        entries = super()._objects(table, path, *args, **kwargs)
+        if not entries:
+            raise PermanentSourceError(
+                f'Reading {table} returned no rows', table=table)
+        return entries
+
+    def data_version(self, table, *, sql=None, columns=None):
+        require_no_sql(sql)
+        self.__dict__.pop('_resolved', None)
+        try:
+            path, _ = self.resolve(table)
+            return self._data_version(path, self._objects(table, path))
+        except SourceError as error:
+            if not error.table:
+                error.table = table
+                error.args = (f'{table}: {error}',)
+            raise
+
+    def _data_version(self, path, entries):
+        entries = sorted(entries, key=lambda value: value.path)
+        try:
+            with _arrow_errors(self.root):
+                metadata = list(zip((entry.path for entry in entries),
+                                    self._identities(entries, None)))
+        except SourceNotFoundError as error:
+            raise TransientSourceError(
+                f'{self.root} changed while its version was read; retry the read',
+                table=self.root) from error
+        return SourceVersion(
+            hashlib.sha256(json.dumps(metadata).encode()).hexdigest(),
+            'listing')
+
+    def _identities(self, found, worker_ceiling):
+        return self.filesystem.handler.object_identities(
+            [entry.path for entry in found])
 
 
 class DatabricksSourceBackend(_DatabricksSessions):
@@ -136,6 +225,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
         project_id: Optional[str] = None,
     ) -> SourceTableConfigResponse:
         del project_id
+        if table_name.startswith('/Volumes/'):
+            raise PermanentSourceError(
+                'Volume Parquet paths support training tables and custom sources only; '
+                'table introspection requires a SQL table')
         bare = self._bare(connector, table_name)
         # Describing the table is the existence probe: Databricks reports a
         # missing one only when something asks for it.
@@ -158,6 +251,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
         sql: Optional[str] = None,
     ) -> SourceTableDataResponse:
         del project_id
+        if table_name.startswith('/Volumes/'):
+            raise PermanentSourceError(
+                'Volume Parquet paths support training tables and custom sources only; '
+                'table introspection requires a SQL table')
         bare = self._bare(connector, table_name)
         query = self._embeddable(connector, sql)
         with self._connected(connector) as connection:
@@ -174,6 +271,10 @@ class DatabricksSourceBackend(_DatabricksSessions):
         timeout: Optional[int] = None,
     ) -> SourceTableDataResponse:
         del project_id
+        if table_name.startswith('/Volumes/'):
+            raise PermanentSourceError(
+                'Volume Parquet paths support training tables and custom sources only; '
+                'table introspection requires a SQL table')
 
         bare = self._bare(connector, table_name)
         query = self._embeddable(connector, sql)
@@ -214,6 +315,9 @@ class DatabricksSourceBackend(_DatabricksSessions):
         paying for the read that would otherwise establish it.
         """
         del project_id  # a local runtime has no projects
+        if table_name.startswith('/Volumes/'):
+            return self._volume_reader(connector,
+                                       table_name).data_version(table_name)
         bare = self._bare(connector, table_name)
         with self._connected(connector) as connection:
             return self._reader(connector, connection).data_version(bare)
@@ -238,24 +342,107 @@ class DatabricksSourceBackend(_DatabricksSessions):
         del project_id  # a local runtime has no projects
         from kumo_core.sources.prepare import read_table
 
-        bare = self._bare(connector, table_name)
-        # One directory per table: a read empties what it is handed, so two
-        # tables sharing a `dest_dir` would leave the second holding only its
-        # own files.
-        destination = staging_dir(dest_dir, bare)
-        query = self._embeddable(connector, sql)
-        with self._connected(connector) as connection:
-            columns = self._declared(connector, connection, bare, dtypes, query)
-            staged = read_table(self._reader(connector, connection), bare,
-                                str(destination), columns=columns,
-                                mode=self.mode, sql=query, version=data_version)
-        if not staged.num_rows:
+        if table_name.startswith('/Volumes/'):
+            reader = replace(self._volume_reader(connector, table_name),
+                             ingest_converts=dtypes is not None)
+            bare = table_name
+            destination = staging_dir(dest_dir, table_name)
+            require_no_sql(sql)
+            before = None
+            staged = None
+            try:
+                before = reader.data_version(bare)
+                columns = select_columns(bare, reader.dtypes(bare), dtypes)
+                reader.validate_ingest_columns(bare, columns)
+                staged = read_table(reader, bare, str(destination),
+                                    columns=columns, mode=self.mode,
+                                    version=data_version or before)
+                try:
+                    unchanged = reader.data_version(bare) == before
+                except SourceNotFoundError:
+                    unchanged = False
+                if not unchanged:
+                    raise TransientSourceError(
+                        f'{bare} changed while it was read; retry the read',
+                        table=bare)
+            except TransientSourceError:
+                from kumo_core.sources.transfer import discard_destination
+                discard_destination(str(destination))
+                raise
+            except SourceError as error:
+                if before is None:
+                    if not error.table:
+                        error.table = bare
+                    raise
+                try:
+                    changed = reader.data_version(bare) != before
+                except (SourceNotFoundError, TransientSourceError):
+                    changed = True
+                except SourceError:
+                    changed = False  # Preserve the original access or provider error.
+                if staged is not None or changed:
+                    from kumo_core.sources.transfer import discard_destination
+                    discard_destination(str(destination))
+                if changed:
+                    raise TransientSourceError(
+                        f'{bare} changed while it was read; retry the read',
+                        table=bare) from error
+                if not error.table:
+                    error.table = bare
+                raise
+
+        else:
+            bare = self._bare(connector, table_name)
+            destination = staging_dir(dest_dir, bare)
+            query = self._embeddable(connector, sql)
+            with self._connected(connector) as connection:
+                columns = self._declared(connector, connection, bare, dtypes,
+                                         query)
+                staged = read_table(self._reader(connector, connection), bare,
+                                    str(destination), columns=columns,
+                                    mode=self.mode, sql=query,
+                                    version=data_version)
+        if staged.num_rows is None:
+            from kumo_core.sources.arrow_parquet import count_rows
+            rows = count_rows(staged.paths)
+        else:
+            rows = staged.num_rows
+        if not rows:
             raise PermanentSourceError(
-                f'Reading {bare} returned no rows. An empty source '
+                f'Reading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
                 f'to infer an encoding.')
 
         return ingest_result(staged)
+
+    def _volume_path(self, connector: SourceConnector, path: str):
+        parts = path.rstrip('/').split('/')
+        if not is_volume_path(path) or len(parts) < 6:
+            raise ValueError('Use a file or folder below a Volume root')
+        config = _target_config(connector)
+        if (parts[2].casefold(),
+                parts[3].casefold()) != (config.catalog.casefold(),
+                                         config.schema_name.casefold()):
+            raise ValueError(
+                'Volume path does not match the connector catalog and schema')
+        return path.rstrip('/')
+
+    def table_location(self, connector: SourceConnector,
+                       table_name: str) -> str:
+        if table_name.startswith('/Volumes/'):
+            return self._volume_path(connector, table_name)
+        return super().table_location(connector, table_name)
+
+    def _volume_reader(self, connector: SourceConnector, path: str):
+        from kumo_core.types import ConnectorType
+        from pyarrow.fs import PyFileSystem
+
+        path = self._volume_path(connector, path)
+        filesystem = PyFileSystem(VolumeSourceHandler(self._client(connector)))
+        return _VolumeReader(filesystem,
+                             object_identity=filesystem.handler.object_identity,
+                             root=path, file_suffix='.parquet',
+                             source_type=ConnectorType.DATABRICKS)
 
     def _declared(
         self,

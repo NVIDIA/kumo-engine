@@ -7,6 +7,7 @@ import os
 from collections import Counter
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -507,22 +508,29 @@ def test_a_mlops_block_stores_each_table_once_under_the_root(graph, tmp_path):
     assert off.id == table.id and not (tmp_path / 'other').exists()
 
 
-def _volume_root(tmp_path):
+def _volume_root(tmp_path, *, other_catalog=False, require_staged=False):
     from types import SimpleNamespace
 
     from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 
     (tmp_path / 'volume').mkdir()
     files = SubTreeFileSystem(str(tmp_path / 'volume'), LocalFileSystem())
-    volume = SimpleNamespace(
-        source_type='databricks', sink_backend=SimpleNamespace(
-            holds_files=lambda connector, path: path.startswith('/Volumes/'),
-            filesystem=lambda connector, path: (files, path.lstrip('/'))))
+    volume = kumo.DatabricksConnector(
+        catalog='other_catalog' if other_catalog else 'c',
+        schema_name='other_schema' if other_catalog else 's',
+        warehouse_id='warehouse', require_staged=require_staged,
+        staging_volume_path='/Volumes/c/s/v/staging' if require_staged else None)
+    volume.__dict__['sink_backend'] = SimpleNamespace(
+        holds_files=lambda connector, path: path.startswith('/Volumes/'),
+        filesystem=lambda connector, path: (files, path.lstrip('/')))
     return kumo.MLOps((volume, '/Volumes/c/s/v/kumo'))
 
 
-def test_a_table_stored_on_a_volume_loads_back(graph, tmp_path):
-    cfg = _volume_root(tmp_path)
+@pytest.mark.parametrize('other_catalog,require_staged', [(False, False), (True, False), (False, True)])
+def test_a_table_stored_on_a_volume_loads_back(
+        graph, tmp_path, other_catalog, require_staged):
+    cfg = _volume_root(tmp_path, other_catalog=other_catalog, require_staged=require_staged)
+    assert cfg.root.connector.source_backend is not None
     with kumo.mlops(cfg):
         pquery, table = _generate(graph)
     path = f'training_tables/{table.id}'
@@ -612,3 +620,58 @@ def test_a_table_rewritten_while_loading_says_so(graph, tmp_path,
         kumo.TrainingTable.load_from_connector(
             cfg, path=f'training_tables/{table.id}', pquery=pquery,
             snapshot=graph[1])
+
+
+def test_volume_folder_load_uses_the_source_backend_before_artifact_routing(
+        monkeypatch):
+    connector = kumo.DatabricksConnector(catalog='catalog',
+                                         schema_name='schema',
+                                         warehouse_id='warehouse')
+    connector.__dict__['sink_backend'] = SimpleNamespace(
+        holds_files=lambda *args: pytest.fail(
+            'Volume sources must use scoped source reads'))
+    observed = []
+
+    def read(cls, source, spec, *, pq, snapshot):
+        observed.append((source.table_name, source.connector))
+        return 'source-reader-result'
+
+    monkeypatch.setattr(kumo.TrainingTable, 'from_source_table',
+                        classmethod(read))
+    path = '/Volumes/catalog/schema/volume/plain-folder'
+    assert kumo.TrainingTable.load_from_connector(
+        connector, path=path, pquery=None,
+        snapshot=None) == 'source-reader-result'
+    assert observed == [(path, connector)]
+
+
+@pytest.mark.parametrize('other_catalog,require_staged', [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize('complete', [False, True])
+def test_stored_volume_routing_checks_commit_before_source_loading(
+        tmp_path, monkeypatch, other_catalog, require_staged, complete):
+    cfg = _volume_root(tmp_path, other_catalog=other_catalog, require_staged=require_staged)
+    assert cfg.root.connector.source_backend is not None
+    stored = tmp_path / 'volume/Volumes/c/s/v/kumo/training_tables/table-id'
+    stored.mkdir(parents=True)
+    pq.write_table(pa.table({'ENTITY1': [1, 2], 'SPLIT': [0, 1]}), stored / 'part.parquet')
+    if complete:
+        (stored / '_SUCCESS').touch()
+    observed = []
+
+    def from_rows(cls, source_table, spec, **kwargs):
+        rows = Path(source_table.connector.config.root_dir) / source_table.table_name
+        observed.append((pq.read_table(rows).to_pydict(), kwargs['source'].location))
+        return 'loaded export'
+
+    monkeypatch.setattr(kumo.TrainingTable, '_from_rows', classmethod(from_rows))
+    path = 'training_tables/table-id'
+    if complete:
+        assert kumo.TrainingTable.load_from_connector(
+            cfg, path=path, pquery=None, snapshot=SimpleNamespace(record_sources=True)) == 'loaded export'
+        assert observed == [({'ENTITY1': [1, 2], 'SPLIT': [0, 1]},
+                             '/Volumes/c/s/v/kumo/' + path)]
+    else:
+        with pytest.raises(FileNotFoundError, match='has no _SUCCESS marker'):
+            kumo.TrainingTable.load_from_connector(
+                cfg, path=path, pquery=None, snapshot=SimpleNamespace(record_sources=True))
+        assert observed == []

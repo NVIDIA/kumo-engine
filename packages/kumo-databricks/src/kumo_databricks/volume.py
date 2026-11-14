@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import io
+import json
 import posixpath
 import queue
 import threading
@@ -19,7 +21,7 @@ from databricks.sdk.errors import DatabricksError, NotFound, PermissionDenied
 from kumo_core.chunked_fs import ChunkedFileHandler
 from kumo_core.sources.diagnostics import safe_summary
 from kumo_databricks.staging import clear_volume
-from pyarrow.fs import FileSystem, PyFileSystem
+from pyarrow.fs import FileInfo, FileSystem, FileType, PyFileSystem
 
 _FILES = '/api/2.0/fs/files'
 _BUFFER = 8 << 20
@@ -28,14 +30,14 @@ _UPLOAD_BOUNDS = {'part_size': 16 << 20, 'parallelism': 4}
 
 def is_volume_path(path: str) -> bool:
     parts = path.rstrip('/').split('/')
-    return (path.startswith('/Volumes/') and len(parts) >= 5
-            and all(parts[1:]) and posixpath.normpath(path) == path.rstrip('/'))
+    return (path.startswith('/Volumes/') and len(parts) >= 5 and all(parts[1:])
+            and posixpath.normpath(path) == path.rstrip('/'))
 
 
 def _upload(client: WorkspaceClient, path: str, source: BinaryIO) -> None:
     upload = client.files.upload
-    bounds = (_UPLOAD_BOUNDS if 'parallelism' in inspect.signature(
-        upload).parameters else {})
+    bounds = (_UPLOAD_BOUNDS
+              if 'parallelism' in inspect.signature(upload).parameters else {})
     upload(path, source, overwrite=True, **bounds)
 
 
@@ -111,6 +113,76 @@ class VolumeHandler(ChunkedFileHandler):
                 self._client.files.delete(path)
             except NotFound:
                 pass
+
+
+class VolumeSourceHandler(VolumeHandler):
+    """Fresh source metadata; artifact filesystem stats keep their original cost."""
+    def has_directory(self, path):
+        with _translated(path):
+            try:
+                self._client.files.get_directory_metadata(path)
+            except NotFound:
+                return False
+        return True
+
+    def get_file_info(self, paths):
+        for path in paths:
+            self._forget(path)
+        infos = super().get_file_info(paths)
+        for index, info in enumerate(infos):
+            if info.type == FileType.NotFound:
+                with _translated(info.path):
+                    try:
+                        self._client.files.get_directory_metadata(info.path)
+                    except NotFound:
+                        pass
+                    else:
+                        infos[index] = FileInfo(info.path, FileType.Directory)
+        return infos
+
+    def object_identity(self, path):
+        return self.object_identities([path])[0]
+
+    def object_identities(self, paths):
+        from kumo_core.sources.errors import PermanentSourceError
+
+        parents = {}
+
+        def listing(parent):
+            if parent not in parents:
+                with _translated(parent):
+                    parents[parent] = {
+                        entry.path.rstrip('/'): entry
+                        for entry in self._client.files.list_directory_contents(
+                            parent) if not entry.is_directory
+                    }
+            return parents[parent]
+
+        identities = []
+        for path in paths:
+            self._forget(path)
+            entry = listing(posixpath.dirname(path)).get(path)
+            if entry is not None:
+                layout = [(path, int(entry.file_size))]
+                self.__dict__.setdefault('_layouts', {})[path] = layout
+            else:
+                layout = self._layout(path)
+            if layout is None:
+                raise FileNotFoundError(path)
+            metadata = []
+            for physical, _ in layout:
+                entry = listing(posixpath.dirname(physical)).get(physical)
+                if entry is None:
+                    raise FileNotFoundError(physical)
+                if entry.last_modified is None:
+                    raise PermanentSourceError(
+                        f'{physical}: Volume sources require modification timestamps',
+                        table=path)
+                metadata.append(
+                    (physical, int(entry.file_size), int(entry.last_modified)))
+            identities.append(
+                (hashlib.sha256(json.dumps(metadata).encode()).hexdigest(), ))
+        return identities
 
 
 class _Part:

@@ -137,6 +137,7 @@ class FakeEntry:
     path: str
     file_size: int
     is_directory: bool = False
+    last_modified: int = 1_700_000_000_000
 
 
 class TrackedStream(io.BytesIO):
@@ -203,6 +204,8 @@ class FakeVolume(FakeFiles):
     def __init__(self, objects: Mapping[str, bytes] | None = None) -> None:
         super().__init__(objects)
         self.ignore_range = False
+        self.modified = {}
+        self.directories = set()
 
     def list_directory_contents(self, path: str) -> list[FakeEntry]:
         path = path.rstrip("/")
@@ -211,7 +214,7 @@ class FakeVolume(FakeFiles):
             if not name.startswith(path + "/"):
                 continue
             child = f"{path}/{name[len(path) + 1:].split('/')[0]}"
-            children[child] = (FakeEntry(child, len(self.objects[child]))
+            children[child] = (FakeEntry(child, len(self.objects[child]), last_modified=self.modified.get(child, 1_700_000_000_000))
                                if child in self.objects else FakeEntry(
                                    child + "/", 0, is_directory=True))
         if not children:
@@ -221,6 +224,11 @@ class FakeVolume(FakeFiles):
     def upload(self, path: str, contents: Any, *, overwrite: bool) -> None:
         assert overwrite
         self.objects[path] = contents.read()
+
+    def get_directory_metadata(self, path: str) -> Any:
+        if path in self.directories or any(name.startswith(path.rstrip('/') + '/') for name in self.objects):
+            return {}
+        raise NotFound('No such directory')
 
     def get_metadata(self, path: str) -> Any:
         if path.endswith("/"):
@@ -251,6 +259,7 @@ class FakeVolume(FakeFiles):
 @dataclass
 class FakeMetadata:
     content_length: int
+    last_modified: str = "Tue, 14 Nov 2023 22:13:20 GMT"
 
 
 class FakeStreamingResponse(TrackedStream):
