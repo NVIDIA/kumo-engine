@@ -13,9 +13,9 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use serde_json::{json, Value as JsonValue};
 
 // ---------------------------------------------------------------------------
@@ -441,23 +441,26 @@ mod tests {
     #[test]
     fn test_shared_counts_cap_policy() {
         let capped = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        assert!(capped.observe_hashed(1, "one"));
-        assert!(capped.observe_hashed(2, "two"));
+        for (hash, value, n) in [(1, "one", 3), (2, "two", 2)] {
+            for _ in 0..n {
+                capped.observe_hashed(hash, value);
+            }
+        }
         assert!(!capped.is_capped());
-        assert!(!capped.observe_hashed(3, "three"));
+        capped.observe_hashed(3, "three");
         assert!(capped.is_capped());
         assert!(!capped.is_aborted());
-        assert!(capped.observe_hashed(1, "one"));
-        assert_eq!(capped.drain_to_map().unwrap()["one"], 2);
+        capped.observe_hashed(4, "four");
+        capped.observe_hashed(5, "five");
+        assert_eq!(
+            capped.drain_to_map().unwrap(),
+            HashMap::from([("one".to_owned(), 3), ("two".to_owned(), 2)])
+        );
 
         let zero_cap = SharedColumnCounts::new_hashed_capped_with_max_categories(0);
-        assert!(!zero_cap.observe_hashed(1, "excluded"));
-        assert_eq!(zero_cap.unique_count.load(Ordering::Relaxed), 0);
+        zero_cap.observe_hashed(1, "excluded");
         assert!(zero_cap.is_capped());
-        assert!(zero_cap
-            .admitted_snapshot
-            .load_full()
-            .is_some_and(|snapshot| snapshot.is_empty()));
+        assert!(zero_cap.drain_to_map().unwrap().is_empty());
 
         let caller_capped = SharedColumnCounts::new_hashed_with_max_categories(2);
         caller_capped.unique_count.store(1, Ordering::Relaxed);
@@ -517,20 +520,12 @@ mod tests {
     }
 
     #[test]
-    fn into_sorted_counts_trims_admission_overshoot_to_the_cap() {
+    fn into_sorted_counts_trims_held_values_to_the_cap() {
         let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        let CountStorage::Hashed { counts: map, .. } = &counts.storage else {
-            unreachable!()
-        };
-        // Concurrent admissions can retain more than the cap.
-        for (hash, value, count) in [(1, "x", 4), (2, "b", 9), (3, "a", 4), (4, "y", 1)] {
-            map.insert(
-                hash,
-                HashedCategoryCount {
-                    value: CategoryIdentity::String(value.to_owned()),
-                    count,
-                },
-            );
+        for (hash, value, n) in [(1, "x", 4), (2, "b", 9), (3, "a", 4), (4, "y", 1)] {
+            for _ in 0..n {
+                counts.observe_hashed(hash, value);
+            }
         }
         let published = counts.into_sorted_counts();
         assert_eq!(
@@ -593,67 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_counts_include_local_deltas_before_and_after_cap() {
-        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        let mut local = LocalColumnCounts::with_capacity(2);
-
-        assert!(counts.observe_hashed(1, "hot"));
-        local.cache_admitted(1, "hot");
-        assert!(local.increment_if_present(1, "hot"));
-        assert!(counts.observe_hashed(2, "cold"));
-        assert!(!counts.observe_hashed(3, "excluded"));
-        assert!(local.increment_if_present(1, "hot"));
-
-        counts.merge_local_batch(&mut local);
-        let result = counts.drain_to_map().unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result["hot"], 3);
-        assert_eq!(result["cold"], 1);
-        assert!(!result.contains_key("excluded"));
-        assert!(counts.is_capped());
-    }
-
-    #[test]
-    fn frozen_snapshot_rejects_excluded_hash_without_dashmap_access() {
-        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(1);
-        assert!(counts.observe_hashed(1, "retained"));
-        assert!(counts.admitted_snapshot.load().is_some());
-
-        assert!(!counts.observe_hashed(2, "excluded"));
-        let accesses_after_first_rejection = counts.hashed_map_accesses.load(Ordering::Relaxed);
-        for _ in 0..100 {
-            assert!(!counts.observe_hashed(2, "excluded"));
-        }
-
-        assert_eq!(
-            counts.hashed_map_accesses.load(Ordering::Relaxed),
-            accesses_after_first_rejection,
-        );
-        assert!(counts.is_capped());
-        assert_eq!(
-            counts.drain_to_map().unwrap(),
-            HashMap::from([("retained".to_owned(), 1)])
-        );
-    }
-
-    #[test]
-    fn rejected_local_key_does_not_skip_a_later_retained_delta() {
-        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(1);
-        assert!(counts.observe_hashed(1, "retained"));
-
-        let mut local = LocalColumnCounts::with_capacity(2);
-        local.counts.insert(2, 7);
-        local.strings.insert(2, "excluded".to_owned());
-        local.counts.insert(1, 4);
-        local.strings.insert(1, "retained".to_owned());
-        counts.merge_local_batch(&mut local);
-
-        let result = counts.drain_to_map().unwrap();
-        assert_eq!(result, HashMap::from([("retained".to_owned(), 5)]));
-        assert!(counts.is_capped());
-    }
-
-    #[test]
     fn colliding_values_are_counted_apart() {
         for counts in [
             SharedColumnCounts::new_hashed(),
@@ -664,10 +598,10 @@ mod tests {
             local.observe(7, "right");
             local.observe(7, "right");
             counts.merge_local_batch(&mut local);
-            assert!(counts.observe_hashed(7, "right"));
-            assert!(counts.observe_hashed(7, "third"));
-            assert!(counts.observe_hashed_i64(8, 11));
-            assert!(counts.observe_hashed_i64(8, 12));
+            counts.observe_hashed(7, "right");
+            counts.observe_hashed(7, "third");
+            counts.observe_hashed_i64(8, 11);
+            counts.observe_hashed_i64(8, 12);
             assert_eq!(counts.unique_count.load(Ordering::Relaxed), 5);
             assert_eq!(
                 counts.drain_to_map().unwrap(),
@@ -683,21 +617,21 @@ mod tests {
     }
 
     #[test]
-    fn colliding_value_respects_the_cap() {
-        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        assert!(counts.observe_hashed(7, "left"));
-        assert!(counts.observe_hashed(7, "right"));
-        assert!(!counts.observe_hashed(7, "late"));
-        assert!(!counts.observe_hashed(9, "other"));
-        assert!(counts.observe_hashed(7, "right"));
-        assert!(counts.is_capped());
+    fn colliding_value_takes_over_a_compacted_hash() {
+        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(1);
+        for value in ["holder", "collided", "collided", "collided"] {
+            counts.observe_hashed(7, value);
+        }
+        counts.observe_hashed(9, "other");
+        counts.observe_hashed(9, "other");
+        counts.observe_hashed(7, "collided");
         assert_eq!(
-            counts.drain_to_map().unwrap(),
-            HashMap::from([("left".to_owned(), 1), ("right".to_owned(), 2)])
+            counts.into_sorted_counts().counts.unwrap(),
+            sorted_pairs(&[("collided", 4)])
         );
 
         let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
-        assert!(exhaustive.observe_hashed(7, "left"));
+        exhaustive.observe_hashed(7, "left");
         exhaustive.observe_hashed(7, "right");
         assert!(exhaustive.is_aborted());
     }
@@ -707,46 +641,150 @@ mod tests {
         use std::thread;
 
         let values: Vec<String> = (0..48).map(|i| format!("value-{i}")).collect();
-        for cap in [MAX_CATEGORIES, 20] {
-            let counts = Arc::new(SharedColumnCounts::new_hashed_capped_with_max_categories(
-                cap,
-            ));
-            let handles: Vec<_> = (0..8)
-                .map(|worker| {
-                    let (counts, values) = (Arc::clone(&counts), values.clone());
-                    thread::spawn(move || {
-                        let mut local = LocalColumnCounts::with_capacity(4);
-                        let mut admitted = HashMap::<String, u64>::new();
-                        for step in 0..20_000usize {
-                            let value = &values[(step * 7 + worker) % values.len()];
-                            let hash = (value.len() % 4) as u64;
-                            if local.increment_if_present(hash, value)
-                                || counts.observe_hashed(hash, value)
-                            {
-                                *admitted.entry(value.clone()).or_default() += 1;
-                                local.cache_admitted(hash, value);
-                            }
-                            if step % 1_000 == 0 {
+        let counts = Arc::new(SharedColumnCounts::new_hashed());
+        let handles: Vec<_> = (0..8)
+            .map(|worker| {
+                let (counts, values) = (Arc::clone(&counts), values.clone());
+                thread::spawn(move || {
+                    let mut local = LocalColumnCounts::with_capacity(4);
+                    let mut observed = HashMap::<String, u64>::new();
+                    for step in 0..20_000usize {
+                        let value = &values[(step * 7 + worker) % values.len()];
+                        let hash = (value.len() % 4) as u64;
+                        local.observe(hash, value);
+                        *observed.entry(value.clone()).or_default() += 1;
+                        if step % 1_000 == 0 {
+                            counts.merge_local_batch(&mut local);
+                        }
+                    }
+                    counts.merge_local_batch(&mut local);
+                    observed
+                })
+            })
+            .collect();
+        let mut expected = HashMap::<String, u64>::new();
+        for handle in handles {
+            for (value, count) in handle.join().unwrap() {
+                *expected.entry(value).or_default() += count;
+            }
+        }
+        assert_eq!(counts.drain_to_map().unwrap(), expected);
+    }
+
+    #[test]
+    fn concurrent_merges_keep_the_error_bound() {
+        use std::thread;
+
+        const CAP: u64 = 16;
+        let counts = Arc::new(SharedColumnCounts::new_hashed_capped_with_max_categories(
+            CAP,
+        ));
+        let handles: Vec<_> = (0..8u64)
+            .map(|worker| {
+                let counts = Arc::clone(&counts);
+                thread::spawn(move || {
+                    let mut local = LocalColumnCounts::with_capacity(8);
+                    let mut observed = HashMap::<String, u64>::new();
+                    for step in 0..20_000u64 {
+                        let value = if step % 2 == 0 {
+                            format!("hot{}", step % 5)
+                        } else {
+                            format!("tail{}", (step * 2_654_435_761 + worker) % 5_000)
+                        };
+                        // Few hashes, so values also collide and take over hashes.
+                        let hash = HyperLogLog::hash_str(&value) % 64;
+                        if worker % 2 == 0 {
+                            counts.observe_hashed(hash, &value);
+                        } else {
+                            local.observe(hash, &value);
+                            if local.len() >= 8 {
                                 counts.merge_local_batch(&mut local);
-                                local.clear();
                             }
                         }
-                        counts.merge_local_batch(&mut local);
-                        admitted
-                    })
+                        *observed.entry(value).or_default() += 1;
+                    }
+                    counts.merge_local_batch(&mut local);
+                    observed
                 })
-                .collect();
-            let mut expected = HashMap::<String, u64>::new();
-            for handle in handles {
-                for (value, count) in handle.join().unwrap() {
-                    *expected.entry(value).or_default() += count;
-                }
+            })
+            .collect();
+        let mut truth = HashMap::<String, u64>::new();
+        for handle in handles {
+            for (value, count) in handle.join().unwrap() {
+                *truth.entry(value).or_default() += count;
             }
-            let drained = counts.drain_to_map().unwrap();
-            assert_eq!(drained.len() as u64, cap.min(48));
-            for (value, count) in drained {
-                assert_eq!(expected[&value], count, "{value}");
+        }
+        let bound = truth.values().sum::<u64>() / (CAP + 1);
+        let counts = Arc::try_unwrap(counts).ok().unwrap();
+        assert!(counts.is_capped());
+        let sorted = counts.into_sorted_counts().counts.unwrap();
+        let published: HashMap<String, u64> = sorted.iter().cloned().collect();
+        assert_eq!(published.len(), sorted.len());
+        assert!(published.len() as u64 <= CAP);
+        for (value, &count) in &published {
+            assert!(
+                count <= truth[value] && count + bound + 1 >= truth[value],
+                "{value}"
+            );
+        }
+        for (value, &count) in &truth {
+            assert!(
+                count <= 2 * bound + 1 || published.contains_key(value),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn hot_partition_keeps_its_own_bound() {
+        let partitions = 2;
+        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(
+            partitions * MIN_PARTITION_CAPACITY,
+        );
+        let in_first_partition =
+            |value: &String| partition_of(partitions as usize, HyperLogLog::hash_str(value)) == 0;
+        let hot: Vec<String> = (0..)
+            .map(|i| format!("hot{i}"))
+            .filter(in_first_partition)
+            .take(64)
+            .collect();
+        let mut truth = HashMap::<String, u64>::new();
+        let mut local = LocalColumnCounts::with_capacity(5_000);
+        for step in 0..400_000u64 {
+            let value = if step % 4 == 0 {
+                hot[(step / 4 % 64) as usize].clone()
+            } else {
+                format!("tail{}", (step * 2_654_435_761) % 50_000)
+            };
+            local.observe(HyperLogLog::hash_str(&value), &value);
+            if local.len() >= 5_000 {
+                counts.merge_local_batch(&mut local);
             }
+            *truth.entry(value).or_default() += 1;
+        }
+        counts.merge_local_batch(&mut local);
+
+        let mut occurrences = [0u64; 2];
+        for (value, count) in &truth {
+            occurrences[usize::from(!in_first_partition(value))] += count;
+        }
+        let bound = |value: &String| {
+            occurrences[usize::from(!in_first_partition(value))] / (MIN_PARTITION_CAPACITY + 1)
+        };
+        let published: HashMap<String, u64> = counts
+            .into_sorted_counts()
+            .counts
+            .unwrap()
+            .into_iter()
+            .collect();
+        for (value, &count) in &published {
+            assert!(
+                count <= truth[value] && count + bound(value) + 1 >= truth[value],
+                "{value}"
+            );
+        }
+        for value in &hot {
+            assert!(published.contains_key(value), "{value}");
         }
     }
 
@@ -772,73 +810,34 @@ mod tests {
     #[test]
     fn local_clear_removes_integer_identity() {
         let mut local = LocalColumnCounts::with_capacity(1);
-        local.cache_admitted_i64(7, 11);
-        assert!(local.increment_i64_if_present(7, 11));
+        assert!(local.try_observe_i64(7, 11));
+        assert!(!local.try_observe_i64(7, 12));
 
         local.clear();
 
-        assert!(!local.increment_i64_if_present(7, 11));
-        assert!(local.integer_values.is_empty());
-        assert!(local.strings.is_empty());
-        assert!(local.counts.is_empty());
+        assert!(local.try_observe_i64(7, 12));
+        assert_eq!(local.counts[&7], 1);
     }
 
     #[test]
     #[should_panic(expected = "exact category occurrence count overflowed u64")]
     fn shared_count_overflow_fails_explicitly() {
         let counts = SharedColumnCounts::new_hashed();
-        assert!(counts.observe_hashed(7, "value"));
-        let CountStorage::Hashed { counts: values, .. } = &counts.storage else {
+        counts.observe_hashed(7, "value");
+        let CountStorage::Hashed { partitions } = &counts.storage else {
             unreachable!();
         };
-        values.get_mut(&7).unwrap().count = u64::MAX;
+        partitions[0].lock().counts.get_mut(&7).unwrap().count = u64::MAX;
         counts.observe_hashed(7, "value");
     }
 
     #[test]
     #[should_panic(expected = "exact local category occurrence count overflowed u64")]
-    fn local_fast_path_count_overflow_fails_explicitly() {
+    fn local_count_overflow_fails_explicitly() {
         let mut local = LocalColumnCounts::with_capacity(1);
-        local.cache_admitted(7, "value");
+        local.observe(7, "value");
         *local.counts.get_mut(&7).unwrap() = u64::MAX;
-        local.increment_if_present(7, "value");
-    }
-
-    #[test]
-    fn concurrent_boundary_overshoot_is_counted_before_final_trim() {
-        use std::thread;
-
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let mut inner = SharedColumnCounts::new_hashed_capped_with_max_categories(1);
-        inner.admission_barrier = Some(Arc::clone(&barrier));
-        let counts = Arc::new(inner);
-        let handles: Vec<_> = [(0, "a"), (u64::MAX, "z")]
-            .into_iter()
-            .map(|(hash, value)| {
-                let counts = Arc::clone(&counts);
-                thread::spawn(move || assert!(counts.observe_hashed(hash, value)))
-            })
-            .collect();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        assert_eq!(counts.unique_count.load(Ordering::Relaxed), 2);
-        assert!(counts.is_capped());
-        let snapshot = counts
-            .admitted_snapshot
-            .load_full()
-            .expect("closed admissions publish a membership snapshot");
-        assert_eq!(snapshot.len(), 2);
-        assert!(snapshot.contains(&0));
-        assert!(snapshot.contains(&u64::MAX));
-        for _ in 0..4 {
-            assert!(counts.observe_hashed(u64::MAX, "z"));
-        }
-        assert_eq!(
-            counts.drain_to_map().unwrap(),
-            HashMap::from([("z".to_owned(), 5)])
-        );
+        local.observe(7, "value");
     }
 
     #[test]
@@ -851,7 +850,7 @@ mod tests {
                 let counts = Arc::clone(&counts);
                 thread::spawn(move || {
                     for _ in 0..1_000 {
-                        assert!(counts.observe_hashed(11, "shared"));
+                        counts.observe_hashed(11, "shared");
                     }
                 })
             })
@@ -1181,28 +1180,200 @@ pub const MAX_CATEGORIES: u64 = 1_000_000;
 
 /// Typed category identity. Integer-backed categories stay unformatted until
 /// publication; string-backed values retain their canonical spelling.
+#[derive(PartialEq)]
 pub enum CategoryIdentity {
     String(String),
     I64(i64),
 }
 
-/// A canonical value and its exact occurrence count. Keeping typed identity
-/// beside the hash makes the DashMap entry the single admission/counting
+/// A canonical value and its occurrence count. Keeping typed identity
+/// beside the hash makes the partition entry the single counting
 /// arbitration point and lets us detect otherwise-silent 64-bit collisions.
 /// A value whose hash is already held by a different value is counted in
-/// `CountStorage::Hashed::collided` instead.
+/// `Partition::collided` instead.
 pub struct HashedCategoryCount {
     value: CategoryIdentity,
     count: u64,
+    /// Occurrences possibly missed before the value was last admitted: the
+    /// true count lies in `count..=count + error`.
+    error: u64,
+}
+
+impl HashedCategoryCount {
+    fn estimate(&self) -> u64 {
+        self.count + self.error
+    }
+}
+
+const MAX_PARTITIONS: u64 = 256;
+const MIN_PARTITION_CAPACITY: u64 = 4096;
+
+fn partition_of(partitions: usize, hash: u64) -> usize {
+    (hash >> 32) as usize % partitions
+}
+
+/// Counts of the values whose hash falls in one partition. Past the column's
+/// cap this is a Space-Saving summary: a value seen once since `floor` last
+/// rose is only marked in `seen_once`, a Bloom filter, and `floor` rises by
+/// one once more than `capacity` values are marked; any other new value starts
+/// with `error = floor`, plus one if it may be marked; past twice `capacity`
+/// values, the `capacity` largest estimates are kept and `floor` rises to the
+/// next.
+#[repr(align(128))] // Neighbouring partition locks do not share a cache line.
+pub struct Partition {
+    counts: HashMap<u64, HashedCategoryCount, IdentityBuildHasher>,
+    collided: Vec<(u64, HashedCategoryCount)>,
+    capacity: usize,
+    floor: u64,
+    seen_once: Vec<u64>,
+    seen_once_values: usize,
+}
+
+impl Partition {
+    fn new(capacity: usize) -> Self {
+        Self {
+            counts: HashMap::default(),
+            collided: Vec::new(),
+            capacity,
+            floor: 0,
+            seen_once: Vec::new(),
+            seen_once_values: 0,
+        }
+    }
+
+    /// Adds `delta` occurrences of `value`; `capped` once the column has more
+    /// distinct values than its cap. Returns whether the value was stored new.
+    fn add(&mut self, hash: u64, value: CategoryIdentity, delta: u64, capped: bool) -> bool {
+        use std::collections::hash_map::Entry;
+        if let Some(stored) = self.find_mut(hash, &value) {
+            SharedColumnCounts::checked_add_count(&mut stored.count, delta);
+            return false;
+        }
+        let error = if capped {
+            match self.first_sighting(hash, delta) {
+                Some(seen_before) => self.floor + u64::from(seen_before),
+                None => return false,
+            }
+        } else {
+            0
+        };
+        let stored = HashedCategoryCount {
+            value,
+            count: delta,
+            error,
+        };
+        match self.counts.entry(hash) {
+            Entry::Vacant(entry) => {
+                entry.insert(stored);
+            }
+            Entry::Occupied(_) => self.collided.push((hash, stored)),
+        }
+        true
+    }
+
+    fn find_mut(
+        &mut self,
+        hash: u64,
+        value: &CategoryIdentity,
+    ) -> Option<&mut HashedCategoryCount> {
+        match self.counts.get_mut(&hash) {
+            Some(stored) if stored.value == *value => Some(stored),
+            Some(_) => self
+                .collided
+                .iter_mut()
+                .find(|(_, stored)| stored.value == *value)
+                .map(|(_, stored)| stored),
+            None => None,
+        }
+    }
+
+    /// Marks a single new occurrence in `seen_once` and returns `None`;
+    /// otherwise returns whether the value may already be marked.
+    fn first_sighting(&mut self, hash: u64, delta: u64) -> Option<bool> {
+        if self.seen_once.is_empty() {
+            // At least 8 bits per value it holds.
+            self.seen_once = vec![0; (self.capacity + 1).next_power_of_two().div_ceil(8)];
+        }
+        let bits = self.seen_once.len() as u64 * 64;
+        let probes = [hash % bits, (hash >> 21) % bits];
+        let seen = probes
+            .iter()
+            .all(|&bit| self.seen_once[(bit / 64) as usize] & (1 << (bit % 64)) != 0);
+        if seen || delta > 1 {
+            return Some(seen);
+        }
+        for bit in probes {
+            self.seen_once[(bit / 64) as usize] |= 1 << (bit % 64);
+        }
+        self.seen_once_values += 1;
+        if self.seen_once_values > self.capacity {
+            self.raise_floor(self.floor + 1);
+        }
+        None
+    }
+
+    fn raise_floor(&mut self, floor: u64) {
+        if floor > self.floor {
+            self.floor = floor;
+            self.seen_once.fill(0);
+            self.seen_once_values = 0;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.counts.len() + self.collided.len()
+    }
+
+    fn values(&self) -> impl Iterator<Item = &HashedCategoryCount> {
+        self.counts
+            .values()
+            .chain(self.collided.iter().map(|(_, stored)| stored))
+    }
+
+    fn into_values(self) -> impl Iterator<Item = HashedCategoryCount> {
+        self.counts
+            .into_values()
+            .chain(self.collided.into_iter().map(|(_, stored)| stored))
+    }
+
+    /// Past twice its capacity, keeps the `capacity` largest estimates and
+    /// returns the dropped values.
+    fn compact(&mut self) -> Vec<HashedCategoryCount> {
+        use std::collections::hash_map::Entry;
+        if self.len() <= 2 * self.capacity {
+            return Vec::new();
+        }
+        let mut estimates: Vec<u64> = self.values().map(HashedCategoryCount::estimate).collect();
+        let (_, &mut next, _) = estimates.select_nth_unstable_by(self.capacity, |a, b| b.cmp(a));
+        self.raise_floor(next);
+        let floor = self.floor;
+        let dropped = self
+            .counts
+            .extract_if(|_, stored| stored.estimate() <= floor)
+            .map(|(_, stored)| stored)
+            .chain(
+                self.collided
+                    .extract_if(.., |(_, stored)| stored.estimate() <= floor)
+                    .map(|(_, stored)| stored),
+            )
+            .collect();
+        // A colliding value whose hash holder was dropped takes its place.
+        for (hash, stored) in std::mem::take(&mut self.collided) {
+            match self.counts.entry(hash) {
+                Entry::Vacant(entry) => {
+                    entry.insert(stored);
+                }
+                Entry::Occupied(_) => self.collided.push((hash, stored)),
+            }
+        }
+        dropped
+    }
 }
 
 /// Internal storage for category counts.
 pub enum CountStorage {
-    /// Hash-based exact retained counts (Hybrid).
-    Hashed {
-        counts: DashMap<u64, HashedCategoryCount, IdentityBuildHasher>,
-        collided: Mutex<Vec<HashedCategoryCount>>,
-    },
+    /// Hash-partitioned counts (Hybrid).
+    Hashed { partitions: Box<[Mutex<Partition>]> },
     /// Graduation v2: ArcSwap frozen graduated set + DashMap pending + inbox coordinator.
     /// Identity is the hash alone; rejected with col_stats, so never published.
     Graduation {
@@ -1221,8 +1392,9 @@ pub enum CountStorage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CategoryLimitPolicy {
-    /// Feature statistics retain admitted keys and reject only new keys once
-    /// the bound is reached.
+    /// Feature statistics count exactly until the column has more distinct
+    /// values than the bound; then each [`Partition`] keeps a Space-Saving
+    /// summary, and publication keeps the bound's largest counts.
     RetainCapped,
     /// Classification targets require an exhaustive vocabulary and abort when
     /// their independent ceiling is exceeded.
@@ -1270,21 +1442,10 @@ pub struct SharedColumnCounts {
     pub storage: CountStorage,
     pub unique_count: AtomicU64,
     pub aborted: AtomicBool,
-    admissions_closed: AtomicBool,
-    /// Readers cover concurrent admission; the snapshot publisher takes the
-    /// write side before enumerating stable membership.
-    admission_gate: RwLock<()>,
-    /// Shared frozen membership used to reject excluded hashes before any
-    /// DashMap shard access.
-    admitted_snapshot: ArcSwapOption<HashSet<u64>>,
     capped: AtomicBool,
     collision_warned: AtomicBool,
     max_categories: Option<u64>,
     limit_policy: CategoryLimitPolicy,
-    #[cfg(test)]
-    hashed_map_accesses: AtomicU64,
-    #[cfg(test)]
-    admission_barrier: Option<Arc<std::sync::Barrier>>,
 }
 
 impl SharedColumnCounts {
@@ -1293,14 +1454,13 @@ impl SharedColumnCounts {
         Self::new_hashed_capped_with_max_categories(MAX_CATEGORIES)
     }
 
-    /// Create retained hash-based feature storage with a caller-specific cap.
+    /// Create hash-based feature storage that publishes the approximate top
+    /// `max_categories` values (see `CategoryLimitPolicy::RetainCapped`).
     ///
     /// Primarily useful for focused ingest tests. Production feature stats use
-    /// [`MAX_CATEGORIES`]. Concurrent distinct admissions can overshoot by at
-    /// most the number of simultaneous in-progress admission operations; the
-    /// complete admitted counts are trimmed deterministically at publication.
+    /// [`MAX_CATEGORIES`].
     pub fn new_hashed_capped_with_max_categories(max_categories: u64) -> Self {
-        Self::new_hashed_with_cap(Some(max_categories), CategoryLimitPolicy::RetainCapped)
+        Self::new_hashed_with_cap(max_categories, CategoryLimitPolicy::RetainCapped)
     }
 
     /// Create hash-based storage with a caller-specific unique-category cap.
@@ -1309,32 +1469,24 @@ impl SharedColumnCounts {
     /// classification targets. It is deliberately separate from the retained
     /// feature-vocabulary policy used by [`Self::new_hashed`].
     pub fn new_hashed_with_max_categories(max_categories: u64) -> Self {
-        Self::new_hashed_with_cap(Some(max_categories), CategoryLimitPolicy::Abort)
+        Self::new_hashed_with_cap(max_categories, CategoryLimitPolicy::Abort)
     }
 
-    fn new_hashed_with_cap(max_categories: Option<u64>, limit_policy: CategoryLimitPolicy) -> Self {
+    fn new_hashed_with_cap(max_categories: u64, limit_policy: CategoryLimitPolicy) -> Self {
+        let partitions = (max_categories / MIN_PARTITION_CAPACITY).clamp(1, MAX_PARTITIONS);
+        let capacity = max_categories.div_ceil(partitions) as usize;
         Self {
             storage: CountStorage::Hashed {
-                counts: DashMap::with_capacity_and_hasher_and_shard_amount(
-                    1024,
-                    IdentityBuildHasher,
-                    256,
-                ),
-                collided: Mutex::new(Vec::new()),
+                partitions: (0..partitions)
+                    .map(|_| Mutex::new(Partition::new(capacity)))
+                    .collect(),
             },
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
-            admissions_closed: AtomicBool::new(false),
-            admission_gate: RwLock::new(()),
-            admitted_snapshot: ArcSwapOption::empty(),
             capped: AtomicBool::new(false),
             collision_warned: AtomicBool::new(false),
-            max_categories,
+            max_categories: Some(max_categories),
             limit_policy,
-            #[cfg(test)]
-            hashed_map_accesses: AtomicU64::new(0),
-            #[cfg(test)]
-            admission_barrier: None,
         }
     }
 
@@ -1362,31 +1514,28 @@ impl SharedColumnCounts {
             },
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
-            admissions_closed: AtomicBool::new(false),
-            admission_gate: RwLock::new(()),
-            admitted_snapshot: ArcSwapOption::empty(),
             capped: AtomicBool::new(false),
             collision_warned: AtomicBool::new(false),
             max_categories,
             limit_policy: CategoryLimitPolicy::Abort,
-            #[cfg(test)]
-            hashed_map_accesses: AtomicU64::new(0),
-            #[cfg(test)]
-            admission_barrier: None,
         }
     }
 
-    /// Record a newly observed unique category and abort only when this counter
-    /// was constructed with an explicit cap.
+    /// Record a newly observed unique category.
     #[inline]
     pub fn record_new_unique(&self) {
-        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.record_new_values(1);
+    }
+
+    /// Past the cap, marks retained counts as capped or aborts exhaustive
+    /// ones. `unique_count` counts admissions, so it is exact until then.
+    fn record_new_values(&self, new_values: u64) {
+        let new_unique = self.unique_count.fetch_add(new_values, Ordering::Relaxed) + new_values;
         if let Some(max_categories) = self.max_categories {
             if new_unique > max_categories {
                 match self.limit_policy {
                     CategoryLimitPolicy::RetainCapped => {
                         self.capped.store(true, Ordering::Relaxed);
-                        self.admissions_closed.store(true, Ordering::Relaxed);
                     }
                     CategoryLimitPolicy::Abort => {
                         self.aborted.store(true, Ordering::Relaxed);
@@ -1402,288 +1551,92 @@ impl SharedColumnCounts {
             .expect("exact category occurrence count overflowed u64");
     }
 
-    #[inline]
-    fn record_hashed_map_access(&self) {
-        #[cfg(test)]
-        self.hashed_map_accesses.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Publish one immutable membership snapshot after admissions close.
-    ///
-    /// The write guard waits for every admission reader that could already
-    /// have passed the cap check, so concurrent overshoot winners are included
-    /// before snapshot misses become authoritative.
-    fn publish_admitted_snapshot(&self) {
-        if self.admitted_snapshot.load().is_some() {
-            return;
-        }
-        let _admission_guard = self.admission_gate.write();
-        if self.admitted_snapshot.load().is_some() {
-            return;
-        }
-        let CountStorage::Hashed { counts, .. } = &self.storage else {
-            return;
-        };
-        let snapshot = counts.iter().map(|entry| *entry.key()).collect();
-        self.admitted_snapshot.store(Some(Arc::new(snapshot)));
-    }
-
-    #[inline]
-    fn reject_from_admitted_snapshot(&self, hash: u64) -> bool {
-        let snapshot = self.admitted_snapshot.load();
-        if snapshot
-            .as_ref()
-            .is_some_and(|admitted| !admitted.contains(&hash))
-        {
-            if !self.capped.load(Ordering::Relaxed) {
-                self.capped.store(true, Ordering::Relaxed);
-            }
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Retained-policy admission of one new distinct value. Callers hold the
-    /// admission gate for reading.
-    fn try_admit_retained(&self, publish_snapshot: &mut bool) -> bool {
-        let at_limit = self.max_categories.is_some_and(|max_categories| {
-            self.unique_count.load(Ordering::Relaxed) >= max_categories
-        });
-        if self.admissions_closed.load(Ordering::Acquire) || at_limit {
-            self.admissions_closed.store(true, Ordering::Release);
-            self.capped.store(true, Ordering::Relaxed);
-            *publish_snapshot = true;
-            return false;
-        }
-        #[cfg(test)]
-        if let Some(barrier) = &self.admission_barrier {
-            barrier.wait();
-        }
-        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some(max_categories) = self.max_categories {
-            if new_unique >= max_categories {
-                // Freeze membership at capacity. Admission readers already in
-                // flight may still win; the publisher waits for all of them.
-                self.admissions_closed.store(true, Ordering::Release);
-                *publish_snapshot = true;
-                if new_unique > max_categories {
-                    self.capped.store(true, Ordering::Relaxed);
-                }
-            }
-        }
-        true
-    }
-
-    /// Exhaustive-policy admission: always admits, aborts past the cap.
-    fn admit_exhaustive(&self) -> bool {
-        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
-        if self
-            .max_categories
-            .is_some_and(|max_categories| new_unique > max_categories)
-        {
-            self.aborted.store(true, Ordering::Relaxed);
-        }
-        true
-    }
-
-    /// Counts a value whose hash is held by a different value.
-    fn merge_collided<F, V>(
-        collided: &Mutex<Vec<HashedCategoryCount>>,
-        delta: u64,
-        identity_matches: F,
-        value_factory: V,
-        admit: impl FnOnce() -> bool,
-    ) -> bool
-    where
-        F: Fn(&CategoryIdentity) -> bool,
-        V: FnOnce() -> CategoryIdentity,
-    {
-        let mut collided = collided.lock();
-        if let Some(stored) = collided
-            .iter_mut()
-            .find(|stored| identity_matches(&stored.value))
-        {
-            Self::checked_add_count(&mut stored.count, delta);
-            return true;
-        }
-        if !admit() {
-            return false;
-        }
-        collided.push(HashedCategoryCount {
-            value: value_factory(),
-            count: delta,
-        });
-        true
-    }
-
-    fn merge_hashed_with<F, V>(
-        &self,
-        hash: u64,
-        delta: u64,
-        identity_matches: F,
-        value_factory: V,
-    ) -> bool
-    where
-        F: Fn(&CategoryIdentity) -> bool,
-        V: FnOnce() -> CategoryIdentity,
-    {
-        if self.aborted.load(Ordering::Relaxed) {
-            return false;
-        }
-        let CountStorage::Hashed { counts, collided } = &self.storage else {
-            return false;
-        };
-
-        if self.limit_policy == CategoryLimitPolicy::RetainCapped {
-            // Once published, an absent hash is known never to have won
-            // admission. This bypasses all DashMap shard locks for the
-            // high-cardinality tail.
-            if self.reject_from_admitted_snapshot(hash) {
-                return false;
-            }
-
-            // Retained hashes remain on the exact shared counting path and do
-            // not need the admission gate after membership is frozen.
-            self.record_hashed_map_access();
-            if let Some(mut stored) = counts.get_mut(&hash) {
-                if identity_matches(&stored.value) {
-                    Self::checked_add_count(&mut stored.count, delta);
-                    return true;
-                }
-            }
-
-            let mut publish_snapshot = false;
-            let admitted = {
-                // Consistent lock order is admission gate before DashMap entry.
-                // The snapshot publisher takes the write guard before
-                // iterating DashMap shards, so it can never wait on a reader
-                // that is itself waiting for the write guard.
-                let _admission_guard = self.admission_gate.read();
-                if self.reject_from_admitted_snapshot(hash) {
-                    return false;
-                }
-
-                self.record_hashed_map_access();
-                match counts.entry(hash) {
-                    dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                        let stored = entry.get_mut();
-                        if identity_matches(&stored.value) {
-                            Self::checked_add_count(&mut stored.count, delta);
-                            true
-                        } else {
-                            Self::merge_collided(
-                                collided,
-                                delta,
-                                identity_matches,
-                                value_factory,
-                                || self.try_admit_retained(&mut publish_snapshot),
-                            )
-                        }
-                    }
-                    dashmap::mapref::entry::Entry::Vacant(entry) => {
-                        let admitted = self.try_admit_retained(&mut publish_snapshot);
-                        if admitted {
-                            entry.insert(HashedCategoryCount {
-                                value: value_factory(),
-                                count: delta,
-                            });
-                        }
-                        admitted
-                    }
-                }
-            };
-            if publish_snapshot {
-                self.publish_admitted_snapshot();
-            }
-            admitted
-        } else {
-            self.record_hashed_map_access();
-            match counts.entry(hash) {
-                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
-                    let stored = entry.get_mut();
-                    if identity_matches(&stored.value) {
-                        Self::checked_add_count(&mut stored.count, delta);
-                        true
-                    } else {
-                        Self::merge_collided(
-                            collided,
-                            delta,
-                            identity_matches,
-                            value_factory,
-                            || self.admit_exhaustive(),
-                        )
-                    }
-                }
-                dashmap::mapref::entry::Entry::Vacant(entry) => {
-                    entry.insert(HashedCategoryCount {
-                        value: value_factory(),
-                        count: delta,
-                    });
-                    self.admit_exhaustive()
-                }
-            }
-        }
-    }
-
-    fn merge_hashed(&self, hash: u64, value_str: &str, delta: u64) -> bool {
-        self.merge_hashed_with(
-            hash,
-            delta,
-            |stored| matches!(stored, CategoryIdentity::String(value) if value == value_str),
-            || CategoryIdentity::String(value_str.to_owned()),
-        )
-    }
-
-    fn merge_hashed_i64(&self, hash: u64, value: i64, delta: u64) -> bool {
-        self.merge_hashed_with(
-            hash,
-            delta,
-            |stored| matches!(stored, CategoryIdentity::I64(stored) if *stored == value),
-            || CategoryIdentity::I64(value),
-        )
-    }
-
-    /// Count one occurrence in shared Hybrid storage. Returns whether the
-    /// category was already admitted or won admission.
-    #[inline]
-    pub fn observe_hashed(&self, hash: u64, value_str: &str) -> bool {
-        self.merge_hashed(hash, value_str, 1)
-    }
-
-    /// Count an integer-backed category without formatting cached, admitted,
-    /// or rejected observations. Typed identity remains an integer until the
-    /// retained vocabulary is formatted once during publication.
-    #[inline]
-    pub fn observe_hashed_i64(&self, hash: u64, value: i64) -> bool {
-        self.merge_hashed_i64(hash, value, 1)
-    }
-
-    /// Merge a batch of local counts into the shared DashMap (Hybrid flush).
-    pub fn merge_local_batch(&self, local: &mut LocalColumnCounts) {
+    /// Adds `(hash, value, delta)` updates, locking each partition once and,
+    /// past the cap, compacting it before unlocking.
+    fn merge(&self, updates: impl IntoIterator<Item = (u64, CategoryIdentity, u64)>) {
         if self.aborted.load(Ordering::Relaxed) {
             return;
         }
-        if matches!(&self.storage, CountStorage::Hashed { .. }) {
-            for (&hash, &count) in &local.counts {
-                if let Some(integer_value) = local.integer_values.get(&hash) {
-                    self.merge_hashed_i64(hash, *integer_value, count);
-                } else if let Some(value) = local.strings.get(&hash) {
-                    self.merge_hashed(hash, value, count);
+        let CountStorage::Hashed { partitions } = &self.storage else {
+            return;
+        };
+        let updates = updates.into_iter();
+        let (fewest, most) = updates.size_hint();
+        // Twice an even share, so groups rarely grow.
+        let per_group = 2 * most.unwrap_or(fewest) / partitions.len();
+        let mut groups: Vec<Vec<_>> = (0..partitions.len())
+            .map(|_| Vec::with_capacity(per_group))
+            .collect();
+        for update in updates {
+            groups[partition_of(partitions.len(), update.0)].push(update);
+        }
+        let mut pending: Vec<_> = groups
+            .into_iter()
+            .enumerate()
+            .filter(|(_, group)| !group.is_empty())
+            .collect();
+        let mut new_values = 0;
+        // Busy partitions are skipped on the first pass and waited for on the second.
+        for wait in [false, true] {
+            let mut busy = Vec::new();
+            for (index, group) in pending {
+                let locked = if wait {
+                    Some(partitions[index].lock())
                 } else {
+                    partitions[index].try_lock()
+                };
+                let Some(mut partition) = locked else {
+                    busy.push((index, group));
                     continue;
+                };
+                // Read under the lock: a stale flag would store an evicted value as exact.
+                let capped = self.capped.load(Ordering::Relaxed);
+                for (hash, value, delta) in group {
+                    new_values += u64::from(partition.add(hash, value, delta, capped));
                 }
-                if self.aborted.load(Ordering::Relaxed) {
-                    return;
+                if capped {
+                    let evicted = partition.compact();
+                    // Free the evicted values after unlocking.
+                    drop(partition);
+                    drop(evicted);
                 }
             }
-            for (hash, value, count) in &local.collided {
-                self.merge_hashed(*hash, value, *count);
-                if self.aborted.load(Ordering::Relaxed) {
-                    return;
-                }
-            }
+            pending = busy;
         }
+        self.record_new_values(new_values);
+    }
+
+    /// Count one occurrence in shared Hybrid storage.
+    pub fn observe_hashed(&self, hash: u64, value_str: &str) {
+        self.merge([(hash, CategoryIdentity::String(value_str.to_owned()), 1)]);
+    }
+
+    /// Count an integer-backed category without formatting it. Typed
+    /// identity remains an integer until the retained vocabulary is
+    /// formatted once during publication.
+    pub fn observe_hashed_i64(&self, hash: u64, value: i64) {
+        self.merge([(hash, CategoryIdentity::I64(value), 1)]);
+    }
+
+    /// Moves a batch of local counts into the shared partitions (Hybrid flush).
+    pub fn merge_local_batch(&self, local: &mut LocalColumnCounts) {
+        let LocalColumnCounts {
+            counts,
+            strings,
+            integer_values,
+            collided,
+        } = local;
+        let values = counts.drain().filter_map(|(hash, count)| {
+            let value = match integer_values.remove(&hash) {
+                Some(value) => CategoryIdentity::I64(value),
+                None => CategoryIdentity::String(strings.remove(&hash)?),
+            };
+            Some((hash, value, count))
+        });
+        let collided = collided
+            .drain(..)
+            .map(|(hash, value, count)| (hash, CategoryIdentity::String(value), count));
+        self.merge(values.chain(collided));
     }
 
     /// Merge a batch of local counts into graduation storage.
@@ -1794,8 +1747,8 @@ impl SharedColumnCounts {
             return None;
         }
         match &self.storage {
-            CountStorage::Hashed { counts, collided } => {
-                let mut entries = Vec::with_capacity(counts.len());
+            CountStorage::Hashed { partitions } => {
+                let mut entries = Vec::new();
                 let publish = |stored: &HashedCategoryCount| {
                     let value = match &stored.value {
                         CategoryIdentity::String(value) => value.clone(),
@@ -1803,8 +1756,9 @@ impl SharedColumnCounts {
                     };
                     (value, stored.count)
                 };
-                entries.extend(counts.iter().map(|entry| publish(entry.value())));
-                entries.extend(collided.lock().iter().map(publish));
+                for partition in partitions.iter() {
+                    entries.extend(partition.lock().values().map(publish));
+                }
                 if let Some(max_categories) = self.max_categories {
                     if entries.len() > max_categories as usize {
                         self.capped.store(true, Ordering::Relaxed);
@@ -1879,13 +1833,12 @@ impl SharedColumnCounts {
         // Graduation output is not trimmed.
         let cap = self.max_categories.filter(|_| graduated.is_none());
         let mut entries: Vec<(String, u64)> = match (self.storage, graduated) {
-            (CountStorage::Hashed { counts, collided }, _) => {
-                let collided = collided.into_inner();
-                let mut entries = Vec::with_capacity(counts.len() + collided.len());
-                entries.extend(counts.into_iter().map(|(_, stored)| publish(stored)));
-                entries.extend(collided.into_iter().map(publish));
-                entries
-            }
+            (CountStorage::Hashed { partitions }, _) => partitions
+                .into_vec()
+                .into_iter()
+                .flat_map(|partition| partition.into_inner().into_values())
+                .map(publish)
+                .collect(),
             (CountStorage::Graduation { .. }, graduated) => {
                 graduated.unwrap_or_default().into_iter().collect()
             }
@@ -1907,7 +1860,10 @@ impl SharedColumnCounts {
     /// Values counted on the collision path.
     pub fn collided_count(&self) -> usize {
         match &self.storage {
-            CountStorage::Hashed { collided, .. } => collided.lock().len(),
+            CountStorage::Hashed { partitions } => partitions
+                .iter()
+                .map(|partition| partition.lock().collided.len())
+                .sum(),
             CountStorage::Graduation { .. } => 0,
         }
     }
@@ -1928,8 +1884,8 @@ impl SharedColumnCounts {
         self.aborted.load(Ordering::Relaxed)
     }
 
-    /// Whether at least one category was excluded or an internal concurrent
-    /// admission overshoot requires final trimming.
+    /// Whether the column has more distinct values than the cap, so the
+    /// published counts are an approximate top-k.
     pub fn is_capped(&self) -> bool {
         self.capped.load(Ordering::Relaxed)
     }
@@ -1941,9 +1897,9 @@ impl SharedColumnCounts {
 
 /// Per-file local category counts for a single column.
 pub struct LocalColumnCounts {
-    pub counts: HashMap<u64, u64>,
-    pub strings: HashMap<u64, String>,
-    integer_values: HashMap<u64, i64>,
+    pub counts: HashMap<u64, u64, IdentityBuildHasher>,
+    pub strings: HashMap<u64, String, IdentityBuildHasher>,
+    integer_values: HashMap<u64, i64, IdentityBuildHasher>,
     /// `(hash, value, count)` for values whose hash `strings` holds for another value.
     collided: Vec<(u64, String, u64)>,
 }
@@ -1951,12 +1907,12 @@ pub struct LocalColumnCounts {
 impl LocalColumnCounts {
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            counts: HashMap::with_capacity(cap),
-            strings: HashMap::with_capacity(cap),
+            counts: HashMap::with_capacity_and_hasher(cap, IdentityBuildHasher),
+            strings: HashMap::with_capacity_and_hasher(cap, IdentityBuildHasher),
             // Keep string-backed categorical caches at their prior allocation
             // footprint. Integer identity storage allocates lazily only when
-            // an integer category actually wins admission.
-            integer_values: HashMap::new(),
+            // an integer category is observed.
+            integer_values: HashMap::default(),
             collided: Vec::new(),
         }
     }
@@ -1992,53 +1948,27 @@ impl LocalColumnCounts {
         }
     }
 
-    /// Increment a cached admitted key without allocating on a miss.
+    /// Integer equivalent of [`Self::observe`]. Returns `false`, without
+    /// counting, when the hash is held by another value.
     #[inline]
-    pub fn increment_if_present(&mut self, hash: u64, value_str: &str) -> bool {
-        let Some(count) = self.counts.get_mut(&hash) else {
-            return false;
-        };
-        if self.strings.get(&hash).map(String::as_str) != Some(value_str) {
-            return false;
-        }
-        *count = count
-            .checked_add(1)
-            .expect("exact local category occurrence count overflowed u64");
-        true
-    }
-
-    /// Integer equivalent of [`Self::increment_if_present`]. The typed
-    /// identity makes the collision check allocation-free.
-    #[inline]
-    pub fn increment_i64_if_present(&mut self, hash: u64, value: i64) -> bool {
-        let Some(count) = self.counts.get_mut(&hash) else {
-            return false;
-        };
-        if self.integer_values.get(&hash) != Some(&value) {
-            return false;
-        }
-        *count = count
-            .checked_add(1)
-            .expect("exact local category occurrence count overflowed u64");
-        true
-    }
-
-    /// Cache a key whose current observation was already counted by shared
-    /// admission. Subsequent local values are unmerged deltas only. A hash
-    /// already cached for another value stays uncached.
-    pub fn cache_admitted(&mut self, hash: u64, value_str: &str) {
-        if let std::collections::hash_map::Entry::Vacant(e) = self.counts.entry(hash) {
-            e.insert(0);
-            self.strings.insert(hash, value_str.to_owned());
-        }
-    }
-
-    /// Cache a newly admitted integer without formatting it. Publication owns
-    /// the one eventual integer-to-string conversion.
-    pub fn cache_admitted_i64(&mut self, hash: u64, value: i64) {
-        if let std::collections::hash_map::Entry::Vacant(e) = self.counts.entry(hash) {
-            e.insert(0);
-            self.integer_values.insert(hash, value);
+    pub fn try_observe_i64(&mut self, hash: u64, value: i64) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.counts.entry(hash) {
+            Entry::Occupied(mut e) => {
+                if self.integer_values.get(&hash) != Some(&value) {
+                    return false;
+                }
+                let count = e.get_mut();
+                *count = count
+                    .checked_add(1)
+                    .expect("exact local category occurrence count overflowed u64");
+                true
+            }
+            Entry::Vacant(e) => {
+                e.insert(1);
+                self.integer_values.insert(hash, value);
+                true
+            }
         }
     }
 

@@ -2623,18 +2623,9 @@ impl FileColStats {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
                         if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.increment_if_present(hash, value) {
-                                return;
-                            }
-                            // Shared state owns membership: count/admit the
-                            // first occurrence before caching only future
-                            // unmerged deltas locally. This prevents a hot
-                            // early value from being stranded in a worker map
-                            // while unrelated workers fill the global cap.
-                            if col_shared.observe_hashed(hash, value)
-                                && local.len() < HYBRID_LOCAL_CAP
-                            {
-                                local.cache_admitted(hash, value);
+                            local.observe(hash, value);
+                            if local.len() >= HYBRID_LOCAL_CAP {
+                                col_shared.merge_local_batch(local);
                             }
                         }
                     }
@@ -2692,13 +2683,10 @@ impl FileColStats {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
                         if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.increment_i64_if_present(hash, value) {
-                                return;
-                            }
-                            if col_shared.observe_hashed_i64(hash, value)
-                                && local.len() < HYBRID_LOCAL_CAP
-                            {
-                                local.cache_admitted_i64(hash, value);
+                            if !local.try_observe_i64(hash, value) {
+                                col_shared.observe_hashed_i64(hash, value);
+                            } else if local.len() >= HYBRID_LOCAL_CAP {
+                                col_shared.merge_local_batch(local);
                             }
                         }
                     }
@@ -4204,10 +4192,9 @@ mod tests {
     #[test]
     fn test_shared_counts_cap_policy() {
         let capped = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        assert!(capped.observe_hashed(HyperLogLog::hash_str("a"), "a"));
-        assert!(capped.observe_hashed(HyperLogLog::hash_str("b"), "b"));
-        assert!(!capped.observe_hashed(HyperLogLog::hash_str("c"), "c"));
-        assert!(capped.observe_hashed(HyperLogLog::hash_str("a"), "a"));
+        for value in ["a", "b", "c", "a"] {
+            capped.observe_hashed(HyperLogLog::hash_str(value), value);
+        }
         assert!(capped.is_capped());
         assert!(!capped.is_aborted());
         assert_eq!(
@@ -4216,8 +4203,8 @@ mod tests {
         );
 
         let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
-        assert!(exhaustive.observe_hashed(HyperLogLog::hash_str("a"), "a"));
-        assert!(exhaustive.observe_hashed(HyperLogLog::hash_str("b"), "b"));
+        exhaustive.observe_hashed(HyperLogLog::hash_str("a"), "a");
+        exhaustive.observe_hashed(HyperLogLog::hash_str("b"), "b");
         assert!(exhaustive.is_aborted());
         assert!(!exhaustive.is_capped());
         assert!(exhaustive.drain_to_map().is_none());
@@ -6241,9 +6228,10 @@ mod tests {
             (cat, IngestedType::String, None), // every value ties on count
         ];
         let tables = [
-            ("users", 64, Some("v1")),
+            // 150 distinct values: above the cap, below compaction.
+            ("users", 100, Some("v1")),
             ("orders", 1_000, Some("v2")),
-            ("aux", 64, None),
+            ("aux", 100, None),
         ];
         tables
             .into_iter()
@@ -6358,7 +6346,7 @@ mod tests {
             assert_eq!(users[ODD_NAME]["category_counts_capped"], true);
             assert_eq!(
                 users[ODD_NAME]["category_counts"].as_array().unwrap().len(),
-                64
+                100
             );
             assert_eq!(users["c6"]["category_counts"], json!([]));
             let collided = users["c5"]["category_counts"].as_array().unwrap();
