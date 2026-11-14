@@ -4215,4 +4215,3 @@ async def test_copy_from_an_archived_source_project_is_allowed(
 
     assert copied.project_id == target_project
     assert copied.config == source.config
-
