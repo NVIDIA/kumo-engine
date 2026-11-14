@@ -229,7 +229,7 @@ const ConnectorsList = () => {
                     />
                 }
             />
-            {projectId && (
+            {projectId && isCopyDialogOpen && (
                 <CopyConnectorDialog
                     open={isCopyDialogOpen}
                     onClose={() => setIsCopyDialogOpen(false)}

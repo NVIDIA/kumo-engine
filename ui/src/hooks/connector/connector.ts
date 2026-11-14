@@ -44,9 +44,9 @@ import { getProjectPath, storageKeys } from "utils/Constants";
 import { connectorListFromConnectorResp } from "utils/Converters/connectorsConverter";
 import { connectorFromConnectorResp } from "utils/Converters/connectorsConverter";
 import { tableFromTableResponse } from "utils/Converters/tablesConverter";
+import { parseErrorMessage } from "utils/errorHandler";
 import { isValid } from "utils/Helpers/typeGuards";
 import { useCustomNavigation } from "utils/navigator";
-import { parseErrorMessage } from "utils/errorHandler";
 import {
     invalidateConnectorList,
     invalidateProjectTableList,

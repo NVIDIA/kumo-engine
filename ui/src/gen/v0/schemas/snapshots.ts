@@ -441,6 +441,7 @@ export const getSnapshotsGraphResponseDefinitionTablesSourceTableSixSourceTwoMod
 export const getSnapshotsGraphResponseDefinitionTablesSourceTableSixDataSourceTypeDefault = `ADLS`;
 export const getSnapshotsGraphResponseDefinitionTablesSourceTableSevenDataSourceTypeDefault = `CUSTOM_SQL`;
 export const getSnapshotsGraphResponseDefinitionTablesSourceTableEightDataSourceTypeDefault = `UNAVAILABLE`;
+export const getSnapshotsGraphResponseTimestampPrecisionDefault = `seconds`;
 
 export const GetSnapshotsGraphResponse = zod.object({
     "snapshot_resource": zod
@@ -841,7 +842,17 @@ export const GetSnapshotsGraphResponse = zod.object({
                     "Group of column keys to be linked together in a graph."
                 )
         )
-    })
+    }),
+    "timestamp_precision": zod
+        .enum([
+            "nanoseconds",
+            "microseconds",
+            "milliseconds",
+            "seconds",
+            "hours",
+            "days"
+        ])
+        .default(getSnapshotsGraphResponseTimestampPrecisionDefault)
 });
 
 /**

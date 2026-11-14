@@ -90,6 +90,21 @@ async def test_copy_applies_name_and_description_overrides() -> None:
     assert create_args.description == ''
 
 
+@pytest.mark.asyncio
+async def test_copy_into_the_source_project_is_rejected_before_lookup() -> None:
+    source = _connector(SOURCE_PROJECT)
+    driver = _driver_with_source(source)
+
+    with pytest.raises(ValueError, match='must differ'):
+        await ConnectorApiDriver.copy_project_connector(
+            driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
+            api.CopyConnectorArgs(target_project_id=SOURCE_PROJECT),
+            MagicMock())
+
+    driver._connector_service.get_for_project.assert_not_awaited()
+    driver.create_project_connector.assert_not_awaited()
+
+
 def _client(copy_result) -> tuple[TestClient, MagicMock]:
     driver = MagicMock(spec=ConnectorApiDriver)
     driver.copy_project_connector = AsyncMock(side_effect=copy_result) \
@@ -137,6 +152,8 @@ def test_copy_route_returns_created_connector() -> None:
     (IdentityForbiddenError('Identity is not mapped to the project group'),
      HTTPStatus.FORBIDDEN),
     (ConnectorNameConflictError('events'), HTTPStatus.CONFLICT),
+    (ValueError('Target project must differ from the source project'),
+     HTTPStatus.BAD_REQUEST),
 ])
 def test_copy_route_maps_errors(error: Exception, status: HTTPStatus) -> None:
     client, _ = _client(error)

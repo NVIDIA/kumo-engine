@@ -290,6 +290,10 @@ class ConnectorApiDriver:
         args: api.CopyConnectorArgs,
         principal: AuthPrincipal,
     ) -> api.ConnectorResponse:
+        target_project_id = ProjectID(args.target_project_id)
+        if target_project_id == project_id:
+            raise ValueError(
+                'Target project must differ from the source project')
         source = await self._connector_service.get_for_project(
             project_id, connector_id, principal)
         create_args = api.CreateConnectorArgs(
@@ -299,8 +303,8 @@ class ConnectorApiDriver:
             description=(args.description if args.description is not None
                          else source.description),
         )
-        return await self.create_project_connector(
-            ProjectID(args.target_project_id), create_args, principal)
+        return await self.create_project_connector(target_project_id,
+                                                   create_args, principal)
 
     async def list_project_connectors(
         self,

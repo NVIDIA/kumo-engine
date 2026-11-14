@@ -50,6 +50,7 @@ from rest.config.table_v2 import (
     TableDefinition,
 )
 from rest.config.training_job import CustomTrainingTable
+from rest.driver.connector_api_driver import ConnectorApiDriver
 from rest.utils.ambient_identity import ensure_startup_ambient_identities
 from statedb.config.common import (
     ArtifactExportJobID,
@@ -4031,3 +4032,153 @@ async def test_connector_delete_blocked_by_a_query_held_graph(
     with pytest.raises(ConnectorInUseError, match='live table'):
         await connectors.delete(project_id, connector.id, ADMIN)
     assert len(await _all_table_rows(db, project_id)) == 1
+
+
+def _copy_driver(connectors: ConnectorService) -> SimpleNamespace:
+    async def create(project_id, args, principal):
+        return await _create_connector(connectors, project_id, args, principal)
+
+    return SimpleNamespace(_connector_service=connectors,
+                           create_project_connector=create)
+
+
+async def _copy(connectors: ConnectorService, source_project: ProjectID,
+                connector_id: ConnectorID, target_project: ProjectID,
+                principal: _Principal, **overrides):
+    return await ConnectorApiDriver.copy_project_connector(
+        _copy_driver(connectors),
+        source_project,
+        connector_id,
+        api.CopyConnectorArgs(target_project_id=str(target_project),
+                              **overrides),
+        principal,
+    )
+
+
+async def _set_project_status(db: StateDB, project_id: ProjectID,
+                              status: ProjectStatus) -> None:
+    repo = JsonRepository('projects', ProjectDBEntry)
+    async with db.write_tx() as tx:
+        row = await repo.get(tx, str(project_id))
+        await repo.upsert(tx, str(project_id),
+                          replace(row.payload, status=status))
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_recreates_config_and_identity_in_target(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+
+    copied = await _copy(connectors, source_project, source.id,
+                         target_project, user)
+
+    assert copied.id != source.id
+    assert copied.project_id == target_project
+    assert copied.identity_id == identity.id
+    assert copied.name == source.name
+    assert copied.config == source.config
+    assert [c.id for c in await connectors.list_for_project(
+        source_project, user)] == [source.id]
+    assert [c.id for c in await connectors.list_for_project(
+        target_project, user)] == [copied.id]
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_applies_name_and_description_overrides(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+
+    copied = await _copy(connectors, source_project, source.id,
+                         target_project, user, name='renamed',
+                         description='copied')
+
+    assert (copied.name, copied.description) == ('renamed', 'copied')
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_rejects_the_source_project_as_target(
+        db: StateDB) -> None:
+    (_group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+
+    with pytest.raises(ValueError, match='must differ'):
+        await _copy(connectors, source_project, source.id, source_project,
+                    user, name='other-name')
+    assert len(await connectors.list_for_project(source_project, user)) == 1
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_requires_identity_bound_to_target_group(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    other_group = await _create_group(db, 'other-team')
+    target_project = await _create_project(db, other_group, 'target')
+    member_of_both = replace(user,
+                             kumo_group_ids=(str(group_id), str(other_group)))
+
+    with pytest.raises(IdentityForbiddenError):
+        await _copy(connectors, source_project, source.id, target_project,
+                    member_of_both)
+    assert await connectors.list_for_project(target_project,
+                                             member_of_both) == []
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_rejects_archived_target(db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+    await _set_project_status(db, target_project, ProjectStatus.ARCHIVED)
+
+    with pytest.raises(ProjectNotFoundError):
+        await _copy(connectors, source_project, source.id, target_project,
+                    user)
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_rejects_target_invisible_to_caller(
+        db: StateDB) -> None:
+    (_group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    other_group = await _create_group(db, 'other-team')
+    hidden_project = await _create_project(db, other_group, 'hidden')
+
+    with pytest.raises(ProjectNotFoundError):
+        await _copy(connectors, source_project, source.id, hidden_project,
+                    user)
+
+
+@pytest.mark.asyncio
+async def test_copy_connector_rejects_project_upload_connector(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     _source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+    upload_id = await connectors.register_project_upload_connector(
+        source_project, '/tmp/uploaded-datasets/source')
+
+    with pytest.raises(ConnectorDoesNotExistError):
+        await _copy(connectors, source_project, upload_id, target_project,
+                    user)
+
+
+@pytest.mark.asyncio
+async def test_repeated_copy_returns_the_existing_target_connector(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+
+    first = await _copy(connectors, source_project, source.id,
+                        target_project, user)
+    second = await _copy(connectors, source_project, source.id,
+                         target_project, user)
+
+    assert second.id == first.id
+    assert len(await connectors.list_for_project(target_project, user)) == 1
+

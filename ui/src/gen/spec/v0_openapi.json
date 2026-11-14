@@ -838,6 +838,65 @@
                 }
             }
         },
+        "/v0/projects/{project_id}/connectors/{connector_id}/copy": {
+            "post": {
+                "tags": ["Connectors"],
+                "summary": "Copy Connector",
+                "operationId": "copy_connector_v0_projects__project_id__connectors__connector_id__copy_post",
+                "parameters": [
+                    {
+                        "name": "project_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Project Id"
+                        }
+                    },
+                    {
+                        "name": "connector_id",
+                        "in": "path",
+                        "required": true,
+                        "schema": {
+                            "type": "string",
+                            "title": "Connector Id"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/CopyConnectorArgs"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Successful Response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ConnectorResponse"
+                                }
+                            }
+                        }
+                    },
+                    "422": {
+                        "description": "Validation Error",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/HTTPValidationError"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/v0/projects/{project_id}/connectors/{connector_id}/validate": {
             "post": {
                 "tags": ["Connectors"],
@@ -8026,6 +8085,41 @@
                 ],
                 "title": "ConnectorType"
             },
+            "CopyConnectorArgs": {
+                "properties": {
+                    "target_project_id": {
+                        "type": "string",
+                        "title": "Target Project Id"
+                    },
+                    "name": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Name"
+                    },
+                    "description": {
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ],
+                        "title": "Description"
+                    }
+                },
+                "additionalProperties": false,
+                "type": "object",
+                "required": ["target_project_id"],
+                "title": "CopyConnectorArgs",
+                "description": "Copy one connector's configuration and identity into a project.\n\n``name`` and ``description`` default to the source connector's values.\nThe identity must be assigned to the target project's group."
+            },
             "CreateAPIKeyResponse": {
                 "properties": {
                     "id": {
@@ -10413,6 +10507,19 @@
                     },
                     "definition": {
                         "$ref": "#/components/schemas/kumoapi__graph__GraphDefinition"
+                    },
+                    "timestamp_precision": {
+                        "type": "string",
+                        "enum": [
+                            "nanoseconds",
+                            "microseconds",
+                            "milliseconds",
+                            "seconds",
+                            "hours",
+                            "days"
+                        ],
+                        "title": "Timestamp Precision",
+                        "default": "seconds"
                     }
                 },
                 "type": "object",
@@ -18427,7 +18534,7 @@
                 "additionalProperties": false,
                 "type": "object",
                 "title": "TrainingTableGenerationPlan",
-                "description": "Configuration parameters that define the construction of a Kumo\ntraining table from a predictive query. Please see the\n`Kumo documentation <https://docs.kumo.ai/docs/advanced-operations\n#training-table-generation>`_ for more information.\n\n:ivar split: (``str``) A custom split that is used to generate a training,\n    validation, and test set in the training table\n    (*default:* ``\"inferred\"``).\n    **Supported Task Types:** All\n\n:ivar train_start_offset: (``int`` | ``\"inferred``\") Defines the numerical\n    offset from the most recent entry to use to generate training data\n    labels. Unless a custom time unit is specified in the aggregation, this\n    value is in days (*default:* ``\"inferred\"``). Eventually we would\n    like to migrate this parameter to start_time.\n    **Supported Task Types:** Temporal\n\n:ivar train_end_offset: (``int`` | ``\"inferred\"``) Defines the numerical\n    offset from the most recent entry to not use to generate training data\n    labels. Unless a custom time unit is specified in the aggregation, this\n    value is in days (*default:* ``\"inferred\"``). Eventually we would\n    like to migrate this parameter to end_time.\n    **Supported Task Types:** Temporal\n\n:ivar start_time: (``int`` | ``\"inferred\"`` | ``str``) Defines the absolute\n    start time to use for generating training data. Can be specified\n    either as a pandas Timestamp compatible string (e.g. '2024-04-01') or\n    as a non-positive integer offset in days from the current time\n    (e.g. -30 for 30 days ago) (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar end_time: (``int`` | ``\"inferred\"`` | ``str``) Defines the absolute\n    end time to use for generating training data. Can be specified either\n    as a pandas Timestamp compatible string (e.g. '2024-04-01') or as a\n    non-positive integer offset in days from the current time\n    (e.g. -30 for 30 days ago) (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar timeframe_step: (``int`` | ``\"inferred\"``) Defines the step size of\n    generating time intervals for training table generation\n    (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar forecast_length: (``int``) Turns a node regression problem into a\n    forecasting problem (*default:* ``\"missing\"``).\n    **Supported Task Types:** Temporal Regression\n\n:ivar lag_timesteps: (``int``) For forecasting problems,\n    leverage the auto-regressive labels as inputs. This parameter controls\n    the number of previous values that should be considered as\n    auto-regressive labels (*default:* ``\"missing\"``).\n    **Supported Task Types:** Temporal Regression\n\n:ivar year_over_year: (``bool``) For forecasting problems, integrate\n    Year-Over-Year features as inputs to give more attention to the data\n    from the previous year when making a prediction.\n    (*default:* ``\"missing\"``)\n\n:ivar weight_col: (``str`` | ``None``) Column on the target table to use\n    for weighting training examples (*default:* ``None``).\n    **Supported Task Types:** All static queries and temporal link\n    prediction."
+                "description": "Configuration parameters that define the construction of a Kumo\ntraining table from a predictive query. Please see the\n`Kumo documentation <https://docs.kumo.ai/docs/advanced-operations\n#training-table-generation>`_ for more information.\n\n:ivar split: (``str``) A custom split that is used to generate a training,\n    validation, and test set in the training table\n    (*default:* ``\"inferred\"``).\n    **Supported Task Types:** All\n\n:ivar train_start_offset: (``int`` | ``\"inferred``\") Defines the numerical\n    offset from the most recent entry to use to generate training data\n    labels. Unless a custom time unit is specified in the aggregation, this\n    value is in days (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar train_end_offset: (``int`` | ``\"inferred\"``) Defines the numerical\n    offset from the most recent entry to not use to generate training data\n    labels. Unless a custom time unit is specified in the aggregation, this\n    value is in days (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar start_time: (``\"inferred\"`` | ``str``) Inclusive lower\n    bound on generated prediction anchors. Temporal node tasks accept\n    pandas Timestamp compatible strings (e.g. '2024-04-01') with default\n    splits. Timezone-aware strings are normalized to UTC; naive strings\n    are read as UTC. ``\"inferred\"`` or ``\"-INF\"`` uses the available-data\n    lower bound. Bounds are intersected with available label data.\n    Direct absolute bounds cannot be combined with train_start_offset,\n    train_end_offset, or explicit date/offset window splits.\n    For relative training windows, use train_start_offset/train_end_offset\n    in the aggregation's time unit.\n    (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal node classification, regression,\n    ranking, and forecasting.\n\n:ivar end_time: (``\"inferred\"`` | ``str``) Label observation\n    cutoff, rather than the latest prediction anchor. Each generated\n    example must fit its complete target horizon by this cutoff,\n    including every future label for forecasting. Accepts the same\n    timestamp strings as start_time;\n    ``\"inferred\"`` uses available label data. Either absolute bound can\n    be omitted. Empty intersections or windows too short for a complete\n    example fail generation. (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal node classification, regression,\n    ranking, and forecasting.\n\n:ivar timeframe_step: (``int`` | ``\"inferred\"``) Defines the step size of\n    generating time intervals for training table generation\n    (*default:* ``\"inferred\"``).\n    **Supported Task Types:** Temporal\n\n:ivar forecast_length: (``int``) Turns a node regression problem into a\n    forecasting problem (*default:* ``\"missing\"``).\n    **Supported Task Types:** Temporal Regression\n\n:ivar lag_timesteps: (``int``) For forecasting problems,\n    leverage the auto-regressive labels as inputs. This parameter controls\n    the number of previous values that should be considered as\n    auto-regressive labels (*default:* ``\"missing\"``).\n    **Supported Task Types:** Temporal Regression\n\n:ivar year_over_year: (``bool``) For forecasting problems, integrate\n    Year-Over-Year features as inputs to give more attention to the data\n    from the previous year when making a prediction.\n    (*default:* ``\"missing\"``)\n\n:ivar weight_col: (``str`` | ``None``) Column on the target table to use\n    for weighting training examples (*default:* ``None``).\n    **Supported Task Types:** All static queries and temporal link\n    prediction."
             },
             "kumoapi__task__TaskType": {
                 "type": "string",

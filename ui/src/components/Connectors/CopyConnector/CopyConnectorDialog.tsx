@@ -116,8 +116,8 @@ const CopyConnectorDialogComponent = ({
                             ) : (
                                 <>
                                     <p className="text-sm text-title-secondary">
-                                        The copy uses the same configuration
-                                        and identity as "{connector?.name}". The
+                                        The copy uses the same configuration and
+                                        identity as "{connector?.name}". The
                                         identity must be assigned to the target
                                         project's group. Tables are not copied.
                                     </p>

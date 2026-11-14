@@ -38,10 +38,12 @@ const connector = {
 };
 
 vi.mock("hooks/connector/connector", () => ({
-    useConnectors: vi.fn()
+    useConnectors: vi.fn(),
+    useCopyConnector: () => ({ copyConnector: vi.fn(), isCopying: false })
 }));
 vi.mock("hooks/project/projects", () => ({
-    useProjectId: () => "project-sales"
+    useProjectId: () => "project-sales",
+    useProjectList: () => ({ projectListResponse: { data: [] } })
 }));
 vi.mock("hooks/validation/validation", () => ({
     useValidationState: () => [null, null, vi.fn(), vi.fn(), { current: null }]
