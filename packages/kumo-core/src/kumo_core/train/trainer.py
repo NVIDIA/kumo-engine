@@ -60,7 +60,7 @@ from kumo_core.evaluation.suite import MetricStore
 from kumo_core.explain import ExplainRuntime
 from kumo_core.explain.column_analysis import ColumnAnalysis
 from kumo_core.explain.gradient_explainer import GradientExplainer
-from kumo_core.explain.subgraph_collector import SubgraphCollector
+from kumo_core.explain.subgraph_collector import FORMAT, SubgraphCollector
 from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.instrumentation import set_metrics_job_name, timing, trace
 from kumo_core.io import filesystem as fsutil
@@ -1614,6 +1614,7 @@ class Trainer(PortableConfigMixin):
         stage: TrainingStage,
         explain_methods: list[ExplainMethod | str],
         root_dir: str | None = None,
+        collector_formats: list[FORMAT] | None = None,
     ):
         r"""Set the explainers to running with.
 
@@ -1623,6 +1624,8 @@ class Trainer(PortableConfigMixin):
             root_dir (str, optional): If specified, will write all XAI
                 results to specified path. This is used for XAI on BP.
                 (default: :obj:`None`)
+            collector_formats: Explicit subgraph formats, or the existing
+                training formats when omitted.
         """
         explain_methods = [
             ExplainMethod(explain_method) for explain_method in explain_methods
@@ -1707,8 +1710,11 @@ class Trainer(PortableConfigMixin):
 
             elif explain_method == ExplainMethod.SUBGRAPH_COLLECTOR:
                 if task_type in SubgraphCollector.supported_task_types:
-                    formats = ['nested_json', 'output', 'rfm']
-                    if task_type.is_link_pred:
+                    formats: list[FORMAT] = (
+                        list(collector_formats)
+                        if collector_formats is not None else
+                        ['nested_json', 'output', 'rfm'])
+                    if collector_formats is None and task_type.is_link_pred:
                         formats.append('historical_items')
                     local_dir = self.get_log_dir(local=True)
                     explainer = SubgraphCollector(
@@ -2044,6 +2050,7 @@ class Trainer(PortableConfigMixin):
         root_dir: str | None = None,
         top_k: int | None = None,
         valid_rhs_node_idx: Tensor = None,
+        collector_formats: list[FORMAT] | None = None,
     ) -> None:
         r"""Runs a set of explainability algorithms outside the
         evaluation/prediction loop for a subset of pre-selected input nodes.
@@ -2068,6 +2075,8 @@ class Trainer(PortableConfigMixin):
                 link prediction, passed from :obj:`kumo-pred`. Used for target
                 BP filtering of RHS nodes. If :obj:`None`, we will make
                 prediction over the entire RHS nodes.
+            collector_formats: Explicit subgraph formats, or the existing
+                training formats when omitted.
         """
         if self.explain_runtime is None:
             raise RuntimeError("explain_runtime is required for explainability")
@@ -2099,7 +2108,8 @@ class Trainer(PortableConfigMixin):
         # eval column level explanation, which will be handled later:
         if ExplainMethod.SUBGRAPH_COLLECTOR in column_explain_methods:
             column_explain_methods.remove(ExplainMethod.SUBGRAPH_COLLECTOR)
-        self.set_explainers(stage, column_explain_methods, root_dir=root_dir)
+        self.set_explainers(stage, column_explain_methods, root_dir=root_dir,
+                            collector_formats=collector_formats)
 
         # Store current eval and pred XAI for link pred task
         prev_eval_top_k: int | None = None
@@ -2258,7 +2268,8 @@ class Trainer(PortableConfigMixin):
         )
         explain_methods = [ExplainMethod.SUBGRAPH_COLLECTOR]
 
-        self.set_explainers(stage, explain_methods, root_dir=root_dir)
+        self.set_explainers(stage, explain_methods, root_dir=root_dir,
+                            collector_formats=collector_formats)
         # Exit if subgraph collector is not supported
         if len(self.pl_model.explainers) == 0:
             self.reset_explain(stage, prev_limit_batches, prev_eval_top_k,
@@ -2267,29 +2278,17 @@ class Trainer(PortableConfigMixin):
 
         # Avoid computing metrics during evaluation:
         self.pl_model.disable_eval_metrics = True
-        if stage != TrainingStage.PRED:
-            loader = self._explain_runtime.get_eval_dataloader(
-                self.datamodule,
-                stage,
-                seed_nodes,
-            )
-        else:
-            # Directly use the predict dataloader instead of creating the
-            # dataloader as there is weird error when creating a new one
-            loader = self.datamodule.predict_dataloader()
-            # Since we are using the original predict dataloader, need to
-            # set limit_predict_batches to just include around first
-            # self.explain_runtime.prediction_selection_nodes nodes
-            self.pl_trainer.limit_predict_batches = math.ceil(
-                self._explain_runtime.prediction_selection_nodes /
-                eval_batch_size)
+        loader = self._explain_runtime.get_eval_dataloader(
+            self.datamodule, stage, seed_nodes)
+        if stage == TrainingStage.PRED:
+            # Selected stage IDs, rather than the population prefix, define
+            # both collector ordinals and mapping metadata.
+            self.pl_trainer.limit_predict_batches = 1.0
 
         if valid_rhs_node_idx is not None:
             self.pl_model.valid_rhs_node_idx = valid_rhs_node_idx
         # Only the selected-seed loader built above runs without workers.
-        replay_workers_warning = (suppress_explain_workers_warning()
-                                  if stage != TrainingStage.PRED else
-                                  nullcontext())
+        replay_workers_warning = suppress_explain_workers_warning()
         with suppress_iterable_len_warning(), replay_workers_warning, \
                 suppress_lightning_leafspec_warning():
             eval_fn(
