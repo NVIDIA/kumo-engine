@@ -39,9 +39,15 @@ cheap pass left ambiguous):
   call.
 """
 
+import math
+import re
+import warnings
 from dataclasses import replace
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from decimal import Decimal
+from typing import Any, Collection, Dict, List, Mapping, Optional, Tuple
 
+from kumo_core.csv_rules import NA_TOKENS, has_leading_zero, looks_missing
+from kumo_core.sources.csv_format import ARROW_NA_TOKENS
 from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
 from kumoapi.source_table import SourceColumn
@@ -53,6 +59,92 @@ from kumo.engine.connector.base import Connector
 #: Rows sampled for stats-based stype inference, matching the cloud SDK's
 #: `kumoai/backend/local/_common.py`'s `_SAMPLE_ROWS`.
 _SAMPLE_ROWS = 10_000
+
+_PLAIN_NUMBER = re.compile(r'[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?', re.ASCII)
+_INTEGER = re.compile(r'[+-]?\d{1,19}', re.ASCII)
+_WHOLE_NUMBER = re.compile(r'[+-]?\d{1,19}(\.0+)?', re.ASCII)
+_INT64 = range(-2**63, 2**63)
+_NOT_NUMBERS = frozenset({Stype.ID, Stype.multicategorical, Stype.timestamp})
+_EXAMPLES = 3
+_HIDDEN_FROM_CSV = ' or '.join(
+    repr(token) for token in sorted(NA_TOKENS - set(ARROW_NA_TOKENS)))
+
+
+def _is_number(value: str) -> bool:
+    return (_PLAIN_NUMBER.fullmatch(value) is not None
+            and math.isfinite(float(value)))
+
+
+def _reads_csv(connector: Connector, table_name: str,
+               sql: Optional[str]) -> bool:
+    r"""Whether staging converts the table's text in Arrow, which refuses a
+    value it cannot parse, where every other source hands DiskGraph the
+    text and gets a counted gap."""
+    from kumoapi.source_table import FileType
+
+    if sql is not None:
+        return False
+    try:
+        config = connector.source_backend.get_table_config(
+            connector, table_name)
+    except Exception:
+        return False
+    source = getattr(config, 'source_table', None)
+    return getattr(source, 'file_type', None) == FileType.CSV
+
+
+def _report_numbers_stored_as_text(
+    connector: Connector,
+    table_name: str,
+    sql: Optional[str],
+    frame: Any,
+    resolved: Mapping[str, Tuple[Optional[Dtype], Optional[Stype]]],
+    declared: Collection[str],
+) -> None:
+    r"""Warns for a text column whose dtype was not declared and whose
+    sampled values are all numbers apart from at least one blank or
+    missing-like token, naming the call that reads it as a number: int64
+    when every number is whole, a zero fraction included where DiskGraph
+    reads the text, but only plain integer text on CSV, whose Arrow read
+    routes a fraction through float64. A column of clean digits is a code,
+    as is any value with a leading zero. A CSV source is told to clear the
+    values its read refuses first, including the spellings its pandas-read
+    sample shows as missing."""
+    csv = None
+    for name, (dtype, stype) in resolved.items():
+        if (dtype != Dtype.string or stype in _NOT_NUMBERS or name in declared
+                or name not in frame):
+            continue
+        column = frame[name]
+        values = [value for value in column if isinstance(value, str)]
+        judged = [(value, _is_number(value.strip())) for value in values]
+        numbers = [value.strip() for value, number in judged if number]
+        others = [value for value, number in judged if not number]
+        if (not numbers or not others
+                or any(has_leading_zero(value) for value in numbers)
+                or not all(looks_missing(value) for value in others)):
+            continue
+        missing = len(others) + len(column) - len(values)
+        examples = ', '.join(
+            repr(value) for value in sorted(set(others))[:_EXAMPLES])
+        csv = _reads_csv(connector, table_name, sql) if csv is None else csv
+        whole = _INTEGER if csv else _WHOLE_NUMBER
+        dtype = (Dtype.int64 if all(
+            whole.fullmatch(value) and int(Decimal(value)) in _INT64
+            for value in numbers) else Dtype.float64)
+        call = (f"table.with_column({name!r}, dtype=Dtype.{dtype.name}, "
+                "stype=Stype.numerical)")
+        advice = (f"A CSV read as a number refuses {len(others)} of them, "
+                  f"and any value spelled {_HIDDEN_FROM_CSV}, which the "
+                  f"sample reads as missing; replace them with empty fields "
+                  f"at the source, then call {call}." if csv else
+                  f"To read it as a number call {call}; values that do not "
+                  "parse become missing and are counted at snapshot.")
+        warnings.warn(
+            f"Column {name!r} in table {table_name!r} is read as text, but "
+            f"every non-blank value in the {len(column)} sampled rows is a "
+            f"number; {missing} value(s) are blank or look like missing "
+            f"(for example {examples}). {advice}", UserWarning, stacklevel=4)
 
 
 def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
@@ -303,6 +395,9 @@ def resolve_table_columns(
             if stype == Stype.multicategorical and dtype == Dtype.string:
                 delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
+        if frame is not None:
+            _report_numbers_stored_as_text(connector, table_name, sql, frame,
+                                           resolved, set(dtypes or {}))
         if is_empty and any(stype is None for _, stype in resolved.values()):
             from kumo_core.sources.errors import PermanentSourceError
             raise PermanentSourceError(
