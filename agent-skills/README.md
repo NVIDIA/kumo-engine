@@ -125,3 +125,72 @@ The skills cite Kumo code by module path, as the agent sees it in a notebook
 resolves each one against `packages/`, and checks every `kumo.<name>` against `kumo.engine.__all__`,
 so the workflow also runs on changes to `kumo-engine`, `kumo-core`, `kumo-api` and `kumo-snowflake`.
 `kumoml.*` lives outside this repository and is not checked.
+
+## Publishing to the NVIDIA skills catalog
+
+[NVIDIA/skills](https://github.com/NVIDIA/skills) pulls every product's skills from its source repo
+once an hour. It accepts only content that NVSkills CI has evaluated and signed. NVSkills CI runs
+only on PRs that change a root-level `skills/` directory. So the catalog reads a built copy,
+`skills/kumo-data-science/` at the repository root, not `agent-skills/skills/`:
+
+The catalog treats every directory with a `SKILL.md` as a separate skill, and its sync deletes any
+such directory that lacks its own `skill.oms.sig`, `skill-card.md` and eval dataset. The package has
+eight: the router `skills/kumo-data-science/` and the seven skills nested in it
+(`kumoai-reference/` and the six `kumo-*/` capability skills). They stay nested so the router's
+relative links resolve, and each of the eight is its own catalog skill:
+
+| Path, in each of the eight skill directories | Written by |
+|---|---|
+| everything else | `agent-skills/scripts/publish_nvskills.py`: the `generic` package |
+| `skill-card.md`, `evals/` | copied from the same path under `agent-skills/nvskills/kumo-data-science/`, e.g. `agent-skills/nvskills/kumo-data-science/kumo-model-tuning/skill-card.md` |
+| `BENCHMARK.md`, `skill.oms.sig` | NVSkills CI, in your PR; never by hand |
+
+Once `agent-skills/nvskills/` exists, the build fails unless every skill has both a card and an
+`evals/*.json`, so a new nested skill cannot be published without them. Until then
+`publish_nvskills.py` lists what is missing.
+
+Whatever is on `main` is what the catalog publishes. To change the skill:
+
+1. Edit `agent-skills/`, never `skills/`.
+2. Run `python3 agent-skills/scripts/publish_nvskills.py` and commit `skills/` with your change.
+   `tests/test_publish_nvskills.py` fails the PR if you forget. It ignores the `SKILL-BUILD`
+   stamp, so a rebuild on an unrelated commit is not required.
+3. A maintainer comments `/nvskills-ci` on the PR. NVSkills CI runs the evals and pushes
+   `BENCHMARK.md` and `skill.oms.sig` as a commit by `nv-skills-ci[bot]`. copy-pr-bot does not
+   trust that commit, so `kumo-core-gpu-ci` runs only after a maintainer comments
+   `/ok to test <sha of that commit>`. A later push to the PR needs another `/nvskills-ci`.
+4. Merge. The catalog picks the change up within the hour.
+
+A change merged without step 3, a revert included, is "sig drift" to the catalog sync: it keeps
+the last signed copy, so the catalog serves content that `main` no longer has until the next signed
+merge. Run `/nvskills-ci` on reverts too.
+
+### Before the first publish
+
+None of this exists yet; the catalog publishes nothing until all of it does. The card follows the
+template in NVIDIA/skills `docs/skill-cards.mdx`; the evals follow the `evals/evals.json` of a
+published catalog skill. Each skill needs its own, under
+`agent-skills/nvskills/kumo-data-science/`:
+
+| Skill | Card | Evals |
+|---|---|---|
+| `kumo-data-science` (router) | [ ] `skill-card.md` | [ ] `evals/evals.json` |
+| `kumoai-reference` | [ ] `kumoai-reference/skill-card.md` | [ ] `kumoai-reference/evals/evals.json` |
+| `kumo-custom-populations` | [ ] `kumo-custom-populations/skill-card.md` | [ ] `kumo-custom-populations/evals/evals.json` |
+| `kumo-graph-visualization` | [ ] `kumo-graph-visualization/skill-card.md` | [ ] `kumo-graph-visualization/evals/evals.json` |
+| `kumo-model-explanations` | [ ] `kumo-model-explanations/skill-card.md` | [ ] `kumo-model-explanations/evals/evals.json` |
+| `kumo-model-persistence` | [ ] `kumo-model-persistence/skill-card.md` | [ ] `kumo-model-persistence/evals/evals.json` |
+| `kumo-model-tuning` | [ ] `kumo-model-tuning/skill-card.md` | [ ] `kumo-model-tuning/evals/evals.json` |
+| `kumo-training-diagnostics` | [ ] `kumo-training-diagnostics/skill-card.md` | [ ] `kumo-training-diagnostics/evals/evals.json` |
+
+- [ ] confirmation from the NVSkills CI maintainers that `/nvskills-ci` evaluates and signs each
+      of the eight directories, writing `BENCHMARK.md` and `skill.oms.sig` into each. No skill in
+      the catalog today nests another, so this layout has not been through NVSkills CI before
+- [ ] the `NVSKILLS_CI_DISPATCH_TOKEN` repository secret, from the NVSkills CI maintainers;
+      `request-nvskills-ci.yml` fails without it
+- [ ] a signed copy on `main`: a PR through steps 1–4 whose `BENCHMARK.md` says PASS in every
+      skill directory
+- [ ] the onboarding PR to NVIDIA/skills adding `components.d/kumo-engine.yml`, pointing at
+      `skills/kumo-data-science`. Its `verify-source-onboarding` check verifies only the paths the
+      file lists, so list all eight to have each checked. It passes only once the signed copy is
+      on `main`.

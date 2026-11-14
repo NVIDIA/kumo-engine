@@ -208,7 +208,8 @@ connector.has_table('orders')    # -> bool
 `.head()`** — do not emit one.
 
 **Assert `table_names()` before building tables.** It is the cheap proof the connector reaches the
-data, and it fails early with a clear error instead of deep inside a snapshot.
+data, and it fails early with a clear error instead of deep inside a snapshot. A rootless
+`S3Connector` (`root_dir=None`) has no `table_names()`, so root it at the confirmed prefix.
 
 **Use the catalog's exact spelling for table and column names.** `connector['<table>']` tries the
 exact name, then its upper-cased form, so `connector['ENTITY_PROFILE']` never finds a lower-case
@@ -227,6 +228,10 @@ Source: shipped package (`kumo.engine.connector.snowflake`, `.base`, `.source_ta
 `kumo_snowflake.identity` for the lookup order)
 
 ### 3.3 The Snowpark session: take it once, first
+
+Only where the host's `runtime.md` provides an active Snowpark session. A host without one
+follows its `runtime.md` for SQL and read-back instead, and this section and the `session`
+calls in §7.1 and §9.1 do not apply.
 
 Kumo's Snowflake connector opens its own Snowpark session. Once Kumo has read or written
 Snowflake, the process holds two sessions, and a later `get_active_session()` raises
@@ -466,9 +471,14 @@ says how a population is staged, or that it is not covered there:
   `ENTITY1` in the confirmed population table and pass it explicitly:
 
 ```python
+def q(name):                                  # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+if f'{POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
+    raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
 session.sql(                                  # the session from §3.3
     f'CREATE OR REPLACE TABLE {POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE} AS '
-    f'SELECT "{ENTITY_KEY}" AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}."{ENTITY_TABLE}"'
+    f'SELECT {q(ENTITY_KEY)} AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}.{q(ENTITY_TABLE)}'
 ).collect()
 population_connector = kumo.SnowflakeConnector.from_spcs_env(   # or from_connection_toml, §3
     warehouse=WAREHOUSE, database=POP_DATABASE, schema_name=POP_SCHEMA,
@@ -478,6 +488,10 @@ prediction_table = kumo.PredictionTable.from_source_table(
 )
 ```
 
+- `CREATE OR REPLACE` replaces an existing table; Node 1d names that before it is confirmed,
+  and the approval covers that one name. The config cell carries it verbatim as
+  `POPULATION_CONFIRMED`, and every staging recipe stops before writing when the name it would
+  replace differs — an edit after confirmation needs a new confirmation, not a silent replace.
 - Stage the population only where Node 1d confirmed it — never in the source schema. Write
   `POP_TABLE` in upper case, so the unquoted `CREATE` and the connector lookup agree.
 - Never change the query, the entity or the target to get rows. An empty population is a fact
@@ -573,6 +587,9 @@ PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=, ext
 PredictionResult.export(output_config)
 ```
 
+- `write_mode`: `OVERWRITE` replaces an existing table at the destination. Use the mode Node 1d
+  confirmed: `OVERWRITE` for a new table or an approved replacement, `APPEND` when the user chose
+  it (`kumoai-reference/references/outputs.md`).
 - For Snowflake, always pass `artifact_type` and `table_name`. `output_paths` is for file and
   object-store connectors only; with a `SnowflakeConnector` it raises `ValueError`. Every
   connector's form is in §9.2.
@@ -591,8 +608,9 @@ PredictionResult.export(output_config)
   (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
   embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
   query's `RANK TOP K` when it has one. Regression and binary classification reject it.
-- Binary classification requires an explicit `binary_classification_threshold`; there is no SDK
-  default. Use the one confirmed at Node 1d (§12).
+- Binary classification: without `binary_classification_threshold` (and none recorded with the
+  model), `predict` returns `True_PROB` and leaves `TARGET_PRED` null; it has no 0.5 default of
+  its own. Always pass the one confirmed at Node 1d (§12), written or local alike.
 - `binary_classification_threshold` and `num_classes_to_return` are arguments of `predict`, and
   only of `predict`. `PredictionOutputConfig` describes where to write, not how to predict: it
   takes neither, and passing one is a `TypeError`. Whatever the destination, the config carries
@@ -615,8 +633,13 @@ def quoted(name):
     return '"' + name.replace('"', '""') + '"'
 
 destination = session.table([OUTPUT_DATABASE, OUTPUT_SCHEMA, quoted(output_table)])
-assert destination.count() == prediction_result.num_rows
+assert destination.count() - before == prediction_result.num_rows
 ```
+
+`before` is 0 for `OVERWRITE`. For `APPEND` it is the same count taken before `predict` — 0 when
+the table does not exist yet, since the first APPEND creates it — so the check compares the rows
+this run added. The delta holds only while nothing else writes to the table
+(`kumoai-reference/references/outputs.md`).
 
 Scope the output connector to the destination database and schema; `table_name` is a bare name.
 Always read the table back — it is the only proof the write-back worked. `session` is the one
@@ -645,8 +668,10 @@ the write, as the host's `runtime.md` says (§9.1 for Snowflake).
 
 ## 10. Complete verified example
 
-On Snowflake. On any other connector, replace steps 1, 7 and 8 with the host `runtime.md`'s
-connect step, the §9.2 destination and its read-back; nothing else changes.
+On Snowflake, in a host whose `runtime.md` provides an active Snowpark session (§3.3). On any
+other host — Snowflake reached from outside it included — drop the `get_active_session()` line and
+replace steps 1, 7 and 8 with that host `runtime.md`'s connect step, the §9.2 destination and its
+SQL read-back; nothing else changes.
 
 Self-contained: `OUTPUT_DATABASE`, `OUTPUT_SCHEMA` and `OUTPUT_TABLE` are placeholders for the
 confirmed output destination (§12).
@@ -664,7 +689,7 @@ from snowflake.snowpark.context import get_active_session
 
 OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE = '<db>', '<schema>', '<table>'  # confirmed destination
 
-session = get_active_session()
+session = get_active_session()   # §3.3: only where the host provides the session
 
 # 1. Scratch directory, then connect (inside SPCS; elsewhere use the §3 order). No credentials in the notebook.
 kumo.configure(scratch_dir=Path('/tmp/kumo-run') / 'scratch')
@@ -808,7 +833,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
 | `predict(num_classes_to_return=N)` | Results per entity the user asked for; defaults to `RANK TOP K` but may differ. Link prediction writing predictions requires it, 1–500; no cap otherwise (§9) |
-| `predict(binary_classification_threshold=)` | Required for binary classification; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
+| `predict(binary_classification_threshold=)` | Always passed for binary classification, written or local; never on `PredictionOutputConfig`. The threshold restated at Node 1d: the user's, else `0.5 [default]` (`kumo-data-science/accept/intake_contract.md`) |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
 | `PredictionOutputConfig(...)` + output connector | Output destination in its connector's form (§9.2); report it back unchanged — `DB.SCHEMA.TABLE`, or the path |
 
@@ -824,14 +849,14 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] The connect step is the host `runtime.md`'s, with no credential literal (§3, §3.4).
-- [ ] Snowflake: connection tries `from_spcs_env`, then `from_connection_toml`, then
-      `SnowflakeIdentity` from secrets (§3), with explicit `warehouse`, `database`,
-      `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
+- [ ] Snowflake: the factory the host's `runtime.md` names (§3), with explicit `warehouse`,
+      `database`, `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
 - [ ] Snowflake: lower-case or mixed-case `database` / `schema_name` passed with their double
       quotes (§3).
 - [ ] Table and column names in the catalog's exact spelling (§3.2).
-- [ ] Snowflake: `session = get_active_session()` once, in the first code cell; never again, no
-      `Session.builder` (§3.3).
+- [ ] Snowflake, on a host that provides a Snowpark session: `session = get_active_session()`
+      once, in the first code cell; never again, no `Session.builder` (§3.3). Elsewhere, the
+      host `runtime.md`'s connection for SQL and read-back.
 - [ ] `connector.table_names()` asserted before building tables.
 - [ ] Every foreign key corrected with `.with_column(col, stype=Stype.ID)`.
 - [ ] `with_column(...)` results assigned or chained — it returns a new Table.
@@ -848,9 +873,12 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] No code cell writes anywhere unless a destination was confirmed; an example of how to add
       one later is markdown text, not a code cell.
 - [ ] Smoke-test sizing called out as such.
+- [ ] `write_mode` and any population replacement as Node 1d confirmed them (§9, §7.1); the
+      staging cell stops when the population name differs from `POPULATION_CONFIRMED`.
 - [ ] Destination in its connector's form (§9.2), reported with its exact name — no
       `_predictions` suffix.
-- [ ] Written destination read back and row count compared to `prediction_result.num_rows`.
+- [ ] Written destination read back and row count compared to `prediction_result.num_rows` —
+      for APPEND, the count added since before `predict` (§9.1).
 - [ ] Success judged by blocking calls returning without raising — not by a status value.
 
 ---
