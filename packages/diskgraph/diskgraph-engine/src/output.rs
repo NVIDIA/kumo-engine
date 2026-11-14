@@ -266,6 +266,8 @@ pub struct RuntimeBatchOutput {
     /// pybind orchestrator before each `fetch_features_for_type` call).
     pub current_features_namespace: Option<String>,
     pub batch: RuntimeBatch,
+    seed_src_rel_list: Vec<u16>,
+    pending_edges: Vec<(Vec<u32>, Vec<u32>)>,
 }
 
 impl RuntimeBatchOutput {
@@ -278,6 +280,8 @@ impl RuntimeBatchOutput {
     ) -> Self {
         Self {
             channel: channel.into(),
+            seed_src_rel_list: seed_src_rel_ids.iter().copied().collect(),
+            pending_edges: Vec::new(),
             seed_src_rel_ids,
             rel_id_to_names,
             type_id_to_name,
@@ -307,21 +311,19 @@ impl OutputHandler for RuntimeBatchOutput {
         src_local_id: u32,
         dst_local_id: u32,
     ) -> Result<()> {
-        if self.seed_src_rel_ids.contains(&rel_id) {
+        if self.seed_src_rel_list.contains(&rel_id) {
             // Seed-src edges are dropped — the seed is task data, never
             // appears as topology in the emitted dict.
             return Ok(());
         }
-        let channel = self
-            .batch
-            .graphs
-            .entry(self.channel.clone())
-            .or_default();
+        // Collected per batch and moved into the channel at `finalize`, so the
+        // per-edge path does no channel-name clone or string-keyed lookup.
         let rel_idx = rel_id as usize;
-        if rel_idx >= channel.edges.len() {
-            channel.edges.resize(rel_idx + 1, (Vec::new(), Vec::new()));
+        if rel_idx >= self.pending_edges.len() {
+            self.pending_edges
+                .resize(rel_idx + 1, (Vec::new(), Vec::new()));
         }
-        let entry = &mut channel.edges[rel_idx];
+        let entry = &mut self.pending_edges[rel_idx];
         entry.0.push(src_local_id);
         entry.1.push(dst_local_id);
         Ok(())
@@ -378,6 +380,20 @@ impl OutputHandler for RuntimeBatchOutput {
             .graphs
             .entry(self.channel.clone())
             .or_default();
+        let pending = std::mem::take(&mut self.pending_edges);
+        if channel.edges.is_empty() {
+            channel.edges = pending;
+        } else {
+            if channel.edges.len() < pending.len() {
+                channel
+                    .edges
+                    .resize(pending.len(), (Vec::new(), Vec::new()));
+            }
+            for (target, (src, dst)) in channel.edges.iter_mut().zip(pending) {
+                target.0.extend(src);
+                target.1.extend(dst);
+            }
+        }
         channel.rel_id_to_names = self.rel_id_to_names.clone();
         for (type_id, type_state) in state.type_states.iter() {
             if self.seed_type_ids.contains(type_id) {

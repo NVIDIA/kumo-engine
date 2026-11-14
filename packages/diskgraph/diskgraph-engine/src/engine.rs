@@ -470,6 +470,8 @@ pub struct DiskGraphEngine {
     pub legacy_recording: bool,
     /// Smallest layer (in edges) whose per-seed dedup runs on the pool.
     pub parallel_commit_min_edges: usize,
+    /// Reused sampling states for runtime batches (same reset as `sample()`).
+    pub runtime_states: crate::state::StatePool,
 }
 
 const NEW_NODE: u32 = u32::MAX;
@@ -892,6 +894,7 @@ impl DiskGraphEngine {
             thread_pool,
             legacy_recording: false,
             parallel_commit_min_edges: 1 << 15,
+            runtime_states: crate::state::StatePool::new(),
         }
     }
 
@@ -1286,7 +1289,7 @@ impl DiskGraphEngine {
         projection: Arc<ResolvedProjection>,
         cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<crate::output::RuntimeBatch> {
-        let mut state = SamplingState::default();
+        let mut state = self.runtime_states.acquire();
         let mut output = crate::output::RuntimeBatchOutput::new(
             name,
             seed_src_rel_ids,
@@ -2054,7 +2057,7 @@ impl DiskGraphEngine {
         // Sample + collate via the shared path. No seed-src relation ids to
         // drop, and no stage seed namespaces in this NodeRange path — pass an
         // empty seed_type_ids set.
-        let mut state = SamplingState::default();
+        let mut state = self.runtime_states.acquire();
         let mut output = RuntimeBatchOutput::new(
             "main",
             HashSet::new(),
