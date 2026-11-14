@@ -10,12 +10,27 @@ from kumoapi.model_plan import ModelPlan
 
 from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
 from kumo.engine._scratch import get_scratch_dir
+from kumo.engine.trainer.trainer import UnsupportedAcceleratorError
 
 
 @pytest.mark.parametrize('accelerator', ['cuda', 'tpu', '', None, 1])
 def test_invalid_accelerator_fails_at_construction(accelerator):
     with pytest.raises(ValueError, match='accelerator must be one of'):
         Trainer(ModelPlan(), accelerator=accelerator)
+
+
+@pytest.mark.parametrize('release, accelerator, fails',
+                         [('14.7.1', 'mps', True), ('14.7.1', 'gpu', True),
+                          ('14.7.1', 'auto', False), ('14.7.1', 'cpu', False),
+                          ('15.0', 'mps', False), ('', 'gpu', False)])
+def test_mps_needs_macos_15(monkeypatch, release, accelerator, fails):
+    monkeypatch.setattr('platform.mac_ver', lambda: (release, ('', ) * 3, ''))
+    if fails:
+        with pytest.raises(UnsupportedAcceleratorError, match='macOS 15'):
+            Trainer(ModelPlan(), accelerator=accelerator)
+    else:
+        trainer = Trainer(ModelPlan(), accelerator=accelerator)
+        assert trainer._accelerator == accelerator
 
 
 def test_accelerator_defaults_to_auto_and_is_instance_local(monkeypatch):

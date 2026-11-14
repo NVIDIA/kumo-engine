@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import shutil
 import time
 import warnings
@@ -1086,6 +1087,10 @@ def _no_lightning_tip(record: logging.LogRecord) -> bool:
     return not str(record.msg).startswith('💡 Tip')
 
 
+class UnsupportedAcceleratorError(ValueError):
+    """This host cannot run the requested accelerator."""
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1109,6 +1114,14 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
+        # process before macOS 15.
+        release = platform.mac_ver()[0]
+        if accelerator in ('gpu', 'mps') and release and int(
+                release.split('.')[0]) < 15:
+            raise UnsupportedAcceleratorError(
+                f'accelerator={accelerator!r} needs macOS 15 or later, but '
+                f"this Mac runs macOS {release}. Use accelerator='cpu'.")
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
