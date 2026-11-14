@@ -14,9 +14,8 @@ from importlib.metadata import EntryPoint
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
-from kumoapi.encoder import Null, TextEmbedding
-
 from kumo_core import embedding_models
 from kumo_core.embedding_models import (
     INSTALL_DEFAULT_MODEL,
@@ -32,6 +31,7 @@ from kumo_core.embedding_models import (
 from kumo_core.encoders.config import EncodersConfig
 from kumo_core.glove import VocabularyIndex
 from kumo_core.io.json import load_json
+from kumoapi.encoder import Null, TextEmbedding
 
 WORDS = ["the", "nan", "null", "n/a", "new york"]
 
@@ -174,7 +174,7 @@ def test_a_directory_is_read_in_place(tmp_path):
 
     assert model.label == "glove.6B 100d"
     assert model.vectors().shape == (2, 100)
-    assert model.tokenize(pd.Series(["world hello"]))[1].tolist() == [1, 0]
+    assert model.tokenize(pa.array(["world hello"]))[1].tolist() == [1, 0]
     assert not (tmp_path / "cache").exists()
     assert [(m.model, m.dim) for m in GloVeVectors.in_directory(root)
             ] == [("glove.6B", 50), ("glove.6B", 100)]
@@ -382,7 +382,7 @@ def test_trainers_with_different_stores_keep_their_models(tmp_path):
 
 def test_models_and_stores_survive_pickling(tmp_path, store):
     model = GloVeVectors(_write_dir(tmp_path / "glove"))
-    model.tokenize(pd.Series(["hello"]))
+    model.tokenize(pa.array(["hello"]))
     fingerprint = model.fingerprint()
     store.add("glove.6B-50d", model)
     custom = ArrayModel(["a", "b"], np.eye(2, dtype=np.float32))
@@ -395,7 +395,7 @@ def test_models_and_stores_survive_pickling(tmp_path, store):
     assert resolve_encoder(TextEmbedding(), restored).fingerprint() == (
         fingerprint)
     custom_copy = resolve_encoder(TextEmbedding("custom"), restored)
-    assert custom_copy.tokenize(pd.Series(["b a"]))[1].tolist() == [1, 0]
+    assert custom_copy.tokenize(pa.array(["b a"]))[1].tolist() == [1, 0]
     assert isinstance(custom, TokenEmbeddingModel)
 
 
