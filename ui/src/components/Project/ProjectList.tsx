@@ -46,11 +46,8 @@ import { useUserGroups } from "hooks/groups/groups";
 import { useProjectId, useProjectListByGroup } from "hooks/project/projects";
 import { useValidationState } from "hooks/validation/validation";
 
-import {
-    defaultModelsPageURL,
-    getProjectPath,
-    storageKeys
-} from "utils/Constants";
+import { storageKeys } from "utils/Constants";
+import { openProject } from "utils/navigator";
 import { getSelectedGroup } from "utils/storage";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
@@ -180,13 +177,10 @@ const ProjectList = ({ open, toggleModal, enableClose }: ProjectListProps) => {
             if (rowData && !selectionInFlightRef.current) {
                 selectionInFlightRef.current = true;
                 toggleModal();
-                const projectID = (rowData as { id: string }).id;
-                storeToLocalStorage(storageKeys.selectedProject, projectID);
-                storeToLocalStorage(storageKeys.selectedGroup, selectedGroupId);
-                navigate(
-                    getProjectPath(projectID).ModelJobsList +
-                        "?" +
-                        defaultModelsPageURL.split("?")[1]
+                openProject(
+                    navigate,
+                    (rowData as { id: string }).id,
+                    selectedGroupId
                 );
             }
         },

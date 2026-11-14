@@ -4,6 +4,10 @@
 
 import { JobType } from "gen/v0/types";
 
+export const DEFAULT_PROJECT_ID = "default";
+
+export const DEFAULT_GROUP_ID = "group_00000000000000000000000000000000";
+
 export const numSampleRows: number = 10;
 
 export const warningsToShow: number = 3;

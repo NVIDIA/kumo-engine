@@ -15,18 +15,19 @@ import {
     PropertiesOverviewCard,
     RadioGroup,
     RadioGroupItem,
-    storeToLocalStorage,
     TextArea,
     Title,
     Tooltip,
     TooltipContent,
     TooltipTrigger
 } from "@kumo-ai/kumo-ui-catalog";
-import { ProjectStatus } from "gen/v0/types";
+import { ProjectDBEntry, ProjectStatus } from "gen/v0/types";
+import { useUserDetails } from "stores/userStore";
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
 import Validation from "components/Validation/Validation";
 
+import { useAdminInfo } from "hooks/auth/admin";
 import { useKumoGroups } from "hooks/groups/groups";
 import {
     useArchiveProject,
@@ -37,11 +38,8 @@ import {
 import { useAutoResizeTextarea } from "hooks/utils/useAutoResizeTextarea";
 import { useValidationState } from "hooks/validation/validation";
 
-import {
-    defaultModelsPageURL,
-    getProjectPath,
-    storageKeys
-} from "utils/Constants";
+import { DEFAULT_GROUP_ID, DEFAULT_PROJECT_ID } from "utils/Constants";
+import { openProject } from "utils/navigator";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
 import ProjectNameInput from "./NameInput/ProjectNameInput";
@@ -54,7 +52,15 @@ const formatDate = (dateStr?: string) => {
     return formatToShortLocalDateString(dateStr);
 };
 
-const DEFAULT_PROJECT_ID = "default";
+const canArchiveProject = (
+    project: ProjectDBEntry | null,
+    userId: string | undefined,
+    isAdmin: boolean
+): boolean =>
+    !!project &&
+    project.id !== DEFAULT_PROJECT_ID &&
+    project.status !== ProjectStatus.ARCHIVED &&
+    (isAdmin || project.created_by === userId);
 
 const ProjectSettings = () => {
     const projectId = useProjectId();
@@ -67,6 +73,8 @@ const ProjectSettings = () => {
     );
     const { updateProject } = useUpdateProject(handleError, setLoading);
     const { archiveProject } = useArchiveProject(handleError, setLoading);
+    const userDetails = useUserDetails();
+    const { isAdmin } = useAdminInfo();
     const { groups } = useKumoGroups();
     const groupName =
         groups.find((g) => g.id === project?.group_id)?.display_name ?? "—";
@@ -133,16 +141,13 @@ const ProjectSettings = () => {
         });
     };
 
-    const canArchive =
-        !!project &&
-        project.id !== DEFAULT_PROJECT_ID &&
-        project.status !== ProjectStatus.ARCHIVED;
+    const canArchive = canArchiveProject(project, userDetails.user_id, isAdmin);
 
     const onArchiveClick = () => {
         clearErrors();
         dialogRef.current?.toggleDialog(
             "Archive project",
-            `Archive "${project?.display_name}"? Archived projects can no longer be changed and their jobs cannot run. This cannot be undone from the UI.`,
+            `Archive "${project?.display_name}"? New resources and jobs can't be created in an archived project. This can't be undone.`,
             {},
             false,
             "Archive",
@@ -155,15 +160,7 @@ const ProjectSettings = () => {
         if (!projectId) return;
         const archived = await archiveProject(projectId);
         if (archived) {
-            storeToLocalStorage(
-                storageKeys.selectedProject,
-                DEFAULT_PROJECT_ID
-            );
-            navigate(
-                getProjectPath(DEFAULT_PROJECT_ID).ModelJobsList +
-                    "?" +
-                    defaultModelsPageURL.split("?")[1]
-            );
+            openProject(navigate, DEFAULT_PROJECT_ID, DEFAULT_GROUP_ID);
         }
     };
 
@@ -329,7 +326,7 @@ const ProjectSettings = () => {
                             </Label>
                             <p className="text-sm text-title-secondary leading-5 mt-1">
                                 Archived projects are read-only and hidden from
-                                the project list.
+                                the project picker.
                             </p>
                         </div>
                         <Button

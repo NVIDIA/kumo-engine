@@ -9,8 +9,9 @@ import {
     storeToLocalStorage
 } from "@kumo-ai/kumo-ui-catalog";
 import { QueryClient } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useUserStore } from "stores/userStore";
 import { mockAxiosInstance } from "tests/mockAxios";
 import {
     mockLocationStateValue,
@@ -21,9 +22,10 @@ import { fireEventChange } from "tests/testHelpers";
 import { testResponseType } from "tests/testResponseType";
 import { createQueryClient, createWrapper } from "tests/testUtil";
 
+import { setMockAdminUserIsAdmin } from "pages/Admin/__tests__/MockFunctions/AdminInfo.mock";
+
 import { storageKeys } from "utils/Constants/enums";
-import { defaultModelsPageURL, getProjectPath } from "utils/Constants/routes";
-import { getStoredSelectedProjectId } from "utils/storage";
+import { getSelectedGroup, getStoredSelectedProjectId } from "utils/storage";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
 import ProjectSettings from "../ProjectSettings";
@@ -343,51 +345,68 @@ describe("ProjectSettings", () => {
     });
 
     describe("Archive project", () => {
-        const archiveButton = () =>
-            screen.queryByRole("button", { name: "Archive project" });
-
         const archiveUrl = `v0/projects/${mockProjectData.id}/archive`;
         const archiveRequested = () =>
             vi
                 .mocked(mockAxiosInstance.post)
                 .mock.calls.some(([url]) => url === archiveUrl);
+        const adminInfoLoaded = () =>
+            vi
+                .mocked(mockAxiosInstance.get)
+                .mock.calls.some(([url]) => url === "v0/admin/info");
 
-        const confirmArchive = async () => {
-            await userEvent.click(archiveButton()!);
+        const openArchiveDialog = async () => {
+            await userEvent.click(
+                await screen.findByRole("button", { name: "Archive project" })
+            );
             const dialog = await screen.findByTestId("dialog-content");
             expect(dialog).toHaveTextContent(mockProjectData.display_name!);
-            await userEvent.click(
-                screen.getByRole("button", { name: "Archive" })
-            );
+            return dialog;
         };
 
-        it("Should archive after confirmation and return to the Default project", async () => {
+        beforeEach(() => {
+            setMockAdminUserIsAdmin(false);
+            useUserStore
+                .getState()
+                .setUserDetails({ user_id: mockProjectData.created_by });
+        });
+
+        afterEach(() => {
+            setMockAdminUserIsAdmin(true);
+            useUserStore.getState().setUserDetails({ user_id: "" });
+            removeFromLocalStorage(storageKeys.selectedGroup);
+        });
+
+        it("Should archive after confirmation and return to the Default project and group", async () => {
+            storeToLocalStorage(storageKeys.selectedGroup, "group-001");
             await renderProjectSettings();
             await waitForProjectLoad();
 
-            await confirmArchive();
+            const dialog = await openArchiveDialog();
+            await userEvent.click(
+                within(dialog).getByRole("button", { name: "Archive" })
+            );
 
             await waitFor(() => expect(archiveRequested()).toBe(true));
             await waitFor(() => {
                 expect(mockUseNavigate).toHaveBeenCalledWith(
-                    getProjectPath("default").ModelJobsList +
-                        "?" +
-                        defaultModelsPageURL.split("?")[1]
+                    "/project/default/models/?page=1&job_type=TRAINING_JOB"
                 );
             });
             expect(getStoredSelectedProjectId()).toBe("default");
+            expect(getSelectedGroup()).toBe(
+                "group_00000000000000000000000000000000"
+            );
         });
 
         it("Should not archive when the confirmation is cancelled", async () => {
             await renderProjectSettings();
             await waitForProjectLoad();
 
-            await userEvent.click(archiveButton()!);
-            await screen.findByTestId("dialog-content");
-            const cancelButtons = screen.getAllByRole("button", {
-                name: "Cancel"
-            });
-            await userEvent.click(cancelButtons[cancelButtons.length - 1]);
+            const dialog = await openArchiveDialog();
+            await userEvent.click(
+                within(dialog).getByRole("button", { name: "Cancel" })
+            );
 
             await waitFor(() =>
                 expect(
@@ -403,7 +422,10 @@ describe("ProjectSettings", () => {
             await renderProjectSettings();
             await waitForProjectLoad();
 
-            await confirmArchive();
+            const dialog = await openArchiveDialog();
+            await userEvent.click(
+                within(dialog).getByRole("button", { name: "Archive" })
+            );
 
             await waitFor(() =>
                 expect(
@@ -412,6 +434,29 @@ describe("ProjectSettings", () => {
             );
             expect(mockUseNavigate).not.toHaveBeenCalled();
             expect(getStoredSelectedProjectId()).toBe(mockProjectData.id);
+        });
+
+        it("Should offer archiving to an administrator who does not own the project", async () => {
+            setMockAdminUserIsAdmin(true);
+            useUserStore.getState().setUserDetails({ user_id: "someone-else" });
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            expect(
+                await screen.findByRole("button", { name: "Archive project" })
+            ).toBeInTheDocument();
+        });
+
+        it("Should not offer archiving to a member who neither owns the project nor is an administrator", async () => {
+            useUserStore.getState().setUserDetails({ user_id: "someone-else" });
+            await renderProjectSettings();
+            await waitForProjectLoad();
+            await waitFor(() => expect(adminInfoLoaded()).toBe(true));
+            await act(async () => {});
+
+            expect(
+                screen.queryByRole("button", { name: "Archive project" })
+            ).not.toBeInTheDocument();
         });
 
         it.each([
@@ -426,7 +471,7 @@ describe("ProjectSettings", () => {
                 responseType: testResponseType.ARCHIVED
             }
         ])(
-            "Should not offer archiving for $description",
+            "Should not offer archiving to the owner for $description",
             async ({ selectedProject, responseType }) => {
                 storeToLocalStorage(
                     storageKeys.selectedProject,
@@ -436,7 +481,9 @@ describe("ProjectSettings", () => {
                 await renderProjectSettings();
                 await waitForProjectLoad();
 
-                expect(archiveButton()).not.toBeInTheDocument();
+                expect(
+                    screen.queryByRole("button", { name: "Archive project" })
+                ).not.toBeInTheDocument();
                 expect(
                     screen.queryByTestId("archive-project-section")
                 ).not.toBeInTheDocument();
