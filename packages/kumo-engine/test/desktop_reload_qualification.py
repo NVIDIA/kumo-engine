@@ -9,8 +9,8 @@ file), a producer process trains on the PR172 fixture, exports the model and
 snapshot, and predicts. The controller ends it and deletes its HOME, TMPDIR,
 caches, working directory, scratch and fixture copy. A new consumer process
 loads the exports and predicts, and the two predictions must match. Run it
-outside the checkout with the Python 3.12 of a clean environment that holds
-the candidate wheel. Use a new output folder for each attempt:
+outside the checkout with the Python of a clean environment that holds the
+candidate wheel. Use a new output folder for each attempt:
 
     python -I desktop_reload_qualification.py run --wheel <wheel> \
         --device cpu --data-dir <PR172 inputs> --output-dir <new dir> \
@@ -46,18 +46,19 @@ tasks = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tasks)
 
 TASKS = ('binary', 'static_link')
-PYTHON = '3.12'
+PYTHONS = ('3.11', '3.12', '3.13', '3.14')
 TORCH = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps'}
 # CUDA kernels are not bit-reproducible, so CUDA uses the GPU smoke's bound.
 ATOL = {'cpu': 1e-4, 'mps': 1e-4, 'gpu': 5e-3}
-# CI runs the HOSTED rows. A person runs the MAC rows: macOS 14 on CPU (a VM
-# is enough) and MPS on a bare-metal macOS 15 host.
+# CI runs the HOSTED rows on PYTHONS. A person runs the MAC rows with Python
+# 3.12: macOS 14 on CPU (a VM is enough) and MPS on a bare-metal macOS 15.
+MAC_PYTHON = '3.12'
 HOSTED = ('linux-x86_64-cpu', 'linux-x86_64-gpu', 'linux-arm64-cpu',
           'windows-wsl-cpu', 'windows-wsl-gpu', 'macos-15-cpu', 'macos-26-cpu')
 MAC = ('macos-14-cpu', 'macos-15-mps')
 NOT_RUN = {
     'macos-26-mps': ('hosted macOS runners are VMs without MPS; needs a '
-                     'bare-metal Mac on macOS 26; not run in this PR'),
+                     'bare-metal Mac on macOS 26'),
     'linux-arm64-gpu': ('no ARM64 GPU runner in this repository; the ARM64 '
                         'wheel has no GPU Faiss, and the DGX Spark guide '
                         'requires a source build'),
@@ -383,8 +384,9 @@ def report(directories, hosted):
         '| Configuration | ' + ' | '.join(TASKS) + ' |',
         '| --- ' * (len(TASKS) + 1) + '|'
     ]
-    for config in HOSTED + MAC:
-        name = f'{config}-py{PYTHON}'
+    rows = [(c, p) for c in HOSTED for p in PYTHONS]
+    for config, python in rows + [(c, MAC_PYTHON) for c in MAC]:
+        name = f'{config}-py{python}'
         row = [
             found.get(name, {}).get(task, {}).get('status', 'UNVERIFIED')
             for task in TASKS
@@ -394,7 +396,7 @@ def report(directories, hosted):
         name += '' if required else ' (not required)'
         lines.append(f'| {name} | ' + ' | '.join(row) + ' |')
     lines.append('\nNot run and not required:')
-    lines += [f'- {c}-py{PYTHON}: {why}' for c, why in NOT_RUN.items()]
+    lines += [f'- {c}: {why}' for c, why in NOT_RUN.items()]
     print(f'Commits (one is required): {", ".join(commits) or "none"}', '',
           *lines, sep='\n')
     return 0 if passed else 1

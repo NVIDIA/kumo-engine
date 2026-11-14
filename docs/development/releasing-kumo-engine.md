@@ -125,31 +125,37 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
-   - runs `desktop_reload_qualification.py` on the `binary` and `static_link`
-     tasks with Python 3.12 in the `reload` job: Linux x86-64 and WSL2 on CPU
-     and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on CPU. A producer
-     process trains, exports the model and snapshot, and predicts. The job
-     ends it and deletes its files. A new process loads the exports and
-     predicts, and the predictions must match. `reload-report` fails unless
-     every CI row passes.
-   - needs two Mac rows that a person runs with Python 3.12: macOS 14 on CPU
-     (a VM is enough) and macOS 15 on MPS (bare metal). Install the macOS
-     wheel of the same build run in a clean venv. Download the object that
-     `packages/kumo-engine/test/pr172/inputs.json` names, make sure that its
-     SHA-256 equals the `sha256` in that file, and extract it. In a folder
-     outside the checkout with `desktop_reload_qualification.py` and
-     `wheel_gpu_smoke.py`, run
-     `python -I desktop_reload_qualification.py run --wheel <wheel> --device <cpu|mps> --data-dir <inputs> --output-dir <dir> --commit <sha>`.
-     Set `<sha>` to the full 40-character commit SHA of the build run. Use a
-     new `<dir>` for each attempt, and keep the failed ones. The report counts
-     the newest run of each row. Save `uv pip freeze` in `<dir>`. Then
-     download the run's `engine-wheel-reload-*` artifacts and run
-     `python -I desktop_reload_qualification.py report <CI dir> <Mac dirs>`.
-     MPS on macOS 26 is not run, because hosted macOS runners are VMs without
-     MPS. CUDA on Linux ARM64 is not run, because no ARM64 GPU runner exists.
    - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
      release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
      routes remain disabled despite experimental build/test coverage.
+
+   Before you approve the `kitmaker` job, start
+   [`Kumo Engine - Desktop reload qualification`][desktop-reload] by hand with
+   the ID of this build run. It runs `desktop_reload_qualification.py` on the
+   `binary` and `static_link` tasks: Linux x86-64 and WSL2 on CPU and CUDA,
+   Linux ARM64 on CPU, and macOS 15 and 26 on CPU, each with Python 3.11 to 3.14.
+   A producer process trains, exports the model and snapshot, and predicts.
+   The job ends it and deletes its files. A new process loads the exports and
+   predicts, and the predictions must match. The `reload-report` job fails
+   unless every CI row passes.
+
+   Two Mac rows run outside CI with Python 3.12: macOS 14 on CPU (a VM is
+   enough) and macOS 15 on MPS (bare metal). Install the macOS wheel of the
+   build run in a clean Python 3.12 venv. Download the object that
+   `packages/kumo-engine/test/pr172/inputs.json` names, make sure that its
+   SHA-256 equals the `sha256` in that file, and extract it. In a folder
+   outside the checkout with `desktop_reload_qualification.py` and
+   `wheel_gpu_smoke.py` from the commit of the build run, run
+   `python -I desktop_reload_qualification.py run --wheel <wheel> --device <cpu|mps> --data-dir <inputs> --output-dir <dir> --commit <sha>`.
+   Set `<sha>` to the full 40-character commit SHA of the build run. Use a new
+   `<dir>` for each attempt, and keep the failed ones. The report counts the
+   newest run of each row. Save `uv pip freeze` in `<dir>`. Then download the
+   `engine-wheel-reload-*` artifacts of the qualification run and run
+   `python -I desktop_reload_qualification.py report <CI dir> <Mac dirs>`.
+   MPS on macOS 26 is not run, because hosted macOS runners are VMs without
+   MPS. CUDA on Linux ARM64 is not run, because no ARM64 GPU runner exists.
+   Approve the `kitmaker` job only after `reload-report` and this full report
+   pass.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.
@@ -171,6 +177,7 @@ Other releases in the repository (for example `kumo-sdk-v*`) do not trigger
 this workflow.
 
 [workflow]: ../../.github/workflows/kumo-engine-wheel.yml
+[desktop-reload]: ../../.github/workflows/kumo-engine-desktop-reload.yml
 [glove-workflow]: ../../.github/workflows/kumo-glove-6b-50d-wheel.yml
 
 ## If a release fails

@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Engine - Desktop reload qualification
+
+# Runs only by hand, on the wheels of one "Kumo Engine - Build and publish
+# wheel" run. See docs/development/releasing-kumo-engine.md.
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      wheel_run_id:
+        description: ID of the build run whose wheels to qualify.
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  wheel:
+    name: Find the build run
+    runs-on: ubuntu-24.04
+    permissions: {actions: read}
+    outputs:
+      sha: ${{ steps.run.outputs.sha }}
+    steps:
+      - id: run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.wheel_run_id }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'wheel_run_id must be a run ID.' >&2; exit 1; }
+          # Only a release or manual run of this repository's wheel workflow counts.
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq 'select(
+            .path == ".github/workflows/kumo-engine-wheel.yml" and
+            (.event == "release" or .event == "workflow_dispatch") and
+            .head_repository.full_name == env.GITHUB_REPOSITORY) | .head_sha')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Run $RUN_ID is not a wheel build of this repository." >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  # Save, restart, reload and predict two tasks (desktop_reload_qualification.py).
+  # A person runs the macOS 14 and MPS rows.
+  reload:
+    needs: [wheel]
+    name: Reload ${{ matrix.target.name }} ${{ matrix.target.device }} (Python ${{ matrix.python }})
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+        target:
+          - {name: linux-x86_64, runner: ubuntu-24.04, artifact: x86_64, device: cpu, torch: --torch-backend=cpu}
+          - {name: linux-x86_64, runner: linux-amd64-gpu-rtxpro6000-latest-1, artifact: x86_64, device: gpu}
+          - {name: linux-arm64, runner: ubuntu-24.04-arm, artifact: aarch64, device: cpu, torch: --torch-backend=cpu, extra: '[cpu]'}
+          - {name: windows-wsl, runner: wsl-amd64-gpu-t4-latest-1, artifact: x86_64, device: cpu, torch: --torch-backend=cpu}
+          - {name: windows-wsl, runner: wsl-amd64-gpu-t4-latest-1, artifact: x86_64, device: gpu}
+          - {name: macos-15, runner: macos-15, artifact: arm64, device: cpu}
+          - {name: macos-26, runner: macos-26, artifact: arm64, device: cpu}
+    runs-on: ${{ matrix.target.runner }}
+    # The tasks read the GPU smoke's private PR172 fixture object.
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {actions: read, contents: read, id-token: write}
+    defaults: {run: {shell: bash}}
+    env: {CANDIDATE_SHA: '${{ needs.wheel.outputs.sha }}', PYTHONPATH: '', UV_LINK_MODE: copy, UV_NO_CONFIG: 'true'}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with: {ref: '${{ needs.wheel.outputs.sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          name: kumo-engine-wheel-${{ matrix.target.artifact }}-${{ needs.wheel.outputs.sha }}
+          path: ${{ runner.temp }}/reload/artifacts
+          run-id: ${{ inputs.wheel_run_id }}
+          github-token: ${{ github.token }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: {enable-cache: false}
+      - id: aws
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and check the pinned PR172 inputs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        # A separate tool environment keeps boto3 out of the candidate venv.
+        run: |
+          uv run --no-project --python 3.12 --with 'boto3>=1.34,<2' python -I - <<'PY'
+          import hashlib, json, os, tarfile
+          from pathlib import Path
+          import boto3
+          spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+          archive = Path(os.environ['RUNNER_TEMP'], 'reload-inputs.tar.gz')
+          boto3.client('s3', region_name=spec['region']).download_file(spec['bucket'], spec['key'], str(archive))
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != spec['sha256']:
+              raise SystemExit('PR172 input checksum differs')
+          with tarfile.open(archive) as source:
+              source.extractall(Path(os.environ['RUNNER_TEMP'], 'reload-inputs'), filter='data')
+          PY
+      - name: Clean install, then train, reload and compare in new processes
+        run: |
+          # Only the pinned credential step may mint OIDC tokens. Start this script
+          # again without the token variables, so that no child process can read them.
+          [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash --noprofile --norc -eo pipefail "$0"
+          cd "$RUNNER_TEMP/reload"
+          mkdir test results
+          cp "$GITHUB_WORKSPACE"/packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke}.py test/
+          wheels=(artifacts/kumo_engine-*.whl) && [ "${#wheels[@]}" -eq 1 ]
+          uv venv --python '${{ matrix.python }}' venv
+          uv pip install --python venv/bin/python ${{ matrix.target.torch }} "${wheels[0]}${{ matrix.target.extra }}"
+          uv pip check --python venv/bin/python
+          uv pip freeze --python venv/bin/python > results/freeze.txt
+          venv/bin/python -I test/desktop_reload_qualification.py run --wheel "${wheels[0]}" \
+            --device ${{ matrix.target.device }} --data-dir "$RUNNER_TEMP/reload-inputs" \
+            --output-dir results --commit "$CANDIDATE_SHA"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: engine-wheel-reload-${{ matrix.target.name }}-${{ matrix.target.device }}-py${{ matrix.python }}-${{ needs.wheel.outputs.sha }}-${{ github.run_attempt }}
+          # Leave out predictions and the files with the private fixture's IDs and classes.
+          path: |
+            ${{ runner.temp }}/reload/results
+            !${{ runner.temp }}/reload/results/**/*.parquet
+            !${{ runner.temp }}/reload/results/*/*.json
+
+  # Marks each configuration and task PASS, FAIL or UNVERIFIED and requires
+  # the CI rows. The release report adds the Mac rows.
+  reload-report:
+    needs: [wheel, reload]
+    if: ${{ !cancelled() && needs.wheel.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    defaults: {run: {shell: bash}}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with: {ref: '${{ needs.wheel.outputs.sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          pattern: engine-wheel-reload-*-${{ needs.wheel.outputs.sha }}-*
+          path: ${{ runner.temp }}/reload-evidence
+      - run: >-
+          python3 -I packages/kumo-engine/test/desktop_reload_qualification.py report
+          --hosted "$RUNNER_TEMP/reload-evidence" | tee -a "$GITHUB_STEP_SUMMARY"
