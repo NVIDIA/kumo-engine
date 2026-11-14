@@ -207,6 +207,21 @@ class TrainingResult:
         return self.bundle_id
 
     @property
+    def metric_history(self) -> Optional[Dict[str, Any]]:
+        """Per-epoch metrics for every search trial, or ``None`` if absent.
+
+        Reads the training progress record kept in the bundle. It needs no
+        tracker and excludes refit epochs. A ``fit()`` result reads the file
+        from the trainer scratch directory, so export and reload the model to
+        keep the history after that directory is removed. Non-finite metric
+        values read as ``None``.
+        """
+        path = self.artifact_paths.get('metric_history')
+        return (None if path is None else json.loads(
+            Path(path).read_text(encoding='utf-8'),
+            parse_constant=lambda _: None))
+
+    @property
     def manifest(self) -> Optional[ModelManifest]:
         """The bundle manifest, if any."""
         return read_provenance(self.bundle_dir)

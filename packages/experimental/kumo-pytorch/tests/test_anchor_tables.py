@@ -27,6 +27,7 @@ from kumo.pytorch.api import (
     DataLoaderSpec,
     DataSchema,
     Dataset,
+    Derived,
     DType,
     Encode,
     EntitySource,
@@ -999,9 +1000,12 @@ class TestDistributedTokenBudgets:
 
 
 def _scored_contract() -> DataLoaderSpec:
+    # A calculation, so fitting reads the selected anchors, not the stored column.
     contract = _contract(temporal=False)
+    entity_values = {"stored": Field(column="score"), "score": Derived("abs", ("stored",))}
     return replace(
         contract,
+        sample=replace(contract.sample, entity_values=entity_values),
         batch=replace(
             contract.batch,
             inputs={

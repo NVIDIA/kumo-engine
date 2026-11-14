@@ -2,7 +2,7 @@
 
 ## Rule
 
-`TableSpec.primary_key` is the single definition of row identity. An
+`TableSpec.primary_key` is the single definition of external entity identity. An
 `EntitySpec` selects a table, not a second lookup column. Every sample request's
 `entity_id` means that table's primary-key value.
 Candidate IDs use the primary key of their own candidate table. Graph roots and
@@ -21,6 +21,7 @@ no fallback or migration that reinterprets an alternate-column request.
 The schema must declare the entity table and a nonempty primary key included
 in that table's columns. This is declaration validation, not proof that actual
 rows have unique, non-null keys. Source-data key validation is separate work.
+Non-entity tables may be keyless under [G-KEYLESS-001](../G-KEYLESS-001/guarantee.md).
 An undeclared entity table fails before the engine opens its data.
 
 Relationship traversal still uses the declared relation columns, which can be

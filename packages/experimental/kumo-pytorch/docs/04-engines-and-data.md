@@ -179,6 +179,14 @@ read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
 fitted encoders, so several contracts over the same tables can share one index.
+Fitting keeps the column statistics of encoders over stored columns in
+`col_stats/`, so it needs the index directory to be writable. Each encoder
+cutoff has one directory there, with a `<table>.col_stats.json` file per table.
+A later fit at the same cutoff computes only the columns and statistics those
+files lack, and adds them. Ingest computes the statistics for the cutoffs in
+`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and kept beside them as
+`<table>.<column>.text-<settings>.tokenizer.json`.
 Its manifest records the schema, the files and their resolved types. If the
 manifest doesn't match the dataset and schema you pass, `prepare` refuses the
 index rather than reusing it, and it never overwrites it. The shard count isn't
@@ -249,13 +257,65 @@ valid [[55.0]]
 test [[154.0]]
 ```
 
-Each pass reads only the anchors in its own split, and encoders are fitted on
-`fit_split` alone, so held-out rows never shape
-vocabularies or statistics. When anchors carry splits, `fit_split` is required.
+Each pass reads only the anchors in its own split. Encoders over computed values
+fit on `fit_split`'s examples alone, so held-out anchors never shape them.
+Encoders over stored columns instead fit on every table row created at or
+before the encoder cutoff (by default the latest anchor time `fit_split`
+selects), whichever split that row's entity belongs to; a non-temporal table
+contributes every row. When anchors carry splits, `fit_split` is required.
 It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists
 (`api.CandidateColumn`).
+
+For graph-neighborhood and sequence tasks, DiskGraph materializes only the anchors into a
+task-owned native seed extension. The base graph stays unchanged. TT-NG then
+owns bounded reads, deterministic epoch order and rank partitioning, and
+produces topology and projected node features together. The existing fitted
+encoders and batch layouts still apply. Original row positions supply omitted
+sample IDs; repeated entity/time pairs remain separate examples. Native order
+may differ from the in-memory engine, and padding remains explicitly marked.
+Closing the task removes its temporary seed extension, not the base graph.
+
+Sequence tasks consume the same native anchor batches and resolved root IDs,
+then call the existing temporal-query loader. They keep their temporal plan,
+event selection, typed encoders and tensor layouts; there is no second native
+anchor reader or a GNN-specific anchor contract. Native history parallelism,
+history capping/decoding and cross-component event merging are separate work.
+
+A selection spanning multiple split stages uses native stage batches. Each stage
+is shuffled independently; batches never mix split stages. The output covers the
+same anchors, while its order differs from the previous global Python shuffle.
+Encoder fitting remains a separate stage and is not made streaming here.
+
+Task extensions use the existing `train_tables` directory inside the graph index,
+including on Windows. They require no symlinks. Closing a task releases its
+combined reader before removing its task files.
+
+### Scalar features and labels in task preparation
+
+For DiskGraph-backed training/BP, `Plan.materialize` computes declared scalar
+features and generated labels once before fitting or iteration:
+
+<!-- test: diskgraph -->
+```python
+with api.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
+    with plan.materialize(anchors, fit_split="train") as task:
+        for batch in task.batches(split="train", output_format="model"):
+            pass  # Supply these tensors to the model.
+```
+
+The materializer prepares the native aggregation plan once, reads projected
+anchor chunks with the existing custom-TT reader, and writes rotating Parquet
+parts under the managed task directory. It preserves anchor IDs, split,
+metadata, and external labels alongside generated scalar features and labels.
+The task owns these intermediate files and removes them on close.
+
+Model-format iteration reads the prepared scalar columns directly; graph and
+history retrieval remain dynamic. Explicit-request inspection and the unchanged
+fitting lifecycle retain reference adapters. Fitting can still require
+population-sized samples. Fixed anchor chunks do not bound the degree or group
+cardinality of an individual anchor.
 
 ## The in-memory engine
 

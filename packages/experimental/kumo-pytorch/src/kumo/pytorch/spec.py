@@ -199,6 +199,9 @@ class DataLoaderSpec:
 
         :raises ValidationError: listing every issue found.
         """
+        entity_issues = _entity_key_issues(self)
+        if entity_issues:
+            raise ValidationError(entity_issues)
         try:
             contract = self.resolve()
         except (ValueError, KeyError) as error:
@@ -389,6 +392,28 @@ class DataLoaderSpec:
         for name, value in self.batch.targets.items():
             lines.append(f"batch target {name}: {type(value).__name__}")
         return "\n".join(lines)
+
+
+def _entity_key_issues(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
+    """Entity identity is checkable before resolving any source column types."""
+    tables = {table.name: table for table in contract.schema.tables}
+    issues = []
+
+    def visit(sample: SampleSpec, path: str) -> None:
+        table = tables.get(sample.entity.table)
+        if table is not None and table.primary_key is None:
+            issues.append(
+                ValidationIssue(
+                    f"{path}.entity.table",
+                    "an entity table requires a primary key",
+                    "choose a table with a declared primary key",
+                )
+            )
+        for name, candidate in sample.candidate_sets.items():
+            visit(candidate.sample_spec(), f"{path}.candidate_sets.{name}")
+
+    visit(contract.sample, "sample")
+    return tuple(issues)
 
 
 class _Validator:
@@ -704,6 +729,8 @@ def _encode(value: Any) -> Any:
 
     if is_dataclass(value) and not isinstance(value, type):
         arguments = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if type(value).__name__ == "IdSpace" and not value.special_ids:
+            del arguments["special_ids"]
         if type(value).__name__ == "Vocabulary" and value.values is not None:
             arguments["values"] = [
                 _encode(item) for item in sorted(value.values, key=lambda item: item[1])

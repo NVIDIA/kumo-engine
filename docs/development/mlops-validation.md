@@ -3,12 +3,15 @@
 Run a small Linux CPU lifecycle against an installed candidate wheel using a
 local SQLite MLflow tracker and registry. The fixture has 60 users and 1,500
 events; it trains two versions for two epochs each, with two steps per epoch.
-Each worker sets both ambient MLflow URIs to the attempt's SQLite database.
+An untracked fit also tries two candidates and records two epochs each. It
+refits the selected candidate on train and validation data and generates
+training explanations.
+Tracked phases set both ambient MLflow URIs to the attempt's SQLite database.
 
 ## Scenario
 
 The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) executes
-four separate processes:
+five separate processes:
 
 1. **Fit:** export the training snapshot/table, train and register two versions,
    verify multi-epoch tracking, and point `champion` to the first version.
@@ -22,6 +25,11 @@ four separate processes:
    label coverage, an independent event-window label join and recomputed AUROC.
 4. **Negative cases:** reject an incomplete model, an unwritable artifact root
    and a prediction export without completion markers.
+5. **Explain:** reopen a copy of the untracked training run with the public
+   explanation API. Verify that the explanations describe the published refit
+   model and not the pre-refit model. Render the gradient and cohort plots and
+   inspect every sampled graph. Verify the diagnostics for an unknown sample, a
+   model bundle, and an unreadable or missing gradient file.
 
 Successful producer scratch and original source files are removed before
 recovery. Failed attempts retain their scratch, logs and receipts. Each attempt
@@ -36,6 +44,7 @@ needs a new output directory. Worker timeouts terminate the process group.
 | `test_snapshot_export.py`, `test_training_table_export.py` | Extend export/reload coverage after removing original source and scratch files. |
 | `test_monitoring.py` | Reuse the temporal fixture pattern and independent label/AUROC assertions on durable predictions. |
 | `test_query_from_snapshot.py`, `test_mlops.py` | Reuse unknown-ID accounting and local permission-failure scenarios. |
+| `test_explanation_artifacts.py`, `test_explanation_plots.py`, `test_training_explanations.py` | Extend fixture and mocked explanation coverage to a real retained run. Failed explanation generation remains covered by the mocked fit tests. |
 
 Numerical reload consistency remains covered by the eight-task runner. This
 scenario checks which model was resolved and recorded, rather than comparing
@@ -51,7 +60,8 @@ Build the wheel using the [release guide](releasing-kumo-engine.md).
 ```sh
 python3 -m venv /tmp/mlops-venv
 /tmp/mlops-venv/bin/python -m pip --isolated install \
-  '/absolute/path/kumo_engine-CANDIDATE.whl[mlflow]' 'mlflow>=3.5,<4'
+  '/absolute/path/kumo_engine-CANDIDATE.whl[mlflow]' 'mlflow>=3.5,<4' \
+  --extra-index-url https://download.pytorch.org/whl/cpu
 mlops_tools_dir="$(mktemp -d /tmp/mlops-tools-XXXXXX)"
 cp packages/kumo-engine/test/wheel_mlops_lifecycle.py \
   packages/kumo-engine/test/wheel_gpu_smoke.py "$mlops_tools_dir/"
@@ -67,9 +77,10 @@ environment isolation and `pip check`. Each phase writes a log and JSON receipt.
 and runtime. Worker receipts record CPU threads and Linux process and terminated
 child RSS maxima separately, not simultaneous process-tree memory.
 
-Full epoch history is currently unavailable in model exports. Tracker curves
-alone do not satisfy that artifact requirement: the summary records it as
-`not implemented`, leaves overall qualification `blocked` and exits nonzero.
+The bundle retains recorded search-trial epochs in `metric-history.json`.
+The negative-case phase loads and re-exports history without importing MLflow.
+Older bundles remain readable and return `None` for `metric_history`.
+The required CPU job reuses the candidate-wheel build.
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.
 Unreached phases remain `blocked`.
 

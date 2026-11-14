@@ -73,6 +73,7 @@ pub struct RowAccess<'p> {
 
 type ReadTimestamp<'p> = fn(&RowAccess<'p>, usize) -> Result<Option<i64>>;
 
+#[derive(Clone)]
 pub enum FloatListValues {
     F16(ArrayRef),
     F32(ArrayRef),
@@ -81,12 +82,14 @@ pub enum FloatListValues {
     Parsed(Vec<f32>),
 }
 
+#[derive(Clone)]
 pub struct FloatListView {
     pub start: usize,
     pub end: usize,
     pub values: FloatListValues,
 }
 
+#[derive(Clone)]
 pub enum IntListValues {
     I8(ArrayRef),
     I16(ArrayRef),
@@ -96,6 +99,7 @@ pub enum IntListValues {
     Parsed(Vec<i64>),
 }
 
+#[derive(Clone)]
 pub struct IntListView {
     pub start: usize,
     pub end: usize,
@@ -298,6 +302,7 @@ impl IntListView {
     }
 }
 
+#[derive(Clone)]
 pub enum StringListValues {
     Utf8(ArrayRef),
     LargeUtf8(ArrayRef),
@@ -305,6 +310,7 @@ pub enum StringListValues {
     Parsed(Vec<String>),
 }
 
+#[derive(Clone)]
 pub struct StringListView {
     pub start: usize,
     pub end: usize,
