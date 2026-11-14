@@ -102,6 +102,7 @@ from kumo.engine._scratch import (
     snapshot_scratch_dir,
 )
 from kumo.engine._storage import network_storage
+from kumo.engine._time_columns import resolve_time_columns
 from kumo.engine._visualization import SVG
 from kumo.engine.connector.base import Connector
 from kumo.engine.table import Table
@@ -216,6 +217,29 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 UserWarning,
                 stacklevel=3,
             )
+
+
+def _with_time_formats(
+        config: Dict[str, Any],
+        formats: Mapping[str, Mapping[str, str]]) -> Dict[str, Any]:
+    r"""`config` with the `timestamp_format` resolved for each table's time
+    columns, handed to DiskGraph only: the snapshot keeps the graph's own
+    config, which a later graph's config is compared against.
+    """
+    if not formats:
+        return config
+    tables = []
+    for table in config['tables']:
+        resolved = formats.get(table['table_name'], {})
+        table = dict(table)
+        for key in ('time_col', 'end_time_col'):
+            column = table.get(key)
+            if column and column['name'] in resolved:
+                table[key] = {
+                    **column, 'timestamp_format': resolved[column['name']]
+                }
+        tables.append(table)
+    return {**config, 'tables': tables}
 
 
 _LOCATION_KEYS = frozenset({'table_name', 'source_table_name', 'connector_id'})
@@ -788,6 +812,15 @@ class Graph:
         and a window shorter than one tick is a configuration error. Each
         clock is cached as a separate snapshot.
 
+        Time columns are settled from every staged value before ingest
+        (`kumo.engine._time_columns`): whole numbers and slash dates take
+        the one reading their values allow, declared as the column's
+        `timestamp_format`, or are refused; a value no calendar or clock
+        holds, or with no reading once the column has one, is made missing
+        and counted. What the scan settles is part of the snapshot's data
+        version, so an index built before it is not reused; a graph whose
+        time columns need nothing keeps its key.
+
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.
             record_sources: if False, record sources without locations or
@@ -875,6 +908,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        settled: Dict[str, Dict[str, Any]] = {}
 
         started = start() if timed else None
         try:
@@ -916,24 +950,33 @@ class Graph:
                     record_sources=record_sources)
 
                 paths = prepared.source.get('paths') or []
-                if paths:
-                    parents = {str(Path(path).parent) for path in paths}
-                    if len(parents) != 1:
-                        raise NotImplementedError(
-                            "TODO(local-sdk): a table staged across multiple "
-                            "directories isn't handled here (mirrors "
-                            "kumoai/backend/local/graph.py's create_snapshot, "
-                            "which also refuses this case).")
-                    source_paths[alias] = parents.pop()
-                else:
-                    source_paths[alias] = str(
-                        prepared.source.get('path') or dest_dir)
+                if paths and len({str(Path(path).parent)
+                                  for path in paths}) != 1:
+                    raise NotImplementedError(
+                        "TODO(local-sdk): a table staged across multiple "
+                        "directories isn't handled here (mirrors "
+                        "kumoai/backend/local/graph.py's create_snapshot, "
+                        "which also refuses this case).")
+                formats, rewritten, located = resolve_time_columns(
+                    alias, table.definition, paths
+                    or [str(prepared.source.get('path') or dest_dir)],
+                    str(dest_dir))
+                if formats or rewritten:
+                    settled[alias] = {
+                        'formats': formats,
+                        'rewritten': rewritten
+                    }
+                source_paths[alias] = (str(Path(located[0]).parent)
+                                       if paths else located[0])
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
             ]
             if timestamp_precision != 'seconds':
                 version_parts.append(timestamp_precision.encode())
+            if settled:
+                version_parts.append(
+                    json.dumps(settled, sort_keys=True).encode())
             data_version = fingerprint(*version_parts)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
@@ -955,7 +998,12 @@ class Graph:
                 # `Trainer.fit()` without this.
                 predicted = DiskgraphIngestResult.for_index(output_dir)
                 result = execute_diskgraph_ingest(
-                    graph_config,
+                    _with_time_formats(
+                        graph_config, {
+                            alias: entry['formats']
+                            for alias, entry in settled.items()
+                            if entry['formats']
+                        }),
                     DiskgraphIngestSpec(
                         data_persist_dir=str(persist_dir),
                         table_data_versions=table_data_versions,
