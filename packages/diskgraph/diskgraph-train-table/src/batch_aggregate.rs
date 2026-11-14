@@ -56,6 +56,16 @@ struct QueryPlan {
     selection: Option<PreparedRowSelection>,
 }
 
+impl QueryPlan {
+    fn cutoff_unit(&self) -> Result<TimeUnit, String> {
+        let unit = self.frames.first().and_then(|f| f.cutoff_unit).unwrap_or(TimeUnit::Seconds);
+        if self.frames.iter().any(|f| f.cutoff_unit.unwrap_or(TimeUnit::Seconds) != unit) {
+            return Err("all frames in a query must use the same cutoff_unit".into());
+        }
+        Ok(unit)
+    }
+}
+
 struct PreparedFrame {
     path: FramePath,
     table: Arc<TableReader>,
@@ -197,7 +207,7 @@ impl ScalarValue {
         }
     }
 
-    fn epoch_seconds(&self) -> Result<Option<i64>, String> {
+    fn timestamp_ticks(&self) -> Result<Option<i64>, String> {
         match self {
             Self::Null => Ok(None),
             Self::I64(value) => Ok(Some(*value)),
@@ -315,6 +325,8 @@ pub fn scalar_values_to_array(
 
 struct MaterializedFrame {
     clock: TimeUnit,
+    scalar_clock: TimeUnit,
+    time_column: Option<String>,
     name: String,
     destination: String,
     deferred_columns: HashMap<String, usize>,
@@ -390,6 +402,7 @@ pub struct QueryResult {
     pub aggregates: Vec<AggregateResult>,
     pub timings: QueryTimings,
     pub stats: QueryStats,
+    pub timestamp_unit: TimeUnit,
 }
 
 fn elapsed_ns(start: Instant) -> u64 {
@@ -647,10 +660,14 @@ fn relation_destinations(
 /// Bounds are compared in the index clock, never against unconverted edge ticks.
 fn frame_bounds(
     plan: &FramePlan,
-    cutoff_seconds: i64,
+    cutoff_ticks: i64,
     clock: TimeUnit,
 ) -> Result<(Option<i64>, Option<i64>), String> {
     let unit = plan.window_unit.unwrap_or(TimeUnit::Seconds);
+    let cutoff_unit = plan.cutoff_unit.unwrap_or(TimeUnit::Seconds);
+    if !cutoff_unit.is_index_clock() {
+        return Err("cutoff_unit must be a fixed index clock".into());
+    }
     let bound = |offset: Option<i64>| -> Result<Option<i64>, String> {
         let Some(offset) = offset else {
             return Ok(None);
@@ -666,13 +683,15 @@ fn frame_bounds(
             }
             .and_then(|v| i32::try_from(v).ok())
             .ok_or("calendar window exceeds supported range")?;
-            let seconds = add_calendar_months(Abs::<Seconds>::from_raw(cutoff_seconds), months)
-                .ok_or("calendar window exceeds supported clock")?
-                .raw();
-            Ok(Some(convert_floor(seconds, TimeUnit::Seconds, clock)))
+            diskgraph_core::with_index_clock!(cutoff_unit, U => {
+                add_calendar_months(Abs::<U>::from_raw(cutoff_ticks), months)
+                    .map(|shifted| Some(convert_floor(shifted.raw(), cutoff_unit, clock)))
+                    .ok_or_else(|| "calendar window exceeds supported clock".to_string())
+            })
         } else {
-            let cutoff = convert_trunc(cutoff_seconds, TimeUnit::Seconds, clock);
-            let delta = convert_floor(offset, unit, clock);
+            let cutoff = convert_floor(cutoff_ticks, cutoff_unit, clock);
+            // Match PQL duration lowering for offsets finer than one index tick.
+            let delta = convert_trunc(offset, unit, clock);
             Ok(Some(cutoff.saturating_add(delta)))
         }
     };
@@ -696,7 +715,7 @@ fn row_clock_time(array: &dyn Array, row: usize, clock: TimeUnit) -> Result<Opti
     time!(TimestampNanosecondArray, TimeUnit::Nanoseconds);
     time!(Date32Array, TimeUnit::Days);
     time!(Date64Array, TimeUnit::Milliseconds);
-    scalar_at(array, row)?.epoch_seconds()
+    scalar_at(array, row)?.timestamp_ticks()
 }
 
 fn exact_key_time(decoder: &SortKeyDecoder, key: u64) -> Option<i64> {
@@ -1005,6 +1024,8 @@ fn materialize_frame(
     stats.rows_materialized += batch.num_rows();
     Ok(MaterializedFrame {
         clock: reader.metadata().timestamp_unit,
+        scalar_clock: plan.cutoff_unit.unwrap_or(TimeUnit::Seconds),
+        time_column: plan.time_column.clone(),
         name: plan.name.clone(),
         destination: destination.clone(),
         deferred_columns,
@@ -1119,7 +1140,10 @@ enum RowsView<'a> {
         stop: usize,
     },
     Owned(&'a [OwnedRow]),
-    Selected { frame: &'a MaterializedFrame, rows: Vec<usize> },
+    Selected {
+        frame: &'a MaterializedFrame,
+        rows: Vec<usize>,
+    },
 }
 
 impl RowsView<'_> {
@@ -1138,13 +1162,35 @@ impl RowsView<'_> {
                     format!("frame {:?} did not project column {column:?}", frame.name)
                 })?;
                 (*start..*stop)
-                    .map(|row| scalar_at(frame.batch.column(position).as_ref(), row))
+                    .map(|row| {
+                        let array = frame.batch.column(position).as_ref();
+                        if matches!(array.data_type(), arrow_schema::DataType::Timestamp(..)
+                            | arrow_schema::DataType::Date32 | arrow_schema::DataType::Date64) {
+                            Ok(row_clock_time(array, row, frame.scalar_clock)?.map_or(ScalarValue::Null, ScalarValue::I64))
+                        } else {
+                            let value = scalar_at(array, row)?;
+                            if frame.time_column.as_deref() == Some(column) {
+                                Ok(value.timestamp_ticks()?.map_or(ScalarValue::Null, |ticks| {
+                                    ScalarValue::I64(convert_floor(ticks, frame.clock, frame.scalar_clock))
+                                }))
+                            } else {
+                                Ok(value)
+                            }
+                        }
+                    })
                     .collect()
             }
             Self::Selected { frame, rows } => {
                 let mut values = Vec::with_capacity(rows.len());
                 for &row in rows {
-                    values.extend(RowsView::Frame { frame, start: row, stop: row + 1 }.values(column)?);
+                    values.extend(
+                        RowsView::Frame {
+                            frame,
+                            start: row,
+                            stop: row + 1,
+                        }
+                        .values(column)?,
+                    );
                 }
                 Ok(values)
             }
@@ -1199,7 +1245,7 @@ impl crate::ttgen_row_aggregate::AggregateScalar for ScalarValue {
         ScalarValue::numeric(self)
     }
     fn epoch_seconds(&self) -> Result<Option<i64>, String> {
-        ScalarValue::epoch_seconds(self)
+        ScalarValue::timestamp_ticks(self)
     }
     fn equality_key(&self) -> String {
         ScalarValue::equality_key(self)
@@ -1223,6 +1269,7 @@ fn reduce(
     cutoff: i64,
     sum_type: Option<SumType>,
     semantics: diskgraph_core::tt_builder::ReductionSemantics,
+    clock: TimeUnit,
 ) -> Result<ScalarValue, String> {
     crate::ttgen_row_aggregate::reduce_rows(
         &rows,
@@ -1239,11 +1286,12 @@ fn reduce(
             target_entity_table: None,
         },
         cutoff,
+        clock,
     )
 }
 
-fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64) -> Result<Vec<OwnedRow>, String> {
-    crate::ttgen_row_aggregate::group_rows(&rows, plan, cutoff)
+fn group_rows(rows: RowsView<'_>, plan: &GroupPlan, cutoff: i64, clock: TimeUnit) -> Result<Vec<OwnedRow>, String> {
+    crate::ttgen_row_aggregate::group_rows(&rows, plan, cutoff, clock)
 }
 
 fn aggregate_result(
@@ -1257,26 +1305,52 @@ fn aggregate_result(
     let mut values = Vec::with_capacity(cutoffs.len());
     for (anchor, cutoff) in cutoffs.iter().copied().enumerate() {
         let frame_view = if let Some((selection, operation)) = selection.and_then(|selection| {
-            selection.operations.iter().find(|(name, _)| name == &plan.name)
+            selection
+                .operations
+                .iter()
+                .find(|(name, _)| name == &plan.name)
                 .map(|(_, operation)| (selection, operation))
         }) {
-            let columns = selection.entity_col_indices.iter().map(|(_, column)| {
-                crate::ttgen_traversal::read_column_value(&selection.entity_table, roots[anchor], *column)
-            }).collect::<Vec<_>>();
-            let table = &operation.path.last().ok_or("empty scalar selection path")?.dst_table;
-            let rows = (frame.offsets[anchor]..frame.offsets[anchor + 1]).filter(|&row| {
-                operation.row_filter.as_ref().is_none_or(|filter| {
-                    crate::ttgen_filter::eval_row_filter(filter, frame.node_ids[row], table, &columns)
+            let columns = selection
+                .entity_col_indices
+                .iter()
+                .map(|(_, column)| {
+                    crate::ttgen_traversal::read_column_value(
+                        &selection.entity_table,
+                        roots[anchor],
+                        *column,
+                    )
                 })
-            }).collect();
+                .collect::<Vec<_>>();
+            let table = &operation
+                .path
+                .last()
+                .ok_or("empty scalar selection path")?
+                .dst_table;
+            let rows = (frame.offsets[anchor]..frame.offsets[anchor + 1])
+                .filter(|&row| {
+                    operation.row_filter.as_ref().is_none_or(|filter| {
+                        crate::ttgen_filter::eval_row_filter(
+                            filter,
+                            frame.node_ids[row],
+                            table,
+                            &columns,
+                        )
+                    })
+                })
+                .collect();
             RowsView::Selected { frame, rows }
         } else {
-            RowsView::Frame { frame, start: frame.offsets[anchor], stop: frame.offsets[anchor + 1] }
+            RowsView::Frame {
+                frame,
+                start: frame.offsets[anchor],
+                stop: frame.offsets[anchor + 1],
+            }
         };
         let value = if let Some((first, remaining)) = plan.groups.split_first() {
-            let mut grouped = group_rows(frame_view, first, cutoff)?;
+            let mut grouped = group_rows(frame_view, first, cutoff, frame.scalar_clock)?;
             for group in remaining {
-                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff)?;
+                grouped = group_rows(RowsView::Owned(&grouped), group, cutoff, frame.scalar_clock)?;
             }
             reduce(
                 RowsView::Owned(&grouped),
@@ -1285,6 +1359,7 @@ fn aggregate_result(
                 cutoff,
                 plan.sum_type,
                 plan.semantics,
+                frame.scalar_clock,
             )?
         } else {
             reduce(
@@ -1294,6 +1369,7 @@ fn aggregate_result(
                 cutoff,
                 plan.sum_type,
                 plan.semantics,
+                frame.scalar_clock,
             )?
         };
         values.push(value);
@@ -1577,6 +1653,7 @@ fn prepare_numeric_frame(
 ) -> Result<Option<Vec<crate::ttgen_resolve::ResolvedAggregate<Seconds>>>, String> {
     if frame.path.len().max(frame.column_path.len()) != 1
         || aggregates.is_empty()
+        || frame.cutoff_unit.is_some_and(|u| u != TimeUnit::Seconds)
         || reader.metadata().timestamp_unit != TimeUnit::Seconds
         || frame.window_unit.is_some_and(|u| u != TimeUnit::Seconds)
         || frame.start_seconds.is_some() && frame.stop_seconds.is_none()
@@ -1605,7 +1682,9 @@ fn prepare_numeric_frame(
             "max" => AggFunc::Max,
             _ => return Ok(None),
         };
-        if aggregate.row_filter.is_some() || aggregate.limit.is_some() || aggregate.target_entity_table.is_some()
+        if aggregate.row_filter.is_some()
+            || aggregate.limit.is_some()
+            || aggregate.target_entity_table.is_some()
             || !aggregate.groups.is_empty()
             || aggregate.sum_type.is_some()
             || aggregate
@@ -1808,6 +1887,7 @@ fn window_groups(plan: &QueryPlan) -> Vec<(FramePlan, Vec<FramePlan>)> {
                 && frame.path == union.path
                 && frame.column_path == union.column_path
                 && frame.window_unit == union.window_unit
+                && frame.cutoff_unit == union.cutoff_unit
                 && frame.preserve_traversal_order == union.preserve_traversal_order
                 && frame.time_column == union.time_column
                 && frame.distinct == union.distinct)
@@ -1906,6 +1986,8 @@ fn shared_window_frames(
                 original.name.clone(),
                 MaterializedFrame {
                     clock: frame.clock,
+                    scalar_clock: frame.scalar_clock,
+                    time_column: frame.time_column.clone(),
                     name: original.name.clone(),
                     destination: frame.destination.clone(),
                     deferred_columns: HashMap::new(),
@@ -1980,6 +2062,7 @@ impl PreparedAggregatePlan {
                     return Err("PQL selection policies require PQL reduction semantics".into());
                 }
                 if selected_rows && (reader.metadata().timestamp_unit != TimeUnit::Seconds
+                    || rows.cutoff_unit.is_some_and(|u| u != TimeUnit::Seconds)
                     || diskgraph_core::tt_builder::plan_timestamp_unit(json)
                         .map_err(|e| e.to_string())? != TimeUnit::Seconds)
                 {
@@ -1993,7 +2076,10 @@ impl PreparedAggregatePlan {
                     query.frames.push(rows.clone());
                 }
                 query.aggregates.push(reduction.clone());
-                if reduction.row_filter.is_some() || reduction.limit.is_some() || reduction.target_entity_table.is_some() {
+                if reduction.row_filter.is_some()
+                    || reduction.limit.is_some()
+                    || reduction.target_entity_table.is_some()
+                {
                     pql.push(op);
                 }
             }
@@ -2190,13 +2276,19 @@ impl PreparedTemporalPlan {
     /// Runtime seed timestamps are index ticks, unlike standalone query cutoffs
     /// whose omitted unit retains its historical seconds default.
     pub fn prepare_history(reader: &GraphIndexReader, root: &str, json: &str) -> Result<Self, String> {
-        if reader.metadata().timestamp_unit != TimeUnit::Seconds {
-            return Err("history iteration requires seconds until explicit index-clock cutoffs are enabled".into());
+        let mut query: QueryPlan = serde_json::from_str(json)
+            .map_err(|e| format!("invalid temporal query JSON: {e}"))?;
+        for frame in &mut query.frames {
+            if frame.cutoff_unit.is_some_and(|u| u != reader.metadata().timestamp_unit) {
+                return Err("history cutoff_unit must match the iterator's index clock".into());
+            }
+            frame.cutoff_unit = Some(reader.metadata().timestamp_unit);
         }
-        Self::prepare(reader, root, json)
+        Self::from_query(reader, root, query)
     }
 
     fn from_query(reader: &GraphIndexReader, root: &str, mut query: QueryPlan) -> Result<Self, String> {
+        query.cutoff_unit()?;
         for sequence in &query.sequences { validate_sequence_plan(sequence)?; }
         let windows = window_groups(&query);
         for frame in query.frames.iter().chain(windows.iter().map(|(union, _)| union)) {
@@ -2336,6 +2428,7 @@ fn execute_query(
     plan: &QueryPlan,
 ) -> Result<QueryResult, String> {
     let total_started = Instant::now();
+    let cutoff_unit = plan.cutoff_unit()?;
     for sequence in &plan.sequences {
         validate_sequence_plan(sequence)?;
     }
@@ -2483,12 +2576,53 @@ fn execute_query(
         aggregates,
         timings,
         stats,
+        timestamp_unit: cutoff_unit,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_time_values_use_the_scalar_clock_but_ids_do_not() {
+        let schema = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("time", arrow_schema::DataType::Int64, false),
+            arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+        ]);
+        let frame = MaterializedFrame {
+            clock: TimeUnit::Seconds,
+            scalar_clock: TimeUnit::Milliseconds,
+            time_column: Some("time".into()),
+            name: "events".into(),
+            destination: "events".into(),
+            deferred_columns: HashMap::new(),
+            positions: HashMap::from([("time".into(), 0), ("id".into(), 1)]),
+            batch: RecordBatch::try_new(Arc::new(schema), vec![
+                Arc::new(Int64Array::from(vec![1300])),
+                Arc::new(Int64Array::from(vec![7])),
+            ]).unwrap(),
+            node_ids: vec![1],
+            timestamps: vec![Some(1300)],
+            offsets: vec![0, 1],
+        };
+        let rows = RowsView::Frame { frame: &frame, start: 0, stop: 1 };
+        assert!(matches!(rows.values("time").unwrap()[0], ScalarValue::I64(1_300_000)));
+        assert!(matches!(rows.values("id").unwrap()[0], ScalarValue::I64(7)));
+    }
+
+    #[test]
+    fn subclock_offsets_match_pql_truncation() {
+        let frame: FramePlan = serde_json::from_value(serde_json::json!({
+            "name":"f", "root_type":"users", "path":[], "time_column":"time",
+            "start_seconds":-1, "stop_seconds":1, "window_unit":"milliseconds", "distinct":true, "columns":[]
+        })).unwrap();
+        assert_eq!(frame_bounds(&frame, 2, TimeUnit::Seconds).unwrap(), (Some(2), Some(2)));
+        let mut exact = frame.clone();
+        exact.start_seconds = Some(-1000);
+        assert_eq!(frame_bounds(&exact, 2, TimeUnit::Seconds).unwrap(), (Some(1), Some(2)));
+    }
+
     use std::collections::BTreeMap;
 
     fn reduce(
@@ -2498,7 +2632,7 @@ mod tests {
         cutoff: i64,
         sum_type: Option<SumType>,
     ) -> Result<ScalarValue, String> {
-        super::reduce(rows, operation, column, cutoff, sum_type, Default::default())
+        super::reduce(rows, operation, column, cutoff, sum_type, Default::default(), TimeUnit::Seconds)
     }
 
     #[test]

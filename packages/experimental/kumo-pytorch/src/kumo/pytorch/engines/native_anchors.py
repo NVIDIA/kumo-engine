@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
-from kumo.pytorch.contract.sample import SampleRequest, TargetValue
-from kumo.pytorch.data.records import cutoff_to_epoch
+from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
+from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
 from kumo.pytorch.materialization import _diskgraph_dtype
 
@@ -43,6 +43,7 @@ class NativeAnchors:
         if issues := check_parquet_anchors(table):
             raise ValueError(issues[0].describe())
         self._source, self._sample, self._table = source, sample, table
+        self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
         parent = Path(source._index_path)
         (parent / "tasks").mkdir(exist_ok=True)
@@ -142,11 +143,11 @@ class NativeAnchors:
                         if target.type in (pa.float32(), pa.float64(), pa.int64(), pa.bool_()):
                             payload[f"TARGET{index}"] = target
                     if table.as_of_time is not None:
-                        times = columns[table.as_of_time].to_pylist()
-                        if any(value is None for value in times):
+                        times = columns[table.as_of_time]
+                        if times.null_count:
                             raise ValueError("anchor prediction times cannot be NULL")
-                        payload["TIMESTAMP"] = pa.array(
-                            [cutoff_to_epoch(value) for value in times], type=pa.timestamp("s")
+                        payload["TIMESTAMP"] = self._source._clock_array(
+                            self._source._cutoff_array(times)
                         )
                     data = pa.table(payload)
                     for split_name in pc.unique(split).to_pylist():
@@ -214,7 +215,7 @@ class NativeAnchors:
                 json.dumps(
                     {
                         "dataset_name": "anchors",
-                        "timestamp_unit": "seconds",
+                        "timestamp_unit": self._source._clock,
                         "num_shards": 1,
                         "tables": specs,
                     }
@@ -360,8 +361,16 @@ class NativeAnchors:
             *getattr(bound, "targets", {}).values(),
         }
         metadata = {
-            name: columns[name].to_pylist() for name in table.metadata if name not in internal
+            name: _arrow_values(columns[name]) for name in table.metadata if name not in internal
         }
+        targets = {}
+        for name, column in {**table.targets, **getattr(bound, "targets", {})}.items():
+            values = columns[column]
+            dtype = self._sample.targets[name].dtype
+            if dtype.name == "timestamp" and pa.types.is_integer(values.type):
+                # External integer labels use declared ticks, not graph-clock ticks.
+                values = values.cast(pa.int64()).cast(dtype.to_arrow())
+            targets[name] = self._source._typed_array(values, dtype).combine_chunks()
         return ModelSourceBatch(
             sample_ids=tuple(columns[table.sample_id].to_pylist())
             if table.sample_id
@@ -371,16 +380,16 @@ class NativeAnchors:
             if table.as_of_time
             else (0,) * n,
             entity_type=self._sample.entity.entity_type,
+            timestamp_unit=self._source._clock,
             entity_values={
-                name: columns[column].combine_chunks()
+                name: self._source._typed_array(
+                    columns[column], self._feature_types[name]
+                ).combine_chunks()
                 for name, column in getattr(bound, "features", {}).items()
             },
             events={},
             row_targets={},
-            targets={
-                name: columns[column].combine_chunks()
-                for name, column in {**table.targets, **getattr(bound, "targets", {})}.items()
-            },
+            targets=targets,
             splits=(stage["split"],) * n,
             request_metadata=tuple(
                 {"split": stage["split"], **{k: v[i] for k, v in metadata.items()}}
@@ -883,11 +892,12 @@ class NativeAnchors:
             values = data[alias]
             if name in self._ipc:
                 columns[name] = [
-                    pa.ipc.open_stream(value.as_py()).read_all()["value"][0].as_py()
+                    _arrow_scalar_value(pa.ipc.open_stream(value.as_py()).read_all()["value"][0])
                     for value in values
                 ]
             else:
-                columns[name] = values.cast(self._types[name]).to_pylist()
+                typed = values.cast(self._types[name])
+                columns[name] = _arrow_values(typed)
         original_positions = data["anchor_position"].to_pylist()
         table = self._table
         return [
@@ -1166,7 +1176,7 @@ class NativeAnchors:
                 first = requests[0]
             if runtime is not None:
                 runtime["_anchor_roots"] = tuple(
-                    (request.sample_id, request.entity_id, cutoff_to_epoch(request.as_of_time))
+                    (request.sample_id, request.entity_id, source._cutoff(request.as_of_time))
                     for request in requests
                 )
                 runtime["_anchor_neighborhood"] = name

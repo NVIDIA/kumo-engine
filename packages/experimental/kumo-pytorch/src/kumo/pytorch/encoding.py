@@ -49,7 +49,9 @@ def typed_key(dtype: DType, value: Any) -> tuple[str, Any]:
     if dtype.name == "bytes":
         return ("bytes", value.hex())
     if dtype.name == "timestamp":
-        return ("timestamp", int(value.timestamp()))
+        import pyarrow as pa
+
+        return ("timestamp", pa.scalar(value, type=dtype.to_arrow()).cast(pa.int64()).as_py())
     if dtype.name == "date32":
         return ("date32", (value - dt.date(1970, 1, 1)).days)
     return (dtype.name, value)
@@ -64,6 +66,13 @@ def json_value(value: Any) -> Any:
         return {"$decimal": str(value)}
     if isinstance(value, dt.datetime):
         return {"$timestamp": value.isoformat()}
+    # Preserve the existing tagged timestamp form for exact ns scalars too.
+    if type(value).__name__ == "TimestampScalar":
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        if isinstance(value, pa.TimestampScalar):
+            return {"$timestamp": pc.cast(value, pa.string()).as_py()}
     if isinstance(value, dt.date):
         return {"$date": value.isoformat()}
     if isinstance(value, float):
@@ -106,6 +115,14 @@ def unjson_value(value: Any) -> Any:
     if len(value) == 1:
         name = next(iter(value))
         if name in decoders:
+            if name == "$timestamp":
+                text = value[name]
+                fraction = text.partition(".")[2].split("+")[0].split("-")[0].rstrip("Z")
+                if len(fraction) > 6:
+                    import pyarrow as pa
+                    import pyarrow.compute as pc
+
+                    return pc.cast(pa.scalar(text), pa.timestamp("ns", tz="UTC"))
             return decoders[name](value[name])
     return {name: unjson_value(item) for name, item in value.items()}
 
@@ -283,17 +300,15 @@ class FittedEncoder:
 
         if isinstance(values, pa.ChunkedArray):
             values = values.combine_chunks()
-        if DType.from_arrow(values.type) != self.dtype:
+        received = DType.from_arrow(values.type)
+        if pa.types.is_timestamp(values.type):
+            received = replace(received, unit=values.type.unit)
+        if received != self.dtype:
             raise ValueError(
                 f"encoder {self.identity}: expected declared {self.dtype}, "
                 f"received Arrow {values.type}"
             )
         if self.dtype.name == "timestamp":
-            if values.type.unit != "s":
-                raise ValueError(
-                    f"encoder {self.identity}: sampled timestamps must already "
-                    "use stored whole seconds"
-                )
             values = pc.cast(values, self.dtype.to_arrow())
         valid = torch.from_numpy(pc.is_valid(values).to_numpy(zero_copy_only=False, writable=True))
         config = self.config

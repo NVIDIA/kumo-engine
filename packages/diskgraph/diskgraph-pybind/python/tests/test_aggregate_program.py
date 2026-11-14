@@ -206,6 +206,15 @@ def test_explicit_plan_preserves_bounded_nonseconds_windows(tmp_path, clock):
         assert values(actual)[name].equals(reference), name
     assert values(actual)["full:count"].to_pylist() == [2]
     assert values(actual)["full:sum"].to_pylist() == [8.0]
+    # Even with omitted cutoff_unit, filtered PQL must not resolve a
+    # seconds-specialized selection against a non-seconds index silently.
+    filtered = json.loads(json.dumps(staged(fragment)))
+    reduction = filtered["stages"][0]["ops"][1]["row_aggregate"]["reduction"]
+    reduction["row_filter"] = {"compare": {"lhs": {"column": "value"}, "op": "gt",
+                                          "rhs": {"constant": {"float": 0.0}}}}
+    reduction["semantics"] = {"all_null_sum_is_zero": True, "keep_first_equal": False}
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="matching seconds"):
+        engine.prepare_aggregate_plan("users", json.dumps(filtered))
     # Both endpoints are checked in the index clock: include1.001s/2s,
     # exclude the lower endpoint1s and future2.5s. Also verify unbounded input.
     for frame in fragment["frames"]:
@@ -272,3 +281,15 @@ def test_pql_filtered_scalar_preserves_filter_and_limit(numeric_graph, limit):
     # User1 retains1e16; user6 retains non-null values greater than1. Numeric SUM's historical
     # limit does not cap traversed rows; preserving it must not invent a cap.
     assert result == [1e16, sum(i for i in range(2, 601) if i % 7 != 0)]
+
+
+@pytest.mark.parametrize("second_unit", ["seconds", None])
+def test_query_cutoff_clock_must_be_shared_by_all_frames(numeric_graph, second_unit):
+    engine, relation = numeric_graph
+    plan = program(relation)
+    plan["frames"][0]["cutoff_unit"] = "milliseconds"
+    if second_unit is not None:
+        plan["frames"][1]["cutoff_unit"] = second_unit
+    roots = {"users": engine.lookup_node_ids("users", pa.array([6], type=pa.int64()))}
+    with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
+        engine.query_temporal(roots, {"users": [1000]}, json.dumps(plan), output_format="model")

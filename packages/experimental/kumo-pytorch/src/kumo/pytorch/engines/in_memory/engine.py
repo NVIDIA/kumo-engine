@@ -35,6 +35,20 @@ class InMemoryEngine:
     name = "in_memory"
 
     @staticmethod
+    def check_contract(contract):
+        """Refuse declared subsecond clocks, which this reference cannot retain."""
+        return tuple(
+            ValidationIssue(
+                f"schema.tables.{table.name}.columns.{name}",
+                "the in-memory reference currently uses whole-second clocks",
+                "use DiskGraphEngine for declared millisecond, microsecond or nanosecond precision",
+            )
+            for table in contract.schema.tables
+            for name, dtype in table.columns.items()
+            if dtype.name == "timestamp" and dtype.unit != "s"
+        )
+
+    @staticmethod
     def check_sources(sources: Mapping[str, TableSource], path: str) -> tuple[ValidationIssue, ...]:
         """Refuse sources other than `InMemoryRows`, before any data is read."""
         unreadable = sorted({source.kind for source in sources.values()} - {"in_memory"})
