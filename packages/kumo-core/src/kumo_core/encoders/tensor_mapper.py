@@ -6,6 +6,7 @@ from __future__ import annotations
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from threading import RLock
 from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
 
 import numpy as np
@@ -740,9 +741,30 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
 
     num_holiday_names: int = 11
 
+    _min_nanoseconds: ClassVar[int] = pd.Timestamp(
+        f"{pd.Timestamp.min.year + 1}-01-01"
+    ).value
+    _first_day: ClassVar[int] = _min_nanoseconds // 10**9 // SECONDS_IN_DAY
+    _last_day: ClassVar[int] = pd.Timestamp.max.value // 10**9 // SECONDS_IN_DAY
+    _daily_tables: ClassVar[dict[torch.device, Tensor]] = {}
+    _daily_table_lock: ClassVar[RLock] = RLock()
+
     def __init__(self, format: str | None = None) -> None:
         self.format = format
         self.helper = TimestampHelper.instance()
+
+    def _to_nanoseconds(
+        self,
+        array: pa.Array,
+        device: torch.device | None,
+    ) -> Tensor:
+        """Convert timestamps to writable int64 storage, preserving NaT."""
+        if array.type == pa.timestamp("ns"):
+            values = array.to_numpy(zero_copy_only=False, writable=True)
+            return torch.from_numpy(values.view(np.int64)).to(device)
+
+        ser = to_datetime(array.to_pandas(), format=self.format)
+        return torch.from_numpy(ser.astype("int64").to_numpy()).to(device)
 
     def forward(
         self,
@@ -751,16 +773,46 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         device: torch.device | None = None,
     ) -> Tensor:
         """Encode Arrow timestamps as calendar, holiday, and UNIX features."""
-        ser = to_datetime(array.to_pandas(), format=self.format)
-
-        unix = torch.from_numpy(ser.astype("int64").to_numpy()).to(device)
+        unix = self._to_nanoseconds(array, device)
         na_mask = unix == torch.iinfo(torch.int64).min
         unix[na_mask] = 0
-        min_date = pd.Timestamp(f"{pd.Timestamp.min.year + 1}-01-01").value
-        unix = unix.clamp(min=min_date)
+        unix = unix.clamp(min=self._min_nanoseconds)
 
         unix = unix // 10**9  # Convert to seconds.
+        day = unix // SECONDS_IN_DAY
 
+        tensor = torch.empty(
+            (len(array), len(self.index)), dtype=torch.long, device=unix.device
+        )
+        if len(array) == 0:
+            return tensor
+
+        table = self._get_daily_table(unix.device)
+        tensor[:, 2:15] = table[day - self._first_day]
+        tensor[:, 0] = (unix // 60) % 60
+        tensor[:, 1] = (unix // 3600) % 24
+        tensor[:, 15] = unix
+        tensor[na_mask] = -1
+        return tensor
+
+    def _get_daily_table(self, device: torch.device) -> Tensor:
+        """Lazily share a compact daily table across mapper instances per device."""
+        table = self._daily_tables.get(device)
+        if table is not None:
+            return table
+        with self._daily_table_lock:
+            if device not in self._daily_tables:
+                cpu = torch.device("cpu")
+                if cpu not in self._daily_tables:
+                    self._daily_tables[cpu] = self._build_daily_table().to(torch.int16)
+                if device != cpu:
+                    self._daily_tables[device] = self._daily_tables[cpu].to(device)
+            return self._daily_tables[device]
+
+    def _build_daily_table(self) -> Tensor:
+        """Evaluate the existing calendar and holiday rules once per supported day."""
+        day = torch.arange(self._first_day, self._last_day + 1, device="cpu")
+        unix = day * SECONDS_IN_DAY
         year_offset = self.helper.year_offset.to(unix.device)
         year_index = (
             torch.searchsorted(
@@ -796,12 +848,9 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
             side="right",
         )
 
-        minute = (unix // 60) % 60
-        hour = (unix // 3600) % 24
-
         # Janurary 1st, 1970 is a Thursday, so offset by 3 days such that
         # Monday gets label 0 and Sunday gets label 6:
-        day_of_week = (unix // 86400 + 3) % 7
+        day_of_week = (day + 3) % 7
 
         day_of_month = day_of_year - cumsum_common_days_per_month[month]
         day_of_month[is_leap_year] = (
@@ -817,12 +866,10 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
         week_of_year = day_of_year // 7  # Approximated.
         weeks_per_year = (days_per_year / 7).ceil().to(torch.long)
 
-        closest_holiday = self.get_closest_holiday(day=unix // SECONDS_IN_DAY)
+        closest_holiday = self.get_closest_holiday(day=day)
 
-        tensor = torch.stack(
+        return torch.stack(
             [
-                minute,
-                hour,
                 year,
                 day_of_week,
                 day_of_month,
@@ -836,14 +883,9 @@ class TimestampTensorMapper(TensorMapper[Tensor]):
                 closest_holiday.days_from_holiday,
                 closest_holiday.to_holiday_name,
                 closest_holiday.from_holiday_name,
-                unix,  # Used for rel_time computation
             ],
             dim=-1,
         )
-
-        tensor[na_mask] = -1
-
-        return tensor
 
     def get_closest_holiday(self, day: Tensor) -> ClosestHoliday:
         r"""Returns the number of days and name of the closest previous and
