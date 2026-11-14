@@ -1349,3 +1349,58 @@ fn test_node_range_seeds_full_catalog() {
         "(b) per-batch size deterministic: {batch_size} per batch, last = remainder"
     );
 }
+
+/// Runtime batches reuse pooled sampling state. A batch must not depend on
+/// earlier batches sampled by the same engine.
+#[test]
+fn test_runtime_batch_independent_of_previous_batches() {
+    let tmp = tempdir().unwrap();
+    let entities: Vec<i64> = vec![0, 3, 5, 7];
+    let targets: Vec<Vec<i64>> = vec![vec![1, 2], vec![4], vec![6, 0, 3], vec![]];
+    let parent_root =
+        build_fixture(&tmp, "tt_res", 8, &entities, &targets).expect("build resolution fixture");
+    let reader = Arc::new(
+        diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_res").unwrap(),
+    );
+    let plan = depth2_plan();
+    let flags = flags();
+    let sample = |engine: &diskgraph_engine::engine::DiskGraphEngine, rows: &[u64]| {
+        let batch = engine
+            .sample_runtime_batch(
+                reader.as_ref(),
+                "tt_res/train_seeds",
+                rows,
+                DatasetId::nil(),
+                &plan,
+                &flags,
+                None,
+                Some("users"),
+                Some("users"),
+                true,
+                None,
+                None,
+                None,
+            )
+            .expect("sample_runtime_batch");
+        let main = batch.graphs["main"].clone();
+        (batch.task.seed_node_ids, main.node_ids, main.edges, main.batch_dict)
+    };
+    let new_engine = || {
+        diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
+            .unwrap()
+    };
+
+    let all_rows: Vec<u64> = (0..entities.len() as u64).collect();
+    let engine = new_engine();
+    let first = sample(&engine, &all_rows);
+    let small = sample(&engine, &[1]);
+    let again = sample(&engine, &all_rows);
+
+    assert_eq!(first, again, "repeating a batch must give the same output");
+    assert_eq!(
+        small,
+        sample(&new_engine(), &[1]),
+        "a batch after a larger one must match a fresh engine"
+    );
+    assert!(!first.2.is_empty(), "fixture must sample edges");
+}
