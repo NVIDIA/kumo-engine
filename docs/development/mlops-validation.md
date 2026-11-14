@@ -5,15 +5,16 @@ local SQLite MLflow tracker and registry. For managed execution and UI checks,
 see [Snowflake notebook tests](snowflake-notebook-actions.md). The fixture has
 60 users and 1,500 events; it trains two versions for two epochs each, with two
 steps per epoch. Local execution also trains an untracked model with two
-candidates and two epochs each, then verifies its exported epoch history after
-a fresh-process reload and re-export. Managed profiles retain the two tracked
-fits and use their platform-specific negative checks.
+candidates and two epochs each, refits the selected candidate on train and
+validation data, and generates training explanations. It verifies exported
+epoch history after a fresh-process reload and re-export. Managed profiles
+retain the two tracked fits and their platform-specific negative checks.
 Tracked local phases set both ambient MLflow URIs to the attempt's SQLite database.
 
 ## Scenario
 
 The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) executes
-four separate processes:
+five separate processes locally (managed profiles use the first four):
 
 1. **Fit:** export the training snapshot/table, train and register two versions,
    verify multi-epoch tracking, and point `champion` to the first version. Local
@@ -29,6 +30,11 @@ four separate processes:
 4. **Negative cases:** reject an incomplete model, an unwritable artifact root
    and a prediction export without completion markers. Verify the untracked model’s
    history survives reload/re-export without importing MLflow.
+5. **Explain:** reopen a copy of the untracked training run with the public
+   explanation API. Verify that the explanations describe the published refit
+   model and not the pre-refit model. Render the gradient and cohort plots and
+   inspect every sampled graph. Verify the diagnostics for an unknown sample, a
+   model bundle, and an unreadable or missing gradient file.
 
 Successful producer scratch and original source files are removed before
 recovery. Failed attempts retain their scratch, logs and receipts. Each attempt
@@ -43,6 +49,7 @@ needs a new output directory. Worker timeouts terminate the process group.
 | `test_snapshot_export.py`, `test_training_table_export.py` | Extend export/reload coverage after removing original source and scratch files. |
 | `test_monitoring.py` | Reuse the temporal fixture pattern and independent label/AUROC assertions on durable predictions. |
 | `test_query_from_snapshot.py`, `test_mlops.py` | Reuse unknown-ID accounting and local permission-failure scenarios. |
+| `test_explanation_artifacts.py`, `test_explanation_plots.py`, `test_training_explanations.py` | Extend fixture and mocked explanation coverage to a real retained run. Failed explanation generation remains covered by the mocked fit tests. |
 
 Numerical reload consistency remains covered by the eight-task runner. This
 scenario checks which model was resolved and recorded, rather than comparing
@@ -76,7 +83,7 @@ and runtime. Worker receipts record CPU threads and Linux process and terminated
 child RSS maxima separately, not simultaneous process-tree memory.
 
 The bundle retains recorded search-trial epochs in `metric-history.json`.
-The final phase loads and re-exports history without importing MLflow.
+The negative-case phase loads and re-exports history without importing MLflow.
 Older bundles remain readable and return `None` for `metric_history`.
 The required CPU job reuses the candidate-wheel build.
 Installation/access prerequisites are `blocked`; incorrect behavior is `failed`.

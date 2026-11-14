@@ -34,7 +34,7 @@ EXPERIMENT = 'kumo-local-lifecycle'
 POPULATION = 60
 EPOCHS = 2
 TRIALS = 2
-PHASES = ('fit', 'score', 'evaluate', 'negative')
+PHASES = ('fit', 'score', 'evaluate', 'negative', 'explain')
 SCHEMA = ['ENTITY', 'TARGET_PRED', 'False_PROB', 'True_PROB']
 
 
@@ -58,6 +58,24 @@ def digest(path):
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def expect(error, call, *needles):
+    """Return the diagnostic of an expected failure, which must name needles."""
+    try:
+        call()
+    except error as caught:
+        require(all(needle in str(caught) for needle in needles),
+                f'Diagnostic is not actionable: {caught}')
+        return str(caught)
+    raise AssertionError(f'Expected {error} from a broken input')
+
+
+def selected(explanations, expected):
+    trial = os.path.relpath(explanations.trial_root, explanations.run_root)
+    require(trial == expected,
+            f'Explanations describe {trial}, not the published {expected}')
+    return trial
 
 
 @cache
@@ -392,8 +410,11 @@ def fit(root):
                   training_table=table.id, training_rows_sha256=rows_sha256,
                   model=model_name(root), versions=versions)
     if profile is None:
-        untracked = kumo.Trainer(small_plan(1, TRIALS), accelerator='cpu').fit(
-            table, snapshot=snapshot)
+        plan = small_plan(1, TRIALS)
+        plan.training_job.disable_explain = False
+        plan.training_job.refit_trainval = True
+        untracked = kumo.Trainer(plan,
+                                 accelerator='cpu').fit(table, snapshot=snapshot)
         require(untracked.tracking is None, 'Ordinary training used a tracker')
         untracked_history = untracked.metric_history
         require(untracked_history['total_trials']
@@ -406,7 +427,21 @@ def fit(root):
                     'Model history lost a recorded epoch')
         untracked.export(kumo.ModelOutputConfig(
             kumo.FileConnector(root_dir=str(root)), path='untracked-model'))
-        result['untracked'] = dict(bundle=untracked.id, history=untracked_history)
+        explained = untracked.explanations
+        require(
+            untracked.manifest.fit_mode == 'refit_trainval'
+            and all(a.available and a.generation_failure is None
+                    for a in explained.availability.values()),
+            f'Refit explanations are incomplete: {explained.availability}')
+        trial = selected(
+            explained,
+            os.path.relpath(untracked.holdout_path.parent, explained.run_root))
+        # Fit scratch is deleted before recovery; retain the training run itself.
+        shutil.copytree(explained.run_root, root / 'training-run')
+        gradient = explained.gradient_scores().to_pandas().to_dict('records')
+        result['untracked'] = dict(
+            bundle=untracked.id, history=untracked_history,
+            explanation_trial=trial, gradient=gradient)
     return result
 
 
@@ -700,6 +735,100 @@ def negative(root):
                 incomplete_prediction=interruption, exported_epoch_history='passed')
 
 
+def explain(root):
+    """Reopen retained refit explanations without the producer's objects."""
+    import pandas as pd
+
+    import kumo.engine as kumo
+
+    state = read(root / 'fit.json')['result']['untracked']
+    run = root / 'training-run'
+    explained = kumo.TrainingExplanations.load(run)
+    trial = selected(explained, state['explanation_trial'])
+    scores = explained.gradient_scores().to_pandas()
+    require(
+        scores.to_dict('records') == state['gradient'],
+        'Gradient scores changed after reopening')
+    model = kumo.Trainer.load_from_connector(
+        kumo.FileConnector(root_dir=str(root)), path='untracked-model',
+        accelerator='cpu').result
+    holdout = model.holdout_df()
+    # The cohorts of this key hold every explained TEST row of the fixture, so
+    # their weighted prediction is the explained model's holdout mean.
+    # Explanation replays TEST in smaller batches (observed drift < 0.001).
+    key = ('events', 1, 'COUNT(*)')
+    cohort = explained.cohort(key)
+    mean = sum(p * q for p, q in zip(cohort.populations, cohort.predictions))
+    published = holdout.True_PROB.mean()
+    pre_refit = pd.read_parquet(run / trial.removesuffix('_refit_trainval') /
+                                'test_df.parquet').True_PROB.mean()
+    require(
+        abs(mean - published) < 0.01 <= abs(pre_refit - published),
+        f'Explained mean {mean} must be within 0.01 of the published refit '
+        f'model {published} and not of the pre-refit model {pre_refit}')
+    figure, axis = explained.plot_gradient(top_k=5)
+    require([bar.get_width()
+             for bar in axis.patches] == scores.score.nlargest(5).tolist(),
+            'Gradient plot differs from the scores')
+    figure.savefig(root / 'explanation-gradient.png')
+    figure, (predictions, populations) = explained.plot_cohort(key)
+    require(
+        predictions.lines[0].get_ydata().tolist() == cohort.predictions
+        and [bar.get_height()
+             for bar in populations.patches] == cohort.populations,
+        'Cohort plot differs from the cohort')
+    figure.savefig(root / 'explanation-cohort.png')
+    references = explained.samples()
+    require(references and all(r.available for r in references),
+            'Sampled graphs are missing')
+    entities = set(holdout.ENTITY)
+    for reference in references:
+        sampled = explained.sample(reference.artifact_id)
+        store = sampled.subgraph_store
+        user = store.nodes[store.root_id].pkey
+        require(
+            store.root_id in store.tables['users'] and user in entities
+            and set(reference.original_ids.values()) == {user}
+            and sampled.feature_store is not None,
+            f'Sample {reference.artifact_id} is not its recorded held-out user')
+
+    unknown = expect(kumo.ExplanationUnavailableError,
+                     lambda: explained.sample('999999'), '999999.json')
+    require(
+        all(a.reason == 'model_only'
+            for a in model.explanations.availability.values()),
+        'A model bundle reported training explanations')
+    bundle = expect(
+        kumo.InvalidRunError,
+        lambda: kumo.TrainingExplanations.load(root / 'untracked-model'),
+        'model bundle alone')
+    broken = root / 'broken-training-run'
+    shutil.copytree(run, broken)
+    path = broken / trial / 'explain_test' / 'scores.csv'
+    path.chmod(0)
+    try:
+        if os.access(path, os.R_OK):
+            raise PrerequisiteError(
+                'Permission case requires a non-root user without read access')
+        denied = expect(
+            (kumo.InvalidExplanationError, PermissionError),
+            lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
+            'Permission denied', str(path))
+    finally:
+        path.chmod(0o600)
+    path.unlink()
+    incomplete = expect(
+        kumo.ExplanationUnavailableError,
+        lambda: kumo.TrainingExplanations.load(broken).gradient_scores(),
+        str(path))
+    shutil.rmtree(broken)
+    return dict(trial=trial, explained_mean=mean,
+                published_mean=float(published),
+                pre_refit_mean=float(pre_refit), samples=len(references),
+                unknown_sample=unknown, model_only=bundle,
+                denied_artifact_access=denied, incomplete_artifact=incomplete)
+
+
 def phase(args):
     started = time.monotonic()
     report = dict(status='failed', phase=args.phase)
@@ -820,6 +949,7 @@ def run(args):
         execution_started = True
         phases = (('negative', 'fit', 'score',
                    'evaluate') if profile is not None else PHASES)
+        report['phases'] = {name: report['phases'][name] for name in phases}
         for name in phases:
             command = [
                 sys.executable, '-I',
