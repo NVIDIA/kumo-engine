@@ -153,42 +153,34 @@ dedicated test environment. These server-side settings
 and the IAM trust enforce access; the branch-owned preflight is configuration lint.
 Only manual dispatch starts cloud work.
 
-The runner can pass only `kumo-engine-sagemaker-test-pipeline`; that role alone
-can create training jobs and pass `kumo-engine-sagemaker-test-execution`.
-IAM restricts job instance types to `ml.m5.2xlarge` and runtime to 3,600 seconds.
-The compiled NotebookJobStep also requires one instance and no retries.
-IAM likewise limits Studio app creation to the same CPU instance type. These
-bounds do not cap the number of permitted jobs or replace account quotas.
-The notebook/Studio execution role cannot create jobs or pass any role.
-The [AWS MLflow action reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_sagemaker-mlflow.html)
-lists `LogModel`, `LogLoggedModelParams` and `SetLoggedModelTags`; it does not
-list a `CreateLoggedModel` IAM action. The execution policy includes those named
-model-write permissions on the dedicated tracking server.
+Account provisioning and IAM policy changes are administrator prerequisites
+managed outside this repository. The test runner uses existing resources; it
+does not create IAM roles, migrate policies, or provision the Studio domain,
+user profile, or space.
 
-`prepare_access.py` generates one self-contained
-`update-sagemaker-test-permissions.sh` for an admin to review and run with AWS CLI
-and jq. It validates all existing state before changes, creates the three dedicated
-roles and a fresh private Studio profile/space, and revokes only recognized legacy
-suite grants from the shared runner and old combined role, including its recognized
-`pipeline-steps` self-launch grant. It preserves unrelated
-permissions and trust, rejects drift, and leaves existing domain defaults unchanged.
+The required role separation is:
 
-The script discovers the suite-tagged `kumo-test-sagemaker` domain and creates the
-`kumo-test-validation` profile and `kumo-test-validation-space` private space,
-using 100 GiB EBS and `ml.m5.2xlarge`. It disables EFS auto-mounting and output sharing, and configures
-60-minute idle shutdown. It never starts an app or job. Put its returned domain ID
-in the GitHub environment variable `SAGEMAKER_TEST_DOMAIN_ID`; local full-UI runs
-use the same variable. No domain identifier is committed to source.
+- The runner may pass only `kumo-engine-sagemaker-test-pipeline`.
+- The pipeline role creates notebook training jobs and may pass only
+  `kumo-engine-sagemaker-test-execution`.
+- The notebook/Studio execution role accesses the dedicated S3 prefixes and
+  managed MLflow server; it must not create jobs or pass roles.
 
-```sh
-python packages/kumo-engine/test/sagemaker_notebook/prepare_access.py \
-  --output-dir /tmp/kumo-sagemaker-permissions
-sh /tmp/kumo-sagemaker-permissions/update-sagemaker-test-permissions.sh
-```
+Account policies must limit job and Studio instances to `ml.m5.2xlarge` and job
+runtime to 3,600 seconds. The compiled NotebookJobStep independently requires
+one instance, no retries, and the same runtime cap. These bounds do not cap
+job counts or replace account quotas. Managed MLflow access should use named
+read/write actions on the dedicated server rather than `sagemaker-mlflow:*`.
+This document describes prerequisites, not evidence that a policy was applied.
 
-The admin runs the second command after reviewing the generated script.
-Local credentials must independently have the equivalent scoped permissions;
-the environment-only OIDC role does not grant SSO identities additional access.
+Full UI checks require the existing `kumo-test-validation` user profile and
+`kumo-test-validation-space` private space in the dedicated test domain.
+Their expected settings are checked by
+[`studio.py`](../../packages/kumo-engine/test/sagemaker_notebook/studio.py).
+Set `SAGEMAKER_TEST_DOMAIN_ID` in the GitHub environment and for local full-UI
+runs. No domain identifier is committed to source. Local credentials need
+scoped access independently; the environment-only OIDC role does not grant
+SSO identities additional access.
 
 The permission negative uses an existing readable sentinel at
 `mlops-validation/sagemaker-denied/README.txt` and requires an actual provider
@@ -277,11 +269,6 @@ timer also interrupts work at that deadline. The timer is removed before the
 final evidence upload, reserving ten minutes of the job limit for publication
 and framework overhead. The controller allows 4,500 seconds; Actions allows 150
 minutes for managed UI checks and cleanup.
-
-The admin migration accepts only exact recorded previous dedicated policies
-when replacing the MLflow wildcard with named actions. The existing runtime cap
-is unchanged, so applying that tightening is not a prerequisite for rerunning
-the notebook. Preparing or testing the script does not apply IAM changes.
 
 Native Studio save verification adds a unique markdown edit absent from the
 uploaded notebook, observes the dirty state, saves, and requires that edit after

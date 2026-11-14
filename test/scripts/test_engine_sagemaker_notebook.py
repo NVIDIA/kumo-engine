@@ -6,7 +6,6 @@ import copy
 import importlib
 import io
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -25,8 +24,8 @@ def modules(monkeypatch):
     monkeypatch.setenv('SAGEMAKER_TEST_DOMAIN_ID', 'd-test123')
     monkeypatch.setenv('SAGEMAKER_TEST_CANDIDATE', str(
         Path(__file__).parent / 'data/sagemaker-candidate.json'))
-    names = ('config', 'evidence', 'runtime', 'client', 'run', 'policies',
-             'prepare_access', 'expected_ui', 'studio', 'browser', 'cleanup')
+    names = ('config', 'evidence', 'runtime', 'client', 'run', 'expected_ui',
+             'studio', 'browser', 'cleanup')
     for name in names:
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.syspath_prepend(str(HERE))
@@ -360,41 +359,6 @@ def test_sdk_compiles_actual_scoped_notebook_training_job(
     upload.assert_called_once()
 
 
-def test_policy_plan_separates_launch_and_runtime_roles(modules):
-    plan = modules.policies.plan()
-    assert set(plan['roles']) == {'RUNNER', 'PIPELINE', 'EXECUTION'}
-    assert len({r['arn'] for r in plan['roles'].values()}) == 3
-    runner = plan['roles']['RUNNER']
-    assert runner['arn'].endswith('/kumo-engine-sagemaker-test-runner')
-    trusts = runner['trust']['Statement']
-    assert len(trusts) == 1
-    condition = trusts[0]['Condition']['StringEquals']
-    assert condition['token.actions.githubusercontent.com:aud'] == 'sts.amazonaws.com'
-    assert condition['token.actions.githubusercontent.com:sub'] == (
-        'repo:NVIDIA@1728152/kumo-engine@1402052651:environment:sagemaker-mlops-test')
-    execution = plan['roles']['EXECUTION']['permissions']['Statement']
-    assert not any('iam:PassRole' in s['Action'] or
-                   'sagemaker:CreateTrainingJob' in s['Action'] for s in execution)
-    pipeline = plan['roles']['PIPELINE']['permissions']['Statement']
-    create = next(s for s in pipeline if s['Action'] == ['sagemaker:CreateTrainingJob'])
-    assert create['Condition'] == {
-        'ForAllValues:StringEquals': {
-            'sagemaker:InstanceTypes': ['ml.m5.2xlarge']
-        },
-        'NumericLessThanEquals': {
-            'sagemaker:MaxRuntimeInSeconds': 3600
-        },
-        'Null': {
-            'sagemaker:InstanceTypes': 'false',
-            'sagemaker:MaxRuntimeInSeconds': 'false'
-        },
-    }
-    passrole = next(s for s in pipeline if s['Action'] == ['iam:PassRole'])
-    assert passrole['Resource'] == [plan['roles']['EXECUTION']['arn']]
-    assert all('sagemaker:InstanceTypes' not in json.dumps(s.get('Condition', {}))
-               for s in pipeline if s is not create)
-
-
 @pytest.fixture
 def lifecycle_receipts(tmp_path):
     counter = iter(range(1, 11))
@@ -598,7 +562,6 @@ def test_dirty_browser_sources_cannot_reuse_committed_provenance(
     shared = root / 'test/snowflake_notebook'
     files = [
         'sagemaker_notebook/run.py', 'sagemaker_notebook/browser.cjs',
-        'sagemaker_notebook/apply_access.sh',
         'sagemaker_notebook/requirements.txt', 'pr172/inputs.json',
         'snowflake_notebook/graph_ui.cjs',
         'snowflake_notebook/verification.cjs', 'platform_candidate.py',
@@ -627,56 +590,6 @@ def test_dirty_browser_sources_cannot_reuse_committed_provenance(
     (root / 'test' / dirty).write_bytes(b'dirty browser verifier\n')
     with pytest.raises(ValueError, match='Commit the exact test inputs'):
         modules.run.committed_sources()
-
-
-def test_studio_setup_requests_match_aws_service_shapes(modules):
-    boto3 = pytest.importorskip('boto3')
-    from botocore.validate import validate_parameters
-    client = boto3.client('sagemaker', region_name='us-west-2',
-                          aws_access_key_id='test', aws_secret_access_key='test')
-    plan = modules.policies.studio_plan('vpc-989a8fe0', ['subnet-5101710c'])
-    for name, operation in [('domain', 'CreateDomain'),
-                            ('profile', 'CreateUserProfile'),
-                            ('space', 'CreateSpace')]:
-        request = json.loads(json.dumps(plan[name]).replace(
-            plan['placeholder'], 'd-test123'))
-        shape = client.meta.service_model.operation_model(operation).input_shape
-        validate_parameters(request, shape)
-    with pytest.raises(ValueError, match='distinct'):
-        modules.policies.studio_plan('vpc-989a8fe0',
-                                     ['subnet-5101710c', 'subnet-5101710c'])
-
-
-@pytest.mark.parametrize('role', ['RUNNER', 'PIPELINE', 'EXECUTION', 'MLFLOW'])
-def test_bucket_listing_is_limited_to_test_prefix(modules, role):
-    import fnmatch
-
-    policy = modules.policies.permissions(role)
-    listings = [s for s in policy['Statement'] if 's3:ListBucket' in s['Action']]
-    assert listings
-    for statement in listings:
-        assert statement['Action'] == ['s3:ListBucket']
-        pattern = statement['Condition']['StringLike']['s3:prefix']
-        assert pattern == 'mlops-validation/sagemaker/*'
-        assert fnmatch.fnmatchcase('mlops-validation/sagemaker/', pattern)
-        assert fnmatch.fnmatchcase('mlops-validation/sagemaker/payload/file', pattern)
-        for prefix in ['', 'mlops-validation/', 'mlops-validation/sagemaker',
-                       'mlops-validation/sagemaker-denied/', 'other/']:
-            assert not fnmatch.fnmatchcase(prefix, pattern)
-    locations = [s for s in policy['Statement'] if 's3:GetBucketLocation' in s['Action']]
-    assert all(s['Action'] == ['s3:GetBucketLocation'] and 'Condition' not in s
-               for s in locations)
-
-
-def test_admin_script_needs_no_mode_flag(modules, tmp_path):
-    script = modules.prepare_access.standalone(tmp_path, modules.policies.plan())
-    text = script.read_text()
-    assert '--studio' not in text.split('KUMO_ACCESS_CONFIG')[0]
-    result = subprocess.run([shutil.which('sh'), str(script), '--studio'],
-                            capture_output=True, text=True,
-                            env=dict(os.environ, PATH='/nonexistent'))
-    assert result.returncode != 0
-    assert 'Usage: sh' in result.stderr
 
 
 @pytest.fixture
@@ -1045,20 +958,6 @@ def test_native_studio_collects_independent_evidence_after_export_failure(
     assert report['status'] == ('passed' if export_passed else 'failed')
 
 
-def test_runner_mlflow_ui_addition_is_readonly_and_dedicated(modules):
-    policy = modules.policies.plan()['mlflow_ui_permissions']
-    assert len(policy['Statement']) == 1
-    statement = policy['Statement'][0]
-    assert statement['Effect'] == 'Allow'
-    assert statement['Resource'] == [modules.config.configuration()['tracking_arn']]
-    actions = statement['Action']
-    assert {'sagemaker-mlflow:GetRun', 'sagemaker-mlflow:GetExperiment',
-            'sagemaker-mlflow:GetMetricHistory'} <= set(actions)
-    assert all(action.startswith(('sagemaker-mlflow:Get', 'sagemaker-mlflow:List',
-                                  'sagemaker-mlflow:Search')) and '*' not in action
-               for action in actions)
-
-
 def test_launcher_initializes_mlflow_auth_before_first_request(
         modules, tmp_path, monkeypatch):
     tracking_arn = modules.config.configuration()['tracking_arn']
@@ -1245,18 +1144,6 @@ def test_cleanup_removes_only_the_attempt_experiment_artifacts(
         assert any(call.kwargs['Prefix'].endswith('/mlflow-artifacts-final/42/')
                    for call in client.s3.list_objects_v2.call_args_list)
     tracking.delete_registered_model.assert_called_once_with('kumo-test-mlops-123456abcdef')
-
-
-def test_pipeline_permissions_cover_pipeline_and_execution_arns(modules):
-    import fnmatch
-    policies = modules.policies.permissions('RUNNER')['Statement']
-    statement = next(s for s in policies if 'sagemaker:CreatePipeline' in s['Action'])
-    base = 'arn:aws:sagemaker:us-west-2:926922431314:pipeline/'
-    for arn in [base + 'kumo-test-notebook-123456abcdef',
-                base + 'kumo-test-notebook-123456abcdef/execution/test']:
-        assert any(fnmatch.fnmatchcase(arn, p) for p in statement['Resource'])
-    assert not any(fnmatch.fnmatchcase(base + 'production', p)
-                   for p in statement['Resource'])
 
 
 def test_studio_lease_refuses_overlapping_invocations(studio_resources):
@@ -1599,20 +1486,6 @@ def test_studio_input_keeps_original_code_outputs_and_receipt(
         assert upload != original
         assert modules.evidence.digest(
             upload.read_bytes()) != modules.evidence.digest(before)
-
-
-def test_execution_policy_supports_logged_model_lifecycle(modules):
-    cfg = modules.config.configuration()
-    statements = modules.policies.permissions('EXECUTION')['Statement']
-    required = {'LogModel', 'LogLoggedModelParams', 'SetLoggedModelTags',
-                'GetLoggedModel', 'FinalizeLoggedModel', 'LogOutputs'}
-    granted = {action for statement in statements
-               if statement['Effect'] == 'Allow'
-               and statement['Resource'] == [cfg['tracking_arn']]
-               for action in statement['Action']}
-    assert {'sagemaker-mlflow:' + name for name in required} <= granted
-    assert 'sagemaker-mlflow:CreateLoggedModel' not in granted
-    assert 'sagemaker-mlflow:*' not in granted
 
 
 def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_path):

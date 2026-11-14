@@ -40,10 +40,9 @@ def committed_sources():
         set(SOURCES.values()) | set(HERE.glob('*.py')) | set(HERE.glob('*.in'))
         | set(HERE.glob('*.txt')) | set(HERE.glob('*.cjs'))
         | {
-            HERE / 'browser.cjs', HERE / 'apply_access.sh', HERE /
-            'requirements.txt', SHARED / 'graph_ui.cjs', SHARED /
-            'verification.cjs', HERE.parent / 'platform_candidate.py', SHARED /
-            'browser/package.json', SHARED /
+            HERE / 'browser.cjs', HERE / 'requirements.txt', SHARED /
+            'graph_ui.cjs', SHARED / 'verification.cjs', HERE.parent /
+            'platform_candidate.py', SHARED / 'browser/package.json', SHARED /
             'browser/package-lock.json', HERE.parent / 'pr172/inputs.json'
         })
     contents, hashes = {}, {}
