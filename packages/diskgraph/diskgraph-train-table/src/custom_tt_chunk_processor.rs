@@ -245,7 +245,7 @@ pub fn read_projected_parquet(
 /// Determine the `OutputMode` for a custom-TT job by peeking at the
 /// customer parquet's schema. For Forecasting, this picks up
 /// AUTOREGRESSION_COL and (optionally) YOY_COL dtypes from the actual
-/// `autoregression` / `yoy` columns; for Node, it picks up the TARGETk
+/// `autoregression` / `yoy` columns; for Node and Forecasting, it picks up the TARGETk
 /// dtype from each `TARGETk` slot the plan declares. Falls back to
 /// `Float64` defaults when columns are absent.
 fn output_mode_for_custom_tt<U: UnitSystem>(
@@ -258,6 +258,23 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
     drop(probe);
 
     let lookup = |name: &str| arrow_schema.field_with_name(name).ok().cloned();
+    let scalar_target_dtypes = || {
+        if plan.is_prediction {
+            return Vec::new();
+        }
+        (0..plan.target_alias_indices.len())
+            .map(|i| {
+                lookup(&target_column(i))
+                    .map(|f| f.data_type().clone())
+                    .unwrap_or_else(|| {
+                        plan.target_dtypes
+                            .get(i)
+                            .cloned()
+                            .unwrap_or(DataType::Float64)
+                    })
+            })
+            .collect()
+    };
     match plan.prediction_type {
         PredictionType::PassThrough => Ok(OutputMode::PassThrough),
         PredictionType::Forecasting => {
@@ -274,43 +291,15 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
             let future_labels_dtype =
                 lookup(FUTURE_LABELS_OUTPUT_ALIAS).map(|f| f.data_type().clone());
             Ok(OutputMode::Forecasting {
-                target_dtypes: if !plan.is_prediction {
-                    plan.target_dtypes.clone()
-                } else {
-                    Vec::new()
-                },
+                target_dtypes: scalar_target_dtypes(),
                 autoregression_dtype: ar_dtype,
                 future_labels_dtype,
                 yoy_dtype,
             })
         }
-        PredictionType::Node => {
-            // A PREDICTION bundle carries NO target column — native predict
-            // emits `[ENTITY1, TIMESTAMP]` only (its plan is PassThrough).
-            // Empty target_dtypes ⟹ zero TARGETk columns (same predict
-            // contract as the Forecasting arm above).
-            let target_dtypes: Vec<DataType> = if plan.is_prediction {
-                Vec::new()
-            } else {
-                // Read one TARGETk dtype per declared target slot, falling back
-                // to the plan-resolved target_dtype for that slot when the
-                // parquet doesn't carry it.
-                (0..plan.target_alias_indices.len())
-                    .map(|i| {
-                        let parquet_name = target_column(i);
-                        lookup(&parquet_name)
-                            .map(|f| f.data_type().clone())
-                            .unwrap_or_else(|| {
-                                plan.target_dtypes
-                                    .get(i)
-                                    .cloned()
-                                    .unwrap_or(DataType::Float64)
-                            })
-                    })
-                    .collect()
-            };
-            Ok(OutputMode::Node { target_dtypes })
-        }
+        PredictionType::Node => Ok(OutputMode::Node {
+            target_dtypes: scalar_target_dtypes(),
+        }),
         PredictionType::Link { include_frequency } => {
             // Predict LP seed tables carry no TARGET1 list column → no target
             // columns in the bundle (same predict contract as Node above).
@@ -458,8 +447,8 @@ fn read_timestamp_ticks(
     None
 }
 
-/// Read a list cell as `Value::List(Vec<Value>)`. Supports inner Float64,
-/// Int64, and Utf8. Returns `None` if the cell is null or the array shape is
+/// Read a list cell as `Value::List(Vec<Value>)`. Supports inner Float32,
+/// Float64, Int64, and Utf8. Returns `None` if the cell is null or the array shape is
 /// unsupported.
 fn read_list_cell<O: arrow_array::OffsetSizeTrait>(
     arr: &arrow_array::GenericListArray<O>,
@@ -477,6 +466,16 @@ fn read_list_cell<O: arrow_array::OffsetSizeTrait>(
                 out.push(Value::Float(f64::NAN));
             } else {
                 out.push(Value::Float(f.value(j)));
+            }
+        }
+        return Some(Value::List(out));
+    }
+    if let Some(f) = list.as_any().downcast_ref::<Float32Array>() {
+        for j in 0..n {
+            if f.is_null(j) {
+                out.push(Value::Float(f64::NAN));
+            } else {
+                out.push(Value::Float(f64::from(f.value(j))));
             }
         }
         return Some(Value::List(out));
@@ -1104,13 +1103,20 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
         .map(|(idx, field)| (idx, field.name().clone()))
         .collect();
 
-    // Pre-resolve per-slot TARGETk / autoregression / yoy column indices for
-    // direct batch reads (avoids per-row name lookups). For Node prediction
-    // we read one TARGETk per declared target slot; missing TARGETk falls
-    // back to NaN (matches the previous behavior for slot 1).
+    let requires_targets =
+        !plan.is_prediction && !matches!(plan.prediction_type, PredictionType::PassThrough);
     let target_col_indices: Vec<Option<usize>> = (0..plan.target_alias_indices.len())
-        .map(|i| schema.index_of(&target_column(i)).ok())
-        .collect();
+        .map(|i| {
+            let name = target_column(i);
+            match schema.index_of(&name) {
+                Ok(index) => Ok(Some(index)),
+                Err(_) if !requires_targets => Ok(None),
+                Err(_) => Err(TTGenError::SchemaError(format!(
+                    "custom-TT parquet missing required column '{name}'"
+                ))),
+            }
+        })
+        .collect::<TTGenResult<_>>()?;
     let frequency_col_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
     let autoreg_col_idx = schema.index_of(AUTOREGRESSION_OUTPUT_ALIAS).ok();
     let future_labels_col_idx = schema.index_of(FUTURE_LABELS_OUTPUT_ALIAS).ok();
@@ -1458,8 +1464,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // A PREDICTION bundle carries NO target (native predict emits
                 // `[ENTITY1, TIMESTAMP]` only). For predict, emit an empty
                 // target set so `write_row_wide` writes no TARGETk columns.
-                // TRAIN reads each TARGETk; missing → NaN (preserves the prior
-                // single-target fallback behavior).
                 let targets: Vec<Value> = if plan.is_prediction {
                     Vec::new()
                 } else {
@@ -2012,6 +2016,28 @@ mod contract_tests {
             (Some("string"), "large_list", Arc::new(large_str.finish())),
             (Some("float64"), "fixed_size_list", Arc::new(fixed.finish())),
         ]
+    }
+
+    #[test]
+    fn read_float32_list_preserves_values_and_nulls() {
+        let mut builder = ListBuilder::new(Float32Builder::new());
+        builder.values().append_value(1.25);
+        builder.values().append_null();
+        builder.values().append_value(-3.5);
+        builder.append(true);
+        builder.append(true);
+        builder.append(false);
+        let array = builder.finish();
+
+        let Some(Value::List(values)) = read_list_cell(&array, 0) else {
+            panic!("Float32 list must be readable");
+        };
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[0], Value::Float(1.25));
+        assert!(matches!(values[1], Value::Float(value) if value.is_nan()));
+        assert_eq!(values[2], Value::Float(-3.5));
+        assert_eq!(read_list_cell(&array, 1), Some(Value::List(vec![])));
+        assert_eq!(read_list_cell(&array, 2), None);
     }
 
     #[test]
