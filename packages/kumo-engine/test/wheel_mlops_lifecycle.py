@@ -339,7 +339,7 @@ def small_plan(seed, trials=1):
 
 def local_fit_record(run, history, registered, bundle):
     require(run.info.status == 'FINISHED', 'Fit tracking unfinished')
-    require(run.data.params.get('kumo.bundle_id') == bundle,
+    require(run.data.tags.get('kumo.bundle_id') == bundle,
             'Fit tracking records the wrong bundle')
     require(
         all(len({step for step, _ in points}) >= 2
