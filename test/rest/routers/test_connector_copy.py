@@ -42,8 +42,10 @@ def _connector(project_id: str, name: str = 'events',
 
 def _driver_with_source(source: api.ConnectorResponse):
     driver = SimpleNamespace(
-        _connector_service=SimpleNamespace(get_for_project=AsyncMock(
-            return_value=source)),
+        _connector_service=SimpleNamespace(
+            get_for_project=AsyncMock(return_value=source),
+            list_for_project=AsyncMock(return_value=[]),
+        ),
         create_project_connector=AsyncMock(
             side_effect=lambda project_id, args, principal: _connector(
                 project_id, args.name, args.description)),
@@ -102,6 +104,24 @@ async def test_copy_into_the_source_project_is_rejected_before_lookup() -> None:
             MagicMock())
 
     driver._connector_service.get_for_project.assert_not_awaited()
+    driver.create_project_connector.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_copy_rejects_a_name_already_used_in_the_target() -> None:
+    source = _connector(SOURCE_PROJECT)
+    driver = _driver_with_source(source)
+    driver._connector_service.list_for_project.return_value = [
+        _connector(TARGET_PROJECT, name='EVENTS')
+    ]
+
+    with pytest.raises(ConnectorNameConflictError, match='already exists'):
+        await ConnectorApiDriver.copy_project_connector(
+            driver, ProjectID(SOURCE_PROJECT), ConnectorID(source.id),
+            api.CopyConnectorArgs(target_project_id=TARGET_PROJECT),
+            MagicMock())
+
+    driver._connector_service.list_for_project.assert_awaited_once()
     driver.create_project_connector.assert_not_awaited()
 
 

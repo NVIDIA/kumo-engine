@@ -101,6 +101,7 @@ from statedb.config.common import (
     TableName,
 )
 from statedb.db.auth import AuthPrincipal
+from statedb.db.identities import normalize_display_name
 from statedb.db.services import ConnectorService, StateServices, TableService
 from statedb.rest.connector_authorization import (
     CONNECTOR_DISCOVERY_ACTIONS,
@@ -303,6 +304,15 @@ class ConnectorApiDriver:
             description=(args.description if args.description is not None
                          else source.description),
         )
+        existing_names = {
+            normalize_display_name(connector.name)
+            for connector in await self._connector_service.list_for_project(
+                target_project_id, principal)
+        }
+        if normalize_display_name(create_args.name) in existing_names:
+            raise ConnectorNameConflictError(
+                f"Connector named '{create_args.name}' already exists in "
+                'this project')
         return await self.create_project_connector(target_project_id,
                                                    create_args, principal)
 

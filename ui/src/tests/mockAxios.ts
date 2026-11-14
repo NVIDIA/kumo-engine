@@ -247,7 +247,7 @@ export const mockAxiosInstance = {
         if (url === "v1/tables/infer_metadata") {
             return mockInferMetadataResponse(payload);
         }
-        if (url.startsWith("v0/projects/") && url.endsWith("/copy")) {
+        if (/^v0\/projects\/[^/]+\/connectors\/[^/]+\/copy$/.test(url)) {
             return mockCopyConnectorResponse();
         }
         if (

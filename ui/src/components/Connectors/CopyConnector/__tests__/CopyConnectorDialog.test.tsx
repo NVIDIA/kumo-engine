@@ -140,6 +140,31 @@ describe("CopyConnectorDialog", () => {
         expect(navigate).not.toHaveBeenCalled();
     });
 
+    it("sends one copy request when Copy is activated twice while a copy is pending", async () => {
+        let resolveCopy: (value: unknown) => void = () => {};
+        copyConnector.mockReturnValue(
+            new Promise((resolve) => {
+                resolveCopy = resolve;
+            })
+        );
+        renderDialog();
+
+        await chooseTarget("Marketing");
+        await userEvent.click(copyButton());
+        await userEvent.click(copyButton());
+        resolveCopy({
+            connector: null,
+            error: "Connector named 'Sales analytics' already exists in this project"
+        });
+
+        await waitFor(() =>
+            expect(screen.getByRole("alert")).toHaveTextContent(
+                "already exists"
+            )
+        );
+        expect(copyConnector).toHaveBeenCalledTimes(1);
+    });
+
     it("disables Copy when the name is blank", async () => {
         renderDialog();
 

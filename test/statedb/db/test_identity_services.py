@@ -4168,7 +4168,7 @@ async def test_copy_connector_rejects_project_upload_connector(
 
 
 @pytest.mark.asyncio
-async def test_repeated_copy_returns_the_existing_target_connector(
+async def test_repeated_copy_reports_that_the_connector_already_exists(
         db: StateDB) -> None:
     (group_id, source_project, user, _identities, connectors, _identity,
      source) = await _bound_databricks_connector(db)
@@ -4176,9 +4176,43 @@ async def test_repeated_copy_returns_the_existing_target_connector(
 
     first = await _copy(connectors, source_project, source.id,
                         target_project, user)
-    second = await _copy(connectors, source_project, source.id,
+    with pytest.raises(ConnectorNameConflictError, match='already exists'):
+        await _copy(connectors, source_project, source.id, target_project,
+                    user)
+
+    assert [c.id for c in await connectors.list_for_project(
+        target_project, user)] == [first.id]
+
+
+@pytest.mark.asyncio
+async def test_copy_rejects_name_used_by_a_differently_configured_connector(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+    existing = await _create_connector(
+        connectors, target_project,
+        _connector_args(source.name, identity.id, 'other_schema'), user)
+
+    with pytest.raises(ConnectorNameConflictError, match='already exists'):
+        await _copy(connectors, source_project, source.id, target_project,
+                    user)
+
+    assert [c.id for c in await connectors.list_for_project(
+        target_project, user)] == [existing.id]
+
+
+@pytest.mark.asyncio
+async def test_copy_from_an_archived_source_project_is_allowed(
+        db: StateDB) -> None:
+    (group_id, source_project, user, _identities, connectors, _identity,
+     source) = await _bound_databricks_connector(db)
+    target_project = await _create_project(db, group_id, 'target')
+    await _set_project_status(db, source_project, ProjectStatus.ARCHIVED)
+
+    copied = await _copy(connectors, source_project, source.id,
                          target_project, user)
 
-    assert second.id == first.id
-    assert len(await connectors.list_for_project(target_project, user)) == 1
+    assert copied.project_id == target_project
+    assert copied.config == source.config
 

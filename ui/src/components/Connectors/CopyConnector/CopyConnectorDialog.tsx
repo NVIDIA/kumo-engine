@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import {
     Button,
@@ -43,18 +43,10 @@ const CopyConnectorDialogComponent = ({
         useProjectList();
     const { copyConnector, isCopying } = useCopyConnector();
     const [targetProjectId, setTargetProjectId] = useState("");
-    const [name, setName] = useState("");
+    const [name, setName] = useState(connector?.name ?? "");
     const [errorMsg, setErrorMsg] = useState("");
     const [copied, setCopied] = useState<ConnectorResponse | null>(null);
-
-    useEffect(() => {
-        if (open) {
-            setTargetProjectId("");
-            setName(connector?.name ?? "");
-            setErrorMsg("");
-            setCopied(null);
-        }
-    }, [open, connector?.name]);
+    const copyInFlightRef = useRef(false);
 
     const projectOptions = useMemo(
         () =>
@@ -75,15 +67,20 @@ const CopyConnectorDialogComponent = ({
         projectOptions.find((p) => p.value === targetProjectId)?.label ?? "";
 
     const onCopyClick = async () => {
-        if (!connector) return;
-        const result = await copyConnector(sourceProjectId, connector.id, {
-            target_project_id: targetProjectId,
-            name: name.trim()
-        });
-        if (result.error !== null) {
-            setErrorMsg(result.error);
-        } else {
-            setCopied(result.connector);
+        if (!connector || copyInFlightRef.current) return;
+        copyInFlightRef.current = true;
+        try {
+            const result = await copyConnector(sourceProjectId, connector.id, {
+                target_project_id: targetProjectId,
+                name: name.trim()
+            });
+            if (result.error !== null) {
+                setErrorMsg(result.error);
+            } else {
+                setCopied(result.connector);
+            }
+        } finally {
+            copyInFlightRef.current = false;
         }
     };
 
