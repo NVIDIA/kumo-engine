@@ -1,0 +1,243 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Databricks notebook platform checks
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Notebook scenario
+        type: choice
+        default: graph-ui
+        options: [graph-ui, engine, all]
+      cluster_id:
+        description: Dedicated single-node KUMO_TEST_ x86 cluster for all scenarios
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: databricks-notebook-ui
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    name: Check protected Databricks environment
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      (github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require dedicated x86 cluster input
+        env:
+          DATABRICKS_TEST_CLUSTER: ${{ inputs.cluster_id }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, re
+          if not re.fullmatch(r'[0-9]{4}-[0-9]{6}-[a-z0-9]+', os.environ['DATABRICKS_TEST_CLUSTER']):
+              raise SystemExit('Provide a dedicated KUMO_TEST_ x86 cluster_id for every scenario')
+          PYTHON
+      - &check-environment
+        name: Verify maintainer-protected environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 packages/kumo-engine/test/databricks_notebook/check_environment.py
+  wheel:
+    needs: configuration
+    uses: ./.github/workflows/kumo-engine-pr.yml
+    with:
+      build_only: true
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
+  notebook-ui:
+    needs: [configuration, wheel]
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      (github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.event_name == 'workflow_dispatch' && inputs.mode != 'engine'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 110
+    environment: databricks-mlops-test
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - *check-environment
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6
+        with:
+          node-version: '22'
+      - name: Require dedicated test configuration and PAT
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'packages/kumo-engine/test/databricks_notebook')
+          from client import Client, configuration
+          Client(configuration())
+          PY
+      - name: Install the shared locked browser tools
+        run: |
+          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
+          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+      - &download-candidate
+        name: Download this dispatch's wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/databricks-wheel
+      - &prepare-candidate
+        name: Identify this checkout's wheel
+        run: |
+          export DATABRICKS_TEST_CANDIDATE="$RUNNER_TEMP/databricks-candidate.json"
+          printf 'DATABRICKS_TEST_CANDIDATE=%s\n' "$DATABRICKS_TEST_CANDIDATE" >> "$GITHUB_ENV"
+          python packages/kumo-engine/test/platform_candidate.py \
+            --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
+            --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
+            --output "$DATABRICKS_TEST_CANDIDATE"
+      - name: Recover expired owned attempts from the test Volume
+        timeout-minutes: 7
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+            --execute --output-dir "$RUNNER_TEMP/databricks-retention"
+      - name: Run the same notebook and export checks as local testing
+        env:
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+          DATABRICKS_TEST_CLUSTER: ${{ inputs.cluster_id }}
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/run.py \
+            --execute --cluster-id "$DATABRICKS_TEST_CLUSTER" \
+            --candidate "$DATABRICKS_TEST_CANDIDATE" \
+            --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
+            --output-dir "$RUNNER_TEMP/databricks-graph"
+      - name: Recover owned attempt resources
+        if: always()
+        timeout-minutes: 7
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/cleanup.py \
+            --output-dir "$RUNNER_TEMP/databricks-graph"
+      - name: Prepare public aggregate results
+        if: always()
+        run: |
+          python packages/kumo-engine/test/platform_summary.py \
+            --platform databricks --scenario graph \
+            --input "$RUNNER_TEMP/databricks-graph" \
+            --output "$RUNNER_TEMP/databricks-graph-public"
+      - name: Retain notebook execution and browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: databricks-graph-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/databricks-graph-public/
+          if-no-files-found: warn
+          retention-days: 7
+  engine-lifecycle:
+    name: Databricks notebook engine checks (native UI excluded)
+    needs: [configuration, wheel]
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      (github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.event_name == 'workflow_dispatch' && inputs.mode != 'graph-ui'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 130
+    environment: databricks-mlops-test
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - *check-environment
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - *download-candidate
+      - *prepare-candidate
+      - name: Recover expired owned attempts from the test Volume
+        if: inputs.mode == 'engine'
+        timeout-minutes: 7
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+            --execute --output-dir "$RUNNER_TEMP/databricks-retention"
+      - name: Execute the shared lifecycle in isolated notebook processes
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+          DATABRICKS_TEST_CLUSTER: ${{ inputs.cluster_id }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+            --execute --cluster-id "$DATABRICKS_TEST_CLUSTER" --engine-checks-only \
+            --candidate "$DATABRICKS_TEST_CANDIDATE" \
+            --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
+            --output-dir "$RUNNER_TEMP/databricks-lifecycle"
+      - name: Recover owned attempt resources
+        if: always()
+        timeout-minutes: 7
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: |
+          python packages/kumo-engine/test/databricks_notebook/cleanup.py \
+            --output-dir "$RUNNER_TEMP/databricks-lifecycle"
+      - name: Prepare public aggregate results
+        if: always()
+        run: |
+          python packages/kumo-engine/test/platform_summary.py \
+            --platform databricks --scenario engine \
+            --input "$RUNNER_TEMP/databricks-lifecycle" \
+            --output "$RUNNER_TEMP/databricks-engine-public"
+      - name: Retain phase receipts, logs and qualification gaps
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: databricks-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/databricks-engine-public/
+          if-no-files-found: warn
+          retention-days: 7
