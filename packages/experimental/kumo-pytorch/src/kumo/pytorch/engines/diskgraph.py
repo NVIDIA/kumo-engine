@@ -1467,8 +1467,9 @@ class DiskGraphSource:
             batch = sequence["batch"]
             offsets = sequence["offsets"]
             timestamps = sequence["timestamps"]
+            table = destination_table(self.schema, spec.entity.table, output.spec.rows.path)
             columns = {
-                name: _arrow_values(batch.column(index))
+                name: _arrow_values(self._decode_decimal_array(table, name, batch.column(index)))
                 for index, name in enumerate(batch.schema.names)
             }
             primary_keys = (
@@ -2114,6 +2115,16 @@ class DiskGraphSource:
             return []
         return _arrow_values(self._feature_arrays(table, node_ids, (column,))[column])
 
+    def _decode_decimal_array(self, table: str, name: str, values: Any) -> Any:
+        # DiskGraph transports decimals as strings; decode once per column,
+        # before either scalar validation or Arrow encoding sees the values.
+        dtype = self._tables[table].columns.get(name)
+        if dtype is not None and dtype.name in {"decimal128", "decimal256"} and (
+            self._pa.types.is_string(values.type) or self._pa.types.is_large_string(values.type)
+        ):
+            return self._typed_array(values, dtype)
+        return values
+
     def _feature_arrays(
         self,
         table: str,
@@ -2126,7 +2137,10 @@ class DiskGraphSource:
             if ids is not None and np.array_equal(ids.to_numpy(), np.asarray(node_ids)):
                 data = self._pa.Table.from_batches(runtime["raw_features"][table]["record_batches"])
                 if all(name in data.column_names for name in names):
-                    return {name: data[name].combine_chunks() for name in names}
+                    return {
+                        name: self._decode_decimal_array(table, name, data[name].combine_chunks())
+                        for name in names
+                    }
         if not names:
             return {}
         if not node_ids:
@@ -2164,6 +2178,7 @@ class DiskGraphSource:
                     f"DiskGraph returned {len(values)} {name!r} values for "
                     f"{len(node_ids)} {table!r} nodes"
                 )
+            result[name] = self._decode_decimal_array(table, name, values)
         return result
 
     @staticmethod
