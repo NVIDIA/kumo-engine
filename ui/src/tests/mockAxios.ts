@@ -14,6 +14,7 @@ import { mockCreateGroupResponse } from "components/Admin/Groups/__tests__/MockF
 import { mockBPAvailableXaiResponse } from "components/BatchPredictions/__tests__/MockFunctions/BPAvailableXai.mock";
 import { mockBPXaiResponse } from "components/BatchPredictions/__tests__/MockFunctions/BPXai.mock";
 import { mockPredictionStatsResponse } from "components/BatchPredictions/__tests__/MockFunctions/PredictionStats.mock";
+import { mockCopyConnectorResponse } from "components/Connectors/CopyConnector/__tests__/MockFunctions/CopyConnector.mock";
 import { mockGraphSnapshotResponse } from "components/Jobs/Graph/__tests__/MockFunctions/GraphSnapshot.mock";
 import { mockGraphSnapshotTotalRows } from "components/Jobs/Graph/__tests__/MockFunctions/GraphSnapshotTotalRows.mock";
 import { mockArchiveResponse } from "components/Jobs/Overview/__tests__/MockFunctions/Archive.mock";
@@ -245,6 +246,9 @@ export const mockAxiosInstance = {
         }
         if (url === "v1/tables/infer_metadata") {
             return mockInferMetadataResponse(payload);
+        }
+        if (/^v0\/projects\/[^/]+\/connectors\/[^/]+\/copy$/.test(url)) {
+            return mockCopyConnectorResponse();
         }
         if (
             url.startsWith("v0/projects/") &&

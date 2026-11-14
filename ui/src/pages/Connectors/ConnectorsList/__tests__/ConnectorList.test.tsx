@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import { useConnectors } from "hooks/connector/connector";
@@ -37,11 +38,25 @@ const connector = {
     }
 };
 
-vi.mock("hooks/connector/connector", () => ({
-    useConnectors: vi.fn()
-}));
+vi.mock("hooks/connector/connector", async () => {
+    const { useEffect } =
+        await vi.importActual<typeof import("react")>("react");
+    return {
+        useConnectors: vi.fn(),
+        useConnectedTables: (
+            _connectorId: string,
+            _handleError: unknown,
+            setLoading: (loading: boolean) => void
+        ) => {
+            useEffect(() => setLoading(false), [setLoading]);
+            return { isLoading: false, tables: [], deleteTable: vi.fn() };
+        },
+        useCopyConnector: () => ({ copyConnector: vi.fn(), isCopying: false })
+    };
+});
 vi.mock("hooks/project/projects", () => ({
-    useProjectId: () => "project-sales"
+    useProjectId: () => "project-sales",
+    useProjectList: () => ({ projectListResponse: { data: [] } })
 }));
 vi.mock("hooks/validation/validation", () => ({
     useValidationState: () => [null, null, vi.fn(), vi.fn(), { current: null }]
@@ -80,6 +95,39 @@ describe("ConnectorsList", () => {
         );
     });
 
+    it("opens the copy dialog from the connector menu", async () => {
+        render(
+            <MemoryRouter
+                initialEntries={[
+                    "/project/project-sales/connectors/Sales analytics"
+                ]}>
+                <Routes>
+                    <Route
+                        path="/project/:projectId/connectors/:id"
+                        element={<ConnectorsList />}
+                    />
+                </Routes>
+            </MemoryRouter>
+        );
+
+        expect(
+            screen.queryByTestId("copy-connector-dialog")
+        ).not.toBeInTheDocument();
+        await userEvent.click(
+            await screen.findByTestId("more-options-dropdown")
+        );
+        await userEvent.click(
+            await screen.findByRole("menuitem", { name: /Copy to project/ })
+        );
+
+        expect(
+            await screen.findByTestId("copy-connector-dialog")
+        ).toBeInTheDocument();
+        expect(screen.getByLabelText("Connector name")).toHaveValue(
+            "Sales analytics"
+        );
+    });
+
     it("uses the project empty state", () => {
         vi.mocked(useConnectors).mockReturnValue({
             isDataLoading: false,
@@ -97,4 +145,4 @@ describe("ConnectorsList", () => {
         expect(screen.getByText("Project connector empty state")).toBeVisible();
     });
 });
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes } from "react-router";

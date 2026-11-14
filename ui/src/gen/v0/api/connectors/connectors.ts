@@ -26,6 +26,7 @@ import { customClient } from "../../../../services/orval_axios_client";
 import {
     CreateProjectsCompleteByProjectIdResponse,
     CreateProjectsConnectorsByProjectIdResponse,
+    CreateProjectsCopyByConnectorIdResponse,
     CreateProjectsDeleteByProjectIdResponse,
     CreateProjectsStartByProjectIdResponse,
     DeleteProjectsConnectorsByConnectorIdResponse,
@@ -42,6 +43,7 @@ import {
 import type {
     CompleteFileUploadRequest,
     ConnectorResponse,
+    CopyConnectorArgs,
     CreateConnectorArgs,
     DeleteUploadedFileRequest,
     EmptyResponse,
@@ -831,6 +833,113 @@ export const useDeleteProjectsConnectorsByConnectorId = <
 > => {
     return useMutation(
         getDeleteProjectsConnectorsByConnectorIdMutationOptions(options),
+        queryClient
+    );
+};
+/**
+ * @summary Copy Connector
+ */
+export const createProjectsCopyByConnectorId = (
+    projectId: string,
+    connectorId: string,
+    copyConnectorArgs: CopyConnectorArgs,
+    options?: SecondParameter<typeof customClient>,
+    signal?: AbortSignal
+) => {
+    return customClient<ConnectorResponse>(
+        {
+            url: `/v0/projects/${projectId}/connectors/${connectorId}/copy`,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            data: copyConnectorArgs,
+            signal
+        },
+        options || CreateProjectsCopyByConnectorIdResponse
+    );
+};
+
+export const getCreateProjectsCopyByConnectorIdMutationKey = () =>
+    ["createProjectsCopyByConnectorId"] as const;
+
+export const getCreateProjectsCopyByConnectorIdMutationOptions = <
+    TError = HTTPValidationError,
+    TContext = unknown
+>(options?: {
+    mutation?: UseMutationOptions<
+        Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>,
+        TError,
+        CreateProjectsCopyByConnectorIdMutationVariables,
+        TContext
+    >;
+    request?: SecondParameter<typeof customClient>;
+}): UseMutationOptions<
+    Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>,
+    TError,
+    CreateProjectsCopyByConnectorIdMutationVariables,
+    TContext
+> => {
+    const mutationKey = getCreateProjectsCopyByConnectorIdMutationKey();
+    const { mutation: mutationOptions, request: requestOptions } = options
+        ? options.mutation &&
+          "mutationKey" in options.mutation &&
+          options.mutation.mutationKey
+            ? options
+            : { ...options, mutation: { ...options.mutation, mutationKey } }
+        : { mutation: { mutationKey }, request: undefined };
+
+    const mutationFn: MutationFunction<
+        Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>,
+        CreateProjectsCopyByConnectorIdMutationVariables
+    > = (props) => {
+        const { projectId, connectorId, data } = props ?? {};
+
+        return createProjectsCopyByConnectorId(
+            projectId,
+            connectorId,
+            data,
+            requestOptions
+        );
+    };
+
+    return { mutationFn, ...mutationOptions };
+};
+
+export type CreateProjectsCopyByConnectorIdMutationResult = NonNullable<
+    Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>
+>;
+export type CreateProjectsCopyByConnectorIdMutationBody = CopyConnectorArgs;
+export type CreateProjectsCopyByConnectorIdMutationError = HTTPValidationError;
+export type CreateProjectsCopyByConnectorIdMutationVariables = {
+    projectId: string;
+    connectorId: string;
+    data: CopyConnectorArgs;
+};
+
+/**
+ * @summary Copy Connector
+ */
+export const useCreateProjectsCopyByConnectorId = <
+    TError = HTTPValidationError,
+    TContext = unknown
+>(
+    options?: {
+        mutation?: UseMutationOptions<
+            Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>,
+            TError,
+            CreateProjectsCopyByConnectorIdMutationVariables,
+            TContext
+        >;
+        request?: SecondParameter<typeof customClient>;
+    },
+    queryClient?: QueryClient
+): UseMutationResult<
+    Awaited<ReturnType<typeof createProjectsCopyByConnectorId>>,
+    TError,
+    CreateProjectsCopyByConnectorIdMutationVariables,
+    TContext
+> => {
+    return useMutation(
+        getCreateProjectsCopyByConnectorIdMutationOptions(options),
         queryClient
     );
 };
