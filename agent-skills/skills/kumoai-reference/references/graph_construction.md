@@ -9,7 +9,8 @@ Where a claim is not verified against the shipped package it is flagged. Do not 
 Import convention: `import kumo.engine as kumo`.
 
 There is no `KumoFineTuning`, `kumo.NodeType`, or `kumo.EdgeType` class. Do not emit them.
-Do not emit `kumo.init` — hosted-edition only, out of scope.
+Local `kumo.init(scratch_dir=...)` configures scratch and optional compute workers.
+Hosted initialization with URL or API-key arguments is out of scope.
 
 ---
 
@@ -70,7 +71,7 @@ quotes inside the string (`schema_name='"my_schema"'`), or it is folded to upper
 connector reaches no tables. Take the Snowpark session once, before any connector. Both rules:
 `kumoai-reference/references/kumo_finetuning_sdk.md` §3 and §3.3.
 
-Never emit `kumo.init(...)` — hosted editions only, out of scope. Never construct
+Never emit hosted `kumo.init(url=..., api_key=...)`. Never construct
 `SnowflakeConnector` with `name=`, `account=` or `credentials=`; none is a parameter.
 
 Everything after this step — tables, graph, query, training, prediction — follows the same

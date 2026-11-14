@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from types import SimpleNamespace
 
 import pytest
 from kumoapi.model_plan import ModelPlan
@@ -50,7 +51,7 @@ def test_fit_and_predict_hide_the_torch_scatter_hint(
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         with pytest.raises(RuntimeError, match='stop at test boundary'):
-            getattr(trainer, method)(None, snapshot=None)
+            getattr(trainer, method)(None, snapshot=SimpleNamespace(_compute=None))
         warnings.warn(HINT, UserWarning)
     assert [str(warning.message) for warning in caught] == [
         'an unrelated warning', HINT

@@ -35,6 +35,8 @@ from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
 
 if TYPE_CHECKING:
+    from kumo.engine.cluster import ComputeCluster
+    from kumo.engine.pquery.predictive_query import PredictiveQuery
     from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
 _RANDOM_SPLITS = ('RandomSplit', 'RandomLinkSplit')
@@ -60,6 +62,7 @@ class TrainingTable:
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
     id: Optional[str] = field(default=None, compare=False)
+    _compute: 'ComputeCluster | None' = field(default=None, compare=False, repr=False)
 
     @property
     def tt_id(self) -> str:
@@ -129,7 +132,7 @@ class TrainingTable:
 
     @classmethod
     def load_from_connector(cls, connector: Any, *, path: str,
-                            pquery: "PredictiveQuery",  # noqa: F821
+                            pquery: "PredictiveQuery",
                             snapshot: GraphSnapshot) -> "TrainingTable":
         r"""Load a table written by :meth:`export` against ``snapshot``.
 
@@ -217,7 +220,7 @@ class TrainingTable:
         source_table: SourceTable,
         spec: TrainingTableSpec,
         *,
-        pq: "PredictiveQuery",  # noqa: F821
+        pq: "PredictiveQuery",
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
         mlops: Optional[Any] = None,
@@ -246,16 +249,17 @@ class TrainingTable:
     @classmethod
     def _from_rows(
         cls,
-        source_table: SourceTable,
+        source_table: SourceTable | Path,
         spec: TrainingTableSpec,
         *,
-        pq: "PredictiveQuery",  # noqa: F821
+        pq: "PredictiveQuery",
         snapshot: GraphSnapshot,
         plan: Optional[PublicGenerationPlan] = None,
         mlops: Optional[Any] = None,
         version: Any = None,
         source: Optional[SourceTableEntry] = None,
     ) -> "TrainingTable":
+        """Materialize connector rows or downloaded Parquet with source provenance."""
         # Local imports keep the immutable descriptor cheap to import and
         # avoid pquery -> trainer -> pquery cycles.
         from kumo_core.io.json import from_json_dict
@@ -295,12 +299,22 @@ class TrainingTable:
         started = start()
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
-        rows_path, staged = stage_source_table(source_table,
-                                               run_dir / "source-table")
-        version = version or staged
-        source = source or provenance.source_table(
-            source_table.connector, source_table.table_name, source_table.sql,
-            version, record_sources=_record_sources(snapshot))
+        if isinstance(source_table, Path):
+            if source is None:
+                raise ValueError("Downloaded training rows require source provenance")
+            rows_path = source_table
+        else:
+            rows_path, staged = stage_source_table(
+                source_table, run_dir / "source-table"
+            )
+            version = version or staged
+            source = source or provenance.source_table(
+                source_table.connector,
+                source_table.table_name,
+                source_table.sql,
+                version,
+                record_sources=_record_sources(snapshot),
+            )
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
             TrainingTableGenerationPlan,

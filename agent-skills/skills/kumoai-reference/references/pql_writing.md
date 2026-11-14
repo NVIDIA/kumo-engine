@@ -482,7 +482,7 @@ print('task type:', pquery.get_task_type())
 
 `validate()` catches syntax and graph-mismatch errors; `get_task_type()` is the semantic check: the task type is never written in the query, only inferred from its shape, so print it and confirm it matches the user's intent before spending a training run. A query that validates can still be the wrong task (see the `LIST_DISTINCT` multilabel-vs-ranking trap below).
 
-> There is no `KumoFineTuning` class. Do not emit `kumo.init()` — hosted-edition only, out of scope.
+> There is no `KumoFineTuning` class. Hosted `kumo.init(url=..., api_key=...)` is out of scope; local scratch/compute initialization is separate.
 
 > `RANK BY` appears in one stray example elsewhere but is defined nowhere and contradicts the `LIST_DISTINCT(...) RANK TOP K` form used here. Treat `RANK BY` as unverified; **do not emit it.**
 
