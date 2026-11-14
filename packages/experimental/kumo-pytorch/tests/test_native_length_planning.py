@@ -16,6 +16,113 @@ diskgraph = pytest.importorskip("diskgraph")
 
 
 @pytest.mark.parametrize(
+    "row_kind",
+    ["columns", "composite", "tokens", "text_tokens", "constant_columns", "constant_tokens"],
+)
+@pytest.mark.parametrize("packed", [False, True])
+def test_native_planning_without_event_primary_key(
+    history_data, tmp_path, monkeypatch, row_kind, packed
+):
+    from dataclasses import replace
+
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+    schema, dataset, _, _, _ = history_data
+    schema = replace(
+        schema,
+        tables=tuple(
+            replace(table, primary_key=None) if table.name == "orders" else table
+            for table in schema.tables
+        ),
+    )
+    tokens = row_kind in {"tokens", "text_tokens", "constant_tokens"}
+    encoding = api.Vocabulary()
+    if row_kind == "text_tokens":
+        tokenizer = Tokenizer(
+            BPE(vocab={"[MISSING]": 0, "[UNK]": 1, "a": 2}, merges=[], unk_token="[UNK]")
+        )
+        encoding = api.Text(state=tokenizer.to_str())
+    row = api.Tokens() if tokens else api.Composite() if row_kind == "composite" else api.Columns()
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)),
+                {
+                    "kind": api.Constant("constant", api.DType("string"))
+                    if row_kind.startswith("constant")
+                    else api.Field("kind")
+                },
+            )
+        },
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            inputs={
+                "history": api.Input(
+                    api.EventSource(("history",), max_events=4),
+                    api.Fields(
+                        (api.Encode("kind", encoding, id_space="words" if tokens else None),),
+                        row=row,
+                        history=api.Flatten(128) if tokens else api.Grouped(),
+                    ),
+                    api.Packed() if packed else api.Padded(),
+                )
+            },
+            id_spaces={"words": api.IdSpace({"pad": "pad"})} if tokens else {},
+            batching=api.Batching(
+                max_samples=2, max_tokens=128, length_input="history", bucket_by_length=True
+            ),
+        ),
+    )
+    path = tmp_path / "anchors.parquet"
+    owners = [1, 3, 2, 1] * 32
+    pq.write_table(pa.table({"entity": owners, "cutoff": [5] * len(owners)}), path)
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    assert not api.check(contract, dataset, engine, anchors=anchors)
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            native = task._anchors
+            task._anchors = ParquetAnchors(anchors)
+            try:
+                expected = list(
+                    task.batches(shuffle=False, chunk_batches=64, output_format="model")
+                )
+            finally:
+                task._anchors.close()
+                task._anchors = native
+
+            def forbidden(*args, **kwargs):
+                pytest.fail("PK-free native planning reconstructed requests or encoded lengths")
+
+            monkeypatch.setattr(native, "_requests", forbidden)
+            monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
+            for epoch in (0, 1):
+                # At least 64 anchors exercise native parallel result concatenation.
+                actual = list(
+                    task.batches(
+                        shuffle=False, epoch=epoch, chunk_batches=64, output_format="model"
+                    )
+                )
+                assert len(actual) == len(expected)
+                assert sorted(i for batch in actual for i in batch.metadata["sample_ids"]) == list(
+                    range(len(owners))
+                )
+                for a, b in zip(actual, expected, strict=True):
+                    assert a.metadata["sample_ids"] == b.metadata["sample_ids"]
+                    _equal(a.inputs, b.inputs)
+                assert native._last_length_planning_stats == (
+                    (len(owners), 0) if epoch == 0 else (0, len(owners))
+                )
+
+
+@pytest.mark.parametrize(
     "layout",
     [
         api.Packed(),

@@ -533,7 +533,7 @@ class NativeAnchors:
                         )
                     )
                 columns[sequence["name"]] = costs
-                sequence["columns"] = [compiled.sequences[sequence["name"]].primary_key]
+                sequence["columns"] = []
                 continue
             if stored_costs and isinstance(spec.representation.row, Tokens):
                 declared_columns = [
@@ -681,11 +681,8 @@ class NativeAnchors:
                         )
                     )
             columns[sequence["name"]] = costs
-            primary_key = compiled.sequences[sequence["name"]].primary_key
             sequence["columns"] = list(
-                dict.fromkeys(
-                    [primary_key, *(item["column"] for item in costs if item["metadata"] is None)]
-                )
+                dict.fromkeys(item["column"] for item in costs if item["metadata"] is None)
             )
         for frame in query["frames"]:
             frame["columns"] = sorted(
