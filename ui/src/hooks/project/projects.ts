@@ -225,7 +225,6 @@ export const useArchiveProject = (
             setLoading(true);
             try {
                 await archiveProjectById({ projectId });
-                invalidateProjectInfo(queryClient, projectId);
                 queryClient.invalidateQueries({
                     queryKey: [ReactQueryKeys.ProjectList]
                 });

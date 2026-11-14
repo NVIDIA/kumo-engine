@@ -2,7 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import Spacer from "react-spacer";
 
@@ -155,12 +155,18 @@ const ProjectSettings = () => {
         );
     };
 
+    const archiveInFlightRef = useRef(false);
+
     const onArchiveConfirm = async () => {
+        if (!projectId || archiveInFlightRef.current) return;
+        archiveInFlightRef.current = true;
         dialogRef.current?.toggleDialog();
-        if (!projectId) return;
-        const archived = await archiveProject(projectId);
-        if (archived) {
-            openProject(navigate, DEFAULT_PROJECT_ID, DEFAULT_GROUP_ID);
+        try {
+            if (await archiveProject(projectId)) {
+                openProject(navigate, DEFAULT_PROJECT_ID, DEFAULT_GROUP_ID);
+            }
+        } finally {
+            archiveInFlightRef.current = false;
         }
     };
 
@@ -325,8 +331,8 @@ const ProjectSettings = () => {
                                 Archive project
                             </Label>
                             <p className="text-sm text-title-secondary leading-5 mt-1">
-                                Archived projects are read-only and hidden from
-                                the project picker.
+                                Archived projects are hidden from the project
+                                picker and can't accept new resources or jobs.
                             </p>
                         </div>
                         <Button

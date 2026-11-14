@@ -399,6 +399,44 @@ describe("ProjectSettings", () => {
             );
         });
 
+        it("Should refresh cached project lists after archiving", async () => {
+            const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            const dialog = await openArchiveDialog();
+            await userEvent.click(
+                within(dialog).getByRole("button", { name: "Archive" })
+            );
+
+            await waitFor(() =>
+                expect(invalidate).toHaveBeenCalledWith({
+                    queryKey: ["projectList"]
+                })
+            );
+        });
+
+        it("Should send one archive request when the confirmation is activated twice", async () => {
+            await renderProjectSettings();
+            await waitForProjectLoad();
+
+            const dialog = await openArchiveDialog();
+            const confirm = within(dialog).getByRole("button", {
+                name: "Archive"
+            });
+            await act(async () => {
+                confirm.click();
+                confirm.click();
+            });
+
+            await waitFor(() => expect(mockUseNavigate).toHaveBeenCalled());
+            expect(
+                vi
+                    .mocked(mockAxiosInstance.post)
+                    .mock.calls.filter(([url]) => url === archiveUrl)
+            ).toHaveLength(1);
+        });
+
         it("Should not archive when the confirmation is cancelled", async () => {
             await renderProjectSettings();
             await waitForProjectLoad();
