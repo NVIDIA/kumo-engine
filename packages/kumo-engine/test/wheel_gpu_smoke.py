@@ -329,7 +329,7 @@ def target_classes(task, targets):
     return sorted({category for value in members for category in value})
 
 
-def build_graph(spec, directory, *, static=False):
+def build_graph(spec, directory, *, static=False, materialize=True):
     from kumoapi.graph import Edge
     from kumoapi.table import Column
 
@@ -354,7 +354,7 @@ def build_graph(spec, directory, *, static=False):
                 if static else definition.get('end_time_col')))
     graph = kumo.Graph(tables, [Edge(**edge) for edge in spec['edges']])
     graph.validate()
-    return graph, graph.snapshot()
+    return graph, graph.snapshot() if materialize else None
 
 
 def prepare_task(task, root, metadata, directory, graphs):

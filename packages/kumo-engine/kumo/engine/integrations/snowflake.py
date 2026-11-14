@@ -56,6 +56,8 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
     """
 
     platform = 'snowflake'
+    _snapshot_ref_before_finish = True
+    _finish_on_owner_thread = True
 
     def __init__(
         self,
