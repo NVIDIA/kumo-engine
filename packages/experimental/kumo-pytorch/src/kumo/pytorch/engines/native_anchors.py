@@ -512,13 +512,6 @@ class NativeAnchors:
             table_name = destination_table(
                 self._source.schema, self._sample.entity.table, event.rows.path
             )
-            # SequencePlan requires a physical projection, not a declared PK.
-            # Token metadata uses the separately retained native node IDs.
-            length_column = compiled.sequences[sequence["name"]].primary_key or next(
-                frame["time_column"]
-                for frame in query["frames"]
-                if frame["name"] == sequence["frame"]
-            )
             stored_costs = event_costs.get(table_name)
             if isinstance(spec.representation.row, (Columns, Composite)):
                 # Row/compound inputs cost one event, but counting metadata still
@@ -540,7 +533,7 @@ class NativeAnchors:
                         )
                     )
                 columns[sequence["name"]] = costs
-                sequence["columns"] = [length_column]
+                sequence["columns"] = []
                 continue
             if stored_costs and isinstance(spec.representation.row, Tokens):
                 declared_columns = [
@@ -689,9 +682,7 @@ class NativeAnchors:
                     )
             columns[sequence["name"]] = costs
             sequence["columns"] = list(
-                dict.fromkeys(
-                    [length_column, *(item["column"] for item in costs if item["metadata"] is None)]
-                )
+                dict.fromkeys(item["column"] for item in costs if item["metadata"] is None)
             )
         for frame in query["frames"]:
             frame["columns"] = sorted(

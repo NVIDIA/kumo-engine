@@ -73,7 +73,8 @@ def test_native_planning_without_event_primary_key(
         ),
     )
     path = tmp_path / "anchors.parquet"
-    pq.write_table(pa.table({"entity": [1, 3, 2, 1], "cutoff": [5] * 4}), path)
+    owners = [1, 3, 2, 1] * 32
+    pq.write_table(pa.table({"entity": owners, "cutoff": [5] * len(owners)}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     assert not api.check(contract, dataset, engine, anchors=anchors)
@@ -82,7 +83,9 @@ def test_native_planning_without_event_primary_key(
             native = task._anchors
             task._anchors = ParquetAnchors(anchors)
             try:
-                expected = list(task.batches(shuffle=False, output_format="model"))
+                expected = list(
+                    task.batches(shuffle=False, chunk_batches=64, output_format="model")
+                )
             finally:
                 task._anchors.close()
                 task._anchors = native
@@ -93,15 +96,22 @@ def test_native_planning_without_event_primary_key(
             monkeypatch.setattr(native, "_requests", forbidden)
             monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
             for epoch in (0, 1):
-                actual = list(task.batches(shuffle=False, epoch=epoch, output_format="model"))
+                # At least 64 anchors exercise native parallel result concatenation.
+                actual = list(
+                    task.batches(
+                        shuffle=False, epoch=epoch, chunk_batches=64, output_format="model"
+                    )
+                )
                 assert len(actual) == len(expected)
                 assert sorted(i for batch in actual for i in batch.metadata["sample_ids"]) == list(
-                    range(4)
+                    range(len(owners))
                 )
                 for a, b in zip(actual, expected, strict=True):
                     assert a.metadata["sample_ids"] == b.metadata["sample_ids"]
                     _equal(a.inputs, b.inputs)
-                assert native._last_length_planning_stats == ((4, 0) if epoch == 0 else (0, 4))
+                assert native._last_length_planning_stats == (
+                    (len(owners), 0) if epoch == 0 else (0, len(owners))
+                )
 
 
 @pytest.mark.parametrize(

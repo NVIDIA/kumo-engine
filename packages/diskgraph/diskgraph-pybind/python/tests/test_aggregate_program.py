@@ -6,7 +6,9 @@
 
 import json
 
+import diskgraph
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from test_shared_numeric_aggregates import numeric_graph as _numeric_graph
 
@@ -293,3 +295,110 @@ def test_query_cutoff_clock_must_be_shared_by_all_frames(numeric_graph, second_u
     roots = {"users": engine.lookup_node_ids("users", pa.array([6], type=pa.int64()))}
     with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
         engine.query_temporal(roots, {"users": [1000]}, json.dumps(plan), output_format="model")
+
+
+@pytest.mark.parametrize("timed", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_identity_only_sequences_preserve_rows_without_value_projection(
+    numeric_graph, timed, empty
+):
+    engine, relation = numeric_graph
+    frame = program(relation)["frames"][0]
+    frame["columns"] = []
+    if not timed:
+        frame.update(time_column=None, start_seconds=None, stop_seconds=None)
+    sequence = {
+        "name": "history",
+        "frame": frame["name"],
+        "columns": [],
+        "order": "descending",
+        "limit": 2,
+    }
+    plan = {"frames": [frame], "sequences": [sequence]}
+    keys = [] if empty else [1, 5, 2]
+    roots = {"users": engine.lookup_node_ids("users", pa.array(keys, type=pa.int64()))}
+    cutoffs = {"users": [1000] * len(keys)}
+    actual = engine.query_temporal(
+        roots, cutoffs, json.dumps(plan), output_format="model"
+    )
+    sequence["columns"] = ["value"]
+    frame["columns"] = ["value"]
+    expected = engine.query_temporal(
+        roots, cutoffs, json.dumps(plan), output_format="model"
+    )
+    actual, expected = actual["sequences"][0], expected["sequences"][0]
+    for name in ("offsets", "node_ids", "timestamps"):
+        assert actual[name].equals(expected[name]), name
+    assert actual["batch"].num_columns == 0
+    assert actual["batch"].num_rows == len(actual["node_ids"]) == (0 if empty else 3)
+
+
+def test_identity_only_rows_need_neither_primary_key_nor_clock(tmp_path):
+    pq.write_table(pa.table({"id": [1, 2, 3]}), tmp_path / "users.parquet")
+    pq.write_table(pa.table({"owner": [1, 1, 3]}), tmp_path / "rows.parquet")
+    config = {
+        "dataset_name": "identity_only",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "users",
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}],
+                "source": {
+                    "type": "parquet",
+                    "paths": [str(tmp_path / "users.parquet")],
+                },
+            },
+            {
+                "name": "rows",
+                "primary_key": None,
+                "columns": [{"name": "owner", "ingested_dtype": "int64"}],
+                "fkeys": [{"src_column": "owner", "dst_table": "users", "reverse": {}}],
+                "source": {
+                    "type": "parquet",
+                    "paths": [str(tmp_path / "rows.parquet")],
+                },
+            },
+        ],
+    }
+    diskgraph.ingest(
+        json.dumps(config),
+        str(tmp_path / "index"),
+        col_stats=False,
+        context_threads=2,
+        encode_threads=2,
+        pk_map_threads=2,
+        edges_map_threads=2,
+        index_threads=2,
+    )
+    engine = diskgraph.SamplerEngine(str(tmp_path / "index"), num_threads=2)
+    relation = next(
+        r["name"]
+        for r in json.loads(engine.get_type_mapping())["edge_relations"]
+        if r["src_type"] == "users"
+    )
+    plan = {
+        "frames": [
+            {
+                "name": "rows",
+                "root_type": "users",
+                "path": [{"relation": relation, "destination_type": "rows"}],
+                "columns": [],
+                "distinct": True,
+            }
+        ],
+        "sequences": [
+            {"name": "ids", "frame": "rows", "columns": [], "order": "ascending"}
+        ],
+    }
+    roots = engine.lookup_node_ids("users", pa.array([1, 2, 3], type=pa.int64()))
+    result = engine.query_temporal(
+        {"users": roots}, {"users": [0] * 3}, json.dumps(plan), output_format="model"
+    )
+    sequence = result["sequences"][0]
+    assert sequence["offsets"].to_pylist() == [0, 2, 2, 3]
+    assert len(set(sequence["node_ids"].to_pylist())) == 3
+    assert sequence["timestamps"].to_pylist() == [None] * 3
+    assert sequence["batch"].num_columns == 0
+    assert sequence["batch"].num_rows == 3
+    assert result["stats"]["values_decoded"] == 0
