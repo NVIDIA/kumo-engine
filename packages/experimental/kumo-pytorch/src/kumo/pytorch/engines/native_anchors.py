@@ -441,12 +441,13 @@ class NativeAnchors:
             )
 
     def _length_contract(self, assembler, compiled, merges, selections, maximum, drop_last):
-        """Lower frozen encoder costs to DG row metadata, never invoke an encoder.
+        """Lower frozen costs to DG row metadata without encoding anchor histories.
 
         #307 supplies recipe-bound per-event uint16 costs indexed by DG node ID.
         They are mapped once and reused for selected/capped histories. Native
         planning adds derived/missing tokens and applies layout/truncation;
         the metadata producer does not decide sample or batch composition.
+        Text constants are counted once here using the frozen encoder.
         """
         from copy import deepcopy
 
@@ -535,15 +536,19 @@ class NativeAnchors:
                     and isinstance(event.fields[item[0][-1]], Field)
                     and not event.fields[item[0][-1]].path
                 ]
-                if set(declared_columns) != set(stored_costs["columns"]) or len(
+                if not declared_columns:
+                    # A constant-only component must not reuse another component's
+                    # per-node costs merely because both read the same table.
+                    stored_costs = None
+                elif set(declared_columns) != set(stored_costs["columns"]) or len(
                     declared_columns
                 ) != len(set(declared_columns)):
                     raise ValueError(
                         "event token metadata does not match this component's stored fields"
                     )
-                if spec.representation.row.missing == "emit":
+                if stored_costs and spec.representation.row.missing == "emit":
                     fixed[sequence["name"]] += stored_costs["constant"]
-                if stored_costs["values"] is not None:
+                if stored_costs and stored_costs["values"] is not None:
                     key = f"stored-event:{table_name}"
                     token_lengths[key] = [stored_costs["values"]]
                     costs.append(
@@ -599,6 +604,18 @@ class NativeAnchors:
                         isinstance(binding.encoder.config, Text) or declarations[0][2] == "repeated"
                     )
                     direct = isinstance(value, Field) and not value.path
+                    if (
+                        not composite
+                        and isinstance(value, Constant)
+                        and value.value is not None
+                        and isinstance(binding.encoder.config, Text)
+                    ):
+                        # One frozen constant cost at iterator attachment, not encoding
+                        # histories or individual anchors during native planning.
+                        fixed[sequence["name"]] += binding.encode_values([value.value])[
+                            "values"
+                        ].numel()
+                        continue
                     if (
                         not composite
                         and direct
@@ -982,6 +999,7 @@ class NativeAnchors:
             self._length_caches.clear()
             getattr(self, "_token_length_arrays", {}).clear()
             self._token_maps = []
+            self._event_costs = {}
             self._temporary.cleanup()
 
     def batches(

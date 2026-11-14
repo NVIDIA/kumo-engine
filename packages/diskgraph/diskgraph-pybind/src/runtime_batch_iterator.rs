@@ -428,17 +428,17 @@ impl LengthPlanning {
                 &history.reader, &roots, &cutoffs, &history.engine.thread_pool,
             )
             .map_err(length_error)?;
+            let selection = history.merges.iter()
+                .find(|plan| plan.name == self.contract.merge)
+                .ok_or_else(|| length_error("unknown length input merge"))?;
             let merges = result
-                .merged_event_orders(&history.merges)
+                .merged_event_orders(std::slice::from_ref(selection))
                 .map_err(length_error)?;
             let (_, bounds, order) = merges
                 .iter()
                 .find(|(name, _, _)| name == &self.contract.merge)
                 .ok_or_else(|| length_error("unknown length input merge"))?;
             // Merge offsets refer to sequences in merge declaration order.
-            let selection = history.merges.iter()
-                .find(|plan| plan.name == self.contract.merge)
-                .ok_or_else(|| length_error("unknown length input merge"))?;
             let mut costs = Vec::new();
             for name in &selection.sequences {
                 let name = name.as_str();

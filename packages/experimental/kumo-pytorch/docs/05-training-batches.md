@@ -219,6 +219,12 @@ Other sources, including `EntitySource`, are refused explicitly; this path does
 not silently switch to Python per-anchor planning. Explicit request batches
 and the reference engine retain their existing planner.
 
+Planning uses only the designated length input's merge; other event inputs
+still load normally. Constant-only components have their own fixed costs,
+with text constants counted once when attaching the iterator. Variable text
+components must match their precomputed stored-field recipe; incompatible
+recipes are refused rather than estimated from unrelated table costs.
+
 ## Inputs, targets and devices
 
 A `Batch` keeps `inputs`, `targets` and `metadata` apart. `metadata` carries

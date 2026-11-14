@@ -320,11 +320,15 @@ def pretrain(data: Path, work: Path, seed: int, epochs: int = PRETRAIN_EPOCHS) -
                 for batch in task.batches(
                     split="train", epoch=epoch, seed=seed, shuffle=True, output_format="model"
                 ):
+                    if not batch.targets["masked"]["valid"].any():
+                        continue
                     loss = model.loss(batch)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
                     total, steps = total + loss.item(), steps + 1
+                if steps == 0:
+                    raise ValueError("pretraining epoch has no masked-value supervision")
                 history.append({"epoch": epoch, "masked_value_loss": total / steps})
                 print(f"pretrain: epoch {epoch} masked-value loss {total / steps:.4f}")
             clock.lap("fit")

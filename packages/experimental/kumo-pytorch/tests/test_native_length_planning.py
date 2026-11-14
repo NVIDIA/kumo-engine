@@ -829,3 +829,234 @@ def test_current_event_length_input_is_refused_before_native_iteration(
     with pytest.raises(ValueError, match=r"\[DG-CURRENT-EVENTS\]"):
         api.prepare(contract, dataset, engine)
     assert not (tmp_path / "index").exists()
+
+
+def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
+    path = tmp_path / "review-anchors.parquet"
+    pq.write_table(pa.table({"entity": list(entities), "at": [cutoff] * len(entities)}), path)
+    return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+
+
+def _reference_batches(task):
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+    native = task._anchors
+    task._anchors = ParquetAnchors(native._table)
+    try:
+        return list(task.batches(shuffle=False, chunk_batches=2, output_format="model"))
+    finally:
+        task._anchors.close()
+        task._anchors = native
+
+
+def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
+    schema, dataset, _, _, _ = history_data
+    events = {
+        name: api.EventSpec(
+            api.Rows(("orders",), api.TimeWindow("at", start=start, stop=0)),
+            {"amount": api.Field("amount")},
+        )
+        for name, start in (("a", None), ("b", -2))
+    }
+    spec = api.DataLoaderSpec(
+        schema,
+        api.SampleSpec(api.EntitySpec("users"), events=events),
+        api.BatchSpec(
+            inputs={
+                name: api.Input(
+                    api.EventSource((name,), max_events=4),
+                    api.Fields((api.Encode("amount", api.Raw()),)),
+                    api.Packed(),
+                )
+                for name in events
+            },
+            batching=api.Batching(max_samples=2, length_input="a", bucket_by_length=True),
+        ),
+    )
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(_review_anchors(tmp_path), fit_split=api.ALL_ANCHORS) as task:
+            expected = _reference_batches(task)
+            actual = list(task.batches(shuffle=False, chunk_batches=2, output_format="model"))
+            assert len(actual) == len(expected)
+            for got, want in zip(actual, expected, strict=True):
+                _equal(got.inputs, want.inputs)
+                assert got.metadata["sample_ids"] == want.metadata["sample_ids"]
+
+
+def test_length_planning_accepts_absent_input_fit_metadata(history_data, tmp_path):
+    from dataclasses import replace
+
+    schema, dataset, _, _, _ = history_data
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"amount": api.Field("amount")}
+            )
+        },
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "history": api.Input(
+                    api.EventSource(("history",)),
+                    api.Fields((api.Encode("amount", api.Raw()),)),
+                    api.Packed(),
+                )
+            },
+            batching=api.Batching(max_samples=2, length_input="history", bucket_by_length=True),
+        ),
+    )
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        anchors = _review_anchors(tmp_path)
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            expected = list(task.batches(shuffle=False, output_format="model"))
+            artifact = task.to_artifact()
+            state = replace(artifact.fitted_state, _fit={"inputs": None, "targets": None})
+            replace(artifact, fitted_state=state).save(tmp_path / "artifact")
+        restored = api.Artifact.load(tmp_path / "artifact").fitted_state
+        with plan.materialize(anchors, fitted=restored) as task:
+            actual = list(task.batches(shuffle=False, output_format="model"))
+            assert len(actual) == len(expected)
+            for got, want in zip(actual, expected, strict=True):
+                _equal(got.inputs, want.inputs)
+
+
+@pytest.mark.parametrize("text", [False, True])
+def test_same_table_constant_component_has_its_own_cost(history_data, tmp_path, text):
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+
+    schema, dataset, _, _, _ = history_data
+    rows = api.Rows(("orders",), api.TimeWindow("at", stop=0))
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "stored": api.EventSpec(rows, {"value": api.Field("kind")}),
+            "constant": api.EventSpec(
+                rows, {"value": api.Constant("aaa", dtype=api.DType("string"))}
+            ),
+        },
+    )
+    encoding = (
+        api.Text(
+            state=Tokenizer(
+                BPE(vocab={"[MISSING]": 0, "[UNK]": 1, "a": 2}, merges=[], unk_token="[UNK]")
+            ).to_str()
+        )
+        if text
+        else api.Vocabulary()
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "history": api.Input(
+                    api.EventSource(("stored", "constant"), max_events=8),
+                    api.Fields(
+                        (api.Encode("value", encoding, id_space="words"),),
+                        row=api.Tokens(),
+                        history=api.Flatten(100),
+                    ),
+                    api.Packed(),
+                )
+            },
+            id_spaces={"words": api.IdSpace({"pad": "pad"})},
+            batching=api.Batching(
+                max_samples=2, max_tokens=100, length_input="history", bucket_by_length=True
+            ),
+        ),
+    )
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(_review_anchors(tmp_path), fit_split=api.ALL_ANCHORS) as task:
+            native = task._anchors
+            expected = _reference_batches(task)
+            for epoch in (0, 1):
+                actual = list(
+                    task.batches(shuffle=False, epoch=epoch, chunk_batches=2, output_format="model")
+                )
+                assert len(actual) == len(expected)
+                for got, want in zip(actual, expected, strict=True):
+                    _equal(got.inputs, want.inputs)
+                    assert got.metadata["sample_ids"] == want.metadata["sample_ids"]
+                assert native._last_length_planning_stats == ((2, 0) if epoch == 0 else (0, 2))
+
+
+def test_nested_padding_budget_and_token_map_lifetime(history_data, tmp_path):
+    import gc
+    import weakref
+    from dataclasses import replace
+
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+
+    schema, dataset, _, _, _ = history_data
+    path = tmp_path / "text-events.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "owner": [1, 2, 2, 2],
+                "at": pa.array([1, 1, 2, 3], type=pa.timestamp("s")),
+                "amount": [1.0] * 4,
+                "kind": ["aaaa"] * 4,
+            }
+        ),
+        path,
+    )
+    dataset = replace(dataset, tables={**dataset.tables, "orders": api.Parquet(str(path))})
+    tokenizer = Tokenizer(
+        BPE(vocab={"[MISSING]": 0, "[UNK]": 1, "a": 2}, merges=[], unk_token="[UNK]")
+    )
+    sample = api.SampleSpec(
+        api.EntitySpec("users"),
+        events={
+            "history": api.EventSpec(
+                api.Rows(("orders",), api.TimeWindow("at", stop=0)), {"text": api.Field("kind")}
+            )
+        },
+    )
+    spec = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            {
+                "history": api.Input(
+                    api.EventSource(("history",)),
+                    api.Fields(
+                        (api.Encode("text", api.Text(state=tokenizer.to_str()), id_space="words"),),
+                        row=api.Tokens(),
+                        history=api.Grouped(),
+                    ),
+                    api.Nested(fields=api.Padded(), events=api.Padded()),
+                )
+            },
+            id_spaces={"words": api.IdSpace({"pad": "pad"})},
+            batching=api.Batching(
+                max_samples=2, max_tokens=16, length_input="history", bucket_by_length=True
+            ),
+        ),
+    )
+    with api.prepare(
+        spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        with plan.materialize(
+            _review_anchors(tmp_path, (1, 2), 10), fit_split=api.ALL_ANCHORS
+        ) as task:
+            expected = _reference_batches(task)
+            actual = list(task.batches(shuffle=False, output_format="model"))
+            assert len(actual) == len(expected) == 1
+            _equal(actual[0].inputs, expected[0].inputs)
+            assert actual[0].inputs["history"]["value_ids"].numel() == 16
+            mapped = weakref.ref(task._anchors._token_maps[0])
+        gc.collect()
+        assert mapped() is None

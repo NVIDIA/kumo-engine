@@ -375,7 +375,7 @@ class Plan:
                     lengths[table] = {"constant": constant, "file": file}
                 if lengths:
                     fit["inputs"] = {
-                        **fit["inputs"],
+                        **(fit.get("inputs") or {}),
                         "statistics": {
                             "cutoff": None,
                             **previous,
