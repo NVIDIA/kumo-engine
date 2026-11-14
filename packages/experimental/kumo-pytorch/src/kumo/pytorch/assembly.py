@@ -2648,6 +2648,10 @@ def fit_plan(
                 for name, value in input_state.prepared_inputs.items()
             },
         )
+    if pinned:
+        # Target-only statistics pins reuse the same fitter and target-space
+        # construction; no selected label values need to be collected.
+        input_state = replace(input_state, encoders={**pinned, **input_state.encoders})
     if target_encoders is None:
         input_state, target_encoders = _fit_targets(
             sample,

@@ -1048,6 +1048,8 @@ class DiskGraphSource:
         )
 
     def column_stats(self, requests: Sequence[StatRequest], cutoff: int | None) -> ColumnStats:
+        if getattr(self, "_materialized_values", None) is not None:
+            return self._materialized_reference.column_stats(requests, cutoff)
         ticks = (
             None
             if cutoff is None
