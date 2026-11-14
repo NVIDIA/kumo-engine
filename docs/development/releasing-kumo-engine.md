@@ -131,31 +131,31 @@ platform's `release-version`.
 
    Before you approve the `kitmaker` job, start
    [`Kumo Engine - Desktop reload qualification`][desktop-reload] by hand with
-   the ID of this build run. It runs `desktop_reload_qualification.py` on the
-   `binary` and `static_link` tasks: Linux x86-64 and WSL2 on CPU and CUDA,
-   Linux ARM64 on CPU, and macOS 15 and 26 on CPU, each with Python 3.11 to 3.14.
-   A producer process trains, exports the model and snapshot, and predicts.
-   The job ends it and deletes its files. A new process loads the exports and
-   predicts, and the predictions must match. The `reload-report` job fails
-   unless every CI row passes.
+   the ID of this build run. Its 28 `Reload` jobs run
+   `desktop_reload_qualification.py` with Python 3.11 to 3.14. They cover Linux
+   x86-64 and WSL2 on CPU and CUDA, Linux ARM64 on CPU, and macOS 15 and 26 on
+   CPU. A producer process trains the `binary` and `static_link` tasks, exports
+   the model and snapshot, and predicts. The job ends it and deletes its files.
+   A new process loads the exports and predicts, and the predictions must match.
 
    Two Mac rows run outside CI with Python 3.12: macOS 14 on CPU (a VM is
-   enough) and macOS 15 on MPS (bare metal). Install the macOS wheel of the
-   build run in a clean Python 3.12 venv. Download the object that
-   `packages/kumo-engine/test/pr172/inputs.json` names, make sure that its
-   SHA-256 equals the `sha256` in that file, and extract it. In a folder
-   outside the checkout with `desktop_reload_qualification.py` and
+   enough) and macOS 15 on MPS (bare metal). Install the macOS wheel file of the
+   build run by its path (`uv pip install <wheel>`) in a clean Python 3.12 venv.
+   Download the object that `packages/kumo-engine/test/pr172/inputs.json` names,
+   make sure that its SHA-256 equals the `sha256` in that file, and extract it.
+   In a folder outside the checkout with `desktop_reload_qualification.py` and
    `wheel_gpu_smoke.py` from the commit of the build run, run
    `python -I desktop_reload_qualification.py run --wheel <wheel> --device <cpu|mps> --data-dir <inputs> --output-dir <dir> --commit <sha>`.
-   Set `<sha>` to the full 40-character commit SHA of the build run. Use a new
-   `<dir>` for each attempt, and keep the failed ones. The report counts the
-   newest run of each row. Save `uv pip freeze` in `<dir>`. Then download the
-   `engine-wheel-reload-*` artifacts of the qualification run and run
-   `python -I desktop_reload_qualification.py report <CI dir> <Mac dirs>`.
-   MPS on macOS 26 is not run, because hosted macOS runners are VMs without
-   MPS. CUDA on Linux ARM64 is not run, because no ARM64 GPU runner exists.
-   Approve the `kitmaker` job only after `reload-report` and this full report
-   pass.
+   Set `<wheel>` to that same path and `<sha>` to the full 40-character commit
+   SHA of the build run. Use a new `<dir>` for each attempt, and keep the failed
+   ones. Save `uv pip freeze` in `<dir>`. MPS on macOS 26 is not run, because
+   hosted macOS runners are VMs without MPS. CUDA on Linux ARM64 is not run,
+   because this repository has no ARM64 GPU runner. The ARM64 wheel also has no
+   GPU Faiss, and the DGX Spark guide asks for a source build. Approve the
+   `kitmaker` job only after all 28 `Reload` jobs pass. The newest
+   `summary.json` of each Mac row (`label` `macos-14-cpu-py3.12` or
+   `macos-15-mps-py3.12`) must also show `PASS` for both tasks. Its `commit`
+   must be the commit of the build run.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.

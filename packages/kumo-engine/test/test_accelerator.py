@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-import platform
 
 import pandas as pd
 import pytest
@@ -25,7 +24,7 @@ def test_invalid_accelerator_fails_at_construction(accelerator):
                           ('14.7.1', 'auto', False), ('14.7.1', 'cpu', False),
                           ('15.0', 'mps', False), ('', 'gpu', False)])
 def test_mps_needs_macos_15(monkeypatch, release, accelerator, fails):
-    monkeypatch.setattr(platform, 'mac_ver', lambda: (release, ('', ) * 3, ''))
+    monkeypatch.setattr('platform.mac_ver', lambda: (release, ('', ) * 3, ''))
     if fails:
         with pytest.raises(UnsupportedAcceleratorError, match='macOS 15'):
             Trainer(ModelPlan(), accelerator=accelerator)

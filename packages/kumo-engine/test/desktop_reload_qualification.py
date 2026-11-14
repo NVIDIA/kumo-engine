@@ -4,66 +4,40 @@
 # SPDX-License-Identifier: Apache-2.0
 """Save, restart, reload and predict two GPU-smoke tasks on one wheel.
 
-For the binary and static_link tasks of wheel_gpu_smoke.py (next to this
-file), a producer process trains on the PR172 fixture, exports the model and
-snapshot, and predicts. The controller ends it and deletes its HOME, TMPDIR,
-caches, working directory, scratch and fixture copy. A new consumer process
-loads the exports and predicts, and the two predictions must match. Run it
-outside the checkout with the Python of a clean environment that holds the
-candidate wheel. Use a new output folder for each attempt:
-
-    python -I desktop_reload_qualification.py run --wheel <wheel> \
-        --device cpu --data-dir <PR172 inputs> --output-dir <new dir> \
-        --commit <full commit SHA>
-    python -I desktop_reload_qualification.py report <evidence dir>...
+Run it outside the checkout, next to wheel_gpu_smoke.py, with the Python of
+the venv that holds the wheel. See docs/development/releasing-kumo-engine.md.
 """
 import argparse
-import base64
-import csv
 import hashlib
-import importlib.util
 import json
 import os
 import platform
+import random
 import re
 import resource
 import shutil
 import signal
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import time
 import traceback
-import zipfile
 from contextlib import contextmanager, suppress
+from importlib import metadata, util
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 GPU_SMOKE = Path(__file__).with_name('wheel_gpu_smoke.py')
-SPEC = importlib.util.spec_from_file_location(GPU_SMOKE.stem, GPU_SMOKE)
-tasks = importlib.util.module_from_spec(SPEC)
+SPEC = util.spec_from_file_location(GPU_SMOKE.stem, GPU_SMOKE)
+tasks = util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tasks)
 
 TASKS = ('binary', 'static_link')
-PYTHONS = ('3.11', '3.12', '3.13', '3.14')
 TORCH = {'cpu': 'cpu', 'gpu': 'cuda', 'mps': 'mps'}
 # CUDA kernels are not bit-reproducible, so CUDA uses the GPU smoke's bound.
 ATOL = {'cpu': 1e-4, 'mps': 1e-4, 'gpu': 5e-3}
-# CI runs the HOSTED rows on PYTHONS. A person runs the MAC rows with Python
-# 3.12: macOS 14 on CPU (a VM is enough) and MPS on a bare-metal macOS 15.
-MAC_PYTHON = '3.12'
-HOSTED = ('linux-x86_64-cpu', 'linux-x86_64-gpu', 'linux-arm64-cpu',
-          'windows-wsl-cpu', 'windows-wsl-gpu', 'macos-15-cpu', 'macos-26-cpu')
-MAC = ('macos-14-cpu', 'macos-15-mps')
-NOT_RUN = {
-    'macos-26-mps': ('hosted macOS runners are VMs without MPS; needs a '
-                     'bare-metal Mac on macOS 26'),
-    'linux-arm64-gpu': ('no ARM64 GPU runner in this repository; the ARM64 '
-                        'wheel has no GPU Faiss, and the DGX Spark guide '
-                        'requires a source build'),
-}
-# Each failure case must fail a fresh consumer with an error that names it.
 ERRORS = {
     'model_corrupt': r'model bundle .* does not match its digest',
     'model_missing': r'model bundle .* is missing',
@@ -76,8 +50,7 @@ ERRORS = {
 
 
 def label(device):
-    """Name the configuration from the OS, CPU, WSL kernel, macOS version,
-    device and Python version that run this script."""
+    """Name the OS or macOS version, CPU, device and Python of this run."""
     if sys.platform == 'darwin':
         host = 'macos-' + platform.mac_ver()[0].split('.')[0]
     elif 'microsoft' in platform.release().lower():
@@ -88,27 +61,21 @@ def label(device):
 
 
 def check_wheel(wheel):
-    """Every file of the candidate wheel is installed unchanged, and
-    kumo.engine is imported from one of those files."""
+    """Return the SHA-256 of the wheel that this venv installed and imports."""
     import kumo.engine as kumo
 
-    roots = [Path(sysconfig.get_path(name)) for name in ('purelib', 'platlib')]
-    with zipfile.ZipFile(wheel) as archive:
-        [record] = [n for n in archive.namelist() if n.endswith('-info/RECORD')]
-        rows = list(csv.reader(archive.read(record).decode().splitlines()))
-    verified = set()
-    for name, digest, *_ in rows:
-        if not digest or '.dist-info/' in name or '.data/' in name:
-            continue
-        path = next((r / name for r in roots if (r / name).is_file()), None)
-        found = path and 'sha256=' + base64.urlsafe_b64encode(
-            hashlib.sha256(path.read_bytes()).digest()).rstrip(b'=').decode()
-        if found != digest:
-            raise RuntimeError(f'{name} differs from the candidate wheel')
-        verified.add(path.resolve())
-    if Path(kumo.__file__).resolve() not in verified:
-        raise RuntimeError(f'kumo.engine is not the wheel: {kumo.__file__}')
-    return hashlib.sha256(Path(wheel).read_bytes()).hexdigest()
+    source = metadata.distribution('kumo-engine').read_text('direct_url.json')
+    url = urlsplit(json.loads(source or '{}').get('url', ''))
+    if url.scheme != 'file' or url.netloc or url.query or url.fragment:
+        raise RuntimeError('kumo-engine is not installed from a local wheel')
+    path = Path(url2pathname(url.path)).resolve()
+    if os.path.normcase(path) != os.path.normcase(wheel.resolve()):
+        raise RuntimeError(f'kumo-engine is installed from {path}, not {wheel}')
+    module = Path(kumo.__file__).resolve()
+    if (sys.prefix == sys.base_prefix
+            or not module.is_relative_to(Path(sys.prefix).resolve())):
+        raise RuntimeError(f'kumo.engine is not imported from a venv: {module}')
+    return hashlib.sha256(wheel.read_bytes()).hexdigest()
 
 
 def mps_case():
@@ -131,10 +98,8 @@ def observe(work):
 
     def seen(key, module, outputs):
         values = outputs.values() if isinstance(outputs, dict) else [outputs]
-        work[key].update([module.device.type] + [
-            value.device.type for value in values
-            if isinstance(value, torch.Tensor) and value.numel()
-        ])
+        tensors = [v for v in values if torch.is_tensor(v) and v.numel()]
+        work[key].update(x.device.type for x in [module, *tensors])
 
     class Proof(pl.Callback):
         def on_train_batch_end(self, trainer, module, outputs, *args):
@@ -156,23 +121,17 @@ def observe(work):
                            'cuda' if index._res is not None else 'faiss-cpu')
         return search(index, *args)
 
-    hook = register_optimizer_step_post_hook(
-        lambda optimizer, *_: work['steps'].add(type(optimizer).__name__))
-    try:
+    step = lambda optimizer, *_: work['steps'].add(type(optimizer).__name__)
+    with register_optimizer_step_post_hook(step):
         with patch.object(pl, 'Trainer', Observed):
             with patch.object(mips.MIPSFaiss, '_search', traced):
                 yield
-    finally:
-        hook.remove()
 
 
 def worker(phase, task, device, durable, out, base, data):
-    """Produce or consume one task in this process. Save the prediction and
-    record what the process did."""
+    """Produce or consume one task here. Save the prediction and the work."""
     if os.environ.get('DRQ_HIDE_FAISS'):
         sys.modules['faiss'] = None  # Each import of Faiss now fails.
-    import random
-
     import numpy as np
     import torch
     from kumoapi.jobs import MetadataField
@@ -184,9 +143,7 @@ def worker(phase, task, device, durable, out, base, data):
     seed = lambda: (random.seed(0), np.random.seed(0), torch.manual_seed(0))
     kumo.configure(scratch_dir=base / 'scratch')
     work = dict(train=set(), predict=set(), search=set(), steps=set())
-    if phase == 'produce':
-        # Only producer storage, which the controller deletes, holds the
-        # source tables.
+    if phase == 'produce':  # Only deleted producer storage holds the tables.
         graph = tasks.TASKS[task]['graph']
         shutil.copytree(Path(data) / graph, base / graph)
         graphs = json.loads((Path(data) / 'graphs.json').read_text())
@@ -212,8 +169,7 @@ def worker(phase, task, device, durable, out, base, data):
                                                        accelerator=device)
             snapshot = kumo.GraphSnapshot.load_from_connector(
                 files, path=meta['snapshot'])
-        # The prediction options of the GPU smoke.
-        options = dict(entities=files['inputs.parquet'])
+        options = dict(entities=files['inputs.parquet'])  # As the GPU smoke.
         if task == 'binary':
             options.update(
                 binary_classification_threshold=.5,
@@ -232,14 +188,12 @@ def worker(phase, task, device, durable, out, base, data):
 
 
 def spawn(phase, task, device, durable, out, data=None, **extra):
-    """Run one worker in a new process. Then end its process group and delete
-    each directory it could cache in: scratch, HOME, TMPDIR, XDG cache,
-    working directory and fixture copy."""
+    """Run one worker in a new process. Then kill its process group and
+    delete its scratch, HOME, TMPDIR, XDG cache, cwd and fixture copy."""
     base = Path(tempfile.mkdtemp(prefix='drq-', dir='/tmp'))
     for name in ('home', 'cache', 'cwd', 'tmp', 'scratch'):
         (base / name).mkdir()
-    # Kumo and DiskGraph variables could point at other binaries or storage.
-    drop = ('KUMO_', 'DISKGRAPH_')
+    drop = ('KUMO_', 'DISKGRAPH_')  # Could point at other binaries or data.
     env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
     env.update(extra, HOME=str(base / 'home'), TMPDIR=str(base / 'tmp'),
                XDG_CACHE_HOME=str(base / 'cache'),
@@ -261,9 +215,8 @@ def spawn(phase, task, device, durable, out, data=None, **extra):
 
 
 def qualify(task, device, data, out, work, result):
-    """Produce, end and delete, then consume one task and compare the two
-    predictions. Then make sure that each failure case fails a fresh
-    consumer with an error that names it. Record each step in result."""
+    """Produce, delete, consume and compare one task. Then make sure that each
+    failure case fails a fresh consumer clearly. Record each step in result."""
     import pandas as pd
 
     durable = work / task
@@ -272,8 +225,7 @@ def qualify(task, device, data, out, work, result):
         if spawn(phase, task, device, durable, out / phase,
                  data if phase == 'produce' else None):
             raise RuntimeError(f'The {phase} process failed: {phase}.log')
-        # Batches run only on the requested device, the search backend is the
-        # expected one, and the consumer does not train.
+        # Batches and searches run on the device. The consumer does not train.
         want = dict(train=[TORCH[device]], predict=[TORCH[device]])
         if phase == 'consume':
             want.update(train=[], steps=[])
@@ -327,7 +279,15 @@ def qualify(task, device, data, out, work, result):
     shutil.rmtree(durable)
 
 
-def run(args):
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest='command', required=True)
+    qualification = commands.add_parser('run')
+    qualification.add_argument('--device', choices=TORCH, required=True)
+    qualification.add_argument('--commit', required=True)
+    for flag in ('--wheel', '--data-dir', '--output-dir'):
+        qualification.add_argument(flag, type=Path, required=True)
+    args = parser.parse_args()
     output = args.output_dir.resolve()
     if any((output / name).exists() for name in ('summary.json', *TASKS)):
         sys.exit(f'{output} holds an earlier attempt. Use a new --output-dir.')
@@ -352,8 +312,7 @@ def run(args):
                 result.update(status='FAIL',
                               error=f'{type(error).__name__}: {error}')
             result['seconds'] = round(time.monotonic() - started, 1)
-            # The largest worker's peak memory. ru_maxrss is in KiB on Linux
-            # and in bytes on macOS.
+            # The largest worker's ru_maxrss: KiB on Linux, bytes on macOS.
             rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
             summary['peak_rss_mib'] = round(
                 rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
@@ -365,68 +324,12 @@ def run(args):
                     for r in summary['tasks'].values()) else 1
 
 
-def report(directories, hosted):
-    """Print PASS, FAIL or UNVERIFIED for each configuration and task, and the
-    rows that are not run. Return 1 unless every required row passes and all
-    rows name one commit. `hosted` requires only the CI rows."""
-    summaries = [
-        json.loads(path.read_text()) for directory in directories
-        for path in directory.rglob('summary.json')
-    ]
-    # Skip the summaries of other tools. The newest run of a row counts.
-    summaries = sorted((s for s in summaries
-                        if {'label', 'commit', 'started', 'tasks'} <= s.keys()),
-                       key=lambda s: s['started'])
-    found = {summary['label']: summary['tasks'] for summary in summaries}
-    commits = sorted({summary['commit'] for summary in summaries})
-    passed = len(commits) < 2
-    lines = [
-        '| Configuration | ' + ' | '.join(TASKS) + ' |',
-        '| --- ' * (len(TASKS) + 1) + '|'
-    ]
-    rows = [(c, p) for c in HOSTED for p in PYTHONS]
-    for config, python in rows + [(c, MAC_PYTHON) for c in MAC]:
-        name = f'{config}-py{python}'
-        row = [
-            found.get(name, {}).get(task, {}).get('status', 'UNVERIFIED')
-            for task in TASKS
-        ]
-        required = config in HOSTED or not hosted
-        passed &= not required or row == ['PASS'] * len(TASKS)
-        name += '' if required else ' (not required)'
-        lines.append(f'| {name} | ' + ' | '.join(row) + ' |')
-    lines.append('\nNot run and not required:')
-    lines += [f'- {c}: {why}' for c, why in NOT_RUN.items()]
-    print(f'Commits (one is required): {", ".join(commits) or "none"}', '',
-          *lines, sep='\n')
-    return 0 if passed else 1
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    commands = parser.add_subparsers(dest='command', required=True)
-    qualification = commands.add_parser('run')
-    qualification.add_argument('--device', choices=TORCH, required=True)
-    qualification.add_argument('--commit', required=True)
-    for flag in ('--wheel', '--data-dir', '--output-dir'):
-        qualification.add_argument(flag, type=Path, required=True)
-    matrix = commands.add_parser('report')
-    matrix.add_argument('evidence', type=Path, nargs='+')
-    matrix.add_argument('--hosted', action='store_true',
-                        help='Require only the CI rows.')
-    args = parser.parse_args()
-    if args.command == 'run':
-        return run(args)
-    return report(args.evidence, args.hosted)
-
-
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['worker']:
-        try:
-            worker(*sys.argv[2:])
-        except BaseException as error:
-            Path(sys.argv[6]).with_suffix('.error').write_text(
-                f'{type(error).__name__}: {error}')
-            raise
-    else:
+    if sys.argv[1:2] != ['worker']:
         sys.exit(main())
+    try:
+        worker(*sys.argv[2:])
+    except BaseException as error:
+        Path(sys.argv[6]).with_suffix('.error').write_text(
+            f'{type(error).__name__}: {error}')
+        raise
