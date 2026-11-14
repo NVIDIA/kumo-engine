@@ -4,6 +4,8 @@
 
 """The default encoder cutoff comes from native anchor columns, not per-anchor requests."""
 
+from datetime import UTC, datetime
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -177,3 +179,63 @@ def test_sub_microsecond_anchor_times_fit_at_full_precision(tmp_path):
         with plan.materialize(table, fit_split="train") as task:
             cutoff = task.fitted_state.fit["inputs"]["statistics"]["cutoff"]
     assert cutoff == (7 * DAY + 1) * 10**9 + 123
+
+
+@pytest.mark.parametrize("kind", ["int64", "timestamp-ns-offset"])
+@pytest.mark.parametrize("case", ["before", "equal", "after", "unbounded"])
+def test_explicit_cutoffs_preserve_fitting_and_warnings(tmp_path, monkeypatch, caplog, kind, case):
+    contract, dataset, engine, table = _plan(tmp_path, TIMES[kind], batch_rows=3)
+    # Include a row after the latest train anchor, but before the explicit later
+    # cutoff and the latest validation anchor. Clamping or using all splits is wrong.
+    path = tmp_path / "events.parquet"
+    events = pq.read_table(path)
+    future = pa.Table.from_pylist(
+        [{"id": 6, "user": "u1", "time": datetime(1970, 1, 10, tzinfo=UTC), "amount": 6.0}],
+        schema=events.schema,
+    )
+    pq.write_table(pa.concat_tables([events, future]), path)
+    extra = 123 if kind == "timestamp-ns-offset" else 0
+    equal = "1970-01-08T00:00:01" + (".000000123" if extra else "") + "Z"
+    cutoff, expected, mean, warns = {
+        "before": (3 * DAY, 3 * DAY * 10**9, 1.5, False),
+        "equal": (equal, (7 * DAY + 1) * 10**9 + extra, 2.5, False),
+        "after": ("1970-01-11T00:00:00Z", 10 * DAY * 10**9, 3.0, True),
+        "unbounded": (None, None, 3.0, True),
+    }[case]
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("an explicit cutoff rebuilt native anchor requests")
+
+    monkeypatch.setattr(NativeAnchors, "fetch", refuse)
+    caplog.set_level("WARNING", logger="kumo.pytorch.preparation")
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(table, fit_split="train", encoder_cutoff=cutoff) as task:
+            native = task.fitted_state
+            assert native.fit["inputs"]["statistics"]["cutoff"] == expected
+            encoder = next(e for e in task.encoders.values() if isinstance(e.config, api.ZScore))
+            assert encoder.mean == pytest.approx(mean)
+        messages = [r.getMessage() for r in caplog.records if r.name == "kumo.pytorch.preparation"]
+        assert len(messages) == int(warns)
+        if warns:
+            assert "after the latest fitting anchor 1970-01-08T00:00:01+00:00" in messages[0]
+            if cutoff is None:
+                assert "None (every row)" in messages[0]
+        if kind == "int64":
+            # RequestAnchors exercises the unchanged per-request fallback.
+            requests = [
+                api.SampleRequest(
+                    f"s{i}",
+                    "u1" if i % 2 == 0 else "u2",
+                    seconds,
+                    split=SPLITS[i],
+                    targets=(api.TargetValue("label", float(i)),),
+                )
+                for i, seconds in enumerate(SECONDS)
+            ]
+            caplog.clear()
+            with plan.materialize(requests, fit_split="train", encoder_cutoff=cutoff) as task:
+                assert task.fitted_state.fingerprint == native.fingerprint
+                assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == expected
+            assert [
+                r.getMessage() for r in caplog.records if r.name == "kumo.pytorch.preparation"
+            ] == messages
