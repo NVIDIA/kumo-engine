@@ -37,6 +37,11 @@ request-only fitting uses raw-row quantiles. Independently fitted cuts can
 therefore differ within the approximation contract. Reuse one fitted state
 when identical bucket assignments are needed across anchor input forms.
 
+Computed scalar encoders used by `Tokens(missing="skip_event")` retain sample
+fitting to respect the input's row eligibility. Direct graph-column statistics
+keep their existing ingestion population. Custom sources without graph statistics
+retain their sample-fitting fallback while using available materialized statistics.
+
 A missing value is never zero or an unseen category: it keeps its own validity
 bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
 lists every option.

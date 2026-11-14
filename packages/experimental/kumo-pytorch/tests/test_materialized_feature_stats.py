@@ -383,3 +383,132 @@ def test_saved_fit_record_omits_temporary_values_paths(history_data, tmp_path):
         assert not directory.exists()
     restored = api.Artifact.load(tmp_path / "artifact")
     assert restored.fitted_state.fit["inputs"] == artifact.fitted_state.fit["inputs"]
+
+
+class _BuildOnlySource:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def build(self, spec, requests):
+        return self.inner.build(spec, requests)
+
+    def fit_graph_fields(self, sample, spec, roots):
+        return self.inner.fit_graph_fields(sample, spec, roots)
+
+    def sample_graph(self, sample, spec, state, roots, seed, epoch):
+        return self.inner.sample_graph(sample, spec, state, roots, seed, epoch)
+
+    def close(self):
+        self.inner.close()
+
+
+class _BuildOnlyEngine:
+    name = "build-only"
+
+    def open(self, dataset, schema):
+        return _BuildOnlySource(api.InMemoryEngine().open(dataset, schema))
+
+    def materialize_anchors(self, table):
+        return api.InMemoryEngine().materialize_anchors(table)
+
+
+def test_materialized_values_keep_optional_statistics_fallback(tmp_path):
+    from kumo.pytorch.engine import SampleSource
+
+    spec = aggregate_contract()
+    inputs = dict(spec.batch.inputs)
+    inputs["entity"] = api.Input(
+        api.EntitySource(),
+        api.Fields((api.Encode("score", api.ZScore()), api.Encode("stored", api.ZScore()))),
+        api.Separate(),
+    )
+    spec = replace(
+        spec,
+        sample=replace(
+            spec.sample, entity_values={**spec.sample.entity_values, "stored": api.Field("score")}
+        ),
+        batch=replace(spec.batch, inputs=inputs),
+    )
+    with api.prepare(spec, aggregate_dataset(), _BuildOnlyEngine()) as plan:
+        assert isinstance(plan._require_open(), SampleSource)
+        assert not hasattr(plan._require_open(), "column_stats")
+        with plan.materialize(_table(), fit_split="train") as task:
+            expected = {
+                name: task.output("entity").field(name=name).encoder for name in ("score", "stored")
+            }
+        values = plan._materialize_values(_table(), tmp_path / "values", stats_split="train")
+        with plan.materialize(values.anchors, values=values, fit_split="train") as task:
+            for name in expected:
+                actual = task.output("entity").field(name=name).encoder
+                assert actual.mean == pytest.approx(expected[name].mean)
+                assert actual.scale == pytest.approx(expected[name].scale)
+
+
+@pytest.mark.parametrize("shared", [False, True])
+def test_selected_stats_preserve_skip_event_fit_population(tmp_path, shared):
+    spec = _contract(temporal=False)
+    values = {
+        "a": api.Aggregate(
+            api.Rows(("user_events",), api.TimeWindow("occurred_at", stop=0)),
+            "sum",
+            "amount",
+            dtype=api.DType("float64"),
+        ),
+        "b": api.Field("score"),
+    }
+    config = api.UseEncoding("shared") if shared else api.Vocabulary()
+    spec = replace(
+        spec,
+        sample=replace(spec.sample, entity_values=values),
+        batch=api.BatchSpec(
+            inputs={
+                "entity": api.Input(
+                    api.EntitySource(),
+                    api.Fields(
+                        (
+                            api.Encode("a", config, id_space="words"),
+                            api.Encode("b", config, id_space="words"),
+                        ),
+                        row=api.Tokens(missing="skip_event"),
+                    ),
+                    api.Packed(),
+                )
+            },
+            encodings={"shared": api.Vocabulary()} if shared else {},
+            id_spaces={"words": api.IdSpace({"pad": "pad"})},
+            batching=api.Batching(max_samples=2),
+        ),
+    )
+    dataset = replace(
+        DATASET,
+        tables={
+            "users": api.InMemoryRows(
+                [{"user_id": 1, "score": 7.0}, {"user_id": 2, "score": None}]
+            ),
+            "events": api.InMemoryRows(
+                [
+                    {"event_id": 1, "user_id": 1, "occurred_at": 50, "amount": 1.0},
+                    {"event_id": 2, "user_id": 2, "occurred_at": 50, "amount": 100.0},
+                ]
+            ),
+        },
+    )
+    anchors = api.AnchorTable(
+        api.InMemoryRows(
+            [
+                {"user_id": 1, "at": 100, "split": "train"},
+                {"user_id": 2, "at": 100, "split": "train"},
+            ]
+        ),
+        "user_id",
+        "at",
+        split="split",
+    )
+    with api.prepare(spec, dataset, api.InMemoryEngine()) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            expected = task.output("entity").field(name="a").encoder.entries
+        values = plan._materialize_values(anchors, tmp_path / "values", stats_split="train")
+        with plan.materialize(values.anchors, values=values, fit_split="train") as task:
+            actual = task.output("entity").field(name="a").encoder.entries
+        assert actual == expected
+        assert {value for value, _ in actual} == ({1.0, 7.0} if shared else {1.0})

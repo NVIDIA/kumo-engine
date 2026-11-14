@@ -493,7 +493,8 @@ class _ValuesSource:
         task = [item for item in requests if item[0] == "__materialized_anchors"]
         stored = [item for item in requests if item[0] != "__materialized_anchors"]
         selected = self.values.selected_column_stats(task)
-        base = self.source.column_stats(stored, cutoff) if stored else None
+        collect = getattr(self.source, "column_stats", None)
+        base = collect(stored, cutoff) if stored and collect is not None else None
         return ColumnStats(
             {**(base.columns if base else {}), **selected.columns},
             base.cutoff if base else selected.cutoff,

@@ -461,7 +461,7 @@ class Plan:
                     tokenizer_json=tokenizer,
                 )
                 files.extend([path] if path else [])
-            else:
+            elif stats is not None and all(item in stats.columns for item in encoder.requests):
                 pinned[identity] = fit_from_stats(identity, encoder, stats)
         logger.info(
             "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",

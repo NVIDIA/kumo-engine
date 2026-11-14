@@ -27,6 +27,7 @@ from kumo.pytorch.contract.batch import (
     EventSource,
     Fields,
     Graph,
+    Tokens,
     UseEncoding,
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
@@ -372,6 +373,16 @@ def table_column_encoders(
                 )
                 for variant, _, _ in variants
             }
+            row = value.representation.row
+            if (
+                isinstance(row, Tokens)
+                and row.missing == "skip_event"
+                and any(
+                    item is not None and item[0] == "__materialized_anchors" for item in columns
+                )
+            ):
+                # Table-wide summaries do not encode the input's row eligibility.
+                columns = {None}
             add(
                 _encoder_identity(name, use),
                 use.encoding,
