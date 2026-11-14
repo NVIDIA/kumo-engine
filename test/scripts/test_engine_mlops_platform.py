@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Platform planning and readback guards; these do not qualify live services."""
+"""Snowflake notebook launch and identity guards."""
 
 import errno
 import importlib.util
@@ -19,14 +19,8 @@ platform = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(platform)
 
 
-def profile_path(name):
-    root = (DIRECTORY / 'mlops_platforms' if name == 'snowflake' else
-            Path(__file__).parent / 'data/mlops_platforms')
-    return root / f'{name}.json'
-
-
-def config(name='snowflake'):
-    return json.loads(profile_path(name).read_text())
+def config():
+    return json.loads((DIRECTORY / 'mlops_platforms/snowflake.json').read_text())
 
 
 def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
@@ -37,10 +31,9 @@ def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
         instance.placement()
 
 
-@pytest.mark.parametrize('name', platform.PLATFORMS)
-def test_attempt_resources_are_scoped_and_reconstructible(name, tmp_path):
+def test_attempt_resources_are_scoped_and_reconstructible(tmp_path):
     path = tmp_path / 'config.json'
-    path.write_text(json.dumps(config(name)))
+    path.write_text(json.dumps(config()))
     first, second = tmp_path / 'a', tmp_path / 'b'
     first.mkdir()
     second.mkdir()
@@ -58,7 +51,7 @@ def test_attempt_resources_are_scoped_and_reconstructible(name, tmp_path):
     (TimeoutError('service timed out'), False),
     (FileNotFoundError('stage absent'), False),
     (PermissionError('wrapper only'), False),
-    (PermissionError(errno.EACCES, 'denied'), True),
+    (PermissionError(errno.EACCES, 'denied'), False),
 ])
 def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
         cause, expected):
@@ -71,12 +64,7 @@ def test_provider_denial_codes_are_recognized():
     class SnowDenied(RuntimeError):
         sqlstate = '42501'
 
-    class AwsDenied(RuntimeError):
-        response = {'Error': {'Code': 'AccessDenied'}}
-
     error = SnowDenied('Snowflake denies access')
-    assert platform.access_error(error) and platform.denied_access(error)
-    error = AwsDenied('AWS denies access')
     assert platform.access_error(error) and platform.denied_access(error)
     wrapped = RuntimeError('Tracking unavailable')
     wrapped.__cause__ = error

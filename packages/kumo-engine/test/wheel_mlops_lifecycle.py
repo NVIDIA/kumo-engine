@@ -24,7 +24,6 @@ import time
 import traceback
 import warnings
 import zipfile
-from contextlib import nullcontext
 from functools import cache
 from pathlib import Path
 
@@ -832,11 +831,9 @@ def explain(root):
 def phase(args):
     started = time.monotonic()
     report = dict(status='failed', phase=args.phase)
-    selected = 'cpu'
     profile = None
     try:
         profile = platform_backend(args.output_dir)
-        selected = accelerator(args.output_dir)
         if profile is not None and profile.config['environment'] == 'managed':
             report['environment'] = check_install(args.wheel,
                                                   args.expected_version,
@@ -856,28 +853,7 @@ def phase(args):
 
         torch.set_num_threads(2)
         kumo.configure(scratch_dir=args.output_dir / f'scratch-{args.phase}')
-        state = dict(stage=args.phase, fits=0, completed_fits=0,
-                     optimizer_steps=0, training_batches=0,
-                     prediction_batches={args.phase: 0})
-        if selected == 'gpu' and (not torch.cuda.is_available()
-                                  or torch.cuda.device_count() != 1):
-            raise PrerequisiteError(
-                'GPU profile requires exactly one visible CUDA device')
-        observer = gpu_helpers().observe_cuda(
-            state) if selected == 'gpu' else nullcontext()
-        with observer:
-            report['result'] = globals()[args.phase](args.output_dir)
-        if selected == 'gpu':
-            report['cuda_work'] = state
-            if args.phase == 'fit':
-                require(
-                    state['fits'] == state['completed_fits'] == 2
-                    and state['training_batches'] > 0
-                    and state['optimizer_steps'] > 0,
-                    'Missing CUDA training work')
-            if args.phase == 'score':
-                require(state['prediction_batches'][args.phase] > 0,
-                        'Missing CUDA prediction work')
+        report['result'] = globals()[args.phase](args.output_dir)
         report['status'] = 'passed'
     except (ImportError, PermissionError, PrerequisiteError):
         report['status'] = 'blocked'
@@ -889,7 +865,7 @@ def phase(args):
     finally:
         report['seconds'] = time.monotonic() - started
         report['resources'] = dict(
-            requested_device=selected, torch_threads=2,
+            device='cpu', torch_threads=2,
             maxrss_self_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             maxrss_terminated_children_kib=resource.getrusage(
                 resource.RUSAGE_CHILDREN).ru_maxrss,

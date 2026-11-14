@@ -2,11 +2,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Plan or execute the shared lifecycle against a named platform profile."""
+"""Run the shared lifecycle inside a Snowflake notebook."""
 
-import argparse
-import errno
-import importlib.util
 import json
 import math
 import os
@@ -17,7 +14,6 @@ from functools import cache, cached_property
 from pathlib import Path
 from uuid import uuid4
 
-PLATFORMS = ('snowflake', 'databricks', 'sagemaker')
 NOTEBOOK_CONTEXT = 'KUMO_MLOPS_NOTEBOOK_CONTEXT'
 NOTEBOOK_ATTEMPT = 'KUMO_MLOPS_NOTEBOOK_ATTEMPT'
 IDENTITY_SQL = 'SELECT CURRENT_ACCOUNT(), CURRENT_USER(), CURRENT_ROLE()'
@@ -31,9 +27,6 @@ FIELDS = {
     'schema',
     'warehouse',
     'role',
-    'catalog',
-    'tracking_arn',
-    'role_arn',
     'accelerator',
     'execution_context',
     'environment',
@@ -59,39 +52,23 @@ def access_error(error):
     while error is not None and id(error) not in seen:
         seen.add(id(error))
         response = getattr(error, 'response', {})
-        code = response.get('Error', {}).get('Code') if isinstance(
-            response, dict) else None
         if (getattr(error, 'sqlstate', None) in ('42501', '28000')
                 or getattr(error, 'status_code', None) in (401, 403)
-                or getattr(response, 'status_code', None) in (401, 403)
-                or getattr(error, 'error_code', None)
-                in ('PERMISSION_DENIED', 'UNAUTHENTICATED') or code
-                in ('AccessDenied', 'AccessDeniedException', 'ExpiredToken',
-                    'InvalidClientTokenId', 'UnrecognizedClientException')
-                or type(error).__name__
-                in ('NoCredentialsError', 'PartialCredentialsError',
-                    'ProfileNotFound', 'NoRegionError', 'Unauthenticated',
-                    'PermissionDenied')):
+                or getattr(response, 'status_code', None) in (401, 403)):
             return True
         error = error.__cause__ or error.__context__
     return False
 
 
-def denied_access(error, *, provider_only=False):
+def denied_access(error):
     """Require denial evidence, not the filesystem wrapper exception's name."""
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
         response = getattr(error, 'response', None)
-        code = response.get('Error', {}).get('Code') if isinstance(
-            response, dict) else None
         if (getattr(error, 'sqlstate', None) == '42501'
                 or getattr(error, 'status_code', None) == 403
-                or getattr(response, 'status_code', None) == 403 or
-            (not provider_only and
-             (getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM)
-              or code in ('AccessDenied', 'AccessDeniedException')
-              or type(error).__name__ == 'PermissionDenied'))):
+                or getattr(response, 'status_code', None) == 403):
             return True
         error = error.__cause__ or error.__context__
     return False
@@ -113,17 +90,10 @@ def validate(config):
             isinstance(value, str) and value.strip()
             for value in config.values()):
         raise ValueError(f'Missing or empty profile fields: {sorted(missing)}')
-    platform = config['platform']
-    if platform not in PLATFORMS:
-        raise ValueError('Unknown platform')
-    if config['accelerator'] not in ('cpu', 'gpu'):
-        raise ValueError('accelerator must be cpu or gpu')
-    if config['environment'] not in ('venv', 'managed'):
-        raise ValueError('environment must be venv or managed')
-    if config['execution_context'] not in ('client', platform,
-                                           'snowflake_notebook'):
-        raise ValueError(
-            'execution_context must be client or the selected platform')
+    if config['platform'] != 'snowflake':
+        raise ValueError('Only the Snowflake notebook profile is supported')
+    if config['accelerator'] != 'cpu':
+        raise ValueError('Snowflake notebook validation requires CPU')
     root = config['artifact_root']
     if any(part in ('..', '.')
            for part in root.split('/')) or '?' in root or '#' in root:
@@ -131,49 +101,20 @@ def validate(config):
             'Artifact roots cannot contain traversal or URL parameters')
     if not re.fullmatch('[A-Za-z][A-Za-z0-9_-]{0,23}', config['model_prefix']):
         raise ValueError('Use a short alphanumeric model prefix')
-    if platform == 'snowflake':
-        for name in ('database', 'schema', 'warehouse', 'experiment',
-                     'model_prefix'):
-            identifier(config.get(name))
-        if config.get('role'):
-            identifier(config['role'])
-        if (config.get('identity') != 'notebook'
-                or config['execution_context'] != 'snowflake_notebook'
-                or config['environment'] != 'managed'):
-            raise ValueError(
-                'Snowflake requires the managed notebook execution path')
-        stage = r'@[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_/-]+'
-        if not re.fullmatch(stage, root):
-            raise ValueError(
-                'Use an explicit @DATABASE.SCHEMA.STAGE/test-prefix root')
-    elif platform == 'databricks':
-        if config['execution_context'] == 'snowflake_notebook':
-            raise ValueError('Notebook context is only for Snowflake')
-        for name in ('catalog', 'schema'):
-            identifier(config.get(name))
-        if config.get('identity') not in ('ambient', 'service_principal'):
-            raise ValueError(
-                'Databricks identity must be ambient or service_principal')
-        if not root.startswith(
-                f'/Volumes/{config["catalog"]}/{config["schema"]}/') or len(
-                    root.split('/')) < 6:
-            raise ValueError(
-                'Use a volume and test prefix in the selected catalog/schema')
-        if not config['experiment'].startswith('/'):
-            raise ValueError(
-                'Use a workspace experiment path with an existing parent')
-    else:
-        if config['execution_context'] == 'snowflake_notebook':
-            raise ValueError('Notebook context is only for Snowflake')
-        if not re.fullmatch(r's3://[a-z0-9][a-z0-9.-]+/[A-Za-z0-9_/-]+', root):
-            raise ValueError('Use an S3 bucket and test prefix')
-        if not re.fullmatch(
-                r'arn:aws[a-z-]*:sagemaker:[a-z0-9-]+:[0-9]{12}:(mlflow-tracking-server|mlflow-app)/[A-Za-z0-9-]+',
-                config.get('tracking_arn', '')):
-            raise ValueError('Use a managed MLflow server or app ARN')
-        if '_' in config['model_prefix']:
-            raise ValueError(
-                'SageMaker model prefixes cannot contain underscores')
+    for name in ('database', 'schema', 'warehouse', 'experiment',
+                 'model_prefix'):
+        identifier(config.get(name))
+    if config.get('role'):
+        identifier(config['role'])
+    if (config.get('identity') != 'notebook'
+            or config['execution_context'] != 'snowflake_notebook'
+            or config['environment'] != 'managed'):
+        raise ValueError(
+            'Snowflake requires the managed notebook execution path')
+    stage = r'@[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_/-]+'
+    if not re.fullmatch(stage, root):
+        raise ValueError(
+            'Use an explicit @DATABASE.SCHEMA.STAGE/test-prefix root')
     denied = config.get('denied_artifact_root')
     if denied:
         other = dict(config, artifact_root=denied)
@@ -182,29 +123,15 @@ def validate(config):
         if denied.rstrip('/') == root.rstrip('/'):
             raise ValueError(
                 'The denied root must differ from the writable test root')
-        if (platform == 'snowflake' and denied.split('/', 1)[0].upper()
-                == root.split('/', 1)[0].upper()):
+        if denied.split('/', 1)[0].upper() == root.split('/', 1)[0].upper():
             raise ValueError(
                 'The denied root must use a separate Snowflake stage')
     return dict(config)
 
 
-def plan(config):
-    config = validate(config)
-    return dict(
-        platform=config['platform'],
-        execution_context=config['execution_context'], configuration=config,
-        phases=['negative', 'fit', 'score', 'evaluate'], mutations=[
-            'Store artifacts under a new attempt prefix',
-            'Create a new experiment and model with two versions',
-            'Move champion only on that new test model'
-        ], retention='Keep test resources and evidence; no automatic deletion',
-        ui_review='Required separately after API execution')
-
-
 def prepare(root, filename, attempt=None):
     config = validate(json.loads(filename.read_text()))
-    if attempt is None and config['platform'] == 'snowflake':
+    if attempt is None:
         attempt = os.environ.get(NOTEBOOK_ATTEMPT)
     if attempt is not None and (not isinstance(attempt, str)
                                 or not re.fullmatch('[a-f0-9]{12}', attempt)):
@@ -222,22 +149,15 @@ def backend(root):
     config = validate(state['config'])
     if not re.fullmatch('[a-f0-9]{12}', state['attempt']):
         raise ValueError('Invalid attempt identifier')
-    cls = Snowflake if config['platform'] == 'snowflake' else Mlflow
-    return cls(config, state['attempt'])
+    return Snowflake(config, state['attempt'])
 
 
-class Backend:
+class Snowflake:
     def __init__(self, config, attempt):
         self.config = config
         self.attempt = attempt
-        suffix = '_' if config['platform'] == 'snowflake' else '-'
-        self.experiment = config['experiment'] + suffix + attempt
-        self.model = config['model_prefix'] + suffix + attempt
-        if config['platform'] == 'snowflake':
-            self.experiment, self.model = self.experiment.upper(
-            ), self.model.upper()
-        if config['platform'] == 'databricks':
-            self.model = f'{config["catalog"]}.{config["schema"]}.{self.model}'
+        self.experiment = (config['experiment'] + '_' + attempt).upper()
+        self.model = (config['model_prefix'] + '_' + attempt).upper()
         self.artifact_root = config['artifact_root'].rstrip('/') + '/' + attempt
 
     @property
@@ -245,52 +165,30 @@ class Backend:
         return self.config['accelerator']
 
     def placement(self):
-        context = self.config['execution_context']
-        if context == 'client':
-            return dict(context='client',
-                        native_platform_qualification='blocked')
-        if context == 'snowflake_notebook':
-            try:
-                launch = json.loads(os.environ.get(NOTEBOOK_CONTEXT, '{}'))
-            except ValueError as error:
-                raise PlatformUnavailable(
-                    'Invalid notebook launch context') from error
-            if (not isinstance(launch, dict)
-                    or not str(launch.get('session', '')).isdecimal()
-                    or launch.get('notebook_extension') is not True
-                    or launch.get('workspace')
-                    != os.environ.get('SNOWFLAKE_WORKSPACE_ID')
-                    or not isinstance(launch.get('identity'), list)
-                    or len(launch['identity']) != 3):
-                raise PlatformUnavailable(
-                    'Launch Snowflake validation from the notebook')
-            from kumo_snowflake.spcs import SPCS_TOKEN_PATH
-            if (not Path(SPCS_TOKEN_PATH).is_file()
-                    or not os.environ.get('SNOWFLAKE_ACCOUNT')
-                    or not os.environ.get('SNOWFLAKE_HOST')):
-                raise PlatformUnavailable(
-                    'Notebook Container Runtime must expose fresh-process authentication'
-                )
-            return dict(
-                context=context, notebook=launch,
-                identity='mounted runtime token; verified against notebook')
-        if context == 'databricks':
-            version = os.environ.get('DATABRICKS_RUNTIME_VERSION')
-            if not version:
-                raise PlatformUnavailable(
-                    'Run inside the selected Databricks runtime')
-            return dict(context='databricks', runtime=version)
-        processing = Path('/opt/ml/config/processingjobconfig.json')
-        if processing.is_file():
-            record = json.loads(processing.read_text())
-            return dict(context='sagemaker', job=record['ProcessingJobName'],
-                        arn=record['ProcessingJobArn'])
-        training = os.environ.get('TRAINING_JOB_NAME')
-        if training and Path(
-                '/opt/ml/input/config/resourceconfig.json').is_file():
-            return dict(context='sagemaker', job=training)
-        raise PlatformUnavailable(
-            'Run inside the selected SageMaker training/processing job')
+        try:
+            launch = json.loads(os.environ.get(NOTEBOOK_CONTEXT, '{}'))
+        except ValueError as error:
+            raise PlatformUnavailable(
+                'Invalid notebook launch context') from error
+        if (not isinstance(launch, dict)
+                or not str(launch.get('session', '')).isdecimal()
+                or launch.get('notebook_extension') is not True
+                or launch.get('workspace')
+                != os.environ.get('SNOWFLAKE_WORKSPACE_ID')
+                or not isinstance(launch.get('identity'), list)
+                or len(launch['identity']) != 3):
+            raise PlatformUnavailable(
+                'Launch Snowflake validation from the notebook')
+        from kumo_snowflake.spcs import SPCS_TOKEN_PATH
+        if (not Path(SPCS_TOKEN_PATH).is_file()
+                or not os.environ.get('SNOWFLAKE_ACCOUNT')
+                or not os.environ.get('SNOWFLAKE_HOST')):
+            raise PlatformUnavailable(
+                'Notebook Container Runtime must expose fresh-process authentication'
+            )
+        return dict(
+            context='snowflake_notebook', notebook=launch,
+            identity='mounted runtime token; verified against notebook')
 
     def negative(self):
         import kumo.engine as kumo
@@ -305,102 +203,13 @@ class Backend:
                 (self.connector, denied.rstrip('/') + '/' + self.attempt),
                 on_error='raise')
         except PermissionError as error:
-            if denied_access(
-                    error,
-                    provider_only=self.config['platform'] == 'snowflake'):
+            if denied_access(error):
                 return dict(denied_artifact_access='passed',
                             diagnostic=str(error))
             raise PlatformUnavailable(
                 'Probe failed without permission-denial evidence') from error
         raise AssertionError('The denied artifact root was writable')
 
-
-class Mlflow(Backend):
-    @cached_property
-    def connector(self):
-        import kumo.engine as kumo
-
-        if self.config['platform'] == 'databricks':
-            identity = None
-            if self.config['identity'] == 'service_principal':
-                names = ('DATABRICKS_HOST', 'DATABRICKS_CLIENT_ID',
-                         'DATABRICKS_CLIENT_SECRET')
-                missing = [name for name in names if not os.environ.get(name)]
-                if missing:
-                    raise PlatformUnavailable(
-                        f'Missing credential environment names: {missing}')
-                identity = kumo.DatabricksIdentity(
-                    host=os.environ[names[0]], client_id=os.environ[names[1]],
-                    client_secret=os.environ[names[2]])
-            return kumo.DatabricksConnector(catalog=self.config['catalog'],
-                                            schema_name=self.config['schema'],
-                                            identity=identity)
-        identity = (kumo.S3Identity(role_arn=self.config['role_arn'])
-                    if self.config.get('role_arn') else None)
-        return kumo.S3Connector(identity=identity)
-
-    def settings(self, register):
-        import mlflow
-
-        import kumo.engine as kumo
-        from kumo.engine.integrations.mlflow import (
-            MlflowTracking,
-            SageMakerMLflow,
-        )
-
-        self.placement()
-        if self.config['platform'] == 'databricks':
-            target = self.connector
-            mlflow.set_tracking_uri('databricks')
-            mlflow.set_registry_uri('databricks-uc')
-        else:
-            identity = (kumo.S3Identity(role_arn=self.config['role_arn'])
-                        if self.config.get('role_arn') else None)
-            target = SageMakerMLflow(self.config['tracking_arn'],
-                                     identity=identity)
-            mlflow.set_tracking_uri(self.config['tracking_arn'])
-            mlflow.set_registry_uri(self.config['tracking_arn'])
-        return kumo.MLOps((self.connector, self.artifact_root),
-                          tracking=MlflowTracking(self.experiment,
-                                                  target=target,
-                                                  log_system_metrics=False),
-                          registry=kumo.ModelRegistryLocation(self.model)
-                          if register else None, on_error='raise')
-
-    def record(self, cfg, ref):
-        require(ref is not None, 'Expected a tracked platform run')
-        with cfg.tracking.client() as client:
-            run = client.get_run(ref.run_id)
-            history = {
-                name: [(int(p.step), float(p.value))
-                       for p in client.get_metric_history(ref.run_id, name)]
-                for name in ('train/loss', 'val/auroc')
-            }
-        require(run.info.status == 'FINISHED',
-                'Platform tracking run did not finish')
-        return dict(params=run.data.tags, metrics=run.data.metrics,
-                    history=history, run=ref.run_id, experiment=self.experiment,
-                    experiment_id=run.info.experiment_id, url=ref.url)
-
-    def registered(self, cfg, version, bundle):
-        with cfg.tracking.client() as client:
-            model = client.get_model_version(self.model, version)
-        require(
-            model.tags.get('kumo_bundle_id') == bundle,
-            'Registry version refers to another bundle')
-
-    def set_alias(self, cfg, version):
-        with cfg.tracking.client() as client:
-            client.set_registered_model_alias(self.model, 'champion', version)
-
-    def alias(self, cfg):
-        with cfg.tracking.client() as client:
-            return str(
-                client.get_model_version_by_alias(self.model,
-                                                  'champion').version)
-
-
-class Snowflake(Backend):
     @staticmethod
     def history_api():
         from snowflake.ml.experiment import ExperimentTracking
@@ -573,9 +382,7 @@ def drift_record(profile, cfg, run, drift):
 def run_notebook(*, config, wheel, expected_version, output_dir,
                  python_executable=None, phase=None, attempt=None):
     """Launch fresh lifecycle processes from a Snowflake Container Runtime notebook."""
-    profile = validate(json.loads(Path(config).read_text()))
-    if profile['platform'] != 'snowflake':
-        raise ValueError('This notebook entrypoint is for Snowflake')
+    validate(json.loads(Path(config).read_text()))
     if phase not in (None, 'negative'):
         raise ValueError('The standalone notebook phase must be negative')
     from IPython import get_ipython
@@ -624,40 +431,3 @@ def run_notebook(*, config, wheel, expected_version, output_dir,
     return dict(
         returncode=completed.returncode,
         summary=json.loads(summary.read_text()) if summary.is_file() else None)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, required=True)
-    parser.add_argument('--output-dir', type=Path)
-    parser.add_argument('--wheel', type=Path)
-    parser.add_argument('--expected-version')
-    parser.add_argument('--execute', action='store_true')
-    args = parser.parse_args(argv)
-    proposal = plan(json.loads(args.config.read_text()))
-    if not args.execute:
-        print(json.dumps(proposal, indent=2))
-        return 0
-    if proposal['platform'] == 'snowflake':
-        parser.error(
-            'Snowflake execution requires run_notebook() in the supplied notebook'
-        )
-    if not all((args.output_dir, args.wheel, args.expected_version)):
-        parser.error(
-            '--execute requires --output-dir, --wheel and --expected-version')
-    path = Path(__file__).with_name('wheel_mlops_lifecycle.py')
-    spec = importlib.util.spec_from_file_location('mlops_lifecycle', path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f'Cannot load the lifecycle helper at {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.main([
-        '--execute-platform', '--platform-config',
-        str(args.config), '--output-dir',
-        str(args.output_dir), '--wheel',
-        str(args.wheel), '--expected-version', args.expected_version
-    ])
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
