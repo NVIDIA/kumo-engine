@@ -513,7 +513,7 @@ class _Foreign(TrackingBase):
         self._tracker = tracker
 
     def __getattribute__(self, name: str) -> Any:
-        if name == '_snapshot_ref_before_finish':
+        if name in ('_snapshot_ref_before_finish', '_finish_on_owner_thread'):
             return getattr(type(self._tracker), name, False) is True
         if name.startswith('_'):
             return object.__getattribute__(self, name)
@@ -724,12 +724,15 @@ class TrackingSession:
                 RuntimeError('the tracking thread stopped'))
             tracker, self._tracker = self._tracker, None
             if tracker is not None:
-                # Release SDK context tokens on the worker that created them.
-                self._abandoned = tracker
-                try:
-                    self._jobs.put_nowait(lambda: None)
-                except queue.Full:
-                    pass
+                if getattr(tracker, '_finish_on_owner_thread', False) is True:
+                    # Release SDK context tokens on their creating worker.
+                    self._abandoned = tracker
+                    try:
+                        self._jobs.put_nowait(lambda: None)
+                    except queue.Full:
+                        pass
+                else:
+                    _abandon(tracker)
             break
         if failed:
             error = failed[0]
