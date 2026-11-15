@@ -2273,9 +2273,6 @@ class _TemporalPlanCompiler:
                 self._physical_column(frame, destination, field.column)
                 if field.column not in columns:
                     columns.append(field.column)
-        if not columns:
-            # Constant-only events still need one physical native projection.
-            columns.append(frame["time_column"])
         if isinstance(spec, EventSpec):
             order = spec.order
             limit = spec.limit
