@@ -14,7 +14,7 @@ import torch
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
 
-pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
+diskgraph = pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
 
 
 @pytest.fixture
@@ -364,13 +364,16 @@ def test_empty_native_anchors_and_cleanup(native_task, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "column,value,match",
+    "column,value,match,error",
     [
-        ("entity", "missing", "unknown graph entity"),
-        ("cutoff", None, "cannot be NULL"),
+        ("entity", "missing", "unknown graph entity", ValueError),
+        ("entity", None, "null primary key", diskgraph.DiskgraphDataError),
+        ("cutoff", None, "cannot be NULL", ValueError),
     ],
 )
-def test_invalid_native_anchors_do_not_drop_rows(native_task, tmp_path, column, value, match):
+def test_invalid_native_anchors_do_not_drop_rows(
+    native_task, tmp_path, column, value, match, error
+):
     plan, task, table = native_task
     data = pq.read_table(table.source.path)
     altered = pa.array([value] + data[column].to_pylist()[1:], type=data[column].type)
@@ -378,7 +381,7 @@ def test_invalid_native_anchors_do_not_drop_rows(native_task, tmp_path, column, 
     invalid = tmp_path / "invalid.parquet"
     pq.write_table(data, invalid)
     before = set(tmp_path.glob(".anchors-*"))
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(error, match=match):
         plan.materialize(replace(table, source=api.Parquet(str(invalid))), fitted=task.fitted_state)
     assert set(tmp_path.glob(".anchors-*")) == before
 

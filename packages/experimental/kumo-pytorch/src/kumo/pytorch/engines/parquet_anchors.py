@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from kumo.pytorch.anchors import AllAnchors, AnchorTable, PositionalAnchors, SplitSelection
+from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
@@ -37,6 +38,19 @@ def _physical(table: AnchorTable) -> dict[str, str]:
     logical_of = dict(getattr(table.source, "columns", {}) or {})
     physical_of = {logical: physical for physical, logical in logical_of.items()}
     return {name: physical_of.get(name, name) for name in table.columns}
+
+
+def _anchor_key_array(values: Any, dtype: DType) -> Any:
+    """Keep already-typed integer/string keys columnar; normalize other inputs."""
+    import pyarrow as pa
+
+    arrow_type = dtype.to_arrow()
+    if (dtype.integer or dtype.name == "string") and values.type == arrow_type:
+        return values
+    return pa.array(
+        [dtype.normalize(value, path="anchors.entity_id") for value in values.to_pylist()],
+        type=arrow_type,
+    )
 
 
 def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:

@@ -647,7 +647,7 @@ class DiskGraphSource:
 
     def materialize_scalar_batches(self, sample, anchors, batch_size):
         """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
-        from kumo.pytorch.engines.parquet_anchors import _files, _physical
+        from kumo.pytorch.engines.parquet_anchors import _anchor_key_array, _files, _physical
 
         physical = _physical(anchors)
         compiled = _TemporalPlanCompiler(self).compile(sample)
@@ -662,13 +662,7 @@ class DiskGraphSource:
                 started = time.perf_counter_ns()
                 columns = {name: batch.column(column) for name, column in physical.items()}
                 key_dtype = entity.columns[entity.primary_key]
-                keys = self._pa.array(
-                    [
-                        key_dtype.normalize(v, path="anchors.entity_id")
-                        for v in columns[anchors.entity_id].to_pylist()
-                    ],
-                    type=key_dtype.to_arrow(),
-                )
+                keys = _anchor_key_array(columns[anchors.entity_id], key_dtype)
                 roots = self._sampler.lookup_node_ids(sample.entity.table, keys)
                 if any(root is None for root in roots):
                     raise ValueError("anchor table contains an unknown graph entity")
