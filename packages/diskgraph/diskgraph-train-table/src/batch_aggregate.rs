@@ -102,6 +102,7 @@ impl PreparedFrame {
 struct SequencePlan {
     name: String,
     frame: String,
+    /// Empty for identity-only output; offsets, node IDs and row count remain.
     columns: Vec<String>,
     order: SequenceOrder,
     limit: Option<usize>,
@@ -798,12 +799,6 @@ fn validate_sequence_plan(plan: &SequencePlan) -> Result<(), String> {
     }
     if plan.limit == Some(0) {
         return Err(format!("sequence {:?} limit must be positive", plan.name));
-    }
-    if plan.columns.is_empty() {
-        return Err(format!(
-            "sequence {:?} must project at least one column",
-            plan.name
-        ));
     }
     Ok(())
 }
