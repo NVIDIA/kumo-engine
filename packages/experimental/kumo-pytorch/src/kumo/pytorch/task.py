@@ -19,6 +19,7 @@ several tasks, or a resume, checks against.
 from __future__ import annotations
 
 import json
+import weakref
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from typing import Any, Literal
@@ -52,6 +53,7 @@ class TaskBatches(Iterator[Batch]):
     configuration; ``load_state_dict`` on a fresh iterator with the same
     configuration continues after them. Resuming replays the skipped batches
     rather than seeking, which is correct but slow for a long pass.
+    Prefetch depth is an execution setting and may change when resuming.
     """
 
     def __init__(
@@ -60,6 +62,7 @@ class TaskBatches(Iterator[Batch]):
         *,
         task_fingerprint: str,
         config: Mapping[str, Any],
+        prefetch_batches: int = 0,
     ) -> None:
         self._produce = produce
         self._task_fingerprint = task_fingerprint
@@ -67,18 +70,59 @@ class TaskBatches(Iterator[Batch]):
         self._iterator: Iterator[Batch] | None = None
         self._consumed = 0
         self._skip = 0
+        if type(prefetch_batches) is not int or prefetch_batches < 0:
+            raise ValueError("prefetch_batches must be a nonnegative integer")
+        self._prefetch_batches = prefetch_batches
+        self._closed = False
+        self._finalizer = None
 
     def __iter__(self) -> TaskBatches:
         return self
 
     def __next__(self) -> Batch:
+        if self._closed:
+            raise StopIteration
         if self._iterator is None:
-            self._iterator = self._produce()
-            for _ in range(self._skip):
-                next(self._iterator)
-        batch = next(self._iterator)
+            if self._prefetch_batches:
+                from kumo.pytorch._prefetch import PrefetchIterator
+
+                self._iterator = PrefetchIterator(
+                    self._produce, capacity=self._prefetch_batches, skip=self._skip
+                )
+                self._finalizer = weakref.finalize(self, self._iterator.close)
+            else:
+                self._iterator = self._produce()
+                for _ in range(self._skip):
+                    next(self._iterator)
+        try:
+            batch = next(self._iterator)
+        except BaseException:
+            self.close()
+            raise
         self._consumed += 1
         return batch
+
+    def close(self) -> None:
+        """Stop iteration and wait for in-flight batch preparation to finish.
+
+        Use as a context manager when stopping an epoch early. A native call
+        already in progress finishes before its resources can be released.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._finalizer is not None:
+            self._finalizer()
+        elif self._iterator is not None and callable(
+            close := getattr(self._iterator, "close", None)
+        ):
+            close()
+
+    def __enter__(self) -> TaskBatches:
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        self.close()
 
     def state_dict(self) -> dict[str, Any]:
         """The resume position: the task fingerprint, batch configuration and batches consumed."""
@@ -95,7 +139,7 @@ class TaskBatches(Iterator[Batch]):
         :raises ValueError: when iteration has started, or the state belongs to
             another task, split, seed, epoch, rank or batch configuration.
         """
-        if self._iterator is not None:
+        if self._iterator is not None or self._closed:
             raise ValueError("load_state_dict must be called before iteration starts")
         if state.get("version") != 1:
             raise ValueError(f"unsupported batch state version {state.get('version')!r}")
@@ -134,6 +178,7 @@ class Task:
         self.contract = contract
         self._assembler = assembler
         self._anchors = anchors
+        self._prefetch_iterators: weakref.WeakSet[TaskBatches] = weakref.WeakSet()
         serialized = assembler.fitted_state
         manifest = assembler.manifest
         self.fitted_state = FittedState(
@@ -209,6 +254,7 @@ class Task:
         world_size: int = 1,
         drop_last: bool | None = None,
         chunk_batches: int = 8,
+        prefetch_batches: int = 0,
         output_format: Literal["inspectable", "model"] = "inspectable",
     ) -> TaskBatches:
         """Emit batches over this task's anchors, or over requests built in code.
@@ -231,6 +277,20 @@ class Task:
         ``output_format="model"`` refuses raw types without a tensor
         representation before fetching a batch; ``"inspectable"`` keeps them
         as Arrow arrays. Both emit the same `Batch` structure.
+
+        ``prefetch_batches=0`` runs synchronously (the default). A positive
+        integer prepares that many batches ahead on one background CPU thread,
+        without changing order, contents or the consumed checkpoint position.
+        It works independently of model architecture and output format; device
+        transfer and model execution remain with the caller. The buffer limit
+        includes a batch being built, but excludes the batch held by the caller
+        and any engine-internal buffering. It is not a byte-memory limit.
+
+        Use ``with task.batches(prefetch_batches=1) as batches:`` when stopping
+        early. Closing the iterator, task or plan waits for in-flight native
+        work before releasing its resources. CPU grad/inference/autocast context
+        is captured when iteration starts. Backend observation hooks must
+        support producer-thread calls; owning-thread-only hooks need adaptation.
         """
 
         if requests is not None and split is not None:
@@ -251,6 +311,8 @@ class Task:
             drop_last = False  # inference scores every anchor, whatever the training policy
         if chunk_batches <= 0:
             raise ValueError("chunk_batches must be positive")
+        if type(prefetch_batches) is not int or prefetch_batches < 0:
+            raise ValueError("prefetch_batches must be a nonnegative integer")
         config = {
             "split": describe_selection(selection) if requests is None else None,
             "requests": None if requests is None else _fingerprint(tuple(requests)),
@@ -308,7 +370,15 @@ class Task:
                     output_format=output_format,
                 )
 
-        return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
+        batches = TaskBatches(
+            produce,
+            task_fingerprint=self.fingerprints["task"],
+            config=config,
+            prefetch_batches=prefetch_batches,
+        )
+        if prefetch_batches:
+            self._prefetch_iterators.add(batches)
+        return batches
 
     def _anchor_batches(
         self,
@@ -415,7 +485,12 @@ class Task:
     def close(self) -> None:
         """Release the materialized anchors. The plan's binding stays open."""
 
+        self._close_prefetch()
         self._anchors.close()
+
+    def _close_prefetch(self) -> None:
+        for batches in list(self._prefetch_iterators):
+            batches.close()
 
     def __enter__(self) -> Task:
         return self
