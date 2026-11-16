@@ -275,7 +275,8 @@ job provisions a dedicated private container cgroup and validates stage peaks
 and warm/cold/warm file residency. Only that temporary container has mount
 capability; it has no network or Docker socket. Unsupported kernel peak reset
 fails explicitly. Both validators passed locally in that Linux environment;
-actual CI execution is pending. `--isolate-memory` runs every campaign worker
+the dedicated Linux CI validation also passed. `--isolate-memory` runs every
+campaign worker
 through the [cgroup supervisor](../benchmarking/cgroup_run.py), which provisions
 a dedicated group, moves the child before exec and drops to the runner UID/GID.
 The supervisor requires passwordless sudo and a writable cgroup v2 parent with
@@ -286,6 +287,15 @@ on Linux with an unprivileged worker, complete benchmark stages, two epochs,
 transient children and timeout cleanup. The nightly repeats this validation.
 Process RSS sampling cannot substitute for peaks. Container validation is collector evidence,
 not a workload benchmark or a requirement to execute on a developer's machine.
+
+The real RTX campaign host reported Linux `6.8.0-147-generic`. Its
+[`memory.peak` interface is read-only](https://docs.kernel.org/6.8/admin-guide/cgroup-v2.html),
+so all three host-stage peak measurements were unavailable despite successful
+worker cgroup creation. The collector requires the
+[per-descriptor reset interface documented in Linux 6.12](https://docs.kernel.org/6.12/admin-guide/cgroup-v2.html)
+or a compatible backport, plus delegated write access. A newer container image
+does not change the host kernel. Provision a compatible GPU runner and rerun
+the collector and campaigns; do not substitute lifetime peaks for stage peaks.
 
 ## GPU collection and nightly runner
 
@@ -315,8 +325,9 @@ The job runs `python -m test.kumo_pytorch.benchmarking.validate_gpu --output DIR
 on real CUDA training, requires transfer/utilization/peak evidence in both
 epochs, and checks that allocated peaks reset. Missing CUDA/NVML fails; there is
 no CPU fallback or skip. The job summary and `kumo-pytorch-benchmark-gpu` artifact
-retain the report and observations. This job is configured but has not yet run
-on the GPU runner. Collector acceptance is separate from full PDF coverage;
+retain the report and observations. CI run 43857600971 passed this collector
+validation and all three existing CUDA package tests on the RTX runner.
+Collector acceptance is separate from full PDF coverage;
 the fixture's overall benchmark report correctly remains incomplete.
 
 ## Validation
@@ -355,4 +366,5 @@ and worker reports. Artifacts contain JSON/JSONL, Markdown and logs, excluding
 source/index payloads and persisted fitting artifacts. No result is uploaded to
 S3. The CPU PR trigger remains active; real-data CUDA jobs require a schedule
 or manual dispatch. A candidate workflow must be published to an internal branch
-before GitHub can execute it. Actual CI measurements are not yet available.
+before GitHub can execute it. The [collective CI review](../PLAN.md#collective-ci-review)
+records actual execution, expected decimal failures and remaining measurements.

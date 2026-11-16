@@ -18,7 +18,10 @@ source, anchor, task and model integration plus the general benchmark runner.
 Linux memory/cache and GPU collector validations have dedicated nightly jobs.
 The workflow also configures all five bounded AML CUDA benchmark campaigns on
 Engine's existing GPU runner, with per-worker cgroups and fresh/reused fitting.
-Actual CI execution and bucket access remain unverified; see
+CI verified bucket access and executed all five campaigns. With the decimal
+fix deliberately removed, graph workloads fail; sequence training completes
+but measurement coverage is incomplete on the GPU runner. See the
+[collective CI review](PLAN.md#collective-ci-review) and
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
 See [coverage ownership](PLAN.md#coverage-ownership).
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to

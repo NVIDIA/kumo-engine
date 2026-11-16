@@ -22,5 +22,8 @@ the available SSO identity cannot perform `iam:PutRolePolicy`.
 
 The downloader does not list the bucket or write objects. The grant contains
 no wildcard resources, other principals or write actions. Additional inputs
-require a separately reviewed grant. CI must verify actual downloads after the
-permission change; owner-profile access alone is not evidence of CI access.
+require a separately reviewed grant. The Engine role then downloaded and
+verified all 11 objects in
+[CI run 43857600971](https://github.com/NVIDIA/kumo-engine/actions/runs/43857600971):
+375,509,265 transferred bytes in 2.84 seconds, including anchors and bindings.
+This verifies CI access; it does not establish workload correctness.

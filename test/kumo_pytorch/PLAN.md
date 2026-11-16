@@ -6,8 +6,9 @@ incrementally; optimize runtime and calibrate performance gates afterwards.
 
 The [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) maps all six
 document sections to code and actual evidence, including user-directed deferrals.
-The bounded correctness prototype is validated; the complete nightly specification
-is not yet satisfied.
+The bounded correctness prototype passed before the decimal fix was withdrawn.
+The [collective CI review](#collective-ci-review) records the current failures
+and measurement gaps; the complete nightly specification is not yet satisfied.
 
 ## Agreed scope
 
@@ -47,8 +48,9 @@ the nightly; the existing PR/main package workflow remains independent.
 The package-regressions job excludes `tests/conformance/` and
 `tests/e2e/test_lifecycle.py`, which their existing nightly jobs execute.
 Notebook execution retains its existing separate workflow. Shared setup and the
-same commit's DiskGraph wheel serve all native jobs. Downloaded AML execution is
-still a local prototype pending CI data access/storage.
+same commit's DiskGraph wheel serve all native jobs. Downloaded AML execution
+now runs in CI; see the [collective review](#collective-ci-review) for evidence
+and remaining runner requirements.
 
 Similar assertions can cover distinct integration boundaries: a generic time
 window test does not prove that AML chose the correct clock and input fields.
@@ -728,3 +730,108 @@ package regressions, AML checks and lifecycle checks retain JUnit results alongs
 existing model-learning and benchmark reports. Review the complete run jointly;
 missing or skipped jobs are coverage gaps, not successes. Earlier passing evidence
 in this plan predates withdrawal of the decimal fix.
+
+### Collective CI review
+
+Reviewed on 2026-11-16. The decimal transport fix remains removed. The
+[published candidate run](https://github.com/NVIDIA/kumo-engine/actions/runs/43857600971)
+executes commit `f27cce6f`; results below distinguish failed execution from missing
+measurements. Reports and JUnit files are retained as Actions artifacts, not
+committed payloads. The earlier implementation notes above are historical.
+
+| Evidence | Result | Interpretation |
+| --- | --- | --- |
+| Dataset/tooling checks | 95 passed; no failures/skips | Harness checks, not full-data acceptance |
+| Existing package regressions | 1,883 passed, 9 failed, 3 CPU-only skips | All nine failures are decimal transport regressions; the three skipped CUDA tests passed separately on the GPU runner |
+| AML correctness/model checks | 338 passed, 7 failed; no skips | Two graph benchmark integration checks and all five raw-file lifecycle checks detect the decimal defect |
+| CUDA collector and existing CUDA package tests | Collector passed; 3 package tests passed, no skips | 512 optimizer updates/transfers, real NVML samples and allocated/reserved peaks; collector fixture is not complete workload coverage |
+| Existing conformance | 1,271 passed; no failures/skips | Both engines and the required plus daily seed batches; 25m19s |
+| Existing lifecycle training and checks | Four training jobs and 22 checks passed; no failed/skipped checks | Saved/reloaded predictions matched exactly for all four runs |
+| Linux memory/cache/isolation validation | Passed on the dedicated Linux validation host | Does not establish kernel capabilities of the separate GPU host |
+| AML acquisition using Engine OIDC role | All 11 pinned objects downloaded and verified | 375,509,265 bytes in 2.84 seconds; only the approved exact-object GetObject grant was added |
+| Real AML CUDA campaigns | 12 failed workers; 18 completed training with incomplete measurements | All 30 independent worker reports retained; see details below |
+
+The candidate's retail test AUROCs were 0.83405/0.83413 for GNN and
+0.83483/0.83501 for PRAGMA, against the retained recency baseline of 0.81025.
+All four saved/reloaded prediction pairs were independently inspected and
+matched exactly across 200,000 rows each. The lifecycle checks passed their
+declared reference and cutoff tolerances. These are the existing retail tasks,
+not AML generalization results.
+
+The [earlier complete run](https://github.com/NVIDIA/kumo-engine/actions/runs/43854428777)
+at `76a27dae`, also without the decimal fix, independently passed all 1,271
+conformance tests. The later candidate completed with 11 successful jobs and
+three failed jobs (package regressions, AML checks and AML benchmarks).
+Conformance passing does not supersede the decimal regression failures.
+
+The candidate's tiny controlled-learning checks completed 50 combined-model
+updates (final loss 2.93e-9, accuracy 1.0) and 100 PRAGMA updates (final loss
+1.00237, accuracy 16/17). Their frozen controls and eligibility checks passed.
+This establishes learning on their fixed fixtures, not real-data model quality.
+
+Real-data profiler review:
+
+- All five cases used verified HI-small inputs, 64 anchors per split with full
+  selected-root histories, three fresh/reused pairs and two requested epochs.
+  Source inspection counted 5,078,345 transactions and 515,088 account-binding
+  rows; prepared indexes contain the declared bounded population.
+- GraphSAGE failed on Arrow string values where decimal graph features were
+  required, before any training update. Combined failed during fitting on a
+  decimal event value. The raw-file correctness tests also exercise inspectable
+  decimal reads; sequence training completing on the model path does not
+  invalidate those failures. Its reused-state workers then failed because fitting
+  had not produced an artifact. These downstream errors are retained, not
+  independent evidence of a persistence defect.
+- nuFormer involvement, PRAGMA masked-value and nuFormer next-token completed
+  all 18 workers and 36 epochs: 576 optimizer updates, 64 emitted examples per
+  epoch, with actual token/event/output counts, native temporal counters,
+  Python operation timers, latencies, transfer timings and GPU measurements.
+- Those sequence workers each met 70/73 metric obligations, counting explicit
+  contract-based inapplicability. The three missing obligations were ingestion,
+  materialization and batch-production host-memory peaks. Each report preserves
+  the reset PermissionError rather than reporting zero or a sampled estimate.
+- The GPU host reports Linux 6.8, whose memory.peak counter is read-only.
+  Separate stage peaks require a compatible per-descriptor reset interface;
+  see [runner requirements](docs/benchmarking.md#linux-stage-peak-memory).
+  The successful Linux validation job ran on a different host/kernel.
+- All sequence workers verified cold then warm selected-file residency and all
+  nine fresh/reused fitting comparisons matched saved-state identities. PRAGMA's
+  post-warmup GPU windows had sufficient samples. All 12 later-epoch nuFormer
+  windows had only one in-window NVML sample at the configured 0.1-second
+  interval, so their steady-window experiment evidence remains incomplete.
+- Graph-native successful execution and full graph measurement coverage cannot
+  be accepted while the intentionally exposed decimal defect stops those paths.
+  No benchmark campaign passed the overall required-evidence gate.
+
+Indicative profiler values from the three fresh runs per sequence case (medians,
+with full histories and all observers enabled):
+
+| Workload / model | First / later epoch samples/s | Fresh / reused materialization ms | Later-epoch p95 batch latency ms | Later-epoch allocated GPU peak MiB |
+| --- | --- | --- | --- | --- |
+| Involvement / nuFormer | 82.64 / 539.54 | 58.09 / 18.27 | 4.52 | 68.35 |
+| Masked value / PRAGMA | 49.52 / 114.65 | 45.43 / 13.69 | 5.24 | 67.63 |
+| Next token / nuFormer | 82.72 / 565.61 | 52.48 / 17.12 | 4.14 | 87.00 |
+
+Samples/s includes the training execution window. Reused materialization uses
+its paired three reused workers. These short, instrumented runs do not establish
+steady equilibrium, causal cache speedup or performance regression thresholds.
+Missing host peaks and graph failures remain absent from numeric comparisons.
+Each artifact worker report retains all 73 metric obligations and raw evidence.
+
+CI integration fixes made while collecting this evidence were limited to the
+measurement/test harness: cgroup placement for Linux validation, CUDA UUID
+normalization, keeping native availability metadata in the report instead of
+changing the package profile keys, the existing CUDA test's field_ids key,
+independent evidence jobs, JUnit retention and candidate-run concurrency. The
+approved dataset grant is recorded in [the access guide](datasets/ACCESS.md).
+No Arena runtime dependency, public dataset copy, IAM role policy change or
+production decimal workaround was introduced.
+
+Next: provision a GPU runner with resettable memory.peak, extend the nuFormer
+measurement windows or choose and validate an adequate sampling interval, then
+rerun the campaigns. Keep the decimal failures visible until an explicit package
+fix is accepted. Full-population/larger-than-RAM measurements and performance
+threshold calibration remain outstanding. Synthetic and weekly remain deferred.
+Reference-engine performance comparison has no execution evidence; native-only
+inapplicability declarations do not establish that comparison. This review does not declare all PDF
+requirements complete.
