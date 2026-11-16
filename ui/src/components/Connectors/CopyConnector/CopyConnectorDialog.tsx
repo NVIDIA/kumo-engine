@@ -63,8 +63,10 @@ const CopyConnectorDialogComponent = ({
         [projectListResponse?.data, sourceProjectId]
     );
 
-    const targetProjectLabel =
-        projectOptions.find((p) => p.value === targetProjectId)?.label ?? "";
+    const copiedProjectLabel = copied
+        ? (projectOptions.find((p) => p.value === copied.project_id)?.label ??
+          copied.project_id)
+        : "";
 
     const onCopyClick = async () => {
         if (!connector || copyInFlightRef.current) return;
@@ -108,7 +110,7 @@ const CopyConnectorDialogComponent = ({
                             {copied ? (
                                 <p>
                                     Connector "{copied.name}" was copied to "
-                                    {targetProjectLabel}".
+                                    {copiedProjectLabel}".
                                 </p>
                             ) : (
                                 <>

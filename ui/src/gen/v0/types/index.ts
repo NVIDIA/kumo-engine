@@ -305,7 +305,6 @@ export * from "./graphSnapshotResourceGraphName";
 export * from "./graphSnapshotResourceStages";
 export * from "./graphSnapshotResourceTableIds";
 export * from "./graphSnapshotResponse";
-export * from "./graphSnapshotResponseTimestampPrecision";
 export * from "./graphSnapshotStage";
 export * from "./graphSnapshotStatsResponse";
 export * from "./graphSnapshotStatsResponseTotalRows";
