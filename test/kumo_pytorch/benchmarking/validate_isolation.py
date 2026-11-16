@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import pwd
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +44,9 @@ def main(argv=None):
     parser.add_argument("--worker", action="store_true")
     args = parser.parse_args(argv)
     if args.worker:
+        user = pwd.getpwuid(os.getuid())
+        assert Path.home() == Path(user.pw_dir)
+        assert os.environ["USER"] == os.environ["LOGNAME"] == user.pw_name
         group = Path(os.environ["KUMO_BENCHMARK_CGROUP"])
         validation = validate(group)
         result = run(
@@ -60,7 +64,7 @@ def main(argv=None):
         validation.update(
             uid=os.getuid(),
             cgroup=str(group),
-            checks=validation["checks"] + ["complete_worker_stages", "two_epochs"],
+            checks=validation["checks"] + ["complete_worker_stages", "two_epochs", "worker_identity_environment"],
         )
         (args.output / "worker-validation.json").write_text(
             json.dumps(validation, indent=2)

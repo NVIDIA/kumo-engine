@@ -8,6 +8,7 @@ process memberships are changed. The parent must already delegate memory.
 import argparse
 import math
 import os
+import pwd
 import signal
 import subprocess
 import sys
@@ -15,6 +16,18 @@ import threading
 import time
 import uuid
 from pathlib import Path
+
+
+def worker_environment(uid, group):
+    """Restore the worker identity after sudo, including library cache defaults."""
+    user = pwd.getpwuid(uid)
+    return dict(
+        os.environ,
+        HOME=user.pw_dir,
+        USER=user.pw_name,
+        LOGNAME=user.pw_name,
+        KUMO_BENCHMARK_CGROUP=str(group),
+    )
 
 
 def execute(command, *, parent, uid, gid, timeout):
@@ -43,7 +56,7 @@ def execute(command, *, parent, uid, gid, timeout):
         if not peak.is_file():
             raise RuntimeError("Worker cgroup has no memory.peak counter")
         os.chown(peak, uid, gid)
-        env = dict(os.environ, KUMO_BENCHMARK_CGROUP=str(group))
+        env = worker_environment(uid, group)
 
         def enter():
             (group / "cgroup.procs").write_text(str(os.getpid()))

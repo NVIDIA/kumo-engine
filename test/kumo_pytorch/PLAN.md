@@ -963,3 +963,18 @@ are still running; this is not yet full-data GPU timing acceptance. Run
 in CUDA kernel names; the port now preserves those identifiers and guards them
 with a static check. GPU reports also retain device identity independently of
 utilization/memory collectors.
+
+### Isolated GPU worker cache environment
+
+Inspection of completed run 43876305626 found all 30 GPU timing workers failed
+when CuPy tried to create `/root/.cupy`. The cgroup supervisor dropped UID/GID
+but retained sudo's home environment. The target user's passwd entry now supplies
+HOME, USER and LOGNAME to the child; the supervisor environment is unchanged.
+This restores the runner's normal cache defaults without changing benchmark
+inputs or decimal decoding.
+
+The Linux isolation validator checks the environment after dropping privileges.
+The five existing GPU reference tests now run through the actual cgroup launcher,
+matching the campaign launch boundary that the previous direct tests missed.
+A subprocess regression also checks cache-path expansion and preserved thread
+configuration. Live Linux/CUDA validation of this follow-up is pending.
