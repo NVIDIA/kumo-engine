@@ -2119,8 +2119,12 @@ class DiskGraphSource:
         # DiskGraph transports decimals as strings; decode once per column,
         # before either scalar validation or Arrow encoding sees the values.
         dtype = self._tables[table].columns.get(name)
-        if dtype is not None and dtype.name in {"decimal128", "decimal256"} and (
-            self._pa.types.is_string(values.type) or self._pa.types.is_large_string(values.type)
+        if (
+            dtype is not None
+            and dtype.name in {"decimal128", "decimal256"}
+            and (
+                self._pa.types.is_string(values.type) or self._pa.types.is_large_string(values.type)
+            )
         ):
             return self._typed_array(values, dtype)
         return values
