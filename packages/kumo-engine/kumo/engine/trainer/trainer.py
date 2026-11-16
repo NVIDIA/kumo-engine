@@ -1562,8 +1562,24 @@ class Trainer:
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
-        Scores the query's population at ``prediction_time``, or the
-        ``entities`` given, or a ``prediction_table`` generated beforehand.
+        Pass at most one of the following to choose what to score:
+
+        - ``prediction_time``: the query's population at that time, as for
+          :meth:`PredictiveQuery.generate_prediction_table`. A timezone-naive
+          ``datetime`` is read as UTC, and a timezone-aware one raises
+          ``ValueError``.
+        - ``entities``: the rows to score (see
+          :meth:`PredictionTable.from_source_table`), with these columns:
+
+          - ``ENTITY1``: the key of each entity to score.
+          - ``TIMESTAMP``: each row's anchor time (optional; required for
+            temporal queries and for static queries whose entity table has a
+            time column).
+
+        - ``prediction_table``: a table generated beforehand.
+
+        With none of the three, a temporal query scores its population at the
+        latest timestamp among the tables aggregated in its target.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
         or :meth:`load_from_connector`. Without ``output_config``,

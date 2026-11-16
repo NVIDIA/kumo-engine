@@ -100,9 +100,11 @@ kumo-engine = "kumo_engine_version:installed_version"
 kumo-engine = "kumo.engine.integrations._snowflake_model:log_model_args"
 
 [project.urls]
-homepage="https://github.com/NVIDIA/kumo-engine"
-documentation="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"
-issues="https://github.com/NVIDIA/kumo-engine/issues"
+Homepage="https://github.com/NVIDIA/kumo-engine"
+Documentation="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"
+"Release notes"="https://docs.nvidia.com/sdgm/kumo-engine/resources/release-notes"
+Source="https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-engine"
+Issues="https://github.com/NVIDIA/kumo-engine/issues"
 
 [tool.uv.sources]
 kumo-core = { workspace = true }
