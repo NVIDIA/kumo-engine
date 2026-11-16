@@ -47,6 +47,7 @@ tokio = { version = "1.33", features = ["full"] }
 uuid = { version = "1.4.0", features = ["v4", "serde"] }
 rayon = "1"
 regex = "1.12"
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
 tracing = { workspace = true, features = ["log"] }
 tracing-log = "0.2"
 
