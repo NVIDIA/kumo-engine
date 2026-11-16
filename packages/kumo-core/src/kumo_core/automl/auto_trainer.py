@@ -952,18 +952,21 @@ class AutoTrainer:
                     gc.collect()
 
         if len(failed_trials) > 0:
-            status.error_msg = construct_gpu_oom_message(
-                num_experiments=self.num_experiments,
-                failed_trials=failed_trials,
-                task_type=self.task.task_type,
-            )
-            status.save(self.home_dir)
             if len(failed_trials) == len(status.trials[num_prev_trials:]):
                 logger.warning("Failed to run any AutoML trial in this run")
             else:
                 logger.warning(f"Failed {len(failed_trials)} AutoML trials")
 
         if not any(t.succeed for t in status.trials):
+            # Save the OOM message only when it explains the failure. The
+            # kumo-auto handler keeps a saved message for later failures.
+            if len(failed_trials) > 0:
+                status.error_msg = construct_gpu_oom_message(
+                    num_experiments=self.num_experiments,
+                    failed_trials=failed_trials,
+                    task_type=self.task.task_type,
+                )
+                status.save(self.home_dir)
             raise RuntimeError(_failed_trials_error_message(status))
 
         with self.instrumentation.timing("auto_trainer.run.get_best_trainer",
