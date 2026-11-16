@@ -95,9 +95,12 @@ impl QueryPython for QueryResult {
         let sequences = PyList::empty(py);
         for mut sequence in self.sequences {
             sequence.timestamps = sequence.timestamps.into_iter().map(|v| v.map(|t|
-                diskgraph_core::time::convert_trunc(t,sequence.clock,diskgraph_core::time::TimeUnit::Seconds))).collect();
+                diskgraph_core::time::convert_trunc(t,sequence.clock,self.timestamp_unit))).collect();
             let item = PyDict::new(py);
             item.set_item("name", sequence.name)?;
+            if self.timestamp_unit != diskgraph_core::time::TimeUnit::Seconds {
+                item.set_item("timestamp_unit", serde_json::to_value(self.timestamp_unit).unwrap().as_str().unwrap())?;
+            }
             if model_format {
                 let offsets = UInt64Array::from(
                     sequence

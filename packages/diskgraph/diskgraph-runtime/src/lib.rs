@@ -14,6 +14,56 @@ use std::{collections::VecDeque, sync::Arc};
 mod errors;
 pub use errors::{Result, RuntimeError};
 
+/// Task-owned, sparse-on-disk length metadata. Zero denotes an uncomputed row;
+/// history count is stored plus one, so an empty computed history is distinct.
+/// Only the requested u32 fields are mapped; no stage-sized private Vec exists.
+pub struct MappedLengthCache {
+    mapping: memmap2::MmapMut,
+    rows: usize,
+    fields: usize,
+}
+impl MappedLengthCache {
+    pub fn new(path: &std::path::Path, rows: usize, fields: usize) -> Result<Self> {
+        if !(1..=3).contains(&fields) { return Err(RuntimeError::config("length cache needs 1..=3 fields")); }
+        let bytes = rows.checked_mul(fields).and_then(|v| v.checked_mul(4))
+            .ok_or_else(|| RuntimeError::config("length cache size overflow"))?.max(4);
+        let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true)
+            .open(path).map_err(|e| RuntimeError::system(e.to_string()))?;
+        file.set_len(bytes as u64).map_err(|e| RuntimeError::system(e.to_string()))?;
+        // This task owns the file and never resizes it while mapped.
+        let mapping = unsafe { memmap2::MmapOptions::new().map_mut(&file) }
+            .map_err(|e| RuntimeError::system(e.to_string()))?;
+        Ok(Self { mapping, rows, fields })
+    }
+    pub fn len(&self) -> usize { self.rows }
+    pub fn is_empty(&self) -> bool { self.rows == 0 }
+    pub fn get(&self, row: usize) -> Option<[usize; 3]> {
+        if row >= self.rows { return None; }
+        let mut values = [0; 3];
+        for (field, value) in values.iter_mut().enumerate().take(self.fields) {
+            let offset = (row * self.fields + field) * 4;
+            *value = u32::from_le_bytes(self.mapping[offset..offset + 4].try_into().unwrap()) as usize;
+        }
+        if values[0] == 0 { return None; }
+        values[0] -= 1;
+        Some(values)
+    }
+    pub fn set(&mut self, row: usize, values: [usize; 3]) -> Result<()> {
+        if row >= self.rows { return Err(RuntimeError::data("length cache row outside stage")); }
+        let mut encoded = [0u32; 3];
+        for field in 0..self.fields {
+            let value = if field == 0 { values[field].checked_add(1) } else { Some(values[field]) }
+                .ok_or_else(|| RuntimeError::config("length count exceeds u32 cache range"))?;
+            encoded[field] = u32::try_from(value).map_err(|_| RuntimeError::config("length count exceeds u32 cache range"))?;
+        }
+        for (field, value) in encoded.iter().enumerate().take(self.fields) {
+            let offset = (row * self.fields + field) * 4;
+            self.mapping[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    }
+}
+
 fn splitmix64(mut x: u64) -> u64 {
     x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
     x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -1782,6 +1832,19 @@ impl RuntimeBatchIterator {
         Ok(())
     }
 
+    /// Sample a planner-selected native anchor batch with this iterator's contract.
+    /// Selection stays native; callers do not rebuild per-row requests.
+    pub fn sample_stage_ids(&self, ids: &[u64]) -> Result<RuntimeBatch> {
+        self.engine.sample_runtime_batch(
+            self.reader.as_ref(), &self.stage_table_catalog_key, ids,
+            diskgraph_core::dataset::DatasetId::nil(), &self.plan, &self.flags,
+            self.negatives.as_ref(), self.entity_node_type.as_deref(),
+            self.target_node_type.as_deref(), self.use_seed_timestamps, None,
+            self.pseudo_time.as_ref().map(PseudoTimeSeed::filter),
+            Some(std::sync::Arc::clone(&self.feature_projection)),
+        ).map_err(RuntimeError::from)
+    }
+
     /// Yield the next native batch, or None at exhaustion; propagate sampling errors.
     pub fn next_batch(&mut self) -> Result<Option<RuntimeBatch>> {
         // Grouped (single-timestamp) path: pull the next bucket-chunk of FINAL
@@ -1849,32 +1912,7 @@ impl RuntimeBatchIterator {
             let stage_node_ids = selected_ids[self.cursor..self.cursor + take].to_vec();
             self.cursor += take;
 
-            let engine = &self.engine;
-            let reader = &self.reader;
-            let stage_table_catalog_key = &self.stage_table_catalog_key;
-            let plan = &self.plan;
-            let flags = &self.flags;
-            let negatives = self.negatives.as_ref();
-            let entity_node_type = self.entity_node_type.as_deref();
-            let target_node_type = self.target_node_type.as_deref();
-            let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
-            let runtime_batch = engine
-                .sample_runtime_batch(
-                    reader.as_ref(),
-                    stage_table_catalog_key,
-                    &stage_node_ids,
-                    diskgraph_core::dataset::DatasetId::nil(),
-                    plan,
-                    flags,
-                    negatives,
-                    entity_node_type,
-                    target_node_type,
-                    self.use_seed_timestamps,
-                    None,
-                    pseudo_time,
-                    Some(std::sync::Arc::clone(&self.feature_projection)),
-                )
-                .map_err(RuntimeError::from)?;
+            let runtime_batch = self.sample_stage_ids(&stage_node_ids)?;
             return Ok(Some(runtime_batch));
         }
 
@@ -3064,5 +3102,33 @@ mod tests {
             let replay = make_worker_offsets(64, 2, 0, true, Some(42), e as u64, "train").unwrap();
             assert_eq!(*ordering, replay, "epoch {} replay diverged", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod mapped_length_cache_tests {
+    use super::*;
+    #[test]
+    fn compact_cache_keeps_empty_and_uncomputed_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lengths");
+        let mut cache = MappedLengthCache::new(&path, 1000, 1).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 4000);
+        assert_eq!(cache.get(9), None);
+        cache.set(9, [0, 900, 800]).unwrap();
+        assert_eq!(cache.get(9), Some([0, 0, 0]));
+        assert!(cache.set(1000, [0;3]).is_err());
+        assert!(cache.set(1, [u32::MAX as usize, 0, 0]).is_err());
+        assert_eq!(cache.get(1), None);
+    }
+    #[test]
+    fn compact_cache_preserves_three_costs_and_zero_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = MappedLengthCache::new(&dir.path().join("triple"), 2, 3).unwrap();
+        cache.set(1, [7, 13, 42]).unwrap();
+        assert_eq!(cache.get(1), Some([7, 13, 42]));
+        let empty = MappedLengthCache::new(&dir.path().join("empty"), 0, 1).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.get(0), None);
     }
 }

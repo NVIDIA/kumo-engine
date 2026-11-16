@@ -54,6 +54,7 @@ class ModelSourceBatch:
     # Iterator-produced ordering; keys describe the declared component selection.
     merged_events: Mapping[Any, Any] = field(default_factory=dict)
     runtime_batch: Any = None
+    timestamp_unit: str = "seconds"
 
     @property
     def batch_size(self) -> int:

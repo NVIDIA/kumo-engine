@@ -31,6 +31,17 @@ deviation, and `Buckets` cuts interpolated from its t-digest. `Text` trains its
 tokenizer on the column's values over those rows: inside DiskGraph on the
 DiskGraph engine, and with `tokenizers` in Python on the in-memory engine.
 
+Materialized scalar features and labels use the same statistics collectors over
+selected training anchors. Their learned bucket cuts use t-digest quantiles;
+request-only fitting uses raw-row quantiles. Independently fitted cuts can
+therefore differ within the approximation contract. Reuse one fitted state
+when identical bucket assignments are needed across anchor input forms.
+
+Computed scalar encoders used by `Tokens(missing="skip_event")` retain sample
+fitting to respect the input's row eligibility. Direct graph-column statistics
+keep their existing ingestion population. Custom sources without graph statistics
+retain their sample-fitting fallback while using available materialized statistics.
+
 A missing value is never zero or an unseen category: it keeps its own validity
 bit (columns) or a reserved missing ID (categories). [The API reference](api/encodings.md)
 lists every option.

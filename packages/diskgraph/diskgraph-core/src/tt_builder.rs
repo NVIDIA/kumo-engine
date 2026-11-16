@@ -115,6 +115,9 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AggregateFrame {
+    /// Unit of explicit anchor cutoffs (legacy plans use seconds).
+    #[serde(default)]
+    pub cutoff_unit: Option<TimeUnit>,
     #[serde(default)]
     pub column_path: Vec<EdgeRef>,
     #[serde(default)]
@@ -660,6 +663,7 @@ impl<U: UnitSystem> DiskGraphTTPlan<U> {
                         _ => continue,
                     };
                     let rows = AggregateFrame {
+                        cutoff_unit: None,
                         column_path: path.clone(),
                         window_unit: *window_unit,
                         preserve_traversal_order: true,

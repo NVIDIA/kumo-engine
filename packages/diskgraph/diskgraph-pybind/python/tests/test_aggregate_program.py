@@ -6,7 +6,9 @@
 
 import json
 
+import diskgraph
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from test_shared_numeric_aggregates import numeric_graph as _numeric_graph
 
@@ -206,6 +208,15 @@ def test_explicit_plan_preserves_bounded_nonseconds_windows(tmp_path, clock):
         assert values(actual)[name].equals(reference), name
     assert values(actual)["full:count"].to_pylist() == [2]
     assert values(actual)["full:sum"].to_pylist() == [8.0]
+    # Even with omitted cutoff_unit, filtered PQL must not resolve a
+    # seconds-specialized selection against a non-seconds index silently.
+    filtered = json.loads(json.dumps(staged(fragment)))
+    reduction = filtered["stages"][0]["ops"][1]["row_aggregate"]["reduction"]
+    reduction["row_filter"] = {"compare": {"lhs": {"column": "value"}, "op": "gt",
+                                          "rhs": {"constant": {"float": 0.0}}}}
+    reduction["semantics"] = {"all_null_sum_is_zero": True, "keep_first_equal": False}
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="matching seconds"):
+        engine.prepare_aggregate_plan("users", json.dumps(filtered))
     # Both endpoints are checked in the index clock: include1.001s/2s,
     # exclude the lower endpoint1s and future2.5s. Also verify unbounded input.
     for frame in fragment["frames"]:
@@ -254,6 +265,88 @@ def test_prepared_plan_reuses_typed_operations_across_chunks(numeric_graph):
         prepared.execute(roots, [1000])
 
 
+@pytest.mark.parametrize("clock,scale", [
+    ("milliseconds", 1000), ("microseconds", 1_000_000),
+    ("nanoseconds", 1_000_000_000),
+])
+@pytest.mark.parametrize("representation", ["aggregate", "row_aggregate", "explicit_seconds"])
+def test_scalar_plan_clock_controls_cutoffs_and_timestamp_results(
+    numeric_graph, clock, scale, representation
+):
+    engine, relation = numeric_graph
+    operations = [("count", None), ("sum", "value"), ("max", "time")]
+    if representation == "aggregate":
+        builder = diskgraph.DiskGraphTTBuilder()
+        builder.for_each("users", "id")
+        builder.node_prediction()
+        for operation, column in operations:
+            builder.aggregate(
+                operation, diskgraph.EdgeRef("users", "id", "events", "owner"),
+                operation, target_col=column, time_col="time", window=(-50, 0),
+                window_unit="seconds",
+            )
+        plan = json.loads(builder.build())
+    else:
+        frame = program(relation)["frames"][0]
+        frame.update(start_seconds=-50, columns=["value", "time"])
+        if representation == "explicit_seconds":
+            frame["cutoff_unit"] = "seconds"
+        plan = staged({"frames": [frame], "aggregates": [
+            {"name": operation, "frame": frame["name"],
+             "operation": operation, "column": column}
+            for operation, column in operations
+        ]})
+    plan["timestamp_unit"] = clock
+    result_scale = 1 if representation == "explicit_seconds" else scale
+    roots = engine.lookup_node_ids("users", pa.array([6, 1, 6], type=pa.int64()))
+    cutoffs = [550 * result_scale] * 3
+    # Select seconds (500, 550], preserve duplicate anchors, and return the
+    # timestamp maximum in the cutoff clock rather than silently using seconds.
+    expected = {
+        "count": [50, 0, 50],
+        "sum": [sum(i for i in range(501, 551) if i % 7), 0.0,
+                sum(i for i in range(501, 551) if i % 7)],
+        "max": [550 * result_scale, None, 550 * result_scale],
+    }
+    prepared = engine.prepare_aggregate_plan("users", json.dumps(plan))
+    results = [
+        prepared.execute(roots, cutoffs, anchor_batch_size=1),
+        engine.query_aggregate_plan(
+            {"users": roots}, {"users": cutoffs}, json.dumps(plan), anchor_batch_size=2
+        ),
+    ]
+    for result in results:
+        assert {name: array.to_pylist() for name, array in values(result).items()} == expected
+
+
+@pytest.mark.parametrize("clock", ["months", "years", "minutes"])
+def test_scalar_plan_rejects_unsupported_top_level_clocks(numeric_graph, clock):
+    engine, relation = numeric_graph
+    plan = staged(program(relation))
+    plan["timestamp_unit"] = clock
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="fixed index clock"):
+        engine.prepare_aggregate_plan("users", json.dumps(plan))
+
+
+@pytest.mark.parametrize("selection", ["row_filter", "limit", "target_entity_table"])
+def test_nonseconds_plan_tag_keeps_pql_selection_guard(numeric_graph, selection):
+    engine, relation = numeric_graph
+    plan = staged(program(relation))
+    plan["timestamp_unit"] = "milliseconds"
+    for op in plan["stages"][0]["ops"]:
+        op["row_aggregate"]["rows"]["cutoff_unit"] = "seconds"
+    reduction = plan["stages"][0]["ops"][0]["row_aggregate"]["reduction"]
+    reduction["semantics"] = {"all_null_sum_is_zero": True, "keep_first_equal": False}
+    reduction[selection] = {
+        "row_filter": {"compare": {"lhs": {"column": "value"}, "op": "gt",
+                                   "rhs": {"constant": {"float": 0.0}}}},
+        "limit": 1,
+        "target_entity_table": "events",
+    }[selection]
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="matching seconds"):
+        engine.prepare_aggregate_plan("users", json.dumps(plan))
+
+
 @pytest.mark.parametrize("limit", [None, 1])
 def test_pql_filtered_scalar_preserves_filter_and_limit(numeric_graph, limit):
     import diskgraph
@@ -272,3 +365,124 @@ def test_pql_filtered_scalar_preserves_filter_and_limit(numeric_graph, limit):
     # User1 retains1e16; user6 retains non-null values greater than1. Numeric SUM's historical
     # limit does not cap traversed rows; preserving it must not invent a cap.
     assert result == [1e16, sum(i for i in range(2, 601) if i % 7 != 0)]
+
+
+@pytest.mark.parametrize("second_unit", ["seconds", None])
+def test_query_cutoff_clock_must_be_shared_by_all_frames(numeric_graph, second_unit):
+    engine, relation = numeric_graph
+    plan = program(relation)
+    plan["frames"][0]["cutoff_unit"] = "milliseconds"
+    if second_unit is not None:
+        plan["frames"][1]["cutoff_unit"] = second_unit
+    roots = {"users": engine.lookup_node_ids("users", pa.array([6], type=pa.int64()))}
+    with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
+        engine.query_temporal(roots, {"users": [1000]}, json.dumps(plan), output_format="model")
+    with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
+        engine.prepare_aggregate_plan("users", json.dumps(staged(plan)))
+
+
+@pytest.mark.parametrize("timed", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_identity_only_sequences_preserve_rows_without_value_projection(
+    numeric_graph, timed, empty
+):
+    engine, relation = numeric_graph
+    frame = program(relation)["frames"][0]
+    frame["columns"] = []
+    if not timed:
+        frame.update(time_column=None, start_seconds=None, stop_seconds=None)
+    sequence = {
+        "name": "history",
+        "frame": frame["name"],
+        "columns": [],
+        "order": "descending",
+        "limit": 2,
+    }
+    plan = {"frames": [frame], "sequences": [sequence]}
+    keys = [] if empty else [1, 5, 2]
+    roots = {"users": engine.lookup_node_ids("users", pa.array(keys, type=pa.int64()))}
+    cutoffs = {"users": [1000] * len(keys)}
+    actual = engine.query_temporal(
+        roots, cutoffs, json.dumps(plan), output_format="model"
+    )
+    sequence["columns"] = ["value"]
+    frame["columns"] = ["value"]
+    expected = engine.query_temporal(
+        roots, cutoffs, json.dumps(plan), output_format="model"
+    )
+    actual, expected = actual["sequences"][0], expected["sequences"][0]
+    for name in ("offsets", "node_ids", "timestamps"):
+        assert actual[name].equals(expected[name]), name
+    assert actual["batch"].num_columns == 0
+    assert actual["batch"].num_rows == len(actual["node_ids"]) == (0 if empty else 3)
+
+
+def test_identity_only_rows_need_neither_primary_key_nor_clock(tmp_path):
+    pq.write_table(pa.table({"id": [1, 2, 3]}), tmp_path / "users.parquet")
+    pq.write_table(pa.table({"owner": [1, 1, 3]}), tmp_path / "rows.parquet")
+    config = {
+        "dataset_name": "identity_only",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "users",
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}],
+                "source": {
+                    "type": "parquet",
+                    "paths": [str(tmp_path / "users.parquet")],
+                },
+            },
+            {
+                "name": "rows",
+                "primary_key": None,
+                "columns": [{"name": "owner", "ingested_dtype": "int64"}],
+                "fkeys": [{"src_column": "owner", "dst_table": "users", "reverse": {}}],
+                "source": {
+                    "type": "parquet",
+                    "paths": [str(tmp_path / "rows.parquet")],
+                },
+            },
+        ],
+    }
+    diskgraph.ingest(
+        json.dumps(config),
+        str(tmp_path / "index"),
+        col_stats=False,
+        context_threads=2,
+        encode_threads=2,
+        pk_map_threads=2,
+        edges_map_threads=2,
+        index_threads=2,
+    )
+    engine = diskgraph.SamplerEngine(str(tmp_path / "index"), num_threads=2)
+    relation = next(
+        r["name"]
+        for r in json.loads(engine.get_type_mapping())["edge_relations"]
+        if r["src_type"] == "users"
+    )
+    plan = {
+        "frames": [
+            {
+                "name": "rows",
+                "root_type": "users",
+                "path": [{"relation": relation, "destination_type": "rows"}],
+                "columns": [],
+                "distinct": True,
+            }
+        ],
+        "sequences": [
+            {"name": "ids", "frame": "rows", "columns": [], "order": "ascending"}
+        ],
+    }
+    roots = engine.lookup_node_ids("users", pa.array([1, 2, 3], type=pa.int64()))
+    result = engine.query_temporal(
+        {"users": roots}, {"users": [0] * 3}, json.dumps(plan), output_format="model"
+    )
+    sequence = result["sequences"][0]
+    assert sequence["offsets"].to_pylist() == [0, 2, 2, 3]
+    assert len(set(sequence["node_ids"].to_pylist())) == 3
+    assert sequence["timestamps"].to_pylist() == [None] * 3
+    assert sequence["batch"].num_columns == 0
+    assert sequence["batch"].num_rows == 3
+    assert result["stats"]["values_decoded"] == 0
