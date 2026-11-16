@@ -35,7 +35,7 @@ import {
     TooltipTrigger,
     useLocalStorage
 } from "@kumo-ai/kumo-ui-catalog";
-import { ProjectDBEntry } from "gen/v0/types";
+import { ProjectDBEntry, ProjectStatus } from "gen/v0/types";
 import { useUserDetails } from "stores/userStore";
 
 import WithErrorBoundary from "components/@hoc/WithErrorBoundary";
@@ -46,11 +46,8 @@ import { useUserGroups } from "hooks/groups/groups";
 import { useProjectId, useProjectListByGroup } from "hooks/project/projects";
 import { useValidationState } from "hooks/validation/validation";
 
-import {
-    defaultModelsPageURL,
-    getProjectPath,
-    storageKeys
-} from "utils/Constants";
+import { storageKeys } from "utils/Constants";
+import { openProject } from "utils/navigator";
 import { getSelectedGroup } from "utils/storage";
 import { formatToShortLocalDateString } from "utils/timeConverter";
 
@@ -124,7 +121,9 @@ const ProjectList = ({ open, toggleModal, enableClose }: ProjectListProps) => {
     } = useProjectListByGroup(selectedGroupId ?? "", handleError);
 
     const tableData = useMemo<ProjectDBEntry[]>(() => {
-        const entries = projects ?? [];
+        const entries = (projects ?? []).filter(
+            (p) => p.status !== ProjectStatus.ARCHIVED
+        );
         const tabFiltered =
             activeTab === "my-projects"
                 ? entries.filter((p) => p?.created_by === userDetails?.user_id)
@@ -178,13 +177,10 @@ const ProjectList = ({ open, toggleModal, enableClose }: ProjectListProps) => {
             if (rowData && !selectionInFlightRef.current) {
                 selectionInFlightRef.current = true;
                 toggleModal();
-                const projectID = (rowData as { id: string }).id;
-                storeToLocalStorage(storageKeys.selectedProject, projectID);
-                storeToLocalStorage(storageKeys.selectedGroup, selectedGroupId);
-                navigate(
-                    getProjectPath(projectID).ModelJobsList +
-                        "?" +
-                        defaultModelsPageURL.split("?")[1]
+                openProject(
+                    navigate,
+                    (rowData as { id: string }).id,
+                    selectedGroupId
                 );
             }
         },
