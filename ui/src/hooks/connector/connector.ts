@@ -10,6 +10,7 @@ import {
 } from "@kumo-ai/kumo-ui-catalog";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+    useCreateProjectsCopyByConnectorId,
     useDeleteProjectsConnectorsByConnectorId,
     useGetProjectsColumnsByConnectorId,
     useGetProjectsConnectorsByConnectorId,
@@ -17,6 +18,8 @@ import {
     useGetProjectsSampleByConnectorId
 } from "gen/v0/api/connectors/connectors";
 import {
+    ConnectorResponse,
+    CopyConnectorArgs,
     GetProjectsColumnsByConnectorIdParams,
     GetProjectsSampleByConnectorIdParams,
     SourceColumn
@@ -41,9 +44,11 @@ import { getProjectPath, storageKeys } from "utils/Constants";
 import { connectorListFromConnectorResp } from "utils/Converters/connectorsConverter";
 import { connectorFromConnectorResp } from "utils/Converters/connectorsConverter";
 import { tableFromTableResponse } from "utils/Converters/tablesConverter";
+import { parseErrorMessage } from "utils/errorHandler";
 import { isValid } from "utils/Helpers/typeGuards";
 import { useCustomNavigation } from "utils/navigator";
 import {
+    invalidateConnectorList,
     invalidateProjectTableList,
     invalidateTablesList
 } from "utils/queryInvalidation";
@@ -169,6 +174,41 @@ export const useConnectors = (
         connectorList,
         deleteConnector
     };
+};
+
+export type CopyConnectorResult =
+    | { connector: ConnectorResponse; error: null }
+    | { connector: null; error: string };
+
+export const useCopyConnector = () => {
+    const queryClient = useQueryClient();
+    const { mutateAsync, isPending } = useCreateProjectsCopyByConnectorId();
+
+    const copyConnector = useCallback(
+        async (
+            projectId: string,
+            connectorId: string,
+            args: CopyConnectorArgs
+        ): Promise<CopyConnectorResult> => {
+            try {
+                const response = await mutateAsync({
+                    projectId,
+                    connectorId,
+                    data: args
+                });
+                invalidateConnectorList(queryClient, args.target_project_id);
+                return { connector: response.data, error: null };
+            } catch (e) {
+                return {
+                    connector: null,
+                    error: parseErrorMessage(e as CustomError)
+                };
+            }
+        },
+        [mutateAsync, queryClient]
+    );
+
+    return { copyConnector, isCopying: isPending };
 };
 
 export const useConnectorDropdownOptions = (
