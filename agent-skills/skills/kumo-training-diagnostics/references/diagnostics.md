@@ -26,14 +26,16 @@ print("Bundle:", training_result.bundle_dir)
 print("Published model:", training_result.published_model)
 ```
 
-The public result fields include `metrics`, `artifact_paths`, `bundle_dir`, `published_model`.
+The public result fields include `metrics`, `artifact_paths`, `bundle_dir`, `published_model`,
+`metric_history`.
 There is no `.job_id`, `.history()`, `.model_uri`, `.refitted_trainval` or `.refitted_full` on
 this local TrainingResult. Those similarly named internal/hosted fields are not public accessors.
 `artifact_paths` identifies published model components; it is not an inventory of all trial files.
 
 After a restart, set `run_dir` to the known retained run path instead. Do not derive the original
-run from a downloaded bundle's parent directory. If only the bundle remains, explain that final
-metrics and configuration may survive while trial history does not.
+run from a downloaded bundle's parent directory. If only the bundle remains, explain what survives.
+Final metrics, configuration, and `result.metric_history` survive (`None` for older bundles).
+TensorBoard files and `analyze/` output do not.
 
 ## Discover, then select the AutoML directory
 
@@ -156,8 +158,9 @@ Recorded estimated times are estimates, not measured remaining duration or a liv
   run logs to distinguish them. Do not infer OOM solely from a short or missing curve.
 - A high score is not proof of no leakage. A low score does not establish which feature or
   encoder is responsible. State hypotheses and the evidence needed to test them.
-- Histories, TensorBoard files, and `analyze/` output are not model-bundle components. They
-  require retained scratch files for this workflow. Do not promise cold-load history access.
+- TensorBoard files and `analyze/` output are not model-bundle components. They require retained
+  scratch files for this workflow. A restored model returns per-epoch search-trial metrics only
+  through `result.metric_history`, without refit epochs. Do not promise other cold-load history.
   See [retention](../../kumo-model-persistence/references/retention.md) to preserve them.
 
 ## Source provenance

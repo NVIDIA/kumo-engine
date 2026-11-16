@@ -45,6 +45,19 @@ class InMemoryGraphSampler:
             for name, table in self._table_specs.items()
         }
         self._indices: dict[tuple[str, str], dict[Any, tuple[dict[str, Any], ...]]] = {}
+        self._ordinals = {
+            name: {id(row): ordinal for ordinal, row in enumerate(rows)}
+            for name, rows in self._tables.items()
+            if self._table_specs[name].primary_key is None
+        }
+
+    def _identity(self, table: str, row: Mapping[str, Any]) -> Any:
+        primary_key = self._table_specs[table].primary_key
+        return self._ordinals[table][id(row)] if primary_key is None else row[primary_key]
+
+    def _sort_key(self, table: str, row: Mapping[str, Any]) -> str | int:
+        identity = self._identity(table, row)
+        return identity if self._table_specs[table].primary_key is None else repr(identity)
 
     def fitting_field_values(
         self,
@@ -119,8 +132,7 @@ class InMemoryGraphSampler:
         seen_edges: set[tuple[str, int, int]] = set()
 
         def add_node(owner: int, table: str, row: dict[str, Any]) -> int:
-            primary_key = self._table_specs[table].primary_key
-            identity = (owner, table, row[primary_key])
+            identity = (owner, table, self._identity(table, row))
             if identity not in node_ids:
                 node_ids[identity] = len(node_rows[table])
                 node_rows[table].append(row)
@@ -185,9 +197,8 @@ class InMemoryGraphSampler:
                     raise ValueError(f"{table!r} row is missing relation column {column!r}")
                 if row[column] is not None:
                     grouped[row[column]].append(row)
-            primary_key = self._table_specs[table].primary_key
             self._indices[key] = {
-                value: tuple(sorted(rows, key=lambda row: repr(row[primary_key])))
+                value: tuple(sorted(rows, key=lambda row: self._sort_key(table, row)))
                 for value, rows in grouped.items()
             }
         return self._indices[key]
@@ -232,7 +243,6 @@ class InMemoryGraphSampler:
                 for candidate in candidates
                 if timestamp_to_epoch(candidate[time_column]) <= root.cutoff
             ]
-        primary_key = self._table_specs[target_table].primary_key
         if traversal.strategy == "recent":
             if clock is None:
                 raise ValueError(
@@ -242,7 +252,7 @@ class InMemoryGraphSampler:
             candidates.sort(
                 key=lambda candidate: (
                     timestamp_to_epoch(candidate[clock]),
-                    repr(candidate[primary_key]),
+                    self._sort_key(target_table, candidate),
                 ),
                 reverse=True,
             )
@@ -250,7 +260,7 @@ class InMemoryGraphSampler:
             salt = f"{seed}:{epoch}:{root.sample_id}:{traversal.relation}:{row[source_key]}"
             candidates.sort(
                 key=lambda candidate: hashlib.sha256(
-                    f"{salt}:{candidate[primary_key]!r}".encode()
+                    f"{salt}:{self._identity(target_table, candidate)!r}".encode()
                 ).digest()
             )
         return target_table, candidates[: traversal.fanout]
@@ -261,8 +271,7 @@ class InMemoryGraphSampler:
     ) -> list[tuple[str, dict[str, Any]]]:
         unique: dict[tuple[str, Any], tuple[str, dict[str, Any]]] = {}
         for table, row in values:
-            key = self._table_specs[table].primary_key
-            unique[(table, row[key])] = (table, row)
+            unique[(table, self._identity(table, row))] = (table, row)
         return list(unique.values())
 
     def _node_output(
@@ -285,8 +294,7 @@ class InMemoryGraphSampler:
         nodes = {}
         for table in sorted(tables):
             rows = node_rows.get(table, [])
-            primary_key = self._table_specs[table].primary_key
-            raw_ids = [row[primary_key] for row in rows]
+            raw_ids = [self._identity(table, row) for row in rows]
             ids: Any = (
                 torch.tensor(raw_ids, dtype=torch.long)
                 if all(isinstance(value, int) for value in raw_ids)

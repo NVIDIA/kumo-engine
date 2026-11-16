@@ -1,0 +1,422 @@
+{
+  "id": "C-KEYLESS-002",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "facts",
+          "primary_key": null,
+          "columns": {
+            "group_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "at": {
+              "$type": "DType",
+              "name": "timestamp",
+              "unit": "s",
+              "timezone": "UTC",
+              "precision": null,
+              "scale": null
+            },
+            "amount": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": "at"
+        },
+        {
+          "$type": "TableSpec",
+          "name": "groups",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        },
+        {
+          "$type": "TableSpec",
+          "name": "links",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "owner": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "group_id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        },
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "$type": "RelationSpec",
+          "name": "group_facts",
+          "left_table": "groups",
+          "left_key": "id",
+          "right_table": "facts",
+          "right_key": "group_id"
+        },
+        {
+          "$type": "RelationSpec",
+          "name": "link_groups",
+          "left_table": "links",
+          "left_key": "group_id",
+          "right_table": "groups",
+          "right_key": "id"
+        },
+        {
+          "$type": "RelationSpec",
+          "name": "user_links",
+          "left_table": "users",
+          "left_key": "id",
+          "right_table": "links",
+          "right_key": "owner"
+        }
+      ]
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "distinct_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_links",
+              "link_groups",
+              "group_facts"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "count",
+          "column": null,
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "visit_count": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_links",
+              "link_groups",
+              "group_facts"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": false
+          },
+          "operation": "count",
+          "column": null,
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "distinct_sum": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_links",
+              "link_groups",
+              "group_facts"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": true
+          },
+          "operation": "sum",
+          "column": "amount",
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        },
+        "visit_sum": {
+          "$type": "Aggregate",
+          "source": {
+            "$type": "Rows",
+            "path": [
+              "user_links",
+              "link_groups",
+              "group_facts"
+            ],
+            "time": {
+              "$type": "TimeWindow",
+              "column": "at",
+              "start": null,
+              "stop": 0
+            },
+            "filters": [],
+            "active": null,
+            "distinct": false
+          },
+          "operation": "sum",
+          "column": "amount",
+          "dtype": {
+            "$type": "DType",
+            "name": "int64",
+            "unit": null,
+            "timezone": null,
+            "precision": null,
+            "scale": null
+          }
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "values": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "distinct_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "visit_count",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "distinct_sum",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              },
+              {
+                "$type": "Encode",
+                "field": "visit_sum",
+                "encoding": {
+                  "$type": "Raw"
+                },
+                "id_space": null
+              }
+            ],
+            "row": {
+              "$type": "Columns"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": null,
+            "field_space": null,
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Separate"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {},
+      "field_names": {},
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1
+      }
+    ],
+    "links": [
+      {
+        "id": 10,
+        "owner": 1,
+        "group_id": 7
+      },
+      {
+        "id": 11,
+        "owner": 1,
+        "group_id": 7
+      }
+    ],
+    "groups": [
+      {
+        "id": 7
+      }
+    ],
+    "facts": [
+      {
+        "group_id": 7,
+        "at": 9,
+        "amount": 2
+      },
+      {
+        "group_id": 7,
+        "at": 9,
+        "amount": 2
+      },
+      {
+        "group_id": 7,
+        "at": 11,
+        "amount": 100
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "selected",
+      "entity_id": 1,
+      "as_of_time": 10
+    },
+    {
+      "sample_id": "empty",
+      "entity_id": 1,
+      "as_of_time": 8
+    }
+  ],
+  "expected": {
+    "selected": {
+      "entity_values": {
+        "distinct_count": 2,
+        "visit_count": 4,
+        "distinct_sum": 4,
+        "visit_sum": 8
+      }
+    },
+    "empty": {
+      "entity_values": {
+        "distinct_count": 0,
+        "visit_count": 0,
+        "distinct_sum": 0,
+        "visit_sum": 0
+      }
+    }
+  },
+  "reason": "Two distinct links both reach group 7. Its two separate amount-2 facts are each visited twice. Distinct selection keeps two occurrences (sum 4); non-distinct selection keeps four visits (sum 8). The time-11 fact is future at 10, and no fact is eligible at 8. Intermediate links and groups are explicitly non-temporal."
+}

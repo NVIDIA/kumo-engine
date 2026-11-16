@@ -69,6 +69,7 @@ __all__ = ["InMemorySampleBuilder"]
 class _Row:
     table: str
     values: Mapping[str, Any]
+    ordinal: int
 
 
 def _sort_value(value: Any) -> tuple[str, str]:
@@ -132,6 +133,7 @@ class InMemorySampleBuilder:
                             )
                             for column, dtype in table.columns.items()
                         },
+                        row_index,
                     )
                 )
             self._tables[name] = tuple(rows)
@@ -153,6 +155,8 @@ class InMemorySampleBuilder:
 
     def _validate_primary_keys(self) -> None:
         for table, spec in self._table_specs.items():
+            if spec.primary_key is None:
+                continue
             seen: set[Any] = set()
             for row in self._tables[table]:
                 if spec.primary_key not in row.values:
@@ -397,9 +401,14 @@ class InMemorySampleBuilder:
             }
         return self._indices[key]
 
-    def _row_sort_key(self, row: _Row) -> tuple[str, str]:
+    def _row_sort_key(self, row: _Row) -> tuple[str, str | int]:
+        if self._table_specs[row.table].primary_key is None:
+            return "occurrence", row.ordinal
+        return _sort_value(self._identity(row))
+
+    def _identity(self, row: _Row) -> Any:
         primary_key = self._table_specs[row.table].primary_key
-        return _sort_value(row.values[primary_key])
+        return row.ordinal if primary_key is None else row.values[primary_key]
 
     def _follow(self, starting_rows: Sequence[_Row], path: tuple[str, ...]) -> list[_Row]:
         current = list(starting_rows)
@@ -458,8 +467,7 @@ class InMemorySampleBuilder:
         if spec.distinct:
             unique: dict[tuple[str, Any], _Row] = {}
             for row in selected:
-                primary_key = self._table_specs[row.table].primary_key
-                identity = (row.table, row.values[primary_key])
+                identity = (row.table, self._identity(row))
                 unique[identity] = row
             selected = list(unique.values())
         selected = [

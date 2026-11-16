@@ -2,26 +2,23 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end harness for ``generate_batch_pred_table_via_diskgraph`` against
-multicategorical sources and FK link-prediction targets.
+"""End-to-end harness for ``generate_batch_pred_table_via_diskgraph_ttng``
+against multicategorical sources and FK link-prediction targets.
 
 Drives the kumo PQL → ``PredictiveQueryValidator`` → ``DiskGraphPlanCompiler``
-(``is_prediction=True``) → ``execute_tt_plan`` chain through a real diskgraph
+(``is_prediction=True``) → ``execute_tt_gen`` chain through a real diskgraph
 wheel against small synthetic parquet, parametrized over the source-column
 on-disk shape and the link-prediction writer arm. Runs in seconds, no
 Temporal infrastructure required.
 
 Why this layer is needed:
 
-- ``test_diskgraph_batch_pred.py`` mocks the wheel and ``DiskGraphPlanCompiler``
-  — it never exercises a real BP plan against real parquet and cannot detect
-  plan-shape regressions surfaced only at execution time.
 - ``test/rest/integ/test_diskgraph_e2e.py`` runs BP through the real wheel
   but is Temporal-backed REST (5–15 min/run) tied to one hardcoded regression
   PQL with no multicategorical or LP-writer-arm coverage.
 - BP-specific compile kwargs (``is_prediction=True``,
-  ``lp_prediction_mode='LHS'``/``'RHS'``, ``lp_rhs_entity_table``,
-  ``lp_rhs_entity_column``, ``target_stype``, ``list_distinct_target_is_array``)
+  ``lp_prediction_mode='LHS'``, ``target_stype``,
+  ``list_distinct_target_is_array``)
   are not exercised by TT-gen tests; wire breaks in those kwargs surface
   only at BP execution time.
 
@@ -30,19 +27,19 @@ Coverage:
     +-------------+--------------------------+---------------------------------+
     | task        | source / target shape    | writer arm exercised            |
     +-------------+--------------------------+---------------------------------+
-    | node-pred   | multicat utf8_delim      | _execute_node_prediction        |
-    | node-pred   | multicat string_array    | _execute_node_prediction        |
-    | node-pred   | multicat int64_array     | _execute_node_prediction        |
-    | link-pred   | FK product_id, modern    | _execute_link_prediction (array)|
-    | link-pred   | FK product_id, hstack    | _execute_link_prediction (legacy)|
+    | node-pred   | multicat utf8_delim      | _execute_node_prediction_ttng   |
+    | node-pred   | multicat string_array    | _execute_node_prediction_ttng   |
+    | node-pred   | multicat int64_array     | _execute_node_prediction_ttng   |
+    | link-pred   | FK product_id, modern    | _execute_link_prediction_ttng   |
+    | link-pred   | FK product_id, hstack    | _execute_link_prediction_ttng   |
+    |             |                          | (raises NotImplementedError)    |
     +-------------+--------------------------+---------------------------------+
 
 The node-pred cases exercise the multicategorical per-token observation
 path at BP plan time (the source-side feature read still observes per token
 even though BP drops the TARGET column from the output parquet). The two
-link-pred cases exercise both LP write arms reachable from kumo PQL — the
-``list_distinct_target_is_array=True`` modern arm (LHS+RHS to separate
-parquets) and the legacy HStack arm (zipped LHS×RHS into one parquet).
+link-pred cases cover the ``list_distinct_target_is_array=True`` arm and the
+guard that rejects the HStack layout.
 
 Fixture builders (canonical 3-user / 4-order multicat layout and 3-table FK
 link-pred graph) are imported from the sibling TT-gen e2e file rather than
@@ -219,9 +216,7 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
     data_dir.mkdir()
     index_dir = tmp_path / "index"
     output_root = tmp_path / "lhs_out"
-    target_output_root = tmp_path / "rhs_out"
     output_root.mkdir()
-    target_output_root.mkdir()
 
     graph = _build_linkpred_graph(data_dir)
     index_path = _ingest_linkpred_index(data_dir, index_dir)
@@ -245,7 +240,6 @@ def test_linkpred_bp_fk_target_arrayout(tmp_path: Path):
         input_timestamp_unit=TimeUnit.SECONDS,
         target_stype="multicategorical",
         entity_time_col=None,
-        target_output_root=str(target_output_root),
         job_id=job_id,
     )
 

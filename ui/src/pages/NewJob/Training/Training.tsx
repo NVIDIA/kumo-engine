@@ -47,7 +47,7 @@ import { ColumnGroup, GraphFlowInfo, JSGraph } from "types/graphs";
 import { DropdownOption, InputState } from "types/inputs";
 import { CreateTrainingJobArgs } from "types/jobs";
 
-import { getProjectPath } from "utils/Constants";
+import { docURLs, getProjectPath } from "utils/Constants";
 import { tablesFromGraphResponse } from "utils/Converters/graphsConverter";
 import { parseErrorMessage } from "utils/errorHandler";
 import { getDefaultGraphGroups, getDefaultGraphInfo } from "utils/graph";
@@ -688,7 +688,7 @@ const NewTrainingJob = () => {
                                             <p>Inferred from your query.</p>
                                             <DocumentationLink
                                                 id="task-type-docs"
-                                                url="https://kumo.ai/docs/task-types"
+                                                url={docURLs.TaskTypes}
                                                 linkText="Learn more"
                                                 className="text-blue-300! hover:text-blue-400!"
                                                 showExternalIcon={true}

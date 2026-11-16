@@ -43,6 +43,7 @@ from ..pquery import (
     NativeGraph,
     NativePqueryTaskPlan,
     PlanGraph,
+    TaskPlanPurpose,
     ValidatedNativeQuery,
     build_native_pquery_task_plan,
     normalize_graph,
@@ -350,7 +351,10 @@ class MaterializedTrainingTask:
 
 
 def build_training_task_plan(
-    request: TrainingWorkflowRequest, ) -> NativePqueryTaskPlan:
+    request: TrainingWorkflowRequest,
+    *,
+    purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
+) -> NativePqueryTaskPlan:
     """Build the exact train-table and task-dataset plan for a request."""
 
     return build_native_pquery_task_plan(
@@ -363,6 +367,7 @@ def build_training_task_plan(
         artifact_dir=request.artifact_dir,
         graph_index_id=request.prepared_graph.index_id,
         timestamps=request.timestamps,
+        purpose=purpose,
     )
 
 

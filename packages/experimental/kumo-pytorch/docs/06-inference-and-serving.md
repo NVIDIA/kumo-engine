@@ -454,7 +454,7 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 <!-- test: output -->
 ```text
 60 anchors scored
-user-3-at-34 scores 0.630
+user-3-at-34 scores 0.647
 ```
 
 The first `prepare` builds the index under `shop-data/index`. A scheduled
@@ -620,9 +620,9 @@ print("serving equals batch inference:", all(matches))
 
 <!-- test: output -->
 ```text
-user-1-at-34 scores 0.135
-user-2-at-34 scores 0.134
-user-3-at-34 scores 0.630
+user-1-at-34 scores 0.116
+user-2-at-34 scores 0.112
+user-3-at-34 scores 0.647
 serving equals batch inference: True
 ```
 
@@ -634,7 +634,12 @@ is up to you. Each table's rows can be a list of dicts or a `pyarrow.Table`.
 
 `assemble` takes a sequence of requests, so one call can serve one request or
 several. For several, put the rows of all of them in one `rows` mapping, each
-row once (a repeated primary key is refused). Each request reads only the rows
+row once (a repeated declared primary key is refused). Keyless tables require
+no PK column and preserve separate identical rows. Their IDs are local to each
+prepared dataset, so equal-time limits, uniform draws and floating reduction
+rounding may differ when rows are reordered or fetched as a subset. Use a
+declared PK when stable choices across preparations are required.
+Each request reads only the rows
 that match it, so its sample is the same as when it is assembled alone:
 
 ```python
@@ -722,12 +727,12 @@ for rows in (user_3, newest_8):
 
 <!-- test: output -->
 ```text
-12 purchases: 0.63
-8 purchases: 0.992
+12 purchases: 0.647
+8 purchases: 0.943
 ```
 
 User 3 has 12 purchases. With only the newest 8 supplied, the model sees a count
-of 8 and the score moves from 0.63 to 0.992.
+of 8 and the score moves from 0.647 to 0.943.
 
 `assemble` can't detect this. A row you leave out looks exactly like a row that
 doesn't exist, so the batch is built without it.

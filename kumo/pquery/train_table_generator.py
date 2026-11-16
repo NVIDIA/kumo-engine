@@ -8,11 +8,14 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import kumo_core.types as core_types
+from kumo_core.model_plan import _use_decoupled_splits
+from kumo_core.training.bounds import parse_time_bound
 from kumo_core.training.options import allow_array_targets
 from kumo_core.training.splits import TrainTableTime, train_table_time
 from kumo_core.training.timestamps import (
     generate_decoupled_timestamps,
     generate_legacy_timestamps,
+    resolve_training_window,
 )
 from kumo_core.training.validation import GenerationValidationError
 from kumo_core.types.conversions import DataFrame
@@ -286,26 +289,18 @@ class TrainingTableGeneratorV2:
                 or isinstance(train_end_offset, DateOffset))
         self.train_end_offset = train_end_offset
 
-        # Handle new time parameters
-        self.start_time = None
-        if start_time is not None:
-            if start_time == '-INF':
-                pass  # Keep start_time as None for -INF case
-            elif isinstance(start_time, int):
-                self.start_time = self.get_date_offset(int(start_time))
-            else:
-                assert isinstance(start_time, str)
-                self.start_time = Timestamp(start_time)
-                assert isinstance(self.start_time, Timestamp)
-
-        self.end_time = None
-        if end_time is not None:
-            if isinstance(end_time, int):
-                self.end_time = self.get_date_offset(int(end_time))
-            else:
-                assert isinstance(end_time, str)
-                self.end_time = Timestamp(end_time)
-                assert isinstance(self.end_time, Timestamp)
+        self.use_decoupled_splits = (
+            _use_decoupled_splits()
+            if use_decoupled_splits is None else use_decoupled_splits)
+        start_bound: int | str | DateOffset | None = start_time
+        end_bound: int | str | DateOffset | None = end_time
+        if self.use_decoupled_splits:
+            if isinstance(start_bound, int):
+                start_bound = self.get_date_offset(start_bound)
+            if isinstance(end_bound, int):
+                end_bound = self.get_date_offset(end_bound)
+        self.start_time = parse_time_bound(start_bound, 'start_time')
+        self.end_time = parse_time_bound(end_bound, 'end_time')
 
         self.timeframe_step = None
         if timeframe_step is not None:
@@ -314,7 +309,6 @@ class TrainingTableGeneratorV2:
         self.lag_timesteps = lag_timesteps
         self.forecast_length = forecast_length
         self.year_over_year = year_over_year
-        self.use_decoupled_splits = use_decoupled_splits
         self.weight_col = normalize_weight_col(weight_col)
 
         self.task_type: core_types.TaskType = get_task_type(
@@ -425,6 +419,12 @@ class TrainingTableGeneratorV2:
         values = self._timestamp_inputs()
         (original_start, original_end, filter_buffer, offset_range, timeframe,
          step) = values
+        window = None
+        if self.task_type.is_node_pred:
+            window = resolve_training_window(
+                self.start_time, self.end_time, original_start, original_end)
+        start_time = self.start_time if window is None else window.start
+        end_time = self.end_time if window is None else window.end
         logger.info(
             f"For raw data, the min_date is {original_start} and the max_date "
             f"is {original_end}.")
@@ -463,13 +463,16 @@ class TrainingTableGeneratorV2:
             split=descriptor,
             train_start_offset=self.train_start_offset,
             train_end_offset=self.train_end_offset,
-            start_time=self.start_time,
-            end_time=self.end_time,
+            start_time=start_time,
+            end_time=end_time,
             drop_earliest=self.drop_earliest_timeframe,
             on_fixed_boundaries=fix_boundaries,
         )
         if short_window:
-            return []
+            return [] if window is None else window.filter(
+                timestamps, offset_range.end_date_offset)
+        if window is not None:
+            timestamps = window.filter(timestamps, offset_range.end_date_offset)
         logger.info(f'Generated {len(timestamps)} timestamps:')
         for i, timestamp in enumerate(timestamps):
             logger.info(f'Timestamp {i:03d}: {timestamp}')
@@ -489,6 +492,10 @@ class TrainingTableGeneratorV2:
         values = self._timestamp_inputs()
         (original_start, original_end, filter_buffer, offset_range, timeframe,
          step) = values
+        window = None
+        if self.task_type.is_node_pred:
+            window = resolve_training_window(
+                self.start_time, self.end_time, original_start, original_end)
         timestamps = generate_decoupled_timestamps(
             original_start=original_start,
             original_end=original_end,
@@ -496,10 +503,12 @@ class TrainingTableGeneratorV2:
             target_timeframe=timeframe,
             target_start_offset=offset_range.start_date_offset,
             step=step,
-            start_time=self.start_time,
-            end_time=self.end_time,
+            start_time=self.start_time if window is None else window.start,
+            end_time=self.end_time if window is None else window.end,
             drop_earliest=self.drop_earliest_timeframe,
         )
+        if window is not None:
+            timestamps = window.filter(timestamps, offset_range.end_date_offset)
         logger.info(f'Generated {len(timestamps)} timestamps:')
         for i, timestamp in enumerate(timestamps):
             logger.info(f'Timestamp {i:03d}: {timestamp}')
@@ -585,13 +594,8 @@ class TrainingTableGeneratorV2:
             validation_response.merge(
                 self.pre_train_table_validator.validate_temporal_splits())
 
-            # Add new validation for time parameter compatibility
-            validation_response.merge(self.pre_train_table_validator.
-                                      validate_train_time_compatibility())
-
-            # Add new validation for time parameter values
             validation_response.merge(
-                self.pre_train_table_validator.validate_train_time())
+                self.pre_train_table_validator.validate_time_bounds())
 
             validation_response.merge(
                 self.pre_train_table_validator.validate_train_offsets(

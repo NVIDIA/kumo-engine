@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import math
 
+import pyarrow as pa
 import torch
 from torch import Tensor
 from torch_geometric.utils import one_hot
 
 from kumo_core.encoders.tensor_mapper import TimestampTensorMapper
 from kumo_core.types.features import NANOSECONDS_IN_DAY
-from kumo_core.features.time import to_datetime
 
 
 class TimeEncoder(torch.nn.Module):
@@ -67,9 +67,9 @@ class TimeEncoder(torch.nn.Module):
         window_size = time.size(1)
 
         # NOTE This currently forces a CUDA device synchronization.
-        ser = to_datetime(time.view(-1).cpu().numpy())
+        array = pa.array(time.view(-1).cpu().numpy(), type=pa.timestamp('ns'))
 
-        time = self.mapper(ser, device=time.device)
+        time = self.mapper(array, device=time.device)
 
         tensors: list[Tensor] = []
         index = TimestampTensorMapper.index

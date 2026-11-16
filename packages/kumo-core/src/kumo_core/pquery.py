@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ from .encoder_selection import (
 )
 from .model_plan import (
     TrainingTableGenerationPlan,
+    _use_decoupled_splits,
     inferred_or_missing_type_to_false,
     inferred_or_missing_type_to_none,
 )
@@ -59,6 +61,7 @@ from .train.autoregression import (
     PADDING_SIZE,
     YOY_COL,
 )
+from .training.bounds import parse_time_bound, validate_time_bounds
 from .training.splits import (
     SplitArguments,
     TrainTableTime,
@@ -73,14 +76,24 @@ from .training.table import (
 )
 from .training.timestamps import (
     default_target_time_range,
+    forecast_offsets,
     generate_legacy_timestamps,
+    resolve_training_window,
 )
 from .training.validation import validate_train_offsets
 from .types import TaskType
 
+logger = logging.getLogger(__name__)
+
 
 class PredictiveQueryPlanError(ValueError):
     """A notebook graph/query cannot be converted to a native task plan."""
+
+
+class TaskPlanPurpose(str, Enum):
+    TRAINING = 'training'
+    PREDICTION = 'prediction'
+    LABELS = 'labels'
 
 
 _NATIVE_TRAINING_TASK_TYPES = frozenset({
@@ -755,6 +768,12 @@ def resolve_query_forecast(
     )
 
 
+def _forecast_offsets(query: ValidatedNativeQuery) -> tuple[int, ...]:
+    """The exact future shifts passed to the native label compiler."""
+    timeframe = query.query.get_combined_date_offset_range().timeframe
+    return forecast_offsets(timeframe, query.forecast_length)
+
+
 def _forecast_options(
     query: ValidatedNativeQuery,
     options: TrainingTableGenerationPlan,
@@ -773,8 +792,7 @@ def _forecast_options(
     step_seconds = int(timeframe.total_seconds())
     lag_offsets = tuple(-step_seconds * index
                         for index in range(int(lag_timesteps), 0, -1))
-    future_offsets = tuple(step_seconds * index
-                           for index in range(query.forecast_length))
+    future_offsets = _forecast_offsets(query)
     compiler_options = {
         "future_offsets_secs": future_offsets,
         "lag_offsets_secs": lag_offsets,
@@ -1017,7 +1035,12 @@ def _temporal_timestamps(
     split: Mapping[str, Any],
     split_family: str,
     explicit: tuple[int, ...],
+    *,
+    purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
 ) -> tuple[tuple[int, ...], bool]:
+    if purpose is not TaskPlanPurpose.TRAINING:
+        return (tuple(_timestamp_ns(value) for value in explicit),
+                'flexible_boundaries' in split)
     offset = query.query.get_combined_date_offset_range()
 
     def date_offset(value: int) -> DateOffset:
@@ -1032,18 +1055,66 @@ def _temporal_timestamps(
     )
     if error is not None:
         raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
-    if explicit:
+
+    start_time: DateOffset | Timestamp | None
+    end_time: DateOffset | Timestamp | None
+    node_bounds = query.task_type in TaskType.get_node_pred_tasks()
+    start_bound = inferred_or_missing_type_to_none(options.start_time)
+    end_bound = inferred_or_missing_type_to_none(options.end_time)
+    if isinstance(start_bound, Integral):
+        start_bound = (date_offset(int(start_bound))
+                       if _use_decoupled_splits() else int(start_bound))
+    if isinstance(end_bound, Integral):
+        end_bound = (date_offset(int(end_bound))
+                     if _use_decoupled_splits() else int(end_bound))
+    try:
+        if not node_bounds:
+            start_time = parse_time_bound(start_bound, 'start_time')
+            end_time = parse_time_bound(end_bound, 'end_time')
+        else:
+            start_time, end_time = validate_time_bounds(
+                start_bound,
+                end_bound,
+                train_start_offset=train_start,
+                train_end_offset=train_end,
+                split_family=(split_family
+                              if inferred_or_missing_type_to_none(
+                                  options.split) is not None else None),
+            )
+    except ValueError as error:
+        raise PredictiveQueryPlanError(str(error)) from error
+    absolute_bounds = (isinstance(start_time, Timestamp)
+                       or isinstance(end_time, Timestamp)) and node_bounds
+    if explicit and not absolute_bounds:
         return (tuple(_timestamp_ns(value) for value in explicit),
                 "flexible_boundaries" in split)
     minimum, maximum, filter_buffer = _temporal_target_time_range(
         query, index_path)
+    try:
+        window = (resolve_training_window(start_time, end_time, minimum, maximum)
+                  if absolute_bounds else None)
+    except ValueError as error:
+        raise PredictiveQueryPlanError(str(error)) from error
+    if window is not None:
+        start_time, end_time = window.start, window.end
 
-    def relative(value: Any) -> DateOffset | Timestamp | None:
-        if value is None or value == "-INF":
-            return None
-        if isinstance(value, Integral):
-            return date_offset(int(value))
-        return Timestamp(Timestamp(value).value)
+    def bounded(values: Sequence[int]) -> tuple[int, ...]:
+        if window is None:
+            return tuple(values)
+        try:
+            return tuple(window.filter(values, offset.end_date_offset))
+        except ValueError as error:
+            raise PredictiveQueryPlanError(str(error)) from error
+
+    if explicit:
+        timestamps = bounded(tuple(_timestamp_ns(value) for value in explicit))
+        dropped = len(explicit) - len(timestamps)
+        if dropped:
+            logger.warning(
+                'Dropped %d of %d explicit training anchors outside '
+                'start_time/end_time or available label data.',
+                dropped, len(explicit))
+        return timestamps, "flexible_boundaries" in split
 
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
@@ -1072,11 +1143,15 @@ def _temporal_timestamps(
             int(train_start))),
         train_end_offset=(None if train_end is None else date_offset(
             int(train_end))),
-        start_time=relative(
-            inferred_or_missing_type_to_none(options.start_time)),
-        end_time=relative(inferred_or_missing_type_to_none(options.end_time)),
+        start_time=start_time,
+        end_time=end_time,
         drop_earliest=True,
     )
+    if absolute_bounds:
+        # Inferred offset splits may extend their first range to fill a stage.
+        # Absolute label bounds remain authoritative over that adjustment.
+        return (bounded(tuple(timestamp.value for timestamp in timestamps)),
+                fixed_boundaries)
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 
@@ -1390,6 +1465,7 @@ def build_native_pquery_task_plan(
         graph_index_id: str | None = None,
         timestamps: tuple[int, ...] = (),
         supplied_rows: bool = False,
+        purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING,
 ) -> NativePqueryTaskPlan:
     """Resolve task inputs for generated or already-supplied rows.
 
@@ -1423,6 +1499,7 @@ def build_native_pquery_task_plan(
                 split,
                 split_family,
                 timestamps,
+                purpose=purpose,
             )
             if fixed_boundaries:
                 split = {**split, "flexible_boundaries": False}

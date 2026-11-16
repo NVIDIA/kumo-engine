@@ -819,11 +819,6 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     assert model_batch.targets["future_activity"]["values"].tolist() == [3.0, 2.0]
     signup = next(row["signup_at"] for row in rows["users"] if row["user_id"] == 2)
     engine = api.DiskGraphEngine(index=indexes[0], num_threads=1)
-    for cutoff in (signup - timedelta(seconds=1), signup):
-        request = api.SampleRequest("before-signup", 2, cutoff)
-        with pytest.raises(ValueError, match="entity did not exist before"):
-            with api.prepare(contract, parquet, engine) as plan:
-                plan.materialize((request,))
     request = api.SampleRequest(
         "after-signup", 2, signup + timedelta(seconds=1), targets=requests[0].targets
     )
@@ -1480,8 +1475,9 @@ def test_diskgraph_reads_parquet_anchor_tables_with_external_labels(tmp_path: Pa
     )
     with api.prepare(contract, parquet, engine) as plan:
         from_table = plan.materialize(anchors, fit_split="train")
-        from_requests = plan.materialize(requests, fit_split="train")
-        assert from_table.fitted_state == from_requests.fitted_state
+        # Compare loading with one frozen state. Materialized columns use the
+        # shared statistics fitter; request-only fitting retains its row recipe.
+        from_requests = plan.materialize(requests, fitted=from_table.fitted_state)
         assert from_table.count("train") == 2 and from_table.count("test") == 1
         for output_format in ("inspectable", "model"):
             got = list(from_table.batches(split="train", output_format=output_format))

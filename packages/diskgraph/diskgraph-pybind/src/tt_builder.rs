@@ -357,6 +357,8 @@ struct TemporalArgs {
 
 /// Lag and horizon offsets are the only op fields typed by the clock, so they
 /// wait for `build()`; every other op is complete when added.
+// Keep ready plan operations inline, including the shared row-aggregate variant.
+#[allow(clippy::large_enum_variant)]
 enum BuilderOp {
     Ready(tt::Op<Seconds>),
     Autoregression(ShiftedOp),
@@ -517,8 +519,7 @@ impl DiskGraphTTBuilder {
                 .into_iter()
                 .map(|(src_col, dst_table)| tt::TTFKeySpec {
                     src_col,
-                    dst_table,
-                })
+                    dst_table })
                 .collect(),
         );
     }
@@ -1158,6 +1159,21 @@ pub fn build_split_spec_json(spec: &Bound<'_, PyAny>, timestamp_unit: &str) -> P
     .map_err(|e| {
         crate::DiskgraphConfigError::new_err(format!("failed to serialize split spec: {e}"))
     })
+}
+
+/// Convert fixed index-clock ticks using DG's existing rounding operations.
+#[pyfunction]
+#[pyo3(signature = (value, from, to, *, rounding="truncate"))]
+pub fn convert_ticks(value: i64, from: &str, to: &str, rounding: &str) -> PyResult<i64> {
+    let (from, to) = (parse_time_unit(from)?, parse_time_unit(to)?);
+    if !from.is_index_clock() || !to.is_index_clock() {
+        return Err(crate::DiskgraphConfigError::new_err("convert_ticks requires fixed index clocks"));
+    }
+    match rounding {
+        "truncate" => Ok(diskgraph_core::time::convert_trunc(value, from, to)),
+        "floor" => Ok(diskgraph_core::time::convert_floor(value, from, to)),
+        _ => Err(crate::DiskgraphConfigError::new_err("rounding must be truncate or floor")),
+    }
 }
 
 pub(crate) fn parse_index_clock(unit: &str) -> PyResult<TimeUnit> {
