@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Provision a dedicated container cgroup and validate peaks
+      - name: Validate Linux file-cache conditioning
         run: |
           mkdir -p "$RUNNER_TEMP/benchmark-memory"
           docker run --rm --network none --read-only --cgroupns private \
@@ -88,22 +88,7 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/benchmark-memory,dst=/out" \
             --mount type=volume,dst=/scratch \
             python:3.12-slim-bookworm python -c \
-            'import subprocess; subprocess.run(["mount", "-o", "remount,rw", "/sys/fs/cgroup"], check=True); from test.kumo_pytorch.benchmarking.validate_memory import main; from test.kumo_pytorch.benchmarking.validate_cache import main as cache_main; code = main(["--cgroup", "/sys/fs/cgroup", "--output", "/out/memory-validation.json"]); raise SystemExit(cache_main(["--workdir", "/scratch", "--output", "/out/cache-validation.json"]) or code)'
-      - name: Show Linux memory validation
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/benchmark-memory/memory-validation.json" ]; then
-            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
-          import json, os
-          from pathlib import Path
-          for path in sorted((Path(os.environ['RUNNER_TEMP']) / 'benchmark-memory').glob('*-validation.json')):
-              result = json.loads(path.read_text())
-              print(f'### {path.stem}')
-              print(f"Status: **{result['status']}**. Kernel: `{result['kernel']}`.")
-              for check in result.get('checks', []):
-                  print(f'- {check}')
-          PY
-          fi
+            'from test.kumo_pytorch.benchmarking.validate_cache import main; raise SystemExit(main(["--workdir", "/scratch", "--output", "/out/cache-validation.json"]))'
       - name: Validate complete workers and cgroup cleanup
         run: |
           docker run --rm --network none --read-only --cgroupns private \
@@ -114,6 +99,21 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/benchmark-memory,dst=/out" \
             python:3.12-slim-bookworm python -c \
             'import os,subprocess; from pathlib import Path; subprocess.run(["mount","-o","remount,rw","/sys/fs/cgroup"],check=True); root=Path("/sys/fs/cgroup"); control=root/"supervisor"; control.mkdir(); (control/"cgroup.procs").write_text(str(os.getpid())); (root/"cgroup.subtree_control").write_text("+memory"); from test.kumo_pytorch.benchmarking.validate_isolation import main; raise SystemExit(main(["--output","/out/isolation"]))'
+      - name: Show Linux collector validation
+        if: ${{ always() }}
+        run: |
+          python - <<'PYTHON' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          from pathlib import Path
+          for path in sorted((Path(os.environ['RUNNER_TEMP']) / 'benchmark-memory').rglob('*-validation.json')):
+              result = json.loads(path.read_text())
+              if 'status' not in result:
+                  continue
+              print(f'### {path.stem}')
+              print(f"Status: **{result['status']}**. Kernel: `{result['kernel']}`.")
+              for check in result.get('checks', []):
+                  print(f'- {check}')
+          PYTHON
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
