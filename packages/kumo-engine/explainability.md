@@ -147,7 +147,13 @@ can change if files are removed after checking it.
 
 The implementation's small fixtures use the shared producer schemas and CSV/JSON
 writers from source revision `74465d01`, plus mocked training integration and
-headless plotting. They are not retained artifacts from a released v1.0 training
-run. Released v1.0 artifact compatibility remains unverified. Website guide
+headless plotting. Real CPU fits of one binary classification query also run.
+Two refit fits in `test_holdout_df.py` check which trial the artifacts describe.
+The CPU lifecycle check of the candidate wheel reopens a copied training run in
+a fresh process. It verifies that the explanations describe the published refit
+model, renders both plots, inspects the sampled graphs and checks broken-run
+diagnostics. These checks do not use retained
+artifacts from a released v1.0 training run, so released v1.0 artifact
+compatibility remains unverified. Website guide
 source and publication are maintained separately; this local guide does not
 update or publish the website.

@@ -21,17 +21,19 @@ from typing import Any
 import numpy as np
 
 from kumo.pytorch.contract.batch import (
+    Composite,
     EntitySource,
     EventsOf,
     EventSource,
     Fields,
     Graph,
+    Tokens,
     UseEncoding,
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.validation import resolved_fields
 from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.sample import Field, destination_table
+from kumo.pytorch.contract.sample import Constant, Field, destination_table
 from kumo.pytorch.encoding import (
     TEXT_RECIPE,
     FittedEncoder,
@@ -48,11 +50,12 @@ StatRequest = tuple[str, str, str]
 
 # Bump when the statistics a request asks for change, so a stale directory is never reused.
 COL_STATS_RECIPE = 1
+# Bump when the token-length rules change, so a stale lengths file is never reused.
+TOKEN_LENGTHS_RECIPE = 1
 # Buckets cuts interpolate the t-digest quantiles at these probabilities.
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 #: A key each semantic type's statistics add to a column's entry.
 _STAT_KEYS = {"categorical": "category_counts", "numerical": "mean"}
-_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 #: DiskGraph's statistics of a column with no rows.
 EMPTY_STATS = {
     "count": 0,
@@ -112,56 +115,127 @@ class TableColumnEncoder:
         return f"{_cutoff_dir(ticks, unit)}/{table}.{column}.text-{digest}.tokenizer.json"
 
 
-#: A stored column the model reads, with its fitted tokenizer's JSON if it is ``Text``.
-LengthColumn = tuple[str, str | None]
+#: A per-node column the model reads: its name, its fitted tokenizer's JSON if it is ``Text``,
+#: and the count of a present value without pieces, 1 under ``Text(empty="unknown")``.
+LengthColumn = tuple[str, str | None, int]
+
+#: The per-node count of a row delivery drops for a NULL in ``Composite.required_fields``.
+DROPPED = 0xFFFF
 
 
 def token_length_columns(
     contract: Any, plan: Any
-) -> dict[str, tuple[int, tuple[LengthColumn, ...]]]:
-    """Each event table's per-event constant and per-node columns under ``Batching.length_input``.
+) -> dict[str, tuple[int, tuple[LengthColumn, ...], tuple[str, ...]]]:
+    """Each event table's per-event constant, per-node columns and required columns under
+    ``Batching.length_input``.
 
     ``Text`` and variable-length list columns vary per node; every other stored column the input
     reads adds 1 to the constant. Lists can't be declared yet (DG-NESTED-COLUMN), so only ``Text``
-    is per-node today.
+    is per-node today. The required columns are those of the ``Composite.required_fields`` of the
+    input, or of its ``EventsOf`` parent, since delivery drops those rows for both.
     """
 
     name = contract.batch.batching.length_input
     if name is None or not isinstance(contract.batch.inputs[name].representation, Fields):
         return {}
-    columns: dict[str, dict[str, str | None]] = {}
-    for use in contract.batch.inputs[name].representation.fields:
+    group = contract.batch.inputs[name].representation
+    columns: dict[str, dict[str, tuple[str, int] | None]] = {}
+    for use in group.fields:
         encoder = plan.output(name=name).field(name=use.field).encoder
-        tokenizer = encoder.tokenizer_json if isinstance(encoder.config, Text) else None
+        text = (
+            (encoder.tokenizer_json, int(encoder.config.empty == "unknown"))
+            if isinstance(encoder.config, Text)
+            else None
+        )
         for variant, _, _ in resolved_fields(contract, name, use.field):
             stored = _stored_column(contract.sample, contract.schema, variant)
             if stored is None or variant[0] not in {"events", "current_events"}:
                 continue
             table, column = stored
             known = columns.setdefault(table, {}).get(column)
-            if tokenizer is not None and known is not None and known != tokenizer:
+            if text is not None and known is not None and known != text:
                 raise ValueError(
-                    f"{table}.{column} is read by Text encoders with different tokenizers, "
-                    "so its token length is ambiguous"
+                    f"{table}.{column} is read by Text encoders with different tokenizers or "
+                    "empty policies, so its token length is ambiguous"
                 )
-            columns[table][column] = tokenizer or known
+            columns[table][column] = text or known
+    required = _required_columns(contract, name)
     lengths = {}
-    for table, read in sorted(columns.items()):
-        per_node = tuple(sorted(item for item in read.items() if item[1] is not None))
-        lengths[table] = (len(read) - len(per_node), per_node)
+    for table in sorted(columns.keys() | required.keys()):
+        read = columns.get(table, {})
+        per_node = tuple(
+            (column, *text) for column, text in sorted(read.items()) if text is not None
+        )
+        lengths[table] = (len(read) - len(per_node), per_node, required.get(table, ()))
     return lengths
 
 
+def _required_columns(contract: Any, name: str) -> dict[str, tuple[str, ...]]:
+    while isinstance(contract.batch.inputs[name].source, EventsOf):
+        name = contract.batch.inputs[name].source.input
+    value = contract.batch.inputs[name]
+    row = getattr(value.representation, "row", None)
+    if not isinstance(row, Composite) or not isinstance(value.source, EventSource):
+        return {}
+    collection = "current_events" if value.source.collection == "current" else "events"
+    stored = {
+        field: {
+            variant[:2]: _stored_column(contract.sample, contract.schema, variant)
+            for variant, _, _ in resolved_fields(contract, name, field)
+        }
+        for field in row.required_fields
+    }
+    # A non-null constant always survives the required-value check. Keep its
+    # identity in the per-table mapping so a nullable column on another
+    # component cannot silently share the same validity file.
+    for field in row.required_fields:
+        for variant, _, _ in resolved_fields(contract, name, field):
+            declaration = getattr(contract.sample, variant[0])[variant[1]].fields[variant[2]]
+            if isinstance(declaration, Constant) and declaration.value is not None:
+                stored[field][variant[:2]] = ("", None)
+    required: dict[str, dict[str, str | None]] = {}
+    for event in value.source.events:
+        rows = getattr(contract.sample, collection)[event].rows
+        table = destination_table(contract.schema, contract.sample.entity.table, rows.path)
+        found = {field: stored[field].get((collection, event)) for field in row.required_fields}
+        missing = [field for field, column in found.items() if column is None]
+        if missing:
+            raise ValueError(
+                f"{table} has no stored column for required field(s) {', '.join(missing)} of "
+                f"{name!r}, so token lengths can't count the events delivery keeps"
+            )
+        for field, (_, column) in found.items():
+            if required.setdefault(table, {}).setdefault(field, column) != column:
+                raise ValueError(
+                    f"required field {field!r} of {name!r} reads several columns of {table}, so "
+                    "token lengths can't count the events delivery keeps"
+                )
+    return {
+        table: tuple(sorted({column for column in fields.values() if column is not None}))
+        for table, fields in required.items()
+    }
+
+
 def token_lengths_file(
-    table: str, columns: Sequence[LengthColumn], ticks: int | None, unit: str
+    table: str,
+    columns: Sequence[LengthColumn],
+    required: Sequence[str],
+    ticks: int | None,
+    unit: str,
 ) -> str:
     import diskgraph
 
     settings = [
         [
-            [column, None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest()]
-            for column, tokenizer in columns
+            [
+                column,
+                None if tokenizer is None else hashlib.sha256(tokenizer.encode()).hexdigest(),
+                empty,
+            ]
+            for column, tokenizer, empty in columns
         ],
+        sorted(required),
+        TOKEN_LENGTHS_RECIPE,
         diskgraph.TOKENIZER_TRAINER,
     ]
     digest = hashlib.sha256(json.dumps(settings).encode()).hexdigest()[:16]
@@ -174,7 +248,8 @@ def read_token_lengths(
     """A table's per-event constant and its read-only per-node counts, indexed by node ID.
 
     ``entry`` is the table's ``FitRecord["statistics"]["token_lengths"]`` value and ``index``
-    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file.
+    the DiskGraph index directory. The per-node counts are ``None`` when ``entry`` has no file;
+    a count of ``DROPPED`` marks a row delivery drops, which adds neither tokens nor an event.
     """
 
     if entry["file"] is None:
@@ -254,7 +329,9 @@ def _cutoff_dir(ticks: int | None, unit: str) -> str:
     return hashlib.sha256(json.dumps([COL_STATS_RECIPE, ticks, unit]).encode()).hexdigest()[:16]
 
 
-def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
+def table_column_encoders(
+    contract: Any, *, scalar_columns=None, target_columns=None
+) -> dict[str, TableColumnEncoder]:
     from kumo.pytorch.assembly import _encoder_identity, _graph_encoder_identity
 
     spec, sample, schema = contract.batch, contract.sample, contract.schema
@@ -286,17 +363,60 @@ def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
         direct = isinstance(value.source, (EntitySource, EventSource, EventsOf))
         for use in value.representation.fields:
             variants = resolved_fields(contract, name, use.field)
-            columns = {_stored_column(sample, schema, variant) for variant, _, _ in variants}
+            columns = {
+                _stored_column(sample, schema, variant)
+                or (
+                    ("__materialized_anchors", scalar_columns[variant[1]])
+                    if scalar_columns and variant[0] == "entity" and variant[1] in scalar_columns
+                    else None
+                )
+                for variant, _, _ in variants
+            }
+            row = value.representation.row
+            if (
+                isinstance(row, Tokens)
+                and row.missing == "skip_event"
+                and any(
+                    item is not None and item[0] == "__materialized_anchors" for item in columns
+                )
+            ):
+                # Table-wide summaries do not encode the input's row eligibility.
+                columns = {None}
             add(
                 _encoder_identity(name, use),
                 use.encoding,
                 variants[0][1],
                 columns if direct and None not in columns else None,
             )
+    if target_columns:
+        from kumo.pytorch.assembly import _identity
+        from kumo.pytorch.contract.batch import LabelTarget
+        from kumo.pytorch.contract.batch.validation import target_dtype
+
+        input_identities = set(uses)
+        for name, target in sorted(spec.targets.items()):
+            if not isinstance(target, LabelTarget) or target.source not in target_columns:
+                continue
+            identity = (
+                _identity("shared", target.encoding.name)
+                if isinstance(target.encoding, UseEncoding)
+                else _identity("targets", name, "value")
+            )
+            if identity not in input_identities:
+                add(
+                    identity,
+                    target.encoding,
+                    target_dtype(contract, target.source),
+                    {("__materialized_anchors", target_columns[target.source])},
+                )
     return {
         identity: TableColumnEncoder(config, dtype, tuple(sorted(columns)))
         for identity, (config, dtype, columns) in sorted(uses.items())
-        if columns and learns_from_values(config, dtype)
+        if columns
+        and learns_from_values(config, dtype)
+        and not (
+            isinstance(config, Text) and any(t == "__materialized_anchors" for t, _ in columns)
+        )
     }
 
 
@@ -325,6 +445,10 @@ def cutoff_nanos(value: Any) -> int | None:
 
     if value is None:
         return None
+    import pyarrow as pa
+
+    if isinstance(value, pa.TimestampScalar):
+        return value.cast(pa.timestamp("ns", tz="UTC")).value
     if type(value) is int:
         return value * 10**9
     if isinstance(value, str):
@@ -425,8 +549,17 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":
         import diskgraph
+        import pyarrow as pa
 
-        return _EPOCH + dt.timedelta(seconds=diskgraph.convert_ticks(value, unit, "seconds"))
+        arrow_unit = {
+            "seconds": "s",
+            "milliseconds": "ms",
+            "microseconds": "us",
+            "nanoseconds": "ns",
+        }.get(unit)
+        if arrow_unit is None:
+            value, arrow_unit = diskgraph.convert_ticks(value, unit, "seconds"), "s"
+        return pa.scalar(value, type=pa.timestamp(arrow_unit, tz="UTC"))
     return value
 
 

@@ -15,7 +15,7 @@ import pytest
 from tokenizers import Tokenizer
 
 from kumo.pytorch import api, encoding
-from kumo.pytorch.column_stats import TableColumnEncoder, read_token_lengths
+from kumo.pytorch.column_stats import DROPPED, TableColumnEncoder, read_token_lengths
 from kumo.pytorch.encoding import fit_encoder, train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 from kumo.pytorch.materialization import ensure_diskgraph_index
@@ -197,6 +197,111 @@ def test_a_measured_fit_keeps_each_event_rows_token_count(tmp_path, padded):
         assert pieces[node] == len(tokenizer.encode(row["description"] or "").ids)
 
 
+def _edited(directory, column: str, value, step: int):
+    rows = _fixture_rows()
+    for row in rows["card_transactions"][::step]:
+        row[column] = value
+    dataset = _write_parquet(rows, directory / "parquet")
+    engine = api.DiskGraphEngine(index=directory / "index", num_threads=2)
+    return rows["card_transactions"], dataset, engine
+
+
+def _entry(contract: api.DataLoaderSpec, dataset, engine) -> dict:
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
+    return entry
+
+
+def _nodes(directory, rows):
+    import diskgraph
+
+    engine = diskgraph.SamplerEngine(str(directory / "index"))
+    ids = pa.array([row["card_transaction_id"] for row in rows])
+    return engine.lookup_node_ids("card_transactions", ids)
+
+
+def _required(fields: tuple[str, ...]) -> api.DataLoaderSpec:
+    contract = _measured(_contract())
+    transactions = contract.batch.inputs["transactions"]
+    group = replace(transactions.representation, row=api.Composite(required_fields=fields))
+    inputs = {**contract.batch.inputs, "transactions": replace(transactions, representation=group)}
+    return replace(contract, batch=replace(contract.batch, inputs=inputs))
+
+
+def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
+    rows, dataset, engine = _edited(tmp_path, "description", "", 4)
+    with api.prepare(
+        _measured(_text_contract(replace(TEXT, empty="unknown"))), dataset, engine
+    ) as plan:
+        with plan.materialize(_requests(), fit_split="train") as task:
+            encoder = task.output("transactions").field(name="description").encoder
+            (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
+    _, pieces = read_token_lengths(tmp_path / "index", entry)
+    descriptions = pa.array([row["description"] for row in rows])
+    emitted = encoder.encode_arrow(descriptions)["piece_offsets"].diff().tolist()
+    nodes = _nodes(tmp_path, rows)
+    assert pieces[nodes].tolist() == emitted
+    empty = [node for node, row in zip(nodes, rows, strict=True) if row["description"] == ""]
+    assert pieces[empty].tolist() == [1] * len(empty)
+
+
+@pytest.mark.parametrize("length_input", ("transactions", "follower"))
+def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path, length_input):
+    rows, dataset, engine = _edited(tmp_path, "channel", None, 3)
+    contract = _required(("channel",))
+    follower = api.Input(
+        api.EventsOf("transactions"),
+        api.Fields((api.Encode(field="amount", encoding=api.ZScore()),)),
+        api.Padded(),
+    )
+    batch = replace(
+        contract.batch,
+        inputs={**contract.batch.inputs, "follower": follower},
+        batching=replace(contract.batch.batching, length_input=length_input),
+    )
+    entry = _entry(replace(contract, batch=batch), dataset, engine)
+    _, counts = read_token_lengths(tmp_path / "index", entry)
+    expected = [DROPPED if row["channel"] is None else 0 for row in rows]
+    assert counts[_nodes(tmp_path, rows)].tolist() == expected
+
+
+@pytest.mark.parametrize(
+    ("again", "message"),
+    (
+        ({"channel": api.Field(column="description")}, "reads several columns"),
+        ({"channel": api.Constant("ok", dtype=api.DType("string"))}, "reads several columns"),
+        ({}, "has no stored column"),
+    ),
+)
+def test_a_required_field_every_component_must_store_once(tmp_path, again, message):
+    contract = _required(("channel",))
+    events = contract.sample.events["transactions"]
+    again = replace(events, fields={"amount": api.Field(column="amount"), **again})
+    sample = replace(contract.sample, events={"transactions": events, "again": again})
+    transactions = contract.batch.inputs["transactions"]
+    source = replace(transactions.source, events=("transactions", "again"))
+    inputs = {**contract.batch.inputs, "transactions": replace(transactions, source=source)}
+    contract = replace(contract, sample=sample, batch=replace(contract.batch, inputs=inputs))
+    dataset, engine = _setup("diskgraph", tmp_path)
+    with api.prepare(contract, dataset, engine) as plan:
+        with pytest.raises(ValueError, match=message):
+            plan.materialize(_requests(), fit_split="train")
+
+
+def test_a_changed_empty_policy_or_required_field_never_reuses_counts(tmp_path):
+    dataset, engine = _setup("diskgraph", tmp_path)
+    contracts = (
+        _measured(_text_contract()),
+        _measured(_text_contract(replace(TEXT, empty="unknown"))),
+        _required(("channel",)),
+        _required(("amount", "channel")),
+    )
+    files = [_entry(contract, dataset, engine)["file"] for contract in contracts]
+    assert len(set(files)) == len(files)
+    assert all((tmp_path / "index" / "col_stats" / file).is_file() for file in files)
+
+
 def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkeypatch):
     import diskgraph
 
@@ -276,3 +381,22 @@ def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):
         pieces = [encoder.encode(value) for value in values]
         assert encoded["values"].tolist() == [piece for item in pieces for piece in item]
         assert encoded["piece_offsets"].diff().tolist() == [len(item) for item in pieces]
+
+
+def test_a_nonnull_constant_required_field_needs_no_validity_scan(tmp_path, monkeypatch):
+    import diskgraph
+
+    contract = _required(("channel",))
+    events = contract.sample.events["transactions"]
+    events = replace(
+        events, fields={**events.fields, "channel": api.Constant("ok", dtype=api.DType("string"))}
+    )
+    contract = replace(contract, sample=replace(contract.sample, events={"transactions": events}))
+
+    def scan(*args, **kwargs):
+        raise AssertionError("an always-present required constant needs no validity scan")
+
+    monkeypatch.setattr(diskgraph, "token_lengths", scan)
+    dataset, engine = _setup("diskgraph", tmp_path)
+    entry = _entry(contract, dataset, engine)
+    assert entry["file"] is None

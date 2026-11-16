@@ -54,7 +54,7 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
-from kumo.pytorch.contract.dtypes import DType
+from kumo.pytorch.contract.dtypes import DType, _arrow_values
 from kumo.pytorch.contract.sample import (
     BuiltSample,
     ExternalTarget,
@@ -141,7 +141,7 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_jsonable(item) for item in value]
     if hasattr(value, "to_pylist"):
-        return {"dtype": str(value.type), "values": json_value(value.to_pylist())}
+        return {"dtype": str(value.type), "values": json_value(_arrow_values(value))}
     return json_value(value)
 
 
@@ -744,8 +744,9 @@ def _fit_inputs(
             graph = SimpleNamespace(
                 source=value.source.name, node_fields=value.representation.node_fields
             )
+            graph_cutoff = getattr(source, "_cutoff", cutoff_to_epoch)
             roots = [
-                GraphRoot(request.sample_id, request.entity_id, cutoff_to_epoch(request.as_of_time))
+                GraphRoot(request.sample_id, request.entity_id, graph_cutoff(request.as_of_time))
                 for requests in _chunks(values_for(None))
                 for request in requests
             ]
@@ -772,11 +773,11 @@ def _fit_inputs(
                     column = fitting_rows.columns[use.field]
                     if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
                         column = column.flatten()
-                    observed[(name, use.field)].extend(column.to_pylist())
+                    observed[(name, use.field)].extend(_arrow_values(column))
             if name in composites:
                 columns = (rows[name].columns[use.field] for use in value.representation.fields)
                 composites[name].update(
-                    zip(*(column.to_pylist() for column in columns), strict=True)
+                    zip(*(_arrow_values(column) for column in columns), strict=True)
                 )
     contributions = {}
     for slot, identity in slots.items():
@@ -898,11 +899,15 @@ def _allocate_spaces(
         members[space_name][encoder.identity] = (encoder.local_ids, encoder.roles)
     spaces = {}
     for name, definition in spec.id_spaces.items():
-        role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
-            set(definition.specials) - set(ROLE_ORDER)
-        )
-        roles = {role: index for index, role in enumerate(role_names)}
-        cursor = len(roles)
+        if definition.special_ids:
+            roles = dict(definition.special_ids)
+            cursor = max(roles.values()) + 1
+        else:
+            role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
+                set(definition.specials) - set(ROLE_ORDER)
+            )
+            roles = {role: index for index, role in enumerate(role_names)}
+            cursor = len(roles)
         mappings = {}
         for identity, (ids, local_roles) in sorted(members[name].items()):
             inverse_roles = {value: role for role, value in local_roles.items()}
@@ -969,12 +974,15 @@ def _encoded_column(binding: OutputBinding, column: Any, *, model=False) -> dict
     return binding.encode_arrow(column, model=model)
 
 
-def _encoded_rows(encoded: dict[str, Any], boundaries: np.ndarray, layout: Any) -> dict[str, Any]:
+def _encoded_rows(
+    encoded: dict[str, Any], boundaries: np.ndarray, layout: Any, *, value_pad=0, field_pad=0
+) -> dict[str, Any]:
     """Lay out scalar rows; expanding fields keep explicit piece/occurrence boundaries."""
     if "occurrence_offsets" in encoded or "piece_offsets" in encoded:
         return {**encoded, "offsets": torch.from_numpy(boundaries.copy())}
+    fills = {"values": value_pad, "field_ids": field_pad, "valid": False, "field_valid": False}
     return {
-        name: layout_array(item, boundaries, layout, fill=False if name == "valid" else 0)
+        name: layout_array(item, boundaries, layout, fill=fills.get(name, 0))
         for name, item in encoded.items()
     }
 
@@ -985,9 +993,11 @@ def _column_output(
     result = {}
     entity = isinstance(prepared.spec.source, EntitySource)
     layout = prepared.spec.layout
+    group = prepared.spec.representation
+    field_space = state.spaces.get(group.field_space) if state is not None else None
     for field, binding in prepared.state.items():
         encoded = _encoded_column(binding, rows.columns[field], model=model)
-        group = prepared.spec.representation
+        value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
         if group.field_names is not None:
             if state is None:
                 raise ValueError("field-name column output requires its fitted mapping state")
@@ -996,7 +1006,7 @@ def _column_output(
                 field,
                 rows,
                 state.field_names[group.field_names],
-                state.spaces.get(group.field_space),
+                field_space,
             )
             owned = np.ones(rows.size, dtype=bool)
             if prepared.declarations[field][0][0][0] in {"events", "current_events"}:
@@ -1010,7 +1020,13 @@ def _column_output(
             encoded["field_ids"] = torch.from_numpy(ids.copy())
             encoded["field_valid"] = torch.from_numpy(owned.copy())
         if not entity:
-            encoded = _encoded_rows(encoded, rows.boundaries, layout)
+            encoded = _encoded_rows(
+                encoded,
+                rows.boundaries,
+                layout,
+                value_pad=value_pad,
+                field_pad=field_space.roles.get("pad", 0) if field_space else 0,
+            )
         result[field] = encoded
     if not entity:
         result["valid"] = layout_array(
@@ -1028,7 +1044,8 @@ def _field_ids(
     names: Mapping[Any, int],
     space: FittedSpace | None,
 ) -> np.ndarray:
-    result = np.zeros(rows.size, dtype=np.int64)
+    pad = space.roles.get("pad", 0) if space is not None else 0
+    result = np.full(rows.size, pad, dtype=np.int64)
     for identity, _dtype, _cardinality in prepared.declarations[field]:
         index = names[tuple(identity)]
         if space is not None:
@@ -1052,7 +1069,7 @@ def _token_rows(
 
     group = prepared.spec.representation
     if isinstance(group.row, Composite):
-        raw = {use.field: rows.columns[use.field].to_pylist() for use in group.fields}
+        raw = {use.field: _arrow_values(rows.columns[use.field]) for use in group.fields}
         keys = [
             tuple(
                 _component_key(prepared.state[use.field], raw[use.field][index])
@@ -1285,6 +1302,8 @@ def _token_output(
     )
     space = state.spaces.get(space_name)
     pad = space.roles.get("pad", 0) if space is not None else 0
+    field_space = state.spaces.get(group.field_space)
+    field_pad = field_space.roles.get("pad", 0) if field_space is not None else 0
     targets = {}
     masked_targets = [
         (target_name, target)
@@ -1343,20 +1362,28 @@ def _token_output(
             targets[target_name] = answers
             tokens = tokens.select(indices, new_bounds)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(prepared.spec.source, EntitySource):
         tokens = tokens.select(np.arange(len(tokens.values)), tokens.boundaries[rows.boundaries])
         _masked_layout(targets, tokens.boundaries, prepared.spec.layout)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(group.row, Composite):
         return tokens.select(np.arange(len(tokens.values)), rows.boundaries).output(
             prepared.spec.layout, pad=pad, field_ids=False
         ), targets
     layout = prepared.spec.layout
-    result = tokens.output(layout.fields, pad=pad, field_ids=group.field_names is not None)
+    result = tokens.output(
+        layout.fields, pad=pad, field_ids=group.field_names is not None, field_pad=field_pad
+    )
     if "offsets" in result:
         result["field_offsets"] = result.pop("offsets")
     lengths = np.diff(rows.boundaries)
@@ -1383,9 +1410,9 @@ def _raw_targets(
 ):
     if isinstance(values, ModelSourceBatch):
         if field is not None:
-            return values.row_targets[source].fields[field].to_pylist()
+            return _arrow_values(values.row_targets[source].fields[field])
         column = values.targets[source]
-        return column.to_pylist() if hasattr(column, "to_pylist") else list(column)
+        return _arrow_values(column) if hasattr(column, "to_pylist") else list(column)
     result = []
     for value in values:
         records = value.candidates.get(candidate, ()) if candidate else (value,)
@@ -1548,7 +1575,7 @@ def _fit_targets(
         for name in groups:
             target = spec.targets[name]
             bindings = state.prepared_inputs[target.input].state
-            columns = [rows[target.input].columns[field].to_pylist() for field in target.fields]
+            columns = [_arrow_values(rows[target.input].columns[field]) for field in target.fields]
             groups[name].update(
                 tuple(
                     typed_key(bindings[field].encoder.dtype, value)
@@ -1560,7 +1587,7 @@ def _fit_targets(
             target = spec.targets[name]
             if isinstance(target, AlignedEventTarget):
                 column = derived[(name, field)].field if (name, field) in derived else field
-                observed[(name, field)].extend(rows[target.input].columns[column].to_pylist())
+                observed[(name, field)].extend(_arrow_values(rows[target.input].columns[column]))
             else:
                 observed[(name, field)].extend(
                     _raw_targets(
@@ -1732,7 +1759,7 @@ def _target_outputs(
         target = spec.targets[name]
         if isinstance(target, MatchingGroupTarget):
             columns = {
-                field: rows[target.input].columns[field].to_pylist() for field in target.fields
+                field: _arrow_values(rows[target.input].columns[field]) for field in target.fields
             }
             bindings = inputs[target.input].state
             keys = [
@@ -1752,6 +1779,7 @@ def _target_outputs(
             )
             output = {}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 raw = _raw_targets(
                     values,
                     target.source,
@@ -1762,7 +1790,10 @@ def _target_outputs(
                 if isinstance(target, CandidateTarget):
                     parent = rows[target.input]
                     encoded = _encoded_rows(
-                        encoded, parent.boundaries, spec.inputs[target.input].layout
+                        encoded,
+                        parent.boundaries,
+                        spec.inputs[target.input].layout,
+                        value_pad=value_pad,
                     )
                     if isinstance(spec.inputs[target.input].layout, Packed):
                         encoded["offsets"] = torch.from_numpy(parent.boundaries.copy())
@@ -1779,10 +1810,11 @@ def _target_outputs(
             output = {}
             derived_by_name = {item.name: item for item in target.derived}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 if field in derived_by_name:
                     derived = derived_by_name[field]
                     threshold = state.thresholds[field]
-                    raw = parent.columns[derived.field].to_pylist()
+                    raw = _arrow_values(parent.columns[derived.field])
                     labels = [
                         None
                         if value is None
@@ -1799,7 +1831,10 @@ def _target_outputs(
                 else:
                     encoded = binding.encode_arrow(parent.columns[field], model=model)
                 output[field] = _encoded_rows(
-                    encoded, parent.boundaries, spec.inputs[target.input].layout
+                    encoded,
+                    parent.boundaries,
+                    spec.inputs[target.input].layout,
+                    value_pad=value_pad,
                 )
             if isinstance(spec.inputs[target.input].layout, Packed):
                 output["offsets"] = torch.from_numpy(parent.boundaries.copy())
@@ -2181,9 +2216,9 @@ class PreparedBatchPlan:
                         GraphRoot(
                             request.sample_id,
                             request.entity_id,
-                            cutoff_to_epoch(request.as_of_time),
+                            cutoff,
                         )
-                        for request in requests
+                        for request, cutoff in zip(requests, values.evaluation_times, strict=True)
                     ]
                     if model
                     else [
@@ -2232,6 +2267,11 @@ class PreparedBatchPlan:
                 "sample_ids": values.sample_ids,
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor(values.evaluation_times),
+                **(
+                    {"timestamp_unit": values.timestamp_unit}
+                    if values.timestamp_unit != "seconds"
+                    else {}
+                ),
                 "splits": values.splits,
                 "request_metadata": values.request_metadata,
             }
@@ -2240,6 +2280,11 @@ class PreparedBatchPlan:
                 "sample_ids": tuple(_sample_id(value) for value in values),
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor([_history(value).evaluation_time for value in values]),
+                **(
+                    {"timestamp_unit": self._source._clock}
+                    if getattr(self._source, "_clock", "seconds") != "seconds"
+                    else {}
+                ),
                 "splits": tuple(
                     value.metadata.get("split") if isinstance(value, BuiltSample) else None
                     for value in values
@@ -2614,6 +2659,10 @@ def fit_plan(
                 for name, value in input_state.prepared_inputs.items()
             },
         )
+    if pinned:
+        # Target-only statistics pins reuse the same fitter and target-space
+        # construction; no selected label values need to be collected.
+        input_state = replace(input_state, encoders={**pinned, **input_state.encoders})
     if target_encoders is None:
         input_state, target_encoders = _fit_targets(
             sample,

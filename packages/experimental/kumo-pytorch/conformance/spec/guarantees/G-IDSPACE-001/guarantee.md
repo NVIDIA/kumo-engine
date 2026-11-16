@@ -13,8 +13,10 @@ membership belongs to the use and does not propagate to its other uses.
 Shared encoders require identical resolved operand types. Sharing a final space
 does not pool independent encoders' observations or collapse their ordinary
 entries. Reserved roles allocate in pad, unknown, missing, mask, entity, event,
-separator, bos, eos order, followed by custom names in lexical order. Members
-then allocate in canonical structured-identity order and local-ID order.
+separator, bos, eos order, followed by custom names, unless the space declares
+special_ids for every role, in which case each role takes its declared final ID,
+gaps between declared IDs stay reserved, and ordinary entries start after the
+largest declared ID. Members then allocate in canonical structured-identity order and local-ID order.
 Applicable local missing/unknown/pad entries map to their declared final roles;
 ordinary entries never collide merely because their local numbers match.
 Equal display strings do not merge roles, field identities, and data values.
@@ -34,3 +36,6 @@ G-REUSE-001 protects unchanged mappings under compatible reuse.
 - [C-IDSPACE-001](golden/C-IDSPACE-001.json): three inputs demonstrate shared
   currency fitting, private amount/merchant mappings, optional local output,
   shared field identities, reserved roles, and exact final IDs.
+- [C-IDSPACE-002](golden/C-IDSPACE-002.json): a space declaring final IDs for
+  every role numbers roles 0 through 5, starts ordinary entries at 6, and uses
+  the declared IDs for missing and padding.
