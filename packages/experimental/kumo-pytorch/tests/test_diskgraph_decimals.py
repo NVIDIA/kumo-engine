@@ -18,6 +18,18 @@ from kumo.pytorch import api
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 
 
+def feature_source(dtype, values):
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
+    source._sampler_context = SimpleNamespace(
+        fetch_features=lambda requests: iter(
+            [{"type": "feature", "batch": pa.record_batch({"amount": values})}]
+        )
+    )
+    return source
+
+
 @pytest.mark.parametrize("precision", [38, 76])
 @pytest.mark.parametrize(
     "encoding,output_format",
@@ -136,15 +148,9 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
     "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
 )
 def test_decimal_transport_rejects_invalid_or_lossy_values(text):
-    source = object.__new__(DiskGraphSource)
-    source._pa, source._pc = pa, pc
-    source._tables = {
-        "events": SimpleNamespace(
-            columns={"amount": api.DType("decimal128", precision=38, scale=10)}
-        )
-    }
+    source = feature_source(api.DType("decimal128", precision=38, scale=10), pa.array([text]))
     with pytest.raises(pa.ArrowInvalid):
-        source._decode_decimal_array("events", "amount", pa.array([text]))
+        source._feature_arrays("events", [1], ("amount",))
 
 
 @pytest.mark.parametrize(
@@ -159,7 +165,6 @@ def test_decimal_transport_rejects_invalid_or_lossy_values(text):
     ],
 )
 def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
-    source = object.__new__(DiskGraphSource)
-    source._pa, source._pc = pa, pc
-    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
-    assert source._decode_decimal_array("events", "amount", values) is values
+    source = feature_source(dtype, values)
+    result = source._feature_arrays("events", list(range(len(values))), ("amount",))["amount"]
+    assert result.equals(values)

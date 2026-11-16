@@ -55,7 +55,13 @@ jobs:
         run: |
           uvx --python 3.12 --from pytest==8.4.2 python -m pytest \
             -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
-            test/kumo_pytorch/checks -q
+            test/kumo_pytorch/checks -q --junitxml="$RUNNER_TEMP/tooling.xml"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-tooling-tests
+          path: ${{ runner.temp }}/tooling.xml
+          retention-days: 14
 
   diskgraph-wheel:
     uses: ./.github/workflows/_diskgraph-wheel.yml
@@ -258,7 +264,14 @@ jobs:
         # Other jobs below own conformance and the T2b lifecycle executions.
         run: |
           python -m pytest -q --require-imports tests \
-            --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py
+            --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py \
+            --junitxml="$RUNNER_TEMP/package-regressions.xml"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-package-regressions
+          path: ${{ runner.temp }}/package-regressions.xml
+          retention-days: 14
 
   plan:
     name: Plan the nightly end-to-end runs
@@ -301,9 +314,9 @@ jobs:
             !${{ runner.temp }}/e2e/t2b/**/index/**
           retention-days: 14
 
-  checks:
-    name: kumo-pytorch-t2b
-    needs: [diskgraph-wheel, run]
+  aml-model-checks:
+    name: PyTorch nightly AML correctness and model training
+    needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -318,14 +331,32 @@ jobs:
         run: |
           python -m pytest -c test/kumo_pytorch/pytest.ini \
             --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
-            test/kumo_pytorch/model_checks -q
+            test/kumo_pytorch/model_checks -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
       - name: Retain controlled AML learning reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
           name: kumo-pytorch-aml-learning
-          path: ${{ runner.temp }}/aml-checks/**/learning.json
+          path: |
+            ${{ runner.temp }}/aml-checks.xml
+            ${{ runner.temp }}/aml-checks/**/learning.json
+            ${{ runner.temp }}/aml-checks/**/results.json
+            ${{ runner.temp }}/aml-checks/**/coverage.json
+            ${{ runner.temp }}/aml-checks/**/report.md
           retention-days: 14
+
+  checks:
+    name: kumo-pytorch-t2b
+    needs: [diskgraph-wheel, run]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: kumo-pytorch-t2b-*-seed*
@@ -341,7 +372,7 @@ jobs:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
           python -m pytest -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
-            tests/e2e/test_lifecycle.py
+            tests/e2e/test_lifecycle.py --junitxml="$RUNNER_TEMP/lifecycle.xml"
       - name: Summarize metrics and run times
         if: ${{ always() }}
         run: |
@@ -358,6 +389,7 @@ jobs:
         with:
           name: kumo-pytorch-t2b-predictions-and-metrics
           path: |
+            ${{ runner.temp }}/lifecycle.xml
             ${{ runner.temp }}/e2e/t2b/metrics.json
             ${{ runner.temp }}/e2e/t2b/*/*.json
             ${{ runner.temp }}/e2e/t2b/*/*.parquet

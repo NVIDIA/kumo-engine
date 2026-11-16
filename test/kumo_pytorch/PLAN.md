@@ -712,3 +712,19 @@ that run. No IAM changes or S3 publication are part of this implementation.
 Reference-engine performance comparison remains deferred per the earlier user
 instruction; native reports do not claim that comparison. Synthetic and weekly
 coverage also remain deferred. Benchmark completion is not claimed before CI.
+
+### CI fault-detection run
+
+The user authorized publishing this branch and dispatching the nightly, then
+requested removal of the decimal transport fix to verify failure detection.
+The fix is now removed while the decimal regression expectations remain. Tests
+that called the removed helper now exercise feature retrieval instead, so their
+failures concern decimal behavior rather than a missing private method. Local
+validation without the fix: nine decimal regressions failed and three unchanged
+array cases passed. These are intentional fault-detection results, not passes.
+
+AML correctness/model checks now run independently of lifecycle jobs. Tooling,
+package regressions, AML checks and lifecycle checks retain JUnit results alongside
+existing model-learning and benchmark reports. Review the complete run jointly;
+missing or skipped jobs are coverage gaps, not successes. Earlier passing evidence
+in this plan predates withdrawal of the decimal fix.
