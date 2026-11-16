@@ -244,7 +244,21 @@ jobs:
           python -m test.kumo_pytorch.benchmarking.suite \
             --config "$RUNNER_TEMP/aml-benchmark-cases.json" \
             --output "$RUNNER_TEMP/aml-benchmarks" --isolate-memory \
-            --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1
+            --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1 \
+            --memory-method sampled --memory-interval 0.01
+      - name: Validate sampled host memory on the GPU host
+        if: ${{ always() }}
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          subprocess.run([
+              'sudo', '--', sys.executable, '-m',
+              'test.kumo_pytorch.benchmarking.cgroup_run',
+              '--uid', str(os.getuid()), '--gid', str(os.getgid()), '--timeout', '60',
+              '--', sys.executable, '-m', 'test.kumo_pytorch.benchmarking.validate_memory',
+              '--method', 'sampled', '--output', os.environ['RUNNER_TEMP'] + '/sampled-memory-validation.json',
+          ], check=True)
+          PY
       - name: Show benchmark results
         if: ${{ always() }}
         run: |
@@ -257,6 +271,7 @@ jobs:
         with:
           name: kumo-pytorch-aml-benchmarks
           path: |
+            ${{ runner.temp }}/sampled-memory-validation.json
             ${{ runner.temp }}/aml-acquisition.json
             ${{ runner.temp }}/aml-benchmark-cases.json
             ${{ runner.temp }}/aml-benchmarks/**/*.json

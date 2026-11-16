@@ -92,6 +92,8 @@ def run_campaign(
     timeout=3600,
     isolate_memory=False,
     gpu_interval=0.1,
+    memory_method="kernel",
+    memory_interval=0.01,
 ):
     if (
         type(repetitions) is not int
@@ -102,6 +104,12 @@ def run_campaign(
         raise ValueError("Campaign requires at least two repetitions and one epoch")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Worker timeout must be positive")
+    if (
+        memory_method not in {"kernel", "sampled"}
+        or not math.isfinite(memory_interval)
+        or memory_interval <= 0
+    ):
+        raise ValueError("Valid memory method and positive interval required")
     if {"save_fitted_state", "load_fitted_state"} & config.keys():
         raise ValueError("Campaign owns fitted-state paths")
     output = Path(output).resolve()
@@ -117,6 +125,8 @@ def run_campaign(
             "isolate_memory": isolate_memory,
             "worker_timeout_seconds": timeout,
             "gpu_interval_seconds": gpu_interval,
+            "memory_method": memory_method,
+            "memory_interval_seconds": memory_interval,
         },
     )
     runs, comparisons = [], []
@@ -148,6 +158,10 @@ def run_campaign(
                 str(epochs),
                 "--gpu-interval",
                 str(gpu_interval),
+                "--memory-method",
+                memory_method,
+                "--memory-interval",
+                str(memory_interval),
             ]
             if isolate_memory:
                 command = [
@@ -298,6 +312,18 @@ def main(argv=None):
     parser.add_argument("--worker-timeout", type=float, default=3600)
     parser.add_argument("--isolate-memory", action="store_true")
     parser.add_argument("--gpu-interval", type=float, default=0.1)
+    parser.add_argument(
+        "--memory-method",
+        choices=("kernel", "sampled"),
+        default="kernel",
+        help="Kernel high-water peaks or explicitly labelled sampled cgroup maxima",
+    )
+    parser.add_argument(
+        "--memory-interval",
+        type=float,
+        default=0.01,
+        help="Seconds between sampled host-memory reads",
+    )
     args = parser.parse_args(argv)
     result = run_campaign(
         args.adapter,
@@ -309,6 +335,8 @@ def main(argv=None):
         timeout=args.worker_timeout,
         isolate_memory=args.isolate_memory,
         gpu_interval=args.gpu_interval,
+        memory_method=args.memory_method,
+        memory_interval=args.memory_interval,
     )
     print(f"{result['status']}: {args.output / 'report.md'}")
     return {"complete": 0, "failed": 1, "incomplete": 2}[result["status"]]

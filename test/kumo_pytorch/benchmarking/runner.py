@@ -293,6 +293,8 @@ def run(
     epochs=2,
     clock=time.monotonic_ns,
     memory_cgroup=None,
+    memory_method="kernel",
+    memory_interval=0.01,
     gpu_interval=1.0,
     warmup_batches=2,
     steady_min_batches=4,
@@ -317,6 +319,10 @@ def run(
         or gpu_interval <= 0
     ):
         raise ValueError("gpu_interval must be positive and finite")
+    if memory_method not in {"kernel", "sampled"}:
+        raise ValueError("memory_method must be kernel or sampled")
+    if not math.isfinite(memory_interval) or memory_interval <= 0:
+        raise ValueError("memory_interval must be positive and finite")
     output = Path(output)
     frozen = {
         "adapter_config": config,
@@ -325,6 +331,8 @@ def run(
         "runtime": _runtime(factory),
         "memory_cgroup": str(memory_cgroup) if memory_cgroup is not None else None,
         "gpu_interval_seconds": gpu_interval,
+        "memory_method": memory_method,
+        "memory_interval_seconds": memory_interval,
         "warmup_batches": warmup_batches,
         "steady_min_batches": steady_min_batches,
     }
@@ -334,14 +342,22 @@ def run(
     write_json(output / "config.json", frozen)
     identities, errors = {}, []
     with (output / "observations.jsonl").open("x") as stream:
-        from .memory import CgroupMemory
+        from .memory import CgroupMemory, SampledCgroupMemory
+
+        memory = (
+            (
+                SampledCgroupMemory(memory_cgroup, interval=memory_interval)
+                if memory_method == "sampled"
+                else CgroupMemory(memory_cgroup)
+            )
+            if memory_cgroup is not None
+            else None
+        )
 
         recorder = Recorder(
             stream,
             clock=clock,
-            observers=(CgroupMemory(memory_cgroup),)
-            if memory_cgroup is not None
-            else (),
+            observers=(memory,) if memory is not None else (),
         )
         for repetition in range(repetitions):
             workload = None

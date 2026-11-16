@@ -1,14 +1,26 @@
-"""Stage high-water accounting for a caller-provisioned Linux cgroup v2.
+"""Exact or explicitly sampled stage peaks for a dedicated Linux cgroup v2.
 
 See https://docs.kernel.org/admin-guide/cgroup-v2.html (memory.peak).
-Reset and read use the same descriptor. No groups, limits or memberships are
+Kernel reset and read use the same descriptor; sampled mode reads memory.current.
+No groups, limits or memberships are
 changed here. The supplied group must contain only this workload and children.
 """
 
+import itertools
+import math
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+
+def _stage(operation):
+    if operation in {"iterator.startup", "batch.request"}:
+        return "batch_production"
+    if operation in {"ingestion", "materialization"}:
+        return operation
+    return None
 
 
 def _is_child(pid, root):
@@ -49,13 +61,7 @@ class CgroupMemory:
 
     @contextmanager
     def stage(self, operation, recorder):
-        stage = (
-            "batch_production"
-            if operation in {"iterator.startup", "batch.request"}
-            else operation
-            if operation in {"ingestion", "materialization"}
-            else None
-        )
+        stage = _stage(operation)
         if stage is None:
             yield
             return
@@ -110,3 +116,125 @@ class CgroupMemory:
                 )
             else:
                 recorder.measure(metric, value, **details)
+
+
+class SampledCgroupMemory(CgroupMemory):
+    """Explicit sampled maxima, including native/descendant cgroup charges.
+
+    Reads memory.current only; never resets or substitutes lifetime peaks.
+    Boundary reads and periodic reads are retained, including sampling gaps.
+    """
+
+    def __init__(self, path, *, interval=0.01, max_samples=100000):
+        super().__init__(path)
+        if not math.isfinite(interval) or interval <= 0 or max_samples < 2:
+            raise ValueError(
+                "Positive memory interval and at least two samples required"
+            )
+        self.interval = interval
+        self.max_samples = max_samples
+
+    def _read_current(self):
+        value = int((self.path / "memory.current").read_text())
+        if value < 0:
+            raise ValueError("Negative memory.current reading")
+        return value
+
+    @contextmanager
+    def stage(self, operation, recorder):
+        stage = _stage(operation)
+        if stage is None:
+            yield
+            return
+        samples, failures = [], []
+        stop = threading.Event()
+        thread = None
+        boundaries = {}
+
+        def sample(kind):
+            try:
+                if len(samples) >= self.max_samples:
+                    raise RuntimeError("Host-memory sample capacity exceeded")
+                start = recorder.clock()
+                value = self._read_current()
+                samples.append(
+                    {
+                        "start_ns": start,
+                        "end_ns": recorder.clock(),
+                        "value": value,
+                        "kind": kind,
+                    }
+                )
+                return True
+            except (OSError, ValueError, RuntimeError) as error:
+                failures.append(f"{type(error).__name__}: {error}")
+                return False
+
+        def poll():
+            while not stop.wait(self.interval):
+                if not sample("periodic"):
+                    return
+
+        try:
+            self.validate()
+            if sample("start_boundary"):
+                thread = threading.Thread(target=poll, daemon=True)
+                thread.start()
+        except (OSError, ValueError, RuntimeError) as error:
+            failures.append(f"{type(error).__name__}: {error}")
+        completed = False
+        try:
+            yield boundaries
+            completed = True
+        finally:
+            stop.set()
+            if thread is not None and thread.ident is not None:
+                thread.join()
+            if not failures:
+                sample("end_boundary")
+                try:
+                    self.validate()
+                except (OSError, ValueError, RuntimeError) as error:
+                    failures.append(f"{type(error).__name__}: {error}")
+            details = {
+                "method": "sampled_cgroup_v2_memory_current",
+                "precision": "sampled_maximum_not_kernel_high_water_mark",
+                "limitations": "Allocations between samples may be missed; boundary reads include observation overhead",
+                "memory_scope": "cgroup_and_descendants_including_file_cache_and_kernel_charges",
+                "operation": operation,
+                "cgroup": str(self.path),
+                "sample_interval_seconds": self.interval,
+                "sample_count": len(samples),
+                "periodic_sample_count": sum(s["kind"] == "periodic" for s in samples),
+                "max_gap_ns": max(
+                    (
+                        b["start_ns"] - a["end_ns"]
+                        for a, b in itertools.pairwise(samples)
+                    ),
+                    default=0,
+                ),
+                "samples": samples,
+                "operation_boundaries": boundaries,
+                "completed_operation": completed,
+                "includes_live_allocations_and_observation_overhead": True,
+            }
+            if not completed:
+                recorder.measure(
+                    stage + ".peak_host_bytes",
+                    status="error",
+                    reason="Measured operation failed",
+                    **details,
+                )
+            elif failures:
+                recorder.measure(
+                    stage + ".peak_host_bytes",
+                    status="unavailable",
+                    reason="; ".join(failures),
+                    **details,
+                )
+            else:
+                recorder.measure(
+                    stage + ".peak_host_bytes",
+                    max(s["value"] for s in samples),
+                    **details,
+                )

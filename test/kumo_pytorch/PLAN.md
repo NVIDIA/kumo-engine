@@ -846,3 +846,17 @@ requirement remain unchanged. No delay or synthetic samples are added.
 The earlier 64-anchor results remain historical evidence. Live validation of
 the larger selection is pending; the host-kernel peak limitation and exposed
 decimal defect remain separate failures.
+
+### Explicit sampled host-memory follow-up
+
+The user selected labelled sampled peaks to support the existing GPU host.
+The general benchmark interface now accepts an explicit memory method and
+interval. Kernel mode retains its exact reset/read behavior; the nightly selects
+sampled cgroup memory at 10 ms. Both methods include native allocations and
+worker descendants. Sampled reports retain raw reads, stage boundaries, sample
+counts and gaps, and label between-sample peaks as potentially missed.
+This is a deliberate measurement-precision choice, not an automatic fallback.
+The GPU job validates held parent/child allocations and independent stage
+measurements on the same host. No host upgrade or runner administration is
+required. Local harness validation: 101 passed, zero failures/skips. Live GPU
+sampling and sampled-memory validation remain pending on the new candidate.

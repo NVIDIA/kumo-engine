@@ -81,6 +81,18 @@ def main(argv=None):
     parser.add_argument("--worker-timeout", type=float, default=3600)
     parser.add_argument("--isolate-memory", action="store_true")
     parser.add_argument("--gpu-interval", type=float, default=0.1)
+    parser.add_argument(
+        "--memory-method",
+        choices=("kernel", "sampled"),
+        default="kernel",
+        help="Kernel high-water peaks or explicitly labelled sampled cgroup maxima",
+    )
+    parser.add_argument(
+        "--memory-interval",
+        type=float,
+        default=0.01,
+        help="Seconds between sampled host-memory reads",
+    )
     args = parser.parse_args(argv)
     result = run_suite(
         json.loads(args.config.read_text()),
@@ -90,6 +102,8 @@ def main(argv=None):
         timeout=args.worker_timeout,
         isolate_memory=args.isolate_memory,
         gpu_interval=args.gpu_interval,
+        memory_method=args.memory_method,
+        memory_interval=args.memory_interval,
         compare_fitting=True,
     )
     print(f"{result['status']}: {args.output / 'report.md'}")

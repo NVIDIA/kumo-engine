@@ -250,7 +250,7 @@ cgroup v2 containing the benchmark and its children. It checks membership and
 rejects unrelated live processes. It does not create groups, move processes,
 change limits or clear caches. Provision the dedicated group outside the runner.
 
-The collector resets and reads `memory.peak` through the same open descriptor,
+The default `--memory-method kernel` resets and reads `memory.peak` through the same open descriptor,
 following the [kernel contract](https://docs.kernel.org/admin-guide/cgroup-v2.html).
 This measures memory-controller charges for the workload and descendant groups,
 including file cache and kernel charges; it is not RSS. Live allocations at reset
@@ -259,9 +259,9 @@ and scope. Ingestion and materialization have separate intervals; batch producti
 retains iterator/request interval peaks, whose maximum is reported separately
 from training. It never sums independent process peaks.
 
-Failed/reset-denied/unsupported collection produces explicit unavailable/error
-measurements, leaving required coverage incomplete. There is no sampled-RSS
-fallback labelled as a peak. Tests cover descriptor/control-flow behavior and
+Failed/reset-denied/unsupported kernel collection produces explicit unavailable/error
+measurements, leaving required coverage incomplete. It never silently falls back
+to sampling. Tests cover descriptor/control-flow behavior and
 the real Linux validator checks transient parent allocations, independent stage
 resets and allocations from children that exit before the stage ends:
 
@@ -285,7 +285,7 @@ limits. Timeout cleanup kills only that worker’s descendants and removes its
 group. The [isolation validator](../benchmarking/validate_isolation.py) passed
 on Linux with an unprivileged worker, complete benchmark stages, two epochs,
 transient children and timeout cleanup. The nightly repeats this validation.
-Process RSS sampling cannot substitute for peaks. Container validation is collector evidence,
+Container validation is collector evidence,
 not a workload benchmark or a requirement to execute on a developer's machine.
 
 The real RTX campaign host reported Linux `6.8.0-147-generic`. Its
@@ -294,8 +294,34 @@ so all three host-stage peak measurements were unavailable despite successful
 worker cgroup creation. The collector requires the
 [per-descriptor reset interface documented in Linux 6.12](https://docs.kernel.org/6.12/admin-guide/cgroup-v2.html)
 or a compatible backport, plus delegated write access. A newer container image
-does not change the host kernel. Provision a compatible GPU runner and rerun
-the collector and campaigns; do not substitute lifetime peaks for stage peaks.
+does not change the host kernel. This requirement applies to exact kernel
+peaks; the nightly now explicitly selects sampled peaks as described below.
+
+
+### Explicit sampled host peaks
+
+The nightly uses `--memory-method sampled --memory-interval 0.01`, following the
+user-approved sampled-peak approach. This reads `memory.current` for the isolated
+worker cgroup, including descendants, native allocations, file-cache and kernel
+charges. Its scope differs from Arena's summed process RSS; it does not double
+count shared pages by summing process RSS. No kernel reset is needed.
+
+Each ingestion, materialization and iterator/request interval gets independent
+boundary and periodic reads. Reports label the maximum **sampled**, not an exact
+kernel high-water mark, and retain the interval, sample count, largest gap, stage
+boundaries and raw readings. Allocations between reads can be missed; short
+stages may have boundary samples only. Boundary reads include observation
+overhead. The method is saved in every worker/campaign configuration; changing
+it changes the measurement semantics and should not be treated as a performance
+change in the package. Read errors, sample-capacity overflow and failed stages
+remain unavailable/errors and fail coverage.
+
+The GPU campaign job also runs the memory validator in a separate worker cgroup
+on that same host. Sampled validation holds allocations for 0.1 seconds to check
+that the sampler captures parent and child allocations and starts a new peak
+for each stage. It does not claim to validate between-sample spikes. The artifact
+includes `sampled-memory-validation.json`. The separate exact-peak Linux tests
+remain enabled on their compatible runner.
 
 ## GPU collection and nightly runner
 

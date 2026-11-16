@@ -36,6 +36,18 @@ def main(argv=None):
         default=os.environ.get("KUMO_BENCHMARK_CGROUP"),
         help="Existing Linux cgroup v2 containing only this workload and children",
     )
+    parser.add_argument(
+        "--memory-method",
+        choices=("kernel", "sampled"),
+        default="kernel",
+        help="Kernel high-water peaks or explicitly labelled sampled cgroup maxima",
+    )
+    parser.add_argument(
+        "--memory-interval",
+        type=float,
+        default=0.01,
+        help="Seconds between sampled host-memory reads",
+    )
     args = parser.parse_args(argv)
     module, separator, name = args.adapter.partition(":")
     if not separator or not module or not name:
@@ -49,6 +61,8 @@ def main(argv=None):
         epochs=args.epochs,
         memory_cgroup=args.memory_cgroup,
         gpu_interval=args.gpu_interval,
+        memory_method=args.memory_method,
+        memory_interval=args.memory_interval,
         warmup_batches=args.warmup_batches,
         steady_min_batches=args.steady_min_batches,
     )

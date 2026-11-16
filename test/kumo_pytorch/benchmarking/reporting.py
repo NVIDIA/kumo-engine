@@ -235,6 +235,64 @@ def report(directory, config, identities, errors):
             )
         ]
         lines.append("| " + " | ".join(_text(v) for v in cells) + " |")
+    memory_rows = [
+        row
+        for name, rows in observations.items()
+        if name.endswith(".peak_host_bytes")
+        for row in rows
+    ]
+    if memory_rows:
+        lines += [
+            "",
+            "## Host-memory measurement method",
+            "",
+            "Peaks include native allocations, descendants, file-cache and kernel charges; they are not RSS.",
+            "",
+            "| Method | Precision | Interval (s) | Samples | Largest gap (ns) |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for method in sorted(
+            {row["details"].get("method", "unspecified") for row in memory_rows}
+        ):
+            rows = [
+                row
+                for row in memory_rows
+                if row["details"].get("method", "unspecified") == method
+            ]
+            sampled = method == "sampled_cgroup_v2_memory_current"
+            lines.append(
+                "| "
+                + " | ".join(
+                    _text(v)
+                    for v in (
+                        method,
+                        "Sampled maximum; between-sample peaks may be missed"
+                        if sampled
+                        else "Kernel high-water mark"
+                        if method == "cgroup_v2_memory_peak_same_fd_reset"
+                        else "unspecified",
+                        sorted(
+                            {
+                                row["details"].get("sample_interval_seconds")
+                                for row in rows
+                            }
+                        )
+                        if sampled
+                        else "not applicable",
+                        sum(row["details"].get("sample_count", 0) for row in rows)
+                        if sampled
+                        else "not applicable",
+                        max(row["details"].get("max_gap_ns", 0) for row in rows)
+                        if sampled
+                        else "not applicable",
+                    )
+                )
+                + " |"
+            )
+        lines += [
+            "",
+            "Raw observations retain stage boundaries and individual samples. Boundary reads include observation overhead; short stages may have boundary reads only.",
+        ]
     lines += [
         "",
         "## All required measurements",

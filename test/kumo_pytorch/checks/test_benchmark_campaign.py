@@ -8,13 +8,16 @@ import pytest
 from test.kumo_pytorch.benchmarking.campaign import run_campaign
 
 
-def test_fresh_processes_retain_incomplete_coverage(tmp_path):
+@pytest.mark.parametrize("memory_method", ("kernel", "sampled"))
+def test_fresh_processes_retain_incomplete_coverage(tmp_path, memory_method):
     result = run_campaign(
         "test.kumo_pytorch.checks.test_benchmark:tabular",
         {},
         tmp_path / "runs",
         repetitions=2,
         epochs=2,
+        memory_method=memory_method,
+        memory_interval=0.02,
     )
     assert result["status"] == "incomplete"
     assert result["independent_repeated_runs"] == "measured"
@@ -23,6 +26,8 @@ def test_fresh_processes_retain_incomplete_coverage(tmp_path):
         directory = tmp_path / "runs" / row["name"]
         config = json.loads((directory / "config.json").read_text())
         assert config["runtime"]["pid"] == row["pid"] != os.getpid()
+        assert config["memory_method"] == memory_method
+        assert config["memory_interval_seconds"] == 0.02
         assert row["exit_code"] == 2
         assert row["execution_completed"]
 

@@ -2,10 +2,11 @@
 
 import io
 import json
+import threading
 
 import pytest
 
-from test.kumo_pytorch.benchmarking.memory import CgroupMemory
+from test.kumo_pytorch.benchmarking.memory import CgroupMemory, SampledCgroupMemory
 from test.kumo_pytorch.benchmarking.recording import Recorder
 
 
@@ -132,3 +133,107 @@ def test_deferral_preserves_failure_evidence():
     assert json.loads(stream.getvalue())["status"] == "error"
     assert recorder.pending == []
     assert recorder.deferral == 0
+
+
+def test_sampled_peak_captures_interior_read_and_resets_between_stages(
+    monkeypatch, tmp_path
+):
+    seen = threading.Event()
+    main = threading.current_thread()
+    current = [10]
+
+    def read(self):
+        value = current[0]
+        if threading.current_thread() is not main and value == 1000:
+            seen.set()
+        return value
+
+    monkeypatch.setattr(CgroupMemory, "validate", lambda self: None)
+    monkeypatch.setattr(SampledCgroupMemory, "_read_current", read)
+    collector = SampledCgroupMemory(tmp_path, interval=0.001)
+    stream = io.StringIO()
+    recorder = Recorder(stream, observers=(collector,))
+    with recorder.span("ingestion"):
+        current[0] = 1000
+        assert seen.wait(2), "Sampler did not observe the held allocation"
+        current[0] = 10
+    with recorder.span("materialization"):
+        pass
+    rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+    peaks = [row for row in rows if row["metric"].endswith(".peak_host_bytes")]
+    assert [row["value"] for row in peaks] == [1000, 10]
+    first = peaks[0]["details"]
+    assert first["method"] == "sampled_cgroup_v2_memory_current"
+    assert first["precision"] == "sampled_maximum_not_kernel_high_water_mark"
+    assert first["periodic_sample_count"] >= 1
+    assert first["samples"][0]["value"] == first["samples"][-1]["value"] == 10
+    assert first["operation_boundaries"]["outcome"] == "completed"
+    assert peaks[1]["details"]["sample_count"] >= 2
+
+
+@pytest.mark.parametrize("failure", ("read", "capacity", "operation"))
+def test_sampled_failure_never_becomes_a_successful_peak(
+    monkeypatch, tmp_path, failure
+):
+    monkeypatch.setattr(CgroupMemory, "validate", lambda self: None)
+
+    def read(self):
+        if failure == "read":
+            raise PermissionError("denied")
+        return 10
+
+    monkeypatch.setattr(SampledCgroupMemory, "_read_current", read)
+    collector = SampledCgroupMemory(tmp_path)
+    stream = io.StringIO()
+    recorder = Recorder(stream, observers=(collector,))
+    if failure == "operation":
+        with pytest.raises(ValueError, match="original"), recorder.span("ingestion"):
+            raise ValueError("original")
+    else:
+        with recorder.span("ingestion"):
+            if failure == "capacity":
+                collector.max_samples = 1
+    rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+    row = next(row for row in rows if row["metric"] == "ingestion.peak_host_bytes")
+    assert row["status"] == ("error" if failure == "operation" else "unavailable")
+    assert row["value"] is None
+
+
+def test_sampled_method_is_visible_in_report_and_configuration(monkeypatch, tmp_path):
+    from test.kumo_pytorch.benchmarking import BatchCounts, Workload, run
+
+    monkeypatch.setattr(CgroupMemory, "validate", lambda self: None)
+    monkeypatch.setattr(SampledCgroupMemory, "_read_current", lambda self: 8192)
+
+    def factory(config, workdir):
+        def prepare(recorder):
+            with recorder.span("ingestion"):
+                pass
+
+        return Workload(
+            identity={"dataset": "fixture", "workload": "sampling"},
+            prepare=prepare,
+            batches=lambda epoch: iter([1]),
+            count=lambda batch: BatchCounts(1, 0),
+        )
+
+    output = tmp_path / "run"
+    result = run(
+        factory,
+        {},
+        output,
+        repetitions=1,
+        epochs=1,
+        memory_cgroup=tmp_path,
+        memory_method="sampled",
+        memory_interval=0.005,
+    )
+    assert result["measurements"]["ingestion.peak_host_bytes"][0]["value"] == 8192
+    assert (
+        "Sampled maximum; between-sample peaks may be missed"
+        in (output / "report.md").read_text()
+    )
+    assert (
+        json.loads((output / "config.json").read_text())["memory_interval_seconds"]
+        == 0.005
+    )
