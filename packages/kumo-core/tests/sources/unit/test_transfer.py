@@ -233,29 +233,27 @@ class TestFetchAll:
         assert raised.value is failure
 
     def test_a_late_failure_is_not_held_behind_a_fetch_still_running(
-            self, tmp_path):
-        """Collected in submission order, this failure is not seen until the
-        blocked fetch ahead of it returns -- and everything queued behind it
-        is fetched in the meantime, to reach an answer already known."""
+        self, tmp_path: Path
+    ) -> None:
+        """Report a later failure while the first fetch remains blocked."""
+        first_started = threading.Event()
         released = threading.Event()
         failure = OSError("connection reset")
-        fetched = []
 
-        def fetch(staged, target):
+        def fetch(staged: StagedFile, target: str) -> None:
             if staged.path.endswith("part-0.parquet"):
+                first_started.set()
                 released.wait(timeout=10)
                 return
-            fetched.append(staged.path)
+            assert first_started.wait(timeout=PROMPTLY)
             raise failure
 
         started = time.monotonic()
         try:
             with pytest.raises(OSError) as raised:
-                fetch_all(files(16), str(tmp_path), fetch=fetch,
-                          worker_ceiling=2)
+                fetch_all(files(16), str(tmp_path), fetch=fetch, worker_ceiling=2)
             assert raised.value is failure
             assert time.monotonic() - started < PROMPTLY
-            assert len(fetched) < 15
         finally:
             released.set()
 

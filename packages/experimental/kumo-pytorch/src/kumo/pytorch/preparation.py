@@ -277,7 +277,16 @@ class Plan:
             directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
             try:
                 values = materialize_values(
-                    self, anchors, Path(directory.name) / "values", inference=inference
+                    self,
+                    anchors,
+                    Path(directory.name) / "values",
+                    inference=inference,
+                    stats_split=self._fit_selection(
+                        split_selection(fit_split), anchors.split is not None
+                    )
+                    if not inference
+                    and (fitted is None or not fitted.has_targets and self.contract.batch.targets)
+                    else None,
                 )
                 anchors = values.anchors
             except BaseException:
@@ -337,8 +346,14 @@ class Plan:
                 }
             pinned, statistics = (
                 ({}, {})
-                if input_state is not None
-                else self._pinned_from_stats(source, fitting, cutoff)
+                if input_state is not None and target_encoders is not None
+                else self._pinned_from_stats(
+                    source,
+                    fitting,
+                    cutoff,
+                    exclude=() if input_state is None else input_state.encoders,
+                    chosen=chosen,
+                )
             )
             reused = {} if fitted is None else fitted.fit
             fit = {
@@ -361,17 +376,33 @@ class Plan:
                 pinned=pinned,
             )
             token_lengths = getattr(source, "token_lengths", None)
-            if token_lengths is not None and input_state is None:
+            if token_lengths is not None and self.contract.batch.batching.length_input is not None:
+                previous = (fit.get("inputs") or {}).get("statistics") or {}
+                length_cutoff = statistics.get("cutoff", previous.get("cutoff"))
                 lengths = {}
                 columns = token_length_columns(self.contract, assembler)
-                for table, (constant, text) in columns.items():
-                    file = token_lengths(table, text, statistics.get("cutoff")) if text else None
+                for table, (constant, per_node, required) in columns.items():
+                    file = (
+                        token_lengths(table, per_node, required, length_cutoff)
+                        if per_node or required
+                        else None
+                    )
                     lengths[table] = {"constant": constant, "file": file}
                 if lengths:
                     fit["inputs"] = {
-                        **fit["inputs"],
-                        "statistics": {"cutoff": None, **statistics, "token_lengths": lengths},
+                        **(fit.get("inputs") or {}),
+                        "statistics": {
+                            "cutoff": None,
+                            **previous,
+                            **statistics,
+                            "token_lengths": lengths,
+                        },
                     }
+            bind_lengths = getattr(task_anchors, "bind_token_lengths", None)
+            if bind_lengths is not None:
+                bind_lengths(
+                    assembler, self.contract, (fit.get("inputs") or {}).get("statistics") or {}
+                )
         except BaseException:
             task_anchors.close()
             raise
@@ -390,12 +421,26 @@ class Plan:
         source: SampleSource,
         fitting: Sequence[SampleRequest] | _Mapped,
         cutoff: int | None | _LatestAnchor,
+        *,
+        exclude=(),
+        chosen=None,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
         column_text = getattr(source, "column_text", None)
+        materialized = getattr(source, "_materialized_values", None)
+        candidates = (
+            materialized.encoder_columns(self.contract)
+            if materialized is not None and materialized.feature_stats
+            else table_column_encoders(self.contract)
+        )
+        if materialized is not None and materialized.feature_stats:
+            expected = describe_selection(chosen)
+            if materialized.feature_stats["fit_split"] != expected:
+                raise ValueError("materialized statistics belong to a different fit split")
         encoders = {
             identity: encoder
-            for identity, encoder in table_column_encoders(self.contract).items()
+            for identity, encoder in candidates.items()
+            if identity not in exclude
             if (column_text if isinstance(encoder.config, Text) else column_stats) is not None
         }
         if not encoders or not fitting:
@@ -428,7 +473,7 @@ class Plan:
                     tokenizer_json=tokenizer,
                 )
                 files.extend([path] if path else [])
-            else:
+            elif stats is not None and all(item in stats.columns for item in encoder.requests):
                 pinned[identity] = fit_from_stats(identity, encoder, stats)
         logger.info(
             "pinned %d encoders from DiskGraph column statistics (cutoff %s) in %.2fs",
@@ -438,16 +483,24 @@ class Plan:
         )
         return pinned, {"cutoff": cutoff, "col_stats": files}
 
-    def _materialize_values(self, anchors: AnchorTable, destination, *, batch_size: int = 1024):
+    def _materialize_values(
+        self, anchors: AnchorTable, destination, *, batch_size: int = 1024, stats_split=None
+    ):
         """Compute scalar features/targets once, separately from binding/fitting.
 
         The output is bounded-batch Parquet. Reuse it with
         ``plan.materialize(values.anchors, ...)``; event histories
         still load online, while fitting and later epochs reuse scalar values.
+
+        ``stats_split`` optionally selects training anchors for feature/label
+        statistics using the shared DiskGraph collectors. This computes fitting
+        inputs, not fitted encoders, and does not fetch event histories.
         """
         from kumo.pytorch.aggregate_materialization import materialize_values
 
-        return materialize_values(self, anchors, destination, batch_size=batch_size)
+        return materialize_values(
+            self, anchors, destination, batch_size=batch_size, stats_split=stats_split
+        )
 
     @staticmethod
     def _fit_selection(selection: SplitSelection | None, declares_splits: bool) -> SplitSelection:

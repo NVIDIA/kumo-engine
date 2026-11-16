@@ -288,9 +288,25 @@ is shuffled independently; batches never mix split stages. The output covers the
 same anchors, while its order differs from the previous global Python shuffle.
 Encoder fitting remains a separate stage and is not made streaming here.
 
+The native model path avoids rebuilding a `SampleRequest` for each anchor.
+Initial entity-key normalization still runs in Python, and nested list/struct
+metadata uses per-row Arrow IPC serialization and decoding because RowPack has
+no corresponding scalar. This is not a guarantee of zero per-row Python work.
+Native chronological event merging requires timed components; an untimed merge
+is rejected when history is attached, before the iterator consumes any batches.
+
 Task extensions use the existing `train_tables` directory inside the graph index,
 including on Windows. They require no symlinks. Closing a task releases its
 combined reader before removing its task files.
+
+Kumo-pytorch cutoffs round downward on every graph clock, preserving the
+no-future-event boundary before 1970; stored datetimes round upward to their declared tick. Plain integer
+anchors remain epoch seconds even on an ms/us/ns index. Use a datetime or typed
+Arrow timestamp for an epoch-ms/us/ns anchor. Every frame in one temporal query
+must agree on its cutoff unit (an omitted unit means seconds). Declared timestamp
+fields retain their s/ms/us/ns precision through fitting, native model batches,
+and artifact reload. Inspectable values finer than Python datetime's microsecond
+resolution remain Arrow timestamp scalars; pandas is not required.
 
 ### Scalar features and labels in task preparation
 
