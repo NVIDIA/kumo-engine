@@ -41,6 +41,14 @@ export const mockProjectsData: ProjectDBEntry[] = [
     }
 ];
 
+export const mockArchivedProject: ProjectDBEntry = {
+    ...mockProjectsData[0],
+    id: "project_0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    slug: "legacy",
+    display_name: "Legacy Archived",
+    status: "archived"
+};
+
 let projectsResponseType = "";
 
 export const mockProjectsByGroupResponse = (): Promise<
@@ -54,6 +62,14 @@ export const mockProjectsByGroupResponse = (): Promise<
     if (projectsResponseType === testResponseType.EMPTY) {
         return Promise.resolve(
             createMockResponse([]) as unknown as AxiosResponse<ProjectDBEntry[]>
+        );
+    }
+    if (projectsResponseType === testResponseType.ARCHIVED) {
+        return Promise.resolve(
+            createMockResponse([
+                ...mockProjectsData,
+                mockArchivedProject
+            ]) as unknown as AxiosResponse<ProjectDBEntry[]>
         );
     }
     return Promise.resolve(

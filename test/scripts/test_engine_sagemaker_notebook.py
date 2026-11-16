@@ -343,6 +343,7 @@ def test_sdk_compiles_actual_scoped_notebook_training_job(
                 attempt='123456abcdef', source_commit='a' * 40)
     client.submit(notebook, init, spec, tmp_path, 1)
     definition = json.loads((tmp_path / 'pipeline-definition.json').read_text())
+    assert definition['PipelineExperimentConfig'] is None
     request = definition['Steps'][0]['Arguments']
     assert request['TrainingJobName'] == name
     assert request['RoleArn'] == config['execution_role']
@@ -1542,3 +1543,48 @@ def test_phase_caps_are_retained_within_shared_work_deadline(tmp_path, monkeypat
     eval(compiled, scope)
     assert timeouts == [900, 200]
     assert budget.WORK_SECONDS == 3000
+
+
+@pytest.mark.parametrize('fault', ['slow_chunks', 'socket_timeout'])
+def test_bootstrap_downloads_cannot_consume_work_reserve(
+        monkeypatch, tmp_path, fault):
+    spec = importlib.util.spec_from_file_location('bootstrap_under_test',
+                                                  HERE / 'bootstrap.py')
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    monkeypatch.setattr(bootstrap.platform, 'machine', lambda: 'x86_64')
+    monkeypatch.setattr(bootstrap.platform, 'libc_ver', lambda:
+                        ('glibc', '2.35'))
+    monkeypatch.setattr(bootstrap, 'Path', lambda _: tmp_path / 'runtime')
+    clock = [0]
+    monkeypatch.setattr(bootstrap.time, 'monotonic', lambda: clock[0])
+    session = Mock()
+    sts, s3, body = Mock(), Mock(), Mock()
+    sts.get_caller_identity.return_value = dict(
+        Account='123456789012',
+        Arn='arn:aws:sts::123456789012:assumed-role/test-role/session')
+    session.client.side_effect = lambda service, **kwargs: sts if service == 'sts' else s3
+    s3.get_object.return_value = {'Body': body}
+
+    def read(_):
+        if fault == 'socket_timeout':
+            raise TimeoutError('socket timeout')
+        clock[0] = 301
+        return b'late chunk'
+
+    body.read.side_effect = read
+    config = dict(
+        region='us-west-2',
+        execution_role='arn:aws:iam::123456789012:role/test-role',
+        account='123456789012', attempt='a' * 12,
+        assets={'candidate.whl': {
+            'bucket': 'test',
+            'key': 'candidate'
+        }})
+    with pytest.raises(TimeoutError, match='socket timeout|download budget'):
+        bootstrap.prepare(config, session=session)
+    body.set_socket_timeout.assert_called_once_with(30)
+    body.close.assert_called_once()
+    options = session.client.call_args.kwargs['config']
+    assert options.connect_timeout == 10 and options.read_timeout == 30
+    assert options.retries == {'total_max_attempts': 1}

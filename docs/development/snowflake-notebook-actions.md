@@ -181,10 +181,10 @@ Saved-output rechecks cover retained rendering and exports, not live controls.
 
 In repository **Settings → Environments**, configure `snowflake-mlops-test`:
 
-1. Allow `main` under deployment branch rules. During PR validation, also allow
-   the exact trial branch; remove that rule after merging. Do not allow
-   wildcard branches or tags.
-2. Require `NVIDIA/kumo-engineers` as the only reviewer; disable admin bypass.
+1. Allow only `main` under deployment branch rules. Do not allow trial
+   branches, wildcard branches, or tags.
+2. Require `NVIDIA/kumo-engineers` as the only reviewer, enable
+   `prevent_self_review`, and disable administrator bypass.
 3. Add these environment secrets:
 
 | Secret | Value |
@@ -200,9 +200,8 @@ Browser artifacts require the current authenticated test page; session expiry
 suppresses captures. Raw browser errors and authentication URLs are not retained.
 
 Open **Actions → Snowflake notebook platform checks → Run workflow**, select
-`main` (or the explicitly allowed trial branch during PR validation),
-and choose `engine` or `graph-ui`. A maintainer
-must approve the environment before credentials are available. The workflow is
+`main`, and choose `engine` or `graph-ui`. A maintainer other than the
+person who started the run must approve the environment before credentials are available. The workflow is
 manual-only. Lifecycle UI verification is currently a separate local command.
 
 ## Results
@@ -262,9 +261,9 @@ Keep notebook credentials separate from ordinary pull-request Snowflake CI.
 The existing workflow uses `SNOWFLAKE_CI_USER`/`SNOWFLAKE_CI_PRIVATE_KEY` in a
 different environment; do not give that user the notebook role or grants.
 
-Before merging, enable `prevent_self_review` in every platform test environment.
-The shared guard enforces independent approval on `main`; explicitly allowlisted
-trial branches temporarily permit maintainer self-approval.
+The Snowflake guard requires independent maintainer approval and a main-only
+deployment allowlist. It rejects feature-branch dispatches before reading
+environment settings or accessing platform credentials.
 After an interrupted engine step, Actions attempts bounded recovery of the owned
 query, Code Bundle and submission prefix. Atomic local journals distinguish
 completed bundle creation from execution intent. Before any CREATE intent, or

@@ -1,6 +1,7 @@
 # SageMaker notebook platform tests
 
-The runner submits a SageMaker `NotebookJobStep` in a Pipeline. SageMaker runs
+The runner submits a SageMaker `NotebookJobStep` in a Pipeline with automatic
+SageMaker Experiments creation disabled; lifecycle evidence uses MLflow. SageMaker runs
 the notebook as a managed training job; the runner collects its executed
 notebook, evidence files, and browser results. Local and GitHub execution use
 the same entrypoint and resource configuration.
@@ -261,19 +262,23 @@ those product dependencies are not covered by the runner or kernel-tool hash loc
 `pip check` validates the installed closure, not its hashes.
 
 Notebook Jobs retain the installed 3,600-second limit. Bootstrap records one
-3,000-second work deadline shared by installation, kernel graph work and all
-lifecycle phases. Each installation retains its 1,200-second cap and each
+3,000-second work deadline shared by staging, installation, kernel graph work and all
+lifecycle phases. Asset downloads share a 300-second staging cap, use bounded
+connect/read timeouts and check remaining time between chunks. Each installation retains its 1,200-second cap and each
 lifecycle phase its 900-second cap, reduced when less work time remains.
 Subprocess limits are capped by the remaining budget; a kernel
 timer also interrupts work at that deadline. The timer is removed before the
 final evidence upload, reserving ten minutes of the job limit for publication
-and framework overhead. The controller allows 4,500 seconds; Actions allows 150
-minutes for managed UI checks and cleanup.
+and framework overhead. The controller allows 4,500 seconds from submission: the extra 900 seconds cover
+Pipeline scheduling, job startup and terminal-result propagation, rather than
+extending notebook execution. `Client.wait` enforces this deadline. Actions allows
+150 minutes for managed UI checks and cleanup.
 
 Native Studio save verification adds a unique markdown edit absent from the
 uploaded notebook, observes the dirty state, saves, and requires that edit after
 reopening in a fresh browser context.
 
 Before merging, enable `prevent_self_review` on the protected platform test
-environments. Trial branches permit maintainer self-approval; the shared guard
-requires independent approval for `main`.
+environment. The SageMaker-specific guard retains the explicitly allowlisted
+trial branch and requires independent approval for `main`; its `TODO(before merge)`
+marks the temporary exception. The shared Snowflake guard remains main-only.

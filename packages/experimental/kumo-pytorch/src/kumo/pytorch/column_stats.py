@@ -27,6 +27,7 @@ from kumo.pytorch.contract.batch import (
     EventSource,
     Fields,
     Graph,
+    Tokens,
     UseEncoding,
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, ScalarEncoding, Text, Vocabulary, ZScore
@@ -55,7 +56,6 @@ TOKEN_LENGTHS_RECIPE = 1
 QUANTILE_GRID = [index / 1024 for index in range(1025)]
 #: A key each semantic type's statistics add to a column's entry.
 _STAT_KEYS = {"categorical": "category_counts", "numerical": "mean"}
-_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 #: DiskGraph's statistics of a column with no rows.
 EMPTY_STATS = {
     "count": 0,
@@ -329,7 +329,9 @@ def _cutoff_dir(ticks: int | None, unit: str) -> str:
     return hashlib.sha256(json.dumps([COL_STATS_RECIPE, ticks, unit]).encode()).hexdigest()[:16]
 
 
-def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
+def table_column_encoders(
+    contract: Any, *, scalar_columns=None, target_columns=None
+) -> dict[str, TableColumnEncoder]:
     from kumo.pytorch.assembly import _encoder_identity, _graph_encoder_identity
 
     spec, sample, schema = contract.batch, contract.sample, contract.schema
@@ -361,17 +363,60 @@ def table_column_encoders(contract: Any) -> dict[str, TableColumnEncoder]:
         direct = isinstance(value.source, (EntitySource, EventSource, EventsOf))
         for use in value.representation.fields:
             variants = resolved_fields(contract, name, use.field)
-            columns = {_stored_column(sample, schema, variant) for variant, _, _ in variants}
+            columns = {
+                _stored_column(sample, schema, variant)
+                or (
+                    ("__materialized_anchors", scalar_columns[variant[1]])
+                    if scalar_columns and variant[0] == "entity" and variant[1] in scalar_columns
+                    else None
+                )
+                for variant, _, _ in variants
+            }
+            row = value.representation.row
+            if (
+                isinstance(row, Tokens)
+                and row.missing == "skip_event"
+                and any(
+                    item is not None and item[0] == "__materialized_anchors" for item in columns
+                )
+            ):
+                # Table-wide summaries do not encode the input's row eligibility.
+                columns = {None}
             add(
                 _encoder_identity(name, use),
                 use.encoding,
                 variants[0][1],
                 columns if direct and None not in columns else None,
             )
+    if target_columns:
+        from kumo.pytorch.assembly import _identity
+        from kumo.pytorch.contract.batch import LabelTarget
+        from kumo.pytorch.contract.batch.validation import target_dtype
+
+        input_identities = set(uses)
+        for name, target in sorted(spec.targets.items()):
+            if not isinstance(target, LabelTarget) or target.source not in target_columns:
+                continue
+            identity = (
+                _identity("shared", target.encoding.name)
+                if isinstance(target.encoding, UseEncoding)
+                else _identity("targets", name, "value")
+            )
+            if identity not in input_identities:
+                add(
+                    identity,
+                    target.encoding,
+                    target_dtype(contract, target.source),
+                    {("__materialized_anchors", target_columns[target.source])},
+                )
     return {
         identity: TableColumnEncoder(config, dtype, tuple(sorted(columns)))
         for identity, (config, dtype, columns) in sorted(uses.items())
-        if columns and learns_from_values(config, dtype)
+        if columns
+        and learns_from_values(config, dtype)
+        and not (
+            isinstance(config, Text) and any(t == "__materialized_anchors" for t, _ in columns)
+        )
     }
 
 
@@ -400,6 +445,10 @@ def cutoff_nanos(value: Any) -> int | None:
 
     if value is None:
         return None
+    import pyarrow as pa
+
+    if isinstance(value, pa.TimestampScalar):
+        return value.cast(pa.timestamp("ns", tz="UTC")).value
     if type(value) is int:
         return value * 10**9
     if isinstance(value, str):
@@ -500,8 +549,17 @@ def _category(dtype: DType, raw: Any, unit: str) -> Any:
         return dt.date(1970, 1, 1) + dt.timedelta(days=value)
     if dtype.name == "timestamp":
         import diskgraph
+        import pyarrow as pa
 
-        return _EPOCH + dt.timedelta(seconds=diskgraph.convert_ticks(value, unit, "seconds"))
+        arrow_unit = {
+            "seconds": "s",
+            "milliseconds": "ms",
+            "microseconds": "us",
+            "nanoseconds": "ns",
+        }.get(unit)
+        if arrow_unit is None:
+            value, arrow_unit = diskgraph.convert_ticks(value, unit, "seconds"), "s"
+        return pa.scalar(value, type=pa.timestamp(arrow_unit, tz="UTC"))
     return value
 
 

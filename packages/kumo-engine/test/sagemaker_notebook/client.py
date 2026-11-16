@@ -251,6 +251,7 @@ class Client:
             ])
         pipeline = Pipeline(
             name=spec['pipeline_name'], steps=[step], sagemaker_session=session,
+            pipeline_experiment_config=None,
             pipeline_definition_config=PipelineDefinitionConfig(
                 use_custom_job_prefix=True))
         definition = json.loads(pipeline.definition())

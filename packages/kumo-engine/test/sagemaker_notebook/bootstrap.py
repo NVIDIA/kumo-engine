@@ -33,13 +33,32 @@ def prepare(config, session=None):
     payload, evidence = root / 'payload', root / 'evidence'
     payload.mkdir()
     evidence.mkdir()
-    s3 = session.client('s3')
+    from botocore.config import Config
+
+    # Bound staging separately so it cannot consume the work/evidence reserve.
+    download_deadline = work_started + 300
+    s3 = session.client(
+        's3', config=Config(connect_timeout=10, read_timeout=30,
+                            retries={'total_max_attempts': 1}))
+
+    def download_remaining():
+        seconds = download_deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError('Notebook asset download budget exhausted')
+        return seconds
+
     for name, asset in config['assets'].items():
         target = payload / name
+        download_remaining()
         body = s3.get_object(Bucket=asset['bucket'], Key=asset['key'])['Body']
         try:
             with target.open('wb') as stream:
-                while chunk := body.read(8 << 20):
+                while True:
+                    body.set_socket_timeout(min(30, download_remaining()))
+                    chunk = body.read(8 << 20)
+                    download_remaining()
+                    if not chunk:
+                        break
                     stream.write(chunk)
         finally:
             body.close()
