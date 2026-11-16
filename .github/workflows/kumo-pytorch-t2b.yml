@@ -335,7 +335,7 @@ jobs:
           retention-days: 14
 
   package-regressions:
-    name: PyTorch nightly existing package tests
+    name: Kumo PyTorch package correctness and regression tests
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
