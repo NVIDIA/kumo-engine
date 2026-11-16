@@ -74,6 +74,7 @@ class TaskBatches(Iterator[Batch]):
             raise ValueError("prefetch_batches must be a nonnegative integer")
         self._prefetch_batches = prefetch_batches
         self._closed = False
+        self._close_complete = False
         self._finalizer = None
 
     def __iter__(self) -> TaskBatches:
@@ -107,16 +108,20 @@ class TaskBatches(Iterator[Batch]):
 
         Use as a context manager when stopping an epoch early. A native call
         already in progress finishes before its resources can be released.
+        If waiting is interrupted, call close again to finish cleanup.
         """
-        if self._closed:
+        if self._close_complete:
             return
         self._closed = True
-        if self._finalizer is not None:
-            self._finalizer()
-        elif self._iterator is not None and callable(
+        if self._iterator is not None and callable(
             close := getattr(self._iterator, "close", None)
         ):
             close()
+        # Explicit cleanup must remain retryable; invoking the one-shot
+        # finalizer would disarm it even if the producer's join is interrupted.
+        if self._finalizer is not None:
+            self._finalizer.detach()
+        self._close_complete = True
 
     def __enter__(self) -> TaskBatches:
         return self

@@ -101,6 +101,10 @@ class PrefetchIterator(Iterator[T]):
             self._condition.notify_all()
         if threading.current_thread() is not self._thread:
             self._thread.join()
+            # An interrupted join can mark a thread stopped before it exits
+            # on some Python versions. Confirm producer cleanup independently.
+            with self._condition:
+                self._condition.wait_for(lambda: self._done)
         with self._condition:
             self._ready.clear()
             self._error = None

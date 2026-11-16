@@ -496,6 +496,7 @@ Stop iteration and wait for in-flight batch preparation to finish.
 
 Use as a context manager when stopping an epoch early. A native call
 already in progress finishes before its resources can be released.
+If waiting is interrupted, call close again to finish cleanup.
 
 #### `TaskBatches.state_dict`
 

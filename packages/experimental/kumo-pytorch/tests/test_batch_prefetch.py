@@ -297,6 +297,135 @@ def test_task_close_stops_prefetch_before_closing_anchors():
         assert list(iterator) == []
 
 
+@pytest.mark.parametrize("interrupted_owner", ["batches", "task", "plan"])
+@pytest.mark.parametrize("retry_owner", ["batches", "task", "plan"])
+def test_interrupted_close_waits_for_producer_before_releasing_resources(
+    monkeypatch, interrupted_owner, retry_owner
+):
+    plan = api.prepare(_contract(), DATASET, api.InMemoryEngine())
+    task = plan.materialize(_table(), fit_split="train")
+    preparing, release, finished = threading.Event(), threading.Event(), threading.Event()
+    events = []
+    produce = task._anchor_batches
+
+    def blocked_produce(*args, **kwargs):
+        producer = produce(*args, **kwargs)
+        try:
+            yield next(producer)
+            preparing.set()
+            assert release.wait(5), "producer was not released"
+            yield next(producer)
+        finally:
+            producer.close()
+            events.append("producer")
+            finished.set()
+
+    monkeypatch.setattr(task, "_anchor_batches", blocked_produce)
+    iterator = task.batches(batch_size=1, prefetch_batches=1)
+    owners = {"batches": iterator, "task": task, "plan": plan}
+    thread = None
+    try:
+        next(iterator)
+        assert preparing.wait(3)
+        thread = iterator._iterator._thread
+        join = thread.join
+        source = plan._source
+        close_anchors, close_source = task._anchors.close, source.close
+
+        def checked_anchor_close():
+            assert finished.is_set()
+            assert not thread.is_alive()
+            events.append("anchors")
+            close_anchors()
+
+        def checked_source_close():
+            assert finished.is_set()
+            assert not thread.is_alive()
+            events.append("source")
+            close_source()
+
+        def interrupt_join():
+            assert threading.current_thread() is threading.main_thread()
+            raise KeyboardInterrupt("consumer join interrupted")
+
+        monkeypatch.setattr(task._anchors, "close", checked_anchor_close)
+        monkeypatch.setattr(source, "close", checked_source_close)
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(thread, "join", interrupt_join)
+            for _ in range(2):
+                with pytest.raises(KeyboardInterrupt, match="consumer join interrupted"):
+                    owners[interrupted_owner].close()
+                assert thread.is_alive()
+                assert events == []
+                assert plan._source is source
+                assert list(iterator) == []
+                assert iterator._finalizer.alive
+
+        def release_and_join():
+            release.set()
+            join(timeout=3)
+            assert not thread.is_alive()
+
+        with monkeypatch.context() as retry:
+            retry.setattr(thread, "join", release_and_join)
+            owners[retry_owner].close()
+            assert finished.is_set()
+            assert not thread.is_alive()
+        assert not iterator._finalizer.alive
+        task.close()
+        plan.close()
+        assert events[0] == "producer"
+        assert "anchors" in events and "source" in events
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(timeout=3)
+        task.close()
+        plan.close()
+
+
+def test_close_confirms_producer_cleanup_when_join_returns_early(monkeypatch):
+    preparing, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def produce():
+        try:
+            yield 0
+            preparing.set()
+            assert release.wait(5), "producer was not released"
+            yield 1
+        finally:
+            finished.set()
+
+    iterator = batches(produce)
+    thread = None
+    try:
+        assert next(iterator) == 0
+        assert preparing.wait(3)
+        prefetch = iterator._iterator
+        thread = prefetch._thread
+        wait_for = prefetch._condition.wait_for
+
+        def release_and_wait(predicate):
+            assert not finished.is_set()
+            assert not predicate()
+            release.set()
+            return wait_for(predicate, timeout=3)
+
+        with monkeypatch.context() as interrupted_state:
+            # Model join's premature return after an interrupted wait without
+            # mutating Python's private thread bookkeeping.
+            interrupted_state.setattr(thread, "join", lambda: None)
+            interrupted_state.setattr(prefetch._condition, "wait_for", release_and_wait)
+            iterator.close()
+            assert finished.is_set()
+            assert prefetch._done
+    finally:
+        release.set()
+        if thread is not None:
+            thread.join(timeout=3)
+        iterator.close()
+
+
 def test_close_before_iteration_does_not_open_source():
     def fail():
         pytest.fail("closed iterator opened its source")
