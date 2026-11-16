@@ -183,7 +183,7 @@ def widened(values: Any) -> Any:
             } else {
                 out = (long long) (sign | ((unsigned long long) (e - 127 + 1023) << 52) | ((unsigned long long) m << 29));
             }
-            """, "test.kumo_pytorch.reference_engine.gpu_widen_float32")
+            """, "kumo_pytorch_gpu_widen_float32")
     return _WIDEN(cupy.ascontiguousarray(values).view(cupy.uint32)).view(cupy.float64)
 
 

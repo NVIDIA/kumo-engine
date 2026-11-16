@@ -69,6 +69,8 @@ def test_gpu_loader_timings_and_state_reuse(source, workload, family):  # noqa: 
         assert fresh["measurements"][name + ".elapsed_ns"]
     assert not fresh["measurements"].get("training.step.elapsed_ns")
     assert not fresh["gpu_observations"]
+    assert fresh["devices"][0]["name"]
+    assert fresh["devices"][0]["total_memory_bytes"] > 0
     coverage = json.loads((source / "fresh/coverage.json").read_text())["metrics"]
     assert {name for name, row in coverage.items() if row["status"] != "complete"} == {
         "later_batch_latency_p50_ns",

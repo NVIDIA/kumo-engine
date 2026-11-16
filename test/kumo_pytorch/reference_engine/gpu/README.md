@@ -2,8 +2,8 @@
 
 These 60 implementation modules were copied from Arena revision
 `f8ffd61bbe280d0cd515a6387387e9502f5d911d`, under
-`gpu-backend/kumo_pytorch_gpu/`. The only source change is replacing the
-`kumo_pytorch_gpu` namespace with `test.kumo_pytorch.reference_engine.gpu`.
+`gpu-backend/kumo_pytorch_gpu/`. The source change replaces the Python `kumo_pytorch_gpu` namespace with
+`test.kumo_pytorch.reference_engine.gpu`; CUDA kernel identifiers are preserved.
 The reference has no Arena runtime dependency and is not installed as part of
 `kumo.pytorch`. Upstream tests, data, saved results and environment scripts were
 not copied. Historical Arena results are not validation of this port.

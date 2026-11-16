@@ -84,9 +84,9 @@ def integer_columns(values: Any) -> list[Any]:
     if kernel is None:
         kernel = _PRINTED_KERNELS[signed] = (
             cupy.ElementwiseKernel("int64 x", "int8 sign, uint64 padded, int8 digits", _PRINTED_SIGNED,
-                                   "test.kumo_pytorch.reference_engine.gpu_printed_signed") if signed else
+                                   "kumo_pytorch_gpu_printed_signed") if signed else
             cupy.ElementwiseKernel("uint64 x", "uint64 padded, int8 digits, int8 last", _PRINTED_UNSIGNED,
-                                   "test.kumo_pytorch.reference_engine.gpu_printed_unsigned"))
+                                   "kumo_pytorch_gpu_printed_unsigned"))
     count = values.size
     if signed:
         sign, padded, digits = (cupy.empty(count, cupy.int8), cupy.empty(count, cupy.uint64),

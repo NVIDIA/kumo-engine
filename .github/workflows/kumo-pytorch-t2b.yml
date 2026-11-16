@@ -165,6 +165,17 @@ jobs:
           report = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'benchmark-gpu/package-tests.xml')
           assert not list(report.iter('skipped')), 'Required CUDA tests skipped on the GPU runner'
           PY
+      - name: Install test-only GPU reference dependencies
+        if: ${{ !cancelled() }}
+        id: gpu-reference-setup
+        run: uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
+      - name: Validate GPU loader timing and fitted-state reuse
+        if: ${{ !cancelled() && steps.gpu-reference-setup.outcome == 'success' }}
+        env:
+          KUMO_GPU_REFERENCE_REQUIRED: '1'
+        run: |
+          python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py \
+            --junitxml="$RUNNER_TEMP/benchmark-gpu/reference-tests.xml"
       - name: Show GPU validation report
         if: ${{ always() }}
         run: |
@@ -264,11 +275,6 @@ jobs:
         env:
           POLARS_MAX_THREADS: '4'
         run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py
-      - name: Validate GPU loader timing and fitted-state reuse
-        if: ${{ !cancelled() && steps.gpu-reference-setup.outcome == 'success' }}
-        env:
-          KUMO_GPU_REFERENCE_REQUIRED: '1'
-        run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py
       - name: Compare loader timings with Polars and GPU references
         if: ${{ !cancelled() && steps.polars-setup.outcome == 'success' }}
         env:

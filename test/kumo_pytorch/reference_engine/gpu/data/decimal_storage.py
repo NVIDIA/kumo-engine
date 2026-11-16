@@ -189,7 +189,7 @@ def _wide_kernels() -> tuple[Any, Any]:
             const long long start = starts[row], length = lengths[row];
             """ + read + """
             held = place >= pad ? characters[start + place - pad] : sign;
-            """, "test.kumo_pytorch.reference_engine.gpu_wide_bytes")
+            """, "kumo_pytorch_gpu_wide_bytes")
         low = cupy.ElementwiseKernel(
             "int64 start, int64 length, raw uint8 characters", "int64 low, bool fits",
             read + """
@@ -202,7 +202,7 @@ def _wide_kernels() -> tuple[Any, Any]:
             }
             low = (long long) word;
             fits = extended && (word >> 63) == (unsigned long long) (sign & 1);
-            """, "test.kumo_pytorch.reference_engine.gpu_wide_low_word")
+            """, "kumo_pytorch_gpu_wide_low_word")
         _WIDE_KERNELS = (widen, low)
     return _WIDE_KERNELS
 

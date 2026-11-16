@@ -500,7 +500,7 @@ def _conversions() -> tuple[Any, Any, Any]:
             if (!ok) for (int k = 0; k < 4; ++k) m[k] = 0;
             kumo_store(m, negative, &result[4 * i]);
             valid = ok;
-            """, "test.kumo_pytorch.reference_engine.gpu_decimal_rescale", preamble=preamble)
+            """, "kumo_pytorch_gpu_decimal_rescale", preamble=preamble)
         to_words = cupy.ElementwiseKernel(
             "raw int64 bits, raw uint64 fives, int32 scale", "raw int64 held, bool valid",
             r"""
@@ -537,7 +537,7 @@ def _conversions() -> tuple[Any, Any, Any]:
             if (!ok) for (int k = 0; k < 4; ++k) r[k] = 0;
             kumo_store(r, negative && ok, &held[4 * i]);
             valid = ok;
-            """, "test.kumo_pytorch.reference_engine.gpu_decimal_float_words", preamble=preamble)
+            """, "kumo_pytorch_gpu_decimal_float_words", preamble=preamble)
         to_float = cupy.ElementwiseKernel(
             "raw int64 held, int32 scale", "int64 bits, bool valid",
             r"""
@@ -572,7 +572,7 @@ def _conversions() -> tuple[Any, Any, Any]:
             }
             bits = ok ? (long long) out : 0;
             valid = ok;
-            """, "test.kumo_pytorch.reference_engine.gpu_decimal_words_float", preamble=preamble)
+            """, "kumo_pytorch_gpu_decimal_words_float", preamble=preamble)
         _CONVERSIONS = (rescale, to_words, to_float)
     return _CONVERSIONS
 
@@ -614,7 +614,7 @@ def _kernels() -> tuple[Any, Any]:
                 if (negative) { v = ~v + carry; carry = (carry && v == 0) ? 1 : 0; }
                 held[4 * i + k] = (long long) v;
             }
-            """, "test.kumo_pytorch.reference_engine.gpu_decimal_calculation", preamble=_PREAMBLE)
+            """, "kumo_pytorch_gpu_decimal_calculation", preamble=_PREAMBLE)
         comparison = cupy.ElementwiseKernel(
             "raw int64 first, raw int64 second, int64 step", "int8 order",
             r"""
@@ -626,6 +626,6 @@ def _kernels() -> tuple[Any, Any]:
                 if (x[k] != y[k]) { result = (kumo_u64) x[k] < (kumo_u64) y[k] ? -1 : 1; break; }
             }
             order = result;
-            """, "test.kumo_pytorch.reference_engine.gpu_decimal_comparison", preamble=_PREAMBLE)
+            """, "kumo_pytorch_gpu_decimal_comparison", preamble=_PREAMBLE)
         _KERNELS = (calculation, comparison)
     return _KERNELS

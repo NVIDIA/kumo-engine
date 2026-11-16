@@ -48,3 +48,38 @@ def test_reference_imports_resolve_inside_test_suite():
                         path,
                         name,
                     )
+
+
+def test_cuda_kernel_names_are_not_python_module_paths():
+    import re
+
+    root = Path(__file__).parents[1] / "reference_engine/gpu"
+    checked = 0
+    for path in root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call) or not isinstance(
+                node.func, ast.Attribute
+            ):
+                continue
+            position = {
+                "ElementwiseKernel": 3,
+                "RawKernel": 1,
+                "ReductionKernel": 6,
+            }.get(node.func.attr)
+            if position is None:
+                continue
+            name = next(
+                (item.value for item in node.keywords if item.arg == "name"), None
+            )
+            if name is None and len(node.args) > position:
+                name = node.args[position]
+            assert isinstance(name, ast.Constant) and isinstance(name.value, str), (
+                path,
+                node.lineno,
+            )
+            assert re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name.value), (
+                path,
+                name.value,
+            )
+            checked += 1
+    assert checked >= 10

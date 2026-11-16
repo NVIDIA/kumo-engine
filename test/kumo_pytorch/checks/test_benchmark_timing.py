@@ -126,7 +126,9 @@ def test_gpu_timing_waits_for_each_delivery_without_gpu_collectors(tmp_path):
     def adapter(config, workdir):
         return Workload(
             identity={"dataset": "fixture", "workload": "async-delivery"},
-            prepare=lambda recorder: None,
+            prepare=lambda recorder: recorder.write(
+                "device", name="fake asynchronous device"
+            ),
             batches=batches,
             count=lambda batch: BatchCounts(len(batch), 0),
             device="cuda:0",
@@ -145,4 +147,6 @@ def test_gpu_timing_waits_for_each_delivery_without_gpu_collectors(tmp_path):
     assert result["execution_status"] == "completed", result["errors"]
     assert result["experiments"]["steady_state"]["status"] == "measured"
     assert not result["gpu_observations"]
+    assert result["devices"][0]["name"] == "fake asynchronous device"
+    assert "Execution devices" in (tmp_path / "run/report.md").read_text()
     assert all(e["metrics"]["batch_latency_p50_ns"] >= 1000 for e in result["epochs"])

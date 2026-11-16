@@ -87,6 +87,17 @@ def bind(recorder, *, split_dir, device):
                 "GPU context, contract checks, routing, data loading and indexes; synchronized completion"
             )
             torch.cuda.set_device(device)
+            properties = torch.cuda.get_device_properties(device)
+            recorder.write(
+                "device",
+                selected_device=str(device),
+                name=properties.name,
+                uuid=str(getattr(properties, "uuid", "unavailable")),
+                total_memory_bytes=properties.total_memory,
+                compute_capability=[properties.major, properties.minor],
+                multiprocessors=properties.multi_processor_count,
+                torch_cuda_version=torch.version.cuda,
+            )
             plan = gpu.prepare(contract, dataset, split_dir=split_dir)
             try:
                 synchronize()

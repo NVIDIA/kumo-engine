@@ -26,6 +26,7 @@ def report(directory, config, identities, errors):
     cache_conditions = []
     dataset_inputs = []
     steady_windows = []
+    devices = []
     with (directory / "observations.jsonl").open() as stream:
         for line in stream:
             row = json.loads(line)
@@ -45,6 +46,8 @@ def report(directory, config, identities, errors):
                 dataset_inputs.append(row)
             elif row["kind"] == "steady_window":
                 steady_windows.append(row)
+            elif row["kind"] == "device":
+                devices.append(row)
     coverage = {}
     for name, spec in metrics.items():
         cases = []
@@ -211,6 +214,7 @@ def report(directory, config, identities, errors):
         "cache_conditions": cache_conditions,
         "dataset_inputs": dataset_inputs,
         "steady_windows": steady_windows,
+        "devices": devices,
     }
     write_json(
         directory / "coverage.json", {"metrics": coverage, "experiments": conditions}
@@ -243,6 +247,15 @@ def report(directory, config, identities, errors):
             )
         ]
         lines.append("| " + " | ".join(_text(v) for v in cells) + " |")
+    if devices:
+        lines += [
+            "",
+            "## Execution devices",
+            "",
+            "```json",
+            json.dumps(devices, indent=2),
+            "```",
+        ]
     memory_rows = [
         row
         for name, rows in observations.items()
