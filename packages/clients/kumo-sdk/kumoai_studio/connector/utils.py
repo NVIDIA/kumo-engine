@@ -1661,12 +1661,12 @@ def _remote_upload_directory(
     if zero_bytes:
         raise ValueError(
             f"Found zero-byte {detected_type.upper()} files: {zero_bytes[:3]}"
-            f"{'...' if len(zero_bytes)>3 else ''}")
+            f"{'...' if len(zero_bytes) > 3 else ''}")
     if too_large:
         raise ValueError(
             f"The following files exceed 1GB and must be re-partitioned "
             f"(~200MB each): "
-            f"{too_large[:3]}{'...' if len(too_large)>3 else ''}")
+            f"{too_large[:3]}{'...' if len(too_large) > 3 else ''}")
 
     par = _determine_parallelism(files, requested=st.parallelism_override)
     par = max(1, min(par, len(files)))

@@ -59,7 +59,7 @@ jobs:
       - name: Generate UI third-party notices
         if: steps.lockfile-only.outputs.only_changed != 'true'
         run: |
-          node apps/studio/ui/scripts/generate-third-party-notice.mjs --root ui --source-map apps/studio/ui/stacktracer/source_map --css-root apps/studio/ui/src --output "$RUNNER_TEMP/NPM-THIRD-PARTY.txt"
+          node apps/studio/ui/scripts/generate-third-party-notice.mjs --root apps/studio/ui --source-map apps/studio/ui/stacktracer/source_map --css-root apps/studio/ui/src --output "$RUNNER_TEMP/NPM-THIRD-PARTY.txt"
           node apps/studio/ui/scripts/generate-third-party-notice.mjs --root packages/ui/kumo-ui-catalog --source-map packages/ui/kumo-ui-catalog/dist/index.es.js.map --css-root packages/ui/kumo-ui-catalog/src --output "$RUNNER_TEMP/UI-CATALOG-NPM-THIRD-PARTY.txt"
 
       - name: Test frontend gateway

@@ -23,9 +23,11 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-STAMP = Path(__file__).resolve().parents[4] / 'development/tooling/scripts/stamp_version.py'
+STAMP = Path(__file__).resolve(
+).parents[4] / 'development/tooling/scripts/stamp_version.py'
 VERSION_FILE = Path(__file__).resolve().parents[4] / 'VERSION'
-SDK_VERSION_FILE = Path(__file__).resolve().parents[1] / 'kumoai_studio/_version.py'
+SDK_VERSION_FILE = Path(
+    __file__).resolve().parents[1] / 'kumoai_studio/_version.py'
 
 
 def _version_pattern():

@@ -26,7 +26,8 @@ class HTTPException(Exception):
         detail: Optional[Any] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> None:
-        # Adapted from https://github.com/Kludex/starlette/blob/b5126b2063dbd6fa46d3e60b4a7117c99dcdbe6e/starlette/exceptions.py
+        # Adapted from Starlette exceptions.py (commit
+        # b5126b2063dbd6fa46d3e60b4a7117c99dcdbe6e).
         if detail is None:
             detail = http.HTTPStatus(status_code).phrase
         self.status_code = status_code

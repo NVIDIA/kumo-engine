@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-WORKFLOW = Path(__file__).resolve().parents[4] / '.github/workflows/kumo-sdk-release.yml'
+WORKFLOW = Path(
+    __file__).resolve().parents[4] / '.github/workflows/kumo-sdk-release.yml'
 RELEASE_BRANCH_ASSIGNMENT = ('release_branch="kumo-sdk-v${version_final%.*}"')
 BASH = shutil.which('bash')
 

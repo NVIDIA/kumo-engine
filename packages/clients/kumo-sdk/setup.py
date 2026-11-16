@@ -8,7 +8,8 @@ from pathlib import Path
 from setuptools import setup
 
 kumo_api_release_ver = '3.0.0'
-api_pyproject = Path(__file__).resolve().parents[2] / 'contracts/kumo-api/pyproject.toml'
+api_pyproject = Path(
+    __file__).resolve().parents[2] / 'contracts/kumo-api/pyproject.toml'
 api_ver = kumo_api_release_ver
 if api_pyproject.exists():
     match = re.search(

@@ -13,7 +13,8 @@ from email.parser import Parser
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-MERGE = Path(__file__).resolve().parents[2] / 'kumo-engine/scripts/merge_wheels.py'
+MERGE = Path(
+    __file__).resolve().parents[2] / 'kumo-engine/scripts/merge_wheels.py'
 
 
 def _write_component_wheel(path: Path) -> None:

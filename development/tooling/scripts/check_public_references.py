@@ -169,6 +169,7 @@ IDENTIFIER_RULES = (
 IDENTIFIER_RULE_EXEMPT_PREFIXES = (
     ".github/",
     "Makefile",
+    "development/Makefile",
     "apps/studio/deploy/",
     "apps/studio/docker/",
     "apps/studio/kumo/testing/rest.py",
@@ -197,7 +198,7 @@ KNOWN_PRIVATE_GITHUB_DEPENDENCIES: dict[tuple[str, str], int] = {}
 SKIPPED_PATHS = {
     "THIRD-PARTY.txt",
     "development/tooling/scripts/check_public_references.py",
-    "test/scripts/test_check_public_references.py",
+    "development/testing/test/scripts/test_check_public_references.py",
 }
 SKIPPED_SUFFIXES = (
     ".lock",

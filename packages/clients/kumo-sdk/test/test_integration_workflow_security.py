@@ -6,7 +6,8 @@ from pathlib import Path
 
 _SDK_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_WORKFLOW = Path(__file__).resolve().parents[4] / '.github/workflows/kumo-sdk-test-integration.yml'
+_WORKFLOW = Path(__file__).resolve(
+).parents[4] / '.github/workflows/kumo-sdk-test-integration.yml'
 _INTEGRATION_AUTH_FILES = (
     _WORKFLOW,
     _SDK_ROOT / "test/conftest.py",
