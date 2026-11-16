@@ -121,7 +121,8 @@ for event in features:
 
 Scalar feature/target precomputation uses staged `row_aggregate` operations in
 `DiskGraphTTPlan`. Prepare once on the sampler that owns the index, then supply
-only dense entity IDs and epoch-second cutoffs for each input chunk:
+only dense entity IDs and cutoffs in the plan's declared clock for each input chunk
+(epoch seconds when the clock is omitted):
 
 ```python
 prepared = sampler.prepare_aggregate_plan("users", plan_json)
@@ -135,8 +136,13 @@ pool; anchor-dependent bounds and row values are evaluated for each chunk. The
 handle retains its index and may be used after the original Python sampler is
 released. It does not cache anchors or computed results.
 
-All row frames in one query must use the same `cutoff_unit`; omission means
-seconds. `diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
+All row frames in one query must use the same `cutoff_unit`. Prepared scalar plans
+inherit their top-level `timestamp_unit` when a frame omits `cutoff_unit`, including
+frames lowered from PQL aggregates. An explicit frame unit takes precedence.
+An omitted plan clock, and omitted frame units in direct `query_temporal` calls,
+default to seconds. PQL row filters, limits and target-table selection still
+require matching seconds plan, cutoff and index clocks.
+`diskgraph.convert_ticks(value, from, to)` exposes the shared fixed-clock
 request/seed conversion (truncation toward zero, including before 1970).
 `rounding="floor"` selects core floor conversion, used by kumo-pytorch to preserve
 its no-future-event anchor boundary before 1970. The function
