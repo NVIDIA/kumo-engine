@@ -493,9 +493,9 @@ def test_concurrent_cache_creation_requires_matching_contents(
         def api(self, path, method='GET', **kwargs):
             calls.append((path, method))
             if len(calls) == 1:
-                raise RuntimeError('Databricks API HTTP 404')
+                raise runner.APIError(404)
             if method == 'PUT' and '?overwrite=false' in path:
-                raise RuntimeError('Databricks API HTTP 409')
+                raise runner.APIError(409)
             return b'candidate' if same_contents else b'corrupt'
 
     if same_contents:
@@ -671,7 +671,9 @@ def test_recovery_steps_always_run_before_publication():
             if step.get('name') == 'Prepare public aggregate results')
 
 
-@pytest.mark.parametrize('dirty', ['kernel.py', 'verify_export.cjs'])
+@pytest.mark.parametrize(
+    'dirty',
+    ['kernel.py', 'verify_export.cjs', 'graph_ui.cjs', 'verification.cjs'])
 def test_graph_provenance_rejects_dirty_kernel(modules, monkeypatch, dirty):
     _, runner = modules
 

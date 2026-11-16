@@ -8,7 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 import yaml
@@ -64,7 +64,17 @@ class Provider:
                 dict(path=p, is_directory=False) for p in sorted(self.files)
                 if p.rsplit('/', 1)[0] == remote
             ]
-            return dict(contents=contents)
+            query = parse_qs(parsed.query)
+            after = query.get('page_token', [''])[0]
+            contents = [entry for entry in contents if entry['path'] > after]
+            size = int(query.get('page_size', [100])[0])
+            more = len(contents) > size
+            contents = contents[:size]
+            return dict(
+                contents=contents,
+                **({
+                    'next_page_token': contents[-1]['path']
+                } if more else {}))
         if target.startswith('/api/2.0/fs/files'):
             remote = target.removeprefix('/api/2.0/fs/files')
             if method == 'PUT':
@@ -473,3 +483,124 @@ def test_missing_record_does_not_authorize_nonempty_control_directory_deletion(
     assert result['empty_controls_removed'] == result['cleaned'] == 0
     assert cloud.files[folder + '/foreign.json']
     assert not any(method == 'DELETE' for _, method, _ in cloud.calls)
+
+
+def test_large_inventory_makes_progress_after_every_runner_is_lost(
+        setup, tmp_path):
+    retention, _, config, cloud = setup
+    for index in range(205):
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
+               submitted=False)
+    cleaned = 0
+    for sweep_index in range(11):
+        root = tmp_path / ('sweep-' + str(sweep_index))
+        result = retention.sweep(cloud, config, root, execute=True,
+                                 now_ms=10**15)
+        assert 0 < result['cleaned'] <= retention.MAX_ATTEMPTS
+        assert result['inventory_has_more'] is (sweep_index < 10)
+        cleaned += result['cleaned']
+        shutil.rmtree(root)
+    assert cleaned == 205
+    assert not cloud.files and not cloud.notebooks
+
+
+def test_failed_old_attempts_cannot_starve_later_recovery(setup, tmp_path):
+    retention, _, config, cloud = setup
+    for index in range(20):
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}')
+    cloud.runs.clear()
+    good, spec, now = leaked(setup, tmp_path / 'good', attempt=f'{20:012x}',
+                             submitted=False)
+    first = retention.sweep(cloud, config, tmp_path / 'first', execute=True,
+                            now_ms=now)
+    assert first['cleaned'] == 0
+    assert first['preserved'] == {'unproven_or_failed_cleanup': 20}
+    assert first['inventory_has_more'] is True
+    shutil.rmtree(tmp_path / 'first')
+    second = retention.sweep(cloud, config, tmp_path / 'second', execute=True,
+                             now_ms=now)
+    assert second['cleaned'] == 1
+    assert good.remote.path not in cloud.files
+    assert spec['notebook_path'] not in cloud.notebooks
+    assert second['inventory_has_more'] is False
+    # End-of-inventory wraps back to the preserved attempts on the next pass.
+    third = retention.sweep(cloud, config, tmp_path / 'third', execute=True,
+                            now_ms=now)
+    assert third['preserved'] == {'unproven_or_failed_cleanup': 20}
+
+
+@pytest.mark.parametrize('fault', ['tamper', 'scope', 'oversize_page'])
+def test_invalid_inventory_progress_cannot_mutate_resources(
+        setup, tmp_path, fault):
+    retention, _, config, cloud = setup
+    for index in range(21):
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
+               submitted=False)
+    retention.sweep(cloud, config, tmp_path / 'first', execute=True,
+                    now_ms=10**15)
+    path = retention.cursor_path(config)
+    value = json.loads(cloud.files[path])
+    if fault == 'scope':
+        value['payload']['config']['expected_user'] = 'foreign'
+        value['hmac_sha256'] = retention.signature(cloud, value['payload'])
+    elif fault == 'tamper':
+        value['payload']['page_token'] = 'untrusted'
+    else:
+        original = cloud.api
+
+        def oversized(endpoint, method='GET', **kwargs):
+            if '/retention?' in endpoint:
+                return dict(contents=[{}] * (retention.MAX_ATTEMPTS + 1))
+            return original(endpoint, method, **kwargs)
+
+        cloud.api = oversized
+    cloud.files[path] = json.dumps(value).encode()
+    cloud.calls.clear()
+    with pytest.raises(ValueError):
+        retention.sweep(cloud, config, tmp_path / 'second', execute=True,
+                        now_ms=10**15)
+    assert all(method == 'GET' for _, method, _ in cloud.calls)
+
+
+def test_plan_does_not_advance_durable_inventory_cursor(setup, tmp_path):
+    retention, _, config, cloud = setup
+    for index in range(21):
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
+               submitted=False)
+    retention.sweep(cloud, config, tmp_path / 'first', execute=True,
+                    now_ms=10**15)
+    before = dict(cloud.files)
+    cloud.calls.clear()
+    result = retention.sweep(cloud, config, tmp_path / 'plan', now_ms=10**15)
+    assert result['eligible'] == 1 and result['cleaned'] == 0
+    assert before == cloud.files
+    assert all(method == 'GET' for _, method, _ in cloud.calls)
+
+
+def test_short_inventory_page_keeps_page_size_across_continuation(
+        setup, tmp_path):
+    retention, _, config, cloud = setup
+    for index in range(3):
+        leaked(setup, tmp_path / str(index), attempt=f'{index:012x}',
+               submitted=False)
+    original = cloud.api
+    sizes = []
+
+    def short_page(endpoint, method='GET', body=None, **kwargs):
+        if '/retention?' in endpoint:
+            query = parse_qs(urlsplit(endpoint).query)
+            sizes.append(query['page_size'])
+            if 'page_token' not in query:
+                path = config['volume'] + '/retention/' + f'{0:012x}' + '/'
+                return dict(contents=[dict(path=path, is_directory=True)],
+                            next_page_token=path)
+        return original(endpoint, method, body, **kwargs)
+
+    cloud.api = short_page
+    first = retention.sweep(cloud, config, tmp_path / 'first', execute=True,
+                            now_ms=10**15)
+    assert first['cleaned'] == 1 and first['inventory_has_more'] is True
+    second = retention.sweep(cloud, config, tmp_path / 'second', execute=True,
+                             now_ms=10**15)
+    assert second['cleaned'] == 2 and second['inventory_has_more'] is False
+    assert sizes == [[str(retention.MAX_ATTEMPTS)]] * 2

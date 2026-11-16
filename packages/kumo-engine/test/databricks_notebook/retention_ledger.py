@@ -153,21 +153,50 @@ class ControlRecord:
             return False
 
 
+def cursor_path(config):
+    return config['volume'] + '/retention-cursor.json'
+
+
 def records(client, config):
+    # The signed cursor survives runner loss. It selects inventory only; each
+    # record still has to prove ownership independently before any cleanup.
+    previous = None
+    try:
+        previous = read(client, cursor_path(config))
+    except RuntimeError as error:
+        if str(error) != 'Databricks API HTTP 404':
+            raise
+    if previous is not None and (not isinstance(previous, dict) or set(previous)
+                                 != {'version', 'config', 'page_token'}
+                                 or previous['version'] != 1
+                                 or previous['config'] != scope(config)
+                                 or not isinstance(previous['page_token'], str)
+                                 or not previous['page_token']):
+        raise ValueError('Invalid retention inventory cursor')
+    token = previous['page_token'] if previous else None
     prefix = config['volume'] + '/retention'
     endpoint = '/api/2.0/fs/directories' + quote(prefix, safe='/')
-    entries, tokens, token = [], set(), None
+    entries, tokens = [], {token} if token else set()
+    # Examine at most one attempt budget per invocation, advancing even past
+    # unproven records and failed cleanup so they cannot starve later entries.
+    limit = min(MAX_RECORDS, MAX_ATTEMPTS)
+    if limit <= 0:
+        raise ValueError('Retention inventory exceeds the record budget')
     for _ in range(10):
+        size = min(100, limit)
         try:
             page = client.api(endpoint + '?' + urlencode(
-                dict(page_size=100, **({
+                dict(page_size=size, **({
                     'page_token': token
                 } if token else {}))))
         except RuntimeError as error:
             if str(error) == 'Databricks API HTTP 404' and not token:
-                return []
+                return [], None, previous
             raise
-        for entry in page.get('contents', []):
+        contents = page.get('contents', [])
+        if not isinstance(contents, list) or len(contents) > size:
+            raise ValueError('Retention page exceeds the record budget')
+        for entry in contents:
             path = entry.get('path', '').removesuffix('/')
             if (entry.get('is_directory') is not True
                     or path.rsplit('/', 1)[0] != prefix
@@ -177,15 +206,32 @@ def records(client, config):
             if path in entries:
                 raise ValueError('Retention listing repeated an attempt')
             entries.append(path)
-        if len(entries) > MAX_RECORDS:
-            raise ValueError('Retention inventory exceeds the record budget')
         token = page.get('next_page_token')
         if not token:
-            return [path + '/resources.json' for path in entries]
+            break
         if not isinstance(token, str) or token in tokens:
             raise ValueError('Retention pagination is ambiguous')
         tokens.add(token)
-    raise ValueError('Retention pagination exceeds the page budget')
+        if entries:
+            break
+    return [path + '/resources.json' for path in entries], token, previous
+
+
+def save_cursor(client, config, token, previous):
+    path = cursor_path(config)
+    endpoint = '/api/2.0/fs/files' + quote(path, safe='/')
+    if previous is not None and read(client, path) != previous:
+        raise ValueError('Retention inventory cursor changed during sweep')
+    if token:
+        value = dict(version=1, config=scope(config), page_token=token)
+        raw = json.dumps(
+            dict(payload=value, hmac_sha256=signature(client, value))).encode()
+        if len(raw) > MAX_BYTES:
+            raise ValueError('Retention cursor exceeds its byte budget')
+        client.api(endpoint + '?overwrite=' + str(previous is not None).lower(),
+                   'PUT', raw=raw)
+    elif previous is not None:
+        client.api(endpoint, 'DELETE')
 
 
 def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
@@ -203,7 +249,8 @@ def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
     def preserve(reason):
         preserved[reason] = preserved.get(reason, 0) + 1
 
-    for path in records(client, config):
+    paths, next_token, previous_cursor = records(client, config)
+    for path in paths:
         try:
             value = read(client, path)
             ledger, spec = value['ledger'], value['spec']
@@ -260,6 +307,8 @@ def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
                 except RuntimeError:
                     pass
             preserve('unproven_record')
+    if execute:
+        save_cursor(client, config, next_token, previous_cursor)
     cleaned = 0
     budget = [MAX_FILES]
     for _, directory in sorted(candidates)[:MAX_ATTEMPTS]:
@@ -270,7 +319,8 @@ def sweep(client, config, root, *, execute=False, ttl_hours=24, now_ms=None):
             except Exception:
                 preserve('unproven_or_failed_cleanup')
     result = dict(status='passed', execute=execute, eligible=len(candidates),
-                  cleaned=cleaned, preserved=preserved,
+                  inventory_has_more=bool(next_token), cleaned=cleaned,
+                  preserved=preserved,
                   empty_controls_removed=empty_controls_removed,
                   deferred=max(0,
                                len(candidates) - MAX_ATTEMPTS))

@@ -24,7 +24,7 @@ def runner(monkeypatch):
 def passed_report():
     return dict(
         identity='test-principal', wheel_sha256='a' * 64,
-        pip_check_returncode=0, phases={
+        lifecycle_status='blocked', pip_check_returncode=0, phases={
             n:
             dict(
                 status='passed', returncode=0,
@@ -235,7 +235,9 @@ def test_denied_storage_setup_cannot_be_substituted_in_collected_report(evidence
         collect(mutated)
 
 
-def test_native_worker_crash_retains_and_redacts_phase_log(monkeypatch, tmp_path):
+@pytest.mark.parametrize('failure', ['worker_crash', 'scratch_cleanup'])
+def test_native_worker_crash_retains_and_redacts_phase_log(
+        monkeypatch, tmp_path, failure):
     import hashlib
     import subprocess
     import sys
@@ -259,16 +261,23 @@ def test_native_worker_crash_retains_and_redacts_phase_log(monkeypatch, tmp_path
     dbutils = SimpleNamespace(notebook=SimpleNamespace(entry_point=SimpleNamespace(
         getDbutils=lambda: utils)))
     source = tmp_path / 'wheel_mlops_lifecycle.py'
-    source.write_text('''from pathlib import Path
+    source.write_text('''import json
+from pathlib import Path
 
 def execute(command, root, log, timeout, env=None):
     if '--execute-platform' in command:
         output = Path(command[command.index('--output-dir') + 1])
         output.mkdir()
         (output / 'fit.log').write_text('native worker crash: ' + env['DATABRICKS_TOKEN'])
-        raise RuntimeError('Worker produced no receipt')
+        FAILURE_ACTION
     return 0
-''')
+'''.replace(
+        'FAILURE_ACTION', "raise RuntimeError('Worker produced no receipt')"
+        if failure == 'worker_crash' else
+        "(output / 'summary.json').write_text(json.dumps(dict(status='failed', "
+        "error='Cannot remove producer scratch', phases={name: dict(status='passed', "
+        "returncode=0) for name in ('fit', 'score', 'evaluate', 'negative')})))"
+    ))
     wheel = tmp_path / 'candidate.whl'
     wheel.write_bytes(b'wheel')
     assets = {p.name: dict(path=str(p), size=p.stat().st_size,
@@ -285,7 +294,14 @@ def execute(command, root, log, timeout, env=None):
                         output=str(output)), dbutils)
     report = json.loads((output / 'lifecycle-result.json').read_text())
     assert report['status'] == 'failed'
-    assert 'Worker produced no receipt' in report['error']
+    if failure == 'worker_crash':
+        assert 'Worker produced no receipt' in report['error']
+    else:
+        assert report['lifecycle_status'] == 'failed'
+        assert report['engine_checks'] == 'incomplete'
+        with pytest.raises(ValueError, match='Lifecycle harness failed'):
+            importlib.import_module(
+                'databricks_notebook.lifecycle_notebook').engine_verdict(report)
     assert (output / 'fit.log').read_text() == 'native worker crash: [REDACTED]'
 
 
@@ -313,3 +329,11 @@ def test_lifecycle_uses_mounted_files_but_keeps_native_tracking_registry(
     assert isinstance(cfg['root'], str)
     assert cfg['tracking'] is native
     assert cfg['registry'] == profile.model
+
+
+@pytest.mark.parametrize('status', ['failed', None, 'unknown'])
+def test_passed_phases_cannot_hide_a_harness_failure(runner, status):
+    report = passed_report()
+    report['lifecycle_status'] = status
+    with pytest.raises(ValueError, match='Lifecycle harness failed'):
+        runner.engine_verdict(report)

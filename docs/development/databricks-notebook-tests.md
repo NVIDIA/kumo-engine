@@ -87,8 +87,9 @@ npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
 node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
 ```
 
-Supply `KUMO_DATABRICKS_TEST_PAT` and `KUMO_DATABRICKS_TEST_HOST` securely in
-the local process environment. Build the complete wheel from this checkout and create
+Supply `KUMO_DATABRICKS_TEST_PAT`, `KUMO_DATABRICKS_TEST_HOST` and
+`KUMO_DATABRICKS_TEST_USER` (the expected PAT principal) securely in the local
+process environment. Build the complete wheel from this checkout and create
 a runtime manifest outside the repository:
 
 ```sh
@@ -264,9 +265,13 @@ configuration enables this for local execution and Actions; the PAT must match
 
 Each approved manual dispatch sweeps old records before notebook execution. In
 `all` mode the graph job performs the single sweep. There is no scheduled cloud
-job. Records must be at least 24 hours old; discovery is limited to 200 records
-and ten pages, cleanup to 20 attempts and 10,000 files per invocation. An inventory
-above the discovery limit requires inspection rather than an unbounded sweep.
+job. Records must be at least 24 hours old. Each invocation examines at most
+20 records over ten pages and cleans at most 20 attempts and 10,000 files.
+A PAT-signed `notebook-ui/retention-cursor.json` saves the next inventory page
+before cleanup, so subsequent dispatches continue past failed attempts even if
+the runner is lost. At the end of inventory, the next sweep starts a new pass
+and retries preserved records. `inventory_has_more` reports pending pages;
+plan mode never advances the cursor. Run local sweeps serially with Actions.
 Recovery reconstructs local state from the Volume and reuses the exact run-owner,
 notebook-path, experiment-tag and model/version checks. An owned active Job is
 cancelled and must terminate before resources are removed. Unknown submission or

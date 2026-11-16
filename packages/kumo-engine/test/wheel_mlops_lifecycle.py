@@ -859,7 +859,8 @@ def phase(args):
         report['status'] = 'blocked'
         report['error'] = traceback.format_exc()
     except Exception as error:
-        if profile is not None and platform_helpers().access_error(error):
+        if profile is not None and platform_helpers().denied_access(
+                error, provider_only=True, provider=profile.config['platform']):
             report['status'] = 'blocked'
         report['error'] = traceback.format_exc()
     finally:

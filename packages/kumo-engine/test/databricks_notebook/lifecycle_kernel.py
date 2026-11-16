@@ -118,17 +118,19 @@ def execute(config, dbutils):
         ]
         with (evidence / 'lifecycle.log').open('w') as log:
             helpers.execute(command, root, log, 3000, env=env)
-        report['phases'] = json.loads(
-            (lifecycle / 'summary.json').read_text())['phases']
+        summary = json.loads((lifecycle / 'summary.json').read_text())
+        report['lifecycle_status'] = summary['status']
+        report['phases'] = summary['phases']
         report['engine_checks'] = (
-            'passed' if
+            'passed' if report['lifecycle_status'] in ('passed', 'blocked') and
             set(report['phases']) == {'fit', 'score', 'evaluate', 'negative'}
             and all(p['status'] == 'passed'
                     for p in report['phases'].values()) else 'incomplete')
-        report['status'] = ('blocked' if report['engine_checks'] == 'passed'
-                            or any(p['status'] == 'blocked'
-                                   for p in report['phases'].values()) else
-                            'failed')
+        report['status'] = (
+            'failed' if report['lifecycle_status'] == 'failed' else
+            'blocked' if report['engine_checks'] == 'passed' or any(
+                p['status'] == 'blocked'
+                for p in report['phases'].values()) else 'failed')
     except Exception:
         report['error'] = traceback.format_exc()
         if runtime_token:

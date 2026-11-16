@@ -308,3 +308,66 @@ def test_local_fit_tracking_rejects_incomplete_evidence(fault):
         history['train/loss'] = [(0, 1.0)]
     with pytest.raises(AssertionError):
         runner.local_fit_record(run, history, registered, 'b')
+
+
+@pytest.mark.parametrize('denied', [False, True])
+def test_platform_worker_preserves_original_error_and_receipt(
+        tmp_path, monkeypatch, denied):
+    import importlib
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
+    helpers = importlib.import_module('wheel_mlops_platform')
+    profile = SimpleNamespace(
+        config=dict(environment='venv', platform='databricks'), model='test',
+        experiment='test', artifact_root='/test', placement=lambda: {})
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: profile)
+    monkeypatch.setattr(runner, 'platform_helpers', lambda: helpers)
+    monkeypatch.setattr(runner, 'check_install', lambda *args: {})
+    monkeypatch.setitem(sys.modules, 'torch',
+                        SimpleNamespace(set_num_threads=lambda _: None))
+    engine = SimpleNamespace(configure=lambda **kwargs: None)
+    monkeypatch.setitem(sys.modules, 'kumo', SimpleNamespace(engine=engine))
+    monkeypatch.setitem(sys.modules, 'kumo.engine', engine)
+
+    def failing_fit(_):
+        error = RuntimeError('original provider failure')
+        if denied:
+            error.status_code = 403
+        raise error
+
+    monkeypatch.setattr(runner, 'fit', failing_fit)
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'wheel',
+                           expected_version='test', phase='fit')
+    assert runner.phase(args) == 1
+    report = runner.read(tmp_path / 'fit.json')
+    assert report['status'] == ('blocked' if denied else 'failed')
+    assert 'original provider failure' in report['error']
+    assert 'AttributeError' not in report['error']
+
+
+def test_final_scratch_failure_overrides_all_passed_phase_receipts(
+        tmp_path, monkeypatch):
+    root = tmp_path / 'attempt'
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: None)
+    monkeypatch.setattr(runner, 'check_install', lambda *args: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kwargs: None)
+
+    def completed(command, cwd, log, timeout):
+        phase = command[command.index('--phase') + 1]
+        runner.write(cwd / (phase + '.json'), dict(status='passed'))
+        if phase == runner.PHASES[-1]:
+            (cwd / ('scratch-' + phase)).mkdir()
+        return 0
+
+    def cannot_remove(path):
+        raise OSError('Cannot remove final producer scratch')
+
+    monkeypatch.setattr(runner, 'execute', completed)
+    monkeypatch.setattr(runner.shutil, 'rmtree', cannot_remove)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1)
+    assert runner.run(args) == 1
+    report = runner.read(root / 'summary.json')
+    assert report['status'] == 'failed'
+    assert all(phase['status'] == 'passed'
+               for phase in report['phases'].values())
+    assert 'Cannot remove final producer scratch' in report['error']

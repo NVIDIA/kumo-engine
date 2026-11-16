@@ -67,8 +67,8 @@ def asset(client, volume, name, expected, local=None):
     remote = volume + '/payload-cache/' + expected + '/' + name
     try:
         content = client.api('/api/2.0/fs/files' + remote, binary=True)
-    except RuntimeError as error:
-        if str(error) != 'Databricks API HTTP 404' or local is None:
+    except APIError as error:
+        if error.status != 404 or local is None:
             raise
         content = Path(local).read_bytes()
         if Path(local).name != name or digest(content) != expected:
@@ -77,8 +77,8 @@ def asset(client, volume, name, expected, local=None):
         try:
             client.api('/api/2.0/fs/files' + remote + '?overwrite=false', 'PUT',
                        raw=content)
-        except RuntimeError as error:
-            if str(error) != 'Databricks API HTTP 409':
+        except APIError as error:
+            if error.status != 409:
                 raise
             content = client.api('/api/2.0/fs/files' + remote, binary=True)
     if digest(content) != expected:
@@ -266,7 +266,8 @@ def committed_graph_sources():
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
                                      text=True).strip()
     paths = list(HERE.glob('*.py')) + list(HERE.glob('*.cjs')) + [
-        SHARED / 'graph_fixture.py', HERE.parent / 'wheel_gpu_smoke.py',
+        SHARED / 'graph_fixture.py', SHARED / 'graph_ui.cjs',
+        SHARED / 'verification.cjs', HERE.parent / 'wheel_gpu_smoke.py',
         HERE.parent / 'platform_candidate.py', HERE.parent /
         'wheel_mlops_lifecycle.py', HERE.parent / 'pr172/inputs.json'
     ]
@@ -303,8 +304,6 @@ def execute(args, root):
         assets[name], content = asset(client, config['volume'], name, expected,
                                       local)
     repo = HERE.parents[3]
-    commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
-                                     text=True).strip()
     attempt = uuid.uuid4().hex[:12]
     path = config['workspace_dir'] + '/kumo-test-graph-' + attempt
     spec = dict(attempt=attempt, assets=assets, candidate=candidate,

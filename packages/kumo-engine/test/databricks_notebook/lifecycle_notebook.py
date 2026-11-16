@@ -94,6 +94,8 @@ def collect(client, run, spec, submitted, root):
 
 
 def engine_verdict(report):
+    if report.get('lifecycle_status') not in ('passed', 'blocked'):
+        raise ValueError('Lifecycle harness failed or lacks its overall status')
     expected = {'fit', 'score', 'evaluate', 'negative'}
     phases = report.get('phases', {})
     states = {

@@ -776,3 +776,54 @@ def test_blocked_graph_prerequisite_preserves_blocked_status(
                     output=tmp_path / 'blocked', execute=True)
     assert report['status'] == 'blocked'
     assert report['reason'] == 'Notebook capacity unavailable'
+
+
+@pytest.mark.parametrize('framed', [False, True])
+@pytest.mark.parametrize('box', [
+    None, {
+        'width': 0,
+        'height': 20
+    }, {
+        'width': 20,
+        'height': 0
+    }, {
+        'width': 20,
+        'height': 20
+    }
+])
+def test_graph_tooltip_requires_rendered_row_in_each_export_scope(framed, box):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js required for the browser helper')
+    program = r'''const assert=require('node:assert/strict');
+const {check}=require(process.argv[1]);
+const framed=JSON.parse(process.argv[2]),box=JSON.parse(process.argv[3]);
+let ownerScrolled=false,hovered=false;
+const owner={evaluate:async()=>{ownerScrolled=true}};
+const row={count:async()=>1,isVisible:async()=>true,boundingBox:async()=>box,
+ hover:async()=>{hovered=true;throw Error('Hover reached')}};
+const svg={locator:selector=>selector==='.kumo-card-name'
+ ? {filter:()=>({waitFor:async()=>{}})}:row};
+const region={waitFor:async()=>{},boundingBox:async()=>({width:200,height:200}),locator:()=>svg};
+const graph={evaluate:owner.evaluate,getByRole:()=>region};
+const frame={parentFrame:()=>framed?{}:null,frameElement:async()=>owner,
+ locator:()=>({count:async()=>2,nth:()=>graph})};
+const page={frames:()=>[frame]};
+const receipt={status:'passed',runtime:{workspace:true},
+ default_reads:{backend_accesses:0,sample_calls:0},opt_in_reads:{sample_calls:1},
+ canaries:Array(6).fill('test'),schema:{tables:{T:{pkey:'ID',cols:[{name:'ID'}]}},
+ edges:[{src_table:'T',fkey:'ID',dst_table:'T'}]}};
+(async()=>{
+ const rendered=box&&box.width>0&&box.height>0;
+ await assert.rejects(check(page,receipt,'unused','test'),
+  {message:rendered?'Hover reached':'Tooltip row is not rendered'});
+ assert.equal(ownerScrolled,true);
+ assert.equal(hovered,Boolean(rendered));
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([
+        node, '-e', program,
+        str(DIRECTORY / 'graph_ui.cjs'),
+        json.dumps(framed),
+        json.dumps(box)
+    ], check=True)

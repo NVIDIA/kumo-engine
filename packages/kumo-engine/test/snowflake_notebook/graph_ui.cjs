@@ -46,6 +46,11 @@ async function hoverTooltip(page, graph, svg, table, column) {
   const row = svg.locator(
     `[data-kumo-table="${table}"][data-kumo-column="${column}"]`,
   );
+  const box = await row.boundingBox();
+  requireThat(
+    box && box.width > 0 && box.height > 0,
+    "Tooltip row is not rendered",
+  );
   await row.hover({ timeout: 10000 });
   const tooltip = graph.getByRole("tooltip");
   const deadline = Date.now() + 5000;

@@ -28,7 +28,8 @@ def product_files(repo, revision):
         if path.startswith('packages/') and any(
                 part in EXCLUDED for part in Path(path).parts[2:]):
             continue
-        files[path] = metadata.split()[2]
+        mode, kind, object_id = metadata.split()
+        files[path] = (mode, kind, object_id)
     return files
 
 
