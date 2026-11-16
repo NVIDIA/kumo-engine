@@ -148,6 +148,21 @@ jobs:
         run: |
           python -m test.kumo_pytorch.benchmarking.validate_gpu \
             --output "$RUNNER_TEMP/benchmark-gpu"
+      - name: Run existing CUDA-only package regressions
+        if: ${{ !cancelled() }}
+        working-directory: packages/experimental/kumo-pytorch
+        run: |
+          python -m pytest -q --require-imports \
+            tests/test_masking.py::test_masking_is_bitwise_equal_on_cpu_and_cuda \
+            tests/test_model.py::test_packed_event_encoder_runs_with_cuda_fp16 \
+            tests/test_varlen_metadata.py::test_varlen_attention_consumes_the_metadata_directly \
+            --junitxml="$RUNNER_TEMP/benchmark-gpu/package-tests.xml"
+          python - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'benchmark-gpu/package-tests.xml')
+          assert not list(report.iter('skipped')), 'Required CUDA tests skipped on the GPU runner'
+          PY
       - name: Show GPU validation report
         if: ${{ always() }}
         run: |
