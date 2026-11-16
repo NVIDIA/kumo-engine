@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import re
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -11,6 +12,7 @@ from typing import Any, ClassVar, Generic, NamedTuple, TypeVar
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import torch
 from kumoapi.encoder import (
     Datetime,
@@ -62,15 +64,31 @@ class TensorMapper(ABC, Generic[T]):
     ) -> T:
         """Encode raw Arrow values, combining chunks before conversion.
 
+        Args:
+            array: Raw column values in a supported Arrow array or chunked array.
+            device: Destination device, or the default device when omitted.
+
+        Returns:
+            The column's compact tensor representation.
+
         Raises:
-            TypeError: If the input is not an Arrow array or chunked array.
+            TypeError: If the input is not an Arrow array or chunked array,
+                or uses an unsupported list-view or string-view type.
         """
-        if isinstance(array, pa.ChunkedArray):
-            array = array.combine_chunks()
-        elif not isinstance(array, pa.Array):
+        if not isinstance(array, (pa.Array, pa.ChunkedArray)):
             raise TypeError(
                 "TensorMapper input must be an Arrow array or chunked array"
             )
+        if hasattr(pa.types, "is_list_view") and (
+            pa.types.is_list_view(array.type)
+            or pa.types.is_large_list_view(array.type)
+            or pa.types.is_string_view(array.type)
+        ):
+            raise TypeError(
+                f"TensorMapper does not support Arrow view arrays ({array.type})"
+            )
+        if isinstance(array, pa.ChunkedArray):
+            array = array.combine_chunks()
         return self.forward(array, device=device)
 
     @abstractmethod
@@ -343,28 +361,6 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         self.sep = sep
         self._is_string_dtype: bool | None = None
 
-    def _forward_pandas(
-        self,
-        ser: pd.Series,
-        *,
-        device: torch.device | None = None,
-    ) -> MultiNestedTensor:
-        """Handle split/explode cases outside the native Arrow path."""
-        # Support for both string-based and list-like input data:
-        if self._is_string_dtype is None and len(ser) > 0:
-            index = ser.first_valid_index()
-            self._is_string_dtype = index is not None and not pd.api.types.is_list_like(
-                ser[index]
-            )
-
-        rowptr, index = self.mapper.map_multi(ser, self.sep)
-        return MultiNestedTensor(
-            num_rows=rowptr.numel() - 1,
-            num_cols=1,
-            values=index.to(device),
-            offset=rowptr.to(device),
-        )
-
     def backward(self, tensor: MultiNestedTensor) -> pd.Series:
         assert tensor.num_cols == 1
 
@@ -397,37 +393,70 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiNestedTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks."""
-        # An Arrow ``list<int>`` column is already the ``(rowptr, index)`` CSR
-        # layout of ``MultiNestedTensor``: map the flat values and reuse the
-        # offsets, skipping the explode / index2ptr machinery.
-        is_list = isinstance(array, (pa.ListArray, pa.LargeListArray))
-        if is_list and pa.types.is_integer(array.type.value_type):
-            offsets_np = array.offsets.to_numpy(zero_copy_only=False)
-            values = array.values
-            # The pandas fallback preserves the legacy -1 token for empty lists.
-            no_empty_rows = bool((offsets_np[1:] > offsets_np[:-1]).all())
-            if (
-                array.null_count == 0
-                and offsets_np[0] == 0
-                and offsets_np[-1] == len(values)
-                and no_empty_rows
-            ):
-                self._is_string_dtype = False
-                if values.null_count == 0:
-                    index = self.mapper.map(values.to_numpy(zero_copy_only=False))
-                else:
-                    index = self.mapper.map(values.to_pandas())
-                offsets = torch.from_numpy(offsets_np.astype(np.int64))
-                return MultiNestedTensor(
-                    num_rows=len(array),
-                    num_cols=1,
-                    values=index.to(device),
-                    offset=offsets.to(device),
-                )
+        """Map Arrow categories to IDs, preserving empty and missing rows."""
+        is_list = isinstance(
+            array, (pa.ListArray, pa.LargeListArray, pa.FixedSizeListArray)
+        )
+        if len(array) > 0 and self._is_string_dtype is None:
+            self._is_string_dtype = not is_list and array.null_count < len(array)
 
-        # Fallback (string lists, nested nulls, sliced offsets, ...).
-        return self._forward_pandas(array.to_pandas(), device=device)
+        if not is_list and self.sep is not None and len(array) > 0:
+            strings = pc.fill_null(pc.cast(array, pa.string()), "__None__")
+            if len(self.sep) == 1:
+                array = pc.split_pattern(strings, pattern=self.sep)
+            else:
+                # Pandas treats multi-character separators as Python regexes,
+                # including capture groups and lookarounds unsupported by RE2.
+                pattern = re.compile(self.sep)
+                array = pa.array(
+                    [pattern.split(row) for row in strings.to_pylist()],
+                    type=pa.list_(pa.string()),
+                )
+            is_list = True
+
+        if is_list:
+            values, offsets = _list_values_and_offsets(array)
+            missing = np.diff(offsets) == 0
+        else:
+            values = array
+            offsets = np.arange(len(array) + 1, dtype=np.int64)
+            missing = np.zeros(len(array), dtype=bool)
+
+        if pa.types.is_dictionary(values.type):
+            values = values.dictionary_decode()
+        if pa.types.is_string(values.type) or pa.types.is_large_string(values.type):
+            keep = pc.fill_null(pc.not_equal(values, ""), True)
+            if not pc.all(keep).as_py():
+                retained = np.empty(len(values) + 1, dtype=np.int64)
+                retained[0] = 0
+                np.cumsum(keep.to_numpy(zero_copy_only=False), out=retained[1:])
+                offsets = retained[offsets]
+                values = pc.filter(values, keep)
+
+        # Fill nullable integers before conversion to avoid rounding through float64.
+        nulls = None
+        if values.null_count:
+            nulls = values.is_null().to_numpy(zero_copy_only=False)
+            if pa.types.is_integer(values.type):
+                values = pc.fill_null(values, 0)
+        index = self.mapper.map(values.to_numpy(zero_copy_only=False))
+        if nulls is not None:
+            index[torch.tensor(nulls)] = -1
+
+        if missing.any():
+            offsets = offsets + np.concatenate(([0], np.cumsum(missing)))
+            occupied = torch.ones(int(offsets[-1]), dtype=torch.bool)
+            occupied[torch.from_numpy(offsets[:-1][missing])] = False
+            expanded = torch.full((int(offsets[-1]),), -1, dtype=torch.long)
+            expanded[occupied] = index
+            index = expanded
+
+        return MultiNestedTensor(
+            num_rows=len(array),
+            num_cols=1,
+            values=index.to(device),
+            offset=torch.from_numpy(offsets).to(device),
+        )
 
     def post_forward(
         self,
@@ -448,6 +477,22 @@ class MultiCategoricalTensorMapper(TensorMapper[MultiNestedTensor]):
         return MultiNestedTensor(
             num_cols=1, num_rows=len(array), offset=offsets, values=values
         )
+
+
+def _list_values_and_offsets(array: pa.Array) -> tuple[pa.Array, np.ndarray]:
+    """Flatten Arrow lists, excluding hidden null-row values and slice prefixes."""
+    if array.null_count:
+        lengths = pc.fill_null(pc.list_value_length(array), 0)
+        offsets = np.empty(len(array) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(lengths.to_numpy(zero_copy_only=False), out=offsets[1:])
+        return pc.list_flatten(array), offsets
+    if isinstance(array, pa.FixedSizeListArray):
+        offsets = np.arange(len(array) + 1, dtype=np.int64) * array.type.list_size
+        return array.flatten(), offsets
+    offsets = array.offsets.to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
+    start = int(offsets[0])
+    return array.values.slice(start, int(offsets[-1]) - start), offsets - start
 
 
 def _row_path(
@@ -501,54 +546,6 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
             )
         return ser
 
-    def _forward_pandas(
-        self,
-        ser: pd.Series,
-        *,
-        device: torch.device | None = None,
-    ) -> MultiEmbeddingTensor:
-        """Parse and pad inputs outside the native Arrow list path."""
-        if len(ser) == 0:
-            return MultiEmbeddingTensor(
-                num_rows=0,
-                num_cols=1,
-                values=torch.empty(0, self.max_length, device=device),
-                offset=torch.tensor([0, self.max_length], device=device),
-            )
-
-        # Support for both string-based and list-like input data:
-        if self._is_string_dtype is None and len(ser) > 0:
-            index = ser.first_valid_index()
-            self._is_string_dtype = index is not None and not pd.api.types.is_list_like(
-                ser[index]
-            )
-
-        ser = self.to_list_like(ser)
-        dtype = str(torch.get_default_dtype()).split(".")[-1]
-
-        def pad_with_nan(row: list[float] | None) -> np.ndarray | list[float]:
-            if row is None or len(row) == 0:
-                return np.full(self.max_length, np.nan, dtype=dtype)
-
-            if len(row) < self.max_length:
-                return np.concatenate(
-                    [
-                        np.array(row, dtype=dtype),
-                        np.full(self.max_length - len(row), np.nan, dtype=dtype),
-                    ]
-                )
-
-            return row[: self.max_length]
-
-        tensor = torch.from_numpy(np.stack(ser.apply(pad_with_nan)))  # type: ignore
-
-        return MultiEmbeddingTensor(
-            num_rows=tensor.size(0),
-            num_cols=1,
-            values=tensor.to(device, torch.get_default_dtype()),
-            offset=torch.tensor([0, self.max_length], device=device),
-        )
-
     def backward(self, tensor: MultiEmbeddingTensor) -> pd.Series:
         assert tensor.num_cols == 1
         ser = pd.Series(tensor.values.tolist(), dtype=object)
@@ -562,35 +559,39 @@ class SequenceTensorMapper(TensorMapper[MultiEmbeddingTensor]):
         *,
         device: torch.device | None = None,
     ) -> MultiEmbeddingTensor:
-        """Encode Arrow lists directly, retaining parsing fallbacks."""
-        is_list = isinstance(array, (pa.ListArray, pa.LargeListArray))
-        if is_list and len(array) > 0:
-            offsets_np = array.offsets.to_numpy(zero_copy_only=False)
-            values_arr = array.values
-            # Defer sliced offsets to the pandas fallback (``array.values``
-            # ignores the slice, so require the full span); empty/null rows
-            # already map to all-NaN rows in both paths.
-            if offsets_np[0] == 0 and offsets_np[-1] == len(values_arr):
-                self._is_string_dtype = False
-                return self._pad_or_truncate(
-                    values_arr.to_numpy(zero_copy_only=False), offsets_np, device
-                )
-
-        if (
-            isinstance(array, pa.FixedSizeListArray)
-            and len(array) > 0
-            and array.null_count == 0
-        ):
-            width = array.type.list_size
-            self._is_string_dtype = False
+        """Parse Arrow sequences and pad or truncate their flattened values."""
+        if len(array) == 0:
             return self._pad_or_truncate(
-                array.flatten().to_numpy(zero_copy_only=False),
-                np.arange(len(array) + 1, dtype=np.int64) * width,
-                device,
+                np.empty(0), np.zeros(1, dtype=np.int64), device
             )
+        if pa.types.is_dictionary(array.type):
+            array = array.dictionary_decode()
+        if pa.types.is_string(array.type) or pa.types.is_large_string(array.type):
+            if self._is_string_dtype is None:
+                self._is_string_dtype = array.null_count < len(array)
+            dtype = str(torch.get_default_dtype()).split(".")[-1]
+            array = pa.array(
+                [
+                    np.fromstring(row.strip("[]"), sep=",", dtype=dtype)
+                    if row is not None
+                    else None
+                    for row in array.to_pylist()
+                ],
+                type=pa.list_(pa.from_numpy_dtype(dtype)),
+            )
+        elif pa.types.is_null(array.type):
+            if self._is_string_dtype is None:
+                self._is_string_dtype = False
+            array = pa.nulls(len(array), type=pa.list_(pa.float64()))
+        else:
+            self._is_string_dtype = False
 
-        # Fallback (string-encoded "[1,2,3]" sequences, sliced offsets, ...).
-        return self._forward_pandas(array.to_pandas(), device=device)
+        values, offsets = _list_values_and_offsets(array)
+        values_np = values.to_numpy(zero_copy_only=False)
+        if values_np.dtype.kind in {"O", "U", "S"}:
+            dtype = str(torch.get_default_dtype()).split(".")[-1]
+            values_np = values_np.astype(dtype)
+        return self._pad_or_truncate(values_np, offsets, device)
 
     def post_forward(
         self,

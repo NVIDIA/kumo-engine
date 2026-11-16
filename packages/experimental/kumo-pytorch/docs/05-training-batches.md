@@ -210,6 +210,21 @@ length bucketing and `drop_last`. Token budgets count actual emitted
 positions, padding included, and are refused with `world_size > 1`, where
 ranks could otherwise take different numbers of steps.
 
+For DiskGraph AnchorTable model batches, native length planning currently
+requires a history `EventSource` length input (`collection="history"`) with a
+Packed, Padded or Nested layout. DiskGraph already refuses `SampleSpec.current_events`
+at `check`/`prepare` with `DG-CURRENT-EVENTS`, including when current and history
+components have the same name; current events cannot reach this native planner.
+Other sources, including `EntitySource`, are refused explicitly; this path does
+not silently switch to Python per-anchor planning. Explicit request batches
+and the reference engine retain their existing planner.
+
+Planning uses only the designated length input's merge; other event inputs
+still load normally. Constant-only components have their own fixed costs,
+with text constants counted once when attaching the iterator. Variable text
+components must match their precomputed stored-field recipe; incompatible
+recipes are refused rather than estimated from unrelated table costs.
+
 ## Inputs, targets and devices
 
 A `Batch` keeps `inputs`, `targets` and `metadata` apart. `metadata` carries

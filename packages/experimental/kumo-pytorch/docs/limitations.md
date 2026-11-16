@@ -115,10 +115,12 @@ or infinity; encoders that require finite observations reject them.
 
 ## Time
 
-- Timestamps normalize to whole-second UTC instants. Stored subsecond values are
-  rounded toward positive infinity, including negative epochs. Anchor
-  (`as_of_time`) times round toward negative infinity, so a later event in the
-  same second is never history. Naïve datetimes mean UTC.
+- Stored timestamps round toward positive infinity to their declared tick.
+  Anchor (`as_of_time`) times round downward to the graph clock, including
+  negative epochs. This preserves the reference engine's existing causal
+  boundary; the reference engine remains seconds-only.
+  Naïve datetimes mean UTC. Integer anchors are epoch seconds; integer timestamp
+  field values use their declared ticks. Use typed timestamps for subsecond anchors.
 - Windows use `(start, stop]`, measured in seconds from each anchor: the start
   is excluded and the stop is included.
   Historical context stops at or before zero; generated targets start at or
