@@ -75,7 +75,7 @@ def test_varlen_attention_consumes_the_metadata_directly() -> None:
     with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
         task = plan.materialize(_requests(), fit_split="train")
         history = next(iter(task.batches(_requests(), batch_size=2))).to("cuda").inputs["history"]
-    tokens = history["key_ids"].numel()
+    tokens = history["field_ids"].numel()
     q = torch.randn(tokens, 2, 64, device="cuda", dtype=torch.bfloat16)
     cu, longest = history["field_cu_seqlens"], history["field_max_seqlen"]
     out = varlen_attn(q, q, q, cu, cu, longest, longest)

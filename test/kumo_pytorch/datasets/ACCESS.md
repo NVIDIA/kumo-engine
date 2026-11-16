@@ -12,27 +12,15 @@ suite or make the bucket public.
 Kumo engine CI already uses GitHub OIDC with the
 `gha-kumo-workflow-tests` role in the `gha-kumo-workflow-tests` environment.
 The nightly AML job requests that role and performs the pinned downloads.
-Its first execution must verify both role assumption and object access; local
-downloads do not establish that permission. If it fails, an administrator must
-review the role/bucket permissions. This change applies no IAM policy.
-The following identity-policy example is sufficient for this downloader's
-GetObject requests; it is documentation, not an applied policy:
+On 2026-11-16, CI assumed the role successfully but GetObject was denied for
+all 11 HI-small inputs. With user authorization, a bucket-policy statement was
+added granting that exact role `s3:GetObject` for only those 11 object ARNs.
+The existing bucket owner restriction was preserved. The applied addition is
+recorded in [ci-read-policy.json](ci-read-policy.json); its resources match the
+HI-small entries in [inputs.json](inputs.json). No IAM role policy was changed:
+the available SSO identity cannot perform `iam:PutRolePolicy`.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": "s3:GetObject",
-    "Resource": [
-      "arn:aws:s3:::kumo-engine-arena/datasets/aml-data/v8/*",
-      "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/*"
-    ]
-  }]
-}
-```
-
-The downloader does not list the bucket or write objects. Existing bucket
-policy restrictions still apply; a policy allowing reads must actually be
-attached to the caller. Permission errors fail acquisition rather than skip a
-required dataset. Local download success does not verify the CI role.
+The downloader does not list the bucket or write objects. The grant contains
+no wildcard resources, other principals or write actions. Additional inputs
+require a separately reviewed grant. CI must verify actual downloads after the
+permission change; owner-profile access alone is not evidence of CI access.
