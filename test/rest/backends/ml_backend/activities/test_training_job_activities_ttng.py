@@ -6,6 +6,7 @@
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from kumo_core.job_config import JobConfig, TrainStatus
@@ -102,12 +103,15 @@ def test_ttng_postprocess_rejects_missing_durable_sidecar(tmp_path) -> None:
         _act._load_ttng_published_metadata(job_config)
 
 
-def test_log_failed_job_returns_saved_train_status(
-        tmp_path, monkeypatch, caplog) -> None:
+def test_log_failed_job_returns_saved_train_status(tmp_path, monkeypatch,
+                                                   caplog) -> None:
     TrainStatus(error_msg='Out-of-memory (OOM) error: x',
-                stacktrace='Traceback ...').save(str(tmp_path))
+                stacktrace='Traceback ...',
+                warning_msg='Batch size reduced').save(str(tmp_path))
     monkeypatch.setattr(_act.JobConfig, 'load',
                         lambda _path: SimpleNamespace(home_dir=str(tmp_path)))
+    save_warning = Mock()
+    monkeypatch.setattr(_act, '_save_training_warning', save_warning)
 
     with caplog.at_level('WARNING'):
         saved = _act.TrainingJobActivities().log_failed_job(
@@ -117,3 +121,15 @@ def test_log_failed_job_returns_saved_train_status(
     assert saved.err_msg == 'Out-of-memory (OOM) error: x'
     assert saved.stacktrace == 'Traceback ...'
     assert 'Traceback ...' in caplog.text
+    save_warning.assert_called_once_with(str(tmp_path), 'trainingjob-1',
+                                         'Batch size reduced')
+
+
+def test_log_failed_job_returns_none_if_status_load_fails(
+        tmp_path, monkeypatch) -> None:
+    (tmp_path / 'status.json').write_text('{not json')
+    monkeypatch.setattr(_act.JobConfig, 'load',
+                        lambda _path: SimpleNamespace(home_dir=str(tmp_path)))
+
+    assert _act.TrainingJobActivities().log_failed_job('trainingjob-1',
+                                                       '/tmp/cfg.json') is None

@@ -320,18 +320,23 @@ class BatchPredictionJobWorkflow:
         final_job_state = (JobState.FAILED
                            if failed_shards else JobState.SUCCEEDED)
         # A failed shard returns what kumo-pred saved in pred_status.json.
-        # Use its curated message, else surface a pointer, and log the
-        # traceback here because release deleted the shard's pod and log.
+        # Use the first shard that saved a message or traceback, else surface
+        # a pointer. Release deleted the shard's pod and log, so log the
+        # traceback here. workflow.logger skips replays.
         err_msg = (f'kumo-pred subprocess exited non-zero for job '
                    f'{job_input.id} on shard(s) {failed_shards}; see the ML '
                    f'workflow worker logs for details'
                    if failed_shards else None)
         stacktrace = None
-        saved = next((result.failure_info for result in successful_results
-                      if result.failure_info is not None), None)
+        infos = [result.failure_info for result in successful_results]
+        saved = next(
+            (info for info in infos
+             if info is not None and (info.message or info.stacktrace)), None)
         if saved is not None:
-            log.warning('Batch prediction job %s traceback:\n%s', job_input.id,
-                        saved.stacktrace)
+            if saved.stacktrace:
+                workflow.logger.warning(
+                    'Batch prediction job %s traceback:\n%s', job_input.id,
+                    saved.stacktrace)
             err_msg = saved.message or err_msg
             stacktrace = saved.stacktrace or None
 

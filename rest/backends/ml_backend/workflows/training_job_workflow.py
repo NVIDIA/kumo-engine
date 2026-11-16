@@ -82,8 +82,8 @@ class TrainingJobWorkflow:
             # Note: warnings are saved by postprocess_job_output via ValidationResponse.save()
             await self._save_output(output)
         else:  # FAILED
-            # log_failed_job also saves warnings if present, and returns what
-            # kumo-auto saved on failure (None in older histories).
+            # log_failed_job saves warnings and returns what kumo-auto saved
+            # on failure, or None if it could not load it.
             saved = await workflow.execute_activity(
                 TrainingJobActivities.log_failed_job,
                 args=[job_input.id, job_config_path, poll_result.warning_msg],

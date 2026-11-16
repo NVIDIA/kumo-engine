@@ -2517,8 +2517,8 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     prediction_config_path.write_text('{}')
     prediction_config = _make_prediction_config(str(tmp_path / 'output'))
     prediction_config.home_dir = str(tmp_path)
-    PredStatus(error_msg='bad column', stacktrace='Traceback ...').save(
-        str(tmp_path))
+    PredStatus(error_msg='bad column',
+               stacktrace='Traceback ...').save(str(tmp_path))
 
     with mock.patch('pool.activities._run_kumo_subprocess',
                     _fake_subprocess), \
@@ -2550,7 +2550,6 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
     else:
         assert pred_end_idx < train_start_idx, (
             f'predict should end before train starts: {events}')
-    # The failed shard returns what kumo-pred saved in pred_status.json.
     assert prediction.failure_info.message == 'bad column'
     assert prediction.failure_info.stacktrace == 'Traceback ...'
 
@@ -2811,6 +2810,7 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
     )
 
     assert result.state is JobState.SUCCEEDED
+    assert result.failure_info is None
     assert result.artifact_manifest is not None
     manifest = load_shard_manifest(result.artifact_manifest)
     assert manifest.producer_stats is True
