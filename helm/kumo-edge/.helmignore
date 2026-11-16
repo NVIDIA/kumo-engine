@@ -1,8 +1,0 @@
-.git
-.github
-.gitignore
-*.swp
-*.bak
-*.tmp
-__pycache__/
-test/

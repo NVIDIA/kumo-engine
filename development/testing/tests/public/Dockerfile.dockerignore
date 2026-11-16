@@ -1,0 +1,96 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# This Dockerfile-specific allowlist supersedes the root .dockerignore, which
+# excludes tests/. Keep Git metadata, local environments and hosted fixtures out.
+**
+!packages/contracts/kumo-api/kumoapi/**
+# Connector source closure only; kumo-core also contains the ML runtime.
+!packages/runtime/kumo-core/src/kumo_core/__init__.py
+!packages/runtime/kumo-core/src/kumo_core/sources/*.py
+!packages/runtime/kumo-core/src/kumo_core/csv_rules.py
+!packages/runtime/kumo-core/src/kumo_core/custom_sql.py
+!packages/runtime/kumo-core/src/kumo_core/artifact_staging.py
+# Table sinks stamp run ids on exported prediction files with it.
+!packages/runtime/kumo-core/src/kumo_core/artifact_export.py
+# Model registries validate bundles through the portable artifact contract.
+!packages/runtime/kumo-core/src/kumo_core/artifacts.py
+!packages/runtime/kumo-core/src/kumo_core/config.py
+!packages/runtime/kumo-core/src/kumo_core/manifest.py
+!packages/runtime/kumo-core/src/kumo_core/io/__init__.py
+!packages/runtime/kumo-core/src/kumo_core/io/filesystem.py
+!packages/runtime/kumo-core/src/kumo_core/io/json.py
+!packages/runtime/kumo-core/src/kumo_core/chunked_fs.py
+!packages/runtime/kumo-core/src/kumo_core/object_store_sink.py
+!packages/runtime/kumo-core/src/kumo_core/artifact_export.py
+!packages/runtime/kumo-core/src/kumo_core/stype_inference.py
+!packages/runtime/kumo-core/src/kumo_core/types/__init__.py
+!packages/runtime/kumo-core/src/kumo_core/types/enums.py
+!packages/runtime/kumo-core/src/kumo_core/types/conversions.py
+# BigQuery's repeated-string type conversion imports this decision lazily.
+!packages/runtime/kumo-core/src/kumo_core/training/__init__.py
+!packages/runtime/kumo-core/src/kumo_core/training/options.py
+!packages/runtime/kumo-core/tests/__init__.py
+!packages/runtime/kumo-core/tests/sources/**
+!packages/integrations/kumo-s3/src/**
+!packages/integrations/kumo-s3/tests/**
+!packages/integrations/kumo-gcs/src/**
+!packages/integrations/kumo-gcs/tests/**
+!packages/integrations/kumo-adls/src/**
+!packages/integrations/kumo-adls/tests/**
+!packages/integrations/kumo-databricks/src/**
+!packages/integrations/kumo-databricks/tests/**
+!packages/integrations/kumo-snowflake/src/**
+!packages/integrations/kumo-snowflake/tests/**
+!packages/integrations/kumo-bigquery/src/**
+# The BigQuery live file is needed by the isolated, synthetic-ADC gate tests.
+!packages/integrations/kumo-bigquery/tests/**
+# ADLS range reads use the hosted filesystem's ordinary import boundary.
+# Admit its shared support and local/ADLS backends, not hosted test setup.
+!apps/studio/io_utils/__init__.py
+!apps/studio/io_utils/dataclasses.py
+!apps/studio/io_utils/errors.py
+!apps/studio/io_utils/logging.py
+!apps/studio/io_utils/retry.py
+!apps/studio/io_utils/fsutil/__init__.py
+!apps/studio/io_utils/fsutil/adls_arrow.py
+!apps/studio/io_utils/fsutil/api.py
+!apps/studio/io_utils/fsutil/common.py
+!apps/studio/io_utils/fsutil/credentials.py
+!apps/studio/io_utils/fsutil/generic.py
+!apps/studio/io_utils/fsutil/impl_adls.py
+!apps/studio/io_utils/fsutil/impl_local.py
+!apps/studio/io_utils/fsutil/logging_policy.py
+!apps/studio/io_utils/fsutil/uri.py
+!apps/studio/async_utils/__init__.py
+!apps/studio/async_utils/caching.py
+!apps/studio/async_utils/instrument.py
+!apps/studio/async_utils/sync.py
+!apps/studio/monitoring/__init__.py
+!apps/studio/monitoring/tracing.py
+!apps/studio/service_framework/__init__.py
+!apps/studio/service_framework/deploy_stage.py
+!apps/studio/service_framework/env_var.py
+!development/testing/test/__init__.py
+!development/testing/test/io_utils/__init__.py
+!development/testing/test/io_utils/fsutil/__init__.py
+!development/testing/test/io_utils/fsutil/adls/**
+!development/tooling/scripts/test_public_connectors.py
+!development/tooling/scripts/test_public.py
+!development/testing/test/scripts/public_tests/**
+!development/testing/tests/public/**
+**/__pycache__/
+**/*.pyc
+# Never copy developer credentials or environments from these trees.
+**/.git
+**/.venv
+**/venv
+**/.env
+**/.env.*
+**/.aws
+**/.azure
+**/.config
+**/.cache
+**/*.pem
+**/*.key

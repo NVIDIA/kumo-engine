@@ -9,11 +9,11 @@ on:  # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - 'packages/kumo-api/**'
+      - 'packages/contracts/kumo-api/**'
       - '.github/workflows/kumo-api-*'
   pull_request:
     paths:
-      - 'packages/kumo-api/**'
+      - 'packages/contracts/kumo-api/**'
       - '.github/workflows/kumo-api-*'
   merge_group:
 
@@ -47,14 +47,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
-          key: kumo-api-pre-commit-${{ hashFiles('packages/kumo-api/.pre-commit-config.yaml') }}
+          key: kumo-api-pre-commit-${{ hashFiles('packages/contracts/kumo-api/.pre-commit-config.yaml') }}
 
       - name: Run pre-commit
         run: |
           uv pip install pre-commit
-          mapfile -t package_files < <(git ls-files packages/kumo-api)
+          mapfile -t package_files < <(git ls-files packages/contracts/kumo-api)
           uv run --no-project pre-commit run \
-            --config packages/kumo-api/.pre-commit-config.yaml \
+            --config packages/contracts/kumo-api/.pre-commit-config.yaml \
             --files "${package_files[@]}"
         env:
           SKIP: 'no-commit-to-branch'
@@ -74,11 +74,11 @@ jobs:
 
       - name: Install Kumo API
         run: |
-          cd packages/kumo-api
+          cd packages/contracts/kumo-api
           uv pip install -e ".[test,release-check]"
 
       - name: Run type checker
         run: |
-          cd packages/kumo-api
+          cd packages/contracts/kumo-api
           uv pip install "ty==0.0.77"
           uv run --no-project ty check --error-on-warning

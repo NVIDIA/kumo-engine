@@ -9,23 +9,23 @@ on:  # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - "agent-skills/**"
+      - "packages/clients/kumo-engine/agent-skills/**"
       # The skills cite modules and names from these packages; a rename must fail here.
-      - "packages/kumo-engine/**"
-      - "packages/kumo-core/**"
-      - "packages/kumo-api/**"
-      - "packages/kumo-snowflake/**"
-      - "packages/kumo-databricks/**"
+      - "packages/clients/kumo-engine/**"
+      - "packages/runtime/kumo-core/**"
+      - "packages/contracts/kumo-api/**"
+      - "packages/integrations/kumo-snowflake/**"
+      - "packages/integrations/kumo-databricks/**"
       - ".github/workflows/agent-skills.yml"
   pull_request:
     paths:
-      - "agent-skills/**"
+      - "packages/clients/kumo-engine/agent-skills/**"
       # The skills cite modules and names from these packages; a rename must fail here.
-      - "packages/kumo-engine/**"
-      - "packages/kumo-core/**"
-      - "packages/kumo-api/**"
-      - "packages/kumo-snowflake/**"
-      - "packages/kumo-databricks/**"
+      - "packages/clients/kumo-engine/**"
+      - "packages/runtime/kumo-core/**"
+      - "packages/contracts/kumo-api/**"
+      - "packages/integrations/kumo-snowflake/**"
+      - "packages/integrations/kumo-databricks/**"
       - ".github/workflows/agent-skills.yml"
   merge_group:
 
@@ -55,5 +55,5 @@ jobs:
       - name: Test skill packaging and scripts
         run: |
           uvx --python 3.14 --from pytest==9.0.3 --with filelock==3.29.5 \
-            python -m pytest -c /dev/null --confcutdir=agent-skills/tests \
-            -p no:cacheprovider -q agent-skills/tests
+            python -m pytest -c /dev/null --confcutdir=packages/clients/kumo-engine/agent-skills/tests \
+            -p no:cacheprovider -q packages/clients/kumo-engine/agent-skills/tests

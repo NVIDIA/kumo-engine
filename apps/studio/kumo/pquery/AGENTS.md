@@ -1,0 +1,19 @@
+# Query orchestration agent guidance
+
+Read [architecture](ARCHITECTURE.md), [development constraints](DEVELOPMENT.md),
+and [testing](TESTING.md) for this service module.
+
+- Parsing/semantic validation and AST definitions live in `packages/contracts/kumo-pql`
+  and `packages/contracts/kumo-api`. Coordinate their consumers within this repository.
+- Compiler semantics live in `packages/data/diskgraph`; the Python compiler is
+  `diskgraph-pybind/python/diskgraph/compiler.py` within that workspace.
+  Follow the [DiskGraph source guidance](../../../../docs/development/generated-artifacts.md#diskgraph-source);
+  update affected service/core adapters here.
+- Preserve temporal boundaries, split semantics, generated table schemas,
+  weight handling, cached statistics, and serialized query compatibility.
+- Use pre/post generation validators for data-dependent checks; do AST-level
+  checks in the parser package. Validate at the earliest applicable stage.
+- Shared training execution lives in `packages/runtime/kumo-core`; service training
+  and task adapters remain in `apps/studio/kumo/train` and `apps/studio/kumo/task`.
+- Select focused tests from the testing guide. Grammar changes also affect
+  UI generation and autocomplete; follow the root generated-artifact guide.

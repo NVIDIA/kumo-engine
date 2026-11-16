@@ -1,6 +1,6 @@
 ---
 name: code-ui
-description: Scaffold and implement UI features following Kumo conventions. Use when creating new components, pages, hooks, stores, or tests in ui/src/.
+description: Scaffold and implement UI features following Kumo conventions. Use when creating new components, pages, hooks, stores, or tests in apps/studio/ui/src/.
 ---
 
 # Code UI
@@ -177,14 +177,14 @@ Run validation after implementation:
 
 ```bash
 # Type check
-cd ui && npx tsc --noEmit
+cd apps/studio/ui && npx tsc --noEmit
 
 # Lint
-cd ui && npm run lint
+cd apps/studio/ui && npm run lint
 
 # Run tests (specific file or all)
-cd ui && npx vitest run src/path/to/__tests__/MyFile.test.tsx
-cd ui && npm test
+cd apps/studio/ui && npx vitest run src/path/to/__tests__/MyFile.test.tsx
+cd apps/studio/ui && npm test
 ```
 
 Fix any errors before considering the task complete.
@@ -274,18 +274,18 @@ Modify the catalog when you need to:
 - Add variants/props to an existing component
 
 Do NOT modify the catalog for:
-- One-off components specific to a single feature (put these in `ui/src/components/`)
+- One-off components specific to a single feature (put these in `apps/studio/ui/src/components/`)
 - Quick layout tweaks (use Tailwind overrides via `className` prop)
 
 ### In-tree catalog workflow
 
-The application consumes `packages/kumo-ui-catalog` through a local file
-reference. Read `packages/kumo-ui-catalog/CLAUDE.md` and its README,
+The application consumes `packages/ui/kumo-ui-catalog` through a local file
+reference. Read `packages/ui/kumo-ui-catalog/CLAUDE.md` and its README,
 then change shared components and UI callers in this same repository.
 Validate the affected catalog stories/tests and UI integration. A separate
 repository, registry publication, or two-PR sequence is not a prerequisite.
 
-From the repository root, `npm --prefix ui run local:catalog` enables catalog
+From the repository root, `npm --prefix apps/studio/ui run local:catalog` enables catalog
 source development with the configured local API. Continue importing catalog
 components through `@kumo-ai/kumo-ui-catalog`, not package-internal paths.
 

@@ -8,7 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
     paths:
-      - tools/faiss-gpu-amd64/**
+      - apps/studio/tools/faiss-gpu-amd64/**
       - .github/workflows/build-faiss-gpu-amd64-wheel.yml
   # No pull_request trigger (NVIDIA runners skip those); dispatch on the branch to test changes.
   workflow_dispatch:
@@ -40,19 +40,19 @@ jobs:
       - name: Build wheel inside CUDA container
         run: |
           docker build -t faiss-builder \
-            -f tools/faiss-gpu-amd64/build.Dockerfile tools/faiss-gpu-amd64/
-          mkdir -p tools/faiss-gpu-amd64/dist
+            -f apps/studio/tools/faiss-gpu-amd64/build.Dockerfile apps/studio/tools/faiss-gpu-amd64/
+          mkdir -p apps/studio/tools/faiss-gpu-amd64/dist
           docker run --rm \
-            -v "$PWD/tools/faiss-gpu-amd64:/workspace/pkg:ro" \
-            -v "$PWD/tools/faiss-gpu-amd64/dist:/out" \
+            -v "$PWD/apps/studio/tools/faiss-gpu-amd64:/workspace/pkg:ro" \
+            -v "$PWD/apps/studio/tools/faiss-gpu-amd64/dist:/out" \
             faiss-builder \
             /workspace/pkg/build_wheel.sh
-          test "$(find tools/faiss-gpu-amd64/dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+          test "$(find apps/studio/tools/faiss-gpu-amd64/dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
 
       - name: Smoke test inside the CUDA 13 build container
         run: |
           docker run --rm \
-            -v "$PWD/tools/faiss-gpu-amd64/dist:/dist:ro" \
+            -v "$PWD/apps/studio/tools/faiss-gpu-amd64/dist:/dist:ro" \
             faiss-builder bash -euo pipefail -c '
               python3.14 -m pip install /dist/*.whl
               python3.14 -c "import importlib.metadata as m, faiss; assert m.version(\"faiss-gpu\").startswith(\"1.14.3\"); faiss.IndexFlatL2(8); print(\"faiss\", faiss.__version__)"
@@ -70,7 +70,7 @@ jobs:
 
       - name: Create checksum
         run: |
-          cd tools/faiss-gpu-amd64/dist
+          cd apps/studio/tools/faiss-gpu-amd64/dist
           wheel=$(find . -maxdepth 1 -name '*.whl' -printf '%f\n')
           sha256sum "$wheel" > "${wheel}.sha256"
           sha256sum --check "${wheel}.sha256"
@@ -80,8 +80,8 @@ jobs:
         with:
           name: faiss-gpu-amd64-cu130-sm120-wheel
           path: |
-            tools/faiss-gpu-amd64/dist/*.whl
-            tools/faiss-gpu-amd64/dist/*.whl.sha256
+            apps/studio/tools/faiss-gpu-amd64/dist/*.whl
+            apps/studio/tools/faiss-gpu-amd64/dist/*.whl.sha256
           if-no-files-found: error
           retention-days: 30
 

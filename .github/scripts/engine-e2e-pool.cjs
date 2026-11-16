@@ -269,7 +269,7 @@ async function main() {
       env.ENGINE_E2E_SCHEDULER_ENABLED === 'true', 'VM creation is disabled');
     const selected = plan(env.TIER, JSON.parse(env.SCALES), JSON.parse(env.ENGINE_E2E_TEMPLATES_JSON),
       Number(env.ENGINE_E2E_MAX_PARALLEL || 2), (name, scale) => command('python',
-        [join(__dirname, '../../packages/kumo-engine/test/cases', name.replace(/-control$/, '') + '.py'),
+        [join(__dirname, '../../packages/clients/kumo-engine/test/cases', name.replace(/-control$/, '') + '.py'),
           '--scale', scale, '--requirements']), env);
     if (await start(selected, io) === false) return;
     appendFileSync(env.GITHUB_OUTPUT, 'plan=' + JSON.stringify(selected) + '\nattempt=' + env.GITHUB_RUN_ATTEMPT + '\n');

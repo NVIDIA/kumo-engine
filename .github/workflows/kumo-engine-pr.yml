@@ -56,7 +56,7 @@ jobs:
           metadata="$(gh api "$pr_url" --jq '[.head.sha, .changed_files] | @tsv')"
           read -r pr_head changed_files <<< "$metadata"
           if [[ "$pr_head" != "$GITHUB_SHA" ]] || (( changed_files > 3000 )) ||
-            grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
+            grep -q -v -E '^(apps/studio/ui/|docs/|apps/studio/helm/|apps/studio/tools/|development/benchmarks/)|\.md$' <<< "$files"; then
             echo gpu=true >> "$GITHUB_OUTPUT"
           else
             echo gpu=false >> "$GITHUB_OUTPUT"
@@ -75,7 +75,7 @@ jobs:
       pull-requests: read
     env:
       CARGO_BUILD_JOBS: '4'
-      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/diskgraph/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/packages/data/diskgraph/target
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: ${{ github.workspace }}/.engine-build-tools/zigcc
       CC_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigcc
       CXX_x86_64_unknown_linux_gnu: ${{ github.workspace }}/.engine-build-tools/zigc++
@@ -101,7 +101,7 @@ jobs:
       - uses: ./.github/actions/rust-toolchain
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          workspaces: packages/diskgraph -> target
+          workspaces: packages/data/diskgraph -> target
           shared-key: engine-pr-py312-glibc217-zig017-czb024-linker1
           cache-workspace-crates: false
           cache-bin: false
@@ -124,7 +124,7 @@ jobs:
           done
           printf '#!/bin/sh\nexec cargo-zigbuild zig ranlib -- "$@"\n' > "$compiler_dir/zigranlib"
           chmod +x "$compiler_dir"/*
-          packages/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
+          packages/clients/kumo-engine/scripts/build_wheel.sh --output-dir "$RUNNER_TEMP/pr-wheel"
       - name: Retain the candidate wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -214,7 +214,7 @@ jobs:
             --default-index https://pypi.org/simple --torch-backend cpu "$wheel[mlflow]" 'mlflow>=3.5,<4' 2>&1 | tee "$work/install.log"
           # uv omits archive hashes; pip records the selected wheel's identity.
           "$RUNNER_TEMP/lifecycle-env/bin/python" -I -m pip --isolated install --no-index --no-deps --force-reinstall "$wheel"
-          cp "$GITHUB_WORKSPACE"/packages/kumo-engine/test/wheel_{mlops_lifecycle,gpu_smoke}.py "$work/"
+          cp "$GITHUB_WORKSPACE"/packages/clients/kumo-engine/test/wheel_{mlops_lifecycle,gpu_smoke}.py "$work/"
           cd "$work"
           "$RUNNER_TEMP/lifecycle-env/bin/python" -I wheel_mlops_lifecycle.py \
             --output-dir "$work/results" --wheel "$wheel" --expected-version "$version" --phase-timeout 300 2>&1 | tee "$work/run.log"

@@ -11,22 +11,22 @@ on: # yamllint disable-line rule:truthy
     paths:
       - ".github/workflows/playwright_ui.yml"
       - "Makefile"
-      - "bin/**"
-      - "docker/**"
-      - "kumo/**"
-      - "pool/**"
+      - "apps/studio/bin/**"
+      - "apps/studio/docker/**"
+      - "apps/studio/kumo/**"
+      - "apps/studio/pool/**"
       - "pyproject.toml"
-      - "rest/**"
-      - "scripts/diskgraph"
-      - "scripts/seed_playwright_local_stack.py"
-      - "scripts/up_local_temporal_cli.sh"
-      - "setup.cfg"
-      - "setup.py"
-      - "temporalio_commons/**"
-      - "test/rest/integ/connector_args/test_e2e_connector_args.json"
-      - "test/rest/integ/test_cases/test_e2e_fixtures.json"
-      - "test/csv_data/**"
-      - "ui/**"
+      - "apps/studio/rest/**"
+      - "development/tooling/scripts/diskgraph"
+      - "development/tooling/scripts/seed_playwright_local_stack.py"
+      - "development/tooling/scripts/up_local_temporal_cli.sh"
+      - "development/config/setup.cfg"
+      - "apps/studio/setup.py"
+      - "apps/studio/temporalio_commons/**"
+      - "development/testing/test/rest/integ/connector_args/test_e2e_connector_args.json"
+      - "development/testing/test/rest/integ/test_cases/test_e2e_fixtures.json"
+      - "development/testing/test/csv_data/**"
+      - "apps/studio/ui/**"
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -43,9 +43,9 @@ concurrency:
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  # Backend devserver process tree (mirrors rest/devserver/main.py panels):
-  #   REST_PORT       — private REST (rest/main.py), seeded + proxied by the UI
-  #   PUBLIC_REST_PORT — public REST (rest/public/main.py)
+  # Backend devserver process tree (mirrors apps/studio/rest/devserver/main.py panels):
+  #   REST_PORT       — private REST (apps/studio/rest/main.py), seeded + proxied by the UI
+  #   PUBLIC_REST_PORT — public REST (apps/studio/rest/public/main.py)
   #   UI_PORT         — vite preview server (Playwright BASE_URL)
   #   TEMPORAL_PORT   — local Temporal dev server (configs/local.json -> :7233)
   REST_PORT: "8000"
@@ -54,8 +54,8 @@ env:
   TEMPORAL_PORT: "7233"
   # Local-only deploy config: DISKGRAPH data compute, singlehost pool,
   # custom orchestration @ localhost:7233, and local storage
-  # rooted at KUMO_HOME (see rest/devserver/configs/local.json).
-  DEPLOY_ENV_CONFIG_FILE: rest/devserver/configs/local.json
+  # rooted at KUMO_HOME (see apps/studio/rest/devserver/configs/local.json).
+  DEPLOY_ENV_CONFIG_FILE: apps/studio/rest/devserver/configs/local.json
   DEPLOY_STAGE: dev
   DISABLE_AUTH: "true"
   TEMPORAL_SERVER: localhost
@@ -89,27 +89,27 @@ jobs:
           files: |
             .github/workflows/playwright_ui.yml
             Makefile
-            bin/**
-            docker/**
-            kumo/**
-            pool/**
+            apps/studio/bin/**
+            apps/studio/docker/**
+            apps/studio/kumo/**
+            apps/studio/pool/**
             pyproject.toml
-            rest/**
-            scripts/diskgraph
-            scripts/seed_playwright_local_stack.py
-            scripts/up_local_temporal_cli.sh
-            setup.cfg
-            setup.py
-            temporalio_commons/**
-            test/rest/integ/connector_args/test_e2e_connector_args.json
-            test/rest/integ/test_cases/test_e2e_fixtures.json
-            test/csv_data/**
-            ui/**
+            apps/studio/rest/**
+            development/tooling/scripts/diskgraph
+            development/tooling/scripts/seed_playwright_local_stack.py
+            development/tooling/scripts/up_local_temporal_cli.sh
+            development/config/setup.cfg
+            apps/studio/setup.py
+            apps/studio/temporalio_commons/**
+            development/testing/test/rest/integ/connector_args/test_e2e_connector_args.json
+            development/testing/test/rest/integ/test_cases/test_e2e_fixtures.json
+            development/testing/test/csv_data/**
+            apps/studio/ui/**
 
       # ---------------------------------------------------------------------
       # Backend env (no Docker). Same composite action the fast pytest/integ
       # jobs use on ubuntu-latest: setup-uv + prebuilt abi3 diskgraph wheel
-      # (scripts/diskgraph install) + Torch and the vendored pure-Python PyG wheel.
+      # (development/tooling/scripts/diskgraph install) + Torch and the vendored pure-Python PyG wheel.
       # It checks out this repository into the workspace root and activates the
       # uv-managed venv for subsequent steps.
       # ---------------------------------------------------------------------
@@ -128,7 +128,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/studio/ui/package-lock.json
 
       # ---------------------------------------------------------------------
       # Install + build the UI BEFORE starting the backend process tree.
@@ -139,7 +139,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Install UI dependencies
         if: steps.ui-changes.outputs.any_changed == 'true'
-        working-directory: ui
+        working-directory: apps/studio/ui
         timeout-minutes: 8
         run: |
           rm -rf node_modules
@@ -148,7 +148,7 @@ jobs:
 
       - name: Install Playwright browsers
         if: steps.ui-changes.outputs.any_changed == 'true'
-        working-directory: ui
+        working-directory: apps/studio/ui
         run: npx playwright install --with-deps chromium firefox webkit
 
       # ---------------------------------------------------------------------
@@ -161,7 +161,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Build UI
         if: steps.ui-changes.outputs.any_changed == 'true'
-        working-directory: ui
+        working-directory: apps/studio/ui
         env:
           UI_LOCAL: "true"
           AUTH_DISABLED: "true"
@@ -205,10 +205,10 @@ jobs:
             TEMPORAL_PORT="${TEMPORAL_PORT}" \
             TEMPORAL_NAMESPACE="${TEMPORAL_NAMESPACE}" \
             TEMPORAL_READY_TIMEOUT=150 \
-            bash scripts/up_local_temporal_cli.sh
+            bash development/tooling/scripts/up_local_temporal_cli.sh
 
       # ---------------------------------------------------------------------
-      # Backend process tree. These are exactly the rest/devserver/main.py
+      # Backend process tree. These are exactly the apps/studio/rest/devserver/main.py
       # panels minus the UI / monitoring / memusage panels: private REST,
       # data-backend + ml-workflow Temporal workers, public REST, pool
       # controller, and a singlehost pool worker. Each carries the same env
@@ -232,7 +232,7 @@ jobs:
           # job-level env above wins for the keys it sets.
           set -a
           # shellcheck source=/dev/null
-          . rest/devserver/.env
+          . apps/studio/rest/devserver/.env
           set +a
 
           PY="$(command -v python)"
@@ -243,7 +243,7 @@ jobs:
           # 9000) -> they collide ("Address already in use") unless each gets a
           # DISTINCT port. REST/public-REST also run their own prometheus_client
           # (METRICS_PORT) and pool-controller its own (POOL_METRICS_PORT).
-          # Assign distinct ports per process, mirroring rest/devserver/main.py.
+          # Assign distinct ports per process, mirroring apps/studio/rest/devserver/main.py.
           export WORKER_METRICS_HOST=127.0.0.1
 
           start_proc() {
@@ -254,25 +254,25 @@ jobs:
             echo "$!" >> "${RUNNER_TEMP}/kumo-playwright/pids.txt"
           }
 
-          # Private REST API (rest/main.py reads REST_API_PORT).
+          # Private REST API (apps/studio/rest/main.py reads REST_API_PORT).
           start_proc rest \
             REST_API_PORT="${REST_PORT}" \
             DISABLE_AUTH="${DISABLE_AUTH}" \
             WORKER_METRICS_PORT=9001 METRICS_PORT=9002 \
-            "$PY" rest/main.py
+            "$PY" apps/studio/rest/main.py
 
-          # Public REST API (rest/public/main.py reads REST_API_PORT).
+          # Public REST API (apps/studio/rest/public/main.py reads REST_API_PORT).
           start_proc public-rest \
             REST_API_PORT="${PUBLIC_REST_PORT}" \
             DISABLE_AUTH="${DISABLE_AUTH}" \
             WORKER_METRICS_PORT=9003 METRICS_PORT=9004 \
-            "$PY" rest/public/main.py
+            "$PY" apps/studio/rest/public/main.py
 
           # Data-backend Temporal worker (WORKERS = DATA_BACKEND_WORKER_NAME).
           start_proc t-worker-data \
             WORKERS=data-backend-worker \
             WORKER_METRICS_PORT=9005 \
-            "$PY" temporalio_commons/worker_main.py
+            "$PY" apps/studio/temporalio_commons/worker_main.py
 
           # ML-workflow Temporal worker (WORKERS = ML_WORKFLOW_WORKER).
           # The seed injects a DONE training job straight into the StateDB, so
@@ -281,7 +281,7 @@ jobs:
           start_proc t-worker-ml \
             WORKERS=ml-workflow-worker \
             WORKER_METRICS_PORT=9006 \
-            "$PY" temporalio_commons/worker_main.py
+            "$PY" apps/studio/temporalio_commons/worker_main.py
 
           # Pool controller (AutoRPC server for the singlehost diskgraph pool).
           start_proc pool-controller \
@@ -339,7 +339,7 @@ jobs:
 
       - name: Start UI preview server
         if: steps.ui-changes.outputs.any_changed == 'true'
-        working-directory: ui
+        working-directory: apps/studio/ui
         env:
           UI_LOCAL: "true"
           AUTH_DISABLED: "true"
@@ -352,7 +352,7 @@ jobs:
 
       - name: Wait for UI
         if: steps.ui-changes.outputs.any_changed == 'true'
-        working-directory: ui
+        working-directory: apps/studio/ui
         run: |
           npx wait-on "http-get://localhost:${UI_PORT}" --timeout 120000 \
             || { echo "--- vite log ---"; cat "${RUNNER_TEMP}/kumo-playwright/logs/vite-ui.log"; exit 1; }
@@ -360,7 +360,7 @@ jobs:
       # ---------------------------------------------------------------------
       # Seed via the existing transport-agnostic seed script, pointed at the
       # LOCAL private REST (no docker cp / docker exec). The CSV root is the
-      # in-repo test/csv_data, localized by the script. The script injects a
+      # in-repo development/testing/test/csv_data, localized by the script. The script injects a
       # DONE training job into the StateDB directly (no real training), so the
       # step finishes in seconds.
       # ---------------------------------------------------------------------
@@ -384,7 +384,7 @@ jobs:
           # faulthandler watchdog dumps stuck stacks every 90s before the kill.
           rc=0
           timeout --kill-after=30s 300s \
-            python -X faulthandler scripts/seed_playwright_local_stack.py || rc=$?
+            python -X faulthandler development/tooling/scripts/seed_playwright_local_stack.py || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "=== seed failed (rc=$rc) — tailing backend logs ==="
             for f in rest public-rest t-worker-data t-worker-ml pool-controller; do
@@ -400,10 +400,10 @@ jobs:
         if: steps.ui-changes.outputs.any_changed == 'true'
         id: playwright
         timeout-minutes: 12
-        working-directory: ui
+        working-directory: apps/studio/ui
         env:
           CI: "true"
-          # Must be 127.0.0.1 to match the API base ui/env.js stamps
+          # Must be 127.0.0.1 to match the API base apps/studio/ui/env.js stamps
           # (REACT_APP_BASE_URL_PROD): with axios withCredentials, a
           # localhost page calling 127.0.0.1 is credentialed cross-origin
           # and the browser blocks it.
@@ -428,7 +428,7 @@ jobs:
             ss -tlnp 2>/dev/null || true
             echo
             echo "=== kumo/temporal/vite processes ==="
-            ps aux | grep -E 'rest/main.py|rest/public/main.py|worker_main.py|pool\.(controller|worker)_main|temporal server start-dev|vite' | grep -v grep || true
+            ps aux | grep -E 'apps/studio/rest/main.py|apps/studio/rest/public/main.py|worker_main.py|pool\.(controller|worker)_main|temporal server start-dev|vite' | grep -v grep || true
           } > "${LOGS}/processes.txt" 2>&1 || true
           # Capture the Temporal dev server pane (started in a tmux session).
           tmux capture-pane -p -S -300 -t local_temporal > "${LOGS}/temporal.log" 2>&1 || true
@@ -442,8 +442,8 @@ jobs:
               [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
             done < "${RUNNER_TEMP}/kumo-playwright/pids.txt"
           fi
-          pkill -9 -f "rest/main.py" 2>/dev/null || true
-          pkill -9 -f "rest/public/main.py" 2>/dev/null || true
+          pkill -9 -f "apps/studio/rest/main.py" 2>/dev/null || true
+          pkill -9 -f "apps/studio/rest/public/main.py" 2>/dev/null || true
           pkill -9 -f "worker_main.py" 2>/dev/null || true
           pkill -9 -f "pool.controller_main" 2>/dev/null || true
           pkill -9 -f "pool.worker_main" 2>/dev/null || true
@@ -500,7 +500,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./ui/playwright-report
+          publish_dir: ./apps/studio/ui/playwright-report
           destination_dir: ${{ steps.vars.outputs.dir }}
           keep_files: true
 

@@ -13,18 +13,18 @@ name: kumo-pytorch DiskGraph
 on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
+      - 'packages/models/experimental/kumo-pytorch/**'
+      - 'packages/data/diskgraph/**'
+      - 'development/tooling/scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-diskgraph.yml'
   push:
     branches: [main]
     paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
+      - 'packages/models/experimental/kumo-pytorch/**'
+      - 'packages/data/diskgraph/**'
+      - 'development/tooling/scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-diskgraph.yml'
@@ -49,7 +49,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/experimental/kumo-pytorch
+        working-directory: packages/models/experimental/kumo-pytorch
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -72,7 +72,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/experimental/kumo-pytorch
+        working-directory: packages/models/experimental/kumo-pytorch
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -81,7 +81,7 @@ jobs:
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
           notebooks: 'true'
-      # Each examples/<name>/walkthrough.ipynb runs in a copy of its folder; the JSON it
+      # Each packages/clients/kumo-engine/examples/<name>/walkthrough.ipynb runs in a copy of its folder; the JSON it
       # writes must equal the committed files byte for byte.
       - name: Every example notebook, failing on drift from its committed files
         run: python -m pytest -m notebook --require-imports -q --durations=0
@@ -94,7 +94,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/experimental/kumo-pytorch
+        working-directory: packages/models/experimental/kumo-pytorch
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -105,7 +105,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: |
             uv.lock
-            packages/experimental/kumo-pytorch/pyproject.toml
+            packages/models/experimental/kumo-pytorch/pyproject.toml
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: diskgraph-wheel

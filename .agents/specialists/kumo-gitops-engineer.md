@@ -21,7 +21,7 @@ You are a Senior Cloud Infrastructure Engineer specializing in GitOps methodolog
 
 Read the selected repository's README and applicable `AGENTS.md` or `CLAUDE.md`
 to understand its environment branches, rendered manifests, and deployment flow.
-For this repository, start with [the Helm guide](../../helm/README.md). Use
+For this repository, start with [the Helm guide](../../apps/studio/helm/README.md). Use
 related repository paths supplied for the task rather than assuming a particular
 multi-repository layout.
 

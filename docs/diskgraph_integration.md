@@ -25,7 +25,7 @@ for bundle ownership and cross-graph behavior.
 
 `DiskgraphConfig` is the data-compute config used by live data pipelines. Its
 fields, admission semantics, and current defaults are defined authoritatively
-in `service_framework/_raw_deploy_config.py`.
+in `apps/studio/service_framework/_raw_deploy_config.py`.
 
 ### Mode Detection
 
@@ -39,7 +39,7 @@ if deploy_env().is_diskgraph:
 ```
 
 `is_diskgraph` is a property on `DeployEnvConfig` in
-`service_framework/deploy_env_config.py` that checks whether `data_compute` is
+`apps/studio/service_framework/deploy_env_config.py` that checks whether `data_compute` is
 a `DiskgraphConfig`. It is not a universal pipeline gate: current ML table
 generation requires a DiskGraph index.
 
@@ -52,8 +52,8 @@ The diskgraph index for a specific graph lives at:
 ```
 
 Resolved from a graph handle by `DiskgraphService.local_snapshot_path()` in
-`kumo/diskgraph/service.py`. ML jobs obtain their bound path through
-`get_diskgraph_index_path_for_job()` in `statedb/config/diskgraph.py`.
+`apps/studio/kumo/diskgraph/service.py`. ML jobs obtain their bound path through
+`get_diskgraph_index_path_for_job()` in `apps/studio/statedb/config/diskgraph.py`.
 
 ### Running Locally
 
@@ -95,14 +95,14 @@ GraphRefreshWorkflow
 
 | File | Purpose |
 |------|---------|
-| `rest/backends/data_backend/workflows/graph_refresh_workflow.py` | Top-level workflow and DiskGraph dispatch |
-| `rest/backends/data_backend/workflows/diskgraph_ingest_workflow.py` | Child workflow: pool session, ensure snapshot, cleanup, stats |
-| `pool/wf_coordinator.py` | Snapshot-session routing to a pool task queue |
-| `pool/activities.py` | Snapshot restore-or-ingest activity |
-| `kumo/diskgraph/service.py` | Local/dataplane path layout and mirror contract |
-| `kumo/diskgraph/ingest.py` | Config conversion and subprocess invocation |
-| `packages/kumo-core/src/kumo_core/diskgraph/runner.py` | Subprocess retry and fatal disk classification |
-| `rest/backends/data_backend/diskgraph_stats_bridge.py` | Col/edge stats → Kumo cache copy |
+| `apps/studio/rest/backends/data_backend/workflows/graph_refresh_workflow.py` | Top-level workflow and DiskGraph dispatch |
+| `apps/studio/rest/backends/data_backend/workflows/diskgraph_ingest_workflow.py` | Child workflow: pool session, ensure snapshot, cleanup, stats |
+| `apps/studio/pool/wf_coordinator.py` | Snapshot-session routing to a pool task queue |
+| `apps/studio/pool/activities.py` | Snapshot restore-or-ingest activity |
+| `apps/studio/kumo/diskgraph/service.py` | Local/dataplane path layout and mirror contract |
+| `apps/studio/kumo/diskgraph/ingest.py` | Config conversion and subprocess invocation |
+| `packages/runtime/kumo-core/src/kumo_core/diskgraph/runner.py` | Subprocess retry and fatal disk classification |
+| `apps/studio/rest/backends/data_backend/diskgraph_stats_bridge.py` | Col/edge stats → Kumo cache copy |
 
 ### Stage 2: Table Generation
 
@@ -124,20 +124,20 @@ DiskGraph generates training and prediction tables natively in Rust via the `dis
 
 **Workflow wiring:**
 - The training and prediction activities in
-  `rest/backends/ml_backend/activities/generate_target_table.py` obtain
+  `apps/studio/rest/backends/ml_backend/activities/generate_target_table.py` obtain
   `diskgraph_index_path` through `get_diskgraph_index_path_for_job()`.
 
 **Key files:**
 
 | File | Purpose |
 |------|---------|
-| `kumo/data/generic/diskgraph_train_table.py` | Service generation adapter and durable bundle publication helpers |
-| `packages/kumo-core/src/kumo_core/training/table.py` | Shared native training-table generation |
-| `kumo/data/generic/diskgraph_batch_pred.py` | Native prediction-table generation |
-| `kumo/data/generic/generate_train_table.py` | Training-table validation and publication orchestration |
-| `kumo/data/generic/generate_current_pred_table.py` | Prediction-table orchestration |
-| `kumo/pquery/batch_pred_table_generator.py` | `PredictionTableGeneratorV2` |
-| `rest/backends/ml_backend/activities/generate_target_table.py` | Workflow activities and graph-index binding |
+| `apps/studio/kumo/data/generic/diskgraph_train_table.py` | Service generation adapter and durable bundle publication helpers |
+| `packages/runtime/kumo-core/src/kumo_core/training/table.py` | Shared native training-table generation |
+| `apps/studio/kumo/data/generic/diskgraph_batch_pred.py` | Native prediction-table generation |
+| `apps/studio/kumo/data/generic/generate_train_table.py` | Training-table validation and publication orchestration |
+| `apps/studio/kumo/data/generic/generate_current_pred_table.py` | Prediction-table orchestration |
+| `apps/studio/kumo/pquery/batch_pred_table_generator.py` | `PredictionTableGeneratorV2` |
+| `apps/studio/rest/backends/ml_backend/activities/generate_target_table.py` | Workflow activities and graph-index binding |
 
 ### Stage 3: Task-dataset materialization
 
@@ -147,26 +147,26 @@ read the published `train_tables/<tt_id>/` extension; the durable generation
 bundle supplies the inputs for ingest or recovery. See the
 [ingest contract](ttng-train-table-ingest-and-cross-graph-reuse.md).
 
-- [Training materialization](../rest/backends/ml_backend/activities/materialize_training_task.py)
-- [Prediction materialization](../rest/backends/ml_backend/activities/materialize_prediction_task.py)
-- [Task-dataset service](../kumo/diskgraph/service.py)
+- [Training materialization](../apps/studio/rest/backends/ml_backend/activities/materialize_training_task.py)
+- [Prediction materialization](../apps/studio/rest/backends/ml_backend/activities/materialize_prediction_task.py)
+- [Task-dataset service](../apps/studio/kumo/diskgraph/service.py)
 
 ### Stage 4: Training and prediction
 
-[AutoTrainer](../packages/kumo-core/src/kumo_core/automl/auto_trainer.py)
+[AutoTrainer](../packages/runtime/kumo-core/src/kumo_core/automl/auto_trainer.py)
 dispatches training trials to
-[DiskgraphNestedTrainer](../packages/kumo-core/src/kumo_core/train/diskgraph_nested_trainer.py).
+[DiskgraphNestedTrainer](../packages/runtime/kumo-core/src/kumo_core/train/diskgraph_nested_trainer.py).
 That trainer constructs `DiskgraphLightningDataModule`, whose
-[runtime adapter](../packages/kumo-core/src/kumo_core/diskgraph/runtime_adapter.py)
+[runtime adapter](../packages/runtime/kumo-core/src/kumo_core/diskgraph/runtime_adapter.py)
 consumes native dataloader batches from the task dataset.
 For two-tower link prediction, that adapter supplies positive/negative indices
 and a negative mask to the
-[link GNN module](../packages/kumo-core/src/kumo_core/train/link_gnn_module.py).
-The [engine-side negative-sampling design](../packages/diskgraph/docs/tt-ng-link-prediction-negative-sampling.md)
+[link GNN module](../packages/runtime/kumo-core/src/kumo_core/train/link_gnn_module.py).
+The [engine-side negative-sampling design](../packages/data/diskgraph/docs/tt-ng-link-prediction-negative-sampling.md)
 explains the sampling contract.
 
-The service entry points are `bin/kumo-auto` and `bin/kumo-pred`.
-`run_ttng_batch_prediction` in [kumo-pred](../bin/kumo-pred) loads the trainer
+The service entry points are `apps/studio/bin/kumo-auto` and `apps/studio/bin/kumo-pred`.
+`run_ttng_batch_prediction` in [kumo-pred](../apps/studio/bin/kumo-pred) loads the trainer
 with the prediction task dataset and runs inference.
 
 ### Stage 5: Batch Prediction Artifact Export
@@ -200,7 +200,7 @@ After inference:
 
 | File | Purpose |
 |------|---------|
-| `packages/kumo-core/src/kumo_core/train/output.py` | Streaming final-schema prediction and embedding writers |
-| `rest/backends/ml_backend/activities/parquet_io_activities.py` | Artifact collection, metadata, and output dispatch |
-| `rest/backends/ml_backend/artifact_export.py` | Provider-specific artifact export |
-| `rest/backends/ml_backend/workflows/batch_prediction_workflow.py` | BP workflow, staging cleanup |
+| `packages/runtime/kumo-core/src/kumo_core/train/output.py` | Streaming final-schema prediction and embedding writers |
+| `apps/studio/rest/backends/ml_backend/activities/parquet_io_activities.py` | Artifact collection, metadata, and output dispatch |
+| `apps/studio/rest/backends/ml_backend/artifact_export.py` | Provider-specific artifact export |
+| `apps/studio/rest/backends/ml_backend/workflows/batch_prediction_workflow.py` | BP workflow, staging cleanup |

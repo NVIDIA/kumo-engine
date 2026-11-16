@@ -27,7 +27,7 @@ def get_project_root():
     """Get the project root directory."""
     if "CLAUDE_PROJECT_DIR" in os.environ:
         return Path(os.environ["CLAUDE_PROJECT_DIR"])
-    return Path(__file__).parent.parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def get_skill_info(skill_file: Path) -> dict:

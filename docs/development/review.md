@@ -1,6 +1,6 @@
 # Review and pull requests
 
-Read [CODEOWNERS](../../CODEOWNERS) for component ownership. Review a change
+Read [CODEOWNERS](../../.github/CODEOWNERS) for component ownership. Review a change
 against actual consumers, preserved behavior, and appropriate validation.
 Keep unrelated improvements separate.
 

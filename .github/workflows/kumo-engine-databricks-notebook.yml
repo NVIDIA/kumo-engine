@@ -54,7 +54,7 @@ jobs:
         name: Verify maintainer-protected environment
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 packages/kumo-engine/test/databricks_notebook/check_environment.py
+        run: python3 packages/clients/kumo-engine/test/databricks_notebook/check_environment.py
   wheel:
     needs: configuration
     uses: ./.github/workflows/kumo-engine-pr.yml
@@ -97,14 +97,14 @@ jobs:
         run: |
           python - <<'PY'
           import sys
-          sys.path.insert(0, 'packages/kumo-engine/test/databricks_notebook')
+          sys.path.insert(0, 'packages/clients/kumo-engine/test/databricks_notebook')
           from client import Client, configuration
           Client(configuration())
           PY
       - name: Install the shared locked browser tools
         run: |
-          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
-          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+          npm ci --prefix packages/clients/kumo-engine/test/snowflake_notebook/browser
+          node packages/clients/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
       - &download-candidate
         name: Download this dispatch's wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
@@ -116,7 +116,7 @@ jobs:
         run: |
           export DATABRICKS_TEST_CANDIDATE="$RUNNER_TEMP/databricks-candidate.json"
           printf 'DATABRICKS_TEST_CANDIDATE=%s\n' "$DATABRICKS_TEST_CANDIDATE" >> "$GITHUB_ENV"
-          python packages/kumo-engine/test/platform_candidate.py \
+          python packages/clients/kumo-engine/test/platform_candidate.py \
             --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
             --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
             --output "$DATABRICKS_TEST_CANDIDATE"
@@ -127,7 +127,7 @@ jobs:
           KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
           KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/retention_ledger.py \
             --execute --output-dir "$RUNNER_TEMP/databricks-retention"
       - name: Run the same notebook and export checks as local testing
         env:
@@ -136,7 +136,7 @@ jobs:
           KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
           KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/run.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/run.py \
             --execute --cluster-id "$DATABRICKS_TEST_CLUSTER" \
             --candidate "$DATABRICKS_TEST_CANDIDATE" \
             --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
@@ -149,12 +149,12 @@ jobs:
           KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
           KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/cleanup.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/cleanup.py \
             --output-dir "$RUNNER_TEMP/databricks-graph"
       - name: Prepare public aggregate results
         if: always()
         run: |
-          python packages/kumo-engine/test/platform_summary.py \
+          python packages/clients/kumo-engine/test/platform_summary.py \
             --platform databricks --scenario graph \
             --input "$RUNNER_TEMP/databricks-graph" \
             --output "$RUNNER_TEMP/databricks-graph-public"
@@ -199,7 +199,7 @@ jobs:
           KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
           KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/retention_ledger.py \
             --execute --output-dir "$RUNNER_TEMP/databricks-retention"
       - name: Execute the shared lifecycle in isolated notebook processes
         env:
@@ -208,7 +208,7 @@ jobs:
           KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
           DATABRICKS_TEST_CLUSTER: ${{ inputs.cluster_id }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
             --execute --cluster-id "$DATABRICKS_TEST_CLUSTER" --engine-checks-only \
             --candidate "$DATABRICKS_TEST_CANDIDATE" \
             --wheel "$RUNNER_TEMP"/databricks-wheel/*.whl \
@@ -221,12 +221,12 @@ jobs:
           KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
           KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
         run: |
-          python packages/kumo-engine/test/databricks_notebook/cleanup.py \
+          python packages/clients/kumo-engine/test/databricks_notebook/cleanup.py \
             --output-dir "$RUNNER_TEMP/databricks-lifecycle"
       - name: Prepare public aggregate results
         if: always()
         run: |
-          python packages/kumo-engine/test/platform_summary.py \
+          python packages/clients/kumo-engine/test/platform_summary.py \
             --platform databricks --scenario engine \
             --input "$RUNNER_TEMP/databricks-lifecycle" \
             --output "$RUNNER_TEMP/databricks-engine-public"

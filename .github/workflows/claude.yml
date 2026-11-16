@@ -19,13 +19,13 @@ name: Claude Code
   # Automatic UI review: fires once when a PR is *opened* against a UI file
   # (types is restricted to `opened`, so later commits/`synchronize` do NOT
   # re-trigger it). Handled by the `auto-review-ui` job below; the review-ui
-  # skill itself filters to the reviewable ui/src and ui/tests paths.
+  # skill itself filters to the reviewable apps/studio/ui/src and ui/tests paths.
   # On demand afterwards: comment `/review-ui` on the PR to re-run it (handled
   # via the `issue_comment` trigger above, also by the `auto-review-ui` job).
   pull_request:
     types: [opened]
     paths:
-      - "ui/**"
+      - "apps/studio/ui/**"
 
 # Default token scope; each job declares its required permissions.
 permissions:

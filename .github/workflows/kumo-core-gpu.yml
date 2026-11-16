@@ -42,7 +42,7 @@ jobs:
           metadata="$(gh api "$pr_url" --jq '[.head.sha, .changed_files] | @tsv')"
           read -r pr_head changed_files <<< "$metadata"
           if [[ "$pr_head" != "$GITHUB_SHA" ]] || (( changed_files > 3000 )) ||
-            grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
+            grep -q -v -E '^(apps/studio/ui/|docs/|apps/studio/helm/|apps/studio/tools/|development/benchmarks/)|\.md$' <<< "$files"; then
             echo gpu=true >> "$GITHUB_OUTPUT"
           else
             echo gpu=false >> "$GITHUB_OUTPUT"
@@ -117,18 +117,18 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FAISS_GPU_AMD64_RELEASE_TAG" \
             | python -c 'import json, os, sys; name = os.environ["FAISS_GPU_AMD64_RELEASE_ASSET"]; urls = [a["url"] for a in json.load(sys.stdin)["assets"] if a["name"] == name]; print(urls[0]) if urls else sys.exit("Release asset not found: " + name)')"
           "${api[@]}" --header 'Accept: application/octet-stream' \
-            --output "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
+            --output "development/third-party/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
             "$asset_url"
           printf '%s  %s\n' \
             "$FAISS_GPU_AMD64_RELEASE_SHA256" \
-            "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
+            "development/third-party/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
             | sha256sum --check -
 
       - name: Install and smoke-test checksum-pinned CUDA Faiss wheel
         run: |
           set -euo pipefail
           uv pip install --force-reinstall --no-deps \
-            "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET"
+            "development/third-party/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET"
           python - <<'PY'
           from importlib import metadata
 
@@ -159,8 +159,8 @@ jobs:
         with:
           name: kumo-core-gpu-coverage
           path: |
-            packages/kumo-core/.coverage*
-            packages/kumo-core/coverage.xml
+            packages/runtime/kumo-core/.coverage*
+            packages/runtime/kumo-core/coverage.xml
           if-no-files-found: ignore
 
   required:

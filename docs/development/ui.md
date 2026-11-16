@@ -1,15 +1,15 @@
 # UI Coding Guide
 
-Conventions and recipes for `ui/`. Paths in examples are relative to `ui/src/`
-unless stated otherwise. Commands run from `ui/`. The component library lives
-in `packages/kumo-ui-catalog` in this same repository.
+Conventions and recipes for `apps/studio/ui/`. Paths in examples are relative to `apps/studio/ui/src/`
+unless stated otherwise. Commands run from `apps/studio/ui/`. The component library lives
+in `packages/ui/kumo-ui-catalog` in this same repository.
 
 ## Project Structure
 
 | Directory               | Purpose                                                  |
 | ----------------------- | -------------------------------------------------------- |
 | `src/components/`       | Feature components, organized by domain                  |
-| `src/components/@ui/`   | Application wrappers and shared UI helpers              |
+| `src/components/@apps/studio/ui/`   | Application wrappers and shared UI helpers              |
 | `src/components/@hoc/`  | HOCs: `WithErrorBoundary`, `WithErrorBoundaryForwardRef` |
 | `src/hooks/`            | Custom hooks (data fetching, state, table logic)         |
 | `src/stores/`           | Zustand stores (debugStore, userStore, cacheStore)       |
@@ -375,7 +375,7 @@ If you discover a spelling issue in any candidate file or folder, fix it in the 
 
 ## UI Catalog Quick Reference
 
-Component index: [catalog components](../../.agents/skills/code-ui/references/catalog-components.md). Verify exports against `packages/kumo-ui-catalog/src/index.ts`.
+Component index: [catalog components](../../.agents/skills/code-ui/references/catalog-components.md). Verify exports against `packages/ui/kumo-ui-catalog/src/index.ts`.
 
 **Most-used components:** `Button`, `Card`, `CardContent`, `CardHeader`, `Dialog`, `DialogContent`, `DialogHeader`, `DialogTitle`, `DialogFooter`, `Alert`, `Badge`, `Input`, `TextArea`, `Select`, `Checkbox`, `Switch`, `Tabs`, `TabsList`, `TabsTrigger`, `TabsContent`, `Tooltip`, `TruncatedTooltip`, `DropdownMenu`, `Skeleton`, `DataTable`, `EmptyEntity`, `Spinner`, `toast`
 
@@ -396,19 +396,19 @@ import { Button, Card, Dialog, cn } from "@kumo-ai/kumo-ui-catalog";
 From the repository root, with the UI/catalog dependencies installed:
 
 ```bash
-npm --prefix ui run type-check
-npm --prefix ui run lint-check
-npm --prefix ui run test -- --run
+npm --prefix apps/studio/ui run type-check
+npm --prefix apps/studio/ui run lint-check
+npm --prefix apps/studio/ui run test -- --run
 ```
 
 `npm run lint` and `npm run format` write changes; their check variants are
 for verification. `npm run test` uses watch mode unless `--run` is passed.
-For catalog work read its existing [README](../../packages/kumo-ui-catalog/README.md)
-and [component guide](../../packages/kumo-ui-catalog/CLAUDE.md).
+For catalog work read its existing [README](../../packages/ui/kumo-ui-catalog/README.md)
+and [component guide](../../packages/ui/kumo-ui-catalog/CLAUDE.md).
 For API and grammar regeneration use the [generator map](generated-artifacts.md).
 
 ## Review references
 
 Use the [review conventions](ui-review.md) and their linked code patterns for
 UI reviews. Shared catalog changes also follow the
-[catalog review procedure](../../packages/kumo-ui-catalog/.agents/skills/review-ui-catalog/SKILL.md).
+[catalog review procedure](../../packages/ui/kumo-ui-catalog/.agents/skills/review-ui-catalog/SKILL.md).

@@ -107,9 +107,9 @@ test('finds mutable actions used by local composite actions', () => {
 
 test('finds mutable actions in nested repository local actions', () => {
   const root = fixture(`"on": push\njobs: {}\n`);
-  addLocalAction(root, `name: Example\nruns:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v6\n`, 'packages/kumo-api');
+  addLocalAction(root, `name: Example\nruns:\n  using: composite\n  steps:\n    - uses: actions/setup-node@v6\n`, 'packages/contracts/kumo-api');
   assert.deepEqual(scan(root).map((item) => [item.kind, item.path]), [
-    ['mutable-action-ref', 'packages/kumo-api/.github/actions/example/action.yml'],
+    ['mutable-action-ref', 'packages/contracts/kumo-api/.github/actions/example/action.yml'],
   ]);
 });
 

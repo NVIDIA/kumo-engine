@@ -9,13 +9,13 @@ on:  # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - 'packages/kumo-api/**'
-      - 'packages/kumo-sdk/**'
+      - 'packages/contracts/kumo-api/**'
+      - 'packages/clients/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
   pull_request:
     paths:
-      - 'packages/kumo-api/**'
-      - 'packages/kumo-sdk/**'
+      - 'packages/contracts/kumo-api/**'
+      - 'packages/clients/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
   merge_group:
   workflow_dispatch:
@@ -86,17 +86,17 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: wheels-${{ github.sha }}-${{ github.run_id }}
-          path: ./packages/kumo-sdk/dist
+          path: ./packages/clients/kumo-sdk/dist
 
       - name: Build and install colocated Kumo API
         run: |
-          uv build --wheel --out-dir packages/kumo-api/dist packages/kumo-api
-          uv pip install packages/kumo-api/dist/*.whl
+          uv build --wheel --out-dir packages/contracts/kumo-api/dist packages/contracts/kumo-api
+          uv pip install packages/contracts/kumo-api/dist/*.whl
 
       - name: Install Kumo SDK from built wheel
         run: |
-          rm -rf packages/kumo-sdk/kumoai_studio  # Avoid importing local package.
-          uv pip install "$(find packages/kumo-sdk/dist/ -name '*.whl')[test]"
+          rm -rf packages/clients/kumo-sdk/kumoai_studio  # Avoid importing local package.
+          uv pip install "$(find packages/clients/kumo-sdk/dist/ -name '*.whl')[test]"
           # The Snowflake client libraries, named directly rather than through
           # `kumoai-studio[snowflake]`: that extra now installs the `kumo-snowflake`
           # plugin and `kumo-core` with it, which are first-party and absent
@@ -109,7 +109,7 @@ jobs:
         run: |
           set -o pipefail
           cd "$RUNNER_TEMP"
-          GLOG_logtostdout=1 uv run --no-project pytest -c "$GITHUB_WORKSPACE/packages/kumo-sdk/pyproject.toml" -s -o log_cli=true --durations=10 "$GITHUB_WORKSPACE/packages/kumo-sdk/test/"
+          GLOG_logtostdout=1 uv run --no-project pytest -c "$GITHUB_WORKSPACE/packages/clients/kumo-sdk/pyproject.toml" -s -o log_cli=true --durations=10 "$GITHUB_WORKSPACE/packages/clients/kumo-sdk/test/"
         env:
           # The windows runner uses a different default encoding and it leads
           # to unicode errors since we use emoji.

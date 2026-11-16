@@ -61,7 +61,7 @@ There is no report-only comparison mode.
 ## Build and installer caches
 
 Both Rust build paths inherit one `CARGO_TARGET_DIR` at
-`packages/diskgraph/target`. The Rust cache restores that directory using a
+`packages/data/diskgraph/target`. The Rust cache restores that directory using a
 shared key and the action's toolchain and dependency hashes. It excludes
 workspace crates and Cargo binaries. Only `main` saves this cache; PR branches
 restore compatible entries from `main`.
@@ -90,15 +90,15 @@ do not receive them through the action environment.
 The fixture manifest records a shared S3 object and its SHA-256. The existing
 bucket enables versioning. The action checks the archive hash before
 extraction. The tables remain outside Git. See the
-[fixture record](../../packages/kumo-engine/test/pr172/README.md).
+[fixture record](../../packages/clients/kumo-engine/test/pr172/README.md).
 
 ## Local feedback
 
 Run the pure output and workflow checks in the existing development environment:
 
 ```sh
-.venv/bin/python -m pytest -q -c /dev/null --confcutdir=test/scripts \
-  test/scripts/test_engine_gpu_smoke.py test/scripts/test_engine_pr_workflow.py
+.venv/bin/python -m pytest -q -c /dev/null --confcutdir=development/testing/test/scripts \
+  development/testing/test/scripts/test_engine_gpu_smoke.py development/testing/test/scripts/test_engine_pr_workflow.py
 ```
 
 These tests need pytest, NumPy, pandas, and PyYAML. They require no GPU or cloud

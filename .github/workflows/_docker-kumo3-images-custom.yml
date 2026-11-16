@@ -11,7 +11,7 @@ name: (Manual) Kumo 3 images (cpu + gpu + ui)
 # image.
 #
 # The set has to reach ECR together: the backend images bake
-# kumo_version.txt = kumo_repo_ref, and at runtime pool/images.py resolves that
+# kumo_version.txt = kumo_repo_ref, and at runtime apps/studio/pool/images.py resolves that
 # baked value to kumo-backend-gpu:<baked> for every pool pod. Nothing at deploy
 # time pulls the GPU image, so a ref missing it deploys green and fails later
 # as a silent ImagePullBackOff when the first pool pod is spawned.

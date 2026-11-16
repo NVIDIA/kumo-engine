@@ -5,7 +5,7 @@
 name: Build Kumo Base AMI
 
 # Builds the kumo-base AMI (Ubuntu 22.04 + NVIDIA driver + Docker +
-# nvidia-container-toolkit) via deploy/ami/kumo-base.pkr.hcl and registers it
+# nvidia-container-toolkit) via apps/studio/deploy/ami/kumo-base.pkr.hcl and registers it
 # as kumo-base-ubuntu22-<timestamp> in the AWS account.
 #
 # Why this exists as a workflow (not a local `packer build`):
@@ -18,7 +18,7 @@ name: Build Kumo Base AMI
 # `kumo-base-ubuntu22-*`, so a base rebuild here becomes the new base for
 # subsequent single-host builds. Rebuild base rarely — only when bumping the
 # NVIDIA driver, pulling OS security patches, or changing what install-base.sh
-# bakes/holds. See deploy/ami/README.md "Step 0".
+# bakes/holds. See apps/studio/deploy/ami/README.md "Step 0".
 
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
@@ -86,7 +86,7 @@ jobs:
           INSTANCE_TYPE: ${{ inputs.instance_type }}
           AWS_REGION_INPUT: ${{ inputs.aws_region }}
         run: |
-          cd deploy/ami
+          cd apps/studio/deploy/ami
           packer init kumo-base.pkr.hcl
 
           # Only pass overrides that were actually provided, so blanks fall

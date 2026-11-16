@@ -68,7 +68,7 @@ fi
 
 # Single-pass awk script:
 #   1. Parses diff structure (file paths from "diff --git", line numbers from @@ hunks)
-#   2. Filters to ui/src/ paths, excluding gen/ and PQLParsing/
+#   2. Filters to apps/studio/ui/src/ paths, excluding gen/ and PQLParsing/
 #   3. Extracts inline suppression comments (review-ui-ignore: rule-id[, rule-id])
 #   4. Skips known exception files per-pattern
 #   5. Detects commented-out code (avoids console.log false positives)
@@ -147,7 +147,7 @@ function has_hardcoded_arbitrary(content,    s, rest, ci, val) {
   if (ch == "+") {
     c = substr($0, 2)
 
-    # ── Scope filter: ui/src/ only, exclude generated code ──
+    # ── Scope filter: apps/studio/ui/src/ only, exclude generated code ──
     if (file !~ /^ui\/src\//)                   { line++; next }
     if (file ~ /^ui\/src\/gen\//)               { line++; next }
     if (file ~ /^ui\/src\/utils\/PQLParsing\//) { line++; next }

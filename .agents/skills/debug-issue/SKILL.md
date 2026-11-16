@@ -88,12 +88,12 @@ Keep customer data and credentials out of public reports.
 
 | Error Pattern | Component | Directory |
 |---------------|-----------|-----------|
-| REST/API errors | REST Service | `rest/` |
-| Workflow/Activity failures | Temporal and pool orchestration | `temporalio_commons/`, `rest/backends/`, `pool/` |
-| Data processing | Data Backend | `kumo/data/` |
-| Training/model errors | ML Training | `packages/kumo-core/src/kumo_core/`, `kumo/train/`, `kumo/task/` |
-| Connector/ingestion | Connectors | `kumo/connector/` |
-| Graph/feature errors | Graph Engine | `packages/kumo-core/src/kumo_core/diskgraph/`, `kumo/diskgraph/` |
+| REST/API errors | REST Service | `apps/studio/rest/` |
+| Workflow/Activity failures | Temporal and pool orchestration | `apps/studio/temporalio_commons/`, `apps/studio/rest/backends/`, `apps/studio/pool/` |
+| Data processing | Data Backend | `apps/studio/kumo/data/` |
+| Training/model errors | ML Training | `packages/runtime/kumo-core/src/kumo_core/`, `apps/studio/kumo/train/`, `apps/studio/kumo/task/` |
+| Connector/ingestion | Connectors | `apps/studio/kumo/connector/` |
+| Graph/feature errors | Graph Engine | `packages/runtime/kumo-core/src/kumo_core/diskgraph/`, `apps/studio/kumo/diskgraph/` |
 
 ### 2.4 Search Codebase
 

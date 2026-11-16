@@ -35,7 +35,7 @@ Rule IDs are **not** shown in review comments — keep comments clean with just 
 
 ### Kumo-Specific
 
-**[HIGH] Generated Code** (`generated-code`): Flag manually defining types, interfaces, or API hooks that already exist in `ui/src/gen/`. Use Orval codegen (`generate-ui-client-code` or `/trigger-ui-codegen`) to regenerate instead.
+**[HIGH] Generated Code** (`generated-code`): Flag manually defining types, interfaces, or API hooks that already exist in `apps/studio/ui/src/gen/`. Use Orval codegen (`generate-ui-client-code` or `/trigger-ui-codegen`) to regenerate instead.
 
 **[HIGH] Catalog Components** (`catalog-component`): Flag reimplementing UI primitives (Button, Dialog, Card, Alert, Tooltip, Select, etc.) that exist in `@kumo-ai/kumo-ui-catalog`. Check catalog imports across 198+ files for precedent.
 
@@ -133,7 +133,7 @@ Rule IDs are **not** shown in review comments — keep comments clean with just 
 
 **[MEDIUM] Accessibility** (`accessibility`): Flag `<div onClick>` that should be `<button>`. Flag inputs without `<label>`. Flag interactive elements missing ARIA labels.
 
-**[HIGH] Scope** (`scope`): Flag unrelated formatting or refactoring mixed in. Flag edits to generated code (`ui/src/gen/`, `ui/src/utils/PQLParsing/grammar/`, `ui/src/utils/PQLParsing/pqDocs.json`).
+**[HIGH] Scope** (`scope`): Flag unrelated formatting or refactoring mixed in. Flag edits to generated code (`apps/studio/ui/src/gen/`, `apps/studio/ui/src/utils/PQLParsing/grammar/`, `apps/studio/ui/src/utils/PQLParsing/pqDocs.json`).
 
 **[MEDIUM] Styling** (`styling`): Flag inline `style={{}}` when Tailwind works. Flag hardcoded color/spacing values.
 
@@ -154,4 +154,4 @@ Pattern examples (loaded conditionally — see Step 3):
 
 Pre-scan script: `.agents/skills/review-ui/scripts/diff-scan.sh`
 Script tests: `.agents/skills/review-ui/scripts/tests/run-tests.sh`
-Coding guidelines: `ui/docs/Coding_Guidelines.md`
+Coding guidelines: `apps/studio/ui/docs/Coding_Guidelines.md`

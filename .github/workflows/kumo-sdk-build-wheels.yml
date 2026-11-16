@@ -68,7 +68,7 @@ permissions:
 defaults:
   run:
     shell: bash
-    working-directory: packages/kumo-sdk
+    working-directory: packages/clients/kumo-sdk
 
 jobs:
   wheel:
@@ -108,11 +108,11 @@ jobs:
         if: ${{ inputs.expected-version != '' }}
         env:
           EXPECTED_VERSION: ${{ inputs.expected-version }}
-        run: ./scripts/validate_wheels_for_release.sh dist/*.whl
+        run: ./development/tooling/scripts/validate_wheels_for_release.sh dist/*.whl
 
       - name: Upload wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.artifact-name }}
-          path: ./packages/kumo-sdk/dist/*.whl
+          path: ./packages/clients/kumo-sdk/dist/*.whl
           retention-days: ${{ inputs.retention-days }}

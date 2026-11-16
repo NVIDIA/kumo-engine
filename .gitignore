@@ -6,15 +6,15 @@ __pycache__/
 .env
 .env.*
 !.env.example
-!docker/compose/.env.compose-local
-!docker/compose/.env.compose-playwright-ci
-docker/compose/.env.compose-local.local
-docker/compose/data/
+!apps/studio/docker/compose/.env.compose-local
+!apps/studio/docker/compose/.env.compose-playwright-ci
+apps/studio/docker/compose/.env.compose-local.local
+apps/studio/docker/compose/data/
 
 *.egg-info/
 build/
-tools/result_analysis/hnm_acc_filled.py
-tools/result_analysis/dd_acc_filled.py
+apps/studio/tools/result_analysis/hnm_acc_filled.py
+apps/studio/tools/result_analysis/dd_acc_filled.py
 test_pqlv2_forecast_length_des0/
 *.parquet/
 .gradio/
@@ -66,7 +66,7 @@ dist/*
 ui/.pnp
 auth_manager/.pnp
 
-ui/**/.pnp.js
+apps/studio/ui/**/.pnp.js
 auth_manager/**/.pnp.js
 
 # production
@@ -74,17 +74,17 @@ ui/build
 auth_manager/build
 
 # misc
-ui/**/.env.local
+apps/studio/ui/**/.env.local
 auth_manager/**/.env.local
-ui/stacktracer/source_map/*.map
+apps/studio/ui/stacktracer/source_map/*.map
 
-ui/**/.env.development.local
+apps/studio/ui/**/.env.development.local
 auth_manager/**/.env.development.local
 
-ui/**/.env.test.local
+apps/studio/ui/**/.env.test.local
 auth_manager/**/.env.test.local
 
-ui/**/.env.production.local
+apps/studio/ui/**/.env.production.local
 auth_manager/**/.env.production.local
 
 # such as npm-debug.log*
@@ -93,7 +93,7 @@ auth_manager/**/.env.production.local
 # env
 ui/.env
 ui/tests/.auth/
-ui/public/env-config.js
+apps/studio/ui/public/env-config.js
 auth_manager/public/env-config.js
 
 # Phase 0 migration audit: detailed enumerated report (regenerated locally; baseline JSON is committed)
@@ -108,19 +108,19 @@ test/data_backend_cache/
 test/ingest/
 
 # test results
-examples/*_prediction
+packages/clients/kumo-engine/examples/*_prediction
 
 # Any test notebooks
 *.ipynb
 # Example notebooks of the experimental kumo-pytorch package are source.
-!packages/experimental/kumo-pytorch/examples/*/walkthrough.ipynb
+!packages/models/experimental/kumo-pytorch/examples/*/walkthrough.ipynb
 
 
 
 # Used by the pyright linter
 .nodeenv
 
-./rest/devserver/.env
+apps/studio/rest/devserver/.env
 
 .google_credential.json
 gha-creds-*.json
@@ -129,12 +129,12 @@ gha-creds-*.json
 .benchmarks/
 .cache/
 
-tools/*/data/*
+apps/studio/tools/*/data/*
 
 openapi.json
 openapi_cleaned.json
 
-tools/**/data/**
+apps/studio/tools/**/data/**
 
 /debug/
 
@@ -160,7 +160,7 @@ tools/**/data/**
 ## Agent worktrees (nested checkouts; committing one creates a broken gitlink)
 .claude/worktrees/
 ## Local devserver secret mount (never commit secrets)
-rest/devserver/secrets/
+apps/studio/rest/devserver/secrets/
 ## On-demand skill catalog (cloned lazily, not checked in)
 .agents/skills-catalog/
 ## Auto-generated gitignore for catalog-sourced symlinks
@@ -171,10 +171,10 @@ certs/
 .compose-local-backend-hash*
 .compose-local-ui-hash*
 docker/build-artifacts/
-docker/compose/config/generated/
+apps/studio/docker/compose/config/generated/
 pytest-of-*/
 
 /public-reports/
 
-# Built by packages/kumo-engine/setup.py from agent-skills/; ships in the wheel.
-packages/kumo-engine/kumo/engine/_skills/
+# Built by packages/clients/kumo-engine/setup.py from packages/clients/kumo-engine/agent-skills/; ships in the wheel.
+packages/clients/kumo-engine/kumo/engine/_skills/

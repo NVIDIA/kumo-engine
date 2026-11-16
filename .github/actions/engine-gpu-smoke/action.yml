@@ -75,7 +75,7 @@ runs:
         import hashlib, json, os, tarfile
         from pathlib import Path
         import boto3
-        spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+        spec = json.loads(Path('packages/clients/kumo-engine/test/pr172/inputs.json').read_text())
         root = Path(os.environ['RUNNER_TEMP']) / 'engine-smoke-inputs'
         root.mkdir()
         archive = root / 'inputs.tar.gz'
@@ -100,7 +100,7 @@ runs:
         for name in ${!PIP_@}; do unset "$name"; done
         export PIP_CONFIG_FILE=/dev/null
         mkdir -p "$RUNNER_TEMP/engine-gpu-smoke"
-        cp packages/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/engine-gpu-smoke/runner.py"
+        cp packages/clients/kumo-engine/test/wheel_gpu_smoke.py "$RUNNER_TEMP/engine-gpu-smoke/runner.py"
         cd "$RUNNER_TEMP/engine-gpu-smoke"
         "$RUNNER_TEMP/engine-smoke-venv/bin/python" -I runner.py \
           --data-dir "$RUNNER_TEMP/engine-smoke-inputs" \

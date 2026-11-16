@@ -9,8 +9,8 @@ on: # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - 'packages/kumo-api/**'
-      - 'packages/kumo-sdk/**'
+      - 'packages/contracts/kumo-api/**'
+      - 'packages/clients/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
   merge_group:
 
@@ -69,7 +69,7 @@ jobs:
           : "${AWS_SESSION_TOKEN:?AWS_SESSION_TOKEN must be set by aws-actions/configure-aws-credentials}"
           export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-west-2}"
           export DRIVER_RPC_TIMEOUT_SEC=120
-          sed -i 's/pip show/uv pip show/g' rest/devserver/main.py
+          sed -i 's/pip show/uv pip show/g' apps/studio/rest/devserver/main.py
           KUMO_ENABLE_UNAUTHENTICATED_API_KEY_STAGING=1 DETACHED=1 DISABLE_AUTH=1 ENABLE_GLUE=1 VENV_PYTHON=$VIRTUAL_ENV/bin/python uv run --no-project make devserver-local
           timeout 120 bash -lc 'until curl -sS -o /dev/null http://localhost:10002/v1/authentication; do sleep 2; done'
           echo "Public API is responding at http://localhost:10002/v1/authentication"
@@ -93,16 +93,16 @@ jobs:
 
       - name: Install colocated Kumo API and SDK
         run: |
-          uv pip install -e packages/kumo-api
+          uv pip install -e packages/contracts/kumo-api
           # The Snowflake extra contains only the hosted client's notebook and
           # connections.toml helpers; it must not pull in local execution code.
-          uv pip install -e 'packages/kumo-sdk[snowflake,test]'
+          uv pip install -e 'packages/clients/kumo-sdk[snowflake,test]'
 
       - name: Run integration test suite
         timeout-minutes: 20
         run: |
           set -o pipefail
-          GLOG_logtostdout=1 uv run --no-project pytest -c packages/kumo-sdk/pyproject.toml -o log_cli=true --durations=10 --runintegration packages/kumo-sdk/test/
+          GLOG_logtostdout=1 uv run --no-project pytest -c packages/clients/kumo-sdk/pyproject.toml -o log_cli=true --durations=10 --runintegration packages/clients/kumo-sdk/test/
         env:
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}

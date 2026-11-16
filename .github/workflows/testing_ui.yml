@@ -9,9 +9,9 @@ on: # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - "ui/**"
-      - "packages/kumo-ui-catalog/**"
-      - "packages/kumo-pql/kumopql/grammar/PQLGrammar.g4"
+      - "apps/studio/ui/**"
+      - "packages/ui/kumo-ui-catalog/**"
+      - "packages/contracts/kumo-pql/kumopql/grammar/PQLGrammar.g4"
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -55,9 +55,9 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
-            ui/**
-            packages/kumo-ui-catalog/**
-            packages/kumo-pql/kumopql/grammar/PQLGrammar.g4
+            apps/studio/ui/**
+            packages/ui/kumo-ui-catalog/**
+            packages/contracts/kumo-pql/kumopql/grammar/PQLGrammar.g4
 
       - name: Free up disk space
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
@@ -86,14 +86,14 @@ jobs:
       - name: Install dependencies
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run install:catalog
           npm ci
 
       - name: Verify generated PQL grammar
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run compile-grammar-to-ts
           git diff --exit-code -- src/utils/PQLParsing/grammar
 
@@ -101,7 +101,7 @@ jobs:
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
         timeout-minutes: 30
         run: |
-          cd ui
+          cd apps/studio/ui
           npx vitest run --coverage --maxWorkers=2
 
       - name: Set destination path
@@ -213,7 +213,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./ui/ui-coverage
+          publish_dir: ./apps/studio/ui/ui-coverage
           destination_dir: ${{ needs.vitest.outputs.coverage_dir }}
 
   comment-coverage:

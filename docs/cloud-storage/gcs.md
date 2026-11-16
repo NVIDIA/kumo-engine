@@ -34,7 +34,7 @@ URLs or ZIP for multi-file results. Non-GCS endpoints are unsupported.
 ## GCS dataplane operations
 
 Use a root such as `gs://<bucket>/kumo/dataplane` with object-admin access for
-the runtime service account. See the [GCP deployment assets](../../deploy/gcp/)
+the runtime service account. See the [GCP deployment assets](../../apps/studio/deploy/gcp/)
 for VM, identity, bucket, private access, and first-boot configuration, and the
 shared contract for lifecycle, preflight, recovery, and release evidence.
 

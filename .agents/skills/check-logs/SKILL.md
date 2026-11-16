@@ -32,7 +32,7 @@ Do not derive a namespace from a tenant name or use an implicit current context.
 
 The application chart uses labels such as `app=mlworkflow`, `app=databackend`,
 and `app=kumo-rest`. Select the workload relevant to the investigation; the
-namespace is chosen at installation. See [the Helm guide](../../../helm/README.md).
+namespace is chosen at installation. See [the Helm guide](../../../apps/studio/helm/README.md).
 
 ---
 

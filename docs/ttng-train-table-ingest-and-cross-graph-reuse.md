@@ -1,6 +1,6 @@
 # TT-NG: one train-table path, orphan-safe cross-graph ingest
 
-**Companion:** [DiskGraph architecture and migration](../packages/diskgraph/docs/tt-ng-architecture-and-migration.md) (index
+**Companion:** [DiskGraph architecture and migration](../packages/data/diskgraph/docs/tt-ng-architecture-and-migration.md) (index
 architecture), the contract docs on `diskgraph_ingest::ingest_stage_extension`
 (orphan semantics) and `tt_executor::run_gen_bundle` (gen-bundle core).
 
@@ -90,7 +90,7 @@ Counters flow as `{parse,lookup,membership}_failures` (+ per-relation
 
 ## Kumo surfacing
 
-`check_ingest_orphan_skips` (`kumo/data/generic/diskgraph_staging.py`) runs
+`check_ingest_orphan_skips` (`apps/studio/kumo/data/generic/diskgraph_staging.py`) runs
 at every consumer of a TT extension: after the train stage ingest
 (`ensure_stage_ingested`), after the predict stage ingest
 (`materialize_prediction_task_dataset`), **and — from the persisted
@@ -114,7 +114,7 @@ not account for every null or unparseable FK-free input.
   after logging the warning; the train activity layer wraps it verbatim into
   a non-retryable `TrainingDataMaterializationError`.
 
-`_validate_ttng_ingest_binding` (`kumo/diskgraph/service.py`) remains a
+`_validate_ttng_ingest_binding` (`apps/studio/kumo/diskgraph/service.py`) remains a
 path/tt_id **sanity** gate only — its stamp is written at re-ingest time with
 the same index it later compares against, so it cannot detect cross-graph
 reuse. Do not re-introduce a "graphs match" assumption on top of it;

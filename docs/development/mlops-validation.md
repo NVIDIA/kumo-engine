@@ -13,7 +13,7 @@ Tracked local phases set both ambient MLflow URIs to the attempt's SQLite databa
 
 ## Scenario
 
-The [runner](../../packages/kumo-engine/test/wheel_mlops_lifecycle.py) executes
+The [runner](../../packages/clients/kumo-engine/test/wheel_mlops_lifecycle.py) executes
 five separate processes locally (managed profiles use the first four):
 
 1. **Fit:** export the training snapshot/table, train and register two versions,
@@ -68,8 +68,8 @@ python3 -m venv /tmp/mlops-venv
   '/absolute/path/kumo_engine-CANDIDATE.whl[mlflow]' 'mlflow>=3.5,<4' \
   --extra-index-url https://download.pytorch.org/whl/cpu
 mlops_tools_dir="$(mktemp -d /tmp/mlops-tools-XXXXXX)"
-cp packages/kumo-engine/test/wheel_mlops_lifecycle.py \
-  packages/kumo-engine/test/wheel_gpu_smoke.py "$mlops_tools_dir/"
+cp packages/clients/kumo-engine/test/wheel_mlops_lifecycle.py \
+  packages/clients/kumo-engine/test/wheel_gpu_smoke.py "$mlops_tools_dir/"
 /tmp/mlops-venv/bin/python -I "$mlops_tools_dir/wheel_mlops_lifecycle.py" \
   --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
   --expected-version CANDIDATE \
@@ -98,6 +98,6 @@ Databricks, Snowflake, SageMaker, or their UI.
 Run the harness checks and existing shared-runner checks without training:
 
 ```sh
-.venv/bin/python -m pytest -q -c /dev/null --confcutdir=test/scripts \
-  test/scripts/test_engine_mlops_lifecycle.py test/scripts/test_engine_gpu_smoke.py
+.venv/bin/python -m pytest -q -c /dev/null --confcutdir=development/testing/test/scripts \
+  development/testing/test/scripts/test_engine_mlops_lifecycle.py development/testing/test/scripts/test_engine_gpu_smoke.py
 ```

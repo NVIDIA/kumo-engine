@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "setuptools-scm[toml]==8.3.1", "toml>=0.10.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+root = "../.."
+fallback_root = "."
+git_describe_command = "git describe --dirty --tags --long --match v[1-9]*"
+
+[project]
+name = "kumo"
+description = "AI on the Modern Data Stack"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0 AND BSD-3-Clause AND MIT"
+license-files = ["LICENSE", "KUMO-THIRD-PARTY.txt"]
+dynamic = [
+    "version",
+    "authors",
+    "keywords",
+    "classifiers",
+    "dependencies",
+    "optional-dependencies",
+]
+
+[dependency-groups]
+# Public engine tests use CPU Torch with the engine's GPU Faiss dependency.
+public-tests = ["torch"]
+
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cpu", group = "public-tests" },
+  { index = "pytorch-cu130", extra = "cu130" },
+  { index = "pytorch-cu132", extra = "cu132" },
+]

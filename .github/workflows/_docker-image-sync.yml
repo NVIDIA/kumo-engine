@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           case "${{ inputs.source_image_name }}" in
-            kumo/*) ;;
+            apps/studio/kumo/*) ;;
             *)
               echo "::error::Unsupported source ECR repository: ${{ inputs.source_image_name }}"
               exit 1

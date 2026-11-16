@@ -31,17 +31,17 @@ Use Python 3.12. Submission needs `snowflake-connector-python` and
 
 ```sh
 python -m pip --isolated install --require-hashes -r \
-  packages/kumo-engine/test/snowflake_notebook/client-requirements.txt
-npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
-node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
+  packages/clients/kumo-engine/test/snowflake_notebook/client-requirements.txt
+npm ci --prefix packages/clients/kumo-engine/test/snowflake_notebook/browser
+node packages/clients/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
 ```
 
 Chromium's system libraries must already be available locally. GitHub Actions
 installs them with Playwright's `install --with-deps chromium` command.
 
 Local runs and Actions use the same generated client lock. To update its versions,
-edit [client-requirements.in](../../packages/kumo-engine/test/snowflake_notebook/client-requirements.in)
-and run `python packages/kumo-engine/test/snowflake_notebook/compile_client.py`.
+edit [client-requirements.in](../../packages/clients/kumo-engine/test/snowflake_notebook/client-requirements.in)
+and run `python packages/clients/kumo-engine/test/snowflake_notebook/compile_client.py`.
 The generator preserves the SPDX header. Add `--upgrade-package NAME` to refresh
 a transitive dependency.
 
@@ -56,7 +56,7 @@ The tests use existing dedicated resources in the test Snowflake account:
 
 - `KUMO_TEST_DB.KUMO_TEST`, `KUMO_TEST_WH`, and `KUMO_TEST_POOL`.
 - A writable internal stage and a separate read-only
-  [denied stage](../../examples/mlops/snowflake/setup-denied-stage.sql).
+  [denied stage](../../packages/clients/kumo-engine/examples/mlops/snowflake/setup-denied-stage.sql).
 - `KUMO_SNOWFLAKE_CI` with key-pair authentication and
   `KUMO_SNOWFLAKE_TEST_ROLE`, including access to the resources above and
   privileges to create test Code Bundles, experiments and models.
@@ -67,14 +67,14 @@ The graph runner selects the `notebook_service` from `SNOWFLAKE_TEST_CONFIG`
 (default example: `KUMO_TEST_NOTEBOOK_SERVICE`)
 on `KUMO_TEST_POOL (GEN_X64_G2_8)`, using CPU Python 3.12. The configured name selects a dedicated test notebook service. Selecting it explicitly prevents use of a shared service.
 
-[resources.py](../../packages/kumo-engine/test/snowflake_notebook/resources.py)
+[resources.py](../../packages/clients/kumo-engine/test/snowflake_notebook/resources.py)
 defines the exact resource allowlist. Set `SNOWFLAKE_TEST_CONFIG` to the JSON
 returned by its `expected()` function, then replace the placeholder `account`,
 `account_locator`, and `account_url` with your dedicated test account before live
 execution:
 
 ```sh
-export SNOWFLAKE_TEST_CONFIG="$(python -c 'import json, sys; sys.path.insert(0, "packages/kumo-engine/test/snowflake_notebook"); import resources; print(json.dumps(resources.expected()))')"
+export SNOWFLAKE_TEST_CONFIG="$(python -c 'import json, sys; sys.path.insert(0, "packages/clients/kumo-engine/test/snowflake_notebook"); import resources; print(json.dumps(resources.expected()))')"
 ```
 
 For local runs, print the template, replace the account placeholders, and paste
@@ -88,7 +88,7 @@ export SNOWFLAKE_TEST_CONFIG
 
 For Actions, store the completed JSON in the protected environment secret.
 
-It pins the [graph assets](../../packages/kumo-engine/test/snowflake_notebook/graph-assets.json)
+It pins the [graph assets](../../packages/clients/kumo-engine/test/snowflake_notebook/graph-assets.json)
 manifest; dependency hashes are generated for each candidate. Existing configuration
 JSON containing the old dependency hashes remains accepted; those entries are ignored. Wheel changes do not require updating this secret. Actions reuses the shared Engine wheel workflow to build the dispatched commit,
 stages the wheel under
@@ -102,7 +102,7 @@ the connection before any test writes.
 For local authentication, keep the encrypted key outside Git and unlock it once:
 
 ```sh
-python packages/kumo-engine/test/snowflake_notebook/key_cache.py --key-file /path/to/key.p8
+python packages/clients/kumo-engine/test/snowflake_notebook/key_cache.py --key-file /path/to/key.p8
 ```
 
 The key cache lasts eight hours. Browser credentials go in an owner-only JSON
@@ -117,9 +117,9 @@ Build and stage the current checkout first (native build prerequisites are in th
 [setup guide](setup.md)):
 
 ```sh
-packages/kumo-engine/scripts/build_wheel.sh --output-dir /tmp/snowflake-wheel-001
+packages/clients/kumo-engine/scripts/build_wheel.sh --output-dir /tmp/snowflake-wheel-001
 export SNOWFLAKE_TEST_CANDIDATE=/tmp/snowflake-candidate-001.json
-python packages/kumo-engine/test/snowflake_notebook/staging.py \
+python packages/clients/kumo-engine/test/snowflake_notebook/staging.py \
   --wheel /tmp/snowflake-wheel-001/*.whl \
   --source-ref "$(git rev-parse HEAD)" --output "$SNOWFLAKE_TEST_CANDIDATE" \
   --key-file /path/to/key.p8
@@ -134,9 +134,9 @@ provenance or a wheel built from different product sources.
 **Engine lifecycle:** prepare the payload, then execute it inside Snowflake notebooks.
 
 ```sh
-python packages/kumo-engine/test/snowflake_notebook/prepare.py \
+python packages/clients/kumo-engine/test/snowflake_notebook/prepare.py \
   --output-dir /tmp/snowflake-payload-001
-python packages/kumo-engine/test/snowflake_notebook/launch.py \
+python packages/clients/kumo-engine/test/snowflake_notebook/launch.py \
   --payload-manifest /tmp/snowflake-payload-001/manifest.json \
   --preflight-payload /tmp/snowflake-payload-001/preflight \
   --lifecycle-payload /tmp/snowflake-payload-001/lifecycle \
@@ -147,7 +147,7 @@ python packages/kumo-engine/test/snowflake_notebook/launch.py \
 **Lifecycle UI only:** verify an existing lifecycle's rendered runs and versions.
 
 ```sh
-python packages/kumo-engine/test/snowflake_notebook/launch.py \
+python packages/clients/kumo-engine/test/snowflake_notebook/launch.py \
   --execute --ui --ui-run /tmp/snowflake-result-001 \
   --ui-credentials /path/to/browser-credentials.json
 ```
@@ -155,7 +155,7 @@ python packages/kumo-engine/test/snowflake_notebook/launch.py \
 **Notebook graph UI:** create and execute a graph notebook, then verify its saved output.
 
 ```sh
-python packages/kumo-engine/test/snowflake_notebook/graph_notebook.py \
+python packages/clients/kumo-engine/test/snowflake_notebook/graph_notebook.py \
   --execute --key-file /path/to/key.p8 \
   --ui-credentials /path/to/browser-credentials.json \
   --output-dir /tmp/snowflake-graph-001
@@ -247,7 +247,7 @@ evidence, and the original browser result remains available beside the retry pro
 To inspect retention without deleting anything:
 
 ```sh
-python packages/kumo-engine/test/snowflake_notebook/retention.py --key-file /path/to/key.p8
+python packages/clients/kumo-engine/test/snowflake_notebook/retention.py --key-file /path/to/key.p8
 ```
 
 Add `--execute` to apply the verified cleanup. Retention never removes the shared

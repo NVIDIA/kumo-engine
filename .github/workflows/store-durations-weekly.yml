@@ -5,7 +5,7 @@
 name: Weekly pytest-split Durations Refresh
 
 # Runs testing.yml weekly in store-durations mode and opens a PR that
-# updates the committed `.test_durations` file.
+# updates the committed `development/config/.test_durations` file.
 
 on:  # yamllint disable-line rule:truthy
   schedule:
@@ -59,13 +59,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet -- .test_durations; then
-            echo "No change to .test_durations; skipping PR."
+          if git diff --quiet -- development/config/.test_durations; then
+            echo "No change to development/config/.test_durations; skipping PR."
             exit 0
           fi
 
           git checkout -B "$BRANCH"
-          git add .test_durations
+          git add development/config/.test_durations
           git commit -m "Refresh pytest-split durations"
           git push --force-with-lease origin "$BRANCH"
 

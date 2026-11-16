@@ -1,8 +1,8 @@
 # Development setup
 
 Run commands from the relevant checkout. Tool declarations are in
-[.mise.toml](../../.mise.toml); Python package inputs are in
-[setup.py](../../setup.py) and package-local
+[development/config/.mise.toml](../../development/config/.mise.toml); Python package inputs are in
+[apps/studio/setup.py](../../apps/studio/setup.py) and package-local
 `pyproject.toml` files.
 
 ## Setup prerequisites and side effects
@@ -17,12 +17,12 @@ Existing targets have these effects; inspect their scripts before running them:
 | Target | Implementation and effect |
 | --- | --- |
 | `make install-tools` | Runs `mise install` for the declared tools; installs toolchains in mise-managed locations |
-| `make install-venv` | [install_venv.sh](../../scripts/install_venv.sh) deletes and recreates `.venv` and the `venv` compatibility link, then installs dependencies and development tools |
-| `make update-packages` | [update_packages.sh](../../scripts/update_packages.sh) updates packages in the selected environment and builds native dependencies |
-| `make install-diskgraph` | [scripts/diskgraph](../../scripts/diskgraph) builds/installs the in-tree Rust/Python engine |
-| `make install-all-dependencies` | [install_all_dependencies.sh](../../scripts/install_all_dependencies.sh) is host provisioning, including system/tool installation and possible shell changes; it is not a routine documentation or agent prerequisite |
+| `make install-venv` | [install_venv.sh](../../development/tooling/scripts/install_venv.sh) deletes and recreates `.venv` and the `venv` compatibility link, then installs dependencies and development tools |
+| `make update-packages` | [update_packages.sh](../../development/tooling/scripts/update_packages.sh) updates packages in the selected environment and builds native dependencies |
+| `make install-diskgraph` | [development/tooling/scripts/diskgraph](../../development/tooling/scripts/diskgraph) builds/installs the in-tree Rust/Python engine |
+| `make install-all-dependencies` | [install_all_dependencies.sh](../../development/tooling/scripts/install_all_dependencies.sh) is host provisioning, including system/tool installation and possible shell changes; it is not a routine documentation or agent prerequisite |
 
-Review `.mise.toml` before trusting a checkout. Shell activation, toolchain
+Review `development/config/.mise.toml` before trusting a checkout. Shell activation, toolchain
 installation, and environment recreation are explicit setup actions. A coding
 agent should report missing prerequisites rather than run host provisioning as
 an automatic repair.
@@ -39,18 +39,18 @@ to the workload and environment:
 | `kumo-core[gpu]` | Use GPU Faiss with a compatible GPU, driver, and CUDA runtime | Installs `faiss-gpu` |
 | `kumo-core` | Reuse a compatible Faiss installation already provided by your environment | Installs neither variant |
 
-The [core package metadata](../../packages/kumo-core/pyproject.toml) specifies
+The [core package metadata](../../packages/runtime/kumo-core/pyproject.toml) specifies
 the versions for each extra. These extras select the Faiss dependency; they do
 not select the PyTorch CPU/CUDA build or provision a complete GPU environment.
 A GPU node can still use CPU Faiss. Select one variant per environment rather
 than combining `[cpu,gpu]`.
 
 For an in-tree installation, use `'./packages/kumo-core[cpu]'`,
-`'./packages/kumo-core[gpu]'`, or `./packages/kumo-core` as the corresponding
+`'./packages/kumo-core[gpu]'`, or `./packages/runtime/kumo-core` as the corresponding
 package input to your installer, alongside the other in-tree packages and
 runtime prerequisites.
 
-The [local SDK example](../../examples/sdk-local/README.md) was tested using
+The [local SDK example](../../packages/clients/kumo-engine/examples/sdk-local/README.md) was tested using
 `[cpu]`. You can retain an already installed compatible Faiss variant instead;
 run the example to check the local SDK workflow after preparing the environment.
 
@@ -67,4 +67,4 @@ that run without a Kumo application.
 `make devserver-local` starts local Temporal before invoking the local variant.
 These targets start processes and may perform environment preparation; consult
 [devserver documentation](../devserver.md) and the actual
-[Makefile](../../Makefile) before using them.
+[Makefile](../../development/Makefile) before using them.

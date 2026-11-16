@@ -26,7 +26,7 @@ When Claude Code writes or edits a Python file, this hook:
 ```
 ✓ isort: imports sorted
 ⚠ flake8 violations:
-kumo/data/session_utils.py:16:1: F401 'kumo.data.backend_utils' imported but unused
+apps/studio/kumo/data/session_utils.py:16:1: F401 'kumo.data.backend_utils' imported but unused
 ```
 
 ### Requirements

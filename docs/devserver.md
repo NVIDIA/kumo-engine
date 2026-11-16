@@ -1,7 +1,7 @@
 # Devserver
 
-The devserver coordinator (`rest/devserver/multi_main.py`) launches one or more
-tmux-based child stacks (`rest/devserver/main.py`) for the
+The devserver coordinator (`apps/studio/rest/devserver/multi_main.py`) launches one or more
+tmux-based child stacks (`apps/studio/rest/devserver/main.py`) for the
 full local Kumo stack for development. It starts 8+ services in parallel panes, validates
 system dependencies before startup, and provides actionable error messages if anything is
 missing.
@@ -17,12 +17,12 @@ UNFENCED=1 NUMS=1 make devserver-local
 
 For cgroup fencing, use `CGROUP_CONFIG=auto NUMS=1` on a configured host,
 or a JSON `CGROUP_CONFIG` with per-child CPU and memory allocations. The
-Makefile requires a resource policy; inspect `rest/devserver/planning.py`
+Makefile requires a resource policy; inspect `apps/studio/rest/devserver/planning.py`
 for its schema.
 
 The local variant uses repo-local data-plane storage, local DiskGraph data
 compute, local ML, and local Temporal. Auth is disabled by default
-(`DISABLE_AUTH=true` in `rest/devserver/.env`).
+(`DISABLE_AUTH=true` in `apps/studio/rest/devserver/.env`).
 
 ## Resetting local state
 
@@ -74,7 +74,7 @@ OIDC redirect URI.
 
 ## Variants
 
-Deploy config for each variant is in `rest/devserver/configs/<variant>.json`:
+Deploy config for each variant is in `apps/studio/rest/devserver/configs/<variant>.json`:
 
 Use `variant=local` for local Temporal. Other variant files can reference
 internal services or cloud resources; they require operator-supplied
@@ -93,7 +93,7 @@ by git; children have isolated state below it. Override it with
 ## Storage Configuration
 
 For the tmux devserver, copy or edit a variant file under
-`rest/devserver/configs/`. The commonly changed fields are in the `storage`
+`apps/studio/rest/devserver/configs/`. The commonly changed fields are in the `storage`
 block:
 
 ```json
@@ -119,8 +119,8 @@ S3 roots use the same shape:
 `{instance_id}` and `{kumo_home}` are expanded by the app at
 runtime, which keeps shared buckets isolated per developer VM and lets local
 variants share the centralized cache default. For the Docker compose-local
-flow, use `docker/compose/.env.compose-local` instead; preflight generates a
-stack-scoped config under `docker/compose/config/generated/$STACK/`.
+flow, use `apps/studio/docker/compose/.env.compose-local` instead; preflight generates a
+stack-scoped config under `apps/studio/docker/compose/config/generated/$STACK/`.
 
 ## Makefile Flags
 
@@ -139,7 +139,7 @@ for this lookup: `DEVSERVER_KUMO_HOME=/path/to/cache make devserver-env DEVSERVE
 
 ## Environment Variables
 
-Global settings live in `rest/devserver/.env`:
+Global settings live in `apps/studio/rest/devserver/.env`:
 
 - **Identity**: `DEPLOY_STAGE`, `INSTANCE_ID`
 - **Feature flags**: Multilabel ranking, BigQuery, column analysis, Databricks enablement
@@ -155,7 +155,7 @@ range, so no source change is required.
 The devserver validates dependencies before launch and will refuse to start if any are
 missing. Checks include:
 
-- **System**: tmux, `temporalio` at the version specified in `setup.py`, kumo package; Docker when a Docker-backed panel is enabled
+- **System**: tmux, `temporalio` at the version specified in `apps/studio/setup.py`, kumo package; Docker when a Docker-backed panel is enabled
 - **Ports**: All allocated ports are available (checked via `lsof`)
 - **Cloud credentials**: S3/GCS access, Temporal Cloud connectivity
 - **K8s context** (k8s-backed variants): EKS config and stern for log viewing

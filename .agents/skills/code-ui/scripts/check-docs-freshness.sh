@@ -19,7 +19,7 @@ STALE=0
 
 # Map: doc file -> space-separated list of source-of-truth files it covers
 declare -A DOC_SOURCES=(
-  ["docs/development/ui.md"]="ui/src/utils/Constants/routes.ts ui/src/utils/Constants/enums.ts ui/src/utils/reactQueryKeys.ts ui/src/utils/queryInvalidation.ts ui/src/utils/storage.ts ui/src/utils/errorHandler.ts ui/src/utils/timeConverter.ts ui/src/routes/Routes.tsx ui/src/routes/Loaders.ts ui/src/tests/testUtil.ts ui/src/tests/mockAxios.ts ui/src/tests/setup.ts"
+  ["docs/development/ui.md"]="apps/studio/ui/src/utils/Constants/routes.ts apps/studio/ui/src/utils/Constants/enums.ts apps/studio/ui/src/utils/reactQueryKeys.ts apps/studio/ui/src/utils/queryInvalidation.ts apps/studio/ui/src/utils/storage.ts apps/studio/ui/src/utils/errorHandler.ts apps/studio/ui/src/utils/timeConverter.ts apps/studio/ui/src/routes/Routes.tsx apps/studio/ui/src/routes/Loaders.ts apps/studio/ui/src/tests/testUtil.ts apps/studio/ui/src/tests/mockAxios.ts apps/studio/ui/src/tests/setup.ts"
   [".agents/skills/review-ui/SKILL.md"]="docs/development/ui-review-kumo.md docs/development/ui-review-react.md docs/development/ui-review-testing.md"
   [".agents/skills/code-ui/SKILL.md"]="docs/development/ui.md .agents/skills/code-ui/references/catalog-components.md"
 )
@@ -63,7 +63,7 @@ done
 
 # Check catalog components doc vs installed package
 CATALOG_DOC="${REPO_ROOT}/.agents/skills/code-ui/references/catalog-components.md"
-CATALOG_PKG="${REPO_ROOT}/ui/node_modules/@kumo-ai/kumo-ui-catalog/package.json"
+CATALOG_PKG="${REPO_ROOT}/apps/studio/ui/node_modules/@kumo-ai/kumo-ui-catalog/package.json"
 if [[ -f "$CATALOG_DOC" && -f "$CATALOG_PKG" ]]; then
   doc_mtime=$(stat -c %Y "$CATALOG_DOC" 2>/dev/null || stat -f %m "$CATALOG_DOC")
   pkg_mtime=$(stat -c %Y "$CATALOG_PKG" 2>/dev/null || stat -f %m "$CATALOG_PKG")

@@ -2,7 +2,7 @@
 
 > **Auto-generated** — run `bash .agents/skills/code-ui/scripts/generate-catalog-docs.sh` to refresh.
 > Source: `@kumo-ai/kumo-ui-catalog` — import everything from this single entry point.
-> Source directory: `packages/kumo-ui-catalog` in this repository.
+> Source directory: `packages/ui/kumo-ui-catalog` in this repository.
 
 ## Import Pattern
 

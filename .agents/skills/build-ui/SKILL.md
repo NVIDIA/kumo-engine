@@ -5,7 +5,7 @@ description: Orchestrate Kumo UI ticket work from GitHub issue analysis through 
 
 # Build UI
 
-Use this skill when the user wants to implement a UI GitHub issue end-to-end, continue work from an existing UI PR, or run a ticket-to-PR workflow for changes in `ui/src/`.
+Use this skill when the user wants to implement a UI GitHub issue end-to-end, continue work from an existing UI PR, or run a ticket-to-PR workflow for changes in `apps/studio/ui/src/`.
 
 This skill is the orchestrator.
 
@@ -102,7 +102,7 @@ Supporting references:
 - `references/handoff-examples.md`
 - `references/output-contracts.md`
 - `references/screenshot-operator-guide.md`
-- `ui/src/screenshot/catalog.json`
+- `apps/studio/ui/src/screenshot/catalog.json`
 - `references/pr-workflow.md`
 - `references/run-state-template.json`
 - `references/workflow-test-scenarios.md`
@@ -110,7 +110,7 @@ Supporting references:
 Screenshot quality bar:
 
 - screenshot success means the changed UI was visually verified, not merely that a route loaded
-- for known surfaces, prefer `ui/src/screenshot/catalog.json` recipes over freeform plans
+- for known surfaces, prefer `apps/studio/ui/src/screenshot/catalog.json` recipes over freeform plans
 - every user-visible requirement that should be proven in the screenshot should have a matching assertion
 - catalog recipes should declare structured `visualCoverage` items with stable IDs, and setup/actions/assertions should use `covers` with those IDs so coverage intent is tied to concrete selectors
 - reusable screenshot fixtures should be used for common deterministic states instead of repeating brittle live-data interactions
@@ -550,8 +550,8 @@ Only after Checkpoint 1 approval:
 
 ```bash
 git fetch origin
-git branch --list "ui/{issue}-*"
-git checkout -b ui/{issue}-{slug} origin/{base-branch}
+git branch --list "apps/studio/ui/{issue}-*"
+git checkout -b apps/studio/ui/{issue}-{slug} origin/{base-branch}
 ```
 
 Rules:
@@ -744,7 +744,7 @@ Use `references/decision-tables.md` section "Auth And Runtime Config For Visual 
 
 Choose the capture path in this priority order:
 
-1. **Local Playwright capture (default for known surfaces).** If a dev server is reachable and `ui/src/screenshot/catalog.json` has a recipe whose `patterns` match a changed file, capture with `ui/scripts/ci-screenshot.mjs` yourself — see "Local Playwright capture (interactive runs)" below. This is deterministic, reproducible, and produces the same evidence CI does. This applies in every interactive mode, not just headless CI.
+1. **Local Playwright capture (default for known surfaces).** If a dev server is reachable and `apps/studio/ui/src/screenshot/catalog.json` has a recipe whose `patterns` match a changed file, capture with `apps/studio/ui/scripts/ci-screenshot.mjs` yourself — see "Local Playwright capture (interactive runs)" below. This is deterministic, reproducible, and produces the same evidence CI does. This applies in every interactive mode, not just headless CI.
 2. **Browser MCP.** Use `mcp__chrome-devtools__*` tools only for freeform exploration of a surface with no matching recipe, or to investigate behavior a static screenshot cannot prove.
 3. **Headless CI Playwright.** In headless/CI runs the workflow owns capture — see "CI Playwright Fallback".
 
@@ -774,12 +774,12 @@ If screenshots are captured:
 
 In a local/interactive run (not headless CI), prefer this over browser MCP whenever a dev server is up and a catalog recipe matches the changed surface:
 
-1. Find the matching recipe in `ui/src/screenshot/catalog.json` (match its `patterns` against the changed files; reuse its `canonicalRoutes`, `readySelector`, `setup`, and `visualCoverage`).
+1. Find the matching recipe in `apps/studio/ui/src/screenshot/catalog.json` (match its `patterns` against the changed files; reuse its `canonicalRoutes`, `readySelector`, `setup`, and `visualCoverage`).
 2. Write a plan to `/tmp/build-ui-screenshots/{issue-or-pr}/plan.json` — a `scenarios` array, each with `route`, deterministic `setup` steps, a `readySelector`, and `assertions` whose selectors target the exact changed element (not a page shell, tab list, or generic heading).
 3. Capture against the local dev server:
 
    ```bash
-   node ui/scripts/ci-screenshot.mjs \
+   node apps/studio/ui/scripts/ci-screenshot.mjs \
      --plan /tmp/build-ui-screenshots/{issue-or-pr}/plan.json \
      --output /tmp/build-ui-screenshots/{issue-or-pr} \
      --base-url http://localhost:3000 \
@@ -788,13 +788,13 @@ In a local/interactive run (not headless CI), prefer this over browser MCP whene
 
    `--auth-disabled` injects the local sentinel token; the local dev backend accepts it and supplies the canonical project/group authorization context used by every deployment.
 4. Inspect `results.json` and the saved PNG. If capture fails, debug the artifacts (`screenshot-debug.md`, the failed `*.html`/`*.png` under `failed/`) before changing the plan. Common gotchas: a first-run "Welcome to Kumo" modal intercepts clicks (dismiss via `[data-testid="cancel-icon"]`), and list pages may not auto-select a row (click `[data-testid="entity-name-0"]` to open the detail panel).
-5. Publish to the PR with `ui/scripts/build-ui-publish-screenshots.mjs` in Phase 9 — same `images` branch and `## Screenshots` section as headless CI.
+5. Publish to the PR with `apps/studio/ui/scripts/build-ui-publish-screenshots.mjs` in Phase 9 — same `images` branch and `## Screenshots` section as headless CI.
 
 The "agent must not shell out to `ci-screenshot.mjs`" rule below applies only to headless CI mode, where the workflow runs it for you. In local runs, running it yourself is the intended path.
 
 ### CI Playwright Fallback
 
-When `mcp__chrome-devtools__*` tools are unavailable but the environment variable `CI_SCREENSHOT_SCRIPT` is set (headless CI mode), the workflow runs Playwright on the agent's behalf. In that headless mode the agent must not shell out to `ui/scripts/ci-screenshot.mjs`.
+When `mcp__chrome-devtools__*` tools are unavailable but the environment variable `CI_SCREENSHOT_SCRIPT` is set (headless CI mode), the workflow runs Playwright on the agent's behalf. In that headless mode the agent must not shell out to `apps/studio/ui/scripts/ci-screenshot.mjs`.
 
 Instead, write a screenshot plan to `$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json` with either:
 
@@ -886,7 +886,7 @@ If approved:
 4. determine the release-notes label
 5. detect breaking changes
 6. create the PR from `.github/PULL_REQUEST_TEMPLATE.md`
-7. if screenshots were captured, publish them with `ui/scripts/build-ui-publish-screenshots.mjs` after PR creation so local PRs use the same `images` branch and `## Screenshots` section as headless CI
+7. if screenshots were captured, publish them with `apps/studio/ui/scripts/build-ui-publish-screenshots.mjs` after PR creation so local PRs use the same `images` branch and `## Screenshots` section as headless CI
 
 Before creating the PR, run a final diff sanity pass:
 
@@ -938,7 +938,7 @@ Use the exact phase label from this table in `lastCompletedPhase`. Do not collap
 Rules:
 
 - reuse the existing work branch
-- in `issue` mode, that is usually `ui/{issue}-*`
+- in `issue` mode, that is usually `apps/studio/ui/{issue}-*`
 - in `pr` mode with continuation, that is usually `{headRefName}`
 - verify current branch state before skipping earlier stages
 - resume only when the branch state clearly corresponds to the requested stage

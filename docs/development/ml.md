@@ -1,7 +1,7 @@
 # ML development and review
 
 Read the [architecture](../../ARCHITECTURE.md) and trace changes across service
-adapters, `packages/kumo-core`, PQL, and DiskGraph.
+adapters, `packages/runtime/kumo-core`, PQL, and DiskGraph.
 
 ## Review priorities
 
@@ -14,7 +14,7 @@ adapters, `packages/kumo-core`, PQL, and DiskGraph.
   and restrictions. Keep unrelated changes separate.
 
 Use [ML review patterns](ml-review-patterns.md) for concrete examples,
-[query orchestration guidance](../../kumo/pquery/AGENTS.md) for service rules,
-and [PQL instructions](../../packages/kumo-pql/AGENTS.md) for parser changes.
+[query orchestration guidance](../../apps/studio/kumo/pquery/AGENTS.md) for service rules,
+and [PQL instructions](../../packages/contracts/kumo-pql/AGENTS.md) for parser changes.
 Follow the [DiskGraph source boundary](generated-artifacts.md#diskgraph-source)
 for native-engine changes.

@@ -1,6 +1,6 @@
 ---
 name: review-ui
-description: Review PR code changes against UI conventions. Use when reviewing PRs that touch frontend code (ui/src/). Applies lessons learned from past UI reviews and enforces coding guidelines.
+description: Review PR code changes against UI conventions. Use when reviewing PRs that touch frontend code (apps/studio/ui/src/). Applies lessons learned from past UI reviews and enforces coding guidelines.
 ---
 
 # UI Code Review
@@ -77,15 +77,15 @@ Surface the PR title and description to inform the LLM review. A PR titled "Temp
 ### Fetch the diff
 
 Run `gh pr diff <number>` to get the code changes. Filter to only these paths:
-- `ui/src/components/`, `ui/src/pages/`
-- `ui/src/hooks/`, `ui/src/stores/`
-- `ui/src/api/`, `ui/src/css/`
-- `ui/src/services/`, `ui/src/utils/` (exclude emitted files; see below)
-- `ui/src/types/`
-- `ui/src/routes/`, `ui/src/main.css`
-- `ui/src/tests/`
+- `apps/studio/ui/src/components/`, `apps/studio/ui/src/pages/`
+- `apps/studio/ui/src/hooks/`, `apps/studio/ui/src/stores/`
+- `apps/studio/ui/src/api/`, `apps/studio/ui/src/css/`
+- `apps/studio/ui/src/services/`, `apps/studio/ui/src/utils/` (exclude emitted files; see below)
+- `apps/studio/ui/src/types/`
+- `apps/studio/ui/src/routes/`, `apps/studio/ui/src/main.css`
+- `apps/studio/ui/src/tests/`
 
-Inspect authored parsing/autocomplete changes in `ui/src/utils/PQLParsing/`
+Inspect authored parsing/autocomplete changes in `apps/studio/ui/src/utils/PQLParsing/`
 manually; the scanner skips that directory.
 
 Exclude generated code:
@@ -136,7 +136,7 @@ For each matching file, check the diff against the linked review conventions. **
 ### Load reference patterns based on what the diff touches
 
 - **Always load:** `docs/development/ui-review-kumo.md`
-- **If `tests/` or `__tests__/` files changed:** also load `docs/development/ui-review-testing.md`
+- **If `development/testing/tests/` or `__tests__/` files changed:** also load `docs/development/ui-review-testing.md`
 - **If component, hook, page, or store files changed:** also load `docs/development/ui-review-react.md`
 
 ### Comment budget
@@ -180,7 +180,7 @@ gh api "repos/${REPO}/pulls/<number>/reviews" \
   "body": "**UI Review** — N [HIGH], M [MEDIUM] across F files (P auto-detected, L manual)",
   "comments": [
     {
-      "path": "ui/src/components/Example.tsx",
+      "path": "apps/studio/ui/src/components/Example.tsx",
       "line": 42,
       "side": "RIGHT",
       "body": "[HIGH] **Console Statement**: Remove `console.log`. Use `logStackTrace()` from `utils/errorHandler`.\n\n```suggestion\nimport { logStackTrace } from \"utils/errorHandler\";\nlogStackTrace(\"debug context\", data);\n```"

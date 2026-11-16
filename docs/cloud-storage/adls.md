@@ -26,7 +26,7 @@ may already grant it. See [delegation-key permissions](https://learn.microsoft.c
 For ACL-based access, grant execute on ancestors and the required target
 permissions. ACLs cannot restrict access already granted by sufficient RBAC
 permissions; see [Azure permission evaluation](https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-access-control-model#how-permissions-are-evaluated). The
-[Azure deployment guide](../../deploy/azure/README.md) defines the separate
+[Azure deployment guide](../../apps/studio/deploy/azure/README.md) defines the separate
 builder, runtime, publisher, and optional Key Vault scopes.
 
 ## ADLS-specific URI and transfer behavior
@@ -59,7 +59,7 @@ read/list access. For failures, inspect Azure Activity and storage logs and
 verify cloud selection, both DFS and Blob private DNS, RBAC propagation, HNS
 ACLs, and Delegator scope.
 
-See the [Azure deployment guide](../../deploy/azure/README.md) for build,
+See the [Azure deployment guide](../../apps/studio/deploy/azure/README.md) for build,
 networking, preflight, replacement upgrades, and teardown. Live identity,
 private networking, RBAC/ACL propagation, user-delegation signing, and HNS
 concurrency remain release checks. Sovereign behavior remains offline-only

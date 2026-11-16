@@ -33,8 +33,8 @@ Fallback policy:
 | Situation                                      | Action                                                                                                                                                                                                                                                         |
 | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Catalog present and installs healthy           | Do nothing                                                                                                                                                                                                                                                     |
-| Catalog source missing | Report an incomplete checkout; the source belongs at `packages/kumo-ui-catalog`                                                                                                                                                                                                                          |
-| Catalog dependencies or build missing | From `ui/`, run `npm run install:catalog && npm install` when dependency setup is authorized; the catalog is an in-tree file dependency |
+| Catalog source missing | Report an incomplete checkout; the source belongs at `packages/ui/kumo-ui-catalog`                                                                                                                                                                                                                          |
+| Catalog dependencies or build missing | From `apps/studio/ui/`, run `npm run install:catalog && npm install` when dependency setup is authorized; the catalog is an in-tree file dependency |
 | Lockfile reinstall explicitly intended         | Run `npm ci`                                                                                                                                                                                                                                                   |
 | Dependency path unclear                        | Stop and ask before mutating npm config                                                                                                                                                                                                                        |
 
@@ -42,7 +42,7 @@ Fallback policy:
 
 | Situation                                                 | Action                                                                                                       |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Required variant/component missing from `kumo-ui-catalog` | Add it in `packages/kumo-ui-catalog` and update UI callers in the same repository         |
+| Required variant/component missing from `kumo-ui-catalog` | Add it in `packages/ui/kumo-ui-catalog` and update UI callers in the same repository         |
 | Catalog change exists in another PR but is not merged         | Proceed with UI implementation assuming the variant will exist and add a blocking note in the PR description |
 | User approves a temporary local workaround                | Implement the workaround with a `TODO` tied to the catalog change and track removal in deferred scope       |
 | User wants to wait for the catalog change                    | Pause implementation and record the blocker in the handoff                                                   |
@@ -68,7 +68,7 @@ Rules:
 | `AUTH_DISABLED` already true at runtime                                                          | Proceed (auth-disabled sentinel; no credentials needed)                                                                                                    |
 | `AUTH_DISABLED` false and `SCREENSHOT_AUTH_EMAIL`/`SCREENSHOT_AUTH_PASSWORD` in the env | Run the catalog-recipe capture (`npm run screenshots:build-ui`) — Direct Connect credentials take precedence and the browser password-login path is used, no `env.js` change |
 | `AUTH_DISABLED` false and no credentials present                                                 | Ask the user to either provide credentials (env vars below), approve a local `env.js` bypass, or skip — do not silently skip                               |
-| `AUTH_DISABLED` false and user approves local bypass change                                      | Edit `ui/env.js`, then regenerate runtime config                                                                                                           |
+| `AUTH_DISABLED` false and user approves local bypass change                                      | Edit `apps/studio/ui/env.js`, then regenerate runtime config                                                                                                           |
 | `AUTH_DISABLED` false and user declines                                                          | Skip visual testing                                                                                                                                        |
 | Runtime config still mismatched after update                                                     | Stop and report the exact mismatch                                                                                                                         |
 
@@ -117,7 +117,7 @@ Screenshot auth and planning decision points:
 | Rebase conflicts occur                                        | Stop and present conflicts                                                                                                                                                |
 | Release-notes label is obvious                                | Recommend it, confirm if needed                                                                                                                                           |
 | Label unclear                                                 | Ask explicitly before PR creation                                                                                                                                         |
-| Screenshots available and GitHub CLI can write to the repo    | After PR creation, run `ui/scripts/build-ui-publish-screenshots.mjs` to publish primary images to the `images` branch, patch the PR body, and post the screenshot comment |
+| Screenshots available and GitHub CLI can write to the repo    | After PR creation, run `apps/studio/ui/scripts/build-ui-publish-screenshots.mjs` to publish primary images to the `images` branch, patch the PR body, and post the screenshot comment |
 | Screenshots available but GitHub CLI cannot write to the repo | Skip upload and note in the PR that screenshots were verified locally                                                                                                     |
 | Screenshots available but browser tooling unavailable         | Use the shared image-branch publisher; browser tooling is not required for screenshot upload                                                                              |
 | Screenshots captured via CI Playwright script                 | Screenshots are posted back to the PR or issue comment and uploaded as workflow artifacts. No browser-based GitHub upload needed.                                         |
@@ -149,7 +149,7 @@ Do not use `pre-existing` without evidence.
 
 ## Shared Component Blast Radius
 
-When a change touches shared UI under `src/components/@ui/`, `src/hooks/`, `src/stores/`, or other widely reused modules:
+When a change touches shared UI under `src/components/@apps/studio/ui/`, `src/hooks/`, `src/stores/`, or other widely reused modules:
 
 | Check                                            | Action                                                                  |
 | ------------------------------------------------ | ----------------------------------------------------------------------- |

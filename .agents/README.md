@@ -29,7 +29,7 @@ This directory follows the [agentskills.io](https://agentskills.io) specificatio
 │   │   ├── SKILL.md
 │   │   └── scripts/
 │   │       ├── diff-scan.sh
-│   │       └── tests/
+│   │       └── development/testing/tests/
 │   │           └── run-tests.sh
 │   ├── debug-issue/
 │   │   └── SKILL.md
@@ -52,20 +52,20 @@ This directory follows the [agentskills.io](https://agentskills.io) specificatio
 ```
 
 Shared engineering guidance is in [docs](../docs/README.md). Catalog workflows
-remain in [their package](../packages/kumo-ui-catalog/.agents/README.md).
+remain in [their package](../packages/ui/kumo-ui-catalog/.agents/README.md).
 
 ## Skills (agentskills.io spec)
 
 | Skill | Purpose |
 |-------|---------|
 | `build-ui` | Orchestrate UI ticket work from GitHub issue through implementation, validation, and PR creation |
-| `code-ui` | Scaffold and implement UI features following Kumo conventions (ui/src/) |
-| `review-ui` | Review code against UI standards (ui/src/) |
+| `code-ui` | Scaffold and implement UI features following Kumo conventions (apps/studio/ui/src/) |
+| `review-ui` | Review code against UI standards (apps/studio/ui/src/) |
 | `debug-issue` | Investigate GitHub issues with source, logs, analysis, and optional consultation |
 | `preflight` | Validate local prerequisites for the requested workflow |
 | `check-logs` | Read supplied logs or collect logs from a selected Kubernetes workload |
 | `investigate-training-stage` | Investigate stuck or slow Temporal training and prediction stages |
-| `review-ml` | Review service ML adapters and the shared runtime in packages/kumo-core against ML standards |
+| `review-ml` | Review service ML adapters and the shared runtime in packages/runtime/kumo-core against ML standards |
 
 ## Additional catalog skills
 

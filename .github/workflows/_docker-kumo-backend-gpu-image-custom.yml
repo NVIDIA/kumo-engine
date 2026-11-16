@@ -134,7 +134,7 @@ jobs:
       - name: Stage DiskGraph Source
         shell: bash
         run: |
-          ./scripts/diskgraph stage-source --out docker/diskgraph-source
+          ./development/tooling/scripts/diskgraph stage-source --out apps/studio/docker/diskgraph-source
 
       - name: Download checksum-pinned CUDA 13 Faiss wheel
         if: ${{ inputs.target_platform == 'linux/amd64' }}
@@ -158,7 +158,7 @@ jobs:
               | sha256sum --check --strict -
           )
           install -m 0644 "$download_dir/$FAISS_GPU_AMD64_RELEASE_ASSET" \
-            "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET"
+            "development/third-party/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET"
 
       - name: Refresh AWS credentials for image build
         if: ${{ inputs.push_image || inputs.bake_glove_level != 'none' }}
@@ -188,7 +188,7 @@ jobs:
           tags: ${{ inputs.kumo_repo_ref }}${{ inputs.image_tag_suffix }}
           context: .
           containerfiles: |
-            ./docker/Dockerfile.kumo_backend_gpu
+            ./apps/studio/docker/Dockerfile.kumo_backend_gpu
           build-args: |
             BAKE_GLOVE_LEVEL=${{ inputs.bake_glove_level }}
             AWS_REGION=us-west-2

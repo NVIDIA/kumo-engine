@@ -31,7 +31,7 @@ runs:
         enable-cache: true
         cache-dependency-glob: |
           uv.lock
-          packages/experimental/kumo-pytorch/pyproject.toml
+          packages/models/experimental/kumo-pytorch/pyproject.toml
     - name: Download the DiskGraph wheel
       if: inputs.diskgraph-wheel-artifact != ''
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -41,7 +41,7 @@ runs:
     - name: Install DiskGraph from the wheel
       if: inputs.diskgraph-wheel-artifact != ''
       shell: bash
-      run: ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+      run: ./development/tooling/scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
     - name: Install the locked workspace environment, then kumo-pytorch into it
       shell: bash
       env:
@@ -51,7 +51,7 @@ runs:
         examples=()
         if [ "$NOTEBOOKS" = true ]; then examples=(--extra examples); fi
         # --inexact keeps the DiskGraph wheel installed above and the root environment.
-        uv sync --locked --inexact --no-install-package diskgraph --extra cpu
+        uv sync --package kumo --locked --inexact --no-install-package diskgraph --extra cpu
         uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
           --package kumo-pytorch --extra dev "${examples[@]}"
         # The notebook runner's tools are not package dependencies.

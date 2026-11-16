@@ -8,7 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
+    paths-ignore: ["apps/studio/ui/**", "apps/studio/tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -71,8 +71,8 @@ jobs:
           # The former Databricks-compute E2E selectors were removed with the
           # DiskGraph cutover. Databricks source/export coverage now lives in
           # test_databricks_diskgraph_e2e.py.
-          "test/rest/test_databricks.py",
-          "test/rest/integ/test_databricks_diskgraph_e2e.py",
+          "development/testing/test/rest/test_databricks.py",
+          "development/testing/test/rest/integ/test_databricks_diskgraph_e2e.py",
         ]
 
     steps:
@@ -96,10 +96,10 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            ui/**
+            apps/studio/ui/**
             CHANGELOG.md
-            tools/**
-            benchmark/**
+            apps/studio/tools/**
+            development/benchmarks/**
 
       - name: Configure AWS credentials
         if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -130,10 +130,10 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           start_ci_memory_monitor
-          GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
+          GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 ${{ env.STORE_DURATIONS == 'true' && '--durations-path development/config/.test_durations --store-durations --durations-path=development/config/.test_durations' || '' }} ${{ matrix.test_dir }}
           move_coverage_artifact
         env:
           KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
@@ -155,7 +155,7 @@ jobs:
           KUMO_ENABLE_GLOVE: "False"
           KUMO_TESTING: "True"
           SPARK_VERSION: "3.5"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
         if: env.RUN_FULL_TEST == 'true' && steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -163,7 +163,7 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 ${{ matrix.test_dir }}
           move_coverage_artifact
@@ -186,7 +186,7 @@ jobs:
           CUDA: "cpu"
           KUMO_TESTING: "True"
           SPARK_VERSION: "3.5"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact
         if: always()
@@ -201,6 +201,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: durations-${{ github.run_id }}-${{ strategy.job-index }}-of-${{ strategy.job-total }}
-          path: .test_durations
+          path: development/config/.test_durations
           include-hidden-files: true
           if-no-files-found: ignore

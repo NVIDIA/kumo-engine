@@ -2,12 +2,12 @@
 
 Local devserver deployments use SQLite for StateDB metadata. Production
 deployments use PostgreSQL; the SQLite backend is restricted to non-production
-deployments by [the runtime guard](../../statedb/db/config.py).
+deployments by [the runtime guard](../../apps/studio/statedb/db/config.py).
 
 ## How it works
 
-- The schema inventory and index definitions live in `statedb/db/schema.py`.
-- `statedb/db/bootstrap.py` creates and validates the schema at startup using
+- The schema inventory and index definitions live in `apps/studio/statedb/db/schema.py`.
+- `apps/studio/statedb/db/bootstrap.py` creates and validates the schema at startup using
   explicit SQLite DDL.
 - REST and ML processes share one database at `<db-storage-root>/state.sqlite`.
 - The database persists across devserver sessions until the devserver state is

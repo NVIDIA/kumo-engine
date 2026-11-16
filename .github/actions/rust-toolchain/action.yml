@@ -4,7 +4,7 @@
 
 name: Rust toolchain
 description: >-
-  Install the toolchain from packages/diskgraph/rust-toolchain.toml with the
+  Install the toolchain from packages/data/diskgraph/rust-toolchain.toml with the
   runner's rustup and make it the default.
 inputs:
   components:
@@ -16,7 +16,7 @@ runs:
   steps:
     - name: Install the pinned Rust toolchain
       shell: bash
-      working-directory: packages/diskgraph
+      working-directory: packages/data/diskgraph
       env:
         COMPONENTS: ${{ inputs.components }}
       run: |

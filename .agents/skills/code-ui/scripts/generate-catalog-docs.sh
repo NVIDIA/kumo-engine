@@ -24,7 +24,7 @@ if [[ "${1:-}" == "--check" ]]; then
   CHECK=1
   shift
 fi
-CATALOG_PATH="${1:-${REPO_ROOT}/packages/kumo-ui-catalog}"
+CATALOG_PATH="${1:-${REPO_ROOT}/packages/ui/kumo-ui-catalog}"
 
 if [[ -z "$CATALOG_PATH" || ! -f "${CATALOG_PATH}/package.json" ]]; then
   echo "ERROR: Cannot find kumo-ui-catalog. Provide path as argument." >&2
@@ -128,7 +128,7 @@ cat > "$OUTPUT" << 'HEADER'
 
 > **Auto-generated** — run `bash .agents/skills/code-ui/scripts/generate-catalog-docs.sh` to refresh.
 > Source: `@kumo-ai/kumo-ui-catalog` — import everything from this single entry point.
-> Source directory: `packages/kumo-ui-catalog` in this repository.
+> Source directory: `packages/ui/kumo-ui-catalog` in this repository.
 
 ## Import Pattern
 

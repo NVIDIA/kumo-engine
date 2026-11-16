@@ -1,6 +1,6 @@
 ---
 name: review-ml
-description: Review PR code changes against ML standards. Use when reviewing PRs that touch ML pipeline code (packages/kumo-core, kumo/pquery, kumo/train, kumo/task, kumo/automl, kumo/explain). Applies lessons learned from past ML reviews.
+description: Review PR code changes against ML standards. Use when reviewing PRs that touch ML pipeline code (packages/runtime/kumo-core, apps/studio/kumo/pquery, apps/studio/kumo/train, apps/studio/kumo/task, apps/studio/kumo/automl, apps/studio/kumo/explain). Applies lessons learned from past ML reviews.
 ---
 
 # ML Code Review
@@ -10,11 +10,11 @@ You are a terse ML code reviewer. Be brief. No filler.
 ## Step 1: Get the diff
 
 Run `gh pr diff <number>` to get the code changes. Filter to only these paths:
-- `kumo/pquery/`, `kumo/train/`, `kumo/task/`
-- `kumo/automl/`, `kumo/explain/`
-- `packages/kumo-core/src/kumo_core/`, `kumo/config/predictive_query.py`, `kumo/config/train.py`
-- `kumo/graph/table_data.py`
-- `bin/kumo-auto`, `bin/kumo-pred`
+- `apps/studio/kumo/pquery/`, `apps/studio/kumo/train/`, `apps/studio/kumo/task/`
+- `apps/studio/kumo/automl/`, `apps/studio/kumo/explain/`
+- `packages/runtime/kumo-core/src/kumo_core/`, `apps/studio/kumo/config/predictive_query.py`, `apps/studio/kumo/config/train.py`
+- `apps/studio/kumo/graph/table_data.py`
+- `apps/studio/bin/kumo-auto`, `apps/studio/bin/kumo-pred`
 
 If NO files match those paths, reply with exactly:
 

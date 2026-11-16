@@ -43,20 +43,20 @@ jobs:
         run: |
           uvx --python 3.14 --from pytest==9.0.3 --with vulture==2.14 \
             --with 'numpy>=2,<3' --with 'pandas>=3,<4' --with 'PyYAML>=6,<7' \
-            python -m pytest -c /dev/null --confcutdir=test/scripts \
+            python dev test -c /dev/null --confcutdir=development/testing/test/scripts \
             -p no:cacheprovider -q \
-            test/scripts/test_check_public_references.py \
-            test/scripts/test_check_dead_code.py \
-            test/scripts/test_check_oss_readiness.py \
-            test/scripts/test_check_secrets.py \
-            test/scripts/test_engine_gpu_smoke.py \
-            test/scripts/test_engine_e2e_case_hardware.py \
-            test/scripts/test_engine_e2e_case_results.py \
-            test/scripts/test_engine_pr_workflow.py \
-            test/scripts/test_engine_wheel_workflow.py
+            development/testing/test/scripts/test_check_public_references.py \
+            development/testing/test/scripts/test_check_dead_code.py \
+            development/testing/test/scripts/test_check_oss_readiness.py \
+            development/testing/test/scripts/test_check_secrets.py \
+            development/testing/test/scripts/test_engine_gpu_smoke.py \
+            development/testing/test/scripts/test_engine_e2e_case_hardware.py \
+            development/testing/test/scripts/test_engine_e2e_case_results.py \
+            development/testing/test/scripts/test_engine_pr_workflow.py \
+            development/testing/test/scripts/test_engine_wheel_workflow.py
 
       - name: Test the Engine runner pool without AWS
-        run: node --test test/scripts/test-engine-e2e-pool.cjs
+        run: node --test development/testing/test/scripts/test-engine-e2e-pool.cjs
 
       # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer
@@ -68,14 +68,14 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [[ "$EVENT_NAME" == "push" ]]; then
-            ./scripts/check_oss_readiness.sh
+            ./development/tooling/scripts/check_oss_readiness.sh
             exit
           fi
           if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
             echo "::error::Could not determine the commit range to scan."
             exit 2
           fi
-          ./scripts/check_oss_readiness.sh --diff "$BASE_SHA" "$HEAD_SHA"
+          ./development/tooling/scripts/check_oss_readiness.sh --diff "$BASE_SHA" "$HEAD_SHA"
 
   gitleaks:
     name: Gitleaks
@@ -119,4 +119,4 @@ jobs:
             echo "::error::Could not determine the commit range to scan."
             exit 2
           fi
-          ./scripts/check_secrets.sh --diff "$BASE_SHA" "$HEAD_SHA"
+          ./development/tooling/scripts/check_secrets.sh --diff "$BASE_SHA" "$HEAD_SHA"

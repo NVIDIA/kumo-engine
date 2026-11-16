@@ -16,7 +16,7 @@ Use this file when `/code-ui` is implementing or updating real UI behavior. Appl
 
 ## Shared Primitive Modifications
 
-When changing a shared `@ui/` component or a widely used hook or type:
+When changing a shared `@apps/studio/ui/` component or a widely used hook or type:
 
 1. Enumerate callers first with `rg`.
 2. Keep the API backward-compatible where possible.
