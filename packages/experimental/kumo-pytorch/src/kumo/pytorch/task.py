@@ -209,7 +209,7 @@ class Task:
         world_size: int = 1,
         drop_last: bool | None = None,
         chunk_batches: int = 8,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
     ) -> TaskBatches:
         """Emit batches over this task's anchors, or over requests built in code.
 
@@ -231,6 +231,14 @@ class Task:
         ``output_format="model"`` refuses raw types without a tensor
         representation before fetching a batch; ``"inspectable"`` keeps them
         as Arrow arrays. Both emit the same `Batch` structure.
+
+        ``"columnar"`` emits `ColumnarGraph` inputs with Arrow feature tables
+        and selected edge indexes, without tensor encoding. It requires
+        materialized DiskGraph anchors, one graph input with explicit Raw
+        fields, fixed sample counts, and a selection contained in one split.
+        Other sample values, targets, entity filters and availability checks
+        are refused before iteration. Shuffle, sharding, padding, drop-last
+        and resume retain their normal semantics.
         """
 
         if requests is not None and split is not None:
@@ -264,8 +272,13 @@ class Task:
             "chunk_batches": chunk_batches,
             "output_format": output_format,
         }
-        if output_format not in {"inspectable", "model"}:
-            raise ValueError("output_format must be 'inspectable' or 'model'")
+        if output_format not in {"inspectable", "model", "columnar"}:
+            raise ValueError("output_format must be 'inspectable', 'model', or 'columnar'")
+        if output_format == "columnar":
+            validate = getattr(self._anchors, "validate_columnar", None)
+            if requests is not None or not callable(validate):
+                raise ValueError("columnar output requires materialized DiskGraph anchors")
+            validate(self._assembler, selection)
         if requests is None:
             self._anchors.count(selection)  # an unknown split is refused now, not mid-iteration
             max_samples = (
@@ -322,7 +335,7 @@ class Task:
         rank: int,
         world_size: int,
         drop_last: bool | None,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
     ) -> Iterator[Batch]:
         anchors = self._anchors
         view = getattr(anchors, "iteration_anchors", None)

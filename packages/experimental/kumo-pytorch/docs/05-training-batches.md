@@ -380,3 +380,45 @@ engine](04-engines-and-data.md#the-diskgraph-engine) for how the index is built
 and reused.
 
 Next: [inference and serving](06-inference-and-serving.md).
+
+## Arrow graphs for foundation-model payloads
+
+For consumers that build their own model representation, a materialized
+DiskGraph task can expose sampled graph columns without first encoding them
+into tensor/mask dictionaries:
+
+```python
+# graph_task has one Graph input named "graph", explicit Raw node fields,
+# and anchors materialized from an AnchorTable.
+for batch in graph_task.batches(batch_size=1024, output_format="columnar"):
+    graph = batch.inputs["graph"]  # api.ColumnarGraph
+    roots = graph.nodes[graph.root_type]
+    root_ids = roots.ids.slice(0, batch.batch_size)
+    for table_name, nodes in graph.nodes.items():
+        features = nodes.features  # pyarrow.Table; NULLs stay in validity bitmaps
+        example_positions = nodes.owners  # indexes into batch.metadata["sample_ids"]
+    for relation_name, edges in graph.edges.items():
+        selected_pairs = edges.index  # Arrow columns: source, destination
+```
+
+Node rows are occurrences within an example: repeated anchors and different
+cutoffs do not share graph occurrences. The root table starts with one root
+per batch example, in batch order. Edge endpoints index the node tables in
+**declared left-to-right orientation**, including reverse traversal and
+self-relations. They contain only sampled links. The same selected pair can
+appear in multiple chunks; take the union when the consumer needs unique
+edges. Chunks do not identify traversal direction or discovery radius.
+
+Feature columns contain exactly the requested Raw fields, in declaration order
+and declared types. Primary-key identity is available separately in `ids`.
+Native buffers are shared where compatible; restoring declared types may
+allocate. All buffers remain valid after iteration and task closure, and
+`Batch.to(...)` keeps them as CPU Arrow values.
+
+This format currently supports one graph-only input, explicit Raw encodings,
+fixed sample counts, and a selection contained in one split. It refuses
+request-backed tasks, non-DiskGraph engines, other sample values, targets,
+entity filters, and availability checks before iteration. Select a single
+split explicitly when anchors span several splits. Shuffle, rank sharding,
+padding, drop-last, and iterator resume retain their existing behavior.
+Existing sampling limits, including timeless destinations, still apply.

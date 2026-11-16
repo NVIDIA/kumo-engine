@@ -388,7 +388,7 @@ Task.batches(
     world_size: int = 1,
     drop_last: bool | None = None,
     chunk_batches: int = 8,
-    output_format: Literal['inspectable', 'model'] = 'inspectable',
+    output_format: Literal['inspectable', 'model', 'columnar'] = 'inspectable',
 ) -> TaskBatches
 ```
 
@@ -412,6 +412,14 @@ and `world_size`; ranks are disjoint before padding. A token budget
 `output_format="model"` refuses raw types without a tensor
 representation before fetching a batch; `"inspectable"` keeps them
 as Arrow arrays. Both emit the same `Batch` structure.
+
+`"columnar"` emits `ColumnarGraph` inputs with Arrow feature tables
+and selected edge indexes, without tensor encoding. It requires
+materialized DiskGraph anchors, one graph input with explicit Raw
+fields, fixed sample counts, and a selection contained in one split.
+Other sample values, targets, entity filters and availability checks
+are refused before iteration. Shuffle, sharding, padding, drop-last
+and resume retain their normal semantics.
 
 #### `Task.preview`
 

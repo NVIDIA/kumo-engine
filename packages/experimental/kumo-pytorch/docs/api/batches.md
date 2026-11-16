@@ -267,6 +267,68 @@ Node attributes use the same explicit field encodings as ordinary columns.
 
 - `node_fields`: table name to the `Fields` (scalar column encodings of physical columns) emitted for its nodes. Field-name IDs are not supported on graph nodes.
 
+### `ColumnarGraph`
+
+*class* · `kumo.pytorch.api.ColumnarGraph`
+
+```python
+class ColumnarGraph(
+    root_type: str,
+    nodes: Mapping[str, ColumnarNodes],
+    edges: Mapping[str, ColumnarEdges],
+)
+```
+
+CPU Arrow graph buffers emitted by `Task.batches(output_format="columnar")`.
+
+`nodes` uses table names and `edges` uses declared relation names.
+The first `Batch.batch_size` rows of `nodes[root_type]` are the roots,
+in batch order, including repeated entities at distinct prediction times.
+Isolated roots and empty declared node/edge types are retained.
+
+Buffers remain valid after advancing or closing the iterator/task. Treat
+them as read-only. Compatible native Arrow buffers are shared; declared
+dtype restoration may allocate. `Batch.to` leaves these CPU buffers in
+Arrow form. This output avoids tensor encoding and is intended for callers
+that construct their own model representation, such as foundation models.
+
+### `ColumnarNodes`
+
+*class* · `kumo.pytorch.api.ColumnarNodes`
+
+```python
+class ColumnarNodes(ids: Array | ChunkedArray, owners: Array, features: Table)
+```
+
+Aligned columns for node occurrences, isolated per example.
+
+`ids` contains primary-key values (index-local row IDs when no primary
+key is declared). `owners` is a non-null uint32 or uint64 Arrow array of positions
+into `Batch.metadata["sample_ids"]`. The same entity may occur under
+several owners. `features` is an Arrow table containing exactly the
+declared Raw fields, in declaration order and declared dtypes. Arrow
+validity bitmaps retain NULLs; no separate masks or filled values are used.
+With no declared fields, the table has zero columns; use `len(ids)` for
+the node count. All three outputs otherwise have the same row order.
+
+### `ColumnarEdges`
+
+*class* · `kumo.pytorch.api.ColumnarEdges`
+
+```python
+class ColumnarEdges(source_type: str, destination_type: str, index: Table)
+```
+
+Selected edges in declared left-to-right relation orientation.
+
+`index` is an Arrow table with non-null uint32 or uint64 `source` and
+`destination` columns, indexing rows in the corresponding node tables.
+Endpoints always belong to the same example. Only edges selected by the
+sampling layers are included, never all links among returned nodes.
+Reverse traversals are reoriented, including self-relations. Chunks may
+repeat a pair selected in both directions; consumers needing unique edges
+should take their union. Chunk order is not traversal provenance.
+
 ### `Columns`
 
 *class* · `kumo.pytorch.api.Columns`
@@ -482,8 +544,10 @@ never mixed. Separate columns sit under their field names with `values`
 and `valid`; token outputs use `value_ids`, `position_ids`, validity
 and source-event indices, with optional `field_ids` and `field_valid`.
 Raw types without a tensor representation stay Arrow arrays in inspectable
-output. Metadata carries `sample_ids`, `entity_ids`, `as_of_time`,
-`splits`, `is_padding`, request metadata, fingerprints and candidate
+output. Columnar output holds `ColumnarGraph` objects with Arrow feature
+tables and selected edge indexes. Metadata carries `sample_ids`,
+`entity_ids`, `as_of_time`, `splits`, `is_padding`, request metadata,
+fingerprints and candidate
 identities; it is not a route for undeclared features.
 
 #### `Batch.to`
