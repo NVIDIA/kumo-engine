@@ -460,6 +460,16 @@ declared types, and declared primary keys must be unique and non-NULL.
 Equal-time graph neighbors at a fanout limit are ordered by the `repr` of
 their primary keys, or by source occurrence ordinal for a keyless table.
 
+#### `InMemoryEngine.check_contract`
+
+*staticmethod*
+
+```python
+InMemoryEngine.check_contract(contract)
+```
+
+Refuse declared subsecond clocks, which this reference cannot retain.
+
 #### `InMemoryEngine.check_sources`
 
 *staticmethod*

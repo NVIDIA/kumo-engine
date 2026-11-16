@@ -28,8 +28,7 @@ jobs:
     name: Check protected Databricks environment
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      (github.ref == 'refs/heads/main' ||
-      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -70,8 +69,7 @@ jobs:
     needs: [configuration, wheel]
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      (github.ref == 'refs/heads/main' ||
-      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch' && inputs.mode != 'engine'
     runs-on: ubuntu-22.04
     timeout-minutes: 110
@@ -173,8 +171,7 @@ jobs:
     needs: [configuration, wheel]
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      (github.ref == 'refs/heads/main' ||
-      github.ref == 'refs/heads/egu/databricks-ui-validation') &&
+      github.ref == 'refs/heads/main' &&
       github.event_name == 'workflow_dispatch' && inputs.mode != 'graph-ui'
     runs-on: ubuntu-22.04
     timeout-minutes: 130

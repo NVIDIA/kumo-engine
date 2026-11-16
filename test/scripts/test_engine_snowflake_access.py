@@ -23,10 +23,7 @@ def environment_guard(monkeypatch):
                  reviewers=[dict(type='Team', reviewer=dict(id=guard.TEAM_ID))])
         ], deployment_branch_policy=dict(protected_branches=False,
                                          custom_branch_policies=True))
-    policies = dict(branch_policies=[
-        dict(name='main', type='branch'),
-        dict(name='feature/platform-trial', type='branch')
-    ])
+    policies = dict(branch_policies=[dict(name='main', type='branch')])
     return guard, environment, policies
 
 
@@ -106,51 +103,44 @@ def test_github_cannot_fall_back_to_local_browser_credentials(
         ui.credentials(Path('/not-a-credential-file'))
 
 
-@pytest.mark.parametrize('feature',
-                         ['feature/platform-trial', 'feature/other-trial'])
-def test_main_only_environment_survives_feature_branch_removal(
-        environment_guard, feature):
-    guard, environment, _ = environment_guard
-    policies = dict(branch_policies=[dict(name='main', type='branch')])
-    guard.validate(environment, policies, branch=feature)
-    with pytest.raises(ValueError, match='selected branch'):
-        guard.validate(environment, policies, branch=feature,
-                       selected_branch=feature)
-
-
-@pytest.mark.parametrize('name,kind', [('*', 'branch'), ('feature/*', 'branch'),
-                                       ('main', 'tag'),
-                                       ('untrusted', 'branch')])
-def test_unapproved_deployment_rules_are_rejected(environment_guard, name,
-                                                  kind):
+@pytest.mark.parametrize('entries', [
+    [],
+    [('main', 'branch'), ('feature/trial', 'branch')],
+    [('main', 'branch'), ('main', 'branch')],
+    [('main', 'tag')],
+    [('*', 'branch')],
+    [('feature/*', 'branch')],
+    [('untrusted', 'branch')],
+])
+def test_unapproved_deployment_rules_are_rejected(environment_guard, entries):
     guard, environment, policies = environment_guard
-    policies['branch_policies'].append(dict(name=name, type=kind))
+    policies['branch_policies'] = [
+        dict(name=name, type=kind) for name, kind in entries
+    ]
     with pytest.raises(ValueError):
         guard.validate(environment, policies)
 
 
-@pytest.mark.parametrize('environment_name,feature',
-                         [('snowflake-mlops-test', 'feature/platform-trial'),
-                          ('other-platform-test', 'feature/other-trial')])
+@pytest.mark.parametrize('environment_name',
+                         ['snowflake-mlops-test', 'other-platform-test'])
 @pytest.mark.parametrize(
     'ref,event,repository,allowed',
     [('refs/heads/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', True),
-     ('feature', 'workflow_dispatch', 'NVIDIA/kumo-engine', True),
+     ('refs/heads/egu/mlops-platform-integration', 'workflow_dispatch',
+      'NVIDIA/kumo-engine', False),
      ('refs/heads/untrusted', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
      ('refs/tags/main', 'workflow_dispatch', 'NVIDIA/kumo-engine', False),
      ('refs/heads/main', 'push', 'NVIDIA/kumo-engine', False),
      ('refs/heads/main', 'pull_request', 'NVIDIA/kumo-engine', False),
      ('refs/heads/main', 'workflow_dispatch', 'other/repository', False)])
-def test_environment_guard_checks_main_and_feature_before_api_access(
-        environment_guard, monkeypatch, environment_name, feature, ref, event,
+def test_environment_guard_checks_main_before_api_access(
+        environment_guard, monkeypatch, environment_name, ref, event,
         repository, allowed):
     import io
 
     guard, environment, policies = environment_guard
-    policies['branch_policies'][1]['name'] = feature
     monkeypatch.setenv('GITHUB_REPOSITORY', repository)
-    monkeypatch.setenv('GITHUB_REF',
-                       'refs/heads/' + feature if ref == 'feature' else ref)
+    monkeypatch.setenv('GITHUB_REF', ref)
     monkeypatch.setenv('GITHUB_EVENT_NAME', event)
     monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
     calls = []
@@ -164,11 +154,19 @@ def test_environment_guard_checks_main_and_feature_before_api_access(
 
     monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
     if allowed:
-        guard.main(environment=environment_name, branch=feature)
+        if environment_name == guard.ENVIRONMENT:
+            guard.main()
+        else:
+            guard.main(environment=environment_name,
+                       branch='feature/platform-trial')
         assert len(calls) == 2
     else:
         with pytest.raises(SystemExit, match='manual dispatch'):
-            guard.main(environment=environment_name, branch=feature)
+            if environment_name == guard.ENVIRONMENT:
+                guard.main()
+            else:
+                guard.main(environment=environment_name,
+                           branch='feature/platform-trial')
         assert calls == []
 
 
@@ -216,48 +214,6 @@ def test_sql_connection_checks_account_before_any_test_writes(
         assert error.value.__suppress_context__
         connection.close.assert_called_once_with()
     cursor.execute.assert_called_once_with('SELECT CURRENT_ACCOUNT()')
-
-
-def test_production_entrypoint_reads_policy_then_rejects_unapproved_branch(
-        environment_guard, monkeypatch):
-    import io
-    guard, environment, policies = environment_guard
-    monkeypatch.setenv('GITHUB_REPOSITORY', 'NVIDIA/kumo-engine')
-    monkeypatch.setenv('GITHUB_REF', 'refs/heads/untrusted')
-    monkeypatch.setenv('GITHUB_EVENT_NAME', 'workflow_dispatch')
-    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
-    calls = []
-
-    def get(request, timeout):
-        calls.append(request.full_url)
-        value = policies if 'deployment-branch-policies' in request.full_url else environment
-        return io.BytesIO(json.dumps(value).encode())
-
-    monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
-    with pytest.raises(ValueError, match='selected branch'):
-        guard.main()
-    assert len(calls) == 2
-
-
-@pytest.mark.parametrize('selected', ['main', 'feature-test'])
-@pytest.mark.parametrize('prevent_self_review', [False, True])
-def test_trial_self_approval_keeps_main_independent(environment_guard, selected,
-                                                    prevent_self_review):
-    guard, environment, policies = environment_guard
-    environment['protection_rules'][0][
-        'prevent_self_review'] = prevent_self_review
-    policies['branch_policies'] = [
-        dict(name='main', type='branch'),
-        dict(name='feature-test', type='branch')
-    ]
-    policies['total_count'] = 2
-    if selected == 'main' and not prevent_self_review:
-        with pytest.raises(ValueError, match='self-review'):
-            guard.validate(environment, policies, branch='feature-test',
-                           selected_branch=selected)
-    else:
-        guard.validate(environment, policies, branch='feature-test',
-                       selected_branch=selected)
 
 
 def test_legacy_dependency_hashes_do_not_block_new_candidates(resources, monkeypatch):

@@ -51,9 +51,8 @@ names requires seeding the wheel and fixture into the new volume once.
 The runner never silently falls back to the old namespace or customer resources.
 
 Use the GitHub environment `databricks-mlops-test`, require approval from
-`NVIDIA/kumo-engineers`, disable administrator bypass, and allow `main`. During PR validation, also allow
-`egu/databricks-ui-validation`; remove that rule after merging. Wildcard branch
-rules and tags are rejected. Its required secrets are
+`NVIDIA/kumo-engineers`, enable `prevent_self_review`, disable administrator
+bypass, and allow only `main`. Trial branches, wildcard rules and tags are rejected. Its required secrets are
 `KUMO_DATABRICKS_TEST_PAT`, containing the dedicated test identity's PAT, and
 `KUMO_DATABRICKS_TEST_HOST`, containing its HTTPS workspace origin.
 Both jobs require `KUMO_DATABRICKS_TEST_USER`, identifying the expected PAT
@@ -62,8 +61,8 @@ control records; the lifecycle checks it again inside every fresh worker.
 The PAT identity needs Jobs submission/export, workspace notebook import and
 read/write access to the dedicated Unity Catalog volume. GitHub's built-in token
 checks environment protections before approval and again before consuming the PAT.
-The cloud jobs accept manual dispatch on `main` or the platform feature branch
-during PR validation. Push and pull-request events do not launch cloud jobs.
+The cloud jobs accept manual dispatch only on `main`, with approval from a
+maintainer other than the person who started the run. Push and pull-request events do not launch cloud jobs.
 
 Every scenario requires `--cluster-id ID` for an existing dedicated single-node
 `KUMO_TEST_` x86 cluster using `i3.xlarge` or `i3.2xlarge`, with attach and Volume
@@ -126,8 +125,9 @@ uploaded only when their contents change. Asset bytes are checked before install
 and again inside the notebook; installed graph modules must match the test revision.
 
 GitHub Actions runs this same command after environment approval. It requires the
-protected PAT and host secrets. Select `main` after merging, or the platform
-feature branch during PR validation; resource names come from the code.
+protected PAT and host secrets. Select `main` after the squash merge; resource
+names come from the code. Feature-branch dispatches are intentionally skipped,
+so final-head live validation must run after merging.
 
 
 ## Lifecycle and Snowflake parity

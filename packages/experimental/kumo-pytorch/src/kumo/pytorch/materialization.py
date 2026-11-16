@@ -262,7 +262,7 @@ def _compile_diskgraph_config(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}"
                     )
-                if resolved != declared:
+                if resolved != declared and not (resolved.name == declared.name == "timestamp"):
                     raise ValueError(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}; supply matching typed data"
@@ -318,6 +318,25 @@ def _compile_diskgraph_config(
             "tables": [configs[name] for name in sorted(configs)],
             "num_shards": num_shards,
             "edge_format": "binary",
+            # Keep declared event precision in the shared graph clock. Whole-
+            # second schemas retain the historical seconds default.
+            "timestamp_unit": {
+                "s": "seconds",
+                "ms": "milliseconds",
+                "us": "microseconds",
+                "ns": "nanoseconds",
+            }[
+                max(
+                    (
+                        dtype.unit
+                        for table in schema.tables
+                        for dtype in table.columns.values()
+                        if dtype.name == "timestamp"
+                    ),
+                    key={"s": 0, "ms": 1, "us": 2, "ns": 3}.get,
+                    default="s",
+                )
+            ],
         },
         relation_mapping,
         source_types,

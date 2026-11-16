@@ -279,7 +279,8 @@ def test_workflow_secrets_are_available_only_after_native_environment_approval(
     assert set(job['steps'][4]['env']) == {
         'KUMO_DATABRICKS_TEST_PAT', 'KUMO_DATABRICKS_TEST_HOST'
     }
-    assert 'egu/databricks-ui-validation' in job['if']
+    assert "github.ref == 'refs/heads/main'" in job['if']
+    assert 'egu/databricks-ui-validation' not in json.dumps(workflow)
     assert 'DATABRICKS_TOKEN' not in json.dumps(workflow)
 
 
@@ -341,7 +342,7 @@ def test_invalid_pat_cannot_enter_request_error_output(modules, config,
 @pytest.mark.parametrize('event,branch,repository,expected', [
     ('push', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine', False),
     ('workflow_dispatch', 'egu/databricks-ui-validation', 'NVIDIA/kumo-engine',
-     True),
+     False),
     ('workflow_dispatch', 'main', 'NVIDIA/kumo-engine', True),
     ('push', 'main', 'NVIDIA/kumo-engine', False),
     ('pull_request', 'main', 'NVIDIA/kumo-engine', False),
@@ -349,7 +350,7 @@ def test_invalid_pat_cannot_enter_request_error_output(modules, config,
     ('workflow_dispatch', 'egu/databricks-ui-validation', 'other/repository',
      False),
 ])
-def test_cloud_jobs_require_manual_main_or_feature_dispatch(
+def test_cloud_jobs_require_manual_main_dispatch(
         job_name, event, branch, repository, expected):
     workflow = yaml.safe_load(
         (ROOT /
@@ -364,6 +365,46 @@ def test_cloud_jobs_require_manual_main_or_feature_dispatch(
     ]:
         expression = expression.replace(name, repr(value))
     assert eval(expression, {'__builtins__': {}}) is expected
+
+
+@pytest.mark.parametrize('ref', [
+    'refs/heads/main', 'refs/heads/egu/databricks-ui-validation'
+])
+def test_production_guard_requires_main_and_the_databricks_environment(
+        monkeypatch, ref):
+    import io
+    import runpy
+    import urllib.request
+
+    environment = dict(
+        can_admins_bypass=False, protection_rules=[
+            dict(type='required_reviewers', prevent_self_review=True,
+                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
+        ], deployment_branch_policy=dict(protected_branches=False,
+                                         custom_branch_policies=True))
+    policies = dict(branch_policies=[dict(name='main', type='branch')])
+    calls = []
+
+    def get(request, timeout):
+        calls.append(request.full_url)
+        assert '/environments/databricks-mlops-test' in request.full_url
+        value = policies if 'deployment-branch-policies' in request.full_url else environment
+        return io.BytesIO(json.dumps(value).encode())
+
+    monkeypatch.setattr(urllib.request, 'urlopen', get)
+    for key, value in dict(GITHUB_REF=ref, GITHUB_REPOSITORY='NVIDIA/kumo-engine',
+                           GITHUB_EVENT_NAME='workflow_dispatch',
+                           GITHUB_TOKEN='test-token').items():
+        monkeypatch.setenv(key, value)
+    if ref == 'refs/heads/main':
+        runpy.run_path(str(DIRECTORY / 'check_environment.py'),
+                       run_name='__main__')
+        assert len(calls) == 2
+    else:
+        with pytest.raises(SystemExit, match='manual dispatch on main'):
+            runpy.run_path(str(DIRECTORY / 'check_environment.py'),
+                           run_name='__main__')
+        assert calls == []
 
 
 def export_reply(commands):
