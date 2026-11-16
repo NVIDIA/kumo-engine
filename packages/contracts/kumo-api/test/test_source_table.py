@@ -120,8 +120,8 @@ def test_object_store_table_name_strips_only_recognized_file_suffixes(
     if source_type is S3SourceTable:
         kwargs['source'] = S3RelativeSource(path=coordinate)
     else:
-        relative_type = (GCSRelativeSource if source_type is GCSSourceTable
-                         else ADLSRelativeSource)
+        relative_type = (GCSRelativeSource if source_type is GCSSourceTable else
+                         ADLSRelativeSource)
         kwargs['source'] = relative_type(path=coordinate)
 
     source_table = source_type(**kwargs)
@@ -183,8 +183,7 @@ def test_gcs_and_adls_source_coordinates_reject_unsafe_values(
 
 
 @pytest.mark.parametrize('source_type', [GCSSourceTable, ADLSSourceTable])
-def test_gcs_and_adls_source_coordinates_preserve_valid_deep_paths(
-        source_type):
+def test_gcs_and_adls_source_coordinates_preserve_valid_deep_paths(source_type):
     relative_type = (GCSRelativeSource
                      if source_type is GCSSourceTable else ADLSRelativeSource)
     source_table = source_type(
@@ -200,8 +199,7 @@ def test_gcs_and_adls_source_coordinates_preserve_valid_deep_paths(
 
 
 @pytest.mark.parametrize('source_type', [GCSSourceTable, ADLSSourceTable])
-def test_gcs_and_adls_source_coordinates_preserve_directory_marker(
-        source_type):
+def test_gcs_and_adls_source_coordinates_preserve_directory_marker(source_type):
     relative_type = (GCSRelativeSource
                      if source_type is GCSSourceTable else ADLSRelativeSource)
     source_table = source_type(
@@ -497,16 +495,14 @@ def test_custom_sql_resolve_contract_rejects_invalid_states():
     with pytest.raises((ValidationError, ValueError)):
         SqlTableResolveResponse(
             errors=[
-                ApiValidationError("Invalid Custom SQL table",
-                                   "Invalid output")
+                ApiValidationError("Invalid Custom SQL table", "Invalid output")
             ],
             table_definition=TableDefinition([], source),
         )
     with pytest.raises((ValidationError, ValueError)):
         SqlTableResolveResponse(
             errors=[
-                ApiValidationError("Invalid Custom SQL table",
-                                   "Invalid output")
+                ApiValidationError("Invalid Custom SQL table", "Invalid output")
             ],
             preview_rows=[["value"]],
         )

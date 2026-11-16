@@ -46,14 +46,14 @@ jobs:
 
       - name: Install ui dependencies/node_modules
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        working-directory: ./ui
+        working-directory: ./apps/studio/ui
         run: node --version && npm --version && rm -rf node_modules && npm run install:catalog && npm ci
         env:
           LEGAL_NOTICE_SOURCEMAP: '1'
 
       - name: Build UI
         if: steps.lockfile-only.outputs.only_changed != 'true'
-        working-directory: ./ui
+        working-directory: ./apps/studio/ui
         run: npm run build
 
       - name: Generate UI third-party notices

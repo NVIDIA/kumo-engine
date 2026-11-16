@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 HELM_BIN=${HELM:-helm}
-FIXTURE="${ROOT}/development/testing/test/manifests/values-aws-minimal.yaml"
+FIXTURE="${ROOT}/test/manifests/values-aws-minimal.yaml"
 
 fail() {
   echo "FAIL: $*" >&2

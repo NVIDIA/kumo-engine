@@ -196,8 +196,7 @@ class BigQuerySourceTable:
     table_name: TableName
     project_id: str
     dataset_id: str
-    data_source_type: Literal[
-        DataSourceType.BIGQUERY] = DataSourceType.BIGQUERY
+    data_source_type: Literal[DataSourceType.BIGQUERY] = DataSourceType.BIGQUERY
 
 
 @dataclass(frozen=True, config=_FORBID_EXTRA_CONFIG)

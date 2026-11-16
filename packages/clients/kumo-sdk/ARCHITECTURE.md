@@ -238,14 +238,14 @@ kumoai_studio/codegen/
 
 ## Integration Points
 
-| Dependency                 | Type            | Purpose                                       |
-| -------------------------- | --------------- | --------------------------------------------- |
-| `packages/contracts/kumo-api`        | In-tree package | Shared types and request/response dataclasses |
+| Dependency                                         | Type            | Purpose                                       |
+| -------------------------------------------------- | --------------- | --------------------------------------------- |
+| `packages/contracts/kumo-api`                      | In-tree package | Shared types and request/response dataclasses |
 | `apps/studio/rest/` and `apps/studio/kumo/pquery/` | In-tree service | Coordinate API and SDK changes in one Kumo PR |
-| Snowflake                  | Connector       | `SnowflakeConnector`, SPCS native app support |
-| AWS S3                     | Connector       | `S3Connector` for data lake access            |
-| BigQuery                   | Connector       | `BigQueryConnector` for GCP                   |
-| Databricks                 | Connector       | `DatabricksConnector`, Unity Catalog          |
+| Snowflake                                          | Connector       | `SnowflakeConnector`, SPCS native app support |
+| AWS S3                                             | Connector       | `S3Connector` for data lake access            |
+| BigQuery                                           | Connector       | `BigQueryConnector` for GCP                   |
+| Databricks                                         | Connector       | `DatabricksConnector`, Unity Catalog          |
 
 ## Key Patterns
 

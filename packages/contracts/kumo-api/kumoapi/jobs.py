@@ -72,8 +72,7 @@ def _normalize_rooted_object_store_output_path(
     components = normalized.split('/')
     if (not normalized
             or any(component in {'', '.', '..'} for component in components)):
-        raise ValueError(
-            'path contains an empty, current, or parent component')
+        raise ValueError('path contains an empty, current, or parent component')
     return f'{normalized}/' if has_trailing_slash else normalized
 
 
@@ -438,8 +437,7 @@ class GCSPredictionOutput:
     artifact_type: PredictionArtifactType
     file_path: str
     connector_id: str
-    storage_type: Literal[
-        PredictionStorageType.GCS] = PredictionStorageType.GCS
+    storage_type: Literal[PredictionStorageType.GCS] = PredictionStorageType.GCS
     # Select additional metadata fields to be included as columns in data.
     extra_fields: List[MetadataField] = field(default_factory=list)
 
@@ -541,8 +539,7 @@ class GCSPredictionTableSource:
     r"""Custom prediction data behind one project-owned GCS connector."""
     connector_id: str
     source: GCSSource = Field(discriminator='mode')
-    storage_type: Literal[
-        PredictionStorageType.GCS] = PredictionStorageType.GCS
+    storage_type: Literal[PredictionStorageType.GCS] = PredictionStorageType.GCS
 
     def __post_init__(self):
         if not self.connector_id:

@@ -158,8 +158,7 @@ def test_source_column_preserves_a_proven_delimiter():
         multicategorical_delimiter=';',
     )
 
-    assert from_json(to_json_dict(source_column),
-                     SourceColumn) == source_column
+    assert from_json(to_json_dict(source_column), SourceColumn) == source_column
 
 
 def test_resolved_source_column_requires_scalar_delimiter_proof():

@@ -93,8 +93,7 @@ def _normalize_google_service_account_email(value: str) -> str:
     return normalized
 
 
-_GOOGLE_SERVICE_ACCOUNT_AUTH_URI = (
-    'https://accounts.google.com/o/oauth2/auth')
+_GOOGLE_SERVICE_ACCOUNT_AUTH_URI = ('https://accounts.google.com/o/oauth2/auth')
 _GOOGLE_SERVICE_ACCOUNT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 _GOOGLE_SERVICE_ACCOUNT_UNIVERSE_DOMAIN = 'googleapis.com'
 
@@ -247,8 +246,7 @@ def validate_resource_slug(value: str, *, allow_reserved: bool = False) -> str:
     normalized. ``allow_reserved`` exists only for canonical bootstrap rows;
     public creation requests must leave it ``False``.
     """
-    if not isinstance(value,
-                      str) or _RESOURCE_SLUG_RE.fullmatch(value) is None:
+    if not isinstance(value, str) or _RESOURCE_SLUG_RE.fullmatch(value) is None:
         raise ValueError(
             'Slug must be 3-48 lowercase ASCII letters, digits, or single '
             'hyphens; start with a letter; and end with a letter or digit')
@@ -622,8 +620,7 @@ class ADLSConnectorResourceConfig:
     @property
     def prefix(self) -> str:
         if not isinstance(self.target, ADLSRootedConnectorTarget):
-            raise AttributeError(
-                'Any-URI ADLS connectors do not have a prefix')
+            raise AttributeError('Any-URI ADLS connectors do not have a prefix')
         return self.target.prefix
 
     @property

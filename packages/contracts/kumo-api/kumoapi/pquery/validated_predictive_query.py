@@ -126,8 +126,7 @@ class ParsedPredictiveQuery:
         all_columns |= set(self.entity_ast.all_query_columns_with_locations)
         all_columns |= set(self.target_ast.all_query_columns_with_locations)
         if self.whatif_ast is not None:
-            all_columns |= set(
-                self.whatif_ast.all_query_columns_with_locations)
+            all_columns |= set(self.whatif_ast.all_query_columns_with_locations)
         return list(all_columns)
 
     @property
@@ -354,9 +353,7 @@ class ValidatedPredictiveQuery(ParsedPredictiveQuery):
                 assert target.target is not None
                 return _get_exclude_cols_dict(target.target)
 
-            dicts = [
-                _get_exclude_cols_dict(child) for child in target.children
-            ]
+            dicts = [_get_exclude_cols_dict(child) for child in target.children]
 
             out_dict = {}
             for cols_dict in dicts:
@@ -364,8 +361,7 @@ class ValidatedPredictiveQuery(ParsedPredictiveQuery):
                     if table not in out_dict:
                         out_dict[table] = cols
                     else:
-                        out_dict[table] = list(
-                            set(out_dict[table]) | set(cols))
+                        out_dict[table] = list(set(out_dict[table]) | set(cols))
             return out_dict
 
         return _get_exclude_cols_dict(self.target_ast)

@@ -168,7 +168,9 @@
     {
         "key": "project_forms_workflow",
         "description": "Shared project form controls",
-        "patterns": ["^apps/studio/ui/src/components/Project/NameInput/ProjectNameInput"],
+        "patterns": [
+            "^apps/studio/ui/src/components/Project/NameInput/ProjectNameInput"
+        ],
         "routes": ["/project/settings/", "/connectors/"],
         "recipeKeys": ["project_forms"]
     }

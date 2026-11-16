@@ -15,8 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-_VERSION_RE = re.compile(
-    r'^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+_VERSION_RE = re.compile(r'^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 _RELEASE_BRANCH_RE = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 _RELEASE_TAG_RE = re.compile(
     r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
@@ -131,8 +130,8 @@ def _previous_major_tag(target: Version, tags: dict[Version, str]) -> str:
 
 
 def plan_release(*, current_version: str, requested_branch: str,
-                 existing_branches: Iterable[str],
-                 existing_tags: Iterable[str], dry_run: bool) -> ReleasePlan:
+                 existing_branches: Iterable[str], existing_tags: Iterable[str],
+                 dry_run: bool) -> ReleasePlan:
     """Validate and plan one major or minor release.
 
     A normal release advances the version on ``master`` by one minor or one

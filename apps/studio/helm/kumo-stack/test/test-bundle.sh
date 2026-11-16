@@ -25,7 +25,7 @@ grep -Fqx 'type: library' "${bundle_root}/Chart.yaml" ||
 [[ -r "${bundle_root}/install.sh" ]] || fail "install.sh is not readable"
 [[ -f "${bundle_root}/config.yaml" ]] || fail "config.yaml is missing"
 [[ -f "${bundle_root}/README.md" ]] || fail "README.md is missing"
-cmp "${STACK_ROOT}/../../LICENSE" "${bundle_root}/LICENSE" >/dev/null ||
+cmp "${STACK_ROOT}/../../../../LICENSE" "${bundle_root}/LICENSE" >/dev/null ||
   fail "root LICENSE is missing or changed"
 cmp "${STACK_ROOT}/THIRD-PARTY.txt" "${bundle_root}/THIRD-PARTY.txt" >/dev/null ||
   fail "third-party notice is missing or changed"
@@ -65,7 +65,7 @@ grep -Fq 'library charts are not installable' "${template_error}" ||
 mkdir -p "${TMP_ROOT}/pulled"
 tar -xzf "${package}" -C "${TMP_ROOT}/pulled"
 bundle_root=$(cd "${TMP_ROOT}/pulled/kumo-helm" && pwd)
-cmp "${STACK_ROOT}/../../LICENSE" "${bundle_root}/LICENSE" >/dev/null ||
+cmp "${STACK_ROOT}/../../../../LICENSE" "${bundle_root}/LICENSE" >/dev/null ||
   fail "packaged root LICENSE is missing or changed"
 cmp "${STACK_ROOT}/THIRD-PARTY.txt" "${bundle_root}/THIRD-PARTY.txt" >/dev/null ||
   fail "packaged third-party notice is missing or changed"

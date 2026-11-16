@@ -107,8 +107,7 @@ def test_date_offset_repr(ts, exp_repr):
     (pd.Timedelta('30 days 18:22:19'), TimeUnit.HOURS,
      '738 hours and 22 minutes'),
     (pd.Timedelta('30 days 18:22:19'), TimeUnit.DAYS, '30 days and 18 hours'),
-    (pd.Timedelta('30 days 18:22:19'), TimeUnit.MONTHS,
-     '1 month and 18 hours'),
+    (pd.Timedelta('30 days 18:22:19'), TimeUnit.MONTHS, '1 month and 18 hours'),
 ])
 def test_timedelta_repr(ts, unit, exp_repr):
     assert DateOffsetRange.timedelta_repr(ts, unit) == exp_repr

@@ -133,8 +133,8 @@ def run_group(group, image, reports, compose, tls, run_id,
             if group in ('hosted-sdk', 'local-sdk'):
                 package = 'kumo-sdk' if group == 'hosted-sdk' else 'kumo-engine'
                 command += [
-                    '-c', f'packages/{package}/pyproject.toml',
-                    f'--confcutdir=packages/{package}'
+                    '-c', f'packages/clients/{package}/pyproject.toml',
+                    f'--confcutdir=packages/clients/{package}'
                 ]
             elif group not in SUITES:
                 # Load this group's fixtures without unrelated hosted/model setup.

@@ -15,7 +15,7 @@ Starlette HTTPException b5126b2063dbd6fa46d3e60b4a7117c99dcdbe6e
   Distributed in: Starlette-derived source distributed in kumoai-studio and aggregate Kumo artifacts
   Copyright     : Copyright © 2018, Encode OSS Ltd.
 
-  Legal text dcb95677a022: 3rdparty/notices/starlette-LICENSE.md
+  Legal text dcb95677a022: development/third-party/notices/starlette-LICENSE.md
 
     Copyright © 2018, [Encode OSS Ltd](https://www.encode.io/).
     All rights reserved.

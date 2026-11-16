@@ -15,8 +15,10 @@ from tools.release_plan import plan_release  # noqa: E402
 
 RELEASE_BRANCHES = {'v0.91', 'v0.92'}
 RELEASE_TAGS = {'v0.91.0', 'v0.92.0'}
-RELEASE_WORKFLOW = (Path(__file__).resolve().parents[4] / '.github/workflows/kumo-api-release.yml')
-HOTFIX_WORKFLOW = (Path(__file__).resolve().parents[4] / '.github/workflows/kumo-api-hotfix-release.yml')
+RELEASE_WORKFLOW = (Path(__file__).resolve().parents[4] /
+                    '.github/workflows/kumo-api-release.yml')
+HOTFIX_WORKFLOW = (Path(__file__).resolve().parents[4] /
+                   '.github/workflows/kumo-api-hotfix-release.yml')
 
 
 def test_plans_prebumped_major_release_without_version_commit():
@@ -34,8 +36,7 @@ def test_plans_prebumped_major_release_without_version_commit():
 def test_plans_approved_prebumped_v3_release_from_v0_92():
     plan = plan_release(current_version='3.0.0', requested_branch='v3.0',
                         existing_branches=RELEASE_BRANCHES,
-                        existing_tags=RELEASE_TAGS | {'v3.0.0b1'},
-                        dry_run=True)
+                        existing_tags=RELEASE_TAGS | {'v3.0.0b1'}, dry_run=True)
 
     assert plan.target_branch == 'v3.0'
     assert plan.target_tag == 'v3.0.0'
@@ -78,8 +79,7 @@ def test_plans_normal_minor_release_with_version_commit():
 def test_plans_normal_minor_release_after_patch_release():
     plan = plan_release(current_version='0.92.3', requested_branch='v0.93',
                         existing_branches=RELEASE_BRANCHES,
-                        existing_tags=RELEASE_TAGS | {'v0.92.3'},
-                        dry_run=False)
+                        existing_tags=RELEASE_TAGS | {'v0.92.3'}, dry_run=False)
 
     assert plan.target_tag == 'v0.93.0'
     assert plan.previous_tag == 'v0.92.0'

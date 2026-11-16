@@ -576,8 +576,7 @@ class PlanMixin:
                 value_repr = '[\n' + value_repr + '\n]'
             elif isinstance(value, dict):
                 value_repr = '\n'.join([
-                    f'{_add_indent(str(k), 2)}: {v},'
-                    for k, v in value.items()
+                    f'{_add_indent(str(k), 2)}: {v},' for k, v in value.items()
                 ])
                 value_repr = '{\n' + value_repr + '\n}'
             else:
@@ -704,8 +703,7 @@ class TrainingTableGenerationPlan(PlanMixin):
                           MissingType] = compat_field(
                               default_factory=lambda: MissingType.VALUE,
                               metadata=Metadata(
-                                  valid_query_types=[QueryType.TEMPORAL]),
-                              gt=0)
+                                  valid_query_types=[QueryType.TEMPORAL]), gt=0)
 
     # Forecasting =============================================================
 
@@ -716,12 +714,18 @@ class TrainingTableGenerationPlan(PlanMixin):
                 valid_query_types=[QueryType.TEMPORAL],
             ), gt=0)
 
-    lag_timesteps: Optional[Union[
-        NonNegativeIntInV2, MissingType]] = compat_field(
-            default_factory=lambda: MissingType.VALUE, metadata=Metadata(
-                valid_task_types=[TaskType.REGRESSION, TaskType.FORECASTING],
-                valid_query_types=[QueryType.TEMPORAL],
-            ), ge=0)
+    lag_timesteps: Optional[Union[NonNegativeIntInV2,
+                                  MissingType]] = compat_field(
+                                      default_factory=lambda: MissingType.VALUE,
+                                      metadata=Metadata(
+                                          valid_task_types=[
+                                              TaskType.REGRESSION,
+                                              TaskType.FORECASTING
+                                          ],
+                                          valid_query_types=[
+                                              QueryType.TEMPORAL
+                                          ],
+                                      ), ge=0)
 
     year_over_year: Union[bool, MissingType] = compat_field(
         default_factory=lambda: MissingType.VALUE,

@@ -129,8 +129,7 @@ def cmd_check_release(args: argparse.Namespace) -> int:
 
     if not baseline_schemas:
         print("", file=sys.stderr)
-        print("Warning: No baseline schemas could be fetched.",
-              file=sys.stderr)
+        print("Warning: No baseline schemas could be fetched.", file=sys.stderr)
         print("RESULT: PASSED (no baselines to compare against)",
               file=sys.stderr)
         return 0

@@ -184,16 +184,14 @@ def test_s3_access_key_credentials_reject_blank_material(field: str, ) -> None:
 
 def test_s3_access_key_credentials_reject_non_certificate_pem() -> None:
     credentials = _credentials()
-    private_key = rsa.generate_private_key(public_exponent=65537,
-                                           key_size=2048)
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_key_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption(),
     ).decode()
 
-    with pytest.raises((ValidationError, ValueError),
-                       match='PEM certificates'):
+    with pytest.raises((ValidationError, ValueError), match='PEM certificates'):
         replace(
             credentials,
             ca_certificate=SecretStr(private_key_pem),

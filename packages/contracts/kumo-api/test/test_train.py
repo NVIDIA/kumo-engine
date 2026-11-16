@@ -13,8 +13,7 @@ from kumoapi.train import TrainingTableSpec
 def test_timestamp_unit_round_trip(unit):
     adapter = TypeAdapter(TrainingTableSpec)
     spec = TrainingTableSpec(timestamp_unit=unit)
-    assert adapter.validate_json(
-        adapter.dump_json(spec)).timestamp_unit == unit
+    assert adapter.validate_json(adapter.dump_json(spec)).timestamp_unit == unit
 
 
 def test_timestamp_unit_default_and_positional_compatibility():

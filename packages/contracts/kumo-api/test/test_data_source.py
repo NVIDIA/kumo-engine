@@ -116,15 +116,12 @@ def test_resource_creation_slugs_are_optional_but_strict():
     assert identity.slug == 'prod-aws'
 
     with pytest.raises((ValidationError, ValueError), match='Reserved'):
-        CreateProjectArgs(name='Default', group_id='group-risk',
-                          slug='default')
+        CreateProjectArgs(name='Default', group_id='group-risk', slug='default')
 
 
-def test_resource_responses_require_slug_and_accept_bootstrap_reserved_values(
-):
+def test_resource_responses_require_slug_and_accept_bootstrap_reserved_values():
     project = ProjectResponse(id=DEFAULT_PROJECT_ID, slug='default',
-                              display_name='Default',
-                              group_id=DEFAULT_GROUP_ID)
+                              display_name='Default', group_id=DEFAULT_GROUP_ID)
     group = GroupResponse(id=DEFAULT_GROUP_ID, slug='default',
                           display_name='Default')
     assert project.slug == group.slug == 'default'
@@ -1169,8 +1166,7 @@ def test_s3_identity_partition_and_role_arn_must_match():
 def test_optional_target_fields_canonicalize_blank_without_requiring_prefix():
     snowflake = SnowflakeConnectorResourceConfig(warehouse='ANALYTICS',
                                                  database='SALES',
-                                                 schema_name='EUROPE',
-                                                 role=' ')
+                                                 schema_name='EUROPE', role=' ')
     s3 = S3ConnectorResourceConfig(target=S3RootedConnectorTarget(
         bucket='company-data', prefix='', region=' '))
     gcs = GCSConnectorResourceConfig(

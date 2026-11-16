@@ -131,7 +131,7 @@ run_case() {
     PATH="${BIN_DIR}:${PATH}" \
     bash "${ROOT}/conformance/check.sh" \
       --chart "$ROOT" \
-      -f "${ROOT}/development/testing/test/manifests/values-aws-minimal.yaml" \
+      -f "${ROOT}/test/manifests/values-aws-minimal.yaml" \
       -f "$values_file" \
       -n csi-errors prereq 2>&1) || :
   printf '%s\n' "$output" | strip_ansi

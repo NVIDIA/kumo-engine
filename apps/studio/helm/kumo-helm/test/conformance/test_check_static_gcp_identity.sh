@@ -52,7 +52,7 @@ output=$(FAKE_KUBECTL_LOG="$KUBECTL_LOG" \
   PATH="${BIN_DIR}:${PATH}" \
   bash "${ROOT}/conformance/check.sh" \
     --chart "$ROOT" \
-    -f "${ROOT}/development/testing/test/manifests/values-gcp-static.yaml" \
+    -f "${ROOT}/test/manifests/values-gcp-static.yaml" \
     -n static-gcp prereq 2>&1) || :
 output=$(printf '%s\n' "$output" | strip_ansi)
 
@@ -75,7 +75,7 @@ missing_key_output=$(FAKE_GCP_SECRET_CASE=wrong_key \
   PATH="${BIN_DIR}:${PATH}" \
   bash "${ROOT}/conformance/check.sh" \
     --chart "$ROOT" \
-    -f "${ROOT}/development/testing/test/manifests/values-gcp-static.yaml" \
+    -f "${ROOT}/test/manifests/values-gcp-static.yaml" \
     -n static-gcp prereq 2>&1) || :
 missing_key_output=$(printf '%s\n' "$missing_key_output" | strip_ansi)
 
@@ -92,7 +92,7 @@ query_error_output=$(FAKE_GCP_SECRET_CASE=query_error \
   PATH="${BIN_DIR}:${PATH}" \
   bash "${ROOT}/conformance/check.sh" \
     --chart "$ROOT" \
-    -f "${ROOT}/development/testing/test/manifests/values-gcp-static.yaml" \
+    -f "${ROOT}/test/manifests/values-gcp-static.yaml" \
     -n static-gcp prereq 2>&1) || :
 query_error_output=$(printf '%s\n' "$query_error_output" | strip_ansi)
 

@@ -67,7 +67,7 @@ def test_release_retains_one_validated_artifact():
 
 
 def test_release_dependency_pins_api_beta():
-    setup = (ROOT / 'apps/studio/setup.py').read_text()
+    setup = (ROOT / 'setup.py').read_text()
 
     assert "kumo_api_release_ver = '3.0.0'" in setup
     assert "kumo_api = f'kumo-api=={api_ver}'" in setup
@@ -75,7 +75,7 @@ def test_release_dependency_pins_api_beta():
 
 
 def test_public_sdk_does_not_inherit_the_application_fsspec_cap():
-    setup = (ROOT / 'apps/studio/setup.py').read_text()
+    setup = (ROOT / 'setup.py').read_text()
 
     assert '"fsspec>=2025.3.0"' in setup
     assert 'fsspec>=2025.3.0,<=' not in setup

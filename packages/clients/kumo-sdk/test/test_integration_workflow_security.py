@@ -9,7 +9,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _WORKFLOW = Path(__file__).resolve().parents[4] / '.github/workflows/kumo-sdk-test-integration.yml'
 _INTEGRATION_AUTH_FILES = (
     _WORKFLOW,
-    _SDK_ROOT / "development/testing/test/conftest.py",
+    _SDK_ROOT / "test/conftest.py",
     _SDK_ROOT / "test/test_client.py",
     _SDK_ROOT / "test/codegen/test_integration_e2e.py",
 )

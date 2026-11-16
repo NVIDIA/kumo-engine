@@ -242,7 +242,9 @@ describe("ensure-screenshot-plan.py", () => {
 
     it("uses route-map ownership when catalog patterns are not specific enough", () => {
         const { output, plan, report } = runHelper({
-            changedFiles: ["apps/studio/ui/src/components/Graphs/SelectTables/Widget.tsx"]
+            changedFiles: [
+                "apps/studio/ui/src/components/Graphs/SelectTables/Widget.tsx"
+            ]
         });
 
         expect(output).toContain("new_graph_select_tables");
@@ -269,7 +271,9 @@ describe("ensure-screenshot-plan.py", () => {
 
     it("captures all page variants for shared entity list changes", () => {
         const { output, plan, report } = runHelper({
-            changedFiles: ["apps/studio/ui/src/components/ListOverview/ListOverview.tsx"]
+            changedFiles: [
+                "apps/studio/ui/src/components/ListOverview/ListOverview.tsx"
+            ]
         });
 
         expect(output).toContain("entity_lists");
@@ -707,7 +711,9 @@ assert [surface["key"] for surface in pruned] == ["alpha"], pruned
 
     it("does not let table list changes keep table creation plans", () => {
         const { output, plan, report } = runHelper({
-            changedFiles: ["apps/studio/ui/src/pages/Tables/TablesList/TablesList.tsx"],
+            changedFiles: [
+                "apps/studio/ui/src/pages/Tables/TablesList/TablesList.tsx"
+            ],
             existingPlan: {
                 scenarios: [
                     {
@@ -769,7 +775,9 @@ assert [surface["key"] for surface in pruned] == ["alpha"], pruned
 
     it("rewrites unrelated existing plans for project settings changes", () => {
         const { output, plan, report } = runHelper({
-            changedFiles: ["apps/studio/ui/src/components/Project/ProjectSettings.tsx"],
+            changedFiles: [
+                "apps/studio/ui/src/components/Project/ProjectSettings.tsx"
+            ],
             existingPlan: {
                 scenarios: [
                     {
@@ -871,7 +879,9 @@ assert [surface["key"] for surface in pruned] == ["alpha"], pruned
 
     it("applies explicit screenshot override flags to select a catalog recipe", () => {
         const { output, plan, report } = runHelper({
-            changedFiles: ["apps/studio/ui/src/components/Uncataloged/Widget.tsx"],
+            changedFiles: [
+                "apps/studio/ui/src/components/Uncataloged/Widget.tsx"
+            ],
             screenshotOverride: {
                 route: "/newjob/training/",
                 coverageIds: ["new_training_task_type_visible"],

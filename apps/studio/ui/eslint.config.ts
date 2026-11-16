@@ -198,7 +198,10 @@ export default [
     //     gen API hooks, hooks, stores, or pages. Type-only gen/* imports are
     //     allowed (erased at compile time). Flip to `error` once clean.
     {
-        files: ["src/components/@apps/studio/ui/**/*.ts", "src/components/@apps/studio/ui/**/*.tsx"],
+        files: [
+            "src/components/@apps/studio/ui/**/*.ts",
+            "src/components/@apps/studio/ui/**/*.tsx"
+        ],
         plugins: { "@typescript-eslint": tseslint.plugin },
         rules: {
             "@typescript-eslint/no-restricted-imports": [

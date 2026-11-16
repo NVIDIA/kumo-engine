@@ -15,7 +15,7 @@ pytorch-forecasting 4039c0da8d3a6ffa687968ec7aea985f047d8658
   Distributed in: PyTorch Forecasting-derived source distributed in kumo-core and aggregate Kumo artifacts
   Copyright     : Copyright 2020 Jan Beitner
 
-  Legal text e75d3121f650: 3rdparty/notices/pytorch-forecasting-LICENSE
+  Legal text e75d3121f650: development/third-party/notices/pytorch-forecasting-LICENSE
 
     THE MIT License
 

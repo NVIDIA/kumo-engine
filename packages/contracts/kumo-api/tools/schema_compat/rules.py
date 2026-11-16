@@ -499,8 +499,8 @@ def compare_dataclass_schemas(
             new_field = new_fields[field_name]
 
             # Compare types
-            changes.extend(
-                compare_field_types(old_field, new_field, model_name))
+            changes.extend(compare_field_types(old_field, new_field,
+                                               model_name))
 
             # Compare defaults
             changes.extend(

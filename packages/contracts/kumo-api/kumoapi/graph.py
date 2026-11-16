@@ -27,8 +27,8 @@ class ColumnKeyGroup:
 
 
 def group_column_relationships(
-    relationships: Iterable[Tuple[ColumnKey, ColumnKey]],
-) -> List[ColumnKeyGroup]:
+    relationships: Iterable[Tuple[ColumnKey,
+                                  ColumnKey]], ) -> List[ColumnKeyGroup]:
     """Group source keys by their destination key.
 
     Group order follows the first occurrence of each destination. Columns are
@@ -207,9 +207,8 @@ def graph_definition_from_edges(
             ColumnKey(edge.src_table, edge.fkey),
             ColumnKey(edge.dst_table, dst_pkey),
         ))
-    return definition_type(
-        tables=dict(tables),
-        col_groups=group_column_relationships(relationships))
+    return definition_type(tables=dict(tables),
+                           col_groups=group_column_relationships(relationships))
 
 
 @dataclass

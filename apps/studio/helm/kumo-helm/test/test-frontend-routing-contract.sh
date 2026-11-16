@@ -18,7 +18,7 @@ command -v "$HELM_BIN" >/dev/null 2>&1 || fail "Helm is required"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kumo-frontend-routing.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-base_fixture="${ROOT}/development/testing/test/manifests/values-aws-default.yaml"
+base_fixture="${ROOT}/test/manifests/values-aws-default.yaml"
 chart_args=(
   -f "$base_fixture"
   --set-string 'workloads.rest.extraEnv.FORWARDED_ALLOW_IPS=198.51.100.0/24'

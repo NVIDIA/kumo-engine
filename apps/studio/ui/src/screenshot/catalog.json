@@ -1288,7 +1288,9 @@
     },
     {
         "key": "project_forms",
-        "patterns": ["^apps/studio/ui/src/components/Project/NameInput/ProjectNameInput"],
+        "patterns": [
+            "^apps/studio/ui/src/components/Project/NameInput/ProjectNameInput"
+        ],
         "canonicalRoutes": ["/project/settings/", "/connectors/"],
         "visualCoverage": [
             {

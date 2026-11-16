@@ -176,7 +176,7 @@ run_case() {
     PATH="${BIN_DIR}:${PATH}" \
     bash "${ROOT}/conformance/check.sh" \
       --chart "$ROOT" \
-      -f "${ROOT}/development/testing/test/manifests/values-aws-minimal.yaml" \
+      -f "${ROOT}/test/manifests/values-aws-minimal.yaml" \
       -f "${TMP_DIR}/values.yaml" \
       "${tenant_args[@]}" \
       -n csi-coverage prereq 2>&1) || :
@@ -185,7 +185,7 @@ run_case() {
 
 # Probe tiers must come from the same fully merged JSON delivered to the app.
 rendered=$(helm template kumo "$ROOT" \
-  -f "${ROOT}/development/testing/test/manifests/values-aws-minimal.yaml" \
+  -f "${ROOT}/test/manifests/values-aws-minimal.yaml" \
   -f "${TMP_DIR}/values.yaml" \
   --show-only templates/tests/probe-inputs.yaml)
 inputs=$(printf '%s\n' "$rendered" | sed -n -E \

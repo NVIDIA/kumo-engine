@@ -27,8 +27,7 @@ def test_table_snapshot_resource_preserves_public_table_stats() -> None:
     }
 
 
-def test_table_snapshot_resource_allows_stats_before_ingest_completes(
-) -> None:
+def test_table_snapshot_resource_allows_stats_before_ingest_completes() -> None:
     resource = from_json(
         {
             'id': 'table_fingerprint@data-version',

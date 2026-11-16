@@ -39,6 +39,7 @@ repos:
     rev: v0.43.0
     hooks:
       - id: yapf
+        args: [--style=development/config/.style.yapf]
         name: Format code
         additional_dependencies: [toml]
         language_version: python3.11
@@ -52,5 +53,6 @@ repos:
     rev: 7.3.0
     hooks:
       - id: flake8
+        args: [--config=development/config/setup.cfg]
         name: Check PEP8
         additional_dependencies: [Flake8-pyproject]

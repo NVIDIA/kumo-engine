@@ -6,7 +6,7 @@
 set -Eeuo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-INSTALLER="${ROOT}/apps/studio/bin/kumo"
+INSTALLER="${ROOT}/bin/kumo"
 CONFIG="${ROOT}/config.yaml"
 
 usage() {

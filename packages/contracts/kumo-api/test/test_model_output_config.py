@@ -104,8 +104,7 @@ def test_model_artifact_output_discriminated_union_is_strict(
 @pytest.mark.parametrize('output', [
     S3ModelArtifactOutput(connector_id='s3',
                           path='s3://model-artifacts/models/job-1/'),
-    GCSModelArtifactOutput(connector_id='gcs',
-                           path='gs://bucket/models/job-1'),
+    GCSModelArtifactOutput(connector_id='gcs', path='gs://bucket/models/job-1'),
     ADLSModelArtifactOutput(
         connector_id='adls',
         path='abfss://models@companylake.dfs.core.windows.net/job-1'),

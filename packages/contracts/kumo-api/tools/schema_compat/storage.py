@@ -280,8 +280,7 @@ def get_baseline_versions(
     return baselines
 
 
-def schema_exists(version: str,
-                  pydantic_version: Optional[int] = None) -> bool:
+def schema_exists(version: str, pydantic_version: Optional[int] = None) -> bool:
     """Check if a schema exists in S3 for a given version.
 
     Args:

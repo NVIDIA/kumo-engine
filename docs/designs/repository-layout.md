@@ -115,11 +115,14 @@ similarity alone.
 | --- | --- |
 | PQL parser suite | 1,805 passed |
 | API package suite | 1,138 passed |
+| Remote Studio SDK | 664 passed, 28 skipped |
+| Connector import boundaries | 15 passed |
 | Repository tooling suite | 941 passed, 3 skipped; 12 existing Faiss fixture failures reproduced on the starting revision |
 | Distributable agent skills | 290 passed |
 | Selected SDK training, prediction, reload, monitoring and presentation tests | 123 passed with a freshly built native DiskGraph wheel |
 | Workflow helper tests | 33 passed |
 | Local launch configuration | 45 concurrent-devserver and Compose configuration checks passed |
+| Chart packaging and CSI guards | Bundle, CSI error-path and CSI node-coverage checks passed |
 | Selected UI proxy, editor-help and table-overview tests | 64 passed |
 | Core service-import boundary | Passed |
 | UI type check and component-library build | Passed |

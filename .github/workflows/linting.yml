@@ -147,7 +147,7 @@ jobs:
       - name: Build Python wheels
         run: |
           projects=(
-            .
+            apps/studio
             packages/contracts/kumo-api
             packages/integrations/kumo-bigquery
             packages/runtime/kumo-core

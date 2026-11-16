@@ -88,7 +88,7 @@ assert_rejected_setting() {
 render_profile() {
   local provider=$1
   local profile="${ROOT}/profiles/${provider}.yaml"
-  local fixture="${ROOT}/development/testing/test/profiles/values-${provider}.yaml"
+  local fixture="${ROOT}/test/profiles/values-${provider}.yaml"
   local manifest="${TMP_DIR}/${provider}.yaml"
 
   assert_render_failure \
