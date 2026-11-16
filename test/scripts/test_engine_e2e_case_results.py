@@ -34,6 +34,20 @@ def test_required_metrics(metric, val, test):
         common.check_metrics(metrics, [metric, "mae"], "reference")
 
 
+def test_sparse_cases_balance_training_at_every_scale(monkeypatch):
+    module = ModuleType("kumoapi.model_plan")
+    module.NumNeighborsConfig = lambda **hops: hops
+    module.WeightMode = NS(SAMPLE="sample")
+    monkeypatch.setitem(sys.modules, "kumoapi.model_plan", module)
+    for scale in ("100M", "1B", "10B", "25B"):
+        overrides = common.sparse_overrides(scale)
+        assert overrides["optimization.majority_sampling_ratio"] == [1.0]
+        assert overrides["optimization.weight_mode"] == ["sample"]
+        large = scale in ("10B", "25B")
+        assert ("training_job.num_experiments" in overrides) == large
+        assert ("optimization.max_epochs" in overrides) == large
+
+
 def test_requested_population_and_counts():
     requested = pd.DataFrame({"ENTITY": range(20), "ANCHOR_TIMESTAMP":
                               [pd.Timestamp("2025-01-01")] * 20})
