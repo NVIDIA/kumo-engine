@@ -19,8 +19,9 @@ Linux memory/cache and GPU collector validations have dedicated nightly jobs.
 The workflow also configures all five bounded AML CUDA benchmark campaigns on
 Engine's existing GPU runner, with per-worker cgroups and fresh/reused fitting.
 CI verified bucket access and executed all five campaigns. With the decimal
-fix deliberately removed, graph workloads fail; sequence training completes
-but measurement coverage is incomplete on the GPU runner. See the
+fix deliberately removed, graph workloads fail. All three sequence campaigns
+now pass measurement coverage with longer GPU windows and explicitly labelled
+sampled host peaks. See the [latest benchmark validation](PLAN.md#gpu-and-sampled-memory-validation),
 [collective CI review](PLAN.md#collective-ci-review) and
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
 See [coverage ownership](PLAN.md#coverage-ownership).

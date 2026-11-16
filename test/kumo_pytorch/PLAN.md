@@ -844,8 +844,8 @@ extends each epoch from 16 to 128 real batches, including 126 after warmup.
 The general runner, 0.1-second NVML polling interval and two-sample coverage
 requirement remain unchanged. No delay or synthetic samples are added.
 The earlier 64-anchor results remain historical evidence. Live validation of
-the larger selection is pending; the host-kernel peak limitation and exposed
-decimal defect remain separate failures.
+the larger selection is recorded below. The host-kernel exact-peak limitation
+and exposed decimal defect are separate issues.
 
 ### Explicit sampled host-memory follow-up
 
@@ -859,4 +859,50 @@ This is a deliberate measurement-precision choice, not an automatic fallback.
 The GPU job validates held parent/child allocations and independent stage
 measurements on the same host. No host upgrade or runner administration is
 required. Local harness validation: 101 passed, zero failures/skips. Live GPU
-sampling and sampled-memory validation remain pending on the new candidate.
+sampling and sampled-memory validation results follow below.
+
+### GPU and sampled-memory validation
+
+[CI run 43864367740](https://github.com/NVIDIA/kumo-engine/actions/runs/43864367740)
+validated code commit `57eca2bb` on Engine's existing RTX runner. All three
+sequence campaigns are **complete**: each of 18 workers executed two full
+512-example epochs and covered all 73 metric obligations, including explicit
+contract-based inapplicability. The nine fitting comparisons and all selected
+cold/warm file-cache pairs passed. There were 4,608 optimizer updates and 18,432
+example emissions across repeated epochs/runs, not 18,432 unique examples.
+
+| Sequence campaign | In-window GPU samples, min–max | Median per-worker sampled host maxima: ingestion / materialization / batch production (MiB) |
+| --- | --- | --- |
+| Involvement / nuFormer | 14–26 | 703.15 / 698.40 / 1,705.27 |
+| Masked value / PRAGMA | 70–86 | 703.73 / 692.41 / 1,782.23 |
+| Next token / nuFormer | 13–26 | 710.12 / 699.79 / 1,656.69 |
+
+All 4,716 host-memory observations in these workers were available and matched
+the maximum of their retained raw samples. Reports explicitly label sampled
+precision and include native/descendant cgroup charges, file-cache and kernel
+charges; these are not RSS or allocation deltas. The target interval was 10 ms;
+actual observed gaps reached 120.40 ms, 320.18 ms and 88.50 ms respectively.
+Scheduling/GIL delays can leave longer gaps, and between-sample peaks can be
+missed. These limitations are retained; sampled acceptance does not establish
+exact kernel peaks or comparability with Arena's RSS values.
+
+The separate GPU-host validator passed on Linux `6.8.0-147-generic`: held parent
+allocation, independent stage measurements and a held child allocation. It
+observed 76.6 / 16.2 / 65.3 MiB in the three controlled intervals, with allocations
+held for 0.1 seconds. Its raw evidence is in `sampled-memory-validation.json`.
+The exact-kernel Linux validator, 101 tooling tests and GPU collector/CUDA package
+checks also passed. Package/AML tests retained exactly the nine/seven expected
+decimal failures, with no new failures.
+
+GraphSAGE still fails on decimal Arrow strings; combined still fails during
+fitting, leaving no state for its paired reuse run. All 12 failed graph workers
+retain their partial reports and traces. The suite remains failed for those
+execution defects; this follow-up does not restore the decimal patch or claim
+graph measurement completeness. Individual worker reports retain pending
+campaign-owned experiments; the enclosing campaign reports establish fitting
+comparisons and independent repetition acceptance.
+
+The earlier window-only run 43862085018 was stopped after retaining completed
+involvement repetitions showing 10–22 GPU samples per window. Run 43864367740
+provides the complete three-campaign validation of both changes. No kernel
+upgrade, runner administration or further AWS permission change was required.

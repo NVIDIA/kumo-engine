@@ -288,7 +288,7 @@ transient children and timeout cleanup. The nightly repeats this validation.
 Container validation is collector evidence,
 not a workload benchmark or a requirement to execute on a developer's machine.
 
-The real RTX campaign host reported Linux `6.8.0-147-generic`. Its
+The initial RTX campaign host reported Linux `6.8.0-147-generic`. Its
 [`memory.peak` interface is read-only](https://docs.kernel.org/6.8/admin-guide/cgroup-v2.html),
 so all three host-stage peak measurements were unavailable despite successful
 worker cgroup creation. The collector requires the
@@ -322,6 +322,13 @@ that the sampler captures parent and child allocations and starts a new peak
 for each stage. It does not claim to validate between-sample spikes. The artifact
 includes `sampled-memory-validation.json`. The separate exact-peak Linux tests
 remain enabled on their compatible runner.
+
+[CI run 43864367740](https://github.com/NVIDIA/kumo-engine/actions/runs/43864367740)
+validated sampled parent/child allocations on Linux 6.8 and all three sequence
+campaigns. Every sequence worker covered 73/73 metric obligations. The target
+interval was 10 ms; actual gaps reached 320.18 ms and are retained in reports.
+This is measured sampled coverage, not an exact high-water guarantee. See the
+[results](../PLAN.md#gpu-and-sampled-memory-validation).
 
 ## GPU collection and nightly runner
 
