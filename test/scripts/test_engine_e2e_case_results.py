@@ -34,6 +34,24 @@ def test_required_metrics(metric, val, test):
         common.check_metrics(metrics, [metric, "mae"], "reference")
 
 
+def test_reference_bands_gate_only_required_metrics():
+    def result(**metrics):
+        return dict(graph={}, training_table={}, hardware={}, metrics=metrics,
+                    required_metrics=["test_auroc", "val_auroc"])
+
+    reference = result(val_auroc=.8, test_auroc=.8, train_auroc=.4,
+                       test_loss=.2)
+    common.compare_reference(
+        result(val_auroc=.82, test_auroc=.78, train_auroc=.9, test_loss=.9),
+        reference, .25)
+    with pytest.raises(ValueError, match="band exceeded: test_auroc"):
+        common.compare_reference(result(val_auroc=.8, test_auroc=.7),
+                                 reference, .25)
+    with pytest.raises(ValueError, match="missing: test_auroc"):
+        common.compare_reference(result(val_auroc=.8, test_auroc=.8),
+                                 result(val_auroc=.8), .25)
+
+
 def test_requested_population_and_counts():
     requested = pd.DataFrame({"ENTITY": range(20), "ANCHOR_TIMESTAMP":
                               [pd.Timestamp("2025-01-01")] * 20})

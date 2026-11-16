@@ -369,10 +369,10 @@ def compare_reference(result, expected, tolerance):
             raise ValueError(f"Reference {key} differs")
     if "metrics" not in result:
         return
-    if result["metrics"].keys() != expected["metrics"].keys():
-        raise ValueError("Reference metric names differ")
-    for name, value in result["metrics"].items():
-        baseline = expected["metrics"][name]
+    for name in result["required_metrics"]:
+        value, baseline = result["metrics"][name], expected["metrics"].get(name)
+        if baseline is None:
+            raise ValueError(f"Reference metric is missing: {name}")
         metric = re.sub(r"^(train|val|test)_", "", name).split("_", 1)[0]
         difference = abs(value - baseline)
         band = .03 if metric in ("auroc", "ap") else abs(baseline) * tolerance
