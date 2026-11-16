@@ -8,7 +8,8 @@ that fails on its first attempt has its failed jobs rerun once. After that, the
 channel hears only about changes: a workflow that starts failing, and one that
 recovers. A run that finishes after a later run of the same workflow is ignored.
 The state last reported for each workflow is kept in a workflow artifact, so
-each change is posted once however often a run is retried. `decide()` is pure;
+each change is posted once however often a run is retried; only artifacts this
+workflow uploaded for main in this repository are read. `decide()` is pure;
 everything else reads the run from the environment and the GitHub API.
 """
 
@@ -21,7 +22,8 @@ import subprocess
 import sys
 import urllib.request
 import zipfile
-from typing import TypedDict
+from collections.abc import Callable
+from typing import NotRequired, TypedDict
 
 FAILING = {"failure", "timed_out"}
 EVENTS = {"push", "schedule"}
@@ -29,6 +31,7 @@ BRANCH = "main"
 PASSING_STATE, FAILING_STATE = "passing", "failing"
 RERUN, FAILING_NOW, RECOVERED = "rerun", "started failing", "recovered"
 STATE_FILE = "state.json"
+ALERT_WORKFLOW = ".github/workflows/kumo-pytorch-alert.yml"
 
 
 class Run(TypedDict):
@@ -43,6 +46,24 @@ class State(TypedDict):
     state: str
     run_number: int
     run_attempt: int
+
+
+class ArtifactRun(TypedDict):
+    id: int
+    head_branch: str
+    head_repository_id: int
+
+
+class Artifact(TypedDict):
+    id: int
+    expired: bool
+    created_at: str
+    workflow_run: NotRequired[ArtifactRun | None]
+
+
+class ProducerRun(TypedDict):
+    path: str
+    event: str
 
 
 def state_of(conclusion: str | None) -> str | None:
@@ -97,6 +118,30 @@ def artifact_name(workflow_id: str) -> str:
     return f"kumo-pytorch-alert-state-{workflow_id}"
 
 
+def newest_trusted(
+    artifacts: list[Artifact], repository_id: int, producer: Callable[[int], ProducerRun]
+) -> Artifact | None:
+    """The newest unexpired artifact that this workflow uploaded for main in this repository."""
+    for artifact in sorted(artifacts, key=lambda artifact: artifact["created_at"], reverse=True):
+        run = artifact.get("workflow_run")
+        if (
+            artifact["expired"]
+            or not run
+            or run["head_branch"] != BRANCH
+            or run["head_repository_id"] != repository_id
+        ):
+            continue
+        producing = producer(run["id"])
+        if producing["path"] == ALERT_WORKFLOW and producing["event"] == "workflow_run":
+            return artifact
+    return None
+
+
+def stale(state: State, number: int, attempt: int) -> bool:
+    """Whether the run attempt is older than the one that saved `state`."""
+    return (number, attempt) < (state["run_number"], state["run_attempt"])
+
+
 def message(outcome: str, workflow: str, sha: str, commit_message: str, url: str) -> str:
     subject = commit_message.splitlines()[0] if commit_message else ""
     return f"{workflow} {outcome} on {BRANCH} at {sha[:10]} {subject}\n{url}"
@@ -123,15 +168,24 @@ def _post(webhook: str, text: str) -> None:
         response.read()
 
 
-def reported_state(repo: str, workflow_id: str) -> State | None:
-    """The state in the newest unexpired state artifact, or None if there is none."""
-    page = json.loads(
-        _gh("api", f"repos/{repo}/actions/artifacts?name={artifact_name(workflow_id)}&per_page=20")
+def reported_state(repo: str, repository_id: int, workflow_id: str) -> State | None:
+    """The state in the newest trusted state artifact, or None if there is none."""
+    pages = json.loads(
+        _gh(
+            "api",
+            f"repos/{repo}/actions/artifacts?name={artifact_name(workflow_id)}&per_page=100",
+            "--paginate",
+            "--slurp",
+        )
     )
-    artifacts = [artifact for artifact in page["artifacts"] if not artifact["expired"]]
-    if not artifacts:
+    artifacts: list[Artifact] = [artifact for page in pages for artifact in page["artifacts"]]
+
+    def producer(run_id: int) -> ProducerRun:
+        return json.loads(_gh("api", f"repos/{repo}/actions/runs/{run_id}"))
+
+    newest = newest_trusted(artifacts, repository_id, producer)
+    if newest is None:
         return None
-    newest = max(artifacts, key=lambda artifact: artifact["created_at"])
     archive = _gh_bytes("api", f"repos/{repo}/actions/artifacts/{newest['id']}/zip")
     with zipfile.ZipFile(io.BytesIO(archive)) as files:
         return json.loads(files.read(STATE_FILE))
@@ -171,7 +225,13 @@ def main() -> int:
     if superseded(runs, number):
         print(f"::notice::Run {number} finished after a later run; ignoring it.")
         return 0
-    state = reported_state(repo, workflow_id)
+    state = reported_state(repo, int(env["REPOSITORY_ID"]), workflow_id)
+    if state is not None and stale(state, number, attempt):
+        print(
+            f"::notice::Run {number} attempt {attempt} is older than run "
+            f"{state['run_number']} attempt {state['run_attempt']}, already reported; ignoring it."
+        )
+        return 0
     if state is not None:
         reported = state["state"]
         source = f"reported by run {state['run_number']} attempt {state['run_attempt']}"

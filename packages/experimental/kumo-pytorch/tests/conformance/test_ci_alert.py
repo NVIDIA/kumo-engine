@@ -94,13 +94,27 @@ def state_archive(state):
     return buffer.getvalue()
 
 
+REPOSITORY_ID = 42
+FORK_ID = 99
+
+
+def producer(head_repository_id=REPOSITORY_ID, branch="main", path=alert.ALERT_WORKFLOW):
+    return dict(head_repository_id=head_repository_id, head_branch=branch, path=path)
+
+
 class GitHub:
-    """The API calls the script makes, answered from runs and state artifacts."""
+    """The API calls the script makes, answered from runs and state artifacts.
+
+    Each state is (state, expired) or (state, expired, producer(...)).
+    """
 
     def __init__(self):
         self.runs = [run(12, "failure"), run(11, "success")]
         self.states = []
         self.calls = []
+
+    def producer(self, index):
+        return self.states[index][2] if len(self.states[index]) > 2 else producer()
 
     def gh_bytes(self, *args):
         self.calls.append(args)
@@ -111,12 +125,28 @@ class GitHub:
             return b"Fix it\n"
         if "/runs?" in path:
             return json.dumps({"workflow_runs": self.runs}).encode()
+        if "/actions/runs/" in path:
+            made_by = self.producer(int(path.split("/")[-1]) - 1000)
+            return json.dumps(dict(path=made_by["path"], event="workflow_run")).encode()
         if "/artifacts?name=kumo-pytorch-alert-state-7&" in path:
-            artifacts = [
-                dict(id=index, expired=expired, created_at=f"2026-11-{index + 1:02d}T00:00:00Z")
-                for index, (_, expired) in enumerate(self.states)
-            ]
-            return json.dumps({"artifacts": artifacts}).encode()
+            assert args[2:] == ("--paginate", "--slurp")
+            artifacts = []
+            for index, state in enumerate(self.states):
+                made_by = self.producer(index)
+                workflow_run = dict(
+                    id=1000 + index,
+                    head_branch=made_by["head_branch"],
+                    head_repository_id=made_by["head_repository_id"],
+                )
+                artifacts.append(
+                    dict(
+                        id=index,
+                        expired=state[1],
+                        created_at=f"2026-11-{index + 1:02d}T00:00:00Z",
+                        workflow_run=workflow_run,
+                    )
+                )
+            return json.dumps([{"artifacts": artifacts}]).encode()
         if path.endswith("/zip"):
             index = int(path.split("/")[-2])
             return state_archive(self.states[index][0])
@@ -127,6 +157,7 @@ class GitHub:
 def environment(monkeypatch, tmp_path):
     values = dict(
         GITHUB_REPOSITORY="owner/repo",
+        REPOSITORY_ID=str(REPOSITORY_ID),
         WORKFLOW="kumo-pytorch tests",
         WORKFLOW_ID="7",
         RUN_ID="100",
@@ -226,6 +257,53 @@ def test_a_rerun_that_passes_after_a_reported_failure_recovers(environment):
     assert alert.main() == 0
     assert posts == [("https://hooks.example/1", RECOVERED_TEXT)]
     assert written_state() == dict(state="passing", run_number=12, run_attempt=3)
+
+
+def test_an_older_attempt_after_a_newer_one_is_ignored(environment):
+    """Run 12's attempt 3 recorded passing; its attempt 2's failure arrives later."""
+    _, github, posts = environment
+    github.runs = [run(12, "success"), run(11, "success")]
+    github.states = [(dict(state="passing", run_number=12, run_attempt=3), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+@pytest.mark.parametrize(
+    "untrusted",
+    (
+        producer(head_repository_id=FORK_ID),
+        producer(branch="feature"),
+        producer(path=".github/workflows/other.yml"),
+    ),
+    ids=("fork", "other-branch", "other-workflow"),
+)
+def test_only_the_alert_workflows_own_state_artifacts_are_read(environment, untrusted):
+    """A newer artifact with the state name from elsewhere can't suppress the alert."""
+    _, github, posts = environment
+    github.states = [
+        (dict(state="passing", run_number=11, run_attempt=1), False),
+        (dict(state="failing", run_number=12, run_attempt=2), False, untrusted),
+    ]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_an_artifact_uploaded_by_another_event_is_skipped():
+    def artifact(index, run_id):
+        workflow_run = dict(id=run_id, head_branch="main", head_repository_id=REPOSITORY_ID)
+        created_at = f"2026-11-{index + 1:02d}T00:00:00Z"
+        return dict(id=index, expired=False, created_at=created_at, workflow_run=workflow_run)
+
+    older, newer = artifact(0, run_id=6), artifact(1, run_id=5)
+    events = {5: "pull_request", 6: "workflow_run"}
+    chosen = alert.newest_trusted(
+        [older, newer],
+        REPOSITORY_ID,
+        lambda run_id: dict(path=alert.ALERT_WORKFLOW, event=events[run_id]),
+    )
+    assert chosen is older
 
 
 def test_without_a_state_artifact_the_previous_run_decides(environment):

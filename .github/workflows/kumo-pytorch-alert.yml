@@ -48,6 +48,7 @@ jobs:
         id: alert
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY_ID: ${{ github.repository_id }}
           SLACK_WEBHOOK_URL: ${{ secrets.KUMO_PYTORCH_SLACK_WEBHOOK_URL }}
           WORKFLOW: ${{ github.event.workflow_run.name }}
           WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
