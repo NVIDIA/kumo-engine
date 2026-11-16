@@ -287,7 +287,8 @@ Native Studio save verification adds a unique markdown edit absent from the
 uploaded notebook, observes the dirty state, saves, and requires that edit after
 reopening in a fresh browser context.
 
-Before merging, enable `prevent_self_review` on the protected platform test
-environment. The SageMaker-specific guard retains the explicitly allowlisted
-trial branch and requires independent approval for `main`; its `TODO(before merge)`
-marks the temporary exception. The shared Snowflake guard remains main-only.
+The SageMaker workflow accepts manual dispatches only from `main`. Its protected
+`sagemaker-mlops-test` environment allows only `main`, requires independent
+`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and disables
+administrator bypass. The guard verifies these settings before the wheel build
+and again before AWS authentication; trial branches, wildcards and tags are rejected.

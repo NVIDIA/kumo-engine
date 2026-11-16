@@ -28,7 +28,8 @@ jobs:
     name: Check protected SageMaker environment
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -59,7 +60,8 @@ jobs:
     needs: [configuration, wheel]
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     environment: sagemaker-mlops-test

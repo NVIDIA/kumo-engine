@@ -1059,8 +1059,10 @@ def test_cleanup_times_out_without_deleting_active_pipeline(modules, tmp_path, m
 @pytest.mark.parametrize('dispatch',
                          ['main', 'egu/sagemaker-platform-validation'])
 @pytest.mark.parametrize('prevent_self_review', [False, True])
-@pytest.mark.parametrize('invalid', [None, 'admin-bypass', 'reviewers', 'branches'])
-def test_sagemaker_environment_keeps_main_independent_and_trial_self_approval(
+@pytest.mark.parametrize(
+    'invalid',
+    [None, 'admin-bypass', 'reviewers', 'branches', 'wildcard', 'tag', 'count'])
+def test_sagemaker_environment_requires_main_and_independent_approval(
         modules, monkeypatch, prevent_self_review, invalid, dispatch):
     import urllib.request
     from importlib.util import module_from_spec, spec_from_file_location
@@ -1069,17 +1071,22 @@ def test_sagemaker_environment_keeps_main_independent_and_trial_self_approval(
     environment = dict(can_admins_bypass=False, protection_rules=[rule],
                        deployment_branch_policy=dict(protected_branches=False,
                                                      custom_branch_policies=True))
-    policies = dict(
-        total_count=2, branch_policies=[
-            dict(type='branch', name='main'),
-            dict(type='branch', name='egu/sagemaker-platform-validation')
-        ])
+    policies = dict(total_count=1,
+                    branch_policies=[dict(type='branch', name='main')])
     if invalid == 'admin-bypass':
         environment['can_admins_bypass'] = True
     if invalid == 'reviewers':
         rule['reviewers'] = []
-    if invalid == 'branches':
-        policies['branch_policies'][1]['name'] = 'feature-*'
+    if invalid in {'branches', 'wildcard'}:
+        policies['branch_policies'].append(
+            dict(
+                type='branch', name=('egu/sagemaker-platform-validation' if
+                                     invalid == 'branches' else 'feature-*')))
+        policies['total_count'] = 2
+    if invalid == 'tag':
+        policies['branch_policies'][0]['type'] = 'tag'
+    if invalid == 'count':
+        policies['total_count'] = 2
     responses = iter([environment, policies])
     requested = []
 
@@ -1096,7 +1103,11 @@ def test_sagemaker_environment_keeps_main_independent_and_trial_self_approval(
     spec = spec_from_file_location('sagemaker_environment', HERE / 'check_environment.py')
     guard = module_from_spec(spec)
     spec.loader.exec_module(guard)
-    if invalid is None and (prevent_self_review or dispatch != 'main'):
+    if dispatch != 'main':
+        with pytest.raises(SystemExit, match='manual dispatch on main'):
+            guard.main()
+        assert not requested
+    elif invalid is None and prevent_self_review:
         guard.main()
     else:
         with pytest.raises(ValueError):
