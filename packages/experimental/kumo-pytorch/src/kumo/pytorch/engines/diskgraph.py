@@ -1257,7 +1257,6 @@ class DiskGraphSource:
         self._last_graph_profile = {
             "samples": len(roots),
             "sampling_ns": sampling_ns,
-            "native_profile_available": self._last_sampling_profile is not None,
             **stages,
             "total_ns": time.perf_counter_ns() - total_started,
         }

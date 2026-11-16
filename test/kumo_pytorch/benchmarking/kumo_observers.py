@@ -213,6 +213,14 @@ class KumoObservers:
                     if profile_name.startswith("_last_"):
                         self.capture_native(after, original.__name__)
                     else:
+                        if profile_name == "last_graph_profile":
+                            after = dict(
+                                after,
+                                native_profile_available=getattr(
+                                    source, "_last_sampling_profile", None
+                                )
+                                is not None,
+                            )
                         self.capture(after, original.__name__, profile_name)
                 return result
 
