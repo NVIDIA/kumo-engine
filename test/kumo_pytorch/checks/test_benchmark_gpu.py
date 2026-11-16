@@ -174,29 +174,39 @@ def test_torch_backend_requires_initialized_cuda_without_initializing(monkeypatc
         TorchCudaBackend("cuda:0").ready()
 
 
-def test_nvml_identity_uses_uuid_not_cuda_ordinal(monkeypatch):
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("GPU-abc", "GPU-abc"),
+        (
+            SimpleNamespace(bytes=list(range(16))),
+            "GPU-00010203-0405-0607-0809-0a0b0c0d0e0f",
+        ),
+    ],
+)
+def test_nvml_identity_uses_uuid_not_cuda_ordinal(monkeypatch, raw, expected):
     calls = []
     cuda = SimpleNamespace(
         is_initialized=lambda: True,
         current_device=lambda: 3,
         get_allocator_backend=lambda: "native",
         get_device_properties=lambda device: SimpleNamespace(
-            uuid="GPU-abc", name="test", total_memory=100
+            uuid=raw, name="test", total_memory=100
         ),
     )
     nvml = SimpleNamespace(
         nvmlInit=lambda: calls.append("init"),
         nvmlDeviceGetHandleByUUID=lambda uuid: calls.append(uuid) or "handle",
-        nvmlDeviceGetUUID=lambda handle: b"GPU-abc",
+        nvmlDeviceGetUUID=lambda handle: expected.encode("ascii"),
         nvmlShutdown=lambda: calls.append("close"),
     )
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
     monkeypatch.setitem(sys.modules, "pynvml", nvml)
     backend = TorchCudaBackend("cuda")
     assert backend.ready()["device"] == "cuda:3"
-    assert backend.start_utilization() == "GPU-abc"
+    assert backend.start_utilization() == expected
     backend.close()
-    assert calls == ["init", "GPU-abc", "close"]
+    assert calls == ["init", expected, "close"]
 
 
 def test_runner_collects_each_gpu_epoch_and_reports_coverage(monkeypatch, tmp_path):

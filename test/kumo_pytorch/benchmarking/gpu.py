@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from uuid import UUID
 
 _ACTIVE = threading.Lock()
 
@@ -62,6 +63,9 @@ class TorchCudaBackend:
 
     def start_utilization(self):
         raw = getattr(self.properties, "uuid", None)
+        # PyTorch exposes CUDA's CUuuid object (16 bytes), not always a str.
+        if raw is not None and hasattr(raw, "bytes"):
+            raw = str(UUID(bytes=bytes(raw.bytes)))
         if isinstance(raw, bytes):
             raw = raw.decode("ascii")
         if not isinstance(raw, str) or not raw:

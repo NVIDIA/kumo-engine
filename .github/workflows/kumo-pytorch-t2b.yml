@@ -163,7 +163,9 @@ jobs:
 
   benchmark-aml:
     name: PyTorch nightly AML benchmark campaigns
-    needs: [diskgraph-wheel, benchmark-memory, benchmark-gpu]
+    # Keep independent evidence even when a collector validation fails; all
+    # jobs retain their own failure status and campaigns gate missing metrics.
+    needs: diskgraph-wheel
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on:
       group: nv-gpu-amd64-rtxpro6000-1gpu

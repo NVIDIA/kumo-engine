@@ -30,7 +30,7 @@ def factory(config, directory):
     def batches(epoch):
         # A freed allocation must affect this epoch's peak, not later epochs.
         temporary = torch.empty(
-            (64 if epoch == 0 else 4) * 1024**2,
+            (256 if epoch == 0 else 4) * 1024**2,
             dtype=torch.uint8,
             device=device,
         )
