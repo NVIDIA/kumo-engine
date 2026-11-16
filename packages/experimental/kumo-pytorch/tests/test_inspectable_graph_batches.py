@@ -13,6 +13,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
+from kumo.pytorch.contract.dtypes import _arrow_values
 from kumo.pytorch.engines.native_anchors import NativeAnchors, _column_values
 
 
@@ -23,16 +24,9 @@ def test_timestamp_columns_preserve_values_and_resolve_timezone_once(monkeypatch
     dtype = pa.timestamp(unit, tz=tz)
     # Both occurrences of the repeated DST hour, fractional precision, pre-epoch, NULL.
     values = pa.chunked_array(
-        [[1699162200 * scale + 1, None], [1699165800 * scale + 1, -1]], type=dtype
+        [[1699162200 * scale + 1, None], [1699165800 * scale, -1, -1000, 0]], type=dtype
     )
-    try:
-        expected = values.to_pylist()
-    except ValueError as error:
-        # Preserve Arrow's refusal of sub-microsecond values without pandas.
-        with pytest.raises(ValueError, match="Nanosecond resolution"):
-            _column_values(pa, values, dtype)
-        assert "Nanosecond resolution" in str(error)
-        return
+    expected = _arrow_values(values)
     attempts = []
 
     class MissingPytz:
@@ -46,10 +40,25 @@ def test_timestamp_columns_preserve_values_and_resolve_timezone_once(monkeypatch
     monkeypatch.setattr(sys, "meta_path", [MissingPytz(), *sys.meta_path])
     actual = _column_values(pa, values, dtype)
     assert len(attempts) <= 1  # independent of row count, including missing optional pytz
-    assert [None if x is None else x.isoformat() for x in actual] == [
-        None if x is None else x.isoformat() for x in expected
-    ]
+    _equal(actual, expected)
     assert _column_values(pa, pa.array([], type=dtype), dtype) == []
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_nanosecond_columns_preserve_main_scalar_contract_without_pandas(monkeypatch, nested):
+    monkeypatch.setitem(sys.modules, "pandas", None)
+    dtype = pa.timestamp("ns", tz="UTC")
+    if nested:
+        dtype = pa.list_(dtype)
+        values = pa.array([[1, -1, 1000, None], None, []], type=dtype)
+    else:
+        values = pa.array([1, -1, 1000, None], type=dtype)
+    expected = _arrow_values(values)
+    actual = _column_values(pa, values, dtype)
+    _equal(actual, expected)
+    fractional = actual[0][0] if nested else actual[0]
+    assert isinstance(fractional, pa.TimestampScalar)
+    assert fractional.value == 1
 
 
 def _equal(actual, expected):

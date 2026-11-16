@@ -474,7 +474,60 @@ fn chunk_lengths(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(write_column_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_function(wrap_pyfunction!(token_lengths, m)?)?;
     m.add("TOKENIZER_TRAINER", TOKENIZER_TRAINER)
+}
+
+/// Statistics of an already selected task-anchor population. No graph history
+/// or cutoff scan is involved; publication uses the ingestion column schema.
+#[pyfunction]
+#[pyo3(signature = (parquet_paths, columns_json, statistics_json, output_dir, *, quantiles=None, timestamp_unit="seconds", num_threads=None))]
+pub fn write_column_stats_for_parquet(
+    py: Python<'_>,
+    parquet_paths: Vec<String>,
+    columns_json: &str,
+    statistics_json: &str,
+    output_dir: &str,
+    quantiles: Option<Vec<f64>>,
+    timestamp_unit: &str,
+    num_threads: Option<usize>,
+) -> PyResult<()> {
+    use diskgraph_ingest::col_stats::StatSet;
+    use diskgraph_ingest::graph_config::SemanticType;
+    let columns: Vec<ColumnSpec> =
+        serde_json::from_str(columns_json).map_err(|e| map_anyhow_err(e.into()))?;
+    let sets: Vec<Vec<SemanticType>> =
+        serde_json::from_str(statistics_json).map_err(|e| map_anyhow_err(e.into()))?;
+    let sets = sets
+        .into_iter()
+        .map(|kinds| {
+            kinds.into_iter().fold(StatSet::default(), |set, kind| {
+                set | StatSet::from(Some(kind))
+            })
+        })
+        .collect();
+    let clock = serde_json::from_value(serde_json::json!(timestamp_unit))
+        .map_err(|e| map_anyhow_err(e.into()))?;
+    py.detach(|| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads.unwrap_or(0))
+            .build()?;
+        let paths: Vec<_> = parquet_paths
+            .iter()
+            .map(|s| Path::new(s.as_str()))
+            .collect();
+        pool.install(|| {
+            crate::bp_col_stats::write_parquet_column_stats(
+                &paths,
+                &columns,
+                sets,
+                quantiles.unwrap_or_default(),
+                Path::new(output_dir),
+                clock,
+            )
+        })
+    })
+    .map_err(map_anyhow_err)
 }

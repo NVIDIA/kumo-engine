@@ -1833,6 +1833,7 @@ fn compute_col_stats_for_parquet(
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
     let options = ColStatsOptions {
+        stat_sets: None,
         summary_stats_by_class,
         histograms,
         max_per: max_per.unwrap_or_default(),
