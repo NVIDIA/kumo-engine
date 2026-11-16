@@ -6,10 +6,33 @@ import hashlib
 import importlib.util
 import json
 import platform
+import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+STAGING_SECONDS = 300
+
+
+@contextmanager
+def staging_limit(seconds):
+    if signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
+        raise RuntimeError('Initialization already has an execution timer')
+
+    def expired(*_):
+        raise TimeoutError('Notebook asset download budget exhausted')
+
+    if seconds <= 0:
+        expired()
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def prepare(config, session=None):
@@ -36,7 +59,7 @@ def prepare(config, session=None):
     from botocore.config import Config
 
     # Bound staging separately so it cannot consume the work/evidence reserve.
-    download_deadline = work_started + 300
+    download_deadline = work_started + STAGING_SECONDS
     s3 = session.client(
         's3', config=Config(connect_timeout=10, read_timeout=30,
                             retries={'total_max_attempts': 1}))
@@ -47,24 +70,26 @@ def prepare(config, session=None):
             raise TimeoutError('Notebook asset download budget exhausted')
         return seconds
 
-    for name, asset in config['assets'].items():
-        target = payload / name
-        download_remaining()
-        body = s3.get_object(Bucket=asset['bucket'], Key=asset['key'])['Body']
-        try:
-            with target.open('wb') as stream:
-                while True:
-                    body.set_socket_timeout(min(30, download_remaining()))
-                    chunk = body.read(8 << 20)
-                    download_remaining()
-                    if not chunk:
-                        break
-                    stream.write(chunk)
-        finally:
-            body.close()
-        if (target.stat().st_size != asset['size'] or hashlib.sha256(
-                target.read_bytes()).hexdigest() != asset['sha256']):
-            raise ValueError('Staged asset differs from source: ' + name)
+    with staging_limit(download_remaining()):
+        for name, asset in config['assets'].items():
+            target = payload / name
+            download_remaining()
+            body = s3.get_object(Bucket=asset['bucket'],
+                                 Key=asset['key'])['Body']
+            try:
+                with target.open('wb') as stream:
+                    while True:
+                        body.set_socket_timeout(min(30, download_remaining()))
+                        chunk = body.read(8 << 20)
+                        download_remaining()
+                        if not chunk:
+                            break
+                        stream.write(chunk)
+            finally:
+                body.close()
+            if (target.stat().st_size != asset['size'] or hashlib.sha256(
+                    target.read_bytes()).hexdigest() != asset['sha256']):
+                raise ValueError('Staged asset differs from source: ' + name)
     helper = payload / 'wheel_mlops_lifecycle.py'
     spec = importlib.util.spec_from_file_location('lifecycle_helpers', helper)
     helpers = importlib.util.module_from_spec(spec)

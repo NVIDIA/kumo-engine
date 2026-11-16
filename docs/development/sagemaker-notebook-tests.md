@@ -19,7 +19,14 @@ by its original digest. The execution role only needs access to that repository.
 The public source is
 `public.ecr.aws/sagemaker/sagemaker-distribution@sha256:c67c9ea12dcf5faa14496248553f6b441567137a75d533d0733a7671f00cf986`.
 AWS publishes its [3.6.1 build inputs](https://github.com/aws/sagemaker-distribution/tree/main/build_artifacts/v3/v3.6/v3.6.1).
-The private mirror is an account setup dependency, not a private image build.
+The private mirror is an account setup dependency. AWS's
+[Distribution deployment recipe](https://aws.amazon.com/blogs/machine-learning/get-started-with-the-open-source-amazon-sagemaker-distribution/)
+copies the public image into the account's ECR repository for managed notebook
+execution. The public manifest above was fetched anonymously with HTTP 200 and
+its SHA256 was verified on 2026-11-16. The complete image content and AWS build
+inputs are public; the runtime mirror requires the configured execution role.
+Keep the digest-preserving copy for the tested NotebookJobStep route rather than
+substituting a public-registry URI without managed-job compatibility evidence.
 An authorized administrator with Skopeo can populate the existing test repository
 without changing its manifest or layers:
 
@@ -264,7 +271,9 @@ those product dependencies are not covered by the runner or kernel-tool hash loc
 Notebook Jobs retain the installed 3,600-second limit. Bootstrap records one
 3,000-second work deadline shared by staging, installation, kernel graph work and all
 lifecycle phases. Asset downloads share a 300-second staging cap, use bounded
-connect/read timeouts and check remaining time between chunks. Each installation retains its 1,200-second cap and each
+connect/read timeouts and check remaining time between chunks. A wall-clock
+interrupt covers the entire staging loop, including a read that keeps receiving
+bytes without completing. Each installation retains its 1,200-second cap and each
 lifecycle phase its 900-second cap, reduced when less work time remains.
 Subprocess limits are capped by the remaining budget; a kernel
 timer also interrupts work at that deadline. The timer is removed before the

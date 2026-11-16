@@ -328,7 +328,7 @@ def test_code_bundle_uses_live_owner_role_metadata_shape(retention):
 
 
 @pytest.mark.parametrize('change', [
-    'different_owner', 'missing_owner', 'legacy_owner', 'database_role',
+    'different_owner', 'missing_owner', 'conflicting_owner', 'database_role',
     'missing_role_type', 'unknown_role_type'
 ])
 def test_code_bundle_ownership_cannot_be_guessed(retention, change):
@@ -338,8 +338,8 @@ def test_code_bundle_ownership_cannot_be_guessed(retention, change):
         bundle['owner_role'] = 'OTHER_ROLE'
     elif change == 'missing_owner':
         bundle.pop('owner_role')
-    elif change == 'legacy_owner':
-        bundle['owner'] = bundle.pop('owner_role')
+    elif change == 'conflicting_owner':
+        bundle['owner'] = 'OTHER_ROLE'
     elif change == 'database_role':
         bundle['owner_role_type'] = 'DATABASE_ROLE'
     elif change == 'missing_role_type':
@@ -407,3 +407,30 @@ def test_sweep_continues_after_provider_cleanup_error(retention, monkeypatch):
     assert set(visited) == set(attempts)
     assert report['expired'] == report['preserved'] == report[
         'cleanup_errors'] == 1
+
+
+def test_code_bundle_accepts_documented_owner_column(retention):
+    value, query, obj = state(retention)
+    bundle = bundle_metadata(retention, value)
+    bundle['owner'] = bundle.pop('owner_role')
+    bundle.pop('owner_role_type')
+    cursor = Cursor([query], obj, bundle=bundle)
+    retention.expire(cursor, value, execute=True, now=NOW)
+    assert cursor.mutations[0].startswith('DROP CODE BUNDLE ')
+
+
+@pytest.mark.parametrize('fault', ['foreign_owner', 'database_role'])
+def test_documented_code_bundle_owner_still_rejects_foreign_role(
+        retention, fault):
+    value, query, obj = state(retention)
+    bundle = bundle_metadata(retention, value)
+    bundle[
+        'owner'] = 'OTHER_ROLE' if fault == 'foreign_owner' else retention.launch.ROLE
+    bundle.pop('owner_role')
+    bundle.pop('owner_role_type')
+    if fault == 'database_role':
+        bundle['owner_role_type'] = 'DATABASE_ROLE'
+    cursor = Cursor([query], obj, bundle=bundle)
+    with pytest.raises(ValueError, match='ownership'):
+        retention.expire(cursor, value, execute=True, now=NOW)
+    assert not cursor.mutations

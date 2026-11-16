@@ -328,6 +328,31 @@ def test_scan_reports_account_locator_in_notebook_identity_tuple():
 
 def test_notebook_cell_ids_are_not_accounts():
     locator = 'bea' + '90923'
-    assert scan_text('example.ipynb', f'  "id": "{locator}",') == []
+    assert scan_text('example.ipynb',
+                     '{"cells":[{"id":"' + locator + '"}]}') == []
     assert scan_text('example.ipynb', f'  "account": "{locator}",')
     assert scan_text('settings.py', f'account = "{locator}"')
+
+
+@pytest.mark.parametrize('indent', [None, 2])
+def test_only_structural_notebook_cell_ids_are_exempt(indent):
+    import json
+    locator = 'bea' + '90923'
+    notebook = dict(
+        cells=[
+            dict(id=locator, source=[f'account = "{locator}"'], outputs=[{
+                'id':
+                locator
+            }])
+        ], metadata={'id': locator})
+    text = json.dumps(notebook, indent=indent)
+    found = scan_text('example.ipynb', text)
+    assert len([f for f in found if f.host == locator]) == 3
+    assert scan_text('example.ipynb',
+                     '{"cells":[{"id":"' + locator + '"}]}') == []
+
+
+def test_notebook_masking_preserves_source_line_numbers():
+    text = '{\n  "cells": [{"id": "bea' + '90923",\n"outputs": [{"account": "zz' + '98765"}]}]\n}'
+    found = scan_text('example.ipynb', text)
+    assert [(f.host, f.line) for f in found] == [('zz' + '98765', 3)]

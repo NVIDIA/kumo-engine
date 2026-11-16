@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run Snowflake and SageMaker notebook lifecycles."""
+"""Plan or execute the shared lifecycle against a named platform profile."""
 
 import errno
 import importlib.util
@@ -16,7 +16,7 @@ from functools import cache, cached_property
 from pathlib import Path
 from uuid import uuid4
 
-PLATFORMS = ('snowflake', 'sagemaker')
+PLATFORMS = ('snowflake', 'databricks', 'sagemaker')
 NOTEBOOK_CONTEXT = 'KUMO_MLOPS_NOTEBOOK_CONTEXT'
 NOTEBOOK_ATTEMPT = 'KUMO_MLOPS_NOTEBOOK_ATTEMPT'
 IDENTITY_SQL = 'SELECT CURRENT_ACCOUNT(), CURRENT_USER(), CURRENT_ROLE()'
@@ -30,13 +30,16 @@ FIELDS = {
     'schema',
     'warehouse',
     'role',
+    'catalog',
+    'cluster_id',
+    'warehouse_id',
     'tracking_arn',
     'role_arn',
+    'notebook_context',
     'accelerator',
     'execution_context',
     'environment',
     'denied_artifact_root',
-    'notebook_context',
 }
 COMMON = {
     'platform', 'artifact_root', 'experiment', 'model_prefix', 'accelerator',
@@ -53,31 +56,15 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def access_error(error):
-    seen = set()
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        response = getattr(error, 'response', {})
-        code = response.get('Error', {}).get('Code') if isinstance(
-            response, dict) else None
-        if (getattr(error, 'sqlstate', None) in ('42501', '28000')
-                or getattr(error, 'status_code', None) in (401, 403)
-                or getattr(response, 'status_code', None) in (401, 403)
-                or getattr(error, 'error_code', None)
-                in ('PERMISSION_DENIED', 'UNAUTHENTICATED') or code
-                in ('AccessDenied', 'AccessDeniedException', 'ExpiredToken',
-                    'InvalidClientTokenId', 'UnrecognizedClientException')
-                or type(error).__name__
-                in ('NoCredentialsError', 'PartialCredentialsError',
-                    'ProfileNotFound', 'NoRegionError', 'Unauthenticated',
-                    'PermissionDenied')):
-            return True
-        error = error.__cause__ or error.__context__
-    return False
-
-
 def denied_access(error, *, provider_only=False, provider=None):
     """Accept explicit denial evidence from the selected provider."""
+    databricks_denied = ()
+    if provider == 'databricks':
+        try:
+            from databricks.sdk.errors import PermissionDenied
+            databricks_denied = (PermissionDenied, )
+        except ImportError:
+            pass
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
@@ -91,8 +78,11 @@ def denied_access(error, *, provider_only=False, provider=None):
                           r'CreateMultipartUpload operation:', str(error)))
         if (getattr(error, 'sqlstate', None) == '42501'
                 or getattr(error, 'status_code', None) == 403
-                or getattr(response, 'status_code', None) == 403 or
+                or getattr(response, 'status_code', None) == 403
+                or isinstance(error, databricks_denied) or
             ((not provider_only or provider == 'sagemaker') and aws_denied) or
+            (provider in (None, 'databricks')
+             and getattr(error, 'error_code', None) == 'PERMISSION_DENIED') or
             (not provider_only and
              (getattr(error, 'errno', None) in (errno.EACCES, errno.EPERM)
               or type(error).__name__ == 'PermissionDenied'))):
@@ -126,8 +116,10 @@ def validate(config):
                     or '..' in Path(context).parts):
         raise ValueError(
             'notebook_context requires an absolute SageMaker runtime path')
-    if config['accelerator'] != 'cpu':
+    if platform == 'sagemaker' and config['accelerator'] != 'cpu':
         raise ValueError('Notebook lifecycle validation requires CPU')
+    if config['accelerator'] not in ('cpu', 'gpu'):
+        raise ValueError('accelerator must be cpu or gpu')
     if config['environment'] not in ('venv', 'managed'):
         raise ValueError('environment must be venv or managed')
     if config['execution_context'] not in ('client', platform,
@@ -156,7 +148,26 @@ def validate(config):
         if not re.fullmatch(stage, root):
             raise ValueError(
                 'Use an explicit @DATABASE.SCHEMA.STAGE/test-prefix root')
-    else:
+    elif platform == 'databricks':
+        if config['execution_context'] == 'snowflake_notebook':
+            raise ValueError('Notebook context is only for Snowflake')
+        for name in ('catalog', 'schema'):
+            identifier(config.get(name))
+        if bool(config.get('cluster_id')) == bool(config.get('warehouse_id')):
+            raise ValueError(
+                'Databricks requires exactly one cluster_id or warehouse_id')
+        if config.get('identity') not in ('ambient', 'service_principal'):
+            raise ValueError(
+                'Databricks identity must be ambient or service_principal')
+        if not root.startswith(
+                f'/Volumes/{config["catalog"]}/{config["schema"]}/') or len(
+                    root.split('/')) < 6:
+            raise ValueError(
+                'Use a volume and test prefix in the selected catalog/schema')
+        if not config['experiment'].startswith('/'):
+            raise ValueError(
+                'Use a workspace experiment path with an existing parent')
+    elif platform == 'sagemaker':
         if config['execution_context'] == 'snowflake_notebook':
             raise ValueError('Notebook context is only for Snowflake')
         if not re.fullmatch(r's3://[a-z0-9][a-z0-9.-]+/[A-Za-z0-9_/-]+', root):
@@ -172,6 +183,15 @@ def validate(config):
     if denied:
         other = dict(config, artifact_root=denied)
         other.pop('denied_artifact_root')
+        if platform == 'databricks':
+            match = re.fullmatch(
+                r'/Volumes/([A-Za-z][A-Za-z0-9_]*)/([A-Za-z][A-Za-z0-9_]*)/'
+                r'[A-Za-z][A-Za-z0-9_]*/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*',
+                denied.rstrip('/'))
+            if match is None:
+                raise ValueError(
+                    'Use an explicit Volume test-prefix for denied access')
+            other.update(catalog=match[1], schema=match[2])
         validate(other)
         if denied.rstrip('/') == root.rstrip('/'):
             raise ValueError(
@@ -203,7 +223,11 @@ def backend(root):
     config = validate(state['config'])
     if not re.fullmatch('[a-f0-9]{12}', state['attempt']):
         raise ValueError('Invalid attempt identifier')
-    cls = Snowflake if config['platform'] == 'snowflake' else SageMaker
+    cls = {
+        'snowflake': Snowflake,
+        'databricks': Mlflow,
+        'sagemaker': SageMaker
+    }[config['platform']]
     return cls(config, state['attempt'])
 
 
@@ -217,6 +241,8 @@ class Backend:
         if config['platform'] == 'snowflake':
             self.experiment, self.model = self.experiment.upper(
             ), self.model.upper()
+        if config['platform'] == 'databricks':
+            self.model = f'{config["catalog"]}.{config["schema"]}.{self.model}'
         self.artifact_root = config['artifact_root'].rstrip('/') + '/' + attempt
 
     @property
@@ -253,6 +279,18 @@ class Backend:
             return dict(
                 context=context, notebook=launch,
                 identity='mounted runtime token; verified against notebook')
+        if context == 'databricks':
+            version = os.environ.get('DATABRICKS_RUNTIME_VERSION')
+            if not version:
+                raise PlatformUnavailable(
+                    'Run inside the selected Databricks runtime')
+            from databricks.sdk import WorkspaceClient
+            user = WorkspaceClient().current_user.me().user_name
+            expected = os.environ.get('KUMO_MLOPS_EXPECTED_DATABRICKS_USER')
+            if expected and user != expected:
+                raise PlatformUnavailable(
+                    'Fresh Databricks process resolved another identity')
+            return dict(context='databricks', runtime=version, user=user)
         if self.config.get('notebook_context'):
             path = Path(__file__).with_name('sagemaker_runtime.py')
             spec = importlib.util.spec_from_file_location(
@@ -293,6 +331,78 @@ class Backend:
             raise PlatformUnavailable(
                 'Probe failed without permission-denial evidence') from error
         raise AssertionError('The denied artifact root was writable')
+
+
+class Mlflow(Backend):
+    @cached_property
+    def connector(self):
+        import kumo.engine as kumo
+
+        identity = None
+        if self.config['identity'] == 'service_principal':
+            names = ('DATABRICKS_HOST', 'DATABRICKS_CLIENT_ID',
+                     'DATABRICKS_CLIENT_SECRET')
+            missing = [name for name in names if not os.environ.get(name)]
+            if missing:
+                raise PlatformUnavailable(
+                    f'Missing credential environment names: {missing}')
+            identity = kumo.DatabricksIdentity(
+                host=os.environ[names[0]], client_id=os.environ[names[1]],
+                client_secret=os.environ[names[2]])
+        return kumo.DatabricksConnector(
+            catalog=self.config['catalog'], schema_name=self.config['schema'],
+            identity=identity, cluster_id=self.config.get('cluster_id'),
+            warehouse_id=self.config.get('warehouse_id'))
+
+    def settings(self, register):
+        import mlflow
+
+        import kumo.engine as kumo
+        from kumo.engine.integrations.mlflow import MlflowTracking
+
+        self.placement()
+        target = self.connector
+        mlflow.set_tracking_uri('databricks')
+        mlflow.set_registry_uri('databricks-uc')
+        return kumo.MLOps(
+            self.artifact_root,
+            tracking=MlflowTracking(self.experiment, target=target,
+                                    log_system_metrics=False),
+            registry=kumo.ModelRegistryLocation(self.model)
+            if register else None, on_error='raise')
+
+    def record(self, cfg, ref):
+        require(ref is not None, 'Expected a tracked platform run')
+        with cfg.tracking.client() as client:
+            run = client.get_run(ref.run_id)
+            history = {
+                name: [(int(p.step), float(p.value))
+                       for p in client.get_metric_history(ref.run_id, name)]
+                for name in ('train/loss', 'val/auroc')
+            }
+        require(run.info.status == 'FINISHED',
+                'Platform tracking run did not finish')
+        return dict(params=run.data.tags, metrics=run.data.metrics,
+                    history=history, run=ref.run_id, experiment=self.experiment,
+                    experiment_id=run.info.experiment_id, url=ref.url,
+                    status=run.info.status, run_name=run.info.run_name)
+
+    def registered(self, cfg, version, bundle):
+        with cfg.tracking.client() as client:
+            model = client.get_model_version(self.model, version)
+        require(
+            model.tags.get('kumo_bundle_id') == bundle,
+            'Registry version refers to another bundle')
+
+    def set_alias(self, cfg, version):
+        with cfg.tracking.client() as client:
+            client.set_registered_model_alias(self.model, 'champion', version)
+
+    def alias(self, cfg):
+        with cfg.tracking.client() as client:
+            return str(
+                client.get_model_version_by_alias(self.model,
+                                                  'champion').version)
 
 
 class SageMaker(Backend):

@@ -1588,3 +1588,52 @@ def test_bootstrap_downloads_cannot_consume_work_reserve(
     options = session.client.call_args.kwargs['config']
     assert options.connect_timeout == 10 and options.read_timeout == 30
     assert options.retries == {'total_max_attempts': 1}
+
+
+def test_staging_interrupts_a_read_that_continuously_progresses(
+        monkeypatch, tmp_path):
+    import signal
+    import time
+    spec = importlib.util.spec_from_file_location('streaming_bootstrap',
+                                                  HERE / 'bootstrap.py')
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    monkeypatch.setattr(bootstrap.platform, 'machine', lambda: 'x86_64')
+    monkeypatch.setattr(bootstrap.platform, 'libc_ver', lambda:
+                        ('glibc', '2.35'))
+    monkeypatch.setattr(bootstrap, 'Path', lambda _: tmp_path / 'runtime')
+    monkeypatch.setattr(bootstrap, 'STAGING_SECONDS', 0.05)
+    session, sts, s3, body = Mock(), Mock(), Mock(), Mock()
+    sts.get_caller_identity.return_value = dict(
+        Account='123456789012',
+        Arn='arn:aws:sts::123456789012:assumed-role/test-role/session')
+    session.client.side_effect = lambda service, **kwargs: sts if service == 'sts' else s3
+    s3.get_object.return_value = {'Body': body}
+    chunks = []
+
+    def read(_):
+        while True:
+            chunks.append(b'x')
+            time.sleep(0.005)
+
+    body.read.side_effect = read
+    config = dict(
+        region='us-west-2',
+        execution_role='arn:aws:iam::123456789012:role/test-role',
+        account='123456789012', attempt='a' * 12,
+        assets={'candidate.whl': {
+            'bucket': 'test',
+            'key': 'candidate'
+        }})
+    previous = signal.getsignal(signal.SIGALRM)
+    try:
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
+        with pytest.raises(TimeoutError, match='download budget'):
+            bootstrap.prepare(config, session=session)
+        assert chunks
+        assert signal.getsignal(signal.SIGALRM) == signal.SIG_IGN
+        assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+        body.close.assert_called_once()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
