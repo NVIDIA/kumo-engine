@@ -79,6 +79,7 @@ from pool.activities import (
     release_snapshot_activity,
 )
 from pool.dataclasses import WorkerEvent, WorkerEventType
+from pool.failure_output import OutputTail
 from pool.locks import PerSnapshotLocks
 from pool.storage_mode import PoolStorageMode
 from pool.training_progress import (
@@ -1778,6 +1779,102 @@ async def test_subprocess_output_drain_bounds_undelimited_records():
 
 
 @pytest.mark.asyncio
+async def test_subprocess_output_drain_keeps_tail_without_progress():
+    reader = asyncio.StreamReader()
+    reader.feed_data(b'loading\nstep 1/9\rstep 9/9\r'
+                     b'Traceback (most recent call last):\n'
+                     b'ValueError: bad input\nunterminated')
+    reader.feed_eof()
+    tail = OutputTail()
+
+    await _drain_subprocess_output(reader, 'kumo-auto', 'job-1', tail)
+
+    assert tail.text() == ('loading\nTraceback (most recent call last):\n'
+                           'ValueError: bad input\nunterminated')
+
+
+def _exited_proc(returncode: int, output: bytes) -> '_FakeProc':
+    fake_proc = _FakeProc(exit_after_term=False)
+    reader = asyncio.StreamReader()
+    reader.feed_data(output)
+    reader.feed_eof()
+    fake_proc.stdout = reader
+    fake_proc.returncode = returncode
+    fake_proc._exit_event.set()
+    return fake_proc
+
+
+@pytest.mark.asyncio
+async def test_subprocess_failure_logs_and_saves_output_tail(
+        monkeypatch, tmp_path, caplog):
+    fake_proc = _exited_proc(
+        1, b'Traceback (most recent call last):\n'
+        b"ValueError: column 'amount' is missing\n")
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    monkeypatch.setattr('asyncio.create_subprocess_exec',
+                        _fake_create_subprocess_exec)
+    saved = tmp_path / 'job.json.kumo-pred.shard-00000.failure.txt'
+
+    with caplog.at_level('INFO'):
+        result = await _run_kumo_subprocess('kumo-pred', 'job-1',
+                                            '/tmp/cfg.json', None,
+                                            save_failure_output_to=str(saved))
+
+    assert result == 'FAILED'
+    expected = ("Traceback (most recent call last):\n"
+                "ValueError: column 'amount' is missing")
+    assert saved.read_text() == expected
+    assert any(record.levelname == 'ERROR' and expected in record.getMessage()
+               for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_subprocess_failure_output_save_error_keeps_failed_state(
+        monkeypatch, caplog):
+    fake_proc = _exited_proc(2, b'RuntimeError: boom\n')
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    def _fail_write(*_args, **_kwargs):
+        raise OSError('storage unavailable')
+
+    monkeypatch.setattr('asyncio.create_subprocess_exec',
+                        _fake_create_subprocess_exec)
+    monkeypatch.setattr('pool.activities.fsutil.write_text', _fail_write)
+
+    with caplog.at_level('INFO'):
+        result = await _run_kumo_subprocess(
+            'kumo-auto', 'job-1', '/tmp/cfg.json', None,
+            save_failure_output_to='/unused/job.json.kumo-auto.failure.txt')
+
+    assert result == 'FAILED'
+    assert any('Could not save the output' in record.getMessage()
+               for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_subprocess_success_does_not_save_output(monkeypatch, tmp_path):
+    fake_proc = _exited_proc(0, b'done\n')
+
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        return fake_proc
+
+    monkeypatch.setattr('asyncio.create_subprocess_exec',
+                        _fake_create_subprocess_exec)
+    saved = tmp_path / 'job.json.kumo-pred.failure.txt'
+
+    result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
+                                        None, save_failure_output_to=str(saved))
+
+    assert result == 'SUCCEEDED'
+    assert not saved.exists()
+
+
+@pytest.mark.asyncio
 async def test_subprocess_output_drain_failure_terminates_child(monkeypatch):
     fake_proc = _FakeProc(exit_after_term=True)
     fake_proc.stdout = _FailedStreamReader()
@@ -2462,7 +2559,8 @@ async def test_gpu_semaphore_serializes_concurrent_train():
     # Track entry/exit order to assert serialization.
     events: list[str] = []
 
-    async def _fake_subprocess(_binary, _job_id, _config_path, _store):
+    async def _fake_subprocess(_binary, _job_id, _config_path, _store,
+                               **_kwargs):
         events.append('start')
         # Yield long enough for the second task to definitely have
         # been scheduled and parked on the semaphore.
@@ -2503,7 +2601,8 @@ async def test_gpu_semaphore_serializes_train_and_predict(tmp_path):
 
     events: list[str] = []
 
-    async def _fake_subprocess(binary, _job_id, _config_path, _store):
+    async def _fake_subprocess(binary, _job_id, _config_path, _store,
+                               **_kwargs):
         events.append(f'{binary}:start')
         await asyncio.sleep(0.05)
         events.append(f'{binary}:end')
@@ -2602,7 +2701,8 @@ async def test_train_restores_and_cleans_ttng_sidecars(monkeypatch):
     async def _fake_ensure_snapshot(*_args, **_kwargs):
         return None
 
-    async def _fake_subprocess(_binary, _job_id, _config_path, _store):
+    async def _fake_subprocess(_binary, _job_id, _config_path, _store,
+                               **_kwargs):
         return 'SUCCEEDED'
 
     async def _run_inline(func, *args, **kwargs):
@@ -2641,7 +2741,8 @@ async def test_train_sidecar_restore_failure_hard_fails(monkeypatch):
     async def _fake_ensure_snapshot(*_a, **_k):
         return None
 
-    async def _fake_subprocess(_binary, _job_id, _config_path, _store):
+    async def _fake_subprocess(_binary, _job_id, _config_path, _store,
+                               **_kwargs):
         return 'SUCCEEDED'
 
     def _raise_restore(*_a, **_k):
@@ -2680,7 +2781,8 @@ async def test_predict_sidecar_restore_failure_hard_fails(
     async def _fake_ensure_snapshot(*_a, **_k):
         return None
 
-    async def _fake_subprocess(_binary, _job_id, _config_path, _store):
+    async def _fake_subprocess(_binary, _job_id, _config_path, _store,
+                               **_kwargs):
         return 'SUCCEEDED'
 
     def _raise_restore(*_a, **_k):

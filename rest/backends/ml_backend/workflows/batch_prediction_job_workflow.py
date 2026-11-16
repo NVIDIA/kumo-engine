@@ -24,6 +24,11 @@ from kumo.train.artifact_manifest import (
 )
 from pool.activities import SnapshotActivities
 from pool.dataclasses import ResourceHint, SnapshotActivity
+from pool.failure_output import (
+    POOL_FAILURE_OUTPUT_PATCH,
+    failure_output_path,
+    failure_summary,
+)
 from pool.wf_coordinator import run_pooled_activity
 from rest.backends import (
     DATA_BACKEND_BP_STATS_TIMEOUT_HOURS,
@@ -40,6 +45,9 @@ from rest.backends.ml_backend.activities import (
 )
 from rest.backends.ml_backend.settings import MLJobSettings
 from rest.backends.ml_backend.workflows import ArtifactExportWorkflow
+from rest.backends.ml_backend.workflows.utils import (
+    read_saved_pool_failure_output,
+)
 from rest.config.artifact_export import (
     ArtifactExportInput,
     DatabricksManagedVolumeStage,
@@ -327,6 +335,20 @@ class BatchPredictionJobWorkflow:
                    f'{job_input.id} on shard(s) {failed_shards}; see '
                    f'pool worker logs for details' if failed_shards else None)
         stacktrace = None
+        if failed_shards and workflow.patched(POOL_FAILURE_OUTPUT_PATCH):
+            # A Kubernetes placement deletes the activity pod and its log on
+            # release, so read the output that each failed shard saved.
+            stacktrace = await read_saved_pool_failure_output(
+                job_input.id, [
+                    failure_output_path(prediction_config_path, 'kumo-pred',
+                                        shard_index)
+                    for shard_index in failed_shards
+                ])
+            summary = failure_summary(stacktrace) if stacktrace else None
+            if summary is not None:
+                err_msg = (f'kumo-pred subprocess exited non-zero for job '
+                           f'{job_input.id} on shard(s) {failed_shards}: '
+                           f'{summary}')
 
         assert final_job_state in [JobState.FAILED, JobState.SUCCEEDED]
         if final_job_state == JobState.SUCCEEDED:

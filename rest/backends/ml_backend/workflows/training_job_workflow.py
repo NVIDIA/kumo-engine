@@ -10,6 +10,11 @@ from temporalio.common import RetryPolicy
 from io_utils import logging
 from pool.activities import SnapshotActivities
 from pool.dataclasses import SnapshotActivity
+from pool.failure_output import (
+    POOL_FAILURE_OUTPUT_PATCH,
+    failure_output_path,
+    failure_summary,
+)
 from pool.wf_coordinator import run_pooled_activity
 from rest.backends import TRAINING_AND_PREDICTION_TIMEOUT_HOURS
 from rest.backends.ml_backend.activities import (
@@ -19,6 +24,9 @@ from rest.backends.ml_backend.activities import (
     TrainingJobActivities,
 )
 from rest.backends.ml_backend.settings import MLJobSettings
+from rest.backends.ml_backend.workflows.utils import (
+    read_saved_pool_failure_output,
+)
 from rest.config.ml_backend import JobState, TrainingJobInput
 from rest.config.training_job import TrainingJobOutput
 from statedb.config._graph_key_norm import _graph_key_to_v2
@@ -146,11 +154,22 @@ class TrainingJobWorkflow:
                 hours=TRAINING_AND_PREDICTION_TIMEOUT_HOURS),
             heartbeat_timeout=timedelta(minutes=5))
 
+        if state != JobState.FAILED:
+            return PollJobResult(state=state)
         # On failure the subprocess's exit reason is in the pool worker
         # log, not in workflow history. Surface a pointer in err_msg so
         # the stored ``TrainingJobOutput`` distinguishes "pool failure"
         # from "no information at all".
         err_msg = (f'kumo-auto subprocess exited non-zero for job '
-                   f'{job_input.id}; see pool worker logs for details'
-                   if state == JobState.FAILED else None)
-        return PollJobResult(state=state, err_msg=err_msg)
+                   f'{job_input.id}; see pool worker logs for details')
+        if not workflow.patched(POOL_FAILURE_OUTPUT_PATCH):
+            return PollJobResult(state=state, err_msg=err_msg)
+        # A Kubernetes placement deletes the activity pod and its log on
+        # release, so read the output that the pool saved for this job.
+        output = await read_saved_pool_failure_output(
+            job_input.id, [failure_output_path(job_config_path, 'kumo-auto')])
+        summary = failure_summary(output) if output else None
+        if summary is not None:
+            err_msg = (f'kumo-auto subprocess exited non-zero for job '
+                       f'{job_input.id}: {summary}')
+        return PollJobResult(state=state, err_msg=err_msg, stacktrace=output)
