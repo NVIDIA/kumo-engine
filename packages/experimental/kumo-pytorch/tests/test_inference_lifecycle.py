@@ -44,11 +44,21 @@ from tests.test_diskgraph_backend import (
 )
 from tests.test_docs_code import _blocks
 
+
+def _explicit_id_contract(schema: api.DataSchema) -> api.DataLoaderSpec:
+    """PRAGMA with gapped explicit special-token IDs (G-IDSPACE-001)."""
+    contract = _pragma_contract(schema)
+    ids = {"pad": 0, "unknown": 1, "missing": 2, "mask": 10, "entity": 11, "event": 12}
+    space = replace(contract.batch.id_spaces["pragma"], special_ids=ids)
+    return replace(contract, batch=replace(contract.batch, id_spaces={"pragma": space}))
+
+
 ROOT = Path(__file__).parents[1]
 Rows = dict[str, list[dict[str, object]]]
 CONTRACTS: dict[str, Callable[[api.DataSchema], api.DataLoaderSpec]] = {
     "temporal": _temporal_contract,
     "pragma": _pragma_contract,
+    "explicit_ids": _explicit_id_contract,
 }
 ENGINES = ("in_memory", "diskgraph")
 SEED, EPOCH = 7, 2
