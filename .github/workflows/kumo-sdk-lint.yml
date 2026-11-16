@@ -9,13 +9,13 @@ on:  # yamllint disable-line rule:truthy
     branches:
       - main
     paths:
-      - 'packages/kumo-api/**'
-      - 'packages/kumo-sdk/**'
+      - 'packages/contracts/kumo-api/**'
+      - 'packages/clients/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
   pull_request:
     paths:
-      - 'packages/kumo-api/**'
-      - 'packages/kumo-sdk/**'
+      - 'packages/contracts/kumo-api/**'
+      - 'packages/clients/kumo-sdk/**'
       - '.github/workflows/kumo-sdk-*'
   merge_group:
 
@@ -49,14 +49,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
-          key: kumo-sdk-pre-commit-${{ hashFiles('packages/kumo-sdk/.pre-commit-config.yaml') }}
+          key: kumo-sdk-pre-commit-${{ hashFiles('packages/clients/kumo-sdk/.pre-commit-config.yaml') }}
 
       - name: Run pre-commit
         run: |
           uv pip install pre-commit
           uv run --no-project pre-commit run \
-            --config packages/kumo-sdk/.pre-commit-config.yaml \
-            --files $(git ls-files packages/kumo-sdk)
+            --config packages/clients/kumo-sdk/.pre-commit-config.yaml \
+            --files $(git ls-files packages/clients/kumo-sdk)
         env:
           SKIP: 'no-commit-to-branch'
 
@@ -83,8 +83,8 @@ jobs:
           # every dependency (including kumo-api) to install normally; it
           # doesn't affect kumo-sdk itself since this job re-installs from
           # the checked-out tree fresh each run.
-          uv pip install packages/kumo-api
-          uv pip install --no-editable -e 'packages/kumo-sdk[test]'
+          uv pip install packages/contracts/kumo-api
+          uv pip install --no-editable -e 'packages/clients/kumo-sdk[test]'
           # The Snowflake client libraries, named directly rather than through
           # `kumoai-studio[snowflake]`: that extra now installs the `kumo-snowflake`
           # plugin and `kumo-core` with it, which are first-party and absent
@@ -96,7 +96,7 @@ jobs:
 
       - name: Run type checker
         run: |
-          cd packages/kumo-sdk
+          cd packages/clients/kumo-sdk
           uv pip install ty==0.0.74
           uv run --no-project ty check --error-on-warning
 
@@ -105,15 +105,15 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Check setup.py changes
+      - name: Check apps/studio/setup.py changes
         run: |
           python - <<'PY'
           import re
           from pathlib import Path
 
-          api_project = (Path('packages/kumo-api/pyproject.toml')
+          api_project = (Path('packages/contracts/kumo-api/pyproject.toml')
                          .read_text(encoding='utf-8'))
-          sdk_setup = Path('packages/kumo-sdk/setup.py').read_text(
+          sdk_setup = Path('packages/clients/kumo-sdk/setup.py').read_text(
               encoding='utf-8')
           api_version = re.search(
               r'^\[project\]\s*$.*?^version\s*=\s*[\'\"]([^\'\"]+)',

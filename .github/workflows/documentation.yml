@@ -8,31 +8,31 @@ name: Documentation
   pull_request:
     paths:
       - "docs/**"
-      - "helm/**"
+      - "apps/studio/helm/**"
       - "**/*.md"
       - ".agents/**"
       - ".claude/**"
       - ".codex/**"
-      - "scripts/docs/**"
-      - "test/scripts/docs/**"
-      - "packages/kumo-ui-catalog/src/**"
-      - "packages/kumo-ui-catalog/.agents/**"
-      - "packages/kumo-ui-catalog/package.json"
+      - "development/tooling/scripts/docs/**"
+      - "development/testing/test/scripts/docs/**"
+      - "packages/ui/kumo-ui-catalog/src/**"
+      - "packages/ui/kumo-ui-catalog/.agents/**"
+      - "packages/ui/kumo-ui-catalog/package.json"
       - ".github/workflows/documentation.yml"
   push:
     branches: [main]
     paths:
       - "docs/**"
-      - "helm/**"
+      - "apps/studio/helm/**"
       - "**/*.md"
       - ".agents/**"
       - ".claude/**"
       - ".codex/**"
-      - "scripts/docs/**"
-      - "test/scripts/docs/**"
-      - "packages/kumo-ui-catalog/src/**"
-      - "packages/kumo-ui-catalog/.agents/**"
-      - "packages/kumo-ui-catalog/package.json"
+      - "development/tooling/scripts/docs/**"
+      - "development/testing/test/scripts/docs/**"
+      - "packages/ui/kumo-ui-catalog/src/**"
+      - "packages/ui/kumo-ui-catalog/.agents/**"
+      - "packages/ui/kumo-ui-catalog/package.json"
       - ".github/workflows/documentation.yml"
 
 permissions:
@@ -43,6 +43,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - run: python3 -m unittest discover -s test/scripts/docs -p 'test_*.py'
-      - run: python3 scripts/docs/check_repository_docs.py --root . --check
+      - run: python3 -m unittest discover -s development/testing/test/scripts/docs -p 'test_*.py'
+      - run: python3 development/tooling/scripts/docs/check_repository_docs.py --root . --check
       - run: bash .agents/skills/code-ui/scripts/generate-catalog-docs.sh --check

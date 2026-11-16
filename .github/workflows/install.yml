@@ -8,7 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**"]
+    paths-ignore: ["apps/studio/ui/**"]
   pull_request:
   merge_group:
 
@@ -40,7 +40,7 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            ui/**
+            apps/studio/ui/**
 
       - name: Set up Python ${{ matrix.python-version }}
         if: steps.ui-changes.outputs.only_changed != 'true'

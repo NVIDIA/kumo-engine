@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-UI_DIR="$ROOT/ui"
+UI_DIR="$ROOT/apps/studio/ui"
 
 status() {
   local label="$1"

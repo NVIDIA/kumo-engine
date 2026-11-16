@@ -5,24 +5,16 @@ This monorepo contains Kumo's graph machine-learning application, Python package
 ## Directory structure
 
 | Area | Location | Purpose |
-|------|----------|---------|
-| REST service | `rest/` | FastAPI routes, services, persistence, and job orchestration |
-| Web application | `ui/` | React user interface and generated API client |
-| Public API package | `packages/kumo-api/` | Shared schemas, PQL types, and API contracts |
-| Service Python SDK | `packages/kumo-sdk/` | Python client for a configured Kumo service (`kumoai_studio`) |
-| Local Python SDK | `packages/kumo-engine/` | In-process SDK surface (`kumo.engine`) for local execution with local or remote data sources |
-| Shared runtime | `packages/kumo-core/` | Service-independent data processing, training, evaluation, and prediction used by the service and local SDK |
-| Connectors | `kumo/connector/` | Data-warehouse and file-source integrations |
-| Data pipeline | `kumo/data/` | Export, cache, and DiskGraph-backed table generation |
-| Query language | `packages/kumo-pql/`, `kumo/pquery/` | Parser and semantic validation package; service query and table-generation orchestration |
-| Service training adapters | `kumo/train/`, `kumo/task/` | Service task materialization and training/prediction adapters around the shared runtime |
-| Graph engine | `kumo/diskgraph/` | Service integration for DiskGraph ingest and snapshot management |
-| Workflows | `temporalio_commons/`, `rest/backends/` | Temporal workflows and activities |
-| Deployment | `docker/`, `helm/` | Container images, Compose topology, and Helm charts |
-| Shared infrastructure | `service_framework/`, `io_utils/`, `async_utils/`, `common_utils/` | Deployment, storage, concurrency, and general utilities |
+| --- | --- | --- |
+| Applications | `apps/studio/` | Studio backend, frontend, utilities and deployment assets |
+| Reusable packages | `packages/` | Contracts, data engine, shared runtime, integrations, clients and UI library |
+| Development | `development/` | Shared tooling, cross-component tests, benchmarks and configuration |
+| Documentation | `docs/` | Shared architecture, contributor guidance and system designs |
 
-Package-owned documentation, including the migrated parser, catalog, graph engine,
-and source providers, is indexed in [docs/README.md](docs/README.md#package-documentation).
+See [package ownership](packages/README.md), [development commands](development/README.md),
+and the [layout design](docs/designs/repository-layout.md). Directory groups do
+not change Python distribution names or import paths. Studio is packaged from
+`apps/studio`; the root Python manifest defines the workspace.
 
 ## Execution pipeline
 
@@ -45,11 +37,11 @@ Users configure data sources, tables, graph relationships, and a predictive quer
 
 ## Important boundaries
 
-- `rest/` owns service APIs and orchestration; it does not implement graph storage or model training.
-- `diskgraph` is a Rust-backed wheel built from the source in `packages/diskgraph/`. The shared runtime in `packages/kumo-core/` and service adapters in `kumo/diskgraph/` and `kumo/data/generic/` integrate its ingest, compilation, and sampling APIs. This repository is the sole source of truth; make engine changes directly in `packages/diskgraph/`.
+- `apps/studio/rest/` owns service APIs and orchestration; it does not implement graph storage or model training.
+- `diskgraph` is a Rust-backed wheel built from the source in `packages/data/diskgraph/`. The shared runtime in `packages/runtime/kumo-core/` and service adapters in `apps/studio/kumo/diskgraph/` and `apps/studio/kumo/data/generic/` integrate its ingest, compilation, and sampling APIs. This repository is the sole source of truth; make engine changes directly in `packages/data/diskgraph/`.
 - `kumoapi` contains contracts shared by the service, SDK, and UI generator.
 - `kumo_core` implements shared training, AutoML, evaluation, explanation, prediction, and DiskGraph integration without service orchestration dependencies.
-- `docker/` defines the images built from this repository; `helm/` defines how the service is installed on Kubernetes.
+- `apps/studio/docker/` defines the images built from this repository; `apps/studio/helm/` defines how the service is installed on Kubernetes.
 
 ## Service layering
 
@@ -59,17 +51,17 @@ The main REST path follows `router -> service -> DAO/driver -> workflow or activ
 
 | Task | Entry point |
 |------|-------------|
-| REST development server | `rest/main.py` via `make devserver` |
-| UI development server | `ui/` |
-| Service Python SDK | `packages/kumo-sdk/` |
-| Local Python SDK | `packages/kumo-engine/` |
-| Shared runtime | `packages/kumo-core/` |
-| Tests | `test/` and package-local test directories |
-| Image builds | `scripts/release/build_kumo_images.py` and Dockerfiles under `docker/` |
-| Helm packaging | `helm/` |
+| REST development server | `apps/studio/rest/main.py` via `make devserver` |
+| UI development server | `apps/studio/ui/` |
+| Service Python SDK | `packages/clients/kumo-sdk/` |
+| Local Python SDK | `packages/clients/kumo-engine/` |
+| Shared runtime | `packages/runtime/kumo-core/` |
+| Tests | `development/testing/test/` and package-local test directories |
+| Image builds | `development/tooling/scripts/release/build_kumo_images.py` and Dockerfiles under `apps/studio/docker/` |
+| Helm packaging | `apps/studio/helm/` |
 
 ## Generated artifacts
 
-- The UI OpenAPI client is generated under `ui/src/gen/`.
-- `uv.lock` is generated from `setup.py`, the workspace `pyproject.toml` files.
+- The UI OpenAPI client is generated under `apps/studio/ui/src/gen/`.
+- `uv.lock` is generated from `apps/studio/setup.py`, the workspace `pyproject.toml` files.
 - Third-party attribution files are generated from resolved dependency metadata.

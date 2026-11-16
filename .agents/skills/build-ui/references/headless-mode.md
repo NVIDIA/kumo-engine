@@ -10,16 +10,16 @@ Do not use interactive Figma MCP in CI. Headless mode uses workflow-owned Figma 
 
 Do not force `--skip-browser` in CI. Headless mode still skips interactive browser MCP usage, but Phase 8 is workflow-owned: the agent proposes a capture plan and the workflow runs Playwright.
 
-Screenshot capture uses Playwright via `ui/scripts/ci-screenshot.mjs` instead of Chrome DevTools MCP. The workflow starts a dev server proxying to the staging backend and owns screenshot execution directly. Screenshot auth is also workflow-owned and uses Direct Connect password-mode credentials or the auth-disabled sentinel, depending on the backend runtime config. The agent must not depend on any auth mechanism beyond the workflow contract.
+Screenshot capture uses Playwright via `apps/studio/ui/scripts/ci-screenshot.mjs` instead of Chrome DevTools MCP. The workflow starts a dev server proxying to the staging backend and owns screenshot execution directly. Screenshot auth is also workflow-owned and uses Direct Connect password-mode credentials or the auth-disabled sentinel, depending on the backend runtime config. The agent must not depend on any auth mechanism beyond the workflow contract.
 
 The headless agent must not execute the screenshot script. It proposes a capture plan by writing `screenshot-plan.json` into the headless artifact directory, and the workflow validates that plan and runs Playwright itself. This keeps screenshot execution deterministic and makes missing screenshots a workflow-enforced outcome rather than an agent-side omission.
 
 In `standard` and `full` modes, `screenshot-plan.json` is required regardless of whether the change is visual. If the implementation is non-visual (for example, a utility helper or a pure logic fix), the agent must still write a plan using the default app-shell routes (`/connectors/`, `/tables/`, `/graphs/`) and note the rationale in the handoff. Skipping the file in `standard`/`full` triggers a hard blocker and fails the job.
 
 The workflow builds the in-tree catalog package with `npm run install:catalog`.
-This command does not rewrite `ui/package.json` or `ui/package-lock.json`.
+This command does not rewrite `apps/studio/ui/package.json` or `apps/studio/ui/package-lock.json`.
 
-If the implementation later requires a real new npm dependency, install it during the implementation phase and keep the resulting `ui/package.json` / `ui/package-lock.json` changes in the PR. Do not include unrelated dependency-install changes.
+If the implementation later requires a real new npm dependency, install it during the implementation phase and keep the resulting `apps/studio/ui/package.json` / `apps/studio/ui/package-lock.json` changes in the PR. Do not include unrelated dependency-install changes.
 
 ## Checkpoint Behavior
 
@@ -200,13 +200,13 @@ Use a scenario plan when the changed UI only appears after interaction, async st
 }
 ```
 
-Known page-specific fallbacks are maintained in `ui/src/screenshot/catalog.json`. Route/workflow ownership is maintained in `ui/src/screenshot/route-map.json` so broad changed files can still resolve to catalog-backed recipes. When a page needs deterministic visual state that is hard to derive from live tenant data, prefer seeding state through `historyState`, `localStorage`, or `sessionStorage` in the scenario rather than inventing brittle tenant-specific interactions.
+Known page-specific fallbacks are maintained in `apps/studio/ui/src/screenshot/catalog.json`. Route/workflow ownership is maintained in `apps/studio/ui/src/screenshot/route-map.json` so broad changed files can still resolve to catalog-backed recipes. When a page needs deterministic visual state that is hard to derive from live tenant data, prefer seeding state through `historyState`, `localStorage`, or `sessionStorage` in the scenario rather than inventing brittle tenant-specific interactions.
 
 For catalog gaps, use `references/decision-tables.md`. When the decision-table row for a missing required catalog variant applies, an unmerged catalog PR can be an acceptable documented workaround if the UI PR body names the catalog branch and the temporary dependency/exception.
 
 Scenario plans may define reusable `fixtures` for common states such as seeded query editor content, selected tabs, selected graph/table state, an opened drawer/modal, list/detail views, or empty states. Fixtures can include `historyState`, `localStorage`, `sessionStorage`, `setup`, `assertions`, and `readySelector(s)`. A scenario opts in with `fixtures: ["fixture_name"]`; scenario-specific state and setup are merged after fixture state.
 
-`ui/scripts/ci-screenshot.mjs` also provides built-in fixtures for common states: `seeded_query_editor`, `selected_tab_model_planner`, `open_graph_table_view`, `opened_dialog`, `list_page_loaded`, `empty_state_loaded`, `selected_connector_state`, `selected_graph_state`, and `selected_table_state`. Plan-local fixtures with the same name override built-ins.
+`apps/studio/ui/scripts/ci-screenshot.mjs` also provides built-in fixtures for common states: `seeded_query_editor`, `selected_tab_model_planner`, `open_graph_table_view`, `opened_dialog`, `list_page_loaded`, `empty_state_loaded`, `selected_connector_state`, `selected_graph_state`, and `selected_table_state`. Plan-local fixtures with the same name override built-ins.
 
 Catalog recipes must include `visualCoverage` as `{ "id": "...", "label": "..." }` objects and map each coverage ID to concrete setup actions or assertions with `covers`. This keeps recipes reviewable: readers can see both the visual intent and the selector or action that proves it.
 
@@ -216,7 +216,7 @@ The workflow may also write `screenshot-overrides.json` when the trigger include
 
 Screenshot planning priority:
 
-1. exact recipe from `ui/src/screenshot/catalog.json`
+1. exact recipe from `apps/studio/ui/src/screenshot/catalog.json`
 2. deterministic seeded-state scenario for the changed surface
 3. interaction-driven scenario for the changed surface
 4. simple route plan only when the changed UI is already visible on initial load
@@ -249,7 +249,7 @@ Rules:
 - if no stable exact selector exists for the changed element, add one in the implementation instead of relying on container text aggregation
 - do not write an empty route list
 
-The workflow owns execution after this file exists. It runs `ui/scripts/ci-screenshot.mjs`, uploads the resulting screenshot artifacts, and decides whether missing or failed capture should block completion.
+The workflow owns execution after this file exists. It runs `apps/studio/ui/scripts/ci-screenshot.mjs`, uploads the resulting screenshot artifacts, and decides whether missing or failed capture should block completion.
 
 Before running Playwright, the workflow must validate the `screenshot-plan.json` schema. Invalid JSON, empty routes, malformed selectors, malformed scenario actions/assertions, or selector keys that do not match the planned routes should stop the run with a structured blocker rather than being treated as a generic screenshot failure.
 

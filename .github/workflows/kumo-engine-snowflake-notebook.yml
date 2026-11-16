@@ -41,7 +41,7 @@ jobs:
         name: Verify maintainer-protected environment
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py
+        run: python3 packages/clients/kumo-engine/test/snowflake_notebook/check_environment.py
   wheel:
     needs: configuration
     uses: ./.github/workflows/kumo-engine-pr.yml
@@ -83,7 +83,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, sys
-          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          sys.path.insert(0, 'packages/clients/kumo-engine/test/snowflake_notebook')
           from resources import require
           require()
           missing = [name for name in ('SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE') if not os.environ.get(name)]
@@ -91,7 +91,7 @@ jobs:
               raise SystemExit('Missing snowflake-mlops-test environment secrets: ' + ', '.join(missing))
           PY
       - name: Install the notebook submission client
-        run: python -m pip --isolated install --require-hashes -r packages/kumo-engine/test/snowflake_notebook/client-requirements.txt
+        run: python -m pip --isolated install --require-hashes -r packages/clients/kumo-engine/test/snowflake_notebook/client-requirements.txt
       - name: Download this dispatch's wheel
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -105,7 +105,7 @@ jobs:
         run: |
           export SNOWFLAKE_TEST_CANDIDATE="$RUNNER_TEMP/snowflake-candidate.json"
           printf 'SNOWFLAKE_TEST_CANDIDATE=%s\n' "$SNOWFLAKE_TEST_CANDIDATE" >> "$GITHUB_ENV"
-          python packages/kumo-engine/test/snowflake_notebook/staging.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/staging.py \
             --wheel "$RUNNER_TEMP"/snowflake-wheel/*.whl \
             --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
             --output "$SNOWFLAKE_TEST_CANDIDATE"
@@ -114,10 +114,10 @@ jobs:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-        run: python packages/kumo-engine/test/snowflake_notebook/retention.py --execute
+        run: python packages/clients/kumo-engine/test/snowflake_notebook/retention.py --execute
       - name: Prepare this revision's notebook tests
         run: |
-          python packages/kumo-engine/test/snowflake_notebook/prepare.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/prepare.py \
             --output-dir "$RUNNER_TEMP/snowflake-payload" \
             --candidate "$SNOWFLAKE_TEST_CANDIDATE"
       - name: Execute the installed-wheel notebook lifecycle
@@ -127,7 +127,7 @@ jobs:
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
           set +e
-          python packages/kumo-engine/test/snowflake_notebook/launch.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/launch.py \
             --payload-manifest "$RUNNER_TEMP/snowflake-payload/manifest.json" \
             --preflight-payload "$RUNNER_TEMP/snowflake-payload/preflight" \
             --lifecycle-payload "$RUNNER_TEMP/snowflake-payload/lifecycle" \
@@ -136,7 +136,7 @@ jobs:
           set -e
           test -f "$RUNNER_TEMP/snowflake-result/summary.json"
           printf '%s\n' "$launcher_exit" > "$RUNNER_TEMP/snowflake-result/launcher-exitcode.txt"
-          python packages/kumo-engine/test/snowflake_notebook/verify.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/verify.py \
             --summary "$RUNNER_TEMP/snowflake-result/summary.json"
       - name: Recover owned notebook submissions
         if: always()
@@ -145,11 +145,11 @@ jobs:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-        run: python packages/kumo-engine/test/snowflake_notebook/recover.py --output-dir "$RUNNER_TEMP/snowflake-result" --execute
+        run: python packages/clients/kumo-engine/test/snowflake_notebook/recover.py --output-dir "$RUNNER_TEMP/snowflake-result" --execute
       - name: Prepare public aggregate results
         if: always()
         run: |
-          python packages/kumo-engine/test/platform_summary.py \
+          python packages/clients/kumo-engine/test/platform_summary.py \
             --platform snowflake --scenario engine \
             --input "$RUNNER_TEMP/snowflake-result" \
             --output "$RUNNER_TEMP/snowflake-engine-public"
@@ -196,7 +196,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, sys
-          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          sys.path.insert(0, 'packages/clients/kumo-engine/test/snowflake_notebook')
           from resources import require
           require()
           names = ('SNOWFLAKE_TEST_CONFIG', 'SNOWFLAKE_PRIVATE_KEY', 'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', 'SNOWFLAKE_UI_CREDENTIALS')
@@ -204,7 +204,7 @@ jobs:
               raise SystemExit('Configure the required protected Snowflake environment secrets before running UI tests')
           PY
       - name: Install the existing Snowflake submission client
-        run: python -m pip --isolated install --require-hashes -r packages/kumo-engine/test/snowflake_notebook/client-requirements.txt
+        run: python -m pip --isolated install --require-hashes -r packages/clients/kumo-engine/test/snowflake_notebook/client-requirements.txt
       - name: Download this dispatch's wheel
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -218,7 +218,7 @@ jobs:
         run: |
           export SNOWFLAKE_TEST_CANDIDATE="$RUNNER_TEMP/snowflake-candidate.json"
           printf 'SNOWFLAKE_TEST_CANDIDATE=%s\n' "$SNOWFLAKE_TEST_CANDIDATE" >> "$GITHUB_ENV"
-          python packages/kumo-engine/test/snowflake_notebook/staging.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/staging.py \
             --wheel "$RUNNER_TEMP"/snowflake-wheel/*.whl \
             --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
             --output "$SNOWFLAKE_TEST_CANDIDATE"
@@ -227,11 +227,11 @@ jobs:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
-        run: python packages/kumo-engine/test/snowflake_notebook/retention.py --execute
+        run: python packages/clients/kumo-engine/test/snowflake_notebook/retention.py --execute
       - name: Install the locked browser test tools
         run: |
-          npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
-          node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
+          npm ci --prefix packages/clients/kumo-engine/test/snowflake_notebook/browser
+          node packages/clients/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
       - name: Run the same graph notebook UI command as local testing
         env:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
@@ -239,7 +239,7 @@ jobs:
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
           SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
         run: |
-          python packages/kumo-engine/test/snowflake_notebook/graph_notebook.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/graph_notebook.py \
             --execute --source-ref "${{ github.sha }}" \
             --output-dir "$RUNNER_TEMP/snowflake-graph"
       - name: Stop and delete this attempt's notebook
@@ -251,12 +251,12 @@ jobs:
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
           SNOWFLAKE_UI_CREDENTIALS: ${{ secrets.SNOWFLAKE_UI_CREDENTIALS }}
         run: |
-          python packages/kumo-engine/test/snowflake_notebook/cleanup.py \
+          python packages/clients/kumo-engine/test/snowflake_notebook/cleanup.py \
             --output-dir "$RUNNER_TEMP/snowflake-graph" --execute
       - name: Prepare public aggregate results
         if: always()
         run: |
-          python packages/kumo-engine/test/platform_summary.py \
+          python packages/clients/kumo-engine/test/platform_summary.py \
             --platform snowflake --scenario graph \
             --input "$RUNNER_TEMP/snowflake-graph" \
             --output "$RUNNER_TEMP/snowflake-graph-public"

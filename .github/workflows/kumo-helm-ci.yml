@@ -8,13 +8,13 @@ on:  # yamllint disable-line rule:truthy
   pull_request:
     branches: [main]
     paths:
-      - "helm/**"
+      - "apps/studio/helm/**"
       - ".github/workflows/kumo-helm-ci.yml"
       - ".github/workflows/kumo-stack-release.yml"
   push:
     branches: [main]
     paths:
-      - "helm/**"
+      - "apps/studio/helm/**"
       - ".github/workflows/kumo-helm-ci.yml"
       - ".github/workflows/kumo-stack-release.yml"
 
@@ -24,7 +24,7 @@ concurrency:
 
 defaults:
   run:
-    working-directory: helm/kumo-helm
+    working-directory: apps/studio/helm/kumo-helm
 
 permissions:
   contents: read
@@ -155,7 +155,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: helm/kumo-temporal
+        working-directory: apps/studio/helm/kumo-temporal
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
@@ -203,7 +203,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: helm
+        working-directory: apps/studio/helm
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:

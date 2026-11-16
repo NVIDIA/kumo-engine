@@ -81,7 +81,7 @@ jobs:
         if: ${{ github.event_name != 'release' }}
         run: >-
           uv run --no-project --with 'orjson>=3.10,<4'
-          scripts/kitmaker_release.py --ferry --check-connectivity
+          development/tooling/scripts/kitmaker_release.py --ferry --check-connectivity
           --portal http://127.0.0.1:8888/kitmaker-portal/api/v0
           --project-id "$PROJECT_ID" --project "$PROJECT" --platform "$PLATFORM"
 
@@ -101,7 +101,7 @@ jobs:
           if [ "$UPLOAD" = true ]; then
             args=()
           fi
-          uv run --no-project --with 'orjson>=3.10,<4' scripts/kitmaker_release.py \
+          uv run --no-project --with 'orjson>=3.10,<4' development/tooling/scripts/kitmaker_release.py \
             --ferry --portal http://127.0.0.1:8888/kitmaker-portal/api/v0 \
             --project-id "$PROJECT_ID" --project "$PROJECT" \
             --platform "$PLATFORM" --repo "$REPO" --tag "$RELEASE_TAG" \

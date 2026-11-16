@@ -59,7 +59,7 @@ actual_instance=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail -
 [[ $actual_instance == "$INSTANCE_TYPE" ]]
 unset metadata_token
 boot_check='local SSD setup'
-curl --retry 5 --retry-all-errors --retry-max-time 120 --connect-timeout 10 --max-time 30 --fail --silent --show-error --location "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh" -o /run/engine-e2e-localssd.sh
+curl --retry 5 --retry-all-errors --retry-max-time 120 --connect-timeout 10 --max-time 30 --fail --silent --show-error --location "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/data/diskgraph/scripts/localssd-raid0-xfs-tui.sh" -o /run/engine-e2e-localssd.sh
 # The formatter writes to /dev/tty even with --yes.
 DISKGRAPH_DATA_ROOT=/mnt/localssd script --quiet --return --command 'bash /run/engine-e2e-localssd.sh --yes' /dev/null </dev/null
 rm -f /run/engine-e2e-localssd.sh

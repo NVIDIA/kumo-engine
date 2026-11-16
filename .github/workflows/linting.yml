@@ -51,7 +51,7 @@ jobs:
       - name: Run linting
         if: steps.lockfile-only.outputs.only_changed != 'true'
         run: |
-          flake8 --extend-exclude .venv .
+          flake8 --config development/config/setup.cfg --extend-exclude .venv .
 
   isort:
     permissions:
@@ -84,7 +84,7 @@ jobs:
       - name: Run linting
         if: steps.lockfile-only.outputs.only_changed != 'true'
         run: |
-          isort --extend-skip .venv --check-only .
+          isort --settings-path development/config/setup.cfg --extend-skip .venv --check-only .
 
   pyroma:
     permissions:
@@ -117,7 +117,7 @@ jobs:
       - name: Check package metadata
         if: steps.lockfile-only.outputs.only_changed != 'true'
         run: |
-          pyroma --min=9 .
+          pyroma --min=9 apps/studio
 
   licensing:
     permissions:
@@ -140,28 +140,28 @@ jobs:
 
       - name: Check source and manifest licensing
         run: |
-          python scripts/check_license_headers.py
-          python scripts/check_python_license_metadata.py
-          pytest -q --confcutdir=test/scripts test/scripts/test_check_license_headers.py test/scripts/test_python_license_metadata.py
+          python development/tooling/scripts/check_license_headers.py
+          python development/tooling/scripts/check_python_license_metadata.py
+          pytest -q --confcutdir=development/testing/test/scripts development/testing/test/scripts/test_check_license_headers.py development/testing/test/scripts/test_python_license_metadata.py
 
       - name: Build Python wheels
         run: |
           projects=(
             .
-            packages/kumo-api
-            packages/kumo-bigquery
-            packages/kumo-core
-            packages/kumo-databricks
-            packages/kumo-gcs
-            packages/kumo-adls
-            packages/kumo-pql
-            packages/kumo-s3
-            packages/kumo-sdk
-            packages/kumo-settings
-            packages/kumo-snowflake
-            packages/kumo-engine
-            packages/experimental/kumo-pytorch
-            tools/glove-6b-50d
+            packages/contracts/kumo-api
+            packages/integrations/kumo-bigquery
+            packages/runtime/kumo-core
+            packages/integrations/kumo-databricks
+            packages/integrations/kumo-gcs
+            packages/integrations/kumo-adls
+            packages/contracts/kumo-pql
+            packages/integrations/kumo-s3
+            packages/clients/kumo-sdk
+            packages/contracts/kumo-settings
+            packages/integrations/kumo-snowflake
+            packages/clients/kumo-engine
+            packages/models/experimental/kumo-pytorch
+            packages/models/glove-6b-50d
           )
           for project in "${projects[@]}"; do
             uv build --wheel --no-build-logs --out-dir "$RUNNER_TEMP/license-wheels" "$project"
@@ -169,7 +169,7 @@ jobs:
 
       - name: Inspect wheel license metadata
         run: |
-          python scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/license-wheels" --require-all
+          python development/tooling/scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/license-wheels" --require-all
 
   yamllint:
     permissions:
@@ -202,7 +202,7 @@ jobs:
       - name: Run linting
         if: steps.lockfile-only.outputs.only_changed != 'true'
         run: |
-          yamllint .
+          yamllint -c development/config/.yamllint.yml .
 
   deploy_static:
     name: deploy_static
@@ -218,35 +218,35 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            deploy/**/*.sh
+            apps/studio/deploy/**/*.sh
 
       - name: Check for deployment Terraform changes
         id: deploy-terraform-changes
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            deploy/azure/terraform/**/*.tf
-            deploy/azure/terraform/terraform.tfvars.example
-            deploy/gcp/terraform/**/*.tf
-            deploy/gcp/terraform/terraform.tfvars.example
+            apps/studio/deploy/azure/terraform/**/*.tf
+            apps/studio/deploy/azure/terraform/terraform.tfvars.example
+            apps/studio/deploy/gcp/terraform/**/*.tf
+            apps/studio/deploy/gcp/terraform/terraform.tfvars.example
 
       - name: Check for deployment Packer changes
         id: deploy-packer-changes
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            deploy/**/*.pkr.hcl
+            apps/studio/deploy/**/*.pkr.hcl
 
       - name: Check for deployment test changes
         id: deploy-test-changes
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            deploy/**
-            docker/compose/docker-compose.singlehost*.yml
-            scripts/compose-local-preflight.sh
-            test/compose/test_compose_local_preflight.py
-            test/deploy/test_cloud_storage_preflight.py
+            apps/studio/deploy/**
+            apps/studio/docker/compose/docker-compose.singlehost*.yml
+            development/tooling/scripts/compose-local-preflight.sh
+            development/testing/test/compose/test_compose_local_preflight.py
+            development/testing/test/deploy/test_cloud_storage_preflight.py
 
       - name: Install ShellCheck
         if: steps.deploy-shell-changes.outputs.any_changed == 'true'
@@ -277,7 +277,7 @@ jobs:
         if: steps.deploy-terraform-changes.outputs.any_changed == 'true'
         run: |
           for cloud in azure gcp; do
-            terraform_dir="deploy/${cloud}/terraform"
+            terraform_dir="apps/studio/deploy/${cloud}/terraform"
             terraform fmt -check -recursive "$terraform_dir"
             cp "$terraform_dir/terraform.tfvars.example" "/tmp/${cloud}.tfvars"
             terraform fmt -check "/tmp/${cloud}.tfvars"
@@ -312,8 +312,8 @@ jobs:
       - name: Run focused offline deployment tests
         if: steps.deploy-test-changes.outputs.any_changed == 'true'
         run: |
-          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=test/deploy -q test/deploy/test_cloud_storage_preflight.py
-          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=test/compose -q test/compose/test_compose_local_preflight.py
+          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=development/testing/test/deploy -q development/testing/test/deploy/test_cloud_storage_preflight.py
+          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=development/testing/test/compose -q development/testing/test/compose/test_compose_local_preflight.py
 
   pyright:
     permissions:
@@ -340,7 +340,7 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            ui/**
+            apps/studio/ui/**
 
       - name: Set up Python
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
@@ -355,7 +355,7 @@ jobs:
       - name: Compute DiskGraph wheel cache key
         id: diskgraph-wheel-key
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
-        run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
+        run: echo "key=$(./development/tooling/scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
 
       - name: Restore DiskGraph wheel
         id: diskgraph-wheel-cache
@@ -375,7 +375,7 @@ jobs:
       - name: Install DiskGraph
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
         run: |
-          ./scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
+          ./development/tooling/scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
         env:
           DISKGRAPH_WHEEL_DIR: ${{ steps.diskgraph-wheel-cache.outputs.cache-hit == 'true' && '/tmp/diskgraph-wheel' || '' }}
 
@@ -386,12 +386,12 @@ jobs:
       - name: Run type checker
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
         run: |
-          pyright -p pyrightconfig.json
+          pyright -p development/config/pyrightconfig.json
 
       - name: Run type checker using the precommit config
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
         run: |
-          pyright -p precommit-pyrightconfig.json
+          pyright -p development/config/precommit-pyrightconfig.json
 
   uilint:
     permissions:
@@ -419,7 +419,7 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            ui/**
+            apps/studio/ui/**
 
       - name: Set up Node.js
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
@@ -430,20 +430,20 @@ jobs:
       - name: Install UI dependencies
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run install:catalog
           npm ci
 
       - name: Run ESLint
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run lint-check
 
       - name: Run Prettier
         if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run format-check
 
   # Keep this job name stable: main branch protection requires the
@@ -456,7 +456,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Check versions match VERSION
-        run: python3 scripts/stamp_version.py --check
+        run: python3 development/tooling/scripts/stamp_version.py --check
 
       - name: Validate first-party Kumo dependencies
         run: |
@@ -465,22 +465,22 @@ jobs:
           import tomllib
           from pathlib import Path
 
-          api_pyproject = Path("packages/kumo-api/pyproject.toml")
+          api_pyproject = Path("packages/contracts/kumo-api/pyproject.toml")
           api_version = tomllib.loads(api_pyproject.read_text())["project"]["version"]
           if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-z]+[0-9]+)?", api_version) is None:
-              raise SystemExit(f"Invalid packages/kumo-api version: {api_version}")
+              raise SystemExit(f"Invalid packages/contracts/kumo-api version: {api_version}")
 
-          setup_text = Path("setup.py").read_text()
+          setup_text = Path("apps/studio/setup.py").read_text()
           expected = 'kumo_api_dep = f"kumo-api=={kumo_api_ver}"'
           if expected not in setup_text:
-              raise SystemExit("setup.py does not use the first-party kumo-api version")
+              raise SystemExit("apps/studio/setup.py does not use the first-party kumo-api version")
 
-          pql_pyproject = Path("packages/kumo-pql/pyproject.toml")
+          pql_pyproject = Path("packages/contracts/kumo-pql/pyproject.toml")
           pql_version = tomllib.loads(pql_pyproject.read_text())["project"]["version"]
           if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-z]+[0-9]+)?", pql_version) is None:
-              raise SystemExit(f"Invalid packages/kumo-pql version: {pql_version}")
+              raise SystemExit(f"Invalid packages/contracts/kumo-pql version: {pql_version}")
           if '"kumo-pql>=0.1.0,<0.2"' not in setup_text:
-              raise SystemExit("setup.py does not use the first-party kumo-pql package")
+              raise SystemExit("apps/studio/setup.py does not use the first-party kumo-pql package")
           if "kumo-pql.git" in setup_text:
               raise SystemExit("Kumo PQL must not be resolved from a Git URL")
           PY
@@ -506,7 +506,7 @@ jobs:
     # with pants_check): a uv workspace shares one lock/environment, so uv
     # itself can't catch a package importing something only installed
     # because a sibling workspace member needs it. See
-    # scripts/ci/check_dependency_boundaries.sh for the full rationale, the
+    # development/tooling/scripts/ci/check_dependency_boundaries.sh for the full rationale, the
     # per-package scope, and the reviewed baseline of pre-existing findings.
     runs-on: ubuntu-24.04
     steps:
@@ -518,4 +518,4 @@ jobs:
           python-version: "3.14"
           enable-cache: false
 
-      - run: scripts/ci/check_dependency_boundaries.sh
+      - run: development/tooling/scripts/ci/check_dependency_boundaries.sh

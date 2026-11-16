@@ -12,16 +12,16 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
     paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
+      - 'packages/models/experimental/kumo-pytorch/**'
+      - 'packages/data/diskgraph/**'
+      - 'development/tooling/scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-t2a.yml'
   pull_request:
     paths:
-      - 'packages/experimental/kumo-pytorch/e2e/**'
-      - 'packages/experimental/kumo-pytorch/tests/e2e/**'
+      - 'packages/models/experimental/kumo-pytorch/e2e/**'
+      - 'packages/models/experimental/kumo-pytorch/tests/e2e/**'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-t2a.yml'
   workflow_dispatch:
@@ -36,7 +36,7 @@ concurrency:
 defaults:
   run:
     shell: bash
-    working-directory: packages/experimental/kumo-pytorch
+    working-directory: packages/models/experimental/kumo-pytorch
 
 jobs:
   diskgraph-wheel:

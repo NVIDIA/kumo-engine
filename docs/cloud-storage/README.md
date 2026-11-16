@@ -5,9 +5,9 @@ for CSV/Parquet sources, rooted outputs, and provider-native dataplanes.
 
 | Provider | Canonical URI | Provider and deployment guidance |
 | -------- | ------------- | -------------------------------- |
-| AWS S3 | `s3://bucket/path` | [AWS single-host guide](../../deploy/ami/USER_GUIDE.md) |
-| GCS | `gs://bucket/path` | [GCS deltas](gcs.md) and [deployment assets](../../deploy/gcp/) |
-| ADLS Gen2 | `abfss://filesystem@account.<dfs-suffix>/path` | [ADLS deltas](adls.md) and [Azure single-host guide](../../deploy/azure/README.md) |
+| AWS S3 | `s3://bucket/path` | [AWS single-host guide](../../apps/studio/deploy/ami/USER_GUIDE.md) |
+| GCS | `gs://bucket/path` | [GCS deltas](gcs.md) and [deployment assets](../../apps/studio/deploy/gcp/) |
+| ADLS Gen2 | `abfss://filesystem@account.<dfs-suffix>/path` | [ADLS deltas](adls.md) and [Azure single-host guide](../../apps/studio/deploy/azure/README.md) |
 
 See also the [development storage matrix](../devserver.md).
 

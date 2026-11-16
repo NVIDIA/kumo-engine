@@ -25,7 +25,7 @@ def get_project_root():
     if "CLAUDE_PROJECT_DIR" in os.environ:
         return Path(os.environ["CLAUDE_PROJECT_DIR"])
     # Walk up from script location
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).resolve().parents[0]
     return script_dir.parent.parent
 
 

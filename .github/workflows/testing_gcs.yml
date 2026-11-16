@@ -56,9 +56,9 @@ jobs:
       fail-fast: false
       matrix:
         test_dir: [
-          test/rest/integ/test_gcs_e2e.py,
-          test/rest/integ/test_bigquery_diskgraph_e2e.py,
-          test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py,
+          development/testing/test/rest/integ/test_gcs_e2e.py,
+          development/testing/test/rest/integ/test_bigquery_diskgraph_e2e.py,
+          development/testing/test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py,
         ]
 
     steps:
@@ -108,7 +108,7 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           GLOG_logtostdout=1 python -X faulthandler -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=thread ${{ matrix.test_dir }}
         env:
@@ -117,7 +117,7 @@ jobs:
           GCS_TEST_BUCKET: 'kumo-test-bucket'
           GCP_STORAGE_TRANSFER_BUCKET: 'kumo-test-bucket'
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: "true"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
           # Standard test environment variables
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}

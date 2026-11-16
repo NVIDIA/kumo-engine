@@ -95,7 +95,7 @@ Expected result:
 
 ## Shared Primitive Modification
 
-- ticket changes a shared `@ui/` component
+- ticket changes a shared `@apps/studio/ui/` component
 - the change adds new optional props and updates all callers
 - many consumer files and tests need updating
 
@@ -110,7 +110,7 @@ Expected result:
 
 ## Shared Component Blast Radius Review
 
-- change touches `src/components/@ui/` or another widely reused module
+- change touches `src/components/@apps/studio/ui/` or another widely reused module
 - blast radius is not obvious from the issue itself
 
 Expected result:

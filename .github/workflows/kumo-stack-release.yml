@@ -55,8 +55,8 @@ jobs:
 
       - name: Stage pinned AWS RDS trust bundle
         run: |
-          bash helm/kumo-stack/release/prepare-aws-rds-ca.sh \
-            helm/kumo-temporal/files/aws-rds-roots.pem
+          bash apps/studio/helm/kumo-stack/release/prepare-aws-rds-ca.sh \
+            apps/studio/helm/kumo-temporal/files/aws-rds-roots.pem
 
       - name: Package the editable installation bundle
         id: package
@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           package_dir="${RUNNER_TEMP}/package"
-          bundle_root="$(bash helm/kumo-stack/build-bundle.sh "${RUNNER_TEMP}/bundle")"
+          bundle_root="$(bash apps/studio/helm/kumo-stack/build-bundle.sh "${RUNNER_TEMP}/bundle")"
           test -f "${bundle_root}/Chart.yaml"
           test -r "${bundle_root}/install.sh"
           test -f "${bundle_root}/config.yaml"

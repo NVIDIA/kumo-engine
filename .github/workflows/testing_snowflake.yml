@@ -8,7 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
+    paths-ignore: ["apps/studio/ui/**", "apps/studio/tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -54,90 +54,90 @@ jobs:
       matrix:
         test_name:
           [
-            'connector (test/connector)',
-            'rest (test/rest)',
-            'fsutil (test/io_utils/fsutil)',
-            'backend - data (test/data/ test/graph/',
-            'backend - pquery (test/pquery/bp_generator)',
-            'backend - pquery (test/pquery/train_table_generator)',
-            'snowflake diskgraph e2e (test/rest/integ/test_snowflake_diskgraph_e2e.py)',
-            'snowflake ingestion diskgraph e2e (test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py)'
+            'connector (development/testing/test/connector)',
+            'rest (development/testing/test/rest)',
+            'fsutil (development/testing/test/io_utils/fsutil)',
+            'backend - data (development/testing/test/data/ development/testing/test/graph/',
+            'backend - pquery (development/testing/test/pquery/bp_generator)',
+            'backend - pquery (development/testing/test/pquery/train_table_generator)',
+            'snowflake diskgraph e2e (development/testing/test/rest/integ/test_snowflake_diskgraph_e2e.py)',
+            'snowflake ingestion diskgraph e2e (development/testing/test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py)'
           ]
         include:
-          - test_name: 'connector (test/connector)'
-            test_dir: 'test/connector'
+          - test_name: 'connector (development/testing/test/connector)'
+            test_dir: 'development/testing/test/connector'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              setup.py
-              test/connector/**
-          - test_name: 'rest (test/rest)'
-            test_dir: 'test/rest --ignore=test/rest/integ/test_snowflake_diskgraph_e2e.py --ignore=test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py'
+              apps/studio/kumo/connector/**
+              apps/studio/setup.py
+              development/testing/test/connector/**
+          - test_name: 'rest (development/testing/test/rest)'
+            test_dir: 'development/testing/test/rest --ignore=development/testing/test/rest/integ/test_snowflake_diskgraph_e2e.py --ignore=development/testing/test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              setup.py
-              test/rest/**
-          - test_name: 'fsutil (test/io_utils/fsutil)'
-            test_dir: 'test/io_utils/fsutil'
+              apps/studio/setup.py
+              development/testing/test/rest/**
+          - test_name: 'fsutil (development/testing/test/io_utils/fsutil)'
+            test_dir: 'development/testing/test/io_utils/fsutil'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              io_utils/**
-              setup.py
-              test/io_utils/fsutil/**
-          - test_name: 'backend - data (test/data/ test/graph/'
-            test_dir: 'test/data/ test/graph/**snowflake**'
+              apps/studio/io_utils/**
+              apps/studio/setup.py
+              development/testing/test/io_utils/fsutil/**
+          - test_name: 'backend - data (development/testing/test/data/ development/testing/test/graph/'
+            test_dir: 'development/testing/test/data/ development/testing/test/graph/**snowflake**'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/stats/**
-              io_utils/**
-              setup.py
-              test/data/
-              test/graph/**snowflake**
-          - test_name: 'backend - pquery (test/pquery/bp_generator)'
-            test_dir: 'test/pquery/test_pql_batch_pred_generator.py'
+              apps/studio/kumo/data/**
+              apps/studio/kumo/stats/**
+              apps/studio/io_utils/**
+              apps/studio/setup.py
+              development/testing/test/data/
+              development/testing/test/graph/**snowflake**
+          - test_name: 'backend - pquery (development/testing/test/pquery/bp_generator)'
+            test_dir: 'development/testing/test/pquery/test_pql_batch_pred_generator.py'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/pquery/**
-              io_utils/**
-              kumo/data/data_processing_backend/**
-              setup.py
-              test/pquery/test_pql_batch_pred_generator.py
-          - test_name: 'backend - pquery (test/pquery/train_table_generator)'
-            test_dir: 'test/pquery/train_table_generator'
+              apps/studio/kumo/data/**
+              apps/studio/kumo/pquery/**
+              apps/studio/io_utils/**
+              apps/studio/kumo/data/data_processing_backend/**
+              apps/studio/setup.py
+              development/testing/test/pquery/test_pql_batch_pred_generator.py
+          - test_name: 'backend - pquery (development/testing/test/pquery/train_table_generator)'
+            test_dir: 'development/testing/test/pquery/train_table_generator'
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/data/**
-              kumo/pquery/**
-              io_utils/**
-              setup.py
-              test/pquery/train_table_generator/**
-          - test_name: 'snowflake diskgraph e2e (test/rest/integ/test_snowflake_diskgraph_e2e.py)'
-            test_dir: "test/rest/integ/test_snowflake_diskgraph_e2e.py"
+              apps/studio/kumo/data/**
+              apps/studio/kumo/pquery/**
+              apps/studio/io_utils/**
+              apps/studio/setup.py
+              development/testing/test/pquery/train_table_generator/**
+          - test_name: 'snowflake diskgraph e2e (development/testing/test/rest/integ/test_snowflake_diskgraph_e2e.py)'
+            test_dir: "development/testing/test/rest/integ/test_snowflake_diskgraph_e2e.py"
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              rest/backends/data_backend/activities/**
-              test/rest/integ/test_snowflake_diskgraph_e2e.py
-              test/rest/integ/test_cases/test_snowflake_e2e_fixtures.json
-              rest/devserver/configs/diskgraph-test.json
-          - test_name: 'snowflake ingestion diskgraph e2e (test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py)'
-            test_dir: "test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py"
+              apps/studio/kumo/connector/**
+              apps/studio/rest/backends/data_backend/activities/**
+              development/testing/test/rest/integ/test_snowflake_diskgraph_e2e.py
+              development/testing/test/rest/integ/test_cases/test_snowflake_e2e_fixtures.json
+              apps/studio/rest/devserver/configs/diskgraph-test.json
+          - test_name: 'snowflake ingestion diskgraph e2e (development/testing/test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py)'
+            test_dir: "development/testing/test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py"
             files_changed: |
               .github/actions/setup/action.yml
               .github/workflows/testing_snowflake.yml
-              kumo/connector/**
-              rest/backends/data_backend/activities/**
-              test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py
-              rest/devserver/configs/diskgraph-test.json
+              apps/studio/kumo/connector/**
+              apps/studio/rest/backends/data_backend/activities/**
+              development/testing/test/rest/integ/test_snowflake_ingestion_diskgraph_e2e.py
+              apps/studio/rest/devserver/configs/diskgraph-test.json
 
 
     steps:
@@ -183,7 +183,7 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
@@ -191,7 +191,7 @@ jobs:
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
         if: steps.data-backend-files-changed.outputs.any_changed == 'true' && (github.event_name == 'push' || inputs.full_test == true) && steps.only-ui-files-changed.outputs.only_changed != 'true' && steps.only-rest-files-changed.outputs.only_changed != 'true'
@@ -199,7 +199,7 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=30 --runsnowflake ${{ matrix.test_dir }}
         env:
@@ -207,4 +207,4 @@ jobs:
           SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_CI_USER }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
           AWS_DEFAULT_REGION: "us-west-2"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}

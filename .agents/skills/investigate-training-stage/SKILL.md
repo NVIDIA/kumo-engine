@@ -117,13 +117,13 @@ state what is missing when the supplied evidence cannot distinguish them.
 
 | Component | File |
 |-----------|------|
-| Parent workflow IDs | `rest/backends/ml_backend/ml_job_backend.py` (`_training_workflow_id`, `_batch_prediction_workflow_id`) |
-| Training workflow | `rest/backends/ml_backend/workflows/training_workflow.py` |
-| Graph refresh / table generation dispatch | `rest/backends/ml_backend/workflows/base_training_workflow.py` |
-| Table-generation workflow IDs | `statedb/config/common.py` (`GenerateTrainTableJobID.wf_id`, `GeneratePredictionTableJobID.wf_id`) |
-| Graph and table refresh | `rest/backends/data_backend/workflows/graph_refresh_workflow.py`, `table_refresh_workflow.py` |
-| DiskGraph ingest | `rest/backends/data_backend/workflows/diskgraph_ingest_workflow.py` |
-| Training / prediction dispatch | `rest/backends/ml_backend/workflows/training_job_workflow.py`, `batch_prediction_job_workflow.py` |
-| Materialization | `rest/backends/ml_backend/workflows/materialize_task_workflows.py` |
-| Pool activities | `pool/activities.py` |
-| Materialize activity | `rest/backends/ml_backend/activities/materialize_training_task.py` |
+| Parent workflow IDs | `apps/studio/rest/backends/ml_backend/ml_job_backend.py` (`_training_workflow_id`, `_batch_prediction_workflow_id`) |
+| Training workflow | `apps/studio/rest/backends/ml_backend/workflows/training_workflow.py` |
+| Graph refresh / table generation dispatch | `apps/studio/rest/backends/ml_backend/workflows/base_training_workflow.py` |
+| Table-generation workflow IDs | `apps/studio/statedb/config/common.py` (`GenerateTrainTableJobID.wf_id`, `GeneratePredictionTableJobID.wf_id`) |
+| Graph and table refresh | `apps/studio/rest/backends/data_backend/workflows/graph_refresh_workflow.py`, `table_refresh_workflow.py` |
+| DiskGraph ingest | `apps/studio/rest/backends/data_backend/workflows/diskgraph_ingest_workflow.py` |
+| Training / prediction dispatch | `apps/studio/rest/backends/ml_backend/workflows/training_job_workflow.py`, `batch_prediction_job_workflow.py` |
+| Materialization | `apps/studio/rest/backends/ml_backend/workflows/materialize_task_workflows.py` |
+| Pool activities | `apps/studio/pool/activities.py` |
+| Materialize activity | `apps/studio/rest/backends/ml_backend/activities/materialize_training_task.py` |

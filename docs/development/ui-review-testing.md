@@ -1,6 +1,6 @@
 # Testing Infrastructure Patterns
 
-> Loaded when the PR diff touches `ui/src/tests/` or `__tests__/` files. These patterns enforce the centralized testing conventions.
+> Loaded when the PR diff touches `apps/studio/ui/src/tests/` or `__tests__/` files. These patterns enforce the centralized testing conventions.
 
 ---
 
@@ -28,7 +28,7 @@ import "tests/mockAxios"; // auto-mocks all axios calls
 
 **Why:** Centralized mocking ensures consistent behavior across tests, makes it easy to find all mocked endpoints, and prevents tests from having stale or inconsistent mock responses.
 
-**Reference:** `ui/src/tests/mockAxios.ts` — URL dispatch table for all HTTP mocks.
+**Reference:** `apps/studio/ui/src/tests/mockAxios.ts` — URL dispatch table for all HTTP mocks.
 
 ---
 
@@ -47,7 +47,7 @@ import { createQueryClient } from "tests/testUtil";
 const queryClient = createQueryClient();
 ```
 
-**Reference:** `ui/src/tests/testUtil.ts` — `createQueryClient()` sets `retry: false` and appropriate defaults.
+**Reference:** `apps/studio/ui/src/tests/testUtil.ts` — `createQueryClient()` sets `retry: false` and appropriate defaults.
 
 ---
 
@@ -69,7 +69,7 @@ const { result } = renderHook(() => useMyDataHook(), {
 });
 ```
 
-**Reference:** `ui/src/tests/testUtil.ts` — `createWrapper()` provides `QueryClientProvider`.
+**Reference:** `apps/studio/ui/src/tests/testUtil.ts` — `createWrapper()` provides `QueryClientProvider`.
 
 ---
 
@@ -97,7 +97,7 @@ beforeEach(() => {
 
 **Why:** Direct state injection exercises the real store selectors and middleware. `vi.mock` bypasses the entire store implementation and can mask bugs.
 
-**Reference:** `ui/src/tests/setup.ts` — sets `useDebugStore` state in `beforeEach`.
+**Reference:** `apps/studio/ui/src/tests/setup.ts` — sets `useDebugStore` state in `beforeEach`.
 
 ---
 
@@ -126,7 +126,7 @@ expect(mockUseNavigate).toHaveBeenCalledWith(navRoutes.Home);
 mockLocationStateValue({ fromPage: "dashboard" });
 ```
 
-**Reference:** `ui/src/tests/mockRouter.ts` — provides `mockNavigateCall()` and `mockLocationStateValue()`.
+**Reference:** `apps/studio/ui/src/tests/mockRouter.ts` — provides `mockNavigateCall()` and `mockLocationStateValue()`.
 
 ---
 
@@ -151,7 +151,7 @@ import {
 
 **Rule:** Before writing a new test helper, check `testHelpers.ts`. If a similar helper exists, use it or extend it rather than duplicating.
 
-**Reference:** `ui/src/tests/testHelpers.ts`, `ui/src/tests/testUtil.ts`.
+**Reference:** `apps/studio/ui/src/tests/testHelpers.ts`, `apps/studio/ui/src/tests/testUtil.ts`.
 
 ---
 
@@ -179,7 +179,7 @@ vi.mock("@tanstack/react-virtual", () => ({
 vi.mock("@tanstack/react-virtual", () => ({ ... }));
 ```
 
-**Reference:** `ui/src/tests/setup.ts`.
+**Reference:** `apps/studio/ui/src/tests/setup.ts`.
 
 ---
 
@@ -204,7 +204,7 @@ const ValidationCard = ({ children }: Props) => (
 
 **Why:** `data-testid` on `@ui` primitives is an intentional convention for testable UI atoms. Tests across the codebase depend on these selectors for shared primitives.
 
-**Reference:** `packages/kumo-ui-catalog/src/components/ui/custom-alert.tsx`, `packages/kumo-ui-catalog/src/components/ui/confirmation-dialog.tsx`, `packages/kumo-ui-catalog/src/components/blocks/card/validation-card.tsx`.
+**Reference:** `packages/ui/kumo-ui-catalog/src/components/ui/custom-alert.tsx`, `packages/ui/kumo-ui-catalog/src/components/ui/confirmation-dialog.tsx`, `packages/ui/kumo-ui-catalog/src/components/blocks/card/validation-card.tsx`.
 
 ---
 
@@ -212,8 +212,8 @@ const ValidationCard = ({ children }: Props) => (
 
 | Source | Area |
 |--------|------|
-| `ui/src/tests/mockAxios.ts` | Centralized HTTP mock dispatch table |
-| `ui/src/tests/mockRouter.ts` | Router mock helpers |
-| `ui/src/tests/testUtil.ts` | createQueryClient, createWrapper, createMockResponse |
-| `ui/src/tests/testHelpers.ts` | Shared test helpers (findAndClickButton, etc.) |
-| `ui/src/tests/setup.ts` | Global test setup, virtualization mocks |
+| `apps/studio/ui/src/tests/mockAxios.ts` | Centralized HTTP mock dispatch table |
+| `apps/studio/ui/src/tests/mockRouter.ts` | Router mock helpers |
+| `apps/studio/ui/src/tests/testUtil.ts` | createQueryClient, createWrapper, createMockResponse |
+| `apps/studio/ui/src/tests/testHelpers.ts` | Shared test helpers (findAndClickButton, etc.) |
+| `apps/studio/ui/src/tests/setup.ts` | Global test setup, virtualization mocks |

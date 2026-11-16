@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Run repository checks with shared configuration from any working directory."""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+CONFIG = ROOT / 'development/config'
+
+
+def main():
+    commands = {
+        'test': [sys.executable, '-m', 'pytest'],
+        'lint': [sys.executable, '-m', 'flake8', '--config', str(CONFIG / 'setup.cfg')],
+        'format-check': [sys.executable, '-m', 'isort', '--settings-path', str(CONFIG / 'setup.cfg'), '--check-only'],
+        'types': [sys.executable, '-m', 'pyright', '-p', str(CONFIG / 'pyrightconfig.json')],
+        'pre-commit': [sys.executable, '-m', 'pre_commit'],
+        'layout-check': [sys.executable, 'development/tooling/check_layout.py'],
+    }
+    if len(sys.argv) < 2 or sys.argv[1] not in commands:
+        print('Usage: ./dev {' + ','.join(commands) + '} [arguments...]')
+        return 2
+    env = os.environ.copy()
+    env['MISE_CONFIG_FILE'] = str(CONFIG / '.mise.toml')
+    env['PYTHONPATH'] = os.pathsep.join(str(ROOT / p) for p in [
+        'apps/studio', 'development/tooling', 'development/testing'
+    ]) + os.pathsep + env.get('PYTHONPATH', '')
+    arguments = sys.argv[2:]
+    if sys.argv[1] == 'pre-commit':
+        arguments = arguments or ['run']
+        if arguments[0] in ['run', 'install', 'install-hooks', 'autoupdate', 'migrate-config']:
+            arguments = [arguments[0], '--config', str(CONFIG / '.pre-commit-config.yaml'), *arguments[1:]]
+    return subprocess.call(commands[sys.argv[1]] + arguments, cwd=ROOT, env=env)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

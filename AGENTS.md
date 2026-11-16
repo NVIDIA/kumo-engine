@@ -2,6 +2,9 @@
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the system map and
 [docs/README.md](docs/README.md) for canonical documentation.
+Use [development commands](development/README.md) and the [package map](packages/README.md)
+to locate a component and its checks. Shared tool configuration lives in
+`development/config`; use the root `dev` entry point or `make`.
 This file contains agent navigation and working constraints; shared engineering
 knowledge belongs in ordinary docs.
 
@@ -15,13 +18,13 @@ mean every nested instruction file has already been loaded.
 
 | Change | Read and inspect |
 | --- | --- |
-| REST/API response | `rest/`, `packages/kumo-api/`, `packages/kumo-sdk/`, [UI instructions](ui/AGENTS.md), [generator map](docs/development/generated-artifacts.md) |
-| Runtime setting or default | `service_framework/`, affected service/worker consumers, [Helm requirements](helm/kumo-helm/docs/requirements.md), `docker/compose/` |
-| Worker/GPU/cache behavior | `pool/`, `kumo/diskgraph/`, `packages/kumo-core/`, [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), [Helm guide](helm/README.md) |
-| Query syntax or table semantics | [PQL instructions](packages/kumo-pql/AGENTS.md), [query integration](kumo/pquery/AGENTS.md), [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), UI grammar/help generators |
-| UI feature or shared component | [UI instructions](ui/AGENTS.md), [catalog instructions](packages/kumo-ui-catalog/CLAUDE.md), shared API and generated clients |
-| Filesystem/backend behavior | [fsutil instructions](io_utils/fsutil/AGENTS.md), affected connector and storage consumers |
-| Local Python interface | `packages/kumo-engine/`, `packages/kumo-core/`, relevant connector packages and their tests |
+| REST/API response | `apps/studio/rest/`, `packages/contracts/kumo-api/`, `packages/clients/kumo-sdk/`, [UI instructions](apps/studio/ui/AGENTS.md), [generator map](docs/development/generated-artifacts.md) |
+| Runtime setting or default | `apps/studio/service_framework/`, affected service/worker consumers, [Helm requirements](apps/studio/helm/kumo-helm/docs/requirements.md), `apps/studio/docker/compose/` |
+| Worker/GPU/cache behavior | `apps/studio/pool/`, `apps/studio/kumo/diskgraph/`, `packages/runtime/kumo-core/`, [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), [Helm guide](apps/studio/helm/README.md) |
+| Query syntax or table semantics | [PQL instructions](packages/contracts/kumo-pql/AGENTS.md), [query integration](apps/studio/kumo/pquery/AGENTS.md), [DiskGraph source ownership](docs/development/generated-artifacts.md#diskgraph-source), UI grammar/help generators |
+| UI feature or shared component | [UI instructions](apps/studio/ui/AGENTS.md), [catalog instructions](packages/ui/kumo-ui-catalog/CLAUDE.md), shared API and generated clients |
+| Filesystem/backend behavior | [fsutil instructions](apps/studio/io_utils/fsutil/AGENTS.md), affected connector and storage consumers |
+| Local Python interface | `packages/clients/kumo-engine/`, `packages/runtime/kumo-core/`, relevant connector packages and their tests |
 | Documentation or skills | [maintenance](docs/maintenance/README.md), [agent setup](docs/development/agents.md), [.agents/README.md](.agents/README.md) |
 
 ## Working rules
@@ -52,6 +55,6 @@ mean every nested instruction file has already been loaded.
 ## Instructions and skills
 
 Repository skills live in [.agents/skills](.agents/skills/); catalog skills
-remain in [the catalog package](packages/kumo-ui-catalog/.agents/README.md).
+remain in [the catalog package](packages/ui/kumo-ui-catalog/.agents/README.md).
 Use [.agents/README.md](.agents/README.md) to find the relevant procedure.
 Read skills only when they apply, and follow their linked engineering guides.

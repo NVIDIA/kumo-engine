@@ -258,7 +258,7 @@ jobs:
           AMI_TAG: ${{ steps.vars.outputs.ami_tag }}
           FORCE_DEREGISTER: ${{ steps.vars.outputs.force_deregister }}
         run: |
-          cd deploy/ami
+          cd apps/studio/deploy/ami
           packer init kumo-singlehost.pkr.hcl
           export PKR_VAR_aws_access_key_id="${AWS_ACCESS_KEY_ID}"
           export PKR_VAR_aws_secret_access_key="${AWS_SECRET_ACCESS_KEY}"

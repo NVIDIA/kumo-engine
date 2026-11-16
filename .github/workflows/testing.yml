@@ -8,7 +8,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths-ignore: ["ui/**", "tools/**"]
+    paths-ignore: ["apps/studio/ui/**", "apps/studio/tools/**"]
   pull_request:
   merge_group:
   workflow_dispatch:
@@ -57,7 +57,7 @@ env:
   ARTIFACTS_DIR: /home/runner/kumo-test-artifacts
   # True when we should record pytest-split durations. Forces minimal-mode
   # pytest to run (bypassing the only_changed short-circuit), appends
-  # --store-durations to the pytest invocation, and enables the per-shard
+  # --durations-path development/config/.test_durations --store-durations to the pytest invocation, and enables the per-shard
   # durations artifact upload + durations-aggregate job.
   STORE_DURATIONS: ${{ inputs.store_durations == true }}
   # True for push-to-main runs and for manual dispatch/call with full_test=true
@@ -66,7 +66,7 @@ env:
   # True when pytest must run even if only_changed says no pytest-affecting
   # files changed. Currently only durations-recording runs set this — they
   # need the full matrix of tests to actually execute to produce a complete
-  # .test_durations file regardless of what changed.
+  # development/config/.test_durations file regardless of what changed.
   FORCE_RUN_TESTS: ${{ inputs.store_durations == true }}
 
 jobs:
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     environment:
-      name: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'gha-kumo-workflow-tests' || 'azure-adls-tests' }}
+      name: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'development/testing/test/io_utils/') || contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'gha-kumo-workflow-tests' || 'azure-adls-tests' }}
       # This job uses environment-scoped credentials for tests; it does not
       # deploy an application. Avoid one deployment record per matrix shard.
       deployment: false
@@ -89,8 +89,8 @@ jobs:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
-      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && contains(matrix.test_dir, 'development/testing/test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'development/testing/test/io_utils/') || contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
       AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -103,58 +103,58 @@ jobs:
       matrix:
         test_dir: [
           # Core components
-          "test/pquery/",
-          test/data/,
-          "test/train/",
-          "test/automl/",
-          test/config/ test/connector/,
-          test/engine/ test/metrics/,
-          test/service_framework/ test/task/ test/utils/ test/callback/ test/async_utils/test_blockbuster_guard.py test/async_utils/test_loop_guards.py,
-          test/stats/ test/explain/ test/e2e,
-          test/graph/,
-          "--splits 2 --group 1 test/io_utils/",
-          "--splits 2 --group 2 test/io_utils/",
+          "development/testing/test/pquery/",
+          development/testing/test/data/,
+          "development/testing/test/train/",
+          "development/testing/test/automl/",
+          development/testing/test/config/ development/testing/test/connector/,
+          development/testing/test/engine/ development/testing/test/metrics/,
+          development/testing/test/service_framework/ development/testing/test/task/ development/testing/test/utils/ development/testing/test/callback/ development/testing/test/async_utils/test_blockbuster_guard.py development/testing/test/async_utils/test_loop_guards.py,
+          development/testing/test/stats/ development/testing/test/explain/ development/testing/test/e2e,
+          development/testing/test/graph/,
+          "--durations-path development/config/.test_durations --splits 2 --group 1 development/testing/test/io_utils/",
+          "--durations-path development/config/.test_durations --splits 2 --group 2 development/testing/test/io_utils/",
           # test_provision_terminal_nonretry.py needs a real Temporal Cloud
           # connection (devapp AWS SM creds or TEMPORAL_SERVER=cloud); it
           # has no local-dev-server fallback, so it can't run in this matrix.
-          "test/pool --ignore=test/pool/test_provision_terminal_nonretry.py",
-          "test/api_contract test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
+          "development/testing/test/pool --ignore=development/testing/test/pool/test_provision_terminal_nonretry.py",
+          "development/testing/test/api_contract development/testing/test/release_tests/test_build_kumo_images.py development/testing/test/release_tests/test_check_updated_release_branches.py development/testing/test/release_tests/test_make_kumo3_hotfix_release.py development/testing/test/release_tests/test_release_v3_guards.py development/testing/test/release_tests/test_start_kumo3_release.py",
 
           # Public API tests
-          "-k graph-saas_static_multiclassclassification_base test/rest/integ/test_e2e_public_api.py",
-          "-k graph-saas_static_binaryclassification_base test/rest/integ/test_e2e_public_api.py",
+          "-k graph-saas_static_multiclassclassification_base development/testing/test/rest/integ/test_e2e_public_api.py",
+          "-k graph-saas_static_binaryclassification_base development/testing/test/rest/integ/test_e2e_public_api.py",
 
           # Public API parametrize cases inherited from the (now-deleted)
           # test_e2e_public_api_v1.py — covers the 4 merged tests
           # (test_freeze_pquery_at_job_launch, test_invalid_job_request,
           # test_e2e_baseline_flow_decoupled, test_e2e_flow_decoupled).
 
-          "-k graph-saas_temporal_binaryclassification_base test/rest/integ/test_e2e_public_api.py",
-          "-k graph-saas_temporal_regression_base test/rest/integ/test_e2e_public_api.py",
-          "-k graph-saas_static_linkprediction_base test/rest/integ/test_e2e_public_api.py",
+          "-k graph-saas_temporal_binaryclassification_base development/testing/test/rest/integ/test_e2e_public_api.py",
+          "-k graph-saas_temporal_regression_base development/testing/test/rest/integ/test_e2e_public_api.py",
+          "-k graph-saas_static_linkprediction_base development/testing/test/rest/integ/test_e2e_public_api.py",
 
           # Other REST tests (public and integ should always be separated)
-          "test/rest/integ/test_graph_validation.py",
-          "test/rest/auth/ test/rest/public/",
-          "test/rest/integ/black_box/test_public_api_key_auth_flow.py test/rest/integ/test_ml_backend.py test/rest/integ/test_schema.py test/rest/integ/test_job_tags.py",
-          "test/rest/integ/test_warm_start_training_e2e.py",
-          "test/rest/integ/test_ui_to_sdk_e2e.py",
-          "test/rest/backends test/rest/config test/rest/driver test/rest/routers test/rest/utils test/rest/uxrt",
-          "test/temporalio_commons",
-          "test/docker",
-          "test/deploy/test_cloud_storage_preflight.py",
-          "test/rest/integ/test_data_variety/test_table_lifecycle.py",
+          "development/testing/test/rest/integ/test_graph_validation.py",
+          "development/testing/test/rest/auth/ development/testing/test/rest/public/",
+          "development/testing/test/rest/integ/black_box/test_public_api_key_auth_flow.py development/testing/test/rest/integ/test_ml_backend.py development/testing/test/rest/integ/test_schema.py development/testing/test/rest/integ/test_job_tags.py",
+          "development/testing/test/rest/integ/test_warm_start_training_e2e.py",
+          "development/testing/test/rest/integ/test_ui_to_sdk_e2e.py",
+          "development/testing/test/rest/backends development/testing/test/rest/config development/testing/test/rest/driver development/testing/test/rest/routers development/testing/test/rest/utils development/testing/test/rest/uxrt",
+          "development/testing/test/temporalio_commons",
+          "development/testing/test/docker",
+          "development/testing/test/deploy/test_cloud_storage_preflight.py",
+          "development/testing/test/rest/integ/test_data_variety/test_table_lifecycle.py",
           # GCS e2e tests moved to testing_gcs.yml (requires IS_GCP_DEPLOY=1)
-          "--splits 2 --group 1 test/rest/test_*.py",
-          "--splits 2 --group 2 test/rest/test_*.py",
-          "-k '[local]' test/rest/integ/test_diskgraph_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_e2e.py",  # needs S3 dataplane
-          "-k '[local]' test/rest/integ/test_diskgraph_public_api_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_public_api_e2e.py",  # needs S3 dataplane
-          "-k '[local]' test/rest/integ/test_diskgraph_custom_tt_e2e.py",
-          "-k '[s3]' test/rest/integ/test_diskgraph_custom_tt_e2e.py",  # needs S3 dataplane
-          "test/rest/integ/test_weighted_table_e2e.py",  # custom-TT REST flow (unparked from test/legacy/)
-          "test/statedb",
+          "--durations-path development/config/.test_durations --splits 2 --group 1 development/testing/test/rest/test_*.py",
+          "--durations-path development/config/.test_durations --splits 2 --group 2 development/testing/test/rest/test_*.py",
+          "-k '[local]' development/testing/test/rest/integ/test_diskgraph_e2e.py",
+          "-k '[s3]' development/testing/test/rest/integ/test_diskgraph_e2e.py",  # needs S3 dataplane
+          "-k '[local]' development/testing/test/rest/integ/test_diskgraph_public_api_e2e.py",
+          "-k '[s3]' development/testing/test/rest/integ/test_diskgraph_public_api_e2e.py",  # needs S3 dataplane
+          "-k '[local]' development/testing/test/rest/integ/test_diskgraph_custom_tt_e2e.py",
+          "-k '[s3]' development/testing/test/rest/integ/test_diskgraph_custom_tt_e2e.py",  # needs S3 dataplane
+          "development/testing/test/rest/integ/test_weighted_table_e2e.py",  # custom-TT REST flow (unparked from test/legacy/)
+          "development/testing/test/statedb",
         ]
 
     outputs:
@@ -207,7 +207,7 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           diskgraph-wheel-artifact: diskgraph-wheel
-          install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
+          install-graphviz: ${{ matrix.test_dir == 'development/testing/test/graph/' }}
 
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
@@ -250,17 +250,17 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           start_ci_memory_monitor
           # --splitting-algorithm least_duration: default duration_based_chunks
           # leaves a trailing group empty (pytest exit 5) when a single test
           # exceeds the per-group duration target (e.g.
           # test_db_file_storage::test_compression at ~511s in
-          # test/rest/test_*.py). No-op when --splits is not in matrix.test_dir.
-          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
+          # development/testing/test/rest/test_*.py). No-op when --durations-path development/config/.test_durations --splits is not in matrix.test_dir.
+          GLOG_logtostdout=1 python -X faulthandler -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=signal --splitting-algorithm least_duration ${{ env.STORE_DURATIONS == 'true' && '--durations-path development/config/.test_durations --store-durations --durations-path=development/config/.test_durations' || '' }} ${{ matrix.test_dir }}
           move_coverage_artifact
-        # Mirror local-test-relevant additions in setup.cfg [tool:pytest] env.
+        # Mirror local-test-relevant additions in development/config/setup.cfg [tool:pytest] env.
         env:
           # Set to "1" in a PR branch to re-enable io_utils.fsutil DEBUG logs
           # while debugging filesystem behavior.
@@ -271,12 +271,12 @@ jobs:
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
           # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
           # DatabricksConnectionInfo.from_environment() then ignores OAuth.
-          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
-          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
-          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
-          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
-          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
-          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'development/testing/test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'development/testing/test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'development/testing/test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -286,7 +286,7 @@ jobs:
           KUMO_ENABLE_GLOVE: "False"
           SPARK_VERSION: "3.5"
           KUMO_TESTING: "True"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'development/testing/test/rest/integ/test_diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
         if: env.RUN_FULL_TEST == 'true' && steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -294,7 +294,7 @@ jobs:
         run: |
           set -o pipefail
           export SPARK_LOCAL_IP="127.0.0.1"
-          source ./tools/ci_pytest_log_controls.sh
+          source ./apps/studio/tools/ci_pytest_log_controls.sh
           configure_pytest_ci_output
           # --timeout=4500 fires below the 90-min step cap so pytest-timeout
           # gets a chance to run; --timeout-method=signal so the on-failure
@@ -311,12 +311,12 @@ jobs:
           KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: ${{ env.KUMO_RUN_GCP_TESTS == '1' && 'true' || 'false' }}
           # Connector shard: Databricks OAuth; io_utils shards: PAT. Never both:
           # DatabricksConnectionInfo.from_environment() then ignores OAuth.
-          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
-          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
-          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
-          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
-          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
-          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
+          DATABRICKS_HOST: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_HOST || '' }}
+          DATABRICKS_CLUSTER_ID: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_CLUSTER_ID || '' }}
+          DATABRICKS_WAREHOUSE_ID: ${{ (contains(matrix.test_dir, 'development/testing/test/connector/') || contains(matrix.test_dir, 'development/testing/test/io_utils/')) && vars.DATABRICKS_WAREHOUSE_ID || '' }}
+          DATABRICKS_CLIENT_ID: ${{ contains(matrix.test_dir, 'development/testing/test/connector/') && vars.DATABRICKS_CLIENT_ID || '' }}
+          DATABRICKS_CLIENT_SECRET: ${{ contains(matrix.test_dir, 'development/testing/test/connector/') && secrets.DATABRICKS_CLIENT_SECRET || '' }}
+          DATABRICKS_TOKEN: ${{ contains(matrix.test_dir, 'development/testing/test/io_utils/') && secrets.DATABRICKS_TOKEN || '' }}
           AWS_DEFAULT_REGION: "us-west-2"
           DEPLOY_STAGE: "test"
           TEMPORAL_SERVER: "localhost"
@@ -325,7 +325,7 @@ jobs:
           CUDA: "cpu"
           SPARK_VERSION: "3.5"
           KUMO_TESTING: "True"
-          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'test/rest/integ/test_diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'development/testing/test/rest/integ/test_diskgraph') && 'apps/studio/rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact
         if: always()
@@ -354,7 +354,7 @@ jobs:
           # The `-of-<total>` suffix lets the aggregate job verify it received
           # every shard; total tracks the matrix size automatically.
           name: durations-${{ github.run_id }}-${{ strategy.job-index }}-of-${{ strategy.job-total }}
-          path: .test_durations
+          path: development/config/.test_durations
           include-hidden-files: true
           if-no-files-found: ignore
 
@@ -374,7 +374,7 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
-        working-directory: packages/diskgraph
+        working-directory: packages/data/diskgraph
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -393,7 +393,7 @@ jobs:
         run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          workspaces: packages/diskgraph -> target
+          workspaces: packages/data/diskgraph -> target
           key: rust-tests-py${{ steps.python.outputs.version }}
       - run: cargo test --locked --workspace
 
@@ -407,7 +407,7 @@ jobs:
     timeout-minutes: 60
     defaults:
       run:
-        working-directory: packages/diskgraph
+        working-directory: packages/data/diskgraph
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -428,7 +428,7 @@ jobs:
         run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          workspaces: packages/diskgraph -> target
+          workspaces: packages/data/diskgraph -> target
           key: clippy-py${{ steps.python.outputs.version }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
@@ -461,8 +461,8 @@ jobs:
           path: dist
       - name: Build and install local wheels
         run: |
-          uv build --wheel --out-dir dist packages/kumo-api
-          uv build --wheel --out-dir dist packages/kumo-pql
+          uv build --wheel --out-dir dist packages/contracts/kumo-api
+          uv build --wheel --out-dir dist packages/contracts/kumo-pql
           uv pip install dist/*.whl pytest
       - name: Run the wheel's ingest for the tests' `cargo run`
         run: |
@@ -484,14 +484,14 @@ jobs:
           echo "DISKGRAPH_INGEST=$ingest" >> "$GITHUB_ENV"
       - name: Test installed native package
         env:
-          PYTHONPATH: ${{ github.workspace }}/packages/diskgraph/diskgraph-pybind/python/tests
+          PYTHONPATH: ${{ github.workspace }}/packages/data/diskgraph/diskgraph-pybind/python/tests
         run: |
           python="$VIRTUAL_ENV/bin/python"
           cd "$RUNNER_TEMP"
           "$python" -m pytest --import-mode=importlib \
-            --confcutdir="$GITHUB_WORKSPACE/packages/diskgraph" \
+            --confcutdir="$GITHUB_WORKSPACE/packages/data/diskgraph" \
             -k 'not test_benchmark_uses_selected_graph' \
-            "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
+            "$GITHUB_WORKSPACE/packages/data/diskgraph/diskgraph-pybind/python/tests" -q
       - name: Verify the same abi3 wheel on Python 3.14
         run: |
           wheels=(dist/diskgraph-*-abi3-*.whl)
@@ -579,17 +579,17 @@ jobs:
           echo "DISKGRAPH_INGEST=$ingest" >> "$GITHUB_ENV"
       - name: Test DiskGraph
         env:
-          PYTHONPATH: ${{ github.workspace }}/packages/diskgraph/diskgraph-pybind/python/tests
+          PYTHONPATH: ${{ github.workspace }}/packages/data/diskgraph/diskgraph-pybind/python/tests
         run: |
           cd "$RUNNER_TEMP"
           python -m pytest --import-mode=importlib \
-            --confcutdir="$GITHUB_WORKSPACE/packages/diskgraph" \
+            --confcutdir="$GITHUB_WORKSPACE/packages/data/diskgraph" \
             -k 'not test_benchmark_uses_selected_graph' \
-            "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
+            "$GITHUB_WORKSPACE/packages/data/diskgraph/diskgraph-pybind/python/tests" -q
       - name: Test kumo-core
-        run: cd packages/kumo-core && python -m pytest -rs
+        run: cd packages/runtime/kumo-core && python -m pytest -rs
       - name: Test kumo-adls
-        run: cd packages/kumo-adls && python -m pytest -rs
+        run: cd packages/integrations/kumo-adls && python -m pytest -rs
 
   package-tests:
     name: packages-${{ matrix.suite }}
@@ -622,8 +622,8 @@ jobs:
       - name: Build and import Kumo-core wheel
         run: |
           output_dir="${RUNNER_TEMP}/kumo-core"
-          uv build --wheel --out-dir "$output_dir" packages/kumo-core
-          uv build --wheel --out-dir "$output_dir" packages/kumo-api
+          uv build --wheel --out-dir "$output_dir" packages/runtime/kumo-core
+          uv build --wheel --out-dir "$output_dir" packages/contracts/kumo-api
           uv pip install --force-reinstall --no-deps "$output_dir"/*.whl
           cd "$RUNNER_TEMP"
           env -u PYTHONPATH python -c "import kumo_core, kumo_core.encoders, kumo_core.evaluation, kumo_core.explain, kumo_core.features, kumo_core.modeling, kumo_core.sampling, kumo_core.training; print(kumo_core.__file__)"
@@ -658,8 +658,8 @@ jobs:
         with:
           name: kumo-core-cpu-coverage
           path: |
-            packages/kumo-core/.coverage*
-            packages/kumo-core/coverage.xml
+            packages/runtime/kumo-core/.coverage*
+            packages/runtime/kumo-core/coverage.xml
           if-no-files-found: ignore
 
       - name: Test installed Kumo-core distributions
@@ -675,7 +675,7 @@ jobs:
       # before/after install so a stale or partial install can't leave
       # `kumo.engine` resolvable when it shouldn't be.
       - name: Install ADLS provider for engine integration tests
-        run: uv pip install --no-deps -e packages/kumo-adls
+        run: uv pip install --no-deps -e packages/integrations/kumo-adls
 
       - name: Build and test the isolated kumo-engine wheel
         if: matrix.suite != 'core'
@@ -685,9 +685,9 @@ jobs:
         run: |
           export ENGINE_SHARD="${SUITE#engine-}"
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"
-          uv build --wheel packages/kumo-engine \
+          uv build --wheel packages/clients/kumo-engine \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
-          uv build --wheel packages/kumo-settings \
+          uv build --wheel packages/contracts/kumo-settings \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           wheel=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_engine-*.whl' -print -quit)
@@ -701,12 +701,12 @@ jobs:
           import kumo.engine
 
           package = Path(kumo.engine.__file__).resolve()
-          source = (Path.cwd() / 'packages/kumo-engine').resolve()
+          source = (Path.cwd() / 'packages/clients/kumo-engine').resolve()
           assert not package.is_relative_to(source), package
           print(f"testing installed local package at {package}")
           PY
           status=0
-          export KUMO_ENGINE_SOURCE_ROOT="$PWD/packages/kumo-engine"
+          export KUMO_ENGINE_SOURCE_ROOT="$PWD/packages/clients/kumo-engine"
           cat > "$RUNNER_TEMP/assert_installed_kumoai.py" <<'PY'
           import os
           import zlib
@@ -765,12 +765,12 @@ jobs:
       - name: Run the kumo-sdk suite against kumo_core
         if: matrix.suite == 'core'
         run: |
-          uv pip install --no-deps -e packages/kumo-core -e packages/kumo-s3 -e packages/kumo-gcs -e packages/kumo-snowflake -e packages/kumo-databricks -e packages/kumo-bigquery -e packages/kumo-sdk
+          uv pip install --no-deps -e packages/runtime/kumo-core -e packages/integrations/kumo-s3 -e packages/integrations/kumo-gcs -e packages/integrations/kumo-snowflake -e packages/integrations/kumo-databricks -e packages/integrations/kumo-bigquery -e packages/clients/kumo-sdk
           uv pip install pytest-mock requests-mock
           python -c "import kumo_core, kumo_s3, kumo_gcs, kumo_snowflake, kumo_databricks, kumo_bigquery, kumoai_studio"
           # snowflake-connector caps pyarrow<24 on 3.14; kumo-core pins <25 and
           # this venv resolves 24, so its import guard warns. Only skew, not a bug.
-          cd packages/kumo-sdk && python -m pytest -rs \
+          cd packages/clients/kumo-sdk && python -m pytest -rs \
             -W "ignore:You have an incompatible version of 'pyarrow' installed:UserWarning"
 
   packages:
@@ -807,13 +807,13 @@ jobs:
 
       - name: Run the MLflow suites at the mlflow extra's floor
         run: |
-          uv pip install --no-deps -e packages/kumo-engine -e packages/kumo-settings
+          uv pip install --no-deps -e packages/clients/kumo-engine -e packages/contracts/kumo-settings
           # mlflow 3.5.0 pins a pyarrow with no wheel for this Python; the
           # extra installs mlflow-skinny, which holds the client and stores.
           uv pip uninstall mlflow mlflow-skinny mlflow-tracing
           uv pip install "mlflow-skinny==3.5.0"
           python -c "import mlflow; assert mlflow.__version__ == '3.5.0'"
-          cd packages/kumo-engine && python -m pytest -rs \
+          cd packages/clients/kumo-engine && python -m pytest -rs \
             test/test_mlflow_target.py test/test_mlflow_model.py \
             test/test_mlflow_tracking.py -k "not (reuses_its_version or \
             late_one_is_dropped or names_its_cause_and_can_raise or \
@@ -862,14 +862,14 @@ jobs:
 
           merged = {}
           for d in dirs:
-              f = d / ".test_durations"
+              f = d / "development/config/.test_durations"
               if not f.exists():
-                  print(f"ERROR: {d.name} has no .test_durations file", file=sys.stderr)
+                  print(f"ERROR: {d.name} has no development/config/.test_durations file", file=sys.stderr)
                   sys.exit(1)
               with f.open() as fp:
                   merged.update(json.load(fp))
 
-          pathlib.Path(".test_durations").write_text(
+          pathlib.Path("development/config/.test_durations").write_text(
               json.dumps(dict(sorted(merged.items())), indent=2) + "\n"
           )
           print(f"Merged {len(merged)} test durations from all {total} shards")
@@ -879,7 +879,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-durations-merged
-          path: .test_durations
+          path: development/config/.test_durations
           include-hidden-files: true
 
   coverage:
@@ -980,8 +980,8 @@ jobs:
           prune-cache: true
       - name: Build and install in-tree wheels
         run: |
-          uv build --wheel --out-dir dist packages/kumo-api
-          uv build --wheel --out-dir dist packages/kumo-pql
+          uv build --wheel --out-dir dist packages/contracts/kumo-api
+          uv build --wheel --out-dir dist packages/contracts/kumo-pql
           api=(dist/kumo_api-*.whl)
           pql=(dist/kumo_pql-*.whl)
           uv pip install "${api[0]}[test]" "${pql[0]}[test]"
@@ -999,11 +999,11 @@ jobs:
               assert Path(module.__file__).is_relative_to(sys.prefix), module.__file__
           PY
           "$python" -m pytest --import-mode=importlib \
-            --confcutdir="$GITHUB_WORKSPACE/packages/kumo-pql" \
-            "$GITHUB_WORKSPACE/packages/kumo-pql/test" -o addopts='' -q
+            --confcutdir="$GITHUB_WORKSPACE/packages/contracts/kumo-pql" \
+            "$GITHUB_WORKSPACE/packages/contracts/kumo-pql/test" -o addopts='' -q
           "$python" -m pytest --import-mode=importlib \
-            --confcutdir="$GITHUB_WORKSPACE/packages/kumo-api" \
-            "$GITHUB_WORKSPACE/packages/kumo-api/test/pquery/test_validated_predictive_query.py" \
+            --confcutdir="$GITHUB_WORKSPACE/packages/contracts/kumo-api" \
+            "$GITHUB_WORKSPACE/packages/contracts/kumo-api/test/pquery/test_validated_predictive_query.py" \
             -o addopts='' -q
       - name: Build PQL API documentation
         if: matrix.python == '3.11'
@@ -1012,4 +1012,4 @@ jobs:
           uv pip install "${pql[0]}[docs]"
           cd "$RUNNER_TEMP"
           "$VIRTUAL_ENV/bin/python" -m sphinx -W --keep-going -b html \
-            "$GITHUB_WORKSPACE/packages/kumo-pql/docs/source" pql-docs
+            "$GITHUB_WORKSPACE/packages/contracts/kumo-pql/docs/source" pql-docs

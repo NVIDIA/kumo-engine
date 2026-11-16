@@ -13,7 +13,7 @@ Builds need internet access and space for Rust and Python dependencies.
 The command builds DiskGraph from this checkout before it runs native tests:
 
 ```bash
-python3 scripts/test_public.py --group all
+python3 development/tooling/scripts/test_public.py --group all
 ```
 
 To run one group, replace `all` with its name from the matrix.
@@ -25,8 +25,8 @@ For one group, use `--test-file` to select a file or `-k` to filter test names.
 You can combine them:
 
 ```bash
-python3 scripts/test_public.py --group s3 \
-  --test-file packages/kumo-s3/tests/test_session.py -k 503
+python3 development/tooling/scripts/test_public.py --group s3 \
+  --test-file packages/integrations/kumo-s3/tests/test_session.py -k 503
 ```
 
 File paths start at the repository root. Files outside the group or in its
@@ -62,11 +62,11 @@ Put each new `test_*.py` file in its group's directory from the
 folders there. Docker copies those test trees. New test files need no runner,
 Docker, or CI registration. Put local fixtures in that directory's `conftest.py`.
 
-The `mixed-files` group discovers `test/connector/local` and
-`test/io_utils/fsutil/local`. Keep real provider tests outside these folders.
+The `mixed-files` group discovers `development/testing/test/connector/local` and
+`development/testing/test/io_utils/fsutil/local`. Keep real provider tests outside these folders.
 Local connector tests share cache cleanup and data fixtures without loading the
 hosted test setup. The shared filesystem contract runs locally here and against
-real providers through `test/io_utils/fsutil/test_all.py`. Its two existing
+real providers through `development/testing/test/io_utils/fsutil/test_all.py`. Its two existing
 large-file skips remain visible in the results.
 
 The public runner excludes each test directory's `live/` folder before import.
@@ -83,7 +83,7 @@ and dependency versions, not every version that Kumo supports.
 SDK and native images install dependencies recorded in `uv.lock`.
 The native image installs `kumo-engine` with CPU PyTorch and GPU Faiss.
 These tests use the CPU. The backend's CPU Faiss selection stays unchanged.
-The reader image uses the smaller `tests/public/requirements-all.txt` profile.
+The reader image uses the smaller `development/testing/tests/public/requirements-all.txt` profile.
 Its main runtime pins match the repository where possible. It uses Arrow 23
 for Snowflake compatibility, a driver with Python 3.14 ARM64 wheels, and a
 newer ARM64-compatible pyinstrument build.
@@ -103,8 +103,8 @@ python3.14 -m venv .venv-public-tests
 .venv-public-tests/bin/python -I -m pip --isolated install \
   --index-url https://download.pytorch.org/whl/cpu 'torch==2.12.0'
 .venv-public-tests/bin/python -I -m pip --isolated install \
-  --index-url https://pypi.org/simple -r tests/public/requirements-all.txt
-.venv-public-tests/bin/python -I scripts/test_public_connectors.py --suite all
+  --index-url https://pypi.org/simple -r development/testing/tests/public/requirements-all.txt
+.venv-public-tests/bin/python -I development/tooling/scripts/test_public_connectors.py --suite all
 ```
 
 The Python socket guard blocks ordinary connections during collection and test

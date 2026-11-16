@@ -69,7 +69,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.inputs.kumo_ref || 'master' }}
-          path: kumo
+          path: apps/studio/kumo
           fetch-depth: 1
           persist-credentials: false
 
@@ -87,7 +87,7 @@ jobs:
         id: install_uv
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
-          working-directory: kumo
+          working-directory: apps/studio/kumo
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -118,7 +118,7 @@ jobs:
               "$@"
           }
           hash_input=""
-          for f in setup.py pyproject.toml uv.lock scripts/update_packages.sh; do
+          for f in apps/studio/setup.py pyproject.toml uv.lock development/tooling/scripts/update_packages.sh; do
             [[ -f "$f" ]] && hash_input+="$(sha256sum "$f")"
           done
           venv_hash=$(echo "$hash_input" | sha256sum | awk '{print $1}')
@@ -151,7 +151,7 @@ jobs:
           KUMO_HOME: ${{ vars.KUMO_HOME || '/mnt/localssd/kumo-home' }}
         run: |
           set -euo pipefail
-          MAIN_PY="$KUMO_REPO_PATH/rest/devserver/main.py"
+          MAIN_PY="$KUMO_REPO_PATH/apps/studio/rest/devserver/main.py"
           if [[ -f "$MAIN_PY" ]] && grep -q 'panels.append(ui_panel(web_ui_port, rest_api_port, docker_label))' "$MAIN_PY"; then
             sed -i 's/panels\.append(ui_panel(web_ui_port, rest_api_port, docker_label))/pass  # UI panel disabled in CI: docker npm ci runs as root/' "$MAIN_PY"
           fi
@@ -579,8 +579,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          pkill -9 -f "rest/devserver/main.py" 2>/dev/null || true
-          pkill -9 -f "rest/public/main.py" 2>/dev/null || true
+          pkill -9 -f "apps/studio/rest/devserver/main.py" 2>/dev/null || true
+          pkill -9 -f "apps/studio/rest/public/main.py" 2>/dev/null || true
           pkill -9 -f "worker_main.py" 2>/dev/null || true
           pkill -9 -f "temporal server start-dev" 2>/dev/null || true
           pkill -9 -f "vite" 2>/dev/null || true

@@ -10,9 +10,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PRIMARY_RECIPES_PATH = SCRIPT_DIR.parent.parent.parent.parent / "ui" / "src" / "screenshot" / "catalog.json"
-ROUTE_MAP_PATH = SCRIPT_DIR.parent.parent.parent.parent / "ui" / "src" / "screenshot" / "route-map.json"
+SCRIPT_DIR = Path(__file__).resolve().parents[0]
+PRIMARY_RECIPES_PATH = Path(__file__).resolve().parents[4] / 'apps/studio/ui/src/screenshot/catalog.json'
+ROUTE_MAP_PATH = Path(__file__).resolve().parents[4] / 'apps/studio/ui/src/screenshot/route-map.json'
 
 
 def get_recipes_path():

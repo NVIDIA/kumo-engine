@@ -6,10 +6,10 @@ name: UI catalog
 
 'on':
   pull_request:
-    paths: ['packages/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
+    paths: ['packages/ui/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
   push:
     branches: [main]
-    paths: ['packages/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
+    paths: ['packages/ui/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
       image: mcr.microsoft.com/playwright:v1.58.1-noble
     defaults:
       run:
-        working-directory: packages/kumo-ui-catalog
+        working-directory: packages/ui/kumo-ui-catalog
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

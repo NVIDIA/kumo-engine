@@ -27,7 +27,7 @@ If the PR modifies shared primitives or has cross-repo dependencies, add a `Note
 
 Before creating the PR, scan the diff for:
 
-- removed or renamed exports from shared modules such as `@ui/`, `hooks/`, `stores/`, or `utils/`
+- removed or renamed exports from shared modules such as `@apps/studio/ui/`, `hooks/`, `stores/`, or `utils/`
 - changed function signatures on exported hooks or components
 - removed or renamed `navRoutes` entries
 - changed `ReactQueryKeys` enum values
@@ -48,12 +48,12 @@ If none are found, write `None.` in the breaking changes section.
 
 ## Shared Screenshot Publishing Flow
 
-Once Phase 9 screenshot publication is authorized, and screenshots are captured by `ui/scripts/ci-screenshot.mjs` or otherwise recorded in a compatible `results.json` manifest:
+Once Phase 9 screenshot publication is authorized, and screenshots are captured by `apps/studio/ui/scripts/ci-screenshot.mjs` or otherwise recorded in a compatible `results.json` manifest:
 
-1. Screenshots are captured by `ui/scripts/ci-screenshot.mjs` and saved to `/tmp/build-ui-screenshots/{issue}/`.
+1. Screenshots are captured by `apps/studio/ui/scripts/ci-screenshot.mjs` and saved to `/tmp/build-ui-screenshots/{issue}/`.
    The script writes `/tmp/build-ui-screenshots/{issue}/results.json` with per-route status, matched selectors, URLs, and artifact paths.
    If the capture fails, the script also saves failure artifacts under `/tmp/build-ui-screenshots/{issue}/failed/`.
-2. Run `ui/scripts/build-ui-publish-screenshots.mjs` to commit primary PNGs to the `images` branch via the GitHub Contents API and obtain commit-pinned raw URLs.
+2. Run `apps/studio/ui/scripts/build-ui-publish-screenshots.mjs` to commit primary PNGs to the `images` branch via the GitHub Contents API and obtain commit-pinned raw URLs.
 3. The script writes `screenshot-section.md` with inline `<img>` tags referencing those URLs.
 4. In headless CI, the workflow posts a PR comment (or issue comment if no PR exists) and uploads the screenshot directory as a workflow artifact for debugging and retention.
 5. In local PR creation, create the PR first, then run the same publisher with `--pr-number <number> --patch-pr --comment-type pr --comment-target <number>` so the PR body and comment use the same screenshot section as CI.
@@ -65,7 +65,7 @@ This flow is simpler and more reliable than the browser-based upload flow. Use i
 Example publish command from the repository root after PR creation; replace `OWNER/REPO` with the intended destination:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --repo OWNER/REPO \
   --issue {issue} \
   --plan /tmp/build-ui-artifacts/{issue}/screenshot-plan.json \
@@ -73,7 +73,7 @@ npm --prefix ui run screenshots:build-ui -- \
   --publish
 ```
 
-The helper runs `ui/scripts/ci-screenshot.mjs` first and then calls `ui/scripts/build-ui-publish-screenshots.mjs` with the standard manifest, resolution, override, and section paths. Use `--skip-capture --publish` only when `results.json` already exists.
+The helper runs `apps/studio/ui/scripts/ci-screenshot.mjs` first and then calls `apps/studio/ui/scripts/build-ui-publish-screenshots.mjs` with the standard manifest, resolution, override, and section paths. Use `--skip-capture --publish` only when `results.json` already exists.
 
 ## Failure Handling
 

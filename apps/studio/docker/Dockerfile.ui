@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA-hosted ubuntu (jammy) build stage — Node 22 builds the SPA here.
+# Public nvcr.io image (no NGC secret needed), off public.ecr.aws so the
+# whole UI build is NVIDIA-native. Does not ship — only the runtime stage's
+# COPY --from=builder output lands in the final image.
+FROM nvcr.io/nvidia/base/ubuntu:jammy-20260217 AS builder
+
+RUN mkdir -p /opt/app
+
+# ca-certificates must be explicit: --no-install-recommends drops libcurl4's
+# Recommends and the nodesource download below needs TLS roots.
+RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certificates curl lsb-release
+# Update the Node.js setup script to version 22.x
+RUN curl -sL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh
+RUN bash /tmp/nodesource_setup.sh
+RUN apt-get -y install --no-install-recommends nodejs
+
+COPY busyloop.sh /opt/app/busyloop.sh
+
+COPY ./kumo/packages/ui/kumo-ui-catalog /opt/packages/ui/kumo-ui-catalog
+COPY ./kumo/apps/studio/ui/package.json /opt/apps/studio/ui/package.json
+COPY ./kumo/apps/studio/ui/package-lock.json /opt/apps/studio/ui/package-lock.json
+COPY ./kumo/apps/studio/ui/.npmrc /opt/apps/studio/ui/.npmrc
+WORKDIR /opt/apps/studio/ui
+RUN LEGAL_NOTICE_SOURCEMAP=1 npm run install:catalog && npm ci
+
+COPY ./kumo/apps/studio/ui /opt/apps/studio/ui
+RUN npm run build
+
+COPY ./kumo/LICENSE /opt/kumo-license-payload/LICENSE
+COPY ./kumo/packages/ui/kumo-ui-catalog/THIRD-PARTY.txt /opt/kumo-license-payload/UI-CATALOG-THIRD-PARTY.txt
+RUN node scripts/generate-third-party-notice.mjs \
+      --root /opt/apps/studio/ui \
+      --source-map /opt/apps/studio/ui/stacktracer/source_map \
+      --css-root /opt/apps/studio/ui/src \
+      --output /opt/kumo-license-payload/NPM-THIRD-PARTY.txt \
+ && node scripts/generate-third-party-notice.mjs \
+      --root /opt/packages/ui/kumo-ui-catalog \
+      --source-map /opt/packages/ui/kumo-ui-catalog/dist/index.es.js.map \
+      --css-root /opt/packages/ui/kumo-ui-catalog/src \
+      --output /opt/kumo-license-payload/UI-CATALOG-NPM-THIRD-PARTY.txt \
+ && test -s /opt/kumo-license-payload/LICENSE \
+ && test -s /opt/kumo-license-payload/UI-CATALOG-THIRD-PARTY.txt \
+ && test -s /opt/kumo-license-payload/UI-CATALOG-NPM-THIRD-PARTY.txt \
+ && test -s /opt/kumo-license-payload/NPM-THIRD-PARTY.txt
+
+# Runtime = the same public NVIDIA ubuntu base as the backend, plus nginx
+# from apt. Off Docker Hub / ECR for NGC provenance, and fully public — no
+# NGC entitlement needed (unlike the gated nvcr nginx repos). Ubuntu's nginx
+# runs as www-data and logs to files, so we drop the stock default site and
+# symlink the logs to stdout/stderr for k8s log collection.
+FROM nvcr.io/nvidia/base/ubuntu:jammy-20260217
+
+RUN apt-get update -y \
+ && apt-get upgrade -y \
+ && apt-get install -y --no-install-recommends nginx \
+ && rm -f /etc/nginx/sites-enabled/default \
+ && ln -sf /dev/stdout /var/log/nginx/access.log \
+ && ln -sf /dev/stderr /var/log/nginx/error.log \
+ && rm -rf /var/lib/apt/lists/*
+
+# SPA fallback + no-cache for runtime env-config.js
+COPY nginx.ui.conf /opt/kumo-ui/nginx.external.conf
+COPY nginx.frontend.conf.template /opt/kumo-ui/nginx.frontend.conf.template
+COPY render-nginx-ui.sh /opt/kumo-ui/bin/render-nginx
+COPY docker-entrypoint-ui.sh /docker-entrypoint-ui.sh
+RUN chmod 755 /docker-entrypoint-ui.sh /opt/kumo-ui/bin/render-nginx
+
+COPY --from=builder /opt/apps/studio/ui/build/ /usr/share/nginx/html/
+COPY --from=builder /opt/apps/studio/ui/env.js /opt/app/env.js
+COPY --from=builder /opt/kumo-license-payload/ /usr/share/licenses/kumo/
+
+# Static assets stay read-only. Runtime files use the writable /tmp volume.
+RUN chmod 644 /opt/app/env.js
+# Numeric UID:GID so the kubelet can verify `runAsNonRoot: true`; a name here
+# yields "cannot verify user is non-root" and the container never starts.
+# www-data is statically allocated 33:33 on Debian/Ubuntu; assert both so a
+# base-image change fails the build instead of the running container.
+RUN test "$(id -u www-data)" = "33" \
+    && test "$(id -g www-data)" = "33"
+USER 33:33
+
+EXPOSE 3000
+ENTRYPOINT ["/docker-entrypoint-ui.sh"]
+CMD ["nginx", "-g", "daemon off;"]
+
+# Health is owned by the deployment platform; no Docker-level healthcheck.
+HEALTHCHECK NONE

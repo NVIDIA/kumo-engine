@@ -32,7 +32,7 @@ inputs:
     required: false
     default: ''
   install-graphviz:
-    description: 'Install the graphviz `dot` binary (only test/graph/ renders graphs).'
+    description: 'Install the graphviz `dot` binary (only development/testing/test/graph/ renders graphs).'
     required: false
     default: 'false'
 
@@ -80,9 +80,9 @@ runs:
         prune-cache: true
         cache-dependency-glob: |
           pyproject.toml
-          packages/kumo-api/pyproject.toml
-          packages/kumo-pql/pyproject.toml
-          setup.py
+          packages/contracts/kumo-api/pyproject.toml
+          packages/contracts/kumo-pql/pyproject.toml
+          apps/studio/setup.py
           uv.lock
 
     - name: Install graphviz
@@ -108,7 +108,7 @@ runs:
       id: diskgraph-wheel-key
       if: inputs.diskgraph-wheel-artifact == '' && steps.working-directory.outputs.working-directory == '' && runner.environment == 'github-hosted'
       working-directory: ${{ steps.working-directory.outputs.working-directory }}
-      run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
+      run: echo "key=$(./development/tooling/scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
       shell: bash
 
     - name: Restore diskgraph wheel
@@ -123,7 +123,7 @@ runs:
       working-directory: ${{ steps.working-directory.outputs.working-directory }}
       run: |
         echo ::group::Install diskgraph
-        ./scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
+        ./development/tooling/scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
         echo ::endgroup::
       env:
         DISKGRAPH_WHEEL_DIR: ${{ (inputs.diskgraph-wheel-artifact != '' || steps.diskgraph-wheel-cache.outputs.cache-hit == 'true') && '/tmp/diskgraph-wheel' || '' }}
@@ -152,12 +152,12 @@ runs:
         # has its own install/build/uninstall isolation test later in the
         # pytest matrix ("packages" job) that assumes it isn't already
         # present.
-        uv sync --locked --inexact --no-install-package diskgraph "${EXTRA_ARGS[@]}"
+        uv sync --package kumo --locked --inexact --no-install-package diskgraph "${EXTRA_ARGS[@]}"
 
         # kumo-sdk (the public SDK, "kumoai-studio") is a workspace member
         # but deliberately not a root dependency; install it separately so
-        # test/api_contract/test_sdk_api_source_contract.py can import it.
-        uv pip install -q --no-deps -e packages/kumo-sdk
+        # development/testing/test/api_contract/test_sdk_api_source_contract.py can import it.
+        uv pip install -q --no-deps -e packages/clients/kumo-sdk
         python - <<'PY'
         import os
 
@@ -169,7 +169,7 @@ runs:
         PY
         echo ::endgroup::
       env:
-        # Selects both the Torch backend and setup.py's faiss-cpu/faiss-gpu
+        # Selects both the Torch backend and apps/studio/setup.py's faiss-cpu/faiss-gpu
         # choice for kumo-core.
         CUDA: ${{ inputs.cuda-version }}
       shell: bash

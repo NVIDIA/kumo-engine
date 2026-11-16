@@ -7,10 +7,10 @@ local check does not establish a supported deployment or GPU profile.
 | --- | --- | --- |
 | Documentation | [Reference, agent, and catalog checks](../maintenance/README.md#validation) | Python 3; Bash and standard shell tools |
 | Focused Python | `.venv/bin/pytest path/to/test.py -k test_name`; package-local tests | Matching installed environment and test dependencies |
-| Lint and types | `.venv/bin/flake8 <path>`, `.venv/bin/isort --check <path>`, `.venv/bin/pyright -p pyrightconfig.json` | `uv sync --extra dev --extra cpu` (or `--extra cu130` for GPU) environment |
-| UI | `npm --prefix ui run test -- --run <test-path>`, `npm --prefix ui run type-check` | Installed UI and in-tree catalog dependencies |
-| Catalog | `npm --prefix packages/kumo-ui-catalog run test:ci` | Catalog dependencies and configured Playwright browser |
-| Rust | `cargo test --manifest-path packages/diskgraph/Cargo.toml -p diskgraph-train-table` | Rust toolchain, native build prerequisites, and crate dependencies |
+| Lint and types | `.venv/bin/flake8 <path>`, `.venv/bin/isort --check <path>`, `.venv/bin/pyright -p development/config/pyrightconfig.json` | `uv sync --package kumo --extra dev --extra cpu` (or `--extra cu130` for GPU) environment |
+| UI | `npm --prefix apps/studio/ui run test -- --run <test-path>`, `npm --prefix apps/studio/ui run type-check` | Installed UI and in-tree catalog dependencies |
+| Catalog | `npm --prefix packages/ui/kumo-ui-catalog run test:ci` | Catalog dependencies and configured Playwright browser |
+| Rust | `cargo test --manifest-path packages/data/diskgraph/Cargo.toml -p diskgraph-train-table` | Rust toolchain, native build prerequisites, and crate dependencies |
 | Helm contract | [Helm CI checks](../../.github/workflows/kumo-helm-ci.yml) | Helm, Python, and each check's declared tooling |
 | Integration/GPU | `make test-kumo-core-gpu` for CUDA behavior; selected storage, training, or deployment tests | CUDA-capable GPU with matching PyTorch/CUDA/Faiss dependencies for GPU tests; explicit services, data, and credentials where required |
 
@@ -53,7 +53,7 @@ It does not rebuild the wheel. Failure blocks release attachment and Kitmaker
 publication. The macOS wheel has no GPU smoke check. The GPU job has a 22-minute
 limit.
 
-The job uses the same [GPU test script](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+The job uses the same [GPU test script](../../packages/clients/kumo-engine/test/wheel_gpu_smoke.py)
 and [setup action](../../.github/actions/engine-gpu-smoke/action.yml) as the PR
 check. The action installs the selected wheel in a fresh environment outside the
 checkout. It uses public PyPI and ignores host pip settings. The installed version
@@ -66,7 +66,7 @@ coordinate, with zero relative tolerance. Labels and ranks can change only when
 their scores justify the change within that bound. These comparisons use the
 same retained model.
 
-The [input manifest](../../packages/kumo-engine/test/pr172/inputs.json) pins
+The [input manifest](../../packages/clients/kumo-engine/test/pr172/inputs.json) pins
 the prepared S3 data and its checksum. The workflow uses its existing AWS test role.
 The job preserves GPU results and logs in the `kumo-engine-wheel-smoke-*` artifact.
 

@@ -55,7 +55,7 @@ permissions:
 defaults:
   run:
     shell: bash
-    working-directory: packages/kumo-sdk
+    working-directory: packages/clients/kumo-sdk
 
 jobs:
   wheel:
@@ -71,7 +71,7 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.artifact-name }}
-          path: ./packages/kumo-sdk/release-artifact
+          path: ./packages/clients/kumo-sdk/release-artifact
 
       - name: Prepare validated wheel
         run: |
@@ -83,7 +83,7 @@ jobs:
         if: ${{ inputs.upload-to-testpypi }}
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
-          packages-dir: packages/kumo-sdk/dist
+          packages-dir: packages/clients/kumo-sdk/dist
           repository-url: https://test.pypi.org/legacy/
           user: __token__
           password: ${{ secrets.TEST_PYPI_TOKEN }}
@@ -94,7 +94,7 @@ jobs:
         if: ${{ inputs.upload-to-pypi }}
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
         with:
-          packages-dir: packages/kumo-sdk/dist
+          packages-dir: packages/clients/kumo-sdk/dist
           repository-url: https://upload.pypi.org/legacy/
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}

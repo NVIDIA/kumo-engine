@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/kumo-engine-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/kumo-engine-light.svg">
-    <img src="assets/kumo-engine-light.svg" width="125" alt="Kumo Engine cube with a green foundation layer">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/kumo-engine-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/kumo-engine-light.svg">
+    <img src="docs/assets/kumo-engine-light.svg" width="125" alt="Kumo Engine cube with a green foundation layer">
   </picture>
 </p>
 
@@ -19,14 +19,14 @@
   <a href="https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/overview"><b>Documentation</b></a> ·
   <a href="#quickstart"><b>Quickstart</b></a> ·
   <a href="#what-makes-kumo-engine-fast"><b>Performance</b></a> ·
-  <a href="examples/kumo-example-notebooks/README.md"><b>Examples</b></a>
+  <a href="packages/clients/kumo-engine/examples/kumo-example-notebooks/README.md"><b>Examples</b></a>
 </p>
 
 **Kumo Engine is an accelerator for context generation over structured data.** It stores your tables and their relationships as a graph on disk and, for each entity, samples the related records up to its prediction time. Describe what to predict in one query, and Kumo Engine uses that context to train and run predictive models directly on your relational data.
 
 <picture>
-  <source media="(max-width: 600px)" srcset="assets/model-context-mobile.svg">
-  <img src="assets/model-context.svg" alt="Connected tables become model context: customer and order tables define relationships, matching keys connect individual records, and selected historical records form model inputs. Future outcomes stay outside the inputs.">
+  <source media="(max-width: 600px)" srcset="docs/assets/model-context-mobile.svg">
+  <img src="docs/assets/model-context.svg" alt="Connected tables become model context: customer and order tables define relationships, matching keys connect individual records, and selected historical records form model inputs. Future outcomes stay outside the inputs.">
 </picture>
 
 *Example: predicting whether a customer will order in the next 30 days. Keys link each customer to their orders, and the model sees only orders placed before the prediction time.*
@@ -78,7 +78,7 @@ Choose your hardware and runtime environment:
 
 - **Hardware:** [Prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) · [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 - **Setup guides:** [Linux](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/linux-machine-deployment) · [macOS](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/macos) · [Windows (WSL2)](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/windows-wsl2) · [Snowflake notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/snowflake-notebook) · [Databricks notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/databricks-notebook)
-- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers ARM64 Linux setup, including Faiss for recommendation tasks.
+- **Platform details:** the [package README](packages/clients/kumo-engine/README.md#installation) covers ARM64 Linux setup, including Faiss for recommendation tasks.
 
 ## Quickstart
 
@@ -125,7 +125,7 @@ When training completes, the example prints the first five predictions:
 Next steps:
 
 - Follow a complete walkthrough in a [Google Colab](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/google-colab-notebook), [Snowflake](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/snowflake-notebook), or [Databricks](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/code-examples/databricks-notebook) notebook.
-- Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples), and browse the [example collection](examples/kumo-example-notebooks/README.md) for industry notebooks, standalone scripts, and synthetic-data generators.
+- Explore more tasks in [Predictive Query Examples](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/workflows-and-solutions/predictive-query-examples), and browse the [example collection](packages/clients/kumo-engine/examples/kumo-example-notebooks/README.md) for industry notebooks, standalone scripts, and synthetic-data generators.
 - To have a coding agent build the workflow for you, install the agent skill by running `python -m kumo.engine.skills`. See [Get Started with Agents](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/agents).
 
 ## What Makes Kumo Engine Fast
@@ -147,8 +147,8 @@ See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/be
 | Connect data, define graphs, train, and predict | [User Code Guide](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/set-up-a-graph/tables) |
 | Configure sampling and training | [Model Plan Guide](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/train-a-model/model-plan-guide) |
 | Run batch predictions in production | [Production Workflow](https://docs.nvidia.com/sdgm/kumo-engine/user-code-guide/deploy-a-model/overview) |
-| Use the in-process Python API | [Local Python interface](packages/kumo-engine/README.md), imported as `kumo.engine` |
-| Version, promote, and monitor models | [MLOps guide](packages/kumo-engine/docs/mlops.md) |
+| Use the in-process Python API | [Local Python interface](packages/clients/kumo-engine/README.md), imported as `kumo.engine` |
+| Version, promote, and monitor models | [MLOps guide](packages/clients/kumo-engine/docs/mlops.md) |
 | Check compatibility before upgrading | [Release notes](https://docs.nvidia.com/sdgm/kumo-engine/resources/release-notes) |
 | Explore the source code | [Architecture](ARCHITECTURE.md) and [engineering docs](docs/README.md) |
 
@@ -159,7 +159,7 @@ See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/be
 
 Kumo Studio allows enterprise teams to build and run predictive models together. Users can connect data sources, train and evaluate models, run batch predictions, and review job history, all through a web UI or Python SDK. Admins control access to data and models with role-based access control.
 
-Deploy Studio on Kubernetes via [Helm](helm/README.md) or on any compatible Linux host with [Docker Compose](docker/compose/README.md). See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements) for prerequisites and setup.
+Deploy Studio on Kubernetes via [Helm](apps/studio/helm/README.md) or on any compatible Linux host with [Docker Compose](apps/studio/docker/compose/README.md). See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements) for prerequisites and setup.
 
 ## Development and Support
 
@@ -193,34 +193,40 @@ Apache-licensed Python subprojects retain a copy of the root license at each pac
 
 | Component | License | License file |
 | --- | --- | --- |
-| `kumo-api` | Apache-2.0 | [packages/kumo-api/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-api/LICENSE) |
-| `kumo-bigquery` | Apache-2.0 | [packages/kumo-bigquery/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-bigquery/LICENSE) |
-| `kumo-core` | Apache-2.0 AND MIT | [packages/kumo-core/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-core/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-core/THIRD-PARTY.txt) |
-| `kumo-databricks` | Apache-2.0 | [packages/kumo-databricks/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-databricks/LICENSE) |
-| `kumo-engine` (formerly `kumoai-local`) | Apache-2.0 | [packages/kumo-engine/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/LICENSE) |
-| `kumo-gcs` | Apache-2.0 | [packages/kumo-gcs/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-gcs/LICENSE) |
-| `kumo-glove-6b-50d` | Apache-2.0 AND PDDL-1.0 | [tools/glove-6b-50d/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/tools/glove-6b-50d/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/tools/glove-6b-50d/THIRD-PARTY.txt) |
-| `kumo-pql` | Apache-2.0 | [packages/kumo-pql/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-pql/LICENSE) |
-| `kumo-s3` | Apache-2.0 | [packages/kumo-s3/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-s3/LICENSE) |
-| `kumo-sdk` (`kumoai-studio`) | Apache-2.0 AND BSD-3-Clause | [packages/kumo-sdk/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-sdk/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-sdk/THIRD-PARTY.txt) |
-| `kumo-snowflake` | Apache-2.0 | [packages/kumo-snowflake/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-snowflake/LICENSE) |
-| Vendored Temporal Helm chart | MIT | [helm/kumo-temporal/charts/temporal/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/helm/kumo-temporal/charts/temporal/LICENSE) |
-| Vendored PtrHash | MIT | [packages/diskgraph/diskgraph-ptrhash/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/diskgraph/diskgraph-ptrhash/LICENSE) |
-| Fabric Toolbox | MIT | [3rdparty/notices/fabric-toolbox-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/fabric-toolbox-LICENSE) |
-| PyTorch Forecasting | MIT | [3rdparty/notices/pytorch-forecasting-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/pytorch-forecasting-LICENSE) |
-| scikit-learn | BSD-3-Clause | [3rdparty/notices/scikit-learn-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/scikit-learn-LICENSE) |
-| spaCy | MIT | [3rdparty/notices/spacy-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/spacy-LICENSE) |
-| Starlette | BSD-3-Clause | [3rdparty/notices/starlette-LICENSE.md](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/starlette-LICENSE.md) |
-| Temporal Python samples | MIT | [3rdparty/notices/temporal-samples-python-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/temporal-samples-python-LICENSE) |
-| torchtext | BSD-3-Clause | [3rdparty/notices/torchtext-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/torchtext-LICENSE) |
-| react-codemirror | MIT | [ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE) |
-| react-spacer | MIT | [ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE) |
-| format | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE) |
-| heap | PSF-2.0 | [packages/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE) |
-| pathfinding | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE) |
-| size-sensor | ISC | [packages/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE) |
-| toggle-selection | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE) |
+| `kumo-api` | Apache-2.0 | [packages/contracts/kumo-api/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/contracts/kumo-api/LICENSE) |
+| `kumo-bigquery` | Apache-2.0 | [packages/integrations/kumo-bigquery/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/integrations/kumo-bigquery/LICENSE) |
+| `kumo-core` | Apache-2.0 AND MIT | [packages/runtime/kumo-core/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/runtime/kumo-core/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/runtime/kumo-core/THIRD-PARTY.txt) |
+| `kumo-databricks` | Apache-2.0 | [packages/integrations/kumo-databricks/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/integrations/kumo-databricks/LICENSE) |
+| `kumo-engine` (formerly `kumoai-local`) | Apache-2.0 | [packages/clients/kumo-engine/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/clients/kumo-engine/LICENSE) |
+| `kumo-gcs` | Apache-2.0 | [packages/integrations/kumo-gcs/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/integrations/kumo-gcs/LICENSE) |
+| `kumo-glove-6b-50d` | Apache-2.0 AND PDDL-1.0 | [packages/models/glove-6b-50d/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/models/glove-6b-50d/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/models/glove-6b-50d/THIRD-PARTY.txt) |
+| `kumo-pql` | Apache-2.0 | [packages/contracts/kumo-pql/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/contracts/kumo-pql/LICENSE) |
+| `kumo-s3` | Apache-2.0 | [packages/integrations/kumo-s3/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/integrations/kumo-s3/LICENSE) |
+| `kumo-sdk` (`kumoai-studio`) | Apache-2.0 AND BSD-3-Clause | [packages/clients/kumo-sdk/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/clients/kumo-sdk/LICENSE), [third-party notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/clients/kumo-sdk/THIRD-PARTY.txt) |
+| `kumo-snowflake` | Apache-2.0 | [packages/integrations/kumo-snowflake/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/integrations/kumo-snowflake/LICENSE) |
+| Vendored Temporal Helm chart | MIT | [apps/studio/helm/kumo-temporal/charts/temporal/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/helm/kumo-temporal/charts/temporal/LICENSE) |
+| Vendored PtrHash | MIT | [packages/data/diskgraph/diskgraph-ptrhash/LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/data/diskgraph/diskgraph-ptrhash/LICENSE) |
+| Fabric Toolbox | MIT | [development/third-party/notices/fabric-toolbox-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/fabric-toolbox-LICENSE) |
+| PyTorch Forecasting | MIT | [development/third-party/notices/pytorch-forecasting-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/pytorch-forecasting-LICENSE) |
+| scikit-learn | BSD-3-Clause | [development/third-party/notices/scikit-learn-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/scikit-learn-LICENSE) |
+| spaCy | MIT | [development/third-party/notices/spacy-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/spacy-LICENSE) |
+| Starlette | BSD-3-Clause | [development/third-party/notices/starlette-LICENSE.md](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/starlette-LICENSE.md) |
+| Temporal Python samples | MIT | [development/third-party/notices/temporal-samples-python-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/temporal-samples-python-LICENSE) |
+| torchtext | BSD-3-Clause | [development/third-party/notices/torchtext-LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/3rdparty/notices/torchtext-LICENSE) |
+| react-codemirror | MIT | [apps/studio/ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE) |
+| react-spacer | MIT | [apps/studio/ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE) |
+| format | MIT | [packages/ui/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE) |
+| heap | PSF-2.0 | [packages/ui/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE) |
+| pathfinding | MIT | [packages/ui/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE) |
+| size-sensor | ISC | [packages/ui/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE) |
+| toggle-selection | MIT | [packages/ui/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE) |
 
-Third-party attribution is recorded in the [repository notice](https://github.com/NVIDIA/kumo-engine/blob/main/THIRD-PARTY.txt), [Python distribution notice](https://github.com/NVIDIA/kumo-engine/blob/main/KUMO-THIRD-PARTY.txt), [UI catalog notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-ui-catalog/THIRD-PARTY.txt), and [Helm stack notice](https://github.com/NVIDIA/kumo-engine/blob/main/helm/kumo-stack/THIRD-PARTY.txt).
+Third-party attribution is recorded in the [repository notice](https://github.com/NVIDIA/kumo-engine/blob/main/THIRD-PARTY.txt), [Python distribution notice](https://github.com/NVIDIA/kumo-engine/blob/main/KUMO-THIRD-PARTY.txt), [UI catalog notice](https://github.com/NVIDIA/kumo-engine/blob/main/packages/ui/kumo-ui-catalog/THIRD-PARTY.txt), and [Helm stack notice](https://github.com/NVIDIA/kumo-engine/blob/main/helm/kumo-stack/THIRD-PARTY.txt).
 
 </details>
+
+## Repository development
+
+See the [architecture](ARCHITECTURE.md), [package map](packages/README.md),
+[development commands](development/README.md), and [contribution guidance](CONTRIBUTING.md).
+Studio lives in `apps/studio`; reusable engine projects live in `packages`.

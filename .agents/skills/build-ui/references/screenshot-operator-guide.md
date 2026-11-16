@@ -43,7 +43,7 @@ Override rules:
 When the UI is running locally and Direct Connect password-mode credentials are available through `SCREENSHOT_AUTH_EMAIL` / `SCREENSHOT_AUTH_PASSWORD`, use the shared local helper from the repository root:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --issue 12345 \
   --plan /tmp/build-ui-artifacts/12345/screenshot-plan.json \
   --base-url http://localhost:3000
@@ -52,7 +52,7 @@ npm --prefix ui run screenshots:build-ui -- \
 Prefer the environment variables: a flag value is visible in this wrapper's own argv (e.g. via `ps`) while it runs. Credentials may also be supplied as explicit flags — `--auth-email <email> --auth-password <pw>` — when argv exposure on your machine is not a concern:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --issue 12345 \
   --plan /tmp/build-ui-artifacts/12345/screenshot-plan.json \
   --base-url http://localhost:3000 \
@@ -67,7 +67,7 @@ Flag credentials are forwarded to `ci-screenshot.mjs` through the environment (`
 A local dev server normally runs with auth disabled (the auth client config endpoint reports `auth_disabled: true`), so no Direct Connect credentials are required. The helper auto-enables auth-disabled mode for `localhost` / `127.0.0.1` base URLs, and you can force it for any host with `--auth-disabled`:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --issue 12345 \
   --plan /tmp/build-ui-artifacts/12345/screenshot-plan.json \
   --base-url http://localhost:3000 \
@@ -83,7 +83,7 @@ Publication writes images to a remote branch and updates the PR/comment; `--pr-n
 To publish the same evidence to an existing PR:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --issue 12345 \
   --plan /tmp/build-ui-artifacts/12345/screenshot-plan.json \
   --repo OWNER/REPO \
@@ -94,7 +94,7 @@ npm --prefix ui run screenshots:build-ui -- \
 If capture already ran and `/tmp/build-ui-screenshots/{issue}/results.json` exists:
 
 ```bash
-npm --prefix ui run screenshots:build-ui -- \
+npm --prefix apps/studio/ui run screenshots:build-ui -- \
   --issue 12345 \
   --skip-capture \
   --repo OWNER/REPO \
@@ -108,4 +108,4 @@ npm --prefix ui run screenshots:build-ui -- \
 - Prefer deterministic seeded state over tenant-specific live-data interactions.
 - Keep recipe assertions tied to exact changed surfaces, not shell containers or generic headings.
 - Every `visualCoverage` ID must be referenced by a concrete setup action or assertion with `covers`.
-- When routes or selectors move, update `ui/src/screenshot/catalog.json`, `ui/src/screenshot/route-map.json`, and the corresponding source selector in the same PR.
+- When routes or selectors move, update `apps/studio/ui/src/screenshot/catalog.json`, `apps/studio/ui/src/screenshot/route-map.json`, and the corresponding source selector in the same PR.

@@ -1,0 +1,13 @@
+# Pure-Python distributions merged into kumo-engine. Paths relative to packages/.
+# DiskGraph is built separately and merged as the native component.
+contracts/kumo-api
+contracts/kumo-pql
+contracts/kumo-settings
+runtime/kumo-core
+clients/kumo-engine
+integrations/kumo-s3
+integrations/kumo-gcs
+integrations/kumo-adls
+integrations/kumo-bigquery
+integrations/kumo-databricks
+integrations/kumo-snowflake

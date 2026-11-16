@@ -1,6 +1,6 @@
 # Kumo Design Tokens
 
-> Source of truth: `packages/kumo-ui-catalog/src/kumo-ui-catalog.css`
+> Source of truth: `packages/ui/kumo-ui-catalog/src/kumo-ui-catalog.css`
 > Figma access: If a Figma URL is provided, extract the file ID from the URL. The Figma MCP server (if configured in `.mcp.json`) handles authentication automatically.
 
 ## Color Tokens — Use These Instead of Tailwind Generics

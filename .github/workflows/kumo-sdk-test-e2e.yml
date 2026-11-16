@@ -69,8 +69,8 @@ jobs:
       - name: Install colocated Kumo API and SDK
         run: |
           pip freeze | grep "pandas\|numpy\|pyarrow"
-          pip install --no-deps -e ./packages/kumo-api
-          pip install --verbose --ignore-installed --force './packages/kumo-sdk[test]'
+          pip install --no-deps -e ./packages/contracts/kumo-api
+          pip install --verbose --ignore-installed --force './packages/clients/kumo-sdk[test]'
           pip freeze | grep "pandas\|numpy\|pyarrow"
 
       - name: Checkout kumo-tests

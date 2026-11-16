@@ -8,9 +8,9 @@ on: # yamllint disable-line rule:truthy
   push:
     branches:
       - main
-    paths: ["ui/**"]
+    paths: ["apps/studio/ui/**"]
   pull_request:
-    paths: ["ui/**"]
+    paths: ["apps/studio/ui/**"]
   workflow_dispatch:
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
       regressed: ${{ steps.ratchet.conclusion == 'failure' }}
     defaults:
       run:
-        working-directory: ui
+        working-directory: apps/studio/ui
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: "22"
           cache: "npm"
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: apps/studio/ui/package-lock.json
 
       - name: Install dependencies
         run: |
@@ -71,7 +71,7 @@ jobs:
         # Complements knip, which structurally cannot see these: test files are
         # always entry points (so an orphaned/catalog-only test never reads as
         # "unused"), and a lazy route's `import()` reads as usage even when the
-        # route is unreachable. Script lives in ui/scripts/find-dead-tests.mjs.
+        # route is unreachable. Script lives in apps/studio/ui/scripts/find-dead-tests.mjs.
         # Fails the build on any finding.
         run: npm run dead-tests
 
@@ -102,4 +102,4 @@ jobs:
 
             **Fix:** revert the change that introduced the regression, or migrate the affected code in this PR.
 
-            **If the increase is intentional** (rare — e.g., adding a deliberately-tracked file): update `ui/.ui-baseline.json` in the same commit so future PRs are held to the new floor.
+            **If the increase is intentional** (rare — e.g., adding a deliberately-tracked file): update `apps/studio/ui/.ui-baseline.json` in the same commit so future PRs are held to the new floor.

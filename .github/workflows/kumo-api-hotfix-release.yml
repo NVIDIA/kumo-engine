@@ -30,7 +30,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/kumo-api
+        working-directory: packages/contracts/kumo-api
 
     steps:
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
@@ -106,7 +106,7 @@ jobs:
           prune-cache: true
 
       - name: Verify import
-        uses: ./packages/kumo-api/.github/actions/verify-import
+        uses: ./packages/contracts/kumo-api/.github/actions/verify-import
         with:
           pydantic-version: 'pydantic>=2.7'
 

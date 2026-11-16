@@ -33,7 +33,7 @@ jobs:
         with:
           repository: ${{ github.repository }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          path: docker/kumo
+          path: apps/studio/docker/kumo
           ref: ${{ github.sha }}
 
       - name: Set up Node.js
@@ -94,9 +94,9 @@ jobs:
         with:
           image: kumo-ui
           tags: latest ${{ steps.vars.outputs.kumo_ui_sha }}
-          context: ./docker
+          context: ./apps/studio/docker
           containerfiles: |
-            ./docker/Dockerfile.ui
+            ./apps/studio/docker/Dockerfile.ui
           extra-args: |
             --ulimit nofile=65535:65535
 

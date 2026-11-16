@@ -14,21 +14,21 @@ listed below. A skipped module does not mean that a live suite passed.
 
 | Suite / working directory | Current selection | Activation and credential timing |
 | --- | --- | --- |
-| [S3 binding](../packages/kumo-s3/tests/live/test_live_conformance.py), `packages/kumo-s3` | `KUMO_S3_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` | Module skips unless the flag is nonempty; ambient boto3 credentials and region resolution are used when tests run |
-| [S3 reader](../packages/kumo-core/tests/sources/live/test_live_object_store.py), `packages/kumo-core` | `KUMO_S3_LIVE=1 python -m pytest tests/sources/live/test_live_object_store.py -rs` | Same flag; native Arrow S3 filesystem resolves credentials at test execution |
-| [Snowflake](../packages/kumo-snowflake/tests/live/test_live_conformance.py), `packages/kumo-snowflake` | `KUMO_SNOWFLAKE_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit `KUMO_SNOWFLAKE_CREDS` | Skips before credential-file access or API/core/provider imports unless the flag is exactly `1`. Enabled collection reads and validates the explicit JSON file; missing or invalid configuration fails rather than skips |
-| [Databricks](../packages/kumo-databricks/tests/live/test_live_conformance.py), `packages/kumo-databricks` | `KUMO_DATABRICKS_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit `KUMO_DATABRICKS_CREDS` | Skips before credential-file access or API/core/provider imports unless the flag is exactly `1`. Enabled collection reads and validates the explicit JSON file; missing or invalid configuration fails rather than skips |
-| [BigQuery](../packages/kumo-bigquery/tests/live/test_live_conformance.py), `packages/kumo-bigquery` | `KUMO_BIGQUERY_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit project/staging environment variables | Skips before provider imports or ADC unless the flag is exactly `1`. Enabled runs require nonempty `KUMO_BIGQUERY_PROJECT` and `KUMO_BIGQUERY_STAGING` before resolving ADC; missing configuration or failed ADC is a collection error |
-| [BigQuery sink](../packages/kumo-bigquery/tests/live/test_live_sink.py), `packages/kumo-bigquery` | `KUMO_BIGQUERY_LIVE=1 python -m pytest tests/live/test_live_sink.py -rs` with explicit project/staging environment variables | Same opt-in, configuration and ADC boundary as the BigQuery reader |
+| [S3 binding](../packages/integrations/kumo-s3/tests/live/test_live_conformance.py), `packages/integrations/kumo-s3` | `KUMO_S3_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` | Module skips unless the flag is nonempty; ambient boto3 credentials and region resolution are used when tests run |
+| [S3 reader](../packages/runtime/kumo-core/tests/sources/live/test_live_object_store.py), `packages/runtime/kumo-core` | `KUMO_S3_LIVE=1 python -m pytest tests/sources/live/test_live_object_store.py -rs` | Same flag; native Arrow S3 filesystem resolves credentials at test execution |
+| [Snowflake](../packages/integrations/kumo-snowflake/tests/live/test_live_conformance.py), `packages/integrations/kumo-snowflake` | `KUMO_SNOWFLAKE_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit `KUMO_SNOWFLAKE_CREDS` | Skips before credential-file access or API/core/provider imports unless the flag is exactly `1`. Enabled collection reads and validates the explicit JSON file; missing or invalid configuration fails rather than skips |
+| [Databricks](../packages/integrations/kumo-databricks/tests/live/test_live_conformance.py), `packages/integrations/kumo-databricks` | `KUMO_DATABRICKS_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit `KUMO_DATABRICKS_CREDS` | Skips before credential-file access or API/core/provider imports unless the flag is exactly `1`. Enabled collection reads and validates the explicit JSON file; missing or invalid configuration fails rather than skips |
+| [BigQuery](../packages/integrations/kumo-bigquery/tests/live/test_live_conformance.py), `packages/integrations/kumo-bigquery` | `KUMO_BIGQUERY_LIVE=1 python -m pytest tests/live/test_live_conformance.py -rs` with explicit project/staging environment variables | Skips before provider imports or ADC unless the flag is exactly `1`. Enabled runs require nonempty `KUMO_BIGQUERY_PROJECT` and `KUMO_BIGQUERY_STAGING` before resolving ADC; missing configuration or failed ADC is a collection error |
+| [BigQuery sink](../packages/integrations/kumo-bigquery/tests/live/test_live_sink.py), `packages/integrations/kumo-bigquery` | `KUMO_BIGQUERY_LIVE=1 python -m pytest tests/live/test_live_sink.py -rs` with explicit project/staging environment variables | Same opt-in, configuration and ADC boundary as the BigQuery reader |
 
 The existing [`testing.yml` packages job](../.github/workflows/testing.yml)
 discovers package tests but does not set the warehouse live flags. All four
 warehouse live modules require explicit opt-in; credential presence alone
 does not activate them. The public runner discovers group directories and
 excludes `live/` before import. The package READMEs for
-[Snowflake](../packages/kumo-snowflake/README.md),
-[Databricks](../packages/kumo-databricks/README.md) and
-[BigQuery](../packages/kumo-bigquery/README.md) document both execution modes
+[Snowflake](../packages/integrations/kumo-snowflake/README.md),
+[Databricks](../packages/integrations/kumo-databricks/README.md) and
+[BigQuery](../packages/integrations/kumo-bigquery/README.md) document both execution modes
 and pytest-only collection-boundary regressions. Enabled provider connection
 or authentication failures remain failures, not skips.
 
@@ -81,17 +81,17 @@ extracted suite is treated as operationally maintained.
 
 All six modules need API/core source or installed packages, pytest and Arrow.
 The warehouse suites additionally use provider packages and their declared
-runtime dependencies: [Snowflake](../packages/kumo-snowflake/pyproject.toml),
-[Databricks](../packages/kumo-databricks/pyproject.toml), and
-[BigQuery](../packages/kumo-bigquery/pyproject.toml). The S3 binding also needs
-[boto3](../packages/kumo-s3/pyproject.toml). Normal core installation still has
+runtime dependencies: [Snowflake](../packages/integrations/kumo-snowflake/pyproject.toml),
+[Databricks](../packages/integrations/kumo-databricks/pyproject.toml), and
+[BigQuery](../packages/integrations/kumo-bigquery/pyproject.toml). The S3 binding also needs
+[boto3](../packages/integrations/kumo-s3/pyproject.toml). Normal core installation still has
 the broader dependency closure recorded in the public guide; do not assume
 these commands work in the narrow public CSV/S3 environment.
 
 The pytest-only Snowflake and Databricks activation regressions use this source
 checkout's `sources.live_opt_in` helper; they do not need installed API/core or
 provider packages. The reader conformance suites share
-[`conformance.py`](../packages/kumo-core/tests/sources/conformance.py)
+[`conformance.py`](../packages/runtime/kumo-core/tests/sources/conformance.py)
 from the core test tree. Core uses `tests.sources.conformance`; warehouse
 suites use `sources.conformance`. An external runner needs an explicit way to obtain
 that helper at a matching revision; installing the production wheel alone does

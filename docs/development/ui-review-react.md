@@ -26,7 +26,7 @@ const JobsList = () => {
 };
 ```
 
-**Reference:** The JobsList refactoring (hooks: `useJobsUrlState`, `useJobsTableData`, `useMergedActiveJobs` in `ui/src/hooks/jobs/`) demonstrates this pattern well.
+**Reference:** The JobsList refactoring (hooks: `useJobsUrlState`, `useJobsTableData`, `useMergedActiveJobs` in `apps/studio/ui/src/hooks/jobs/`) demonstrates this pattern well.
 
 ---
 
@@ -89,7 +89,7 @@ vi.advanceTimersByTime(300);
 vi.useRealTimers();
 ```
 
-**Reference:** `ui/src/tests/setup.ts` configures Vitest globals. `ui/docs/Coding_Guidelines.md` documents timeout anti-patterns.
+**Reference:** `apps/studio/ui/src/tests/setup.ts` configures Vitest globals. `apps/studio/ui/docs/Coding_Guidelines.md` documents timeout anti-patterns.
 
 ---
 
@@ -144,7 +144,7 @@ Any `dangerouslySetInnerHTML` usage. The codebase has zero instances.
 
 **Rule:** Never use `dangerouslySetInnerHTML`. If you must render dynamic content, use Markdoc (`@markdoc/markdoc` is already a dependency) or escape the content.
 
-**Reference:** `ui/src/services/axios_client.ts` sanitizes HTML error responses from proxy with `HTML_PATTERN` detection.
+**Reference:** `apps/studio/ui/src/services/axios_client.ts` sanitizes HTML error responses from proxy with `HTML_PATTERN` detection.
 
 ---
 
@@ -192,7 +192,7 @@ Adding new class definitions to `main.css` instead of using Tailwind utilities.
 
 **Exception:** Legacy chart/XAI components (`.xai-table-item`, `.histogram-table`, etc.) still use global CSS classes. Don't migrate these without testing those specific components.
 
-**Reference:** `packages/kumo-ui-catalog/src/kumo-ui-catalog.css` (custom properties), `ui/src/main.css` (legacy globals).
+**Reference:** `packages/ui/kumo-ui-catalog/src/kumo-ui-catalog.css` (custom properties), `apps/studio/ui/src/main.css` (legacy globals).
 
 ---
 
@@ -291,9 +291,9 @@ new Intl.DateTimeFormat('en-US').format(date);
 
 | Source | Area |
 |--------|------|
-| `ui/src/components/@hoc/WithErrorBoundary.tsx` | Regular and forwardRef error boundary HOCs |
-| `ui/src/components/Validation/Validation.tsx` | Catalog dialog and alert usage |
-| `ui/src/components/Validation/ValidationStatus.tsx` | Catalog validation card usage |
-| `packages/kumo-ui-catalog/src/kumo-ui-catalog.css` | CSS custom properties |
-| `ui/src/main.css` | Legacy global CSS |
-| `ui/docs/Coding_Guidelines.md` | Component architecture, state, testing, naming |
+| `apps/studio/ui/src/components/@hoc/WithErrorBoundary.tsx` | Regular and forwardRef error boundary HOCs |
+| `apps/studio/ui/src/components/Validation/Validation.tsx` | Catalog dialog and alert usage |
+| `apps/studio/ui/src/components/Validation/ValidationStatus.tsx` | Catalog validation card usage |
+| `packages/ui/kumo-ui-catalog/src/kumo-ui-catalog.css` | CSS custom properties |
+| `apps/studio/ui/src/main.css` | Legacy global CSS |
+| `apps/studio/ui/docs/Coding_Guidelines.md` | Component architecture, state, testing, naming |

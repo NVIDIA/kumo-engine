@@ -30,7 +30,7 @@ compatibility. Pip logs remain evidence even when they report dependency conflic
 `KUMO_DATABRICKS_TEST_PAT` and `KUMO_DATABRICKS_TEST_HOST` come from protected
 environment secrets. The host is the HTTPS test workspace origin. Dedicated test
 resource names are fixed in
-[client.py](../../packages/kumo-engine/test/databricks_notebook/client.py);
+[client.py](../../packages/clients/kumo-engine/test/databricks_notebook/client.py);
 no configuration JSON or CONFIG secret is required. The runner does not read shell
 startup files, use the generic developer PAT, or pass credentials into the notebook.
 The notebook accesses its test volume through the Databricks runtime identity.
@@ -83,8 +83,8 @@ Use Python 3.12 and Node.js 22. The submission client uses the Python standard l
 Install the same locked browser tools used by Snowflake:
 
 ```sh
-npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
-node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
+npm ci --prefix packages/clients/kumo-engine/test/snowflake_notebook/browser
+node packages/clients/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install chromium
 ```
 
 Supply `KUMO_DATABRICKS_TEST_PAT`, `KUMO_DATABRICKS_TEST_HOST` and
@@ -93,8 +93,8 @@ process environment. Build the complete wheel from this checkout and create
 a runtime manifest outside the repository:
 
 ```sh
-packages/kumo-engine/scripts/build_wheel.sh --output-dir /tmp/databricks-wheel
-python packages/kumo-engine/test/platform_candidate.py \
+packages/clients/kumo-engine/scripts/build_wheel.sh --output-dir /tmp/databricks-wheel
+python packages/clients/kumo-engine/test/platform_candidate.py \
   --wheel /tmp/databricks-wheel/*.whl --source-ref "$(git rev-parse HEAD)" \
   --output /tmp/databricks-candidate.json
 export DATABRICKS_TEST_CANDIDATE=/tmp/databricks-candidate.json
@@ -103,7 +103,7 @@ export DATABRICKS_TEST_CANDIDATE=/tmp/databricks-candidate.json
 Then run:
 
 ```sh
-python packages/kumo-engine/test/databricks_notebook/run.py \
+python packages/clients/kumo-engine/test/databricks_notebook/run.py \
   --execute --cluster-id DEDICATED_TEST_CLUSTER_ID \
   --wheel /tmp/databricks-wheel/*.whl \
   --output-dir /tmp/databricks-graph-001
@@ -120,7 +120,7 @@ receive that manifest and wheel; no committed historical pin needs refreshing.
 Admission checks the build source against the current product files before cloud
 access. The graph fixture must already be in its checksum-addressed cache, or local
 runs can seed it with `--fixture` using
-[the shared input manifest](../../packages/kumo-engine/test/pr172/inputs.json).
+[the shared input manifest](../../packages/clients/kumo-engine/test/pr172/inputs.json).
 Existing assets are hash-verified and reused without upload. The test helpers are
 uploaded only when their contents change. Asset bytes are checked before installation
 and again inside the notebook; installed graph modules must match the test revision.
@@ -155,7 +155,7 @@ are removed before recovery phases. The same process-group deadline handling as 
 shared runner stops timed-out workers and their descendants.
 
 ```sh
-python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+python packages/clients/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
   --execute --engine-checks-only --cluster-id DEDICATED_TEST_CLUSTER_ID \
   --wheel /tmp/databricks-wheel/*.whl \
   --output-dir /tmp/databricks-lifecycle-001
@@ -283,9 +283,9 @@ uploaded as public Actions artifacts.
 To inspect the plan locally, then execute the same bounded recovery:
 
 ```sh
-python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+python packages/clients/kumo-engine/test/databricks_notebook/retention_ledger.py \
   --output-dir /tmp/databricks-retention-plan
-python packages/kumo-engine/test/databricks_notebook/retention_ledger.py \
+python packages/clients/kumo-engine/test/databricks_notebook/retention_ledger.py \
   --execute --output-dir /tmp/databricks-retention-execution
 ```
 

@@ -70,7 +70,7 @@ reviews:
     - "!**/*_pb2.pyi"
 
   path_instructions:
-    - path: "kumo/**/*.py"
+    - path: "apps/studio/kumo/**/*.py"
       instructions: |
         For dead-code findings, consider only code added by this pull request,
         or code made unused or unreachable by this pull request. Report it only

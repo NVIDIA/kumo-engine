@@ -120,7 +120,7 @@ jobs:
       - name: Stage DiskGraph Source
         shell: bash
         run: |
-          ./scripts/diskgraph stage-source --out docker/diskgraph-source
+          ./development/tooling/scripts/diskgraph stage-source --out apps/studio/docker/diskgraph-source
 
       # Direct buildah-build call: the Wandalen/wretry.action wrapper is
       # blocked by the org actions allowlist (its internal
@@ -143,7 +143,7 @@ jobs:
           tags: ${{ inputs.kumo_repo_ref }}${{ inputs.image_tag_suffix }}
           context: .
           containerfiles: |
-            ./docker/Dockerfile.kumo_backend_cpu
+            ./apps/studio/docker/Dockerfile.kumo_backend_cpu
           build-args: |
             BAKE_GLOVE_LEVEL=${{ inputs.bake_glove_level }}
             AWS_REGION=us-west-2

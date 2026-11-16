@@ -27,7 +27,7 @@ jobs:
             echo "Unsupported SDK release tag: ${{ github.ref_name }}"
             exit 1
           fi
-          source_version=$(python -c 'exec(input()); print(__version__)' < packages/kumo-sdk/kumoai_studio/_version.py)
+          source_version=$(python -c 'exec(input()); print(__version__)' < packages/clients/kumo-sdk/kumoai_studio/_version.py)
           if [[ "kumo-sdk-v${source_version}" != "${{ github.ref_name }}" ]]; then
             echo "Tag ${{ github.ref_name }} does not match source version ${source_version}."
             exit 1

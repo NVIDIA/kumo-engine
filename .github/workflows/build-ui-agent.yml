@@ -344,9 +344,9 @@ jobs:
           git diff --name-only --diff-filter=ACMRT origin/master "$RUNNER_TOOLING_REF" -- \
             .agents/skills/build-ui \
             .github/workflows/build-ui-agent.yml \
-            ui/scripts/build-ui-pr-body.mjs \
-            ui/scripts/ci-screenshot.mjs \
-            ui/src/screenshot \
+            apps/studio/ui/scripts/build-ui-pr-body.mjs \
+            apps/studio/ui/scripts/ci-screenshot.mjs \
+            apps/studio/ui/src/screenshot \
             > "$TOOLING_FILES"
           git checkout -B "$BRANCH" origin/master
 
@@ -496,7 +496,7 @@ jobs:
 
       - name: Install UI dependencies
         run: |
-          cd ui
+          cd apps/studio/ui
           cp package.json /tmp/build-ui-package.json.orig
           cp package-lock.json /tmp/build-ui-package-lock.json.orig
 
@@ -508,7 +508,7 @@ jobs:
 
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-        working-directory: ui
+        working-directory: apps/studio/ui
 
       # Fail fast if the staging backend is unreachable before the expensive
       # implement-and-screenshot run. The organization fallback covers staging
@@ -529,7 +529,7 @@ jobs:
 
       - name: Start UI dev server
         run: |
-          cd ui
+          cd apps/studio/ui
           UI_REMOTE=true API_TARGET=${{ secrets.BUILD_UI_BACKEND_URL }} npm start >/tmp/build-ui-ui.log 2>&1 &
           echo $! >/tmp/build-ui-ui.pid
           npx --yes wait-on http://localhost:3000 --timeout 60000
@@ -559,7 +559,7 @@ jobs:
           git status --porcelain=v1 > "$GIT_STATUS_PORCELAIN"
 
           (
-            cd ui
+            cd apps/studio/ui
             bash ../.agents/skills/build-ui/scripts/check-preflight.sh
           ) | tee "$PRECHECK_TSV"
 
@@ -725,7 +725,7 @@ jobs:
             - Use commit messages in the format: feat(ui): <description> (#${{ steps.parse.outputs.issue_number }})
             - Use the PR title format: UI: <issue title>. If the issue title already starts with `UI:` or `[UI]`, normalize it to a single `UI: ` prefix.
             - The workflow already checked out dedicated ticket branch `${{ steps.work_branch.outputs.branch }}` from `origin/master`; keep all implementation commits on this branch.
-            - Build-ui runner tooling may be overlaid from the workflow ref for CI validation; do not modify `.agents/skills/build-ui`, `.github/workflows/build-ui-agent.yml`, `ui/scripts/ci-screenshot.mjs`, `ui/scripts/build-ui-pr-body.mjs`, or `ui/src/screenshot` for ticket implementation.
+            - Build-ui runner tooling may be overlaid from the workflow ref for CI validation; do not modify `.agents/skills/build-ui`, `.github/workflows/build-ui-agent.yml`, `apps/studio/ui/scripts/ci-screenshot.mjs`, `apps/studio/ui/scripts/build-ui-pr-body.mjs`, or `apps/studio/ui/src/screenshot` for ticket implementation.
             - Do not push the branch or create a PR from the agent step. The workflow owns push/PR creation after workflow-owned screenshot validation succeeds.
             - If `${{ steps.pr_mode.outputs.dry_run }}` is `true`, stop after planning artifacts and do not make implementation commits.
             - If `${{ steps.pr_mode.outputs.validate_only }}` is `true`, stop after local commits, handoff, and workflow-owned screenshot validation artifacts.
@@ -1409,7 +1409,7 @@ jobs:
             exit 1
           fi
 
-          cd ui
+          cd apps/studio/ui
           if ! node scripts/ci-screenshot.mjs \
             --plan "$NORMALIZED_PLAN_PATH" \
             --output "$CI_SCREENSHOT_OUTPUT" \
@@ -1708,7 +1708,7 @@ jobs:
             ARGS+=(--pr-number "$PR_NUMBER" --patch-pr)
           fi
 
-          node ui/scripts/build-ui-publish-screenshots.mjs "${ARGS[@]}"
+          node apps/studio/ui/scripts/build-ui-publish-screenshots.mjs "${ARGS[@]}"
 
       - name: Upload screenshot artifacts
         if: always() && steps.screenshot_mode.outputs.skip_screenshots != 'true'
@@ -1771,7 +1771,7 @@ jobs:
           fi
           if [ -n "${BUILD_UI_RUNNER_TOOLING_FILES:-}" ] && [ -s "$BUILD_UI_RUNNER_TOOLING_FILES" ]; then
             while IFS= read -r file; do
-              if [ "$file" = "ui/scripts/build-ui-pr-body.mjs" ]; then
+              if [ "$file" = "apps/studio/ui/scripts/build-ui-pr-body.mjs" ]; then
                 continue
               fi
               if git cat-file -e "HEAD:$file" 2>/dev/null; then
@@ -1837,7 +1837,7 @@ jobs:
           SCREENSHOT_SECTION_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-section.md"
           ISSUE_JSON_PATH="/tmp/build-ui-issue.json"
           gh issue view "$ISSUE_NUMBER" --json title,body > "$ISSUE_JSON_PATH"
-          node ui/scripts/build-ui-pr-body.mjs \
+          node apps/studio/ui/scripts/build-ui-pr-body.mjs \
             --base \
             /tmp/build-ui-pr-body.md \
             "$ISSUE_NUMBER" \
@@ -1848,7 +1848,7 @@ jobs:
             "${{ steps.normalized_screenshot_status.outputs.status }}"
 
           if [ -s "$SCREENSHOT_SECTION_PATH" ]; then
-            node ui/scripts/build-ui-pr-body.mjs /tmp/build-ui-pr-body.md "$SCREENSHOT_SECTION_PATH"
+            node apps/studio/ui/scripts/build-ui-pr-body.mjs /tmp/build-ui-pr-body.md "$SCREENSHOT_SECTION_PATH"
           fi
 
           if [ -n "$PR_NUMBER" ]; then

@@ -1,0 +1,131 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+default_language_version:
+  python: python3.11
+repos:
+  # The SDK retains its standalone tool versions and policy in
+  # packages/clients/kumo-sdk/.pre-commit-config.yaml; package CI runs it separately.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.2.0
+    hooks:
+      - id: no-commit-to-branch
+        args: ['--branch', 'master']
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.2.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(packages/data/diskgraph/|packages/ui/kumo-ui-catalog/)
+      - id: trailing-whitespace
+        exclude: ^(packages/data/diskgraph/|packages/ui/kumo-ui-catalog/|THIRD-PARTY\.txt)
+      - id: check-yaml
+        exclude: ^apps/studio/helm/kumo-helm/(templates/|examples/)
+
+  - repo: https://github.com/adrienverge/yamllint.git
+    rev: v1.26.3
+    hooks:
+      - id: yamllint
+        args: [-c=development/config/.yamllint.yml]
+        exclude: ^packages/ui/kumo-ui-catalog/
+
+  - repo: https://github.com/regebro/pyroma
+    rev: '5.0'
+    hooks:
+      - id: pyroma
+        name: Check packaging
+        args: [--min=9, apps/studio]
+        additional_dependencies: ["setuptools-scm[toml]==8.3.1"]
+
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.3.1
+    hooks:
+      - id: autoflake
+        name: Remove unused imports and variables
+        exclude: ^(apps/studio/kumo/pquery/grammar/|packages/(data/diskgraph/|models/experimental/kumo-pytorch/|contracts/kumo-api/|runtime/kumo-core/|clients/kumo-sdk/))
+        args: [
+          --remove-all-unused-imports,
+          --remove-unused-variables,
+          --remove-duplicate-keys,
+          --in-place,
+        ]
+
+  - repo: https://github.com/google/yapf
+    rev: v0.40.2
+    hooks:
+      - id: yapf
+        args: [--style=development/config/.style.yapf]
+        name: Format code
+        exclude: ^(apps/studio/kumo/pquery/grammar/|packages/(data/diskgraph/|models/experimental/kumo-pytorch/|contracts/kumo-api/|runtime/kumo-core/|clients/kumo-sdk/))
+        additional_dependencies: ["toml>=0.10.2"]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        args: [--settings-path=development/config/setup.cfg]
+        name: Sort imports
+        exclude: ^(apps/studio/kumo/pquery/grammar/|packages/(data/diskgraph/|models/experimental/kumo-pytorch/|contracts/kumo-api/|runtime/kumo-core/|clients/kumo-sdk/))
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        args: [--config=development/config/setup.cfg]
+        name: Check PEP8
+        exclude: ^(apps/studio/kumo/pquery/grammar/|packages/(data/diskgraph/|models/experimental/kumo-pytorch/|contracts/kumo-api/|runtime/kumo-core/|clients/kumo-sdk/))
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.283
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: env PYRIGHT_PYTHON_GLOBAL_NODE=0 env PYRIGHT_PYTHON_ENV_DIR=.nodeenv pyright -p development/config/precommit-pyrightconfig.json
+        require_serial: true
+        pass_filenames: false
+        files: '.*\.py'
+        additional_dependencies: [kubernetes-stubs]
+
+  - repo: local
+    hooks:
+      - id: license-headers
+        name: Check source license headers
+        entry: python3 development/tooling/scripts/check_license_headers.py
+        language: system
+        pass_filenames: false
+      - id: python-license-metadata
+        name: Check Python license metadata
+        entry: python development/tooling/scripts/check_python_license_metadata.py
+        language: python
+        additional_dependencies: ["tomli==2.2.1; python_version < '3.11'"]
+        pass_filenames: false
+      - id: third-party-notice
+        name: third-party notice freshness and policy
+        entry: python3 development/tooling/scripts/gen_third_party.py --check THIRD-PARTY.txt
+        language: system
+        pass_filenames: false
+        files: ^(THIRD-PARTY\.txt|development/third-party/BUILD|development/third-party/kumo-wheels/|development/third-party/notices/|packages/data/diskgraph/(Cargo\.lock|diskgraph-ptrhash/|scripts/generate_artifact_manifest\.py|third_party/(artifact-manifest|source-provenance)\.json)|packages/runtime/kumo-core/src/kumo_core/evaluation/distribution\.py|packages/clients/kumo-engine/scripts/(build_wheel\.sh|merge_wheels\.py)|development/tooling/scripts/gen_third_party\.py|packages/models/glove-6b-50d/(build_wheel\.sh|pyproject\.toml))
+      - id: lint-staged
+        name: ui-lint-staged
+        entry: bash -c 'cd apps/studio/ui/ && npx lint-staged --config package.json --allow-empty'
+        language: system
+        pass_filenames: false
+  - repo: https://github.com/lk16/detect-missing-init
+    rev: v0.1.6
+    hooks:
+      - id: detect-missing-init
+        # apps/studio/kumo/ is deliberately excluded: it lost its own __init__.py (and so
+        # did kumo/engine/) to become a shared PEP 420 namespace package with
+        # packages/clients/kumo-engine's kumo.engine (see apps/studio/setup.py's comment on this).
+        # apps/studio/tools/ is scoped to apps/studio/tools/ci rather than the whole tree: apps/studio/tools/
+        # glove-6b-50d is its own first-party distribution with a src/
+        # layout and no explicit `where=["src"]` in its pyproject.toml, so
+        # adding __init__.py under packages/models/glove-6b-50d/ (this hook's fix)
+        # makes setuptools bundle a stray top-level __init__.py into its
+        # wheel -- reproduced locally with a clean build. This hook has no
+        # per-path ignore, only this flat folder list, so scoping down is
+        # the only way to keep both exclusions working; confirmed both
+        # false positives against a pristine master checkout, unrelated to
+        # any specific PR's changes.
+        args: ['--create', "--track", "--python-folders", "apps/studio/async_utils,apps/studio/io_utils,apps/studio/rest,development/tooling/scripts,apps/studio/statedb,development/testing/test,apps/studio/temporalio_commons,apps/studio/tools/ci"]

@@ -9,13 +9,13 @@ on: # yamllint disable-line rule:truthy
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - 'rest/app.py'
-      - 'rest/config/**'
-      - 'rest/main.py'
-      - 'rest/routers/**'
-      - 'rest/scripts/download_schema.py'
-      - 'rest/utils/routers.py'
-      - 'ui/src/gen/spec/**'
+      - 'apps/studio/rest/app.py'
+      - 'apps/studio/rest/config/**'
+      - 'apps/studio/rest/main.py'
+      - 'apps/studio/rest/routers/**'
+      - 'apps/studio/rest/scripts/download_schema.py'
+      - 'apps/studio/rest/utils/routers.py'
+      - 'apps/studio/ui/src/gen/spec/**'
   issue_comment:
     types: [created]
 
@@ -73,13 +73,13 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96  # v47.0.6
         with:
           files: |
-            rest/app.py
-            rest/config/**
-            rest/main.py
-            rest/routers/**
-            rest/scripts/download_schema.py
-            rest/utils/routers.py
-            ui/src/gen/spec/**
+            apps/studio/rest/app.py
+            apps/studio/rest/config/**
+            apps/studio/rest/main.py
+            apps/studio/rest/routers/**
+            apps/studio/rest/scripts/download_schema.py
+            apps/studio/rest/utils/routers.py
+            apps/studio/ui/src/gen/spec/**
 
       - name: Configure AWS credentials
         if: steps.backend-changes.outputs.any_changed == 'true'
@@ -101,8 +101,8 @@ jobs:
         run: |
           PYTHONPATH="$GITHUB_WORKSPACE" \
             DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
-          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
-          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
         if: steps.backend-changes.outputs.any_changed == 'true'
@@ -113,21 +113,21 @@ jobs:
       - name: Install UI dependencies
         if: steps.backend-changes.outputs.any_changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run install:catalog
           npm ci --ignore-scripts
 
       - name: Run linting and prettier
         if: steps.backend-changes.outputs.any_changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run lint-format-codegen --subdir=spec
 
       - name: Check for Spec changes
         if: steps.backend-changes.outputs.any_changed == 'true'
         id: openapi-changes
         run: |
-          if git diff --quiet --exit-code ui/src/gen/spec/; then
+          if git diff --quiet --exit-code apps/studio/ui/src/gen/spec/; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -303,8 +303,8 @@ jobs:
           cd pr-branch
           PYTHONPATH="$GITHUB_WORKSPACE/pr-branch" \
             DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
-          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
-          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -325,7 +325,7 @@ jobs:
       - name: Check for Spec changes
         id: openapi-changes
         run: |
-          if git -C pr-branch diff --quiet --exit-code ui/src/gen/spec/; then
+          if git -C pr-branch diff --quiet --exit-code apps/studio/ui/src/gen/spec/; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -349,9 +349,9 @@ jobs:
         if: steps.openapi-changes.outputs.changed == 'true'
         run: |
           cd pr-branch
-          # Stash only ui/src/gen/ changes
-          git add ui/src/gen/
-          git stash push -m "Preserve ui/src/gen changes" ui/src/gen/
+          # Stash only apps/studio/ui/src/gen/ changes
+          git add apps/studio/ui/src/gen/
+          git stash push -m "Preserve apps/studio/ui/src/gen changes" apps/studio/ui/src/gen/
 
           # Reset all other changes (both staged and unstaged)
           git reset --hard HEAD
@@ -359,7 +359,7 @@ jobs:
           # Clean all untracked files and directories
           git clean -fdx
 
-          # Restore the ui/src/gen/ changes
+          # Restore the apps/studio/ui/src/gen/ changes
           git stash pop
 
       - name: Commit and push changes
@@ -367,7 +367,7 @@ jobs:
         id: commit-changes
         run: |
           cd pr-branch
-          git add ui/src/gen/
+          git add apps/studio/ui/src/gen/
           git commit -m "Regenerated UI client code based on OpenAPI spec changes"
           git pull --rebase origin ${{ steps.pr-details.outputs.ref }}
           git push origin HEAD:${{ steps.pr-details.outputs.ref }}
@@ -415,8 +415,8 @@ jobs:
         run: |
           PYTHONPATH="$GITHUB_WORKSPACE" \
             DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
-          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
-          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' apps/studio/ui/src/gen/spec/v1_openapi.json
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -425,19 +425,19 @@ jobs:
 
       - name: Install UI dependencies
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run install:catalog
           npm ci
 
       - name: Run linting and prettier
         run: |
-          cd ui
+          cd apps/studio/ui
           npm run lint-format-codegen --subdir=spec
 
       - name: Check for Spec changes
         id: openapi-changes
         run: |
-          if git diff --quiet --exit-code ui/src/gen/; then
+          if git diff --quiet --exit-code apps/studio/ui/src/gen/; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -446,7 +446,7 @@ jobs:
       - name: Generate orval schema/types/api
         if: steps.openapi-changes.outputs.changed == 'true'
         run: |
-          cd ui
+          cd apps/studio/ui
           npx orval
           npm run inject-zod-schemas
           npm run lint-format-codegen
@@ -454,9 +454,9 @@ jobs:
       - name: Revert/Remove unrelated changes
         if: steps.openapi-changes.outputs.changed == 'true'
         run: |
-          # Stash only ui/src/gen/ changes
-          git add ui/src/gen/
-          git stash push -m "Preserve ui/src/gen changes" ui/src/gen/
+          # Stash only apps/studio/ui/src/gen/ changes
+          git add apps/studio/ui/src/gen/
+          git stash push -m "Preserve apps/studio/ui/src/gen changes" apps/studio/ui/src/gen/
 
           # Reset all other changes (both staged and unstaged)
           git reset --hard HEAD
@@ -464,7 +464,7 @@ jobs:
           # Clean all untracked files and directories
           git clean -fdx
 
-          # Restore the ui/src/gen/ changes
+          # Restore the apps/studio/ui/src/gen/ changes
           git stash pop
 
       - name: Configure Git
@@ -490,6 +490,6 @@ jobs:
           title: "`UI`: Regenerated orval code based on OpenAPI spec files"
           body: |
             This PR was automatically generated because changes were detected in:
-            `ui/src/gen/spec/`
+            `apps/studio/ui/src/gen/spec/`
           branch: ${{ env.branch_name }}
           base: main

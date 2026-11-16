@@ -13,12 +13,12 @@ pip install 'kumo-engine[snowflake]'  # adds snowflake-connector-python, ...
 ```
 
 The extras are the ones declared in
-[`packages/kumo-engine/pyproject.toml`](../../packages/kumo-engine/pyproject.toml);
+[`packages/clients/kumo-engine/pyproject.toml`](../../packages/clients/kumo-engine/pyproject.toml);
 `scripts/merge_wheels.py` turns each into the dependencies of the provider it
 names and fails if a bundled package is not reachable from any of them.
 Provider code must be imported at the point of use, never at module top level,
 so a bare install can still `import kumo.engine`
-(`packages/kumo-engine/test/test_optional_imports.py` enforces this).
+(`packages/clients/kumo-engine/test/test_optional_imports.py` enforces this).
 
 `kumo-api`, `kumo-pql`, `kumo-core` and every provider are always bundled.
 Kumo-owned source uses Apache-2.0; bundled third-party source and native
@@ -65,13 +65,13 @@ so PyPI shows `>=3.11` rather than `>=3.10,>=3.11`.
 
 The root [`VERSION`](../../VERSION) file is the only place the version is
 written, and it is shared by kumo-engine, kumo-sdk, the platform, the Studio
-images and the Helm charts. `scripts/stamp_version.py` copies it into
+images and the Helm charts. `development/tooling/scripts/stamp_version.py` copies it into
 `kumo.engine._version` (which becomes the engine wheel's metadata version),
 `kumoai_studio/_version.py` (the SDK wheel's version), the platform's
-`common_utils/version_file.py` and the charts; CI checks they agree.
+`apps/studio/common_utils/version_file.py` and the charts; CI checks they agree.
 
-To change it, edit `VERSION` and run `python3 scripts/stamp_version.py`, or use
-`packages/kumo-sdk/scripts/set_version.py <version>` (what the SDK release
+To change it, edit `VERSION` and run `python3 development/tooling/scripts/stamp_version.py`, or use
+`packages/clients/kumo-sdk/scripts/set_version.py <version>` (what the SDK release
 workflows do). Versions are `X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN` or `X.Y.Z.devN`, so
 an engine release is cut at the same version as the SDK's. PyPI never accepts a
 re-upload of a version, so a bad release is fixed by releasing the next
@@ -85,7 +85,7 @@ uses the first answer; then the git revision of a source checkout; then
 `latest`. `kumo_core` only defines the mechanism; the providers belong to the
 distributions that register them:
 
-- the platform (root `setup.py`) registers `container-file`
+- the platform (root `apps/studio/setup.py`) registers `container-file`
   (`common_utils.version_file`), the image version in `~/kumo_version.txt`, and
   `release-version`, the stamped `VERSION`, for an installed platform with no
   version file;
@@ -99,13 +99,13 @@ platform's `release-version`.
 ## Cut a release
 
 1. **Check the dependencies are on PyPI.** The wheel requires
-   a `kumo-glove-6b-50d` in the range `packages/kumo-engine/pyproject.toml`
+   a `kumo-glove-6b-50d` in the range `packages/clients/kumo-engine/pyproject.toml`
    allows (`>=1.0.0,<2`) for `[text]`. Release it first if it is new, by
    publishing a GitHub release tagged `kumo-glove-6b-50d-v<version>`
    ([its workflow][glove-workflow]), which publishes it the same way as step 5.
    A manual run of the engine workflow tells you whether it is there: its
    `check-requirements` job names every install PyPI cannot satisfy.
-2. **Set the version** (`VERSION` plus `scripts/stamp_version.py`) on a branch
+2. **Set the version** (`VERSION` plus `development/tooling/scripts/stamp_version.py`) on a branch
    and merge it. The tag must point at a commit that contains it.
 3. **Publish a GitHub release** tagged `kumo-engine-v<version>` (for example
    `kumo-engine-v1.1.0`), targeting that commit. Tick *pre-release* for
@@ -141,7 +141,7 @@ platform's `release-version`.
    Two Mac rows run outside CI with Python 3.12: macOS 14 on CPU (a VM is
    enough) and macOS 15 on MPS (bare metal). Install the macOS wheel file of the
    build run by its path (`uv pip install <wheel>`) in a clean Python 3.12 venv.
-   Download the object that `packages/kumo-engine/test/pr172/inputs.json` names,
+   Download the object that `packages/clients/kumo-engine/test/pr172/inputs.json` names,
    make sure that its SHA-256 equals the `sha256` in that file, and extract it.
    In a folder outside the checkout with `desktop_reload_qualification.py` and
    `wheel_gpu_smoke.py` from the commit of the build run, run
@@ -211,12 +211,12 @@ virtualization.
 ## Build locally
 
 ```bash
-packages/kumo-engine/scripts/build_wheel.sh --help
-packages/kumo-engine/scripts/build_wheel.sh --offline-report   # <version>+<sha>
+packages/clients/kumo-engine/scripts/build_wheel.sh --help
+packages/clients/kumo-engine/scripts/build_wheel.sh --offline-report   # <version>+<sha>
 ```
 
 Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed
-`THIRD-PARTY.txt` (checked with `scripts/gen_third_party.py`), and network
+`THIRD-PARTY.txt` (checked with `development/tooling/scripts/gen_third_party.py`), and network
 access for component build dependencies. `--verify-image IMAGE` installs the
 wheel into a Docker image and checks that the closure imports and that provider
 dependencies are absent from a bare install.
@@ -275,7 +275,7 @@ needs:
   owned by the Portal projects' owner;
 - the variable `KITMAKER_PIC`, that owner's email address.
 
-Review the license metadata: the wheel carries the `License-Expression` derived by `scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.
+Review the license metadata: the wheel carries the `License-Expression` derived by `development/tooling/scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.
 
 ## Charon connectivity and validation
 
@@ -317,7 +317,7 @@ Kitmaker validation without publication, run the script with `--dry-run` and
 its usual release arguments. Add `--ferry` and the local tunnel Portal URL when
 using Charon; this needs GitHub Actions OIDC variables and `id-token: write`.
 The script requires `orjson`, already declared through the root project's
-dynamic dependencies in `setup.py`; the workflow installs it in an isolated
+dynamic dependencies in `apps/studio/setup.py`; the workflow installs it in an isolated
 `uv run` environment.
 
 ### Connectivity failures

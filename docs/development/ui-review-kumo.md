@@ -7,7 +7,7 @@
 ### Pattern 1: Use Generated Code (Orval)
 
 **What triggers it:**
-Manually defining types, interfaces, or API call wrappers that Orval already generates in `ui/src/gen/`.
+Manually defining types, interfaces, or API call wrappers that Orval already generates in `apps/studio/ui/src/gen/`.
 
 **Example:**
 ```typescript
@@ -23,7 +23,7 @@ interface PQueryResponse {
 import { PQueryResponse } from 'gen/v1/types';
 ```
 
-**Resolution:** Run `generate-ui-client-code` or comment `/trigger-ui-codegen` on the PR. Generated code lives in `ui/src/gen/v0/` (legacy) and `ui/src/gen/v1/` (current). Orval config: `ui/orval.config.ts`.
+**Resolution:** Run `generate-ui-client-code` or comment `/trigger-ui-codegen` on the PR. Generated code lives in `apps/studio/ui/src/gen/v0/` (legacy) and `apps/studio/ui/src/gen/v1/` (current). Orval config: `apps/studio/ui/orval.config.ts`.
 
 ---
 
@@ -48,7 +48,7 @@ import { Dialog, DialogContent, DialogHeader } from "@kumo-ai/kumo-ui-catalog";
 **Available catalog components** (imported in 198+ files across the codebase):
 Button, Card, CardHeader, CardContent, Dialog, DialogContent, Alert, AlertDescription, Tooltip, Select, Skeleton, Tabs, HoverCard, Symbol, GridRow, GridCol, and more.
 
-**Reference:** See usage in `ui/src/components/Validation/Validation.tsx` and `ui/src/components/Validation/ValidationStatus.tsx`.
+**Reference:** See usage in `apps/studio/ui/src/components/Validation/Validation.tsx` and `apps/studio/ui/src/components/Validation/ValidationStatus.tsx`.
 
 ---
 
@@ -69,7 +69,7 @@ const { data } = useGetAdminInfo(
 );
 ```
 
-**Reference:** `ui/src/utils/reactQueryKeys.ts` defines 84 query keys. `ui/src/hooks/misc/queryOptions.ts` provides centralized query option configuration with per-key staleTime/cacheTime settings.
+**Reference:** `apps/studio/ui/src/utils/reactQueryKeys.ts` defines 84 query keys. `apps/studio/ui/src/hooks/misc/queryOptions.ts` provides centralized query option configuration with per-key staleTime/cacheTime settings.
 
 ---
 
@@ -88,7 +88,7 @@ import { invalidateJobsList } from "utils/queryInvalidation";
 invalidateJobsList(queryClient);
 ```
 
-**Reference:** `ui/src/utils/queryInvalidation.ts` provides typed invalidation functions that ensure consistent cache management.
+**Reference:** `apps/studio/ui/src/utils/queryInvalidation.ts` provides typed invalidation functions that ensure consistent cache management.
 
 ---
 
@@ -113,7 +113,7 @@ const projectId = getFromLocalStorage<string>(storageKeys.selectedProject);
 
 **Why:** The storage helpers handle JSON serialization, optional encoding for sensitive data, and `clearLocalStorage()` preserves `navPath` and `DEBUG`.
 
-**Reference:** `packages/kumo-ui-catalog/src/utils/storage.ts`, `ui/src/utils/storage.ts`, `ui/src/utils/Constants/enums.ts` (`storageKeys` enum).
+**Reference:** `packages/ui/kumo-ui-catalog/src/utils/storage.ts`, `apps/studio/ui/src/utils/storage.ts`, `apps/studio/ui/src/utils/Constants/enums.ts` (`storageKeys` enum).
 
 ---
 
@@ -166,7 +166,7 @@ export default WithErrorBoundaryForwardRef(MyDialog);
 
 **Exports:** `WithErrorBoundary` is the default export and `WithErrorBoundaryForwardRef` is a named export of `components/@hoc/WithErrorBoundary.tsx`.
 
-**Reference:** `ui/src/components/@hoc/WithErrorBoundary.tsx` (both wrappers).
+**Reference:** `apps/studio/ui/src/components/@hoc/WithErrorBoundary.tsx` (both wrappers).
 
 ---
 
@@ -188,7 +188,7 @@ const Admin = createLazyModule(() => import("pages/Admin/Admin"));
 
 **Why:** The `createLazyModule` pattern caches the import promise (deduplicates) and exposes `preload()` for route loaders to prefetch on hover/navigation.
 
-**Reference:** `ui/src/routes/Routes.tsx` — all page routes follow this pattern.
+**Reference:** `apps/studio/ui/src/routes/Routes.tsx` — all page routes follow this pattern.
 
 ---
 
@@ -211,7 +211,7 @@ if (flags.IS_DATABRICKS_DEPLOY) { ... }
 
 **Available flags:** `ENABLE_FILE_UPLOAD`, `ENABLE_COLUMN_ANALYSIS`, `MAX_TABLES_IN_A_GRAPH`, `IS_DATABRICKS_DEPLOY`, `ENABLE_UI_SCHEMA_VALIDATION`.
 
-**Reference:** `ui/src/hooks/utils/featureFlags.ts`, `ui/src/stores/debugStore.ts`. Flags are fetched from `/constants/flags` endpoint.
+**Reference:** `apps/studio/ui/src/hooks/utils/featureFlags.ts`, `apps/studio/ui/src/stores/debugStore.ts`. Flags are fetched from `/constants/flags` endpoint.
 
 ---
 
@@ -234,7 +234,7 @@ const token = tokenService.getAccessToken();
 
 **Why:** The `tokenService` handles token lifecycle, refresh, and cleanup on logout. The axios interceptor automatically injects the `Authorization` header.
 
-**Reference:** `ui/src/services/token_service.ts`, `ui/src/services/axios_client.ts` (interceptors).
+**Reference:** `apps/studio/ui/src/services/token_service.ts`, `apps/studio/ui/src/services/axios_client.ts` (interceptors).
 
 ---
 
@@ -274,7 +274,7 @@ const userMessage = adjustError("");
 - Calls `logStackTrace()` internally (backend in prod, console in dev, silent in test)
 - `adjustError()` handles empty error descriptions with a user-friendly fallback
 
-**Reference:** `ui/src/utils/errorHandler.ts` — `handleErrorFunctional()`, `adjustError()`, `parseErrorMessage()`, `logStackTrace()`.
+**Reference:** `apps/studio/ui/src/utils/errorHandler.ts` — `handleErrorFunctional()`, `adjustError()`, `parseErrorMessage()`, `logStackTrace()`.
 
 ---
 
@@ -317,7 +317,7 @@ const Component = () => {
 
 **Convention:** Separate `State` and `Actions` interfaces. Use `store.getInitialState()` for reset logic.
 
-**Reference:** `ui/src/stores/debugStore.ts`, `ui/src/stores/userStore.ts`, `ui/src/stores/cacheStore.ts`.
+**Reference:** `apps/studio/ui/src/stores/debugStore.ts`, `apps/studio/ui/src/stores/userStore.ts`, `apps/studio/ui/src/stores/cacheStore.ts`.
 
 ---
 
@@ -391,7 +391,7 @@ try { ... } catch (err) {
 }
 ```
 
-**Reference:** `ui/src/utils/errorHandler.ts` — `logStackTrace()` routes logs based on `NODE_ENV`.
+**Reference:** `apps/studio/ui/src/utils/errorHandler.ts` — `logStackTrace()` routes logs based on `NODE_ENV`.
 
 ---
 
@@ -421,7 +421,7 @@ const navigate = useCustomNavigation();
 // Supports ctrl+click / cmd+click to open in new tab
 ```
 
-**Reference:** `ui/src/utils/Constants/routes.ts` (`navRoutes` enum), `ui/src/utils/navigator.ts` (`useCustomNavigation` hook).
+**Reference:** `apps/studio/ui/src/utils/Constants/routes.ts` (`navRoutes` enum), `apps/studio/ui/src/utils/navigator.ts` (`useCustomNavigation` hook).
 
 ---
 
@@ -449,7 +449,7 @@ const ConnectorsList = createLazyModule(() => import("pages/Connectors/Connector
 
 **Why:** Route loaders fire on navigation (or even on hover/preload), so data fetching starts before the component JS is even loaded. This eliminates the request waterfall of lazy-load-JS → mount → fetch-data.
 
-**Reference:** `ui/src/routes/Routes.tsx` (loader pattern), `ui/src/routes/Loaders.ts`.
+**Reference:** `apps/studio/ui/src/routes/Routes.tsx` (loader pattern), `apps/studio/ui/src/routes/Loaders.ts`.
 
 ---
 
@@ -469,7 +469,7 @@ const apiUrl = window._env_.REACT_APP_BASE_URL_PROD;
 
 **Why:** `env.js` injects `window._env_` at container startup, allowing runtime configuration without rebuilds. `process.env` values are baked in at build time. The only acceptable `process.env` usage is in `getBaseURL()` (to check `NODE_ENV`) and test guards.
 
-**Reference:** `ui/env.js`, `ui/src/services/axios_client.ts` (`getBaseURL()`).
+**Reference:** `apps/studio/ui/env.js`, `apps/studio/ui/src/services/axios_client.ts` (`getBaseURL()`).
 
 ---
 
@@ -523,7 +523,7 @@ const usePolling = () => {
 };
 ```
 
-**Reference:** `ui/src/hooks/tables/sourceTables.ts` (AbortController), `ui/src/hooks/connector/connector.ts` (isCancelled polling).
+**Reference:** `apps/studio/ui/src/hooks/tables/sourceTables.ts` (AbortController), `apps/studio/ui/src/hooks/connector/connector.ts` (isCancelled polling).
 
 ---
 
@@ -555,7 +555,7 @@ return <Input value={name} onChange={(event) => setName(event.target.value)} onB
 
 **Why:** The codebase has a consistent validation pattern using `inputState` enum and API-side validation endpoints. Introducing a form library would create two competing patterns.
 
-**Reference:** `ui/src/utils/Constants/enums.ts` (`inputState` enum), `ui/src/utils/validator.ts`.
+**Reference:** `apps/studio/ui/src/utils/Constants/enums.ts` (`inputState` enum), `apps/studio/ui/src/utils/validator.ts`.
 
 ---
 
@@ -590,7 +590,7 @@ const fetchData = async () => {
 
 **Why:** Store initialization fetches should be resilient. If the flags endpoint is down, the user can still see the app with defaults. `Promise.all` would show a blank screen.
 
-**Reference:** `ui/src/stores/debugStore.ts` — `fetchData()` uses this pattern.
+**Reference:** `apps/studio/ui/src/stores/debugStore.ts` — `fetchData()` uses this pattern.
 
 ---
 
@@ -613,7 +613,7 @@ catch (err) {
 // to SERVICE_UNAVAILABLE_MESSAGE automatically. Just use handleErrorFunctional().
 ```
 
-**Reference:** `ui/src/services/axios_client.ts` — response interceptor with `HTML_PATTERN` detection.
+**Reference:** `apps/studio/ui/src/services/axios_client.ts` — response interceptor with `HTML_PATTERN` detection.
 
 ---
 
@@ -649,7 +649,7 @@ switch (state.status) {
 
 **Why:** Discriminated unions make impossible states unrepresentable and give TypeScript exhaustive checking in switch statements.
 
-**Reference:** `ui/docs/Coding_Guidelines.md` recommends this pattern.
+**Reference:** `apps/studio/ui/docs/Coding_Guidelines.md` recommends this pattern.
 
 ---
 
@@ -732,23 +732,23 @@ Suppress documented layout exceptions with `// review-ui-ignore: arbitrary-tailw
 
 | Source | Area |
 |--------|------|
-| `ui/src/utils/reactQueryKeys.ts` | 84 centralized query keys |
-| `ui/src/utils/queryInvalidation.ts` | Cache invalidation helpers |
-| `ui/src/utils/storage.ts` | Application storage and session-storage helpers |
-| `packages/kumo-ui-catalog/src/utils/storage.ts` | Local-storage helpers |
-| `ui/src/services/orval_axios_client.ts` | Zod-validated API client |
-| `ui/src/services/axios_client.ts` | Interceptors, HTML sanitization, getBaseURL |
-| `ui/src/services/token_service.ts` | Token lifecycle management |
-| `ui/src/stores/debugStore.ts` | Feature flags, Zustand conventions, Promise.allSettled |
-| `ui/src/stores/userStore.ts` | Zustand store with selectors |
-| `ui/src/stores/cacheStore.ts` | Simple store without middleware |
-| `ui/src/routes/Routes.tsx` | Lazy loading, route loaders, navRoutes |
-| `ui/src/utils/Constants/routes.ts` | navRoutes enum |
-| `ui/src/utils/navigator.ts` | useCustomNavigation hook |
-| `ui/src/components/@hoc/WithErrorBoundary.tsx` | Regular and forwardRef error boundary HOCs |
-| `ui/src/utils/errorHandler.ts` | handleErrorFunctional, adjustError, logStackTrace |
-| `ui/src/utils/Constants/enums.ts` | inputState, storageKeys enums |
-| `ui/src/utils/validator.ts` | Form validation utilities |
-| `ui/env.js` | Runtime config via window._env_ |
-| `ui/tsconfig.json` | strict: true, noImplicitAny, baseUrl: "src" |
-| `ui/docs/Coding_Guidelines.md` | Component architecture, state, testing, naming |
+| `apps/studio/ui/src/utils/reactQueryKeys.ts` | 84 centralized query keys |
+| `apps/studio/ui/src/utils/queryInvalidation.ts` | Cache invalidation helpers |
+| `apps/studio/ui/src/utils/storage.ts` | Application storage and session-storage helpers |
+| `packages/ui/kumo-ui-catalog/src/utils/storage.ts` | Local-storage helpers |
+| `apps/studio/ui/src/services/orval_axios_client.ts` | Zod-validated API client |
+| `apps/studio/ui/src/services/axios_client.ts` | Interceptors, HTML sanitization, getBaseURL |
+| `apps/studio/ui/src/services/token_service.ts` | Token lifecycle management |
+| `apps/studio/ui/src/stores/debugStore.ts` | Feature flags, Zustand conventions, Promise.allSettled |
+| `apps/studio/ui/src/stores/userStore.ts` | Zustand store with selectors |
+| `apps/studio/ui/src/stores/cacheStore.ts` | Simple store without middleware |
+| `apps/studio/ui/src/routes/Routes.tsx` | Lazy loading, route loaders, navRoutes |
+| `apps/studio/ui/src/utils/Constants/routes.ts` | navRoutes enum |
+| `apps/studio/ui/src/utils/navigator.ts` | useCustomNavigation hook |
+| `apps/studio/ui/src/components/@hoc/WithErrorBoundary.tsx` | Regular and forwardRef error boundary HOCs |
+| `apps/studio/ui/src/utils/errorHandler.ts` | handleErrorFunctional, adjustError, logStackTrace |
+| `apps/studio/ui/src/utils/Constants/enums.ts` | inputState, storageKeys enums |
+| `apps/studio/ui/src/utils/validator.ts` | Form validation utilities |
+| `apps/studio/ui/env.js` | Runtime config via window._env_ |
+| `apps/studio/ui/tsconfig.json` | strict: true, noImplicitAny, baseUrl: "src" |
+| `apps/studio/ui/docs/Coding_Guidelines.md` | Component architecture, state, testing, naming |

@@ -18,8 +18,8 @@ on:  # yamllint disable-line rule:truthy
         required: false
   pull_request:
     paths:
-      - 'packages/experimental/kumo-pytorch/tests/e2e/tiers.py'
-      - 'packages/experimental/kumo-pytorch/tests/e2e/runs.py'
+      - 'packages/models/experimental/kumo-pytorch/tests/e2e/tiers.py'
+      - 'packages/models/experimental/kumo-pytorch/tests/e2e/runs.py'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-t2b.yml'
 
@@ -33,7 +33,7 @@ concurrency:
 defaults:
   run:
     shell: bash
-    working-directory: packages/experimental/kumo-pytorch
+    working-directory: packages/models/experimental/kumo-pytorch
 
 jobs:
   diskgraph-wheel:

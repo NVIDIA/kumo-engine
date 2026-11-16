@@ -1542,7 +1542,7 @@ wheels = [
 [[package]]
 name = "diskgraph"
 version = "0.2.0"
-source = { editable = "packages/diskgraph" }
+source = { editable = "packages/data/diskgraph" }
 dependencies = [
     { name = "numpy" },
     { name = "pyarrow" },
@@ -1560,8 +1560,8 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "kumo-api", marker = "extra == 'kumo'", editable = "packages/kumo-api" },
-    { name = "kumo-api", marker = "extra == 'test'", editable = "packages/kumo-api" },
+    { name = "kumo-api", marker = "extra == 'kumo'", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-api", marker = "extra == 'test'", editable = "packages/contracts/kumo-api" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pyarrow", specifier = ">=16,<25" },
     { name = "pyarrow", marker = "extra == 'test'" },
@@ -2869,7 +2869,7 @@ wheels = [
 
 [[package]]
 name = "kumo"
-source = { editable = "." }
+source = { editable = "apps/studio" }
 dependencies = [
     { name = "aiobotocore" },
     { name = "aiocache" },
@@ -3119,7 +3119,7 @@ requires-dist = [
     { name = "databricks-sql-connector", specifier = "==4.5.0" },
     { name = "db-dtypes", specifier = "==1.1.1" },
     { name = "deprecated", specifier = "==1.3.1" },
-    { name = "diskgraph", editable = "packages/diskgraph" },
+    { name = "diskgraph", editable = "packages/data/diskgraph" },
     { name = "ec2-metadata", specifier = "==2.10.0" },
     { name = "fastapi", marker = "extra == 'full'", specifier = "==0.138.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = "==0.138.0" },
@@ -3149,17 +3149,17 @@ requires-dist = [
     { name = "jsons", specifier = "==1.6.3" },
     { name = "kubernetes", specifier = "==24.2.0" },
     { name = "kubernetes-stubs", marker = "extra == 'dev'" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-bigquery", editable = "packages/kumo-bigquery" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
-    { name = "kumo-core", extras = ["faiss-cpu"], marker = "extra == 'cpu'", editable = "packages/kumo-core" },
-    { name = "kumo-core", extras = ["faiss-gpu"], marker = "extra == 'cu130'", editable = "packages/kumo-core" },
-    { name = "kumo-core", extras = ["faiss-gpu"], marker = "extra == 'cu132'", editable = "packages/kumo-core" },
-    { name = "kumo-databricks", editable = "packages/kumo-databricks" },
-    { name = "kumo-gcs", editable = "packages/kumo-gcs" },
-    { name = "kumo-pql", editable = "packages/kumo-pql" },
-    { name = "kumo-s3", editable = "packages/kumo-s3" },
-    { name = "kumo-snowflake", editable = "packages/kumo-snowflake" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-bigquery", editable = "packages/integrations/kumo-bigquery" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
+    { name = "kumo-core", extras = ["faiss-cpu"], marker = "extra == 'cpu'", editable = "packages/runtime/kumo-core" },
+    { name = "kumo-core", extras = ["faiss-gpu"], marker = "extra == 'cu130'", editable = "packages/runtime/kumo-core" },
+    { name = "kumo-core", extras = ["faiss-gpu"], marker = "extra == 'cu132'", editable = "packages/runtime/kumo-core" },
+    { name = "kumo-databricks", editable = "packages/integrations/kumo-databricks" },
+    { name = "kumo-gcs", editable = "packages/integrations/kumo-gcs" },
+    { name = "kumo-pql", editable = "packages/contracts/kumo-pql" },
+    { name = "kumo-s3", editable = "packages/integrations/kumo-s3" },
+    { name = "kumo-snowflake", editable = "packages/integrations/kumo-snowflake" },
     { name = "markdown", marker = "extra == 'full'", specifier = "==3.10" },
     { name = "markdown", marker = "extra == 'rest'", specifier = "==3.10" },
     { name = "matplotlib", marker = "extra == 'drawing'", specifier = ">=3.10.5" },
@@ -3284,7 +3284,7 @@ public-tests = [{ name = "torch", index = "https://download.pytorch.org/whl/cpu"
 [[package]]
 name = "kumo-adls"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-adls" }
+source = { editable = "packages/integrations/kumo-adls" }
 dependencies = [
     { name = "azure-core" },
     { name = "azure-identity" },
@@ -3307,8 +3307,8 @@ requires-dist = [
     { name = "azure-identity", specifier = ">=1.25,<2" },
     { name = "azure-storage-file-datalake", specifier = ">=12.22,<13" },
     { name = "fsspec" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "pyarrow", specifier = ">=16,<25" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
     { name = "requests", specifier = ">=2.31,<3" },
@@ -3318,7 +3318,7 @@ provides-extras = ["test"]
 [[package]]
 name = "kumo-api"
 version = "3.0.0"
-source = { editable = "packages/kumo-api" }
+source = { editable = "packages/contracts/kumo-api" }
 dependencies = [
     { name = "numpy" },
     { name = "pandas" },
@@ -3360,7 +3360,7 @@ provides-extras = ["test", "release-check"]
 [[package]]
 name = "kumo-bigquery"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-bigquery" }
+source = { editable = "packages/integrations/kumo-bigquery" }
 dependencies = [
     { name = "google-api-core" },
     { name = "google-auth", extra = ["requests"] },
@@ -3386,8 +3386,8 @@ requires-dist = [
     { name = "google-cloud-bigquery-storage", specifier = ">=2.39" },
     { name = "google-cloud-storage", specifier = ">=2.14" },
     { name = "google-resumable-media", specifier = ">=2,<3" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "pyarrow", specifier = ">=14" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
 ]
@@ -3396,7 +3396,7 @@ provides-extras = ["test"]
 [[package]]
 name = "kumo-core"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-core" }
+source = { editable = "packages/runtime/kumo-core" }
 dependencies = [
     { name = "diskgraph" },
     { name = "filelock" },
@@ -3453,16 +3453,16 @@ text = [
 
 [package.metadata]
 requires-dist = [
-    { name = "diskgraph", editable = "packages/diskgraph" },
+    { name = "diskgraph", editable = "packages/data/diskgraph" },
     { name = "faiss-cpu", marker = "extra == 'faiss-cpu'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "extra == 'dev'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "extra == 'faiss-gpu'", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "extra == 'test'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.13.1" },
     { name = "fsspec", specifier = ">=2023.5.0" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
-    { name = "kumo-pql", editable = "packages/kumo-pql" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "packages/models/glove-6b-50d" },
+    { name = "kumo-pql", editable = "packages/contracts/kumo-pql" },
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "optuna", specifier = ">=4,<5" },
@@ -3494,7 +3494,7 @@ provides-extras = ["faiss-cpu", "faiss-gpu", "text", "test", "dev"]
 [[package]]
 name = "kumo-databricks"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-databricks" }
+source = { editable = "packages/integrations/kumo-databricks" }
 dependencies = [
     { name = "databricks-sdk" },
     { name = "databricks-sql-connector" },
@@ -3514,8 +3514,8 @@ test = [
 requires-dist = [
     { name = "databricks-sdk", specifier = ">=0.49" },
     { name = "databricks-sql-connector", specifier = ">=4.5.0" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "pandas", specifier = ">=1.5,<3" },
     { name = "pyarrow", specifier = ">=14" },
     { name = "pydantic", specifier = ">=2.11" },
@@ -3525,7 +3525,7 @@ provides-extras = ["test"]
 
 [[package]]
 name = "kumo-engine"
-source = { editable = "packages/kumo-engine" }
+source = { editable = "packages/clients/kumo-engine" }
 dependencies = [
     { name = "faiss-cpu", marker = "sys_platform == 'darwin'" },
     { name = "faiss-gpu", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -3597,22 +3597,22 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'test'", specifier = ">=1.34,<2" },
     { name = "botocore", marker = "extra == 'test'", specifier = ">=1.34,<2" },
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.68" },
-    { name = "diskgraph", marker = "extra == 'test'", editable = "packages/diskgraph" },
+    { name = "diskgraph", marker = "extra == 'test'", editable = "packages/data/diskgraph" },
     { name = "faiss-cpu", marker = "sys_platform == 'darwin'", specifier = "==1.14.3" },
     { name = "faiss-cpu", marker = "(platform_machine != 'x86_64' and extra == 'cpu') or (sys_platform != 'linux' and extra == 'cpu')", specifier = "==1.14.3" },
     { name = "faiss-gpu", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==1.14.3" },
     { name = "filelock", specifier = ">=3.29.5" },
-    { name = "kumo-adls", marker = "extra == 'adls'", editable = "packages/kumo-adls" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-bigquery", marker = "extra == 'bigquery'", editable = "packages/kumo-bigquery" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
-    { name = "kumo-databricks", marker = "extra == 'databricks'", editable = "packages/kumo-databricks" },
+    { name = "kumo-adls", marker = "extra == 'adls'", editable = "packages/integrations/kumo-adls" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-bigquery", marker = "extra == 'bigquery'", editable = "packages/integrations/kumo-bigquery" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
+    { name = "kumo-databricks", marker = "extra == 'databricks'", editable = "packages/integrations/kumo-databricks" },
     { name = "kumo-engine", extras = ["mlflow", "s3"], marker = "extra == 'sagemaker'" },
-    { name = "kumo-gcs", marker = "extra == 'gcs'", editable = "packages/kumo-gcs" },
-    { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "tools/glove-6b-50d" },
-    { name = "kumo-s3", marker = "extra == 's3'", editable = "packages/kumo-s3" },
-    { name = "kumo-settings", editable = "packages/kumo-settings" },
-    { name = "kumo-snowflake", extras = ["sdk"], marker = "extra == 'snowflake'", editable = "packages/kumo-snowflake" },
+    { name = "kumo-gcs", marker = "extra == 'gcs'", editable = "packages/integrations/kumo-gcs" },
+    { name = "kumo-glove-6b-50d", marker = "extra == 'text'", editable = "packages/models/glove-6b-50d" },
+    { name = "kumo-s3", marker = "extra == 's3'", editable = "packages/integrations/kumo-s3" },
+    { name = "kumo-settings", editable = "packages/contracts/kumo-settings" },
+    { name = "kumo-snowflake", extras = ["sdk"], marker = "extra == 'snowflake'", editable = "packages/integrations/kumo-snowflake" },
     { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.10.0" },
     { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.5,<4" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=1.26,<3" },
@@ -3631,7 +3631,7 @@ provides-extras = ["plots", "cpu", "test", "snowflake", "databricks", "bigquery"
 [[package]]
 name = "kumo-gcs"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-gcs" }
+source = { editable = "packages/integrations/kumo-gcs" }
 dependencies = [
     { name = "fsspec", extra = ["http"] },
     { name = "google-api-core" },
@@ -3655,8 +3655,8 @@ requires-dist = [
     { name = "google-auth", extras = ["requests"] },
     { name = "google-cloud-storage", specifier = ">=3.1.0" },
     { name = "google-resumable-media", specifier = ">=2,<3" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "pyarrow", specifier = ">=14" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
 ]
@@ -3665,12 +3665,12 @@ provides-extras = ["test"]
 [[package]]
 name = "kumo-glove-6b-50d"
 version = "1.0.0"
-source = { editable = "tools/glove-6b-50d" }
+source = { editable = "packages/models/glove-6b-50d" }
 
 [[package]]
 name = "kumo-pql"
 version = "0.1.0"
-source = { editable = "packages/kumo-pql" }
+source = { editable = "packages/contracts/kumo-pql" }
 dependencies = [
     { name = "antlr4-python3-runtime" },
     { name = "kumo-api" },
@@ -3691,7 +3691,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "antlr4-python3-runtime", specifier = "==4.9.3" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
     { name = "pandas", specifier = ">=1.5,<3" },
     { name = "pytest", marker = "extra == 'test'" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = "<8.0.0" },
@@ -3703,7 +3703,7 @@ provides-extras = ["test", "docs"]
 
 [[package]]
 name = "kumo-pytorch"
-source = { editable = "packages/experimental/kumo-pytorch" }
+source = { editable = "packages/models/experimental/kumo-pytorch" }
 dependencies = [
     { name = "diskgraph" },
     { name = "numpy" },
@@ -3726,7 +3726,7 @@ examples = [
 
 [package.metadata]
 requires-dist = [
-    { name = "diskgraph", editable = "packages/diskgraph" },
+    { name = "diskgraph", editable = "packages/data/diskgraph" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pyarrow", specifier = ">=15,<25" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
@@ -3739,7 +3739,7 @@ provides-extras = ["dev", "examples"]
 [[package]]
 name = "kumo-s3"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-s3" }
+source = { editable = "packages/integrations/kumo-s3" }
 dependencies = [
     { name = "boto3" },
     { name = "botocore" },
@@ -3758,8 +3758,8 @@ test = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.34" },
     { name = "botocore", specifier = ">=1.34,<2" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "pyarrow", specifier = ">=14" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4" },
@@ -3769,7 +3769,7 @@ provides-extras = ["test"]
 [[package]]
 name = "kumo-settings"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-settings" }
+source = { editable = "packages/contracts/kumo-settings" }
 
 [package.optional-dependencies]
 test = [
@@ -3783,7 +3783,7 @@ provides-extras = ["test"]
 [[package]]
 name = "kumo-snowflake"
 version = "0.1.0.dev1"
-source = { editable = "packages/kumo-snowflake" }
+source = { editable = "packages/integrations/kumo-snowflake" }
 dependencies = [
     { name = "cryptography" },
     { name = "kumo-api" },
@@ -3810,8 +3810,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=50" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
-    { name = "kumo-core", editable = "packages/kumo-core" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
+    { name = "kumo-core", editable = "packages/runtime/kumo-core" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pandas", specifier = ">=1.5,<3" },
     { name = "pyarrow", specifier = ">=14" },
@@ -3828,7 +3828,7 @@ provides-extras = ["sdk", "test"]
 
 [[package]]
 name = "kumoai-studio"
-source = { editable = "packages/kumo-sdk" }
+source = { editable = "packages/clients/kumo-sdk" }
 dependencies = [
     { name = "aiohttp" },
     { name = "fsspec", extra = ["http"] },
@@ -3871,7 +3871,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.10.0" },
     { name = "fsspec", specifier = ">=2025.3.0" },
     { name = "graphviz", marker = "extra == 'doc'" },
-    { name = "kumo-api", editable = "packages/kumo-api" },
+    { name = "kumo-api", editable = "packages/contracts/kumo-api" },
     { name = "mermaid-py", marker = "extra == 'doc'" },
     { name = "packaging", marker = "extra == 'release'", specifier = ">=23" },
     { name = "packaging", marker = "extra == 'test'", specifier = ">=23" },

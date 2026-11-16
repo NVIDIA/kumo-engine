@@ -155,7 +155,7 @@ def _get_weight_spec(self) -> Optional[WeightSpec]:
 **Reviewer comment:** "A lot of these interfaces should already be created by code-gen... you can trigger orval regeneration"
 
 **What triggers it:**
-Manually defining types that exist in generated code (`ui/src/gen/`).
+Manually defining types that exist in generated code (`apps/studio/ui/src/gen/`).
 
 **Pattern:** Use `/trigger-ui-codegen` comment or run `make generate-ui-client-code`.
 
@@ -169,7 +169,7 @@ Manually defining types that exist in generated code (`ui/src/gen/`).
 - `FREQUENCY_COL_NAME` - already computed for link prediction
 - `ENTITY_INCLUDE_BIT` - entity filtering
 
-Reference: `kumo/pquery/train_table_generator.py`
+Reference: `apps/studio/kumo/pquery/train_table_generator.py`
 
 ---
 
