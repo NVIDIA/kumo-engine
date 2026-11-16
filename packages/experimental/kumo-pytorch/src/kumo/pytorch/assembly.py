@@ -730,6 +730,34 @@ def _fit_inputs(
                     {tuple(item[0]): 0 for item in declarations[name][use.field]}
                 )
     observed = {slot: [] for slot in slots}
+    columnar = {
+        identity
+        for identity, (config, dtype) in definitions.items()
+        if isinstance(config, (Buckets, ZScore)) and dtype.numeric
+    }
+
+    def observe(slot, values):
+        identity = slots[slot]
+        if identity in columnar:
+            dtype = definitions[identity][1]
+            if (
+                not isinstance(values, (pa.Array, pa.ChunkedArray))
+                or values.type != dtype.to_arrow()
+            ):
+                if isinstance(values, (pa.Array, pa.ChunkedArray)):
+                    values = _arrow_values(values)
+                values = pa.array(
+                    [dtype.normalize(value, path=f"encoder {identity}") for value in values],
+                    type=dtype.to_arrow(),
+                )
+            observed[slot].extend(
+                values.chunks if isinstance(values, pa.ChunkedArray) else (values,)
+            )
+        else:
+            observed[slot].extend(
+                _arrow_values(values) if isinstance(values, (pa.Array, pa.ChunkedArray)) else values
+            )
+
     composites = {
         name: Counter()
         for name, value in spec.inputs.items()
@@ -751,7 +779,7 @@ def _fit_inputs(
             ]
             found = source.fit_graph_fields(sample, graph, roots)
             for slot in graph_slots:
-                observed[slot].extend(found[slot[1:]])
+                observe(slot, found[slot[1:]])
     builds = composites or any(
         isinstance(spec.inputs[slot[0]].representation, Fields) for slot in observed
     )
@@ -772,7 +800,7 @@ def _fit_inputs(
                     column = fitting_rows.columns[use.field]
                     if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
                         column = column.flatten()
-                    observed[(name, use.field)].extend(_arrow_values(column))
+                    observe((name, use.field), column)
             if name in composites:
                 columns = (rows[name].columns[use.field] for use in value.representation.fields)
                 composites[name].update(
@@ -785,7 +813,12 @@ def _fit_inputs(
         name: pinned[name]
         if name in pinned
         else fit_encoder(
-            identity=name, config=config, dtype=dtype, values=contributions.get(name, ())
+            identity=name,
+            config=config,
+            dtype=dtype,
+            values=pa.chunked_array(contributions.get(name, ()), type=dtype.to_arrow())
+            if name in columnar
+            else contributions.get(name, ()),
         )
         for name, (config, dtype) in sorted(definitions.items())
     }
