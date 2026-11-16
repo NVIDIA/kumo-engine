@@ -48,9 +48,6 @@ from rest.backends.ml_backend.activities.parquet_io_activities import (
     prepare_training_table_export,
     write_artifacts_to_customer,
 )
-from rest.backends.ml_backend.activities.pool_failure_output import (
-    read_pool_failure_output,
-)
 from rest.backends.ml_backend.job_queue import StateDbJobQueue
 from rest.backends.ml_backend.ml_job_backend import MLJobBackend
 from rest.backends.ml_backend.ml_job_output_store import MLJobOutputStore
@@ -204,9 +201,6 @@ async def build_ml_workflow_worker(worker_env: WorkerEnv) -> List[Worker]:
         # Shared post-completion activities.
         training_activities.postprocess_job_output,
         training_activities.log_failed_job,
-        # Reads the output that a failed pool kumo-auto / kumo-pred child
-        # saved, because its activity pod is deleted on release.
-        read_pool_failure_output,
         # I/O-bound parquet post-processing runs on the thread executor.
         # Artifact export keeps credentialed provider I/O in the activity
         # process, but isolates its credential-free Pandas/PyArrow CSV

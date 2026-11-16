@@ -21,7 +21,7 @@ from rest.config.batch_prediction_job import (
 )
 from rest.config.ml_backend import JobState
 from rest.config.prediction_output import DatabricksPredictionOutput
-from statedb.config.common import ConnectorID
+from statedb.config.common import ConnectorID, JobFailureInfo
 from statedb.utils.errors import PredictionOutputProcessingError
 
 
@@ -117,12 +117,14 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
     )
     monkeypatch.setattr(module.workflow, 'execute_activity', AsyncMock())
     run_pooled = AsyncMock(return_value=PredictionShardResult(
-        state=JobState.FAILED))
+        state=JobState.FAILED,
+        failure_info=JobFailureInfo(message='Out-of-memory (OOM) error: x',
+                                    stacktrace='Traceback ...')))
     monkeypatch.setattr(module, 'run_pooled_activity', run_pooled)
 
     workflow = module.BatchPredictionJobWorkflow()
     workflow._save_output = AsyncMock()  # type: ignore[method-assign]
-    await workflow._run(
+    output = await workflow._run(
         cast(BatchPredictionJobInput, job_input),
         cast(MLJobSettings, SimpleNamespace()),
         '/tmp/prediction-config.json',
@@ -132,6 +134,9 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
     assert dispatch['schedule_to_close_timeout'] == timedelta(days=21)
     assert dispatch['heartbeat_timeout'] == timedelta(minutes=5)
     assert dispatch['args'][-2:] == [True, True]
+    # The failed shard's saved message and traceback reach the job output.
+    assert output.failure_info.message == 'Out-of-memory (OOM) error: x'
+    assert output.failure_info.stacktrace == 'Traceback ...'
 
 
 @pytest.mark.asyncio
@@ -314,52 +319,3 @@ async def test_durable_output_selects_only_accepted_shard_manifests(
     assert finalizer_options['schedule_to_close_timeout'] == timedelta(hours=6)
     assert finalizer_options['heartbeat_timeout'] == timedelta(minutes=5)
     assert artifact_export_args == [export_input]
-
-
-@pytest.mark.asyncio
-async def test_pool_failure_reports_saved_output_of_failed_shards(monkeypatch):
-    job_input = SimpleNamespace(
-        id='batchpredictionjob-test',
-        training_job_id='trainingjob-test',
-        predictive_query=SimpleNamespace(
-            name='query', graph=SimpleNamespace(name='prediction-graph')),
-        graph_data_compute_input=SimpleNamespace(graph_key='prediction-graph'),
-        graph_version_info=SimpleNamespace(graph_data_version='version-1'),
-        config=SimpleNamespace(num_parallel_workers_limit=2, outputs=[]),
-    )
-    monkeypatch.setattr(
-        module, 'deploy_env', lambda: SimpleNamespace(
-            on_local=False,
-            data_compute=SimpleNamespace(k8s_pool=None),
-        ))
-    monkeypatch.setattr(module.workflow, 'now', lambda: datetime.now())
-    monkeypatch.setattr(module.workflow, 'patched', lambda _name: True)
-    monkeypatch.setattr(module.workflow, 'execute_activity', AsyncMock())
-
-    async def _run_pooled(**kwargs):
-        failed = kwargs['shard_index'] == 1
-        return PredictionShardResult(
-            state=JobState.FAILED if failed else JobState.SUCCEEDED)
-
-    monkeypatch.setattr(module, 'run_pooled_activity',
-                        AsyncMock(side_effect=_run_pooled))
-    output = 'RuntimeError: shard 1 ran out of memory'
-    read_output = AsyncMock(return_value=output)
-    monkeypatch.setattr(module, 'read_saved_pool_failure_output', read_output)
-
-    workflow = module.BatchPredictionJobWorkflow()
-    workflow._save_output = AsyncMock()  # type: ignore[method-assign]
-    result = await workflow._run(
-        cast(BatchPredictionJobInput, job_input),
-        cast(MLJobSettings, SimpleNamespace()),
-        '/tmp/prediction-config.json',
-    )
-
-    read_output.assert_awaited_once_with(
-        'batchpredictionjob-test',
-        ['/tmp/prediction-config.json.kumo-pred.shard-00001.failure.txt'])
-    assert result.failure_info is not None
-    assert result.failure_info.message == (
-        'kumo-pred subprocess exited non-zero for job batchpredictionjob-test '
-        'on shard(s) [1]: RuntimeError: shard 1 ran out of memory')
-    assert result.failure_info.stacktrace == output

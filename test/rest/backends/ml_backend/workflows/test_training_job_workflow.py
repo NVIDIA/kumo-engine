@@ -9,8 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pool.failure_output import POOL_FAILURE_OUTPUT_PATCH
-from rest.backends.ml_backend.activities import TrainingJobActivities
+from rest.backends.ml_backend.activities import (
+    PollJobResult,
+    TrainingJobActivities,
+)
 from rest.backends.ml_backend.settings import MLJobSettings
 from rest.backends.ml_backend.workflows import training_job_workflow as module
 from rest.config.data_backend import ConnectorExecutionRef
@@ -46,10 +48,14 @@ async def test_pool_dispatch_timeout_and_postprocess_connector_refs(
         graph_version_info=SimpleNamespace(graph_data_version='version-1'),
     )
     expected_output = object()
+    saved = PollJobResult(JobState.FAILED, 'Out-of-memory (OOM) error: x',
+                          'Traceback ...')
 
     async def execute_activity(activity_fn, *, args=None, **_kwargs):
         if activity_fn is TrainingJobActivities.postprocess_job_output:
             return expected_output
+        if activity_fn is TrainingJobActivities.log_failed_job:
+            return saved
         return None
 
     execute = AsyncMock(side_effect=execute_activity)
@@ -79,65 +85,19 @@ async def test_pool_dispatch_timeout_and_postprocess_connector_refs(
         connector_id].authorization_token == 'child-workflow-token'
     workflow._save_output.assert_awaited_with(expected_output)
 
-    # Histories recorded before the failure-output patch keep the old text.
-    monkeypatch.setattr(module.workflow, 'patched', lambda _patch_id: False)
     run_pooled.return_value = JobState.FAILED
     failed = await workflow._run_via_pool(typed_job_input,
                                           '/tmp/job-config.json')
     assert failed.err_msg == (
         'kumo-auto subprocess exited non-zero for job trainingjob-test; '
-        'see pool worker logs for details')
-    assert failed.stacktrace is None
+        'see the ML workflow worker logs for details')
 
-
-def _pool_training_workflow(monkeypatch, read_output: AsyncMock):
-    job_input = SimpleNamespace(
-        id=TrainingJobID('trainingjob-test'),
-        spec=SimpleNamespace(predictive_query=SimpleNamespace(
-            name='query', graph=SimpleNamespace(name='training-graph'))),
-        graph_data_compute_input=SimpleNamespace(graph_key='training-graph'),
-        graph_version_info=SimpleNamespace(graph_data_version='version-1'),
+    # The curated message and traceback that log_failed_job returns win.
+    await workflow.run(
+        typed_job_input,
+        cast(MLJobSettings, SimpleNamespace(raise_fake_error=False)),
+        '/tmp/job-config.json',
     )
-    monkeypatch.setattr(module.workflow, 'patched',
-                        lambda patch_id: patch_id == POOL_FAILURE_OUTPUT_PATCH)
-    monkeypatch.setattr(module, 'run_pooled_activity',
-                        AsyncMock(return_value=JobState.FAILED))
-    monkeypatch.setattr(module, 'read_saved_pool_failure_output', read_output)
-    workflow = module.TrainingJobWorkflow()
-    workflow._input = job_input  # type: ignore[assignment]
-    workflow._settings = SimpleNamespace(  # type: ignore[assignment]
-        raise_fake_error=False)
-    workflow._save_output = AsyncMock()  # type: ignore[method-assign]
-    return workflow, cast(TrainingJobInput, job_input)
-
-
-@pytest.mark.asyncio
-async def test_pool_failure_reports_saved_child_output(monkeypatch) -> None:
-    output = ('Traceback (most recent call last):\n'
-              "ValueError: column 'amount' is missing")
-    read_output = AsyncMock(return_value=output)
-    workflow, job_input = _pool_training_workflow(monkeypatch, read_output)
-
-    failed = await workflow._run_via_pool(job_input, '/tmp/job-config.json')
-
-    assert failed.state == JobState.FAILED
-    assert failed.err_msg == (
-        'kumo-auto subprocess exited non-zero for job trainingjob-test: '
-        "ValueError: column 'amount' is missing")
-    assert failed.stacktrace == output
-    read_output.assert_awaited_once_with(
-        'trainingjob-test', ['/tmp/job-config.json.kumo-auto.failure.txt'])
-
-
-@pytest.mark.asyncio
-async def test_pool_failure_without_saved_output_keeps_pointer(
-        monkeypatch) -> None:
-    workflow, job_input = _pool_training_workflow(monkeypatch,
-                                                  AsyncMock(return_value=None))
-
-    failed = await workflow._run_via_pool(job_input, '/tmp/job-config.json')
-
-    assert failed.err_msg == (
-        'kumo-auto subprocess exited non-zero for job trainingjob-test; '
-        'see pool worker logs for details')
-    assert failed.stacktrace is None
+    failure_info = workflow._save_output.await_args.args[0].failure_info
+    assert failure_info.message == 'Out-of-memory (OOM) error: x'
+    assert failure_info.stacktrace == 'Traceback ...'

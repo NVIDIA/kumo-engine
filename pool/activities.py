@@ -74,7 +74,6 @@ from pool.dataclasses import (
     WorkerStatusReport,
 )
 from pool.diskgraph_args import DiskgraphIngestArgs
-from pool.failure_output import OutputTail, failure_output_path
 from pool.locks import PerSnapshotLocks
 from pool.pidfd import pidfd_open, pidfd_process_exited, pidfd_send_signal
 # Single source of truth for the heartbeat cadence — controller side owns it.
@@ -110,7 +109,12 @@ from rest.config.batch_prediction_job import (
 )
 from rest.config.ml_backend import JobState
 from service_framework.deploy_env_config import deploy_env
-from statedb.config.common import DataSnapshot, JobEventLogEntry, JobType
+from statedb.config.common import (
+    DataSnapshot,
+    JobEventLogEntry,
+    JobFailureInfo,
+    JobType,
+)
 from statedb.utils.errors import PredictionOutputProcessingError
 from temporalio_commons.auto_rpc_exception import RpcError as _RpcError
 from temporalio_commons.process_pool_utils import run_with_async_caller_loop
@@ -1704,8 +1708,6 @@ class SnapshotActivities:
                         return await _run_kumo_subprocess(
                             'kumo-auto', job_id, job_config_path,
                             self._get_job_output_store(),
-                            save_failure_output_to=failure_output_path(
-                                job_config_path, 'kumo-auto'),
                             **({
                                 'subprocess_environment': gpu_environment
                             } if gpu_environment else {}))
@@ -1735,7 +1737,7 @@ class SnapshotActivities:
         this GPU worker into a shared managed-volume prefix. Other output
         types retain the durable Kumo artifact path.
         """
-        from kumo_core.job_config import PredictionConfig
+        from kumo_core.job_config import PredictionConfig, PredStatus
 
         from kumo.train.artifact_manifest import (
             PREDICTION_ARTIFACT_MANIFEST_VERSION,
@@ -1905,10 +1907,6 @@ class SnapshotActivities:
                             job_id,
                             sharded_config_path,
                             None,
-                            # The shared base config path, not the shard's
-                            # local copy, so the workflow worker can read it.
-                            save_failure_output_to=failure_output_path(
-                                job_config_path, 'kumo-pred', shard_index),
                             **({
                                 'subprocess_environment': subprocess_environment
                             } if subprocess_environment else {}),
@@ -2017,12 +2015,27 @@ class SnapshotActivities:
                             ignore_errors=True,
                         )
 
+                    failure_info = None
+                    if job_state == JobState.FAILED:
+                        # kumo-pred saves its curated message and traceback
+                        # in the shared home dir, and release deletes this
+                        # pod with its log, so return them to the workflow.
+                        try:
+                            status = await asyncio.to_thread(
+                                PredStatus.load, runtime_config.home_dir)
+                            failure_info = JobFailureInfo(
+                                message=status.error_msg or '',
+                                stacktrace=status.stacktrace or '')
+                        except Exception:
+                            log.warning('Could not load the prediction status',
+                                        exc_info=True)
                     return PredictionShardResult(
                         state=job_state,
                         databricks_uploads=[
                             upload for _, upload in completed_uploads
                         ],
                         artifact_manifest=artifact_manifest,
+                        failure_info=failure_info,
                     )
                 except BaseException:
                     for connector_spec, upload in completed_uploads:
@@ -2162,8 +2175,6 @@ _SUBPROCESS_TERM_GRACE_SECS = 10.0
 _SUBPROCESS_KILL_GRACE_SECS = 60.0
 _SUBPROCESS_EXIT_POLL_SECS = 0.1
 _SUBPROCESS_OWNERSHIP_HANDSHAKE_SECS = 10.0
-# Bounds the write of a failed child's output tail to shared storage.
-_SUBPROCESS_FAILURE_OUTPUT_SAVE_SECS = 60.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2550,7 +2561,6 @@ async def _drain_subprocess_output(
     stdout: asyncio.StreamReader,
     binary_name: str,
     job_id: JobID,
-    tail: Optional[OutputTail] = None,
 ) -> None:
     """Drain newline- and carriage-return-delimited subprocess output.
 
@@ -2561,18 +2571,10 @@ async def _drain_subprocess_output(
     complete record keeps long-running training and prediction processes
     flowing. Undelimited output is also flushed in bounded records so a
     malformed child cannot grow this buffer without limit.
-
-    ``tail`` keeps the last non-progress records, so a failure can report
-    them after the child exits.
     """
     pending = b''
     progress_record: bytes | None = None
     last_progress_log_at: float | None = None
-
-    def _emit(record: bytes) -> None:
-        _log_subprocess_output(record, binary_name, job_id)
-        if tail is not None:
-            tail.add(record)
 
     def _flush_progress(*, force: bool) -> None:
         nonlocal progress_record, last_progress_log_at
@@ -2601,15 +2603,18 @@ async def _drain_subprocess_output(
                 _flush_progress(force=False)
             elif record.endswith(b'\n'):
                 _flush_progress(force=True)
-                _emit(record.rstrip(b'\r\n'))
+                _log_subprocess_output(record.rstrip(b'\r\n'), binary_name,
+                                       job_id)
             else:
                 pending = record
         while len(pending) >= _SUBPROCESS_OUTPUT_MAX_RECORD_BYTES:
-            _emit(pending[:_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES])
+            _log_subprocess_output(
+                pending[:_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES], binary_name,
+                job_id)
             pending = pending[_SUBPROCESS_OUTPUT_MAX_RECORD_BYTES:]
         _flush_progress(force=False)
     _flush_progress(force=True)
-    _emit(pending)
+    _log_subprocess_output(pending, binary_name, job_id)
 
 
 class _SubprocessSupervisorUnavailable(RuntimeError):
@@ -2799,46 +2804,16 @@ async def _launch_owned_subprocess(
         _close_ack_write()
 
 
-async def _report_subprocess_failure(binary_name: str, job_id: JobID,
-                                     returncode: Optional[int], output: str,
-                                     save_to: Optional[str]) -> None:
-    """Log a failed child's last output and save it for the workflow.
-
-    Releasing a Kubernetes placement deletes the activity pod and its log,
-    so the saved copy is the one that outlives this activity. Saving is best
-    effort: the job still fails with its original state if storage fails.
-    """
-    log.error(
-        'pool %s subprocess for job=%s exited with rc=%s. Last output:\n%s',
-        binary_name, job_id, returncode, output or '(no output)')
-    if save_to is None:
-        return
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(fsutil.write_text, save_to, output),
-            timeout=_SUBPROCESS_FAILURE_OUTPUT_SAVE_SECS)
-    except Exception:
-        log.warning(
-            'Could not save the output of the failed pool %s subprocess for '
-            'job=%s to %s', binary_name, job_id, save_to, exc_info=True)
-
-
 async def _run_kumo_subprocess(
-        binary_name: str,
-        job_id: JobID,
-        job_config_path: str,
+        binary_name: str, job_id: JobID, job_config_path: str,
         job_output_store: Optional[MLJobOutputStore],
-        subprocess_environment: Optional[dict[str, str]] = None,
-        save_failure_output_to: Optional[str] = None) -> JobState:
+        subprocess_environment: Optional[dict[str, str]] = None) -> JobState:
     """Run ``binary_name`` (kumo-auto / kumo-pred) and wait for it to exit.
 
     Heartbeats periodically so Temporal sees the activity alive; on
     workflow cancellation, SIGTERM the subprocess (with 10s grace) then
     SIGKILL — without this kumo-auto / kumo-pred would keep running and
     leak GPU + SSD until natural exit.
-
-    On a non-zero exit, the last output lines are logged at ERROR and, when
-    ``save_failure_output_to`` is set, saved to that path.
     """
     # Prefer the repo-local script; fall back to PATH.
     repo_local = osp.join(osp.dirname(osp.dirname(osp.abspath(__file__))),
@@ -2871,10 +2846,8 @@ async def _run_kumo_subprocess(
         cmd, child_env, binary_name, job_id)
 
     assert proc.stdout is not None
-    output_tail = OutputTail()
     drain_task = asyncio.create_task(
-        _drain_subprocess_output(proc.stdout, binary_name, job_id,
-                                 output_tail),
+        _drain_subprocess_output(proc.stdout, binary_name, job_id),
         name=f'pool-{binary_name}-drain')
     proc_wait_task = asyncio.create_task(
         proc.wait(), name=f'pool-{binary_name}-wait')
@@ -3061,10 +3034,6 @@ async def _run_kumo_subprocess(
     rc = proc.returncode
     log.info('pool %s subprocess for job=%s exited with rc=%s', binary_name,
              job_id, rc)
-    if rc != 0:
-        await _report_subprocess_failure(binary_name, job_id, rc,
-                                         output_tail.text(),
-                                         save_failure_output_to)
     return JobState.SUCCEEDED if rc == 0 else JobState.FAILED
 
 

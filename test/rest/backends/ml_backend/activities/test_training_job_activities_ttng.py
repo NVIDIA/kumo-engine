@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from kumo_core.job_config import JobConfig
+from kumo_core.job_config import JobConfig, TrainStatus
 from kumoapi.train import TrainingStage
 
 from io_utils.json import save_json
@@ -100,3 +100,20 @@ def test_ttng_postprocess_rejects_missing_durable_sidecar(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match='split_info'):
         _act._load_ttng_published_metadata(job_config)
+
+
+def test_log_failed_job_returns_saved_train_status(
+        tmp_path, monkeypatch, caplog) -> None:
+    TrainStatus(error_msg='Out-of-memory (OOM) error: x',
+                stacktrace='Traceback ...').save(str(tmp_path))
+    monkeypatch.setattr(_act.JobConfig, 'load',
+                        lambda _path: SimpleNamespace(home_dir=str(tmp_path)))
+
+    with caplog.at_level('WARNING'):
+        saved = _act.TrainingJobActivities().log_failed_job(
+            'trainingjob-1', '/tmp/cfg.json')
+
+    assert saved is not None
+    assert saved.err_msg == 'Out-of-memory (OOM) error: x'
+    assert saved.stacktrace == 'Traceback ...'
+    assert 'Traceback ...' in caplog.text

@@ -82,8 +82,9 @@ class PollJobResult:
 
 class TrainingJobActivities:
     @activity.defn(name='log_failed_training_job')
-    def log_failed_job(self, job_id: TrainingJobID, job_config_path: str,
-                       warning_msg: Optional[str] = None) -> None:
+    def log_failed_job(
+            self, job_id: TrainingJobID, job_config_path: str,
+            warning_msg: Optional[str] = None) -> Optional[PollJobResult]:
         # Save warnings even for failed jobs (e.g., batch size reduction before failure)
         if warning_msg:
             job_config = JobConfig.load(job_config_path)
@@ -91,6 +92,19 @@ class TrainingJobActivities:
 
         log.error(f"Job `{job_id}` failed. Reproduce cmd: "
                   f"./bin/kumo-auto --json {job_config_path}")
+        # kumo-auto saves its curated message and traceback in the home dir.
+        # A pool pod and its log are deleted on release, so return and log
+        # them here. Returning a dataclass keeps older workflow workers safe.
+        try:
+            status = TrainStatus.load(JobConfig.load(job_config_path).home_dir)
+        except Exception:
+            log.warning(f"Could not load the train status of job `{job_id}`",
+                        exc_info=True)
+            return None
+        if status.stacktrace:
+            log.warning(f"Job `{job_id}` traceback:\n{status.stacktrace}")
+        return PollJobResult(JobState.FAILED, status.error_msg,
+                             status.stacktrace)
 
     @connector_activity_registry.connector_authorized_activity(
         name='postprocess_training_job_output')

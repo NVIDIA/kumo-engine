@@ -7,16 +7,12 @@ from datetime import timedelta
 from typing import Optional, Union
 
 from temporalio import workflow
-from temporalio.common import RetryPolicy
 from temporalio.workflow import ActivityCancellationType
 
 from io_utils.exceptions import catch_and_log
 from rest.backends.ml_backend.activities import (
     MLBackendActivities,
     persist_job_inputs,
-)
-from rest.backends.ml_backend.activities.pool_failure_output import (
-    read_pool_failure_output,
 )
 from rest.backends.ml_backend.settings import MLJobSettings
 from rest.config.batch_prediction_job import BatchPredictionJobInput
@@ -70,27 +66,6 @@ async def dequeue_job(job_id: JobID):
         cancellation_type=(
             ActivityCancellationType.WAIT_CANCELLATION_COMPLETED),
     )
-
-
-async def read_saved_pool_failure_output(job_id: JobID,
-                                         paths: list[str]) -> Optional[str]:
-    """Return the output that failed pool children saved, if any.
-
-    The output only improves the failure message, so a failed read keeps the
-    job's original failure instead of failing the workflow.
-    """
-    try:
-        return await workflow.execute_activity(
-            read_pool_failure_output,
-            args=[job_id, paths],
-            schedule_to_close_timeout=timedelta(minutes=5),
-            retry_policy=RetryPolicy(maximum_attempts=3),
-        )
-    except Exception:
-        workflow.logger.warning(
-            'Could not read the saved pool failure output for job %s', job_id,
-            exc_info=True)
-        return None
 
 
 async def init_job_generic(job_input: Union[TrainingJobInput,

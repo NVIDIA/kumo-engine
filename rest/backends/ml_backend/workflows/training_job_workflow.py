@@ -10,11 +10,6 @@ from temporalio.common import RetryPolicy
 from io_utils import logging
 from pool.activities import SnapshotActivities
 from pool.dataclasses import SnapshotActivity
-from pool.failure_output import (
-    POOL_FAILURE_OUTPUT_PATCH,
-    failure_output_path,
-    failure_summary,
-)
 from pool.wf_coordinator import run_pooled_activity
 from rest.backends import TRAINING_AND_PREDICTION_TIMEOUT_HOURS
 from rest.backends.ml_backend.activities import (
@@ -24,9 +19,6 @@ from rest.backends.ml_backend.activities import (
     TrainingJobActivities,
 )
 from rest.backends.ml_backend.settings import MLJobSettings
-from rest.backends.ml_backend.workflows.utils import (
-    read_saved_pool_failure_output,
-)
 from rest.config.ml_backend import JobState, TrainingJobInput
 from rest.config.training_job import TrainingJobOutput
 from statedb.config._graph_key_norm import _graph_key_to_v2
@@ -90,14 +82,17 @@ class TrainingJobWorkflow:
             # Note: warnings are saved by postprocess_job_output via ValidationResponse.save()
             await self._save_output(output)
         else:  # FAILED
-            # log_failed_job also saves warnings if present
-            await workflow.execute_activity(
+            # log_failed_job also saves warnings if present, and returns what
+            # kumo-auto saved on failure (None in older histories).
+            saved = await workflow.execute_activity(
                 TrainingJobActivities.log_failed_job,
                 args=[job_input.id, job_config_path, poll_result.warning_msg],
                 schedule_to_close_timeout=timedelta(minutes=10))
 
-            output = TrainingJobOutput.failed(err_msg=poll_result.err_msg,
-                                              stacktrace=poll_result.stacktrace)
+            output = TrainingJobOutput.failed(
+                err_msg=(saved and saved.err_msg) or poll_result.err_msg,
+                stacktrace=(saved and saved.stacktrace)
+                or poll_result.stacktrace)
             await self._save_output(output)
 
     async def _run_via_pool(
@@ -154,22 +149,10 @@ class TrainingJobWorkflow:
                 hours=TRAINING_AND_PREDICTION_TIMEOUT_HOURS),
             heartbeat_timeout=timedelta(minutes=5))
 
-        if state != JobState.FAILED:
-            return PollJobResult(state=state)
-        # On failure the subprocess's exit reason is in the pool worker
-        # log, not in workflow history. Surface a pointer in err_msg so
-        # the stored ``TrainingJobOutput`` distinguishes "pool failure"
-        # from "no information at all".
+        # The exit reason is not in workflow history. Surface a pointer in
+        # err_msg for failures without a curated kumo-auto message;
+        # log_failed_job logs the saved traceback on the ML workflow worker.
         err_msg = (f'kumo-auto subprocess exited non-zero for job '
-                   f'{job_input.id}; see pool worker logs for details')
-        if not workflow.patched(POOL_FAILURE_OUTPUT_PATCH):
-            return PollJobResult(state=state, err_msg=err_msg)
-        # A Kubernetes placement deletes the activity pod and its log on
-        # release, so read the output that the pool saved for this job.
-        output = await read_saved_pool_failure_output(
-            job_input.id, [failure_output_path(job_config_path, 'kumo-auto')])
-        summary = failure_summary(output) if output else None
-        if summary is not None:
-            err_msg = (f'kumo-auto subprocess exited non-zero for job '
-                       f'{job_input.id}: {summary}')
-        return PollJobResult(state=state, err_msg=err_msg, stacktrace=output)
+                   f'{job_input.id}; see the ML workflow worker logs for '
+                   f'details' if state == JobState.FAILED else None)
+        return PollJobResult(state=state, err_msg=err_msg)
