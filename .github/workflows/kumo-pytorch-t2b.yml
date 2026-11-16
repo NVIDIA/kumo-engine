@@ -232,6 +232,7 @@ jobs:
           output-credentials: true
           unset-current-credentials: true
       - name: Download and verify pinned sources and anchors
+        id: aml-data
         env:
           AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
@@ -288,6 +289,12 @@ jobs:
             --config "$RUNNER_TEMP/aml-timing-cases.json" \
             --output "$RUNNER_TEMP/aml-timings" --measurement-profile timing \
             --isolate-memory --repetitions 3 --epochs 2 --worker-timeout 1800
+      - name: Check real AML multi-source histories
+        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.history_checks \
+            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-histories" \
+            --anchors-per-split 4 --threads 1
       - name: Validate sampled host memory on the GPU host
         if: ${{ always() }}
         run: |
@@ -304,6 +311,9 @@ jobs:
       - name: Show benchmark results
         if: ${{ always() }}
         run: |
+          if [ -f "$RUNNER_TEMP/aml-histories/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-histories/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f "$RUNNER_TEMP/aml-benchmarks/report.md" ]; then
             cat "$RUNNER_TEMP/aml-benchmarks/report.md" >> "$GITHUB_STEP_SUMMARY"
             echo 'Download kumo-pytorch-aml-benchmarks for linked reports, metric coverage and raw observations.' >> "$GITHUB_STEP_SUMMARY"
@@ -318,6 +328,8 @@ jobs:
           path: |
             ${{ runner.temp }}/sampled-memory-validation.json
             ${{ runner.temp }}/aml-acquisition.json
+            ${{ runner.temp }}/aml-histories/report.json
+            ${{ runner.temp }}/aml-histories/report.md
             ${{ runner.temp }}/aml-benchmark-cases.json
             ${{ runner.temp }}/aml-timing-cases.json
             ${{ runner.temp }}/aml-timings/**/*.json

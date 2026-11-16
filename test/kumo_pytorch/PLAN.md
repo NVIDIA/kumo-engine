@@ -10,6 +10,16 @@ The bounded correctness prototype passed before the decimal fix was withdrawn.
 The [collective CI review](#collective-ci-review) records the current failures
 and measurement gaps; the complete nightly specification is not yet satisfied.
 
+## Required behavior is an assertion, not a capability gate
+
+Every in-scope required case must exist even if the package does not support
+its behavior yet. Assert successful, correct behavior and let unsupported
+operations or wrong results fail normally. Do not skip, xfail, catch an error
+as success, pre-filter inputs, or weaken assertions to accommodate missing
+support. Dataset/hardware cases run in their designated CI jobs; the required
+coverage must execute there. Explicit user scope deferrals remain separate
+from implementation gaps. This rule applies to every remaining criterion.
+
 ## Agreed scope
 
 - Keep all new test models, workload definitions, fixtures, dataset records and
@@ -31,6 +41,46 @@ and measurement gaps; the complete nightly specification is not yet satisfied.
   subsequent requirement for every benchmark measurement now includes it in
   the revised benchmarking plan below. Match workload semantics without
   requiring identical batches.
+
+## PR #353 follow-up: multi-source histories
+
+The first acceptance-table follow-up adds 24 package cases in
+`packages/experimental/kumo-pytorch/tests/test_multisource_history.py`:
+two source-specific windows, optional required row filters, duplicate keyless
+occurrences, source identity, timestamp ties, all/first/last retention, both
+delivery directions, packed/padded layouts and an empty root. These run with
+the existing package regressions; existing ordering/cap tests are retained.
+
+`model_checks/test_multisource_history.py` exercises the real-data checker on
+raw AML fixtures and checks its independent reference against literal expected
+rows. `history_checks.py` adds two real-AML cases (windows, filters-and-windows)
+using sender and receiver event components with different clocks and filters.
+It does not replace the published model workload definitions. The nightly uses
+the already verified download, checks four unchanged anchors per split and
+retains `aml-histories/report.json` and `report.md` in the
+`kumo-pytorch-aml-benchmarks` artifact and the job summary. Either case failing
+makes the command fail, including an unsupported-operation rejection.
+
+Local CPU validation on 2026-11-16: 57 passed, 13 failed, 0 skipped across the
+new cases and existing ordering/cap tests. All 13 failures are `DG-ROW-FILTER`;
+they remain ordinary failures, with no xfail or skip. The bounded real HI-small
+run passed the window case (12 anchors, 399 uncapped component occurrences)
+and failed the filtered case with the same rejection. This is not full-data or
+CI validation. Required filter behavior remains unimplemented in this branch;
+the acceptance tests now exist and expose that gap.
+
+Run the real-data check from the repository root:
+
+```sh
+python -m test.kumo_pytorch.history_checks \
+  --data-dir test/kumo_pytorch/.data \
+  --output test/kumo_pytorch/.runs/multisource-histories \
+  --anchors-per-split 4 --threads 1
+```
+
+The output directory must be new. The command verifies the pinned source and
+anchor files, keeps the original splits, writes both case results and returns
+nonzero while required row-filter support is missing.
 
 ## Coverage ownership
 

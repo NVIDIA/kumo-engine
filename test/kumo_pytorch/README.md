@@ -10,6 +10,10 @@ dataset/backend/model adapters, complete-epoch timing and readable/structured
 reports, AML bindings, fresh-process fitting comparisons and explicit Linux
 file-cache experiments. Measurement coverage remains incomplete.
 Full-population coverage remains pending; see [the plan](PLAN.md).
+The [multi-source history follow-up](PLAN.md#pr-353-follow-up-multi-source-histories)
+adds required filter/cutoff checks and a bounded real-AML run. Unsupported
+required behavior fails normally; current row-filter rejection is not a skip
+or expected success.
 
 The existing nightly workflow runs the package's regression tests in place,
 alongside its conformance and retail lifecycle jobs and these AML additions.
