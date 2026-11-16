@@ -1297,7 +1297,9 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
+        let sampling_started = Instant::now();
         self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
+        let sampling_ns = sampling_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         output.finalize(&state)?;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
@@ -1306,6 +1308,7 @@ impl DiskGraphEngine {
         // path already populated `raw_features` via `handle_fused_features`
         // during sampling; we skip the post-fetch in that case to avoid
         // duplicate batches.
+        let retrieval_started = Instant::now();
         if !request.flags.fused_feature_fetching {
             for (type_id, type_state) in &state.type_states {
                 if self
@@ -1340,7 +1343,26 @@ impl DiskGraphEngine {
             }
         }
 
-        Ok(output.into_runtime_batch())
+        let retrieval_ns = retrieval_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut batch = output.into_runtime_batch();
+        let rows_decoded = batch
+            .raw_features
+            .values()
+            .flat_map(|bank| &bank.batches)
+            .map(|rows| rows.num_rows() as u64)
+            .sum::<u64>();
+        batch.profile = crate::output::NativeProfile {
+            sampling_ns,
+            retrieval_ns: if request.flags.fused_feature_fetching {
+                sampling_ns
+            } else {
+                retrieval_ns
+            },
+            rows_examined: state.stats.rows_examined + rows_decoded,
+            rows_decoded,
+            fused: request.flags.fused_feature_fetching,
+        };
+        Ok(batch)
     }
 
     /// Sample another neighborhood for an already resolved native anchor batch.
@@ -2935,6 +2957,10 @@ impl DiskGraphEngine {
             }
         }
         work_queue.sort_unstable_by_key(|(node_type_id, _)| *node_type_id);
+        state.stats.rows_examined += work_queue
+            .iter()
+            .map(|(_, rows)| rows.len() as u64)
+            .sum::<u64>();
 
         // Fused fetching path
         if fused {

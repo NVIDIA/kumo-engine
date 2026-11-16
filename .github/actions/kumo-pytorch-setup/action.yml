@@ -4,12 +4,16 @@
 
 name: kumo-pytorch setup
 description: >-
-  kumo-engine's locked CPU workspace environment (CPU torch, kumo-core and its
+  kumo-engine's locked workspace environment (CPU or CUDA torch, kumo-core and its
   torch-geometric) plus kumo-pytorch and its dev extra (with notebooks: 'true',
   also its examples extra and a pinned Jupyter kernel and client); with
   diskgraph-wheel-artifact, also DiskGraph from that wheel of this commit's
   packages/diskgraph.
 inputs:
+  torch-extra:
+    description: Locked workspace PyTorch extra (cpu or cu130).
+    required: false
+    default: cpu
   python-version:
     required: false
     default: '3.12'
@@ -46,12 +50,14 @@ runs:
       shell: bash
       env:
         NOTEBOOKS: ${{ inputs.notebooks }}
+        TORCH_EXTRA: ${{ inputs.torch-extra }}
       run: |
         set -euo pipefail
+        case "$TORCH_EXTRA" in cpu|cu130) ;; *) exit 1 ;; esac
         examples=()
         if [ "$NOTEBOOKS" = true ]; then examples=(--extra examples); fi
         # --inexact keeps the DiskGraph wheel installed above and the root environment.
-        uv sync --locked --inexact --no-install-package diskgraph --extra cpu
+        uv sync --locked --inexact --no-install-package diskgraph --extra "$TORCH_EXTRA"
         uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
           --package kumo-pytorch --extra dev "${examples[@]}"
         # The notebook runner's tools are not package dependencies.

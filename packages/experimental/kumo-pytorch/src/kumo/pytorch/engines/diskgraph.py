@@ -465,6 +465,8 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+        self._last_sampling_profile: Mapping[str, Any] | None = None
+        self._last_retrieval_profile: Mapping[str, Any] | None = None
 
     @property
     def _sampler(self):
@@ -1255,6 +1257,7 @@ class DiskGraphSource:
         self._last_graph_profile = {
             "samples": len(roots),
             "sampling_ns": sampling_ns,
+            "native_profile_available": self._last_sampling_profile is not None,
             **stages,
             "total_ns": time.perf_counter_ns() - total_started,
         }
@@ -1347,6 +1350,7 @@ class DiskGraphSource:
         source: str,
         roots: Sequence[GraphRoot],
     ) -> tuple[Any, list[Mapping[str, Any]], Mapping[str, str]]:
+        self._last_sampling_profile = None
         neighborhood = sample.neighborhoods.get(source)
         if neighborhood is None:
             raise ValueError(f"unknown neighborhood {source!r}")
@@ -1357,20 +1361,21 @@ class DiskGraphSource:
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
+            self._last_sampling_profile = runtime.get("native_profile")
             return self._runtime_graph_events(sample, source, runtime)
         root_ids = self._root_ids(sample.entity.table, roots)
 
         plan, physical_relations = self._sampling_plan(neighborhood)
-        events = list(
-            self._sampler.sample(
-                {sample.entity.table: root_ids},
-                json.dumps(plan),
-                fused=False,
-                seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
-                swap_edge_direction=False,
-                seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
-            )
+        iterator = self._sampler.sample(
+            {sample.entity.table: root_ids},
+            json.dumps(plan),
+            fused=False,
+            seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
+            swap_edge_direction=False,
+            seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
         )
+        events = list(iterator)
+        self._last_sampling_profile = getattr(iterator, "native_profile", None)
         return neighborhood, events, physical_relations
 
     def close(self) -> None:
@@ -1467,8 +1472,9 @@ class DiskGraphSource:
             batch = sequence["batch"]
             offsets = sequence["offsets"]
             timestamps = sequence["timestamps"]
+            table = destination_table(self.schema, spec.entity.table, output.spec.rows.path)
             columns = {
-                name: _arrow_values(batch.column(index))
+                name: _arrow_values(self._decode_decimal_array(table, name, batch.column(index)))
                 for index, name in enumerate(batch.schema.names)
             }
             primary_keys = (
@@ -2114,19 +2120,33 @@ class DiskGraphSource:
             return []
         return _arrow_values(self._feature_arrays(table, node_ids, (column,))[column])
 
+    def _decode_decimal_array(self, table: str, name: str, values: Any) -> Any:
+        # DiskGraph transports decimals as strings; decode once per column,
+        # before either scalar validation or Arrow encoding sees the values.
+        dtype = self._tables[table].columns.get(name)
+        if dtype is not None and dtype.name in {"decimal128", "decimal256"} and (
+            self._pa.types.is_string(values.type) or self._pa.types.is_large_string(values.type)
+        ):
+            return self._typed_array(values, dtype)
+        return values
+
     def _feature_arrays(
         self,
         table: str,
         node_ids: Sequence[int],
         names: Sequence[str],
     ) -> dict[str, Any]:
+        self._last_retrieval_profile = None
         runtime = getattr(self, "_runtime_batch", None)
         if runtime is not None and table in runtime["raw_features"]:
             ids = runtime["graphs"]["main"]["node_ids"].get(table)
             if ids is not None and np.array_equal(ids.to_numpy(), np.asarray(node_ids)):
                 data = self._pa.Table.from_batches(runtime["raw_features"][table]["record_batches"])
                 if all(name in data.column_names for name in names):
-                    return {name: data[name].combine_chunks() for name in names}
+                    return {
+                        name: self._decode_decimal_array(table, name, data[name].combine_chunks())
+                        for name in names
+                    }
         if not names:
             return {}
         if not node_ids:
@@ -2138,9 +2158,10 @@ class DiskGraphSource:
                 for name in names
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
-        for event in self._sampler.fetch_features(
+        iterator = self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
-        ):
+        )
+        for event in iterator:
             if event["type"] == "feature":
                 batch = event["batch"]
                 for name in names:
@@ -2148,6 +2169,7 @@ class DiskGraphSource:
                     if index < 0:
                         raise RuntimeError(f"DiskGraph returned no {name!r} feature for {table!r}")
                     chunks[name].append(batch.column(index))
+        self._last_retrieval_profile = getattr(iterator, "native_profile", None)
         result = {
             name: (
                 parts[0]
@@ -2164,6 +2186,7 @@ class DiskGraphSource:
                     f"DiskGraph returned {len(values)} {name!r} values for "
                     f"{len(node_ids)} {table!r} nodes"
                 )
+            result[name] = self._decode_decimal_array(table, name, values)
         return result
 
     @staticmethod

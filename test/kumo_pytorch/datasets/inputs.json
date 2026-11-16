@@ -1,0 +1,454 @@
+{
+  "schema_version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "provenance": {
+    "repository": "https://github.com/kumo-ai/kumo-engine-arena",
+    "revision": "b0701af6075de1cf79f0064d1f8213cc9fb4fbc6",
+    "catalogs": [
+      "benchmarks/registry/datasets.v1.json",
+      "benchmarks/registry/anchors.v1.json"
+    ]
+  },
+  "datasets": {
+    "hi-small": {
+      "dataset_id": "aml-data/hi-small",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 99240770,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-small/accounts.parquet",
+          "bytes": 8425649,
+          "sha256": "818569ae0ae8e059aa9b2a93ec1ef795326dc407a01fe9de599aac67a1e5e326"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-small/patterns.parquet",
+          "bytes": 86986,
+          "sha256": "2eb3312374ea7be417ae873309631fd540c6fc8e4c5eb760330584dcf1eb9f38"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-small/transactions.parquet",
+          "bytes": 90728135,
+          "sha256": "9bfe6d172e7d4c527f791bc0b2e2fb0297288098c19814bc81ad77b8ddf74d26"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet",
+          "bytes": 10549556,
+          "sha256": "471e991f31e3e36e65c69f94df70cae01aec6fc43b08eaf3bee4c2af429696b2"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/_bindings/v1/binding.json",
+          "bytes": 1273,
+          "sha256": "8e728588893185bec8d812c6f58ddf45abd81feb7e7ab64d1f61c81c96f58277"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/_bindings/v1/entities.parquet",
+          "bytes": 898874,
+          "sha256": "16e228c25f4597bf64b459c8f7de14f82dd6cd6fbefdc46e0113b00013bc960e"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/account-daily/v1/manifest.json",
+          "bytes": 25385,
+          "sha256": "97bb412b1a5327ded1ab3470c32eb46841e7fedb761a23f199d9ed109f8a6180"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/account-daily/v1/anchors.parquet",
+          "bytes": 131432935,
+          "sha256": "1322fd03d63e740704e67495a51e138b4dec245411a5f6a59a45ffd45c3e194c"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/account-daily/v2/manifest.json",
+          "bytes": 13679,
+          "sha256": "14593bc40bbed727dfea7ba12fc9513419d751e3284a32f99104f9c038a9ec72"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-small/account-daily/v2/anchors.parquet",
+          "bytes": 133322520,
+          "sha256": "0fe71590809e0949ee058b6900c996ac25c7cd7a6a0aa3512724277654210271"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    },
+    "hi-medium": {
+      "dataset_id": "aml-data/hi-medium",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 626119918,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-medium/accounts.parquet",
+          "bytes": 40036768,
+          "sha256": "3778531beaa9443c386594e6652b5c1073e4f121230dc1feb7ccb8033a82b489"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-medium/patterns.parquet",
+          "bytes": 569833,
+          "sha256": "37a3ae1f3b8615336a3f71bd23f48af5b0f99c725c4dbb64fe8bc752c3379ddc"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-medium/transactions.parquet",
+          "bytes": 585513317,
+          "sha256": "8e266fa3b93962bf765dcb94f753a1f2c33c0ac9f18aecf4c1d1aaf999c89eb3"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/_bindings/v1/accounts.parquet",
+          "bytes": 48484642,
+          "sha256": "a1910c1b425ac7805badde97b845b73c39ab113160c34d4a827852035b1b5ab6"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/_bindings/v1/binding.json",
+          "bytes": 1279,
+          "sha256": "87ad70d121a3118a843ad036d5d4b6f3b19f41292b121de2b7a04a49b480f165"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/_bindings/v1/entities.parquet",
+          "bytes": 4166470,
+          "sha256": "d3661a7e8be76f8d4a0fce12913c5ca19f7ea949de28c616d55dc177d4ddd431"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/account-daily/v1/manifest.json",
+          "bytes": 25536,
+          "sha256": "a7d7af27e3b9703e7227dae5424795e4a875694a304d19725c41557ec18d4982"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/account-daily/v1/anchors.parquet",
+          "bytes": 913957405,
+          "sha256": "0e90ffc29f245517feb44a08d6bb8b2cf2eb0507bd747511f14e5bc2116cb920"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/account-daily/v2/manifest.json",
+          "bytes": 13782,
+          "sha256": "a0d12ecc2af664d2a5310f42c2b9044fd9d1f3397e07f678232b6f70abc7f72f"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-medium/account-daily/v2/anchors.parquet",
+          "bytes": 934261642,
+          "sha256": "ef691ed101272d0dad16cf9ead773f6962e66e30c6afdcc7c689237882023e1e"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    },
+    "hi-large": {
+      "dataset_id": "aml-data/hi-large",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 3300643349,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-large/accounts.parquet",
+          "bytes": 40074250,
+          "sha256": "4c48d7eafdc5f0273c5c0e4ab93ec0794ca84e516d59cd926c0c245d87d7a9b1"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-large/patterns.parquet",
+          "bytes": 3461542,
+          "sha256": "de9e2554c4438e4b82121260432d9518423503f931329af3a03aca4a5e05b8b6"
+        },
+        {
+          "key": "datasets/aml-data/v8/hi-large/transactions.parquet",
+          "bytes": 3257107557,
+          "sha256": "8c7619109a45b7ac288c6e94f2a6ea296981c621c6d05110878c785f8a9901cc"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/_bindings/v1/accounts.parquet",
+          "bytes": 48802289,
+          "sha256": "61104ffc688429d777b3345207557ec2ef3a825a0a8805f3fbaab3c586b0b4e2"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/_bindings/v1/binding.json",
+          "bytes": 1278,
+          "sha256": "14f3cbcb3ea175c085ddeda403ccec5e79efbdc49b0481732e32bca647e6c080"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/_bindings/v1/entities.parquet",
+          "bytes": 4020487,
+          "sha256": "e9435bec20bb345dd792dcc58b7230a59b35caa73e7b9f65e5c9ea49676542cf"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/account-daily/v1/manifest.json",
+          "bytes": 32884,
+          "sha256": "193e1b5a9b6528e5efc699f65128cfc71b3472701fb3711b4908428e5a2d0130"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/account-daily/v1/anchors.parquet",
+          "bytes": 4404577705,
+          "sha256": "05c456d4a300c7c094e70bc9bf9d0b90536b9a9295a822314057c123fe23c140"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/account-daily/v2/manifest.json",
+          "bytes": 13866,
+          "sha256": "c4196f682eb5800c298575ff2523e98da8899aebe871b3a78e04070101eb7498"
+        },
+        {
+          "key": "anchors/aml-data/v8/hi-large/account-daily/v2/anchors.parquet",
+          "bytes": 4534780370,
+          "sha256": "e40c291745927f09bb317d9693bff2a3f57fc50dcd0a41488abe5de3bd592338"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    },
+    "li-small": {
+      "dataset_id": "aml-data/li-small",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 136681846,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-small/accounts.parquet",
+          "bytes": 12133189,
+          "sha256": "63badb2f23773ed8195adeba56495cc475a86d0a5aa283cda1030c4926f981c6"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-small/patterns.parquet",
+          "bytes": 29622,
+          "sha256": "9e400ec35ae42cfd7f095f7723c4537ba71077d393ddc05be895b8aca1ab538a"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-small/transactions.parquet",
+          "bytes": 124519035,
+          "sha256": "b36dec7e7f6eb1d79b5df6b4b953cd88ccbc47278892db9db6d1ca62916fbd13"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/_bindings/v1/accounts.parquet",
+          "bytes": 14881800,
+          "sha256": "8cca9169fcbeaf44d45c8668cc178a655e2a1ed585c511e9ac20bed19f995ef0"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/_bindings/v1/binding.json",
+          "bytes": 1275,
+          "sha256": "c27d60c2db911fd5bbe95b0b7173d243ef538ce695f33ee7c1ee11370c42462a"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/_bindings/v1/entities.parquet",
+          "bytes": 1290585,
+          "sha256": "1c75f6f9feca693b110673da5f670ab69ae5c530877728b26638f4ea6fece932"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/account-daily/v1/manifest.json",
+          "bytes": 25402,
+          "sha256": "33108a522c37e9b1ab6370aa479ac44ce46d5a2f2e8794a3f20d957209da3920"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/account-daily/v1/anchors.parquet",
+          "bytes": 179163187,
+          "sha256": "f13ca58dd27fae12897afa8dc001e3f93048633b683d7813ccda8f6b8b91180e"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/account-daily/v2/manifest.json",
+          "bytes": 13688,
+          "sha256": "d331d4ae47a70a3936594b92d679d15802f88a8487f8f2afd6fd1ab1a74722a3"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-small/account-daily/v2/anchors.parquet",
+          "bytes": 182040012,
+          "sha256": "676bb34032326d56a4a2035f6fe5e14f1c651fb1f46e31d42f920dfca391b776"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    },
+    "li-medium": {
+      "dataset_id": "aml-data/li-medium",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 611594783,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-medium/accounts.parquet",
+          "bytes": 38569523,
+          "sha256": "26f4f28b739017c539046398763a9329101fbff581ef5903b290c63e65daae62"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-medium/patterns.parquet",
+          "bytes": 110101,
+          "sha256": "0f29d091f15cad6f77190a14270d07c3f17947dd181004e9b077c093cccd25bd"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-medium/transactions.parquet",
+          "bytes": 572915159,
+          "sha256": "7739064af6b6f428da0369067d37a7da5c0bb08cf4829acedf7e173c4c8580a3"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet",
+          "bytes": 46742279,
+          "sha256": "8a47abedd397f1d96a13ed2bd1a26bbf3440c7cb0263140975b0bc0f8ae0246a"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/_bindings/v1/binding.json",
+          "bytes": 1279,
+          "sha256": "ad29e9bcb1b2514c1c6f8405c54db516771caf460e837276ba2c23498ab8a1e6"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/_bindings/v1/entities.parquet",
+          "bytes": 4039866,
+          "sha256": "cedc0a83b91f50516f074d918a57e0fd35ff71819065eafb6542e2b30a2ffc8b"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/account-daily/v1/manifest.json",
+          "bytes": 25530,
+          "sha256": "543a88cac9650d6f4ceda0435f1405593ea7c15560f9a59f5501c88ba8fa9f4f"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/account-daily/v1/anchors.parquet",
+          "bytes": 851750119,
+          "sha256": "38affdea6568e3e5badf0fb3036f6a5b9c7812d4fe16c3188c589131febf295f"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/account-daily/v2/manifest.json",
+          "bytes": 13780,
+          "sha256": "583ced0e369612fef7d249e25b9574a46a0be841a098fc0754df18431b94f53a"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-medium/account-daily/v2/anchors.parquet",
+          "bytes": 871753282,
+          "sha256": "270c835000af2067e33ce3dc97e6e4696899ebb328b33cc176c89d7a202a3a33"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    },
+    "li-large": {
+      "dataset_id": "aml-data/li-large",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 3224494111,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "files": [
+        {
+          "key": "datasets/aml-data/v8/manifest.json",
+          "bytes": 24273,
+          "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-large/accounts.parquet",
+          "bytes": 39254070,
+          "sha256": "00536ddc255107e4cf2e3207107e38ac587a771f5aa7be484170b0e878e77878"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-large/patterns.parquet",
+          "bytes": 530798,
+          "sha256": "d3c7cf96383d1918901d26932323f0ac17f174670e0950821960e26858dcd896"
+        },
+        {
+          "key": "datasets/aml-data/v8/li-large/transactions.parquet",
+          "bytes": 3184709243,
+          "sha256": "d71a4defc39ca27c25f1799c5577961470aacbc52363f1805b60fcfe54aff7c7"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/_bindings/v1/accounts.parquet",
+          "bytes": 47888498,
+          "sha256": "348acf27605e6ffaaacc870f8066da57e22d61ae8c6b7153ff61adfbb1df3b5f"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/_bindings/v1/binding.json",
+          "bytes": 1277,
+          "sha256": "3e18b7db5454cdc04ffdb5b53d3461acdb2a2b32fd1c3b437d5f8306279df7cd"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/_bindings/v1/entities.parquet",
+          "bytes": 4171950,
+          "sha256": "01da43684332f66b95dc165ada1ec2094d0f14ba125efa163271edd72a568dd6"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/account-daily/v1/manifest.json",
+          "bytes": 31046,
+          "sha256": "68a7faaa8e370365237b69eeaa72db6a51f64835824fe176944813d15d7aaa44"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/account-daily/v1/anchors.parquet",
+          "bytes": 4301061311,
+          "sha256": "aa0441b1f7baaad36dc67598df52b33f89c3f9a31e6e974697a04cef2d46aea5"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/account-daily/v2/manifest.json",
+          "bytes": 13837,
+          "sha256": "8b3ac4dbc931de55356218db440e400391ce2ea41b812744a43286422e66d563"
+        },
+        {
+          "key": "anchors/aml-data/v8/li-large/account-daily/v2/anchors.parquet",
+          "bytes": 4429270440,
+          "sha256": "096bc73a776835f48a705e7a1df116898618ad549ace624ccd90d6b0d1671bab"
+        }
+      ],
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ]
+    }
+  }
+}

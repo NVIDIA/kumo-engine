@@ -215,6 +215,18 @@ pub struct RuntimeBatch {
     /// (e.g. "tt_id/train_seeds") is included here only when the seed has
     /// feature columns; otherwise `hetero[train_table_name].tf` stays empty.
     pub raw_features: HashMap<String, RawFeatureBank>,
+    /// Native graph profile, excluding Python conversion. Elapsed time includes
+    /// native scheduling/output work; it is not CPU time.
+    pub profile: NativeProfile,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct NativeProfile {
+    pub sampling_ns: u64,
+    pub retrieval_ns: u64,
+    pub rows_examined: u64,
+    pub rows_decoded: u64,
+    pub fused: bool,
 }
 
 #[derive(Debug, Default, Clone)]

@@ -1,0 +1,104 @@
+{
+  "dataset_id": "aml-data",
+  "source_url": "https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml",
+  "versioned_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+  "kagglehub_version": "1.0.2",
+  "verified_at_utc": "2026-10-16T19:05:59.402838+00:00",
+  "license": "CDLA-Sharing-1.0",
+  "license_source": "https://github.com/IBM/AML-Data",
+  "license_url": "https://cdla.dev/sharing-1-0/",
+  "file_count": 18,
+  "total_bytes": 41608549656,
+  "files": [
+    {
+      "path": "HI-Large_Patterns.txt",
+      "bytes": 13807473,
+      "sha256": "bcf815a1931cfdcefd5d6d9feaa8f95dbc33cfd6ef8cd52d9a41e8d994c22820"
+    },
+    {
+      "path": "HI-Large_Trans.csv",
+      "bytes": 17052760651,
+      "sha256": "d13635e297c64673826217631fb88d635c4f506052e1bde833895eda2a65c3f2"
+    },
+    {
+      "path": "HI-Large_accounts.csv",
+      "bytes": 147691860,
+      "sha256": "c799ad2527e90b439147942518ae9a19f660e70ae6c3b78029ecb380a2d81cf4"
+    },
+    {
+      "path": "HI-Medium_Patterns.txt",
+      "bytes": 2279574,
+      "sha256": "d612cd7ed6f7761c0e36f3b788dfbae68aa0842c77145b192c777c22daba5c9f"
+    },
+    {
+      "path": "HI-Medium_Trans.csv",
+      "bytes": 3031783420,
+      "sha256": "3126afb8155e7c8815d62bc5370549a7b5ae6bf7dfe872b3cd7813e66a3d7ff5"
+    },
+    {
+      "path": "HI-Medium_accounts.csv",
+      "bytes": 145008642,
+      "sha256": "0fb441d31df9ca0868803eebce718b7e85a4e385334222427c400a5ba64475f9"
+    },
+    {
+      "path": "HI-Small_Patterns.txt",
+      "bytes": 323844,
+      "sha256": "2c546b5ce6009e73851f0139af053cf845f08bf92f3bc82fe1eb937dec2ef39b"
+    },
+    {
+      "path": "HI-Small_Trans.csv",
+      "bytes": 475664283,
+      "sha256": "b19d39f515523373f991b689c07e11e7b0b95c17a2c27a87d91584ae16c5b040"
+    },
+    {
+      "path": "HI-Small_accounts.csv",
+      "bytes": 34053187,
+      "sha256": "786808526e33cfc441212dd6fccda7edfc24172149bed59c6ef59b186836b014"
+    },
+    {
+      "path": "LI-Large_Patterns.txt",
+      "bytes": 1934790,
+      "sha256": "1f7024cdc01a7b0bfcba00db7e72946f65ebf08cfd9f4cc61259ce54b7541e0c"
+    },
+    {
+      "path": "LI-Large_Trans.csv",
+      "bytes": 16742513790,
+      "sha256": "9240e875e7522400c0bd4db1049108b18bb43bbba0a96ff221b62cdef3f7a094"
+    },
+    {
+      "path": "LI-Large_accounts.csv",
+      "bytes": 144349585,
+      "sha256": "8e68ee4767cfb9a280a94cc31ff8a6c3c71e4c58aad8939e3f13fc2194030b0c"
+    },
+    {
+      "path": "LI-Medium_Patterns.txt",
+      "bytes": 390893,
+      "sha256": "6aa4c4041894eb272339ed10c862a4ee1ac53a469326ed9dd3dd9e35da0e625c"
+    },
+    {
+      "path": "LI-Medium_Trans.csv",
+      "bytes": 2976436978,
+      "sha256": "0fc89584453c97472b1bfde7ca746e21d7167140c22a6c4875272b197a4a3910"
+    },
+    {
+      "path": "LI-Medium_accounts.csv",
+      "bytes": 141781157,
+      "sha256": "d553f80638c183dd0b015f85810da7085a2fcf0adb4abee61f2ed609c693cab4"
+    },
+    {
+      "path": "LI-Small_Patterns.txt",
+      "bytes": 99156,
+      "sha256": "734c15b7ff4be1a04a3529bd1524b92c1e8b62289d3ce4881423596ee47a208f"
+    },
+    {
+      "path": "LI-Small_Trans.csv",
+      "bytes": 650422357,
+      "sha256": "f7a9940339c78b5d1476071505b5867c0f5319640b9c4279d13f531bf965319d"
+    },
+    {
+      "path": "LI-Small_accounts.csv",
+      "bytes": 47248016,
+      "sha256": "f51322afe81859fefc58b09cae6068dbdacce78cd9dfb9ef2b693e5190ec4718"
+    }
+  ]
+}

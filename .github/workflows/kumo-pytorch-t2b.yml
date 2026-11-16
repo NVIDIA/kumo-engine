@@ -4,10 +4,10 @@
 
 name: kumo-pytorch nightly end-to-end
 
-# The nightly tier: the end-to-end flows at M, and conformance properties on
-# more generated seed batches, on both engines. Not a required check. Pull
-# requests run it only when they change this workflow or the tiers'
-# configuration.
+# The nightly tier: existing package regressions, the end-to-end flows at M,
+# conformance on both engines, and AML checks. Not a required check. Pull
+# requests run it when they change this workflow, the tiers' configuration,
+# shared setup, or the standalone AML testing suite.
 on:  # yamllint disable-line rule:truthy
   schedule:
     - cron: '0 9 * * *'
@@ -18,6 +18,7 @@ on:  # yamllint disable-line rule:truthy
         required: false
   pull_request:
     paths:
+      - 'test/kumo_pytorch/**'
       - 'packages/experimental/kumo-pytorch/tests/e2e/tiers.py'
       - 'packages/experimental/kumo-pytorch/tests/e2e/runs.py'
       - '.github/actions/kumo-pytorch-setup/**'
@@ -36,8 +37,228 @@ defaults:
     working-directory: packages/experimental/kumo-pytorch
 
 jobs:
+  dataset-tooling:
+    name: PyTorch nightly dataset tooling checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.12'
+      - name: Test acquisition without AWS or service fixtures
+        run: |
+          uvx --python 3.12 --from pytest==8.4.2 python -m pytest \
+            -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
+            test/kumo_pytorch/checks -q
+
   diskgraph-wheel:
     uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  benchmark-memory:
+    name: PyTorch nightly Linux memory and file-cache validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Provision a dedicated container cgroup and validate peaks
+        run: |
+          mkdir -p "$RUNNER_TEMP/benchmark-memory"
+          docker run --rm --network none --read-only --cgroupns private \
+            --pids-limit 64 --memory 256m --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
+            -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/app \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/test/kumo_pytorch/benchmarking,dst=/app/test/kumo_pytorch/benchmarking,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/benchmark-memory,dst=/out" \
+            --mount type=volume,dst=/scratch \
+            python:3.12-slim-bookworm python -c \
+            'import subprocess; subprocess.run(["mount", "-o", "remount,rw", "/sys/fs/cgroup"], check=True); from test.kumo_pytorch.benchmarking.validate_memory import main; from test.kumo_pytorch.benchmarking.validate_cache import main as cache_main; code = main(["--cgroup", "/sys/fs/cgroup", "--output", "/out/memory-validation.json"]); raise SystemExit(cache_main(["--workdir", "/scratch", "--output", "/out/cache-validation.json"]) or code)'
+      - name: Show Linux memory validation
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/benchmark-memory/memory-validation.json" ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          from pathlib import Path
+          for path in sorted((Path(os.environ['RUNNER_TEMP']) / 'benchmark-memory').glob('*-validation.json')):
+              result = json.loads(path.read_text())
+              print(f'### {path.stem}')
+              print(f"Status: **{result['status']}**. Kernel: `{result['kernel']}`.")
+              for check in result.get('checks', []):
+                  print(f'- {check}')
+          PY
+          fi
+      - name: Validate complete workers and cgroup cleanup
+        run: |
+          docker run --rm --network none --read-only --cgroupns private \
+            --pids-limit 64 --memory 256m --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
+            -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/app \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/test/kumo_pytorch,dst=/app/test/kumo_pytorch,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/benchmark-memory,dst=/out" \
+            python:3.12-slim-bookworm python -c \
+            'import os,subprocess; from pathlib import Path; subprocess.run(["mount","-o","remount,rw","/sys/fs/cgroup"],check=True); root=Path("/sys/fs/cgroup"); control=root/"supervisor"; control.mkdir(); (control/"cgroup.procs").write_text(str(os.getpid())); (root/"cgroup.subtree_control").write_text("+memory"); from test.kumo_pytorch.benchmarking.validate_isolation import main; raise SystemExit(main(["--output","/out/isolation"]))'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-benchmark-memory
+          path: ${{ runner.temp }}/benchmark-memory
+          retention-days: 14
+
+  benchmark-gpu:
+    name: PyTorch nightly GPU measurement validation
+    needs: diskgraph-wheel
+    # NVIDIA runners do not accept pull_request jobs. Manual dispatch permits
+    # validation of a reviewed internal branch before merging it into main.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on:
+      group: nv-gpu-amd64-rtxpro6000-1gpu
+      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    timeout-minutes: 22
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-extra: cu130
+      - name: Install the measurement-only NVML binding
+        run: uv pip install nvidia-ml-py==13.615.71
+      - name: Validate real GPU measurements
+        run: |
+          python -m test.kumo_pytorch.benchmarking.validate_gpu \
+            --output "$RUNNER_TEMP/benchmark-gpu"
+      - name: Show GPU validation report
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/benchmark-gpu/report.md" ]; then
+            cat "$RUNNER_TEMP/benchmark-gpu/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-benchmark-gpu
+          path: ${{ runner.temp }}/benchmark-gpu
+          retention-days: 14
+
+  benchmark-aml:
+    name: PyTorch nightly AML benchmark campaigns
+    needs: [diskgraph-wheel, benchmark-memory, benchmark-gpu]
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on:
+      group: nv-gpu-amd64-rtxpro6000-1gpu
+      labels: linux-amd64-gpu-rtxpro6000-latest-1
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 240
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-extra: cu130
+      - name: Install measurement-only NVML binding
+        run: uv pip install nvidia-ml-py==13.615.71
+      - name: Read private AML inputs with the Engine test role
+        id: aml-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify pinned sources and anchors
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
+        run: |
+          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+            --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
+      - name: Plan all declared AML workload and model combinations
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          template = json.loads(Path('test/kumo_pytorch/workloads/aml-benchmark.json').read_text())
+          template.update(data_dir=str(root / 'aml-data'), cache_mode='cold-warm')
+          cases = [dict(name=f"{s['selector']['workload_id']}-{family}",
+                        adapter='test.kumo_pytorch.aml_benchmark:factory',
+                        config=dict(template, family=family, workload=s['selector']['workload_id']))
+                   for s in json.loads(Path('test/kumo_pytorch/workloads/aml.json').read_text())
+                   for family in s['models']]
+          (root / 'aml-benchmark-cases.json').write_text(json.dumps(cases, indent=2))
+          PY
+      - name: Run CUDA campaigns in dedicated worker cgroups
+        run: |
+          python -m test.kumo_pytorch.benchmarking.suite \
+            --config "$RUNNER_TEMP/aml-benchmark-cases.json" \
+            --output "$RUNNER_TEMP/aml-benchmarks" --isolate-memory \
+            --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1
+      - name: Show benchmark results
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/aml-benchmarks/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-benchmarks/report.md" >> "$GITHUB_STEP_SUMMARY"
+            echo 'Download kumo-pytorch-aml-benchmarks for linked reports, metric coverage and raw observations.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-benchmarks
+          path: |
+            ${{ runner.temp }}/aml-acquisition.json
+            ${{ runner.temp }}/aml-benchmark-cases.json
+            ${{ runner.temp }}/aml-benchmarks/**/*.json
+            ${{ runner.temp }}/aml-benchmarks/**/*.jsonl
+            ${{ runner.temp }}/aml-benchmarks/**/*.md
+            ${{ runner.temp }}/aml-benchmarks/**/*.log
+            !${{ runner.temp }}/aml-benchmarks/**/work/**
+            !${{ runner.temp }}/aml-benchmarks/**/*-fitted-state/**
+          retention-days: 14
+
+  package-regressions:
+    name: PyTorch nightly existing package tests
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Run existing regressions in place
+        # Other jobs below own conformance and the T2b lifecycle executions.
+        run: |
+          python -m pytest -q --require-imports tests \
+            --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py
 
   plan:
     name: Plan the nightly end-to-end runs
@@ -92,6 +313,19 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Check AML model consumers on tiny Kumo batches
+        working-directory: .
+        run: |
+          python -m pytest -c test/kumo_pytorch/pytest.ini \
+            --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
+            test/kumo_pytorch/model_checks -q
+      - name: Retain controlled AML learning reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-learning
+          path: ${{ runner.temp }}/aml-checks/**/learning.json
+          retention-days: 14
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: kumo-pytorch-t2b-*-seed*
