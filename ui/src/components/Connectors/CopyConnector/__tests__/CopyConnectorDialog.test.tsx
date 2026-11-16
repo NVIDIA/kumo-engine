@@ -117,7 +117,7 @@ describe("CopyConnectorDialog", () => {
         );
         expect(onClose).toHaveBeenCalled();
         expect(navigate).toHaveBeenCalledWith(
-            "/project/project-marketing/connectors/"
+            "/project/project-marketing/connectors/Sales copy"
         );
     });
 

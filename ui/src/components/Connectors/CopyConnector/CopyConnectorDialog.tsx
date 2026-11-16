@@ -193,7 +193,7 @@ const CopyConnectorDialogComponent = ({
                                         onClose();
                                         navigate(
                                             getProjectPath(copied.project_id)
-                                                .Connectors
+                                                .Connectors + copied.name
                                         );
                                     }}>
                                     Go to project
