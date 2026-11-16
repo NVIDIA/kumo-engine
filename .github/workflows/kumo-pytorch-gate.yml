@@ -56,21 +56,33 @@ jobs:
             echo affected=false >> "$GITHUB_OUTPUT"
           fi
 
+  # One DiskGraph wheel per run, shared by the CPU and DiskGraph workflows.
+  diskgraph-wheel:
+    needs: changes
+    if: needs.changes.outputs.affected == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
   cpu:
     name: CPU
-    needs: changes
+    needs: [changes, diskgraph-wheel]
     if: needs.changes.outputs.affected == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/kumo-pytorch-tests.yml
+    with:
+      prebuilt-diskgraph-wheel: true
 
   diskgraph:
     name: DiskGraph
-    needs: changes
+    needs: [changes, diskgraph-wheel]
     if: needs.changes.outputs.affected == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/kumo-pytorch-diskgraph.yml
+    with:
+      prebuilt-diskgraph-wheel: true
 
   policy:
     name: kumo-pytorch-policy
@@ -91,7 +103,7 @@ jobs:
 
   gate:
     name: kumo-pytorch-gate
-    needs: [changes, cpu, diskgraph, policy]
+    needs: [changes, diskgraph-wheel, cpu, diskgraph, policy]
     # A failed or cancelled dependency must fail this check rather than skip it.
     if: ${{ always() }}
     runs-on: ubuntu-24.04
@@ -102,6 +114,7 @@ jobs:
         env:
           CHANGES_RESULT: ${{ needs.changes.result }}
           AFFECTED: ${{ needs.changes.outputs.affected }}
+          WHEEL_RESULT: ${{ needs.diskgraph-wheel.result }}
           CPU_RESULT: ${{ needs.cpu.result }}
           DISKGRAPH_RESULT: ${{ needs.diskgraph.result }}
           POLICY_RESULT: ${{ needs.policy.result }}
@@ -122,8 +135,9 @@ jobs:
               exit 1
               ;;
           esac
-          if [[ "$CPU_RESULT" != success || "$DISKGRAPH_RESULT" != success || "$POLICY_RESULT" != success ]]; then
-            echo "::error::kumo-pytorch checks must pass (cpu=$CPU_RESULT, diskgraph=$DISKGRAPH_RESULT, policy=$POLICY_RESULT)."
+          if [[ "$WHEEL_RESULT" != success || "$CPU_RESULT" != success ||
+                "$DISKGRAPH_RESULT" != success || "$POLICY_RESULT" != success ]]; then
+            echo "::error::kumo-pytorch checks must pass (diskgraph-wheel=$WHEEL_RESULT, cpu=$CPU_RESULT, diskgraph=$DISKGRAPH_RESULT, policy=$POLICY_RESULT)."
             exit 1
           fi
           echo 'kumo-pytorch checks passed.'

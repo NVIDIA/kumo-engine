@@ -21,6 +21,11 @@ on:  # yamllint disable-line rule:truthy
       - 'pyproject.toml'
       - 'uv.lock'
   workflow_call:
+    inputs:
+      prebuilt-diskgraph-wheel:
+        description: The caller already uploaded this run's diskgraph-wheel artifact.
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
@@ -32,11 +37,13 @@ concurrency:
 
 jobs:
   diskgraph-wheel:
+    if: ${{ !inputs.prebuilt-diskgraph-wheel }}
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   cpu:
     name: kumo-pytorch-tests
     needs: diskgraph-wheel
+    if: ${{ !cancelled() && (needs.diskgraph-wheel.result == 'success' || needs.diskgraph-wheel.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:

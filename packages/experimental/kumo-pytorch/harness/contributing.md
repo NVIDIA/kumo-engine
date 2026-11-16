@@ -403,15 +403,17 @@ only GPU skips remain.
 every PR. Its first job decides whether the PR can affect kumo-pytorch: a
 change to this package, `/packages/diskgraph`, `/scripts/diskgraph`, the
 kumo-pytorch workflows, setup action and scripts, the DiskGraph wheel
-workflow, or the workspace's `pyproject.toml` or `uv.lock`. If so, it runs:
+workflow, or the workspace's `pyproject.toml` or `uv.lock`. If so, it builds
+one DiskGraph wheel from the commit's `/packages/diskgraph` (cached by its
+source tree, so most PRs reuse it), shared by the CPU and DiskGraph jobs, and
+runs:
 
 - **`CPU / kumo-pytorch-tests`** (`kumo-pytorch-tests.yml`): conformance on the
   in-memory engine, the test suite, Ruff lint and format checks, and a wheel
   build.
-- **`DiskGraph / …`** (`kumo-pytorch-diskgraph.yml`): one DiskGraph wheel built
-  from the commit's `/packages/diskgraph` (cached by its source tree, so most
-  PRs reuse it), then `kumo-pytorch-diskgraph` runs conformance on both engines
-  and the whole suite with `--require-imports`; `kumo-pytorch-notebooks`
+- **`DiskGraph / …`** (`kumo-pytorch-diskgraph.yml`): `kumo-pytorch-diskgraph`
+  runs conformance on both engines and the whole suite with
+  `--require-imports`; `kumo-pytorch-notebooks`
   executes the `examples/` notebooks and requires their outputs to match the
   committed files; `kumo-pytorch-install` builds the sdist and the wheel from
   it, installs it with DiskGraph's wheel into a fresh environment, and runs the
