@@ -86,27 +86,25 @@ impl<'a> EdgeUnpacker<'a> {
     /// true on a prefix and false after it. Entry 0 is checked first, so an empty
     /// prefix only touches the front of the segment.
     pub fn partition_point(&self, mut pred: impl FnMut(u64) -> bool) -> usize {
+        diskgraph_core::indexed_range::partition_point_by(self.len(), |i| pred(self.key_at(i)))
+    }
+
+    /// Number of entries remaining in this view.
+    pub fn len(&self) -> usize {
         if self.entry_bytes == 0 {
             return 0;
         }
-        let len = (self.end as usize - self.ptr as usize) / self.entry_bytes;
-        if len == 0 || !pred(self.key_at(0)) {
-            return 0;
-        }
-        let (mut lo, mut hi) = (1, len);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if pred(self.key_at(mid)) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
+        (self.end as usize - self.ptr as usize) / self.entry_bytes
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Probe a sort key without unpacking destination IDs or advancing the view.
     #[inline]
-    fn key_at(&self, index: usize) -> u64 {
+    pub fn key_at(&self, index: usize) -> u64 {
+        assert!(index < self.len(), "edge key index out of bounds");
         unsafe {
             let ptr = self.ptr.add(index * self.entry_bytes);
             if self.entry_bytes <= 8 {
