@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -16,7 +18,9 @@ import torch
 from kumo.pytorch import api
 from kumo.pytorch.contract.batch.tokens import MAX_SPECIAL_ID
 from kumo.pytorch.spec import _encode
+from tests.test_diskgraph_backend import _write_parquet
 
+ROOT = Path(__file__).parents[1]
 LABELS: dict[str, str] = {
     "pad": "[PAD]",
     "mask": "[MASK]",
@@ -84,6 +88,11 @@ def _contract(space: api.IdSpace) -> api.DataLoaderSpec:
 ROWS: list[dict[str, object]] = [
     {"id": 1, "country": "US"},
     {"id": 2, "country": "DE"},
+    {"id": 3, "country": None},
+]
+UNSEEN: list[dict[str, object]] = [
+    {"id": 1, "country": "FR"},
+    {"id": 2, "country": "US"},
     {"id": 3, "country": None},
 ]
 
@@ -206,8 +215,7 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     assert artifact.contract.batch.id_spaces["tokens"].special_ids == BLUEPRINT
     assert artifact.fitted_state.to_dict()["spaces"]["tokens"]["roles"] == BLUEPRINT
 
-    unseen = [{"id": 1, "country": "FR"}, {"id": 2, "country": "US"}, {"id": 3, "country": None}]
-    with api.prepare(artifact.contract, _dataset(unseen), api.InMemoryEngine()) as plan:
+    with api.prepare(artifact.contract, _dataset(UNSEEN), api.InMemoryEngine()) as plan:
         with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
             batch = next(task.batches(batch_size=3))
     emitted = batch.inputs["emitted"]["value_ids"]
@@ -215,6 +223,65 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     assert emitted[2].tolist() == [BLUEPRINT["missing"]]
     assert batch.inputs["omitted"]["value_ids"][2].tolist() == [BLUEPRINT["pad"]]
     assert torch.equal(emitted[1], trained.inputs["emitted"]["value_ids"][0])
+
+
+def _diskgraph(rows: list[dict[str, object]], directory: Path) -> tuple[api.Dataset, api.Engine]:
+    directory.mkdir(parents=True)
+    dataset = _write_parquet({"users": rows}, directory / "parquet")
+    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+
+
+def _infer_in_child(artifact_dir: Path, directory: Path, out: Path) -> None:
+    """Runs in a child interpreter: load the artifact, then infer on DiskGraph over UNSEEN."""
+
+    artifact = api.Artifact.load(artifact_dir)
+    dataset, engine = _diskgraph(UNSEEN, directory)
+    with api.prepare(artifact.contract, dataset, engine) as plan:
+        with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
+            batch = next(task.batches(batch_size=3))
+    child = {
+        "special_ids": dict(artifact.contract.batch.id_spaces["tokens"].special_ids),
+        "space": artifact.fitted_state.to_dict()["spaces"]["tokens"],
+        "emitted": batch.inputs["emitted"]["value_ids"].tolist(),
+        "omitted": batch.inputs["omitted"]["value_ids"].tolist(),
+    }
+    out.write_text(json.dumps(child))
+
+
+@pytest.mark.parametrize(
+    ("labels", "special_ids"),
+    [(LABELS, BLUEPRINT), (GAPPED_LABELS, GAPPED)],
+    ids=["blueprint", "gapped"],
+)
+def test_explicit_ids_survive_a_diskgraph_reload_in_a_fresh_process(
+    tmp_path: Path, labels: dict[str, str], special_ids: dict[str, int]
+) -> None:
+    pytest.importorskip("diskgraph")
+    contract = _contract(api.IdSpace(specials=labels, special_ids=special_ids))
+    dataset, engine = _diskgraph(ROWS, tmp_path / "train")
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_requests()) as task:
+            task.to_artifact().save(tmp_path / "artifact")
+            trained = next(task.batches(batch_size=3))
+            space = task.fitted_state.to_dict()["spaces"]["tokens"]
+
+    out = tmp_path / "child.json"
+    code = (
+        "from pathlib import Path; from tests.test_special_token_ids import _infer_in_child; "
+        f"_infer_in_child(Path({str(tmp_path / 'artifact')!r}), "
+        f"Path({str(tmp_path / 'infer')!r}), Path({str(out)!r}))"
+    )
+    subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
+    child = json.loads(out.read_text())
+
+    assert child["special_ids"] == special_ids
+    assert child["space"] == json.loads(json.dumps(space))
+    assert child["space"]["roles"] == special_ids
+    emitted, omitted = child["emitted"], child["omitted"]
+    assert emitted[0] == [special_ids["unknown"]]
+    assert emitted[1] == trained.inputs["emitted"]["value_ids"][0].tolist()
+    assert emitted[2] == [special_ids["missing"]]
+    assert omitted[2] == [special_ids["pad"]]
 
 
 def test_masked_values_use_the_explicit_mask_id() -> None:
