@@ -29,7 +29,10 @@ import { HandleErrorFunc } from "types/validation";
 import { errorStatusCode } from "utils/Constants";
 import { parseErrorMessage, prepareCustomError } from "utils/errorHandler";
 import { queryClient } from "utils/queryClient";
-import { invalidateProjectInfo } from "utils/queryInvalidation";
+import {
+    invalidateProjectInfo,
+    invalidateProjectList
+} from "utils/queryInvalidation";
 import { ReactQueryKeys } from "utils/reactQueryKeys";
 import { getStoredSelectedProjectId } from "utils/storage";
 
@@ -225,9 +228,7 @@ export const useArchiveProject = (
             setLoading(true);
             try {
                 await archiveProjectById({ projectId });
-                queryClient.invalidateQueries({
-                    queryKey: [ReactQueryKeys.ProjectList]
-                });
+                invalidateProjectList(queryClient);
                 return true;
             } catch (e) {
                 const statusCode = (

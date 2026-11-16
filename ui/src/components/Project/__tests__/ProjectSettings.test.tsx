@@ -399,6 +399,41 @@ describe("ProjectSettings", () => {
             );
         });
 
+        it("Should archive the project shown in the dialog when the selected project changes while it is open", async () => {
+            let rerender: ReturnType<typeof render>["rerender"] = () => {};
+            await act(async () => {
+                ({ rerender } = render(
+                    <MemoryRouter>
+                        <ProjectSettings />
+                    </MemoryRouter>,
+                    { wrapper: createWrapper(queryClient) }
+                ));
+            });
+            await waitForProjectLoad();
+
+            const dialog = await openArchiveDialog();
+            storeToLocalStorage(storageKeys.selectedProject, "other-project");
+            await act(async () => {
+                rerender(
+                    <MemoryRouter>
+                        <ProjectSettings />
+                    </MemoryRouter>
+                );
+            });
+            await userEvent.click(
+                within(dialog).getByRole("button", { name: "Archive" })
+            );
+
+            await waitFor(() => expect(archiveRequested()).toBe(true));
+            expect(
+                vi
+                    .mocked(mockAxiosInstance.post)
+                    .mock.calls.some(
+                        ([url]) => url === "v0/projects/other-project/archive"
+                    )
+            ).toBe(false);
+        });
+
         it("Should refresh cached project lists after archiving", async () => {
             const invalidate = vi.spyOn(queryClient, "invalidateQueries");
             await renderProjectSettings();

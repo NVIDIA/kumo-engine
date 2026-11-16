@@ -148,7 +148,7 @@ const ProjectSettings = () => {
         dialogRef.current?.toggleDialog(
             "Archive project",
             `Archive "${project?.display_name}"? New resources and jobs can't be created in an archived project. This can't be undone.`,
-            {},
+            { projectId },
             false,
             "Archive",
             "destructive"
@@ -157,12 +157,13 @@ const ProjectSettings = () => {
 
     const archiveInFlightRef = useRef(false);
 
-    const onArchiveConfirm = async () => {
-        if (!projectId || archiveInFlightRef.current) return;
+    const onArchiveConfirm = async (target?: { projectId?: string }) => {
+        const targetProjectId = target?.projectId;
+        if (!targetProjectId || archiveInFlightRef.current) return;
         archiveInFlightRef.current = true;
         dialogRef.current?.toggleDialog();
         try {
-            if (await archiveProject(projectId)) {
+            if (await archiveProject(targetProjectId)) {
                 openProject(navigate, DEFAULT_PROJECT_ID, DEFAULT_GROUP_ID);
             }
         } finally {
