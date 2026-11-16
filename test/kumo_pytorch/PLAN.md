@@ -949,5 +949,17 @@ and epoch experiment interface.
 The nightly selects fifteen loader campaigns: five input configurations on
 DiskGraph, Polars and the GPU reference. Reports label CPU/GPU output placement;
 there is no cross-engine batch equality or extra model-training path. CUDA
-libraries are installed only for reference timing in the existing benchmark job.
-Live GPU validation remains pending. See the [GPU timing guide](docs/benchmarking.md#gpu-loader-timing-reference).
+libraries are installed for reference checks and timing in the existing GPU
+validation and benchmark jobs. See the [GPU timing guide](docs/benchmarking.md#gpu-loader-timing-reference).
+
+Live CUDA integration validation passed on
+[43876305626](https://github.com/NVIDIA/kumo-engine/actions/runs/43876305626)
+at `73579263`: all five reference input configurations passed, with zero failures
+or skips, including CUDA-resident inputs/targets, explicit timing coverage and
+fresh/reused fitted state. The three existing CUDA-only package checks and GPU
+measurement validation also passed. The full real-AML three-backend campaigns
+are still running; this is not yet full-data GPU timing acceptance. Run
+`43874750714` was cancelled and replaced after review caught namespace substitution
+in CUDA kernel names; the port now preserves those identifiers and guards them
+with a static check. GPU reports also retain device identity independently of
+utilization/memory collectors.
