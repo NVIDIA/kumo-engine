@@ -32,7 +32,7 @@ For a control, add `--control` and use a separate reference. Results record `con
 Temporal-link imports use the query's label-window end to validate target creation times, matching generated answers.
 Controls load all exported answer rows into RAM. Their large-scale memory and runtime remain unqualified.
 Static-link imports omit native prior-stage target exclusions. Controls have no paired normal/control quality gate.
-References compare node and edge counts, training-table checks and metric bands.
+References compare node and edge counts, training-table checks and bands for each configured `val_<metric>` and `test_<metric>`. Training metrics and losses are recorded but do not gate.
 At 100M and 1B, an order-independent pandas hash covers all exported training rows.
 At 10B and 25B, native metadata supplies total rows, per-split rows and binary positive counts without a full export.
 Repeat and reload predictions need identical coordinates and score differences within the case tolerance.
