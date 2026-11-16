@@ -26,6 +26,23 @@ def test_vector_permutation_is_the_existing_scalar_permutation(size, seed):
     assert sorted(expected) == list(range(size))
 
 
+@pytest.mark.parametrize("half", range(17, 32))
+@pytest.mark.parametrize("window", ["start", "middle", "end"])
+def test_large_vector_domains_match_scalar_without_fallback(half, window, monkeypatch):
+    # Just above a power of two exercises cycle walking at every large width.
+    size = 2 ** (2 * half - 2) + 1
+    start = {"start": 0, "middle": size // 2, "end": size - 4096}[window]
+    positions = range(start, start + 4096)
+    order = _Permutation(size, 77)
+    expected = [order(position) for position in positions]
+
+    def refuse_scalar(self, position):
+        pytest.fail("large-domain parity must exercise the vector kernel")
+
+    monkeypatch.setattr(_Permutation, "__call__", refuse_scalar)
+    assert list(order.many(positions)) == expected
+
+
 @pytest.mark.parametrize("size", [2**32 - 1, 2**32 + 1, 2**63, 2**64 - 1, 2**64, 2**65 + 1])
 def test_large_domains_are_pointwise_and_do_not_allocate_an_epoch(size):
     positions = [0, 1, size // 2, size - 2, size - 1]

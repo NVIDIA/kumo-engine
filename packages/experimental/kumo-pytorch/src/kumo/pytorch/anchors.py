@@ -385,7 +385,7 @@ class _Permutation:
                 return value
 
     def many(self, positions):
-        """Evaluate independent positions in a bounded array, preserving scalar order."""
+        """Evaluate positions in scalar order; the caller bounds the input size."""
         import numpy as np
 
         # Avoid array overhead for tiny batches and retain scalar support for
