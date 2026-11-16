@@ -10,6 +10,9 @@ dataset/backend/model adapters, complete-epoch timing and readable/structured
 reports, AML bindings, fresh-process fitting comparisons and explicit Linux
 file-cache experiments. Measurement coverage remains incomplete.
 Full-population coverage remains pending; see [the plan](PLAN.md).
+The [population acceptance runner](docs/population.md) now provides smoke and
+full modes for all five AML combinations. Fixture validation does not establish
+full HI-small acceptance; required graph cases currently expose decimal failures.
 The [multi-source history follow-up](PLAN.md#pr-353-follow-up-multi-source-histories)
 adds required filter/cutoff checks and a bounded real-AML run. Unsupported
 required behavior fails normally; current row-filter rejection is not a skip

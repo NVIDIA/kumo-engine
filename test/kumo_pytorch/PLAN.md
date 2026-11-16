@@ -84,6 +84,15 @@ nonzero while required row-filter support is missing.
 
 ## Coverage ownership
 
+The [full-population follow-up](docs/population.md) implements the next PR #353
+criterion. It maps a001/a017/a018 to the existing AML declarations and retains
+all five current combinations. Native anchor tables stream the execution view;
+full mode fits every training anchor and verifies every split without a step
+limit. The nightly retains smoke/full reports separately from benchmarks, and
+required failures are ordinary failures. Local fixture validation: 19 passed,
+four decimal-related graph failures, zero skipped. Full real-data execution
+and validation at the chosen freeze commit remain outstanding.
+
 The nightly combines existing package tests, existing conformance and retail
 lifecycle jobs, and AML workload checks. Each test has one execution owner in
 the nightly; the existing PR/main package workflow remains independent.

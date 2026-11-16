@@ -289,6 +289,18 @@ jobs:
             --config "$RUNNER_TEMP/aml-timing-cases.json" \
             --output "$RUNNER_TEMP/aml-timings" --measurement-profile timing \
             --isolate-memory --repetitions 3 --epochs 2 --worker-timeout 1800
+      - name: Smoke-check every AML population binding
+        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.population --mode smoke \
+            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-population-smoke" \
+            --smoke-anchors 4 --batch-size 4 --threads 4
+      - name: Check complete AML populations
+        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.population --mode full \
+            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-population-full" \
+            --batch-size 4 --threads 4
       - name: Check real AML multi-source histories
         if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
         run: |
@@ -311,6 +323,11 @@ jobs:
       - name: Show benchmark results
         if: ${{ always() }}
         run: |
+          for mode in smoke full; do
+            if [ -f "$RUNNER_TEMP/aml-population-$mode/report.md" ]; then
+              cat "$RUNNER_TEMP/aml-population-$mode/report.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           if [ -f "$RUNNER_TEMP/aml-histories/report.md" ]; then
             cat "$RUNNER_TEMP/aml-histories/report.md" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -344,6 +361,18 @@ jobs:
             ${{ runner.temp }}/aml-benchmarks/**/*.log
             !${{ runner.temp }}/aml-benchmarks/**/work/**
             !${{ runner.temp }}/aml-benchmarks/**/*-fitted-state/**
+          retention-days: 14
+
+      - name: Retain AML population acceptance reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-populations
+          path: |
+            ${{ runner.temp }}/aml-population-*/report.json
+            ${{ runner.temp }}/aml-population-*/report.md
+            ${{ runner.temp }}/aml-population-*/*/report.json
+            ${{ runner.temp }}/aml-population-*/*/contract.json
           retention-days: 14
 
   package-regressions:
