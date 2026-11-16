@@ -110,7 +110,7 @@ def report(directory, config, identities, errors):
     steady_gpu_complete = True
     for window in steady_windows:
         device = identities.get(window["scope"]["repetition"], {}).get("device", "cpu")
-        if device == "cpu":
+        if device == "cpu" or profile == "timing":
             continue
         samples = [
             sample

@@ -423,8 +423,8 @@ accept a DiskGraph `index_dir`. Start workers with `POLARS_MAX_THREADS` matching
 `threads`; the nightly installs `polars==2.1.0` as a test-only dependency.
 
 The generic `--measurement-profile timing` option selects loader timings and
-sample counts/rates from the metric catalog. It rejects model training and GPU
-execution and disables memory collectors. The default `full` profile and its
+sample counts/rates from the metric catalog. It rejects model training and disables memory/GPU utilization collectors.
+CUDA loader comparisons synchronize each batch delivery. The default `full` profile and its
 73-metric obligations remain unchanged. Each timing campaign still requires
 independent repetitions, complete first/later epochs, explicit post-warmup
 windows and fresh/reused fitted-state evidence. Cache-control experiments are
@@ -455,3 +455,39 @@ retains individual values, medians and ranges, separated by fresh/reused fitting
 and epoch. Only workers that completed execution contribute to summary values;
 failed runs keep their errors and partial observations in linked reports and
 still fail the suite. The existing DiskGraph decimal failures remain failures.
+
+## GPU loader timing reference
+
+The [copied GPU backend](../reference_engine/gpu/README.md) adds a third timing
+point alongside DiskGraph and Polars. Its source is Arena main revision
+`f8ffd61bbe280d0cd515a6387387e9502f5d911d`. It runs entirely from the testing suite;
+there is no external Arena import or additional installed Kumo package.
+
+For the AML adapter select `backend: "gpu"`, `device: "cuda:0"`,
+`training: false` and `cache_mode: "uncontrolled"`, using the same sources,
+anchors, input contract, batch size and seed as the CPU controls. The nightly
+selects all five input configurations, so its combined loader report covers
+fifteen campaigns. Each has three independent fresh/reused-state pairs and two
+epochs. The test-only CUDA library pins live in
+[gpu-requirements.txt](../reference_engine/gpu-requirements.txt).
+
+GPU preparation replaces Kumo's `prepare(contract, dataset, engine)` call. The
+generic adapter accepts `KumoInputs.prepare_plan(contract, dataset)` and an
+optional `observe(observers)` callback for this alternate implementation.
+It preserves the standard task/materialization/artifact lifecycle and owns no
+model. A per-worker split directory permits the backend's normal routing for
+datasets larger than the device; the adapter never truncates histories to fit.
+
+`reference.load` includes context initialization, contract checking, routing,
+loading and backend index construction. GPU input/target fitting and categorical/
+numerical fitting have explicit timers; numerical statistics retain their
+existing host path. Device synchronization completes GPU operations inside
+these timers. Batch planning, delivery and end-to-end windows also synchronize;
+latency therefore does not measure only asynchronous kernel submission.
+
+The timing tables label output locations. DiskGraph and Polars deliver CPU
+tensors; this reference delivers GPU tensors. No model transfer or training is
+added to equalize those locations, and no batch-equality or model-quality claim
+is made. All three backends retain their actual emitted counts and runtime
+identities. GPU memory/utilization profiling remains outside this timing-only
+comparison, while existing CUDA training campaigns keep their full metric scope.

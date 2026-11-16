@@ -1,6 +1,6 @@
 """Public Kumo API adapter, independent of source schema and model architecture."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +19,8 @@ class KumoInputs:
     materialize_options: Mapping[str, Any] = field(default_factory=dict)
     batch_options: Mapping[str, Any] = field(default_factory=dict)
     reference: bool = False
+    prepare_plan: Callable[[Any, Any], Any] | None = None
+    observe: Callable[[Any], None] | None = None
 
 
 def kumo_workload(
@@ -62,21 +64,28 @@ def kumo_workload(
             if "epoch" in selected.batch_options:
                 raise ValueError("The benchmark runner owns epoch selection")
             state["inputs"] = selected
-            if selected.reference:
+            if selected.observe is not None:
+                selected.observe(observers)
+            plan_factory = selected.prepare_plan or (
+                lambda contract, dataset: prepare_task(
+                    contract, dataset, selected.engine
+                )
+            )
+            if selected.reference and selected.prepare_plan is None:
                 observers.patch(
                     selected.engine, "open", observers.timed("reference.load")
                 )
             with recorder.span("task.setup"):
                 plan = stack.enter_context(
-                    prepare_task(selected.contract, selected.dataset, selected.engine)
+                    plan_factory(selected.contract, selected.dataset)
                 )
-        observers.attach_source(plan._source)
+        observers.attach_source(getattr(plan, "_source", None))
         if probe_reopen:
             plan.close()
             plan = stack.enter_context(
-                prepare_task(selected.contract, selected.dataset, selected.engine)
+                plan_factory(selected.contract, selected.dataset)
             )
-            observers.attach_source(plan._source)
+            observers.attach_source(getattr(plan, "_source", None))
         with (
             recorder.span("materialization"),
             recorder.span("reference.fit") if selected.reference else nullcontext(),
@@ -93,6 +102,8 @@ def kumo_workload(
             task = stack.enter_context(
                 plan.materialize(selected.fitting_anchors, **options)
             )
+            if selected.prepare_plan is not None:
+                synchronize()
             if (
                 loaded is not None
                 and loaded.has_targets
@@ -119,7 +130,9 @@ def kumo_workload(
         )
         state["task"] = task
         state["recorder"] = recorder
-        observers.attach_source(task._assembler._source)
+        observers.attach_source(
+            getattr(getattr(task, "_assembler", None), "_source", None)
+        )
         if consumer_factory is not None:
             state["step"] = consumer_factory(task, recorder)
             if not callable(state["step"]):
@@ -134,6 +147,8 @@ def kumo_workload(
                     selected.epoch_anchors, epoch=epoch, **selected.batch_options
                 )
             )
+            if selected.prepare_plan is not None:
+                synchronize()
         while True:
             with (
                 recorder.span("reference.batch")
@@ -142,6 +157,8 @@ def kumo_workload(
             ):
                 try:
                     batch = next(iterator)
+                    if selected.prepare_plan is not None:
+                        synchronize()
                 except StopIteration:
                     return
             yield batch

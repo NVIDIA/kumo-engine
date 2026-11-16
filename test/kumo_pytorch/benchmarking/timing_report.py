@@ -56,6 +56,15 @@ def timing_summary(cases, output):
                 rows.append(
                     {
                         "case": case["name"],
+                        "output_devices": sorted(
+                            {
+                                w["identity"].get(
+                                    "output_device", w.get("device", "unspecified")
+                                )
+                                for _, r in selected
+                                for w in r.get("workloads", {}).values()
+                            }
+                        ),
                         "status": campaign["status"],
                         "mode": mode,
                         "epoch": epoch,
@@ -70,13 +79,14 @@ def timing_summary(cases, output):
                 )
     write_json(output / "timings.json", {"measurement_profile": "timing", "rows": rows})
     lines = [
-        "## CPU loader timing comparison",
+        "## Loader timing comparison",
         "",
         (
             "Medians of successful workers only; each cell retains repetitions and ranges in timings.json. "
             "Failed workers retain partial measurements and errors in their linked reports. "
             "Nested stages overlap and must not be added. Caches are uncontrolled. "
             "First/later epochs and fresh/reused fitting stay separate. "
+            "GPU timings synchronize device work; output locations are shown. "
             "This compares timings, not batch equality, training or model quality."
         ),
         "",
@@ -108,7 +118,14 @@ def timing_summary(cases, output):
         ),
     )
     for scope, columns in tables:
-        headings = ["Case", "Status", "Fit", "Epoch", "Successful / expected runs"]
+        headings = [
+            "Case",
+            "Status",
+            "Output",
+            "Fit",
+            "Epoch",
+            "Successful / expected runs",
+        ]
         lines += [
             "| " + " | ".join(headings + [c[0] for c in columns]) + " |",
             "| "
@@ -121,6 +138,7 @@ def timing_summary(cases, output):
             values = [
                 f"[{row['case']}]({row['case']}/report.md)",
                 row["status"],
+                ", ".join(row["output_devices"]) or "unspecified",
                 row["mode"],
                 "preparation" if row["epoch"] is None else row["epoch"],
                 f"{row['successful_runs']} / {row['expected_runs']}",

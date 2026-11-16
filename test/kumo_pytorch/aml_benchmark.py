@@ -145,19 +145,23 @@ def factory(config, workdir):
         raise ValueError("AML training supports CPU or runner-provided CUDA")
     seed = config.get("seed", 0)
     training = config.get("training", True)
-    if type(training) is not bool or (not training and device != "cpu"):
-        raise ValueError(
-            "Loader-only execution requires device=cpu; training must be boolean"
-        )
     backend = config.get("backend", "diskgraph")
-    if backend not in {"diskgraph", "polars"}:
-        raise ValueError("backend must be diskgraph or polars")
-    reference = backend == "polars"
+    if backend not in {"diskgraph", "polars", "gpu"}:
+        raise ValueError("backend must be diskgraph, polars or gpu")
+    reference = backend != "diskgraph"
+    if type(training) is not bool:
+        raise ValueError("training must be boolean")
     if reference and (
         training or cache_mode != "uncontrolled" or "index_dir" in config
     ):
         raise ValueError(
-            "Polars supports loader timing only, with resident tables and uncontrolled caches"
+            "Reference backends support loader timing only with uncontrolled caches and no DiskGraph index"
+        )
+    if backend == "gpu" and not device.startswith("cuda"):
+        raise ValueError("The GPU reference requires a runner-provided CUDA device")
+    if not training and backend != "gpu" and device != "cpu":
+        raise ValueError(
+            "DiskGraph and Polars loader-only execution requires device=cpu"
         )
     data_dir = Path(config["data_dir"]).resolve()
     previous_threads = torch.get_num_threads()
@@ -169,7 +173,7 @@ def factory(config, workdir):
     if reference:
         inapplicable.update(
             {
-                name: "Polars loads resident tables; no DiskGraph index or Rust operations"
+                name: "Reference preparation has no DiskGraph index or Rust sampling/retrieval operations"
                 for name in (
                     "index.build.elapsed_ns",
                     "index.reopen.elapsed_ns",
@@ -328,7 +332,15 @@ def factory(config, workdir):
             history_capacity=capacity,
             data_scope="complete train pass over bounded physical-row selection; full selected-root histories",
         )
-        if reference:
+        prepare_plan = observe = None
+        if backend == "gpu":
+            from .benchmarking.gpu_reference import bind
+
+            engine = None
+            prepare_plan, observe = bind(
+                recorder, split_dir=workdir / "gpu-split", device=device
+            )
+        elif backend == "polars":
             from .reference_engine.polars import PolarsEngine
 
             engine = PolarsEngine(num_threads=config["threads"])
@@ -357,6 +369,8 @@ def factory(config, workdir):
                 "output_format": "model",
             },
             reference=reference,
+            prepare_plan=prepare_plan,
+            observe=observe,
         )
 
     result = kumo_workload(
@@ -366,6 +380,7 @@ def factory(config, workdir):
             "workload": workload,
             "model": family if training else None,
             "backend": backend,
+            "output_device": device if backend == "gpu" else "cpu",
             "input_family": family,
             "anchor_version": selection["selector"]["anchor_version"],
             "anchors_per_split": config["anchors_per_split"],

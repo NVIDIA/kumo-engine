@@ -123,7 +123,14 @@ def _percentiles(values):
     return statistics.median(ordered), ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
-def _epoch(workload, recorder, epoch, warmup_batches=2, steady_min_batches=4):
+def _epoch(
+    workload,
+    recorder,
+    epoch,
+    warmup_batches=2,
+    steady_min_batches=4,
+    synchronize_batches=False,
+):
     workload.synchronize()
     totals = dict.fromkeys(BatchCounts.__dataclass_fields__, 0)
     absent = set()
@@ -149,6 +156,8 @@ def _epoch(workload, recorder, epoch, warmup_batches=2, steady_min_batches=4):
                         complete = True
                     else:
                         request["outcome"] = "produced"
+                    if synchronize_batches:
+                        workload.synchronize()
                 wait_ns += request["elapsed_ns"]
                 if complete:
                     break
@@ -376,12 +385,8 @@ def run(
                 if not isinstance(workload, Workload):
                     raise TypeError("factory must return Workload")
                 workload.validate()
-                if measurement_profile == "timing" and (
-                    workload.step is not None or workload.device != "cpu"
-                ):
-                    raise ValueError(
-                        "Timing comparisons require CPU loader-only workloads"
-                    )
+                if measurement_profile == "timing" and workload.step is not None:
+                    raise ValueError("Timing comparisons require loader-only workloads")
                 if not workload.identity.get("dataset") or not workload.identity.get(
                     "workload"
                 ):
@@ -397,7 +402,7 @@ def run(
                 )
                 recorder.write("workload", **identities[repetition])
                 workload.prepare(recorder)
-                if workload.device != "cpu":
+                if workload.device != "cpu" and measurement_profile == "full":
                     from .gpu import GPUCollector
 
                     recorder.observers = (
@@ -408,7 +413,13 @@ def run(
                     recorder.scope = {"repetition": repetition, "epoch": epoch}
                     workload.before_epoch(epoch, recorder)
                     _epoch(
-                        workload, recorder, epoch, warmup_batches, steady_min_batches
+                        workload,
+                        recorder,
+                        epoch,
+                        warmup_batches,
+                        steady_min_batches,
+                        synchronize_batches=measurement_profile == "timing"
+                        and workload.device != "cpu",
                     )
             except Exception:  # noqa: BLE001 -- retain arbitrary adapter failures in the report
                 errors.append(

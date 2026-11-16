@@ -240,8 +240,8 @@ jobs:
           (root / 'aml-benchmark-cases.json').write_text(json.dumps(cases, indent=2))
           timing = [dict(name=f"{case['name']}-{backend}", adapter=case['adapter'],
                          config=dict(case['config'], backend=backend, training=False,
-                                     device='cpu', cache_mode='uncontrolled'))
-                    for case in cases for backend in ('diskgraph', 'polars')]
+                                     device='cuda:0' if backend == 'gpu' else 'cpu', cache_mode='uncontrolled'))
+                    for case in cases for backend in ('diskgraph', 'polars', 'gpu')]
           (root / 'aml-timing-cases.json').write_text(json.dumps(timing, indent=2))
           PY
       - name: Run CUDA campaigns in dedicated worker cgroups
@@ -255,12 +255,21 @@ jobs:
         if: ${{ !cancelled() && steps.aml-credentials.outcome == 'success' }}
         id: polars-setup
         run: uv pip install polars==2.1.0
+      - name: Install test-only GPU reference dependencies
+        if: ${{ !cancelled() && steps.aml-credentials.outcome == 'success' }}
+        id: gpu-reference-setup
+        run: uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
       - name: Validate Polars timing adapters on tiny sources
         if: ${{ !cancelled() && steps.polars-setup.outcome == 'success' }}
         env:
           POLARS_MAX_THREADS: '4'
         run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py
-      - name: Compare CPU loader timings with Polars
+      - name: Validate GPU loader timing and fitted-state reuse
+        if: ${{ !cancelled() && steps.gpu-reference-setup.outcome == 'success' }}
+        env:
+          KUMO_GPU_REFERENCE_REQUIRED: '1'
+        run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py
+      - name: Compare loader timings with Polars and GPU references
         if: ${{ !cancelled() && steps.polars-setup.outcome == 'success' }}
         env:
           POLARS_MAX_THREADS: '4'

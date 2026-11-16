@@ -923,4 +923,31 @@ separately gates loader timings, counts, first/later epochs and state reuse.
 Caches are labelled uncontrolled. Reports expose failed workers, actual emitted
 counts and per-run timing distributions; no speedup is inferred from partial runs.
 The [benchmark guide](docs/benchmarking.md#polars-loader-timing-comparison) describes
-configuration and artifact locations. Live runner validation is pending.
+configuration and artifact locations.
+
+Validated on Engine nightly [43870021962](https://github.com/NVIDIA/kumo-engine/actions/runs/43870021962)
+at `f90e6cea`: all five Polars campaigns completed. Their 30 independent workers
+covered all 30 timing obligations, 60 complete epochs and 30,720 emitted examples.
+Source hashes, prepared-table identities, selected anchors and history capacities
+match the DiskGraph controls. The three DiskGraph sequence campaigns completed;
+graph/combined still expose the deliberately unpatched decimal defect, with
+combined's failed fresh fitting also leaving no artifact for reuse. No partial
+failed-worker timing enters summary medians. Existing sequence CUDA training
+campaigns retained complete full-profile coverage. Tooling passed 106 checks;
+package/AML checks retained their known nine/seven decimal failures.
+
+
+### GPU timing reference addition
+
+The user requested the Arena GPU backend as another timing-only comparison.
+The test-owned copy uses Arena main `f8ffd61b`, with imports renamed into
+`test.kumo_pytorch.reference_engine.gpu`. The common runner now accepts a CUDA
+loader without a model and synchronizes batch completion. Explicit GPU fitting
+hooks and the alternate preparation entry point retain the existing fitted-state
+and epoch experiment interface.
+
+The nightly selects fifteen loader campaigns: five input configurations on
+DiskGraph, Polars and the GPU reference. Reports label CPU/GPU output placement;
+there is no cross-engine batch equality or extra model-training path. CUDA
+libraries are installed only for reference timing in the existing benchmark job.
+Live GPU validation remains pending. See the [GPU timing guide](docs/benchmarking.md#gpu-loader-timing-reference).

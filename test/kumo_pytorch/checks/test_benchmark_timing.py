@@ -43,7 +43,7 @@ def test_timing_scope_rejects_training(tmp_path):
         measurement_profile="timing",
     )
     assert result["execution_status"] == "failed"
-    assert "CPU loader-only" in result["errors"][0]["traceback"]
+    assert "loader-only" in result["errors"][0]["traceback"]
 
 
 def test_unknown_profile_creates_no_output(tmp_path):
@@ -100,3 +100,49 @@ def test_timing_summary_separates_epochs_fit_modes_and_excludes_failures(tmp_pat
     assert rows[3]["metrics"]["materialization.elapsed_ns"]["median"] == 3
     assert all(row["status"] == "failed" for row in rows)
     assert "example/report.md" in "\n".join(lines)
+
+
+def test_gpu_timing_waits_for_each_delivery_without_gpu_collectors(tmp_path):
+    from test.kumo_pytorch.benchmarking import BatchCounts, Workload
+
+    from .test_benchmark import Clock
+
+    clock = Clock()
+    pending = False
+
+    def synchronize():
+        nonlocal pending
+        if pending:
+            clock.value += 1000  # Independent fake asynchronous completion cost.
+            pending = False
+
+    def batches(epoch):
+        nonlocal pending
+        for number in range(8):
+            pending = True
+            yield [number]
+            assert not pending, "The runner requested another batch before completion"
+
+    def adapter(config, workdir):
+        return Workload(
+            identity={"dataset": "fixture", "workload": "async-delivery"},
+            prepare=lambda recorder: None,
+            batches=batches,
+            count=lambda batch: BatchCounts(len(batch), 0),
+            device="cuda:0",
+            synchronize=synchronize,
+        )
+
+    result = run(
+        adapter,
+        {},
+        tmp_path / "run",
+        repetitions=1,
+        epochs=2,
+        measurement_profile="timing",
+        clock=clock,
+    )
+    assert result["execution_status"] == "completed", result["errors"]
+    assert result["experiments"]["steady_state"]["status"] == "measured"
+    assert not result["gpu_observations"]
+    assert all(e["metrics"]["batch_latency_p50_ns"] >= 1000 for e in result["epochs"])
