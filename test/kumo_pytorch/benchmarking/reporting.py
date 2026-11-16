@@ -4,7 +4,7 @@ import json
 import statistics
 from collections import defaultdict
 
-from .metrics import CONDITIONS, METRICS
+from .metrics import CONDITIONS, required_metrics
 
 
 def write_json(path, value):
@@ -16,6 +16,8 @@ def _text(value):
 
 
 def report(directory, config, identities, errors):
+    profile = config.get("measurement_profile", "full")
+    metrics = required_metrics(profile)
     observations = defaultdict(list)
     epochs = []
     backend_profiles = []
@@ -44,7 +46,7 @@ def report(directory, config, identities, errors):
             elif row["kind"] == "steady_window":
                 steady_windows.append(row)
     coverage = {}
-    for name, spec in METRICS.items():
+    for name, spec in metrics.items():
         cases = []
         for repetition in range(config["repetitions"]):
             declaration = identities.get(repetition, {}).get("inapplicable", {})
@@ -187,11 +189,17 @@ def report(directory, config, identities, errors):
             "status": "measured",
             "reason": "Verified selected Linux file-page residency before separate epochs; application/device caches uncontrolled",
         }
+    if profile == "timing":
+        conditions["cold_and_warm_caches"] = {
+            "status": "outside_scope",
+            "reason": "Loader timing comparison does not control caches",
+        }
     result = {
         "schema_version": 1,
+        "measurement_profile": profile,
         "status": "failed" if errors else "incomplete",
         "execution_status": "failed" if errors else "completed",
-        "metric_coverage": {"complete": measured, "total": len(METRICS)},
+        "metric_coverage": {"complete": measured, "total": len(metrics)},
         "experiments": conditions,
         "workloads": identities,
         "epochs": epochs,
@@ -213,7 +221,7 @@ def report(directory, config, identities, errors):
         "",
         (
             f"Status: **{result['status']}**. "
-            f"Execution: {result['execution_status']}. Metric coverage: {measured}/{len(METRICS)}."
+            f"Execution: {result['execution_status']}. Profile: {profile}. Metric coverage: {measured}/{len(metrics)}."
         ),
         "",
         "This is measurement evidence, not a performance-regression pass.",

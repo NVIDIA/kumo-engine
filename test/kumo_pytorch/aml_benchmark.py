@@ -116,6 +116,7 @@ def factory(config, workdir):
         "load_fitted_state",
         "save_fitted_state",
         "cache_mode",
+        "backend",
     }
     if set(config) - allowed:
         raise ValueError(
@@ -148,17 +149,44 @@ def factory(config, workdir):
         raise ValueError(
             "Loader-only execution requires device=cpu; training must be boolean"
         )
+    backend = config.get("backend", "diskgraph")
+    if backend not in {"diskgraph", "polars"}:
+        raise ValueError("backend must be diskgraph or polars")
+    reference = backend == "polars"
+    if reference and (
+        training or cache_mode != "uncontrolled" or "index_dir" in config
+    ):
+        raise ValueError(
+            "Polars supports loader timing only, with resident tables and uncontrolled caches"
+        )
     data_dir = Path(config["data_dir"]).resolve()
     previous_threads = torch.get_num_threads()
     state = {}
     # These declarations follow the selected contract, never probe availability.
     inapplicable = {
-        **{
-            f"reference.{stage}.elapsed_ns": "DiskGraph execution; reference comparison is a separate experiment"
-            for stage in ("load", "fit", "plan", "batch")
-        },
         "bpe.fit.elapsed_ns": "AML contracts use categorical encoders, not BPE",
     }
+    if reference:
+        inapplicable.update(
+            {
+                name: "Polars loads resident tables; no DiskGraph index or Rust operations"
+                for name in (
+                    "index.build.elapsed_ns",
+                    "index.reopen.elapsed_ns",
+                    "index.bytes",
+                    "native.sample.elapsed_ns",
+                    "native.retrieve.elapsed_ns",
+                    "native.aggregate.elapsed_ns",
+                )
+            }
+        )
+    else:
+        inapplicable.update(
+            {
+                f"reference.{stage}.elapsed_ns": "DiskGraph execution; reference comparison is a separate experiment"
+                for stage in ("load", "fit", "plan", "batch")
+            }
+        )
     if family == "graphsage":
         inapplicable.update(
             {
@@ -300,15 +328,21 @@ def factory(config, workdir):
             history_capacity=capacity,
             data_scope="complete train pass over bounded physical-row selection; full selected-root histories",
         )
+        if reference:
+            from .reference_engine.polars import PolarsEngine
+
+            engine = PolarsEngine(num_threads=config["threads"])
+        else:
+            engine = r.DiskGraphEngine(
+                index=Path(config.get("index_dir", workdir / "index")),
+                num_threads=config["threads"],
+            )
         return KumoInputs(
             build_contract(
                 aml_data_schema(), family, native=native, max_events=capacity
             ),
             dataset,
-            r.DiskGraphEngine(
-                index=Path(config.get("index_dir", workdir / "index")),
-                num_threads=config["threads"],
-            ),
+            engine,
             requests,
             requests,
             materialize_options={
@@ -322,6 +356,7 @@ def factory(config, workdir):
                 "seed": seed,
                 "output_format": "model",
             },
+            reference=reference,
         )
 
     result = kumo_workload(
@@ -330,7 +365,8 @@ def factory(config, workdir):
             "version": "v8",
             "workload": workload,
             "model": family if training else None,
-            "backend": "diskgraph",
+            "backend": backend,
+            "input_family": family,
             "anchor_version": selection["selector"]["anchor_version"],
             "anchors_per_split": config["anchors_per_split"],
             "population": "bounded train selection",
@@ -351,7 +387,7 @@ def factory(config, workdir):
         else (lambda: None),
         device=device,
         inapplicable=inapplicable,
-        probe_reopen=True,
+        probe_reopen=not reference,
         load_fitted_state=config.get("load_fitted_state"),
         save_fitted_state=config.get("save_fitted_state"),
     )

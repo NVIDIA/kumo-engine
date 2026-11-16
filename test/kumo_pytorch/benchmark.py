@@ -48,6 +48,9 @@ def main(argv=None):
         default=0.01,
         help="Seconds between sampled host-memory reads",
     )
+    parser.add_argument(
+        "--measurement-profile", choices=("full", "timing"), default="full"
+    )
     args = parser.parse_args(argv)
     module, separator, name = args.adapter.partition(":")
     if not separator or not module or not name:
@@ -63,6 +66,7 @@ def main(argv=None):
         gpu_interval=args.gpu_interval,
         memory_method=args.memory_method,
         memory_interval=args.memory_interval,
+        measurement_profile=args.measurement_profile,
         warmup_batches=args.warmup_batches,
         steady_min_batches=args.steady_min_batches,
     )

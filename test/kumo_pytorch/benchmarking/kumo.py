@@ -62,6 +62,10 @@ def kumo_workload(
             if "epoch" in selected.batch_options:
                 raise ValueError("The benchmark runner owns epoch selection")
             state["inputs"] = selected
+            if selected.reference:
+                observers.patch(
+                    selected.engine, "open", observers.timed("reference.load")
+                )
             with recorder.span("task.setup"):
                 plan = stack.enter_context(
                     prepare_task(selected.contract, selected.dataset, selected.engine)

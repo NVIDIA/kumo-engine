@@ -406,3 +406,52 @@ S3. The CPU PR trigger remains active; real-data CUDA jobs require a schedule
 or manual dispatch. A candidate workflow must be published to an internal branch
 before GitHub can execute it. The [collective CI review](../PLAN.md#collective-ci-review)
 records actual execution, expected decimal failures and remaining measurements.
+
+## Polars loader timing comparison
+
+The test-only [Polars engine](../reference_engine/README.md) uses the same Kumo
+contracts, prepared source tables and selected anchors as DiskGraph. The nightly
+adds CPU loader-only campaigns for each declared AML input family on both
+backends, independently of the existing CUDA model/training campaigns. Graph and
+combined keep v2 anchors. Batch size, thread count and source/anchor selection are
+shared; sampled graphs and individual batches need not be identical. No numerical
+parity or model-quality assertion is made across engines.
+
+Set `backend` to `polars` or `diskgraph`, `training` to `false`, `device` to `cpu`
+and `cache_mode` to `uncontrolled` in the AML adapter config. Polars does not
+accept a DiskGraph `index_dir`. Start workers with `POLARS_MAX_THREADS` matching
+`threads`; the nightly installs `polars==2.1.0` as a test-only dependency.
+
+The generic `--measurement-profile timing` option selects loader timings and
+sample counts/rates from the metric catalog. It rejects model training and GPU
+execution and disables memory collectors. The default `full` profile and its
+73-metric obligations remain unchanged. Each timing campaign still requires
+independent repetitions, complete first/later epochs, explicit post-warmup
+windows and fresh/reused fitted-state evidence. Cache-control experiments are
+outside this comparison: neither a new interpreter nor resident Polars tables
+establish a cold-cache claim.
+
+`reference.load` times the actual engine `open` call. `reference.fit` encloses
+materialization, `reference.plan` creates the batch iterator and
+`reference.batch` encloses its requests. These overlap their enclosing ingestion,
+materialization and batch-production timers and must not be added. DiskGraph
+index construction/reopen and Polars resident-table loading are reported in
+separate columns, with unsupported breakdowns visible in worker reports.
+
+```sh
+POLARS_MAX_THREADS=4 python -m test.kumo_pytorch.benchmarking.suite \
+  --config /path/to/paired-loader-cases.json --output /path/to/new-timings \
+  --measurement-profile timing --repetitions 3 --epochs 2
+```
+
+Cases retain the standard `name`, `adapter`, `config` schema. Each backend gets
+its own case and fresh process/state artifacts. Both use the same runner host;
+results include runtime/dependency pins, source identities and actual emitted
+counts. Source read/conversion and preparation are timed anew in each worker.
+
+The Actions job summary and `kumo-pytorch-aml-benchmarks` artifact include
+`aml-timings/report.md`, which puts loader campaigns side by side. `timings.json`
+retains individual values, medians and ranges, separated by fresh/reused fitting
+and epoch. Only workers that completed execution contribute to summary values;
+failed runs keep their errors and partial observations in linked reports and
+still fail the suite. The existing DiskGraph decimal failures remain failures.

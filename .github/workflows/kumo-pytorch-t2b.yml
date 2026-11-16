@@ -238,6 +238,11 @@ jobs:
                    for s in json.loads(Path('test/kumo_pytorch/workloads/aml.json').read_text())
                    for family in s['models']]
           (root / 'aml-benchmark-cases.json').write_text(json.dumps(cases, indent=2))
+          timing = [dict(name=f"{case['name']}-{backend}", adapter=case['adapter'],
+                         config=dict(case['config'], backend=backend, training=False,
+                                     device='cpu', cache_mode='uncontrolled'))
+                    for case in cases for backend in ('diskgraph', 'polars')]
+          (root / 'aml-timing-cases.json').write_text(json.dumps(timing, indent=2))
           PY
       - name: Run CUDA campaigns in dedicated worker cgroups
         run: |
@@ -246,6 +251,24 @@ jobs:
             --output "$RUNNER_TEMP/aml-benchmarks" --isolate-memory \
             --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1 \
             --memory-method sampled --memory-interval 0.01
+      - name: Install test-only Polars reference
+        if: ${{ !cancelled() && steps.aml-credentials.outcome == 'success' }}
+        id: polars-setup
+        run: uv pip install polars==2.1.0
+      - name: Validate Polars timing adapters on tiny sources
+        if: ${{ !cancelled() && steps.polars-setup.outcome == 'success' }}
+        env:
+          POLARS_MAX_THREADS: '4'
+        run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py
+      - name: Compare CPU loader timings with Polars
+        if: ${{ !cancelled() && steps.polars-setup.outcome == 'success' }}
+        env:
+          POLARS_MAX_THREADS: '4'
+        run: |
+          python -m test.kumo_pytorch.benchmarking.suite \
+            --config "$RUNNER_TEMP/aml-timing-cases.json" \
+            --output "$RUNNER_TEMP/aml-timings" --measurement-profile timing \
+            --isolate-memory --repetitions 3 --epochs 2 --worker-timeout 1800
       - name: Validate sampled host memory on the GPU host
         if: ${{ always() }}
         run: |
@@ -266,6 +289,9 @@ jobs:
             cat "$RUNNER_TEMP/aml-benchmarks/report.md" >> "$GITHUB_STEP_SUMMARY"
             echo 'Download kumo-pytorch-aml-benchmarks for linked reports, metric coverage and raw observations.' >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f "$RUNNER_TEMP/aml-timings/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-timings/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -274,6 +300,13 @@ jobs:
             ${{ runner.temp }}/sampled-memory-validation.json
             ${{ runner.temp }}/aml-acquisition.json
             ${{ runner.temp }}/aml-benchmark-cases.json
+            ${{ runner.temp }}/aml-timing-cases.json
+            ${{ runner.temp }}/aml-timings/**/*.json
+            ${{ runner.temp }}/aml-timings/**/*.jsonl
+            ${{ runner.temp }}/aml-timings/**/*.md
+            ${{ runner.temp }}/aml-timings/**/*.log
+            !${{ runner.temp }}/aml-timings/**/work/**
+            !${{ runner.temp }}/aml-timings/**/*-fitted-state/**
             ${{ runner.temp }}/aml-benchmarks/**/*.json
             ${{ runner.temp }}/aml-benchmarks/**/*.jsonl
             ${{ runner.temp }}/aml-benchmarks/**/*.md

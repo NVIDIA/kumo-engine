@@ -8,8 +8,11 @@ import pytest
 from test.kumo_pytorch.benchmarking.campaign import run_campaign
 
 
-@pytest.mark.parametrize("memory_method", ("kernel", "sampled"))
-def test_fresh_processes_retain_incomplete_coverage(tmp_path, memory_method):
+@pytest.mark.parametrize(
+    "memory_method,profile",
+    (("kernel", "full"), ("sampled", "full"), ("kernel", "timing")),
+)
+def test_fresh_processes_retain_incomplete_coverage(tmp_path, memory_method, profile):
     result = run_campaign(
         "test.kumo_pytorch.checks.test_benchmark:tabular",
         {},
@@ -18,14 +21,19 @@ def test_fresh_processes_retain_incomplete_coverage(tmp_path, memory_method):
         epochs=2,
         memory_method=memory_method,
         memory_interval=0.02,
+        measurement_profile=profile,
     )
     assert result["status"] == "incomplete"
     assert result["independent_repeated_runs"] == "measured"
-    assert "pending" in result["cold_and_warm_caches"]
+    assert (
+        "pending" if profile == "full" else "outside timing-comparison scope"
+    ) in result["cold_and_warm_caches"]
+    assert result["measurement_profile"] == profile
     for row in result["runs"]:
         directory = tmp_path / "runs" / row["name"]
         config = json.loads((directory / "config.json").read_text())
         assert config["runtime"]["pid"] == row["pid"] != os.getpid()
+        assert config["measurement_profile"] == profile
         assert config["memory_method"] == memory_method
         assert config["memory_interval_seconds"] == 0.02
         assert row["exit_code"] == 2

@@ -68,6 +68,10 @@ def run_suite(cases, output, **options):
             else "See results.json failure"
         )
         lines.append(f"| {row['name']} | {row['status']} | {link} |")
+    if options.get("measurement_profile") == "timing":
+        from .timing_report import timing_summary
+
+        lines += ["", *timing_summary(cases, output)]
     (output / "report.md").write_text("\n".join(lines) + "\n")
     return result
 
@@ -93,6 +97,9 @@ def main(argv=None):
         default=0.01,
         help="Seconds between sampled host-memory reads",
     )
+    parser.add_argument(
+        "--measurement-profile", choices=("full", "timing"), default="full"
+    )
     args = parser.parse_args(argv)
     result = run_suite(
         json.loads(args.config.read_text()),
@@ -104,6 +111,7 @@ def main(argv=None):
         gpu_interval=args.gpu_interval,
         memory_method=args.memory_method,
         memory_interval=args.memory_interval,
+        measurement_profile=args.measurement_profile,
         compare_fitting=True,
     )
     print(f"{result['status']}: {args.output / 'report.md'}")

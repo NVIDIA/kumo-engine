@@ -131,6 +131,57 @@ CONDITIONS = (
     "independent_repeated_runs",
 )
 
+# Loader comparisons have an explicit, smaller measurement scope. The full PDF
+# inventory remains the default for nightly model/training campaigns.
+TIMING_METRICS = {
+    name: METRICS[name]
+    for name in (
+        *(
+            f"{stage}.elapsed_ns"
+            for stage in (
+                "ingestion",
+                "source.read",
+                "source.convert",
+                "index.build",
+                "index.reopen",
+                "reference.load",
+                "anchors.prepare",
+                "task.setup",
+                "materialization",
+                "input.fit",
+                "target.fit",
+                "vocabulary.fit",
+                "statistics.fit",
+                "bpe.fit",
+                "state.load",
+                "reference.fit",
+                "reference.plan",
+                "reference.batch",
+                "batch_production",
+            )
+        ),
+        "samples",
+        "real_samples",
+        "padding_samples",
+        "batches",
+        "samples_per_second",
+        "first_batch_ns",
+        "batch_latency_p50_ns",
+        "batch_latency_p95_ns",
+        "later_batch_latency_p50_ns",
+        "later_batch_latency_p95_ns",
+        "batch_wait_ns",
+    )
+}
+
+
+def required_metrics(profile):
+    if profile == "full":
+        return METRICS
+    if profile == "timing":
+        return TIMING_METRICS
+    raise ValueError("measurement_profile must be full or timing")
+
 
 def validate_inapplicable(declarations):
     for name, reason in declarations.items():

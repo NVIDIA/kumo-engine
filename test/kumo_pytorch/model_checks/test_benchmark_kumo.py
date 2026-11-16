@@ -87,8 +87,16 @@ def test_native_state_comparison_in_fresh_processes(tmp_path):
     assert result["status"] == "incomplete"
 
 
-@pytest.mark.parametrize("backend", ("in_memory", "diskgraph"))
-@pytest.mark.parametrize("training", (False, True))
+@pytest.mark.parametrize(
+    "backend,training",
+    (
+        ("in_memory", False),
+        ("in_memory", True),
+        ("diskgraph", False),
+        ("diskgraph", True),
+        ("polars", False),
+    ),
+)
 def test_unrelated_dataset_and_model(tmp_path, backend, training):
     models, seen = [], []
 
@@ -121,12 +129,18 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
             )
             rows = [{"product_id": i, "price": float(i + 1)} for i in range(5)]
             recorder.measure("source.rows", len(rows))
-            if backend == "diskgraph":
+            if backend in {"diskgraph", "polars"}:
                 with recorder.span("source.convert"):
                     path = workdir / "products.parquet"
                     pq.write_table(pa.Table.from_pylist(rows), path)
                 dataset = r.Dataset({"products": r.Parquet(str(path))})
-                engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
+                if backend == "polars":
+                    pytest.importorskip("polars")
+                    from test.kumo_pytorch.reference_engine.polars import PolarsEngine
+
+                    engine = PolarsEngine()
+                else:
+                    engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
                 recorder.measure("converted.bytes", path.stat().st_size)
             else:
                 dataset = r.Dataset({"products": r.InMemoryRows(rows)})
@@ -141,10 +155,11 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
                 anchors,
                 anchors,
                 materialize_options={"fit_split": "train"},
+                reference=backend == "polars",
                 batch_options={
                     "batch_size": 3,
                     "output_format": "model"
-                    if backend == "diskgraph"
+                    if backend in {"diskgraph", "polars"}
                     else "inspectable",
                 },
             )

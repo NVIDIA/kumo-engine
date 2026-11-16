@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .metrics import required_metrics
 from .reporting import write_json
 
 
@@ -94,7 +95,9 @@ def run_campaign(
     gpu_interval=0.1,
     memory_method="kernel",
     memory_interval=0.01,
+    measurement_profile="full",
 ):
+    required_metrics(measurement_profile)
     if (
         type(repetitions) is not int
         or repetitions < 2
@@ -117,6 +120,7 @@ def run_campaign(
     write_json(
         output / "config.json",
         {
+            "measurement_profile": measurement_profile,
             "adapter": adapter,
             "config": config,
             "repetitions": repetitions,
@@ -158,6 +162,8 @@ def run_campaign(
                 str(epochs),
                 "--gpu-interval",
                 str(gpu_interval),
+                "--measurement-profile",
+                measurement_profile,
                 "--memory-method",
                 memory_method,
                 "--memory-interval",
@@ -166,6 +172,11 @@ def run_campaign(
             if isolate_memory:
                 command = [
                     "sudo",
+                    *(
+                        ["--preserve-env=POLARS_MAX_THREADS"]
+                        if "POLARS_MAX_THREADS" in os.environ
+                        else []
+                    ),
                     "--",
                     sys.executable,
                     "-m",
@@ -225,7 +236,11 @@ def run_campaign(
                         for name in (
                             "steady_state",
                             "first_and_later_epochs",
-                            "cold_and_warm_caches",
+                            *(
+                                ("cold_and_warm_caches",)
+                                if measurement_profile == "full"
+                                else ()
+                            ),
                         )
                     ),
                     "cache_experiment": result["experiments"]["cold_and_warm_caches"]
@@ -258,6 +273,7 @@ def run_campaign(
         c["status"] == "measured" for c in comparisons
     )
     result = {
+        "measurement_profile": measurement_profile,
         "status": "failed"
         if not completed or any(c["status"] == "failed" for c in comparisons)
         else "complete"
@@ -272,11 +288,15 @@ def run_campaign(
         "runs": runs,
         "fitting_comparisons": comparisons,
     }
+    if measurement_profile == "timing":
+        result["cold_and_warm_caches"] = (
+            "outside timing-comparison scope; caches uncontrolled"
+        )
     write_json(output / "results.json", result)
     lines = [
         "# Benchmark campaign",
         "",
-        f"Status: **{result['status']}**.",
+        f"Status: **{result['status']}**. Measurement profile: {measurement_profile}.",
         "",
         "Each run starts a fresh interpreter. Process isolation does not itself control OS caches; see worker conditions.",
         "",
@@ -324,6 +344,9 @@ def main(argv=None):
         default=0.01,
         help="Seconds between sampled host-memory reads",
     )
+    parser.add_argument(
+        "--measurement-profile", choices=("full", "timing"), default="full"
+    )
     args = parser.parse_args(argv)
     result = run_campaign(
         args.adapter,
@@ -337,6 +360,7 @@ def main(argv=None):
         gpu_interval=args.gpu_interval,
         memory_method=args.memory_method,
         memory_interval=args.memory_interval,
+        measurement_profile=args.measurement_profile,
     )
     print(f"{result['status']}: {args.output / 'report.md'}")
     return {"complete": 0, "failed": 1, "incomplete": 2}[result["status"]]

@@ -906,3 +906,21 @@ The earlier window-only run 43862085018 was stopped after retaining completed
 involvement repetitions showing 10–22 GPU samples per window. Run 43864367740
 provides the complete three-campaign validation of both changes. No kernel
 upgrade, runner administration or further AWS permission change was required.
+
+### Polars timing-only reference addition
+
+The final requested reference comparison uses the copied test-owned Polars
+engine under `reference_engine/`, with no Arena runtime dependency or installed
+package changes. Both engines use the same AML contracts, source/anchor selection,
+512 anchors per split, four-example batches and four threads. Polars is restricted
+to CPU loader execution. No cross-engine batch equality, model training or
+correctness-reference replacement is added.
+
+The nightly adds ten loader campaigns (five input configurations × two engines),
+each with three independent fresh/reused-state pairs and two complete epochs.
+The explicit timing profile preserves the existing full-profile obligations and
+separately gates loader timings, counts, first/later epochs and state reuse.
+Caches are labelled uncontrolled. Reports expose failed workers, actual emitted
+counts and per-run timing distributions; no speedup is inferred from partial runs.
+The [benchmark guide](docs/benchmarking.md#polars-loader-timing-comparison) describes
+configuration and artifact locations. Live runner validation is pending.

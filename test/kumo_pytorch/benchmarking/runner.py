@@ -17,7 +17,7 @@ from importlib.metadata import distributions
 from pathlib import Path
 
 from .interface import BatchCounts, Workload
-from .metrics import validate_inapplicable
+from .metrics import required_metrics, validate_inapplicable
 from .recording import Recorder
 from .reporting import report, write_json
 
@@ -90,6 +90,7 @@ def _runtime(factory):
                 "MKL_NUM_THREADS",
                 "OPENBLAS_NUM_THREADS",
                 "RAYON_NUM_THREADS",
+                "POLARS_MAX_THREADS",
             )
         },
         "hostname": platform.node(),
@@ -298,6 +299,7 @@ def run(
     gpu_interval=1.0,
     warmup_batches=2,
     steady_min_batches=4,
+    measurement_profile="full",
 ):
     """Run a trusted ``factory(config, workdir) -> Workload`` and retain evidence.
 
@@ -305,6 +307,7 @@ def run(
     Existing output directories are never overwritten. Failures retain reports;
     callers must inspect status (CLI uses nonzero for incomplete coverage).
     """
+    required_metrics(measurement_profile)
     for name, value in (
         ("repetitions", repetitions),
         ("epochs", epochs),
@@ -326,6 +329,7 @@ def run(
     output = Path(output)
     frozen = {
         "adapter_config": config,
+        "measurement_profile": measurement_profile,
         "repetitions": repetitions,
         "epochs": epochs,
         "runtime": _runtime(factory),
@@ -350,7 +354,7 @@ def run(
                 if memory_method == "sampled"
                 else CgroupMemory(memory_cgroup)
             )
-            if memory_cgroup is not None
+            if memory_cgroup is not None and measurement_profile == "full"
             else None
         )
 
@@ -372,6 +376,12 @@ def run(
                 if not isinstance(workload, Workload):
                     raise TypeError("factory must return Workload")
                 workload.validate()
+                if measurement_profile == "timing" and (
+                    workload.step is not None or workload.device != "cpu"
+                ):
+                    raise ValueError(
+                        "Timing comparisons require CPU loader-only workloads"
+                    )
                 if not workload.identity.get("dataset") or not workload.identity.get(
                     "workload"
                 ):
