@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Snowflake notebook launch and identity guards."""
+"""Platform planning and readback guards; these do not qualify live services."""
 
 import errno
 import importlib.util
@@ -19,8 +19,12 @@ platform = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(platform)
 
 
-def config():
-    return json.loads((DIRECTORY / 'mlops_platforms/snowflake.json').read_text())
+def profile_path(name):
+    return DIRECTORY / 'mlops_platforms' / f'{name}.json'
+
+
+def config(name='snowflake'):
+    return json.loads(profile_path(name).read_text())
 
 
 def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
@@ -31,9 +35,10 @@ def test_snowflake_requires_notebook_launch_before_connecting(monkeypatch):
         instance.placement()
 
 
-def test_attempt_resources_are_scoped_and_reconstructible(tmp_path):
+@pytest.mark.parametrize('name', platform.PLATFORMS)
+def test_attempt_resources_are_scoped_and_reconstructible(name, tmp_path):
     path = tmp_path / 'config.json'
-    path.write_text(json.dumps(config()))
+    path.write_text(json.dumps(config(name)))
     first, second = tmp_path / 'a', tmp_path / 'b'
     first.mkdir()
     second.mkdir()
@@ -51,25 +56,13 @@ def test_attempt_resources_are_scoped_and_reconstructible(tmp_path):
     (TimeoutError('service timed out'), False),
     (FileNotFoundError('stage absent'), False),
     (PermissionError('wrapper only'), False),
-    (PermissionError(errno.EACCES, 'denied'), False),
+    (PermissionError(errno.EACCES, 'denied'), True),
 ])
 def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
         cause, expected):
     wrapped = PermissionError('MLOps cannot write under artifact_root')
     wrapped.__cause__ = cause
     assert platform.denied_access(wrapped) is expected
-
-
-def test_provider_denial_codes_are_recognized():
-    class SnowDenied(RuntimeError):
-        sqlstate = '42501'
-
-    error = SnowDenied('Snowflake denies access')
-    assert platform.access_error(error) and platform.denied_access(error)
-    wrapped = RuntimeError('Tracking unavailable')
-    wrapped.__cause__ = error
-    assert platform.access_error(wrapped)
-    assert not platform.access_error(AssertionError('model identity wrong'))
 
 
 @pytest.mark.parametrize('phase', [None, 'negative'])
@@ -162,12 +155,16 @@ def test_notebook_worker_identity_is_checked_before_mlops(
 
 @pytest.mark.parametrize(
     'case', ['denied', 'local-spool', 'missing', 'timeout', 'writable'])
-def test_negative_requires_real_permission_denial(case, monkeypatch):
+@pytest.mark.parametrize('name', platform.PLATFORMS)
+def test_negative_requires_real_permission_denial(case, name, monkeypatch):
     import sys
 
-    denied = '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation'
-    instance = platform.Snowflake({
-        **config(), 'denied_artifact_root': denied
+    denied = {
+        'snowflake': '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
+        'databricks': '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
+    }[name]
+    instance = platform.Backend({
+        **config(name), 'denied_artifact_root': denied
     }, 'abcdef123456')
     instance.connector = object()
 
@@ -182,7 +179,12 @@ def test_negative_requires_real_permission_denial(case, monkeypatch):
             class ProviderDenied(RuntimeError):
                 sqlstate = '42501'
 
-            error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            if name == 'snowflake':
+                error.__cause__ = ProviderDenied('Snowflake stage write denied')
+            elif name == 'databricks':
+                class PermissionDenied(RuntimeError):
+                    error_code = 'PERMISSION_DENIED'
+                error.__cause__ = PermissionDenied('Volume write denied')
         elif case == 'missing':
             error.__cause__ = FileNotFoundError('stage missing')
         elif case == 'timeout':
@@ -201,3 +203,35 @@ def test_negative_requires_real_permission_denial(case, monkeypatch):
         with pytest.raises(platform.PlatformUnavailable,
                            match='without permission-denial'):
             instance.negative()
+
+
+def test_denied_databricks_root_can_use_an_isolated_catalog():
+    profile = config('databricks')
+    denied = '/Volumes/kumo_test_denied/kumo_test/test_denied/mlops-validation'
+    result = platform.validate({**profile, 'denied_artifact_root': denied})
+    assert result['catalog'] == profile['catalog']
+    assert result['schema'] == profile['schema']
+    assert result['artifact_root'] == profile['artifact_root']
+    assert result['denied_artifact_root'] == denied
+
+
+@pytest.mark.parametrize('denied', [
+    '/Volumes/readonly/schema/volume/../other',
+    '/Volumes/readonly/schema/volume/path?query=invalid',
+    '/Volumes/readonly/schema/volume//path',
+    '/Volumes/readonly/schema/volume',
+])
+def test_denied_databricks_root_rejects_unsafe_paths(denied):
+    with pytest.raises(ValueError, match='Volume test-prefix'):
+        platform.validate({**config('databricks'), 'denied_artifact_root': denied})
+
+
+@pytest.mark.parametrize('name', ['snowflake', 'databricks'])
+def test_typed_databricks_denial_without_error_code_stays_provider_scoped(name):
+    errors = pytest.importorskip('databricks.sdk.errors')
+    denied = errors.PermissionDenied('provider denied')
+    assert denied.error_code is None
+    wrapped = PermissionError('artifact write failed')
+    wrapped.__cause__ = denied
+    assert platform.denied_access(wrapped, provider_only=True,
+                                  provider=name) is (name == 'databricks')

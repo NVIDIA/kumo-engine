@@ -144,3 +144,24 @@ def test_reject_substituted_wheel_before_writing_manifest(
     with pytest.raises(ValueError):
         admission.prepare(wheel, source, output, run)
     assert not output.exists()
+
+
+def test_candidate_rejects_executable_mode_only_changes(tmp_path):
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=tmp_path,
+                                       text=True).strip()
+
+    git('init', '-q')
+    git('config', 'user.email', 'test@example.invalid')
+    git('config', 'user.name', 'Test')
+    script = tmp_path / 'scripts/build_wheel.sh'
+    script.parent.mkdir()
+    script.write_text('#!/bin/sh\nexit 0\n')
+    git('add', '.')
+    git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'base')
+    source = git('rev-parse', 'HEAD')
+    script.chmod(0o755)
+    git('add', '.')
+    git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'executable')
+    with pytest.raises(ValueError, match='does not match'):
+        admission.verify(tmp_path, dict(build=dict(source_commit=source)))
