@@ -351,8 +351,13 @@ does not establish GPU measurement correctness.
 [The suite command](../benchmarking/suite.py) accepts a JSON list of
 `{name, adapter, config}` cases; it has no dataset/model dispatch. Each case runs
 fresh/reused fitted-state pairs in independent interpreters. The AML nightly
-constructs this list from the existing workload catalog, uses 64 anchors per
+constructs this list from the existing workload catalog, uses 512 anchors per
 split with full histories, and performs three pairs of two epochs per case.
+At batch size four this provides 128 batches per epoch and 126 after warmup.
+The previous 64-anchor selection produced later nuFormer windows of about
+0.1 seconds, too short for two in-window GPU samples at the 0.1-second polling
+interval. The larger selection extends actual workload execution; the sampling
+interval and required-evidence checks are unchanged.
 This is a bounded population experiment, not full-AML population acceptance.
 
 The suite and campaign return 0 only when all required metric coverage and

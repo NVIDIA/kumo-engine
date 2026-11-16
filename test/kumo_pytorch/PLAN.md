@@ -835,3 +835,14 @@ threshold calibration remain outstanding. Synthetic and weekly remain deferred.
 Reference-engine performance comparison has no execution evidence; native-only
 inapplicability declarations do not establish that comparison. This review does not declare all PDF
 requirements complete.
+
+### GPU sampling window follow-up
+
+The nightly benchmark selection increases from 64 to 512 anchors per split
+for all five AML cases, retaining full histories and batch size four. This
+extends each epoch from 16 to 128 real batches, including 126 after warmup.
+The general runner, 0.1-second NVML polling interval and two-sample coverage
+requirement remain unchanged. No delay or synthetic samples are added.
+The earlier 64-anchor results remain historical evidence. Live validation of
+the larger selection is pending; the host-kernel peak limitation and exposed
+decimal defect remain separate failures.
