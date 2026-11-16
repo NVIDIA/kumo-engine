@@ -72,6 +72,15 @@ def mapped(tmp_path_factory):
             }
         ],
     }
+    # Two distinct fixture anchors allow a checkpoint inside the training epoch.
+    for selected in (groups, native_groups):
+        selected["train"].append(
+            {
+                **selected["train"][0],
+                "sample_id": selected["train"][0]["sample_id"] + "-2",
+                "physical_row_position": 10,
+            }
+        )
     selections = {
         "v1": {"split": native_groups, "forecast_split": groups},
         "v2": {"forecast_split": groups},
@@ -112,7 +121,7 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
         torch.set_num_threads(previous)
     assert result["status"] == "passed" and result["optimizer_updates"] == 1
     assert result["complete_epoch"] is False
-    assert result["fit_split"] == "train" and result["fit_requests"] == 1
+    assert result["fit_split"] == "train" and result["fit_requests"] == 2
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"
     for split in ("train", "valid", "test"):
         expected_id = "pretrain-train" if native and split == "train" else split
@@ -135,6 +144,7 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
         assert all(count > 0 for count in lifecycle["unknown_tokens"])
     finetuning = result["finetuning"]
     assert finetuning["status"] == "passed" and not finetuning["input_refitting"]
+    assert finetuning["parent_pid"] == os.getpid() != finetuning["pid"]
     assert finetuning["head_replaced"] == native
     assert finetuning["split"] == "forecast_split/train"
     pretrained = r.Artifact.load(tmp_path / "lifecycle/artifact")
@@ -146,13 +156,19 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
     first = finetuning["first_update"]
     resumed = finetuning["resume"]
     assert resumed["status"] == "passed" and resumed["completed_updates"] == 2
-    assert resumed["parent_pid"] == os.getpid() != resumed["pid"]
+    assert resumed["parent_pid"] == finetuning["pid"] != resumed["pid"]
+    assert resumed["pid"] != os.getpid()
     assert first["sample_ids"] == resumed["next_update"]["sample_ids"] == ["train"]
     assert first["target_weight"] == resumed["next_update"]["target_weight"] == 1
     if family != "graphsage":
         assert first["history_tokens"] == (24 if family == "pragma" else 43)
     if native:
         assert first["unknown_tokens"] > 0, "Finetuning fitted its new category"
+    mid_epoch = result["mid_epoch_resume"]
+    assert mid_epoch["status"] == "passed"
+    assert mid_epoch["parent_pid"] == os.getpid() != mid_epoch["pid"]
+    assert mid_epoch["final_iterator"]["batches"] == 2
+    assert len(mid_epoch["remaining"]) == 1
     # A validly bound but wrong model checkpoint must still fail prediction
     # equivalence; generic malformed/incompatible artifacts have package tests.
     if selection["selector"]["workload_id"] == "next-token-pretrain":

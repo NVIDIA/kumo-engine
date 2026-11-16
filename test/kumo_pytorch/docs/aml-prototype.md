@@ -226,8 +226,11 @@ AML text/BPE fields in this prototype.
 
 ## Finetuning and resume
 
-The [training lifecycle check](../training_lifecycle.py) reloads the saved task
-and weights. PRAGMA and next-token nuFormer retain their trained backbone and
+The [training lifecycle check](../training_lifecycle.py) starts a fresh Python
+process that reloads the saved task and weights before finetuning. The worker
+reopens the same DiskGraph index with `ingest="never"`; no live task or model is
+inherited. Its PID must differ from the calling process. PRAGMA and next-token
+nuFormer retain their trained backbone and
 replace the pretraining head with a binary account-involvement head. The three
 supervised cases retain their existing heads. This downstream PRAGMA task is a
 lifecycle check, not an additional starter-workload catalog entry.
@@ -235,18 +238,21 @@ lifecycle check, not an additional starter-workload catalog entry.
 All five paths use only the selected `forecast_split=train` anchors, retaining
 v2 execution clocks for graph models. `fitted=artifact.fitted_state.inputs`
 preserves vocabularies, special IDs and numeric state while allowing the label
-target to bind. Input fitting is guarded, input fingerprints and fitting
-provenance must remain unchanged, and only involvement labels are emitted.
+target to bind. Input fitting is guarded in the child; input fingerprints,
+independent state-content hashes and fitting provenance must remain unchanged,
+and only involvement labels are emitted.
 PRAGMA masking is off and nuFormer consumes full, unshifted histories.
 Independent involvement loss checks are reused; backbone parameters must update.
 
 After one finetuning update, the probe saves the task, bound model weights,
 AdamW state (including moments, steps and hyperparameters), CPU RNG and the next
-probe epoch. The uninterrupted process performs its next update; a fresh Python
+probe epoch. The finetuning process performs its next update; another fresh Python
 process restores the checkpoint without fitting and performs the same update.
 Sample IDs, input hashes, loss, model state and optimizer state must match
 exactly under the same CPU/thread/batch configuration. Resume artifacts and
-child logs live under each case's ignored `finetuning/` output directory.
+child logs live under each case's ignored `finetuning/` output directory. The
+nightly retains `report.json`, `finetune.log` and the resume `child.log` in the
+`kumo-pytorch-aml-learning` artifact, including logs when a required check fails.
 
 The existing raw-file fixture uses different pretraining and forecast training
 anchors. A category first seen at finetuning stays unknown; full-history lengths
@@ -254,11 +260,50 @@ and target counts are checked. Deliberately resetting AdamW moments and steps
 must fail comparison against uninterrupted training, even with correct model
 weights. Generic artifact validation remains in the existing package tests.
 
-All five real HI-small paths pass. These checks take the first batch of probe
-epochs 0 and 1, with four selected forecast training anchors by default. They
-verify resume after finetuning; they do not establish arbitrary mid-epoch
-iterator recovery, native pretraining-objective resume, convergence or GPU
-equivalence. The separate controlled learning checks are described below.
+The [fresh-process fixture tests](../model_checks/test_finetuning.py) cover all
+five combinations using generated source tables. They also deliberately discard
+the saved input state inside a fresh process and require the refitting guard to
+fail. The original raw AML tests still run and must fail normally on package
+defects; generated-fixture success is not real HI-small acceptance.
+
+The finetuning probe takes the first batch of epochs 0 and 1, with four selected
+forecast training anchors by default. Mid-epoch continuation of the original
+objectives is checked separately below. Neither probe establishes convergence
+or GPU equivalence.
+
+## Mid-epoch training resume
+
+The [checkpoint check](../checkpoint_resume.py) keeps each workload's original
+head and objective, including masked-value and next-token pretraining. It trains
+to an interior batch boundary, saves bound model weights, AdamW state, CPU RNG
+and `TaskBatches.state_dict()`, then finishes that epoch uninterrupted. A fresh
+interpreter reloads the same persisted task state and index, restores all four
+checkpoint components and continues with `TaskBatches.load_state_dict()`.
+Input/target refitting is forbidden throughout.
+
+Every remaining batch must match exactly: sample IDs/order, padding, inputs,
+targets and masks, logits, loss, eligible target count, model/optimizer state
+and RNG state. The final iterator state and full selected anchor population
+must also match, without omitted or repeated examples. Comparisons use the same
+CPU/thread configuration. The package currently replays consumed batches on
+resume; this check makes no seeking-speed claim.
+
+The [generated-source tests](../model_checks/test_checkpoint_resume.py) cover
+all five combinations at two checkpoint positions, using five training anchors,
+shuffling, one batch per loader chunk and a short final batch. Deliberately
+resetting the iterator position, AdamW moments or RNG must fail the comparison.
+Existing package tests retain ownership of generic iterator/configuration and
+native-anchor padding checks.
+
+`run_aml` also applies the resume check to each original training population;
+it requires at least two selected training anchors and uses a bounded probe
+batch size that leaves a suffix to resume. The nightly runs this alongside
+the existing real-data checks with four anchors per split and batch size two.
+Its `kumo-pytorch-aml-lifecycle` artifact contains overall/per-case reports and
+child logs. Generated-source reports are in `kumo-pytorch-aml-learning` under
+`mid-epoch-resume/`. Both artifact uploads run on failure as well as success.
+Unsupported behavior is an ordinary failure; passing generated sources does
+not establish full-data or CUDA acceptance.
 
 ## Controlled learning checks
 

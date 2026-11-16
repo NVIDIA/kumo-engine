@@ -1,16 +1,16 @@
-"""Bounded AML finetuning with frozen inputs and fresh-process optimizer resume."""
+"""Fresh-process AML finetuning with frozen inputs, followed by optimizer resume."""
 
 import argparse
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
-import torch
 import kumo.pytorch.api as r
+import torch
 
 from .involvement import verify_batch
 from .lifecycle import forbid_fitting, input_digest
@@ -86,15 +86,8 @@ def update(task, model, optimizer, requests, config, *, epoch):
     }
 
 
-def resume(directory):
-    directory = Path(directory)
-    config = json.loads((directory / "config.json").read_text())
-    torch.set_num_threads(config["threads"])
-    assert os.getpid() != config["parent_pid"] and r.__file__ == config["kumo_api"]
-    artifact = r.Artifact.load(directory / "artifact")
-    checkpoint = torch.load(directory / "optimizer.pt", weights_only=True)
-    assert artifact.fitted_state.fingerprint == checkpoint["fitted_state_sha256"]
-    requests = tuple(
+def training_requests(config):
+    return tuple(
         r.SampleRequest(
             **{
                 **row,
@@ -103,6 +96,17 @@ def resume(directory):
         )
         for row in config["training_requests"]
     )
+
+
+def resume(directory):
+    directory = Path(directory)
+    config = json.loads((directory / "config.json").read_text())
+    torch.set_num_threads(config["threads"])
+    assert os.getpid() != config["parent_pid"] and r.__file__ == config["kumo_api"]
+    artifact = r.Artifact.load(directory / "artifact")
+    checkpoint = torch.load(directory / "optimizer.pt", weights_only=True)
+    assert artifact.fitted_state.fingerprint == checkpoint["fitted_state_sha256"]
+    requests = training_requests(config)
     dataset = r.Dataset(
         {name: r.Parquet(path) for name, path in config["sources"].items()}
     )
@@ -141,8 +145,8 @@ def resume(directory):
 
 
 def check_training(lifecycle_directory, requests):
-    """Reload trained weights, finetune on forecast-train anchors, then resume."""
-    lifecycle_directory = Path(lifecycle_directory)
+    """Run finetuning in a fresh interpreter; keep required errors as failures."""
+    lifecycle_directory = Path(lifecycle_directory).resolve()
     config = json.loads((lifecycle_directory / "config.json").read_text())
     assert requests and all(row.split == "train" for row in requests)
     config["training_requests"] = [
@@ -158,10 +162,56 @@ def check_training(lifecycle_directory, requests):
         }
         for row in requests
     ]
+    config["finetune_parent_pid"] = os.getpid()
+    config["lifecycle_directory"] = str(lifecycle_directory)
     directory = lifecycle_directory.parent / "finetuning"
     directory.mkdir(exist_ok=False)
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    command = [
+        sys.executable,
+        "-m",
+        "test.kumo_pytorch.training_lifecycle",
+        str(directory),
+        "--finetune",
+    ]
+    with (directory / "finetune.log").open("w") as log:
+        child = subprocess.run(
+            command,
+            cwd=Path(__file__).resolve().parents[2],
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            timeout=240,
+            check=False,
+        )
+    if child.returncode:
+        raise RuntimeError(
+            f"Fresh-process finetuning failed; see {directory / 'finetune.log'}"
+        )
+    result = json.loads((directory / "report.json").read_text())
+    assert result["status"] == "passed"
+    assert result["pid"] != os.getpid()
+    assert result["parent_pid"] == os.getpid()
+    return result
+
+
+def finetune(directory):
+    """Reload only persisted inputs/weights before the first finetuning update."""
+    directory = Path(directory).resolve()
+    config = json.loads((directory / "config.json").read_text())
+    assert os.getpid() != config["finetune_parent_pid"], (
+        "Finetuning did not start a new process"
+    )
+    assert r.__file__ == config["kumo_api"], "Finetuning loaded a different package"
+    torch.set_num_threads(config["threads"])
+    torch.manual_seed(config["seed"])
+    lifecycle_directory = Path(config["lifecycle_directory"])
+    requests = training_requests(config)
+    assert requests and all(row.split == "train" for row in requests)
+    # The subsequent resume process must differ from this finetuning process.
+    config["parent_pid"] = os.getpid()
+    (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     artifact = r.Artifact.load(lifecycle_directory / "artifact")
+    assert artifact.fitted_state.fingerprint == config["fitted_state_sha256"]
     original = artifact.contract
     contract = replace(
         original,
@@ -180,6 +230,7 @@ def check_training(lifecycle_directory, requests):
         index=Path(config["index"]), ingest="never", num_threads=config["threads"]
     )
     frozen = artifact.fitted_state.inputs.fingerprint
+    input_state = input_digest(artifact.fitted_state.inputs.to_dict())
     # Target fitting is allowed; input fitting must never run even if it would
     # reproduce the same values. The full input fingerprint guards all state.
     with (
@@ -193,6 +244,7 @@ def check_training(lifecycle_directory, requests):
             requests, fitted=artifact.fitted_state.inputs, fit_split="train"
         ) as task:
             assert task.fitted_state.inputs.fingerprint == frozen
+            assert input_digest(task.fitted_state.inputs.to_dict()) == input_state
             assert (
                 task.fitted_state.fit["inputs"] == artifact.fitted_state.fit["inputs"]
             )
@@ -210,6 +262,7 @@ def check_training(lifecycle_directory, requests):
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
             first = update(task, model, optimizer, requests, config, epoch=0)
             assert task.fitted_state.inputs.fingerprint == frozen
+            assert input_digest(task.fitted_state.inputs.to_dict()) == input_state
             task.to_artifact().save(directory / "artifact")
             r.save_weights(
                 directory / "weights.pt", model.state_dict(), task.fitted_state
@@ -226,6 +279,7 @@ def check_training(lifecycle_directory, requests):
             torch.save(checkpoint, directory / "optimizer.pt")
             expected = update(task, model, optimizer, requests, config, epoch=1)
             assert task.fitted_state.inputs.fingerprint == frozen
+            assert input_digest(task.fitted_state.inputs.to_dict()) == input_state
     (directory / "expected.json").write_text(json.dumps(expected, indent=2) + "\n")
     with (directory / "child.log").open("w") as log:
         child = subprocess.run(
@@ -239,14 +293,18 @@ def check_training(lifecycle_directory, requests):
             stdout=log,
             stderr=subprocess.STDOUT,
             timeout=120,
+            check=False,
         )
     if child.returncode:
         raise RuntimeError(
             f"Fresh-process resume failed; see {directory / 'child.log'}"
         )
-    return {
+    result = {
         "status": "passed",
         "task": "account-involvement-next24h",
+        "pid": os.getpid(),
+        "parent_pid": config["finetune_parent_pid"],
+        "input_state_content_sha256": input_state,
         "split": "forecast_split/train",
         "input_state_sha256": frozen,
         "input_refitting": False,
@@ -256,8 +314,13 @@ def check_training(lifecycle_directory, requests):
         "resume": json.loads((directory / "result.json").read_text()),
     }
 
+    (directory / "report.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    resume(parser.parse_args().directory)
+    parser.add_argument("--finetune", action="store_true")
+    args = parser.parse_args()
+    (finetune if args.finetune else resume)(args.directory)

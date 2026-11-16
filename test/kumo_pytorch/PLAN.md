@@ -82,6 +82,44 @@ The output directory must be new. The command verifies the pinned source and
 anchor files, keeps the original splits, writes both case results and returns
 nonzero while required row-filter support is missing.
 
+## PR #353 follow-up: fresh-process finetuning
+
+The finetuning worker now starts in a fresh interpreter, reloads persisted task
+state and pretrained weights, and reopens the existing index without ingestion.
+All five model/workload combinations retain frozen input state and fitting
+provenance while binding downstream labels and updating backbone weights.
+An input-fitting guard rejects even a refit that would reproduce identical
+state. The existing optimizer-resume comparison runs in another fresh process.
+The nightly retains the finetuning report and both child-process logs.
+
+Local CPU validation on 2026-11-16: six new checks passed (five generated-source
+model cases and a deliberate refitting attempt), five existing raw AML checks
+failed on decimal decoding, and zero skipped. Those failures remain ordinary
+failures; no engine patch or expected-failure marker was added. CI and full
+real-data validation remain outstanding. The finetuning probe uses the first
+batches of epochs 0 and 1; original-objective mid-epoch resume is covered below.
+See [finetuning and resume](docs/aml-prototype.md#finetuning-and-resume).
+
+## PR #353 follow-up: mid-epoch training resume
+
+[Mid-epoch checks](docs/aml-prototype.md#mid-epoch-training-resume) now save and
+restore the real TaskBatches iterator position, model weights, AdamW state and
+CPU RNG in a fresh process. Every remaining batch and training update must
+match the uninterrupted suffix exactly, including native pretraining targets
+and masks. All five original workloads retain their original objectives.
+
+Ten generated-source cases cover two interior checkpoint positions, shuffled
+anchors, loader chunk boundaries and a short final batch. Deliberately lost
+iterator, optimizer or RNG state must fail. The existing package iterator tests
+remain in the package-regressions job; no duplicate configuration-rejection
+suite is added. `run_aml` exercises the same check on selected real anchors,
+and the nightly now retains a separate bounded real-data lifecycle artifact.
+Local CPU validation on 2026-11-16: ten new resume cases, six finetuning cases
+and five existing package iterator cases passed; five raw AML cases failed on
+the existing decimal-decoding defect before resume; zero skipped. CI/full-data
+and CUDA validation remain outstanding; no package behavior is patched or
+marked as an expected failure.
+
 ## Coverage ownership
 
 The [full-population follow-up](docs/population.md) implements the next PR #353

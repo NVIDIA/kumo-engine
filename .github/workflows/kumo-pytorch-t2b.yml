@@ -301,6 +301,14 @@ jobs:
           python -m test.kumo_pytorch.population --mode full \
             --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-population-full" \
             --batch-size 4 --threads 4
+      - name: Check bounded AML training lifecycle and mid-epoch resume
+        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.run_aml \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --prepared-dir "$RUNNER_TEMP/aml-lifecycle-prepared" \
+            --output "$RUNNER_TEMP/aml-lifecycle" --anchors-per-split 4 \
+            --batch-size 2 --steps 1 --threads 1
       - name: Check real AML multi-source histories
         if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
         run: |
@@ -373,6 +381,18 @@ jobs:
             ${{ runner.temp }}/aml-population-*/report.md
             ${{ runner.temp }}/aml-population-*/*/report.json
             ${{ runner.temp }}/aml-population-*/*/contract.json
+          retention-days: 14
+
+      - name: Retain real AML lifecycle reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-lifecycle
+          path: |
+            ${{ runner.temp }}/aml-lifecycle/report.json
+            ${{ runner.temp }}/aml-lifecycle/**/result.json
+            ${{ runner.temp }}/aml-lifecycle/**/report.json
+            ${{ runner.temp }}/aml-lifecycle/**/*.log
           retention-days: 14
 
   package-regressions:
@@ -468,6 +488,11 @@ jobs:
             ${{ runner.temp }}/aml-checks.xml
             ${{ runner.temp }}/aml-checks/**/learning.json
             ${{ runner.temp }}/aml-checks/**/results.json
+            ${{ runner.temp }}/aml-checks/**/finetuning/report.json
+            ${{ runner.temp }}/aml-checks/**/finetuning/finetune.log
+            ${{ runner.temp }}/aml-checks/**/finetuning/child.log
+            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/report.json
+            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/child.log
             ${{ runner.temp }}/aml-checks/**/coverage.json
             ${{ runner.temp }}/aml-checks/**/report.md
           retention-days: 14

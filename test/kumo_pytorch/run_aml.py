@@ -21,6 +21,7 @@ from .aml_source import (
     prepared_dataset,
 )
 from .contracts import build_contract
+from .checkpoint_resume import check_resume
 from .data import ROOT
 from .models.aml import build_model
 from .lifecycle import check_lifecycle
@@ -291,6 +292,7 @@ def run_case(
             native=False,
         ),
     )
+    report["mid_epoch_resume"] = check_resume(directory / "lifecycle", requests["train"])
     report["status"] = "passed"
     report["target_and_loss_checks"] = "passed" if target_checks else "not_checked"
     report["input_membership_and_counts"] = (
