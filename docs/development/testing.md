@@ -74,6 +74,13 @@ To test a new wheel without publication, run Kumo Engine - Build and publish
 wheel manually at the selected commit. Candidate PR feedback runs separately
 through the trusted PR GPU workflow.
 
+## Author tools
+
+Use the optional [author validation tools](author-validation.md) to discover
+existing local checks, run public smoke/scale harnesses, and retain paired
+benchmark commands, raw samples and scoped reports. They do not provision a
+machine or replace the owning test suites.
+
 ## Report evidence
 
 Record the command, environment, result, and any untested dependency. Keep

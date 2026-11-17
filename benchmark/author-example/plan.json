@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "workload_id": "integer-sum-runner-control-v1",
+  "scope": "A self-comparison of four integer sums. Exercises orchestration only; no engine or performance claim.",
+  "context": {
+    "seed": "not applicable",
+    "workers": 1,
+    "cache_state": "uncontrolled",
+    "device": "cpu"
+  },
+  "timeout_seconds": 30,
+  "pairs": 2,
+  "warmups": 0,
+  "inputs": [
+    {
+      "path": "workload.py"
+    }
+  ],
+  "correctness_expect": {
+    "cases": 4,
+    "output_sha256": "3bc524717bf646671b6d710228021a3d09da291bd7b5c930523f6039cafd461f"
+  },
+  "baseline": {
+    "cwd": "../..",
+    "python": "{runner_python}",
+    "argv": [
+      "{python}",
+      "benchmark/author-example/workload.py"
+    ],
+    "correctness_argv": [
+      "{python}",
+      "benchmark/author-example/workload.py",
+      "--receipt",
+      "{result}"
+    ],
+    "artifacts": [
+      "workload.py"
+    ]
+  },
+  "candidate": {
+    "cwd": "../..",
+    "python": "{runner_python}",
+    "argv": [
+      "{python}",
+      "benchmark/author-example/workload.py"
+    ],
+    "correctness_argv": [
+      "{python}",
+      "benchmark/author-example/workload.py",
+      "--receipt",
+      "{result}"
+    ],
+    "artifacts": [
+      "workload.py"
+    ]
+  }
+}
