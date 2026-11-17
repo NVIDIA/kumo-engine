@@ -105,8 +105,8 @@ class RowsJoin:
 class RowLimit:
     """How many matching rows a route keeps, when the contract keeps fewer than all.
 
-    Rows tied with the last kept row on ``time_column`` are kept by primary key,
-    so fetch every row tied at the boundary.
+    Rows tied with the last kept row on ``time_column`` are kept by primary key
+    or internal occurrence identity for keyless tables. Fetch every tied row.
 
     :param count: rows kept per ``per``.
     :param order: ``"newest"`` or ``"oldest"`` by ``time_column``.
@@ -378,7 +378,9 @@ class _Reads:
             )
         self.column(hop.from_table, hop.from_column, "join key")
         self.column(hop.table, hop.column, "join key")
-        self.column(hop.table, self.tables[hop.table].primary_key, "primary key")
+        primary_key = self.tables[hop.table].primary_key
+        if primary_key is not None:
+            self.column(hop.table, primary_key, "primary key")
         return route.then(hop)
 
     def follow(self, route: _Route, path: tuple[str, ...], origin: str) -> _Route:
@@ -873,7 +875,7 @@ def _history(
     return text
 
 
-def _route_join(route: _Route, pk: str) -> RowsJoin:
+def _route_join(route: _Route, pk: str | None) -> RowsJoin:
     if not route.hops:
         return RowsJoin(pk, request_field=route.root)
     hop = route.hops[-1]

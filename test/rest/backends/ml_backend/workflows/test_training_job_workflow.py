@@ -9,7 +9,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rest.backends.ml_backend.activities import TrainingJobActivities
+from rest.backends.ml_backend.activities import (
+    PollJobResult,
+    TrainingJobActivities,
+)
 from rest.backends.ml_backend.settings import MLJobSettings
 from rest.backends.ml_backend.workflows import training_job_workflow as module
 from rest.config.data_backend import ConnectorExecutionRef
@@ -45,10 +48,16 @@ async def test_pool_dispatch_timeout_and_postprocess_connector_refs(
         graph_version_info=SimpleNamespace(graph_data_version='version-1'),
     )
     expected_output = object()
+    saved = [
+        PollJobResult(JobState.FAILED, 'Out-of-memory (OOM) error: x',
+                      'Traceback ...'), None
+    ]
 
     async def execute_activity(activity_fn, *, args=None, **_kwargs):
         if activity_fn is TrainingJobActivities.postprocess_job_output:
             return expected_output
+        if activity_fn is TrainingJobActivities.log_failed_job:
+            return saved.pop(0)
         return None
 
     execute = AsyncMock(side_effect=execute_activity)
@@ -83,4 +92,17 @@ async def test_pool_dispatch_timeout_and_postprocess_connector_refs(
                                           '/tmp/job-config.json')
     assert failed.err_msg == (
         'kumo-auto subprocess exited non-zero for job trainingjob-test; '
-        'see pool worker logs for details')
+        'see the ML workflow worker logs for details')
+
+    for message, stacktrace in (('Out-of-memory (OOM) error: x',
+                                 'Traceback ...'),
+                                ('kumo-auto subprocess exited non-zero',
+                                 'kumo-auto subprocess exited non-zero')):
+        await workflow.run(
+            typed_job_input,
+            cast(MLJobSettings, SimpleNamespace(raise_fake_error=False)),
+            '/tmp/job-config.json',
+        )
+        failure_info = workflow._save_output.await_args.args[0].failure_info
+        assert failure_info.message.startswith(message)
+        assert failure_info.stacktrace.startswith(stacktrace)

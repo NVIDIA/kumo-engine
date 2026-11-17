@@ -1,0 +1,374 @@
+{
+  "id": "C-IDSPACE-002",
+  "contract": {
+    "$type": "DataLoaderSpec",
+    "schema": {
+      "$type": "DataSchema",
+      "tables": [
+        {
+          "$type": "TableSpec",
+          "name": "users",
+          "primary_key": "id",
+          "columns": {
+            "id": {
+              "$type": "DType",
+              "name": "int64",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "color": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            },
+            "shape": {
+              "$type": "DType",
+              "name": "string",
+              "unit": null,
+              "timezone": null,
+              "precision": null,
+              "scale": null
+            }
+          },
+          "time_column": {
+            "$type": "NonTemporal"
+          }
+        }
+      ],
+      "relations": []
+    },
+    "sample": {
+      "$type": "SampleSpec",
+      "entity": {
+        "$type": "EntitySpec",
+        "table": "users",
+        "entity_type": "users",
+        "filters": [],
+        "available_from": null
+      },
+      "entity_values": {
+        "color": {
+          "$type": "Field",
+          "column": "color",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        },
+        "shape": {
+          "$type": "Field",
+          "column": "shape",
+          "path": [],
+          "selection": "one",
+          "time_column": null,
+          "reference_time": "sample"
+        }
+      },
+      "dated_entity_values": {},
+      "events": {},
+      "current_events": {},
+      "neighborhoods": {},
+      "targets": {},
+      "candidate_sets": {}
+    },
+    "batch": {
+      "$type": "BatchSpec",
+      "inputs": {
+        "omitted": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "color",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": null,
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "tokens"
+              },
+              {
+                "$type": "Encode",
+                "field": "shape",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": null,
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "omit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": "fields",
+            "field_space": "tokens",
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        },
+        "emitted": {
+          "$type": "Input",
+          "source": {
+            "$type": "EntitySource"
+          },
+          "representation": {
+            "$type": "Fields",
+            "fields": [
+              {
+                "$type": "Encode",
+                "field": "color",
+                "encoding": {
+                  "$type": "Vocabulary",
+                  "values": null,
+                  "max_size": null,
+                  "min_frequency": 1,
+                  "missing_id": 0,
+                  "unknown_id": 1
+                },
+                "id_space": "tokens"
+              }
+            ],
+            "row": {
+              "$type": "Tokens",
+              "max_tokens": null,
+              "keep": "first",
+              "missing": "emit",
+              "occurrence_order": "fields"
+            },
+            "history": {
+              "$type": "Grouped"
+            },
+            "field_names": "fields",
+            "field_space": "tokens",
+            "forbidden_fields": []
+          },
+          "layout": {
+            "$type": "Padded"
+          }
+        }
+      },
+      "targets": {},
+      "encodings": {},
+      "id_spaces": {
+        "tokens": {
+          "$type": "IdSpace",
+          "specials": {
+            "pad": "[PAD]",
+            "mask": "[MASK]",
+            "unknown": "[UNK]",
+            "entity": "[USR]",
+            "event": "[EVT]",
+            "missing": "[MISSING]"
+          },
+          "special_ids": {
+            "pad": 0,
+            "mask": 1,
+            "unknown": 2,
+            "entity": 3,
+            "event": 4,
+            "missing": 5
+          }
+        }
+      },
+      "field_names": {
+        "fields": {
+          "$type": "FieldNames"
+        }
+      },
+      "batching": {
+        "$type": "Batching",
+        "max_samples": null,
+        "max_tokens": null,
+        "length_input": null,
+        "bucket_by_length": false,
+        "drop_last": false
+      }
+    },
+    "version": 3
+  },
+  "tables": {
+    "users": [
+      {
+        "id": 1,
+        "color": "red",
+        "shape": "round"
+      },
+      {
+        "id": 2,
+        "color": null,
+        "shape": "round"
+      },
+      {
+        "id": 3,
+        "color": "red",
+        "shape": null
+      }
+    ]
+  },
+  "anchors": [
+    {
+      "sample_id": "u1",
+      "entity_id": 1,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u2",
+      "entity_id": 2,
+      "as_of_time": 100
+    },
+    {
+      "sample_id": "u3",
+      "entity_id": 3,
+      "as_of_time": 100
+    }
+  ],
+  "expected": {
+    "u1": {
+      "entity_values": {
+        "color": "red",
+        "shape": "round"
+      }
+    },
+    "u2": {
+      "entity_values": {
+        "color": null,
+        "shape": "round"
+      }
+    },
+    "u3": {
+      "entity_values": {
+        "color": "red",
+        "shape": null
+      }
+    }
+  },
+  "reason": "The space declares every role's final ID: pad 0, mask 1, unknown 2, entity 3, event 4 and missing 5, so ordinary IDs start at 6. Canonical declared field identities color and shape allocate 6 and 7. Private color entries in emitted and omitted allocate 8 and 9, and omitted shape allocates 10, in canonical identity order; the space size is 11. Emitted NULL color maps local missing 0 to final 5; omitted rows drop NULL tokens and pad with 0, so field IDs for padding also use the declared pad ID.",
+  "batch": {
+    "inputs": {
+      "omitted": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              9,
+              10
+            ],
+            [
+              10,
+              0
+            ],
+            [
+              9,
+              0
+            ]
+          ]
+        },
+        "field_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            [
+              6,
+              7
+            ],
+            [
+              7,
+              0
+            ],
+            [
+              6,
+              0
+            ]
+          ]
+        }
+      },
+      "emitted": {
+        "value_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            1
+          ],
+          "values": [
+            [
+              8
+            ],
+            [
+              5
+            ],
+            [
+              8
+            ]
+          ]
+        },
+        "field_ids": {
+          "dtype": "int64",
+          "shape": [
+            3,
+            1
+          ],
+          "values": [
+            [
+              6
+            ],
+            [
+              6
+            ],
+            [
+              6
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "state": {
+    "format_version": 2,
+    "spaces": {
+      "tokens": {
+        "roles": {
+          "pad": 0,
+          "mask": 1,
+          "unknown": 2,
+          "entity": 3,
+          "event": 4,
+          "missing": 5
+        },
+        "size": 11
+      }
+    }
+  }
+}

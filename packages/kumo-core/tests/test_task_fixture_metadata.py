@@ -13,8 +13,9 @@ import pyarrow as pa
 import pytest
 import torch
 from kumo_core.diskgraph.metadata import DiskgraphSchema
-from kumo_core.types import TaskType
-from kumoapi.typing import Stype
+from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
+from kumoapi.encoder import Index, Numerical
+from kumoapi.typing import ColStatType, Stype
 
 
 @pytest.fixture
@@ -55,7 +56,13 @@ def test_task_configuration_metadata(
     feature_store, graph_schema, encoders = task_fixtures.create_task_data(
         df_dict={"users": users, "orders": orders.to_pandas()},
         schema_dict=schemas,
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        encoders=EncodersConfig(
+            encoders={"users": {"age": Numerical(_stats={ColStatType.MEAN: 30.0})}},
+            target=TargetEncoderConfig(
+                "TARGET",
+                Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 2], [False, 1]]}),
+            ),
+        ),
         train_table_df=train.to_pandas(),
     )
 

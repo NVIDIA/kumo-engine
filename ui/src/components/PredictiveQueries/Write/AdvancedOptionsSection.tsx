@@ -19,7 +19,7 @@ import MPCodeEditor from "components/CodeEditor/MPCodeEditor";
 
 import { DropdownOption } from "types/inputs";
 
-import { runMode } from "utils/Constants";
+import { docURLs, runMode } from "utils/Constants";
 import { getValues } from "utils/Helpers/objectHelpers";
 
 export interface RunModeSelectionProps {
@@ -140,7 +140,7 @@ export const ModelPlannerInput = ({
                     {" See "}
                     <DocumentationLink
                         id="query_suggestion_doc"
-                        pageLink={"model-planner"}
+                        url={docURLs.ModelPlanner}
                         linkText="docs"
                         isNewDocs={true}
                     />

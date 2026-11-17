@@ -24,7 +24,7 @@
 3. Refusals. Refused, naming the table, row and column: a table the schema does
    not declare; a required table or column left out; a column the table does not
    declare; a value that is not of its column's declared type (checked as for
-   `InMemoryRows`); a NULL or repeated primary key within a
+   `InMemoryRows`); a NULL or repeated declared primary key within a keyed
    table; a request whose entity, or a candidate, has no row; and an empty
    request list.
 
@@ -33,8 +33,19 @@
 A table or column that inference never reads may be left out; it reads as an
 empty table or as `None`, and the batches are unchanged. Every other declared
 table must be named (an empty list when a request has no rows in it), and every
-supplied row must carry its table's other columns, primary key, join keys and
+supplied row must carry its table's other columns, declared primary key, join keys and
 time columns included, with `None` for a missing value.
+Keyless tables require no PK column and retain separate identical rows under
+[G-KEYLESS-001](../G-KEYLESS-001/guarantee.md).
+
+For keyless tables, serving preserves occurrence multiplicity and selection
+rules, but exact offline/serving equality is not promised for results depending
+on local identity or source order. This includes opaque graph IDs, equal-time
+ordering and limits, uniform graph draws, and floating reduction rounding.
+Compare graph features and connectivity under a renaming of opaque IDs.
+A fetched subset or reordered rows form a different prepared dataset; declare
+a PK when stable cross-preparation ordering and choices are required. The
+exact-batch guarantee for existing keyed contracts is unchanged.
 
 Types are never inferred from the supplied rows: the artifact's contract pins
 every column type, so a column that is `None` throughout a request neither

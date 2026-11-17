@@ -49,5 +49,14 @@
       "version": "8.5.0-28.el8_10"
     }
   ],
+  "expression_overrides": [
+    {
+      "ecosystem": "rust",
+      "name": "onig_sys",
+      "version": "69.9.3",
+      "license_expression": "MIT AND BSD-2-Clause",
+      "reason": "The onig_sys crate bundles Oniguruma's C source under BSD-2-Clause."
+    }
+  ],
   "schema": 1
 }

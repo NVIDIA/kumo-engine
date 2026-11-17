@@ -45,6 +45,7 @@ python = "^3.11"
 # workspace member. packages/scripts/ has no pyproject.toml either.
 members = [
   "packages/kumo-api",
+  "packages/kumo-settings",
   "packages/kumo-pql",
   "packages/kumo-core",
   "packages/diskgraph",

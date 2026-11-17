@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import torch
 import torch.nn.functional as F
-from kumo_core.encoders.config import EncodersConfig
+from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
 from kumo_core.encoders.target.multicategorical import (
     MultiCategoricalTargetEncoder,
 )
@@ -51,9 +51,15 @@ from kumo_core.train.trainer import (
 from kumo_core.training.config import FitMode, TrainerConfig
 from kumo_core.training.task_config import TaskConfig
 from kumo_core.types import TaskType
-from kumoapi.encoder import MultiCategorical, Numerical, NumericalList
+from kumoapi.encoder import (
+    Datetime,
+    Index,
+    MultiCategorical,
+    Numerical,
+    NumericalList,
+)
 from kumoapi.train import TrainingStage
-from kumoapi.typing import Stype
+from kumoapi.typing import ColStatType, Stype
 from torch_geometric.sampler import NumNeighbors
 
 from io_utils import fsutil, parquet_util
@@ -411,7 +417,23 @@ def test_trainer_load_preserves_edge_type_with_trailing_underscore_rel(
     _, graph_store, encoders = create_task_data(
         df_dict=df_dict,
         schema_dict=schema_dict,
-        task_type=TaskType.BINARY_CLASSIFICATION,
+        encoders=EncodersConfig(
+            encoders={
+                "USERS": {"AGE": Numerical(_stats={ColStatType.MEAN: 35.0})},
+                "ORDERS": {
+                    "TIME": Datetime(
+                        _stats={
+                            ColStatType.MIN: "kumo_timestamp_1990-01-01 00:00:00",
+                            ColStatType.MAX: "kumo_timestamp_1992-01-01 00:00:00",
+                        }
+                    )
+                },
+            },
+            target=TargetEncoderConfig(
+                "TARGET",
+                Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 9], [False, 3]]}),
+            ),
+        ),
         train_table_df=train_table_df,
     )
 
