@@ -7,7 +7,6 @@
 import datetime
 import decimal
 import json
-import logging
 import pathlib
 
 import pyarrow as pa
@@ -43,6 +42,10 @@ def _ingest(index_dir: pathlib.Path, clock: str, tables: list) -> str:
         output_dir=str(index_dir),
     )
     return str(index_dir)
+
+
+def _builder_warnings(caplog) -> list:
+    return [r.getMessage() for r in caplog.records if r.name == "_c.tt_builder"]
 
 
 def _as_nanos(array: pa.Array) -> list:
@@ -501,8 +504,7 @@ def test_off_tick_rows_anchors_and_windows_follow_the_clock(off_tick_data, tmp_p
         "days": "The window (0, 36] hours truncates to (0, 24] hours on the days index "
                 "clock. Use a window of whole days, or a finer timestamp_precision.",
     }
-    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == (
-        [truncated[clock]] if clock in truncated else [])
+    assert _builder_warnings(caplog) == ([truncated[clock]] if clock in truncated else [])
 
 
 @pytest.mark.parametrize("fields", [
