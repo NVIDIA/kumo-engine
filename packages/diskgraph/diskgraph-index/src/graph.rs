@@ -1600,6 +1600,20 @@ impl TableReader {
     }
 
     pub fn node_id_from_pk(&self, key: &Key) -> Result<Option<u64>> {
+        let Some(node_id) = self.pk_candidate(key)? else {
+            return Ok(None);
+        };
+        if let Some(validated) = self.validate_pk_at_node(node_id, key)? {
+            if validated {
+                return Ok(Some(node_id));
+            }
+            return Ok(None);
+        }
+        Ok(Some(node_id))
+    }
+
+    /// The node the pkmap assigns `key`, before checking that node stores it.
+    fn pk_candidate(&self, key: &Key) -> Result<Option<u64>> {
         let pk_map = match &self.pk_map {
             Some(map) => map,
             None => return Ok(None),
@@ -1620,14 +1634,35 @@ impl TableReader {
             .get(shard_idx)
             .map(|range| range.min_id)
             .unwrap_or(0);
-        let node_id = min_id.saturating_add(local as u64);
-        if let Some(validated) = self.validate_pk_at_node(node_id, key)? {
-            if validated {
-                return Ok(Some(node_id));
-            }
-            return Ok(None);
+        Ok(Some(min_id.saturating_add(local as u64)))
+    }
+
+    /// Whether `node_id`, whose rowpack is `row`, is the canonical row of
+    /// its primary key: `node_id_from_pk` of the key stored in `row` returns
+    /// `node_id`. Reads the key from `row` instead of fetching the node again.
+    pub fn is_canonical_row(
+        &self,
+        node_id: u64,
+        row: &[u8],
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> Result<bool> {
+        let missing = || anyhow!("table {} has no primary-key index", self.node_type);
+        let pk = self.primary_key_map.as_ref().ok_or_else(missing)?;
+        let key_type = self.pk_map.as_ref().ok_or_else(missing)?.key_type();
+        let decoder = self.node_data_decoder.as_ref().ok_or_else(missing)?;
+        let col_idx = crate::layout::pk_column_index(pk, decoder).ok_or_else(missing)?;
+        let column = &decoder.context().columns[col_idx];
+        let value = decoder.decode_column_value(row, col_idx, scratch)?;
+        let key = crate::layout::pk_key_from_value(pk, key_type, &value, column)
+            .with_context(|| format!("{} node {node_id}", self.node_type))?;
+        if self.pk_candidate(&key)? != Some(node_id) {
+            return Ok(false);
         }
-        Ok(Some(node_id))
+        let verifiable = self
+            .node_data_compression
+            .as_ref()
+            .is_some_and(|compression| compression.codec == "rowpack");
+        Ok(!verifiable || crate::layout::pk_value_matches(&key, &value, column) != Some(false))
     }
 
     /// Check whether `node_id` is the canonical (first-occurrence) node for its

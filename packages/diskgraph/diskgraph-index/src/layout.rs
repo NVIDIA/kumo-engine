@@ -2,7 +2,8 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::pkmap::Key;
+use crate::pkmap::{parse_key_from_str, Key, KeyType};
+use anyhow::anyhow;
 use diskgraph_core::metadata::PrimaryKeyMap;
 use diskgraph_rowpack::{
     ColumnContext, ColumnEncoding, IngestedType, RowPackDecodeScratch, RowPackDecoder, ValueRef,
@@ -122,17 +123,8 @@ impl<'a> EdgeListView<'a> {
             None => return Ok(None),
         };
         let ctx = decoder.context();
-        let col_idx = match pk.pk_column_index.and_then(|idx| {
-            ctx.columns
-                .get(idx)
-                .filter(|col| col.name == pk.column)
-                .map(|_| idx)
-        }) {
-            Some(idx) => idx,
-            None => match ctx.columns.iter().position(|col| col.name == pk.column) {
-                Some(idx) => idx,
-                None => return Ok(None),
-            },
+        let Some(col_idx) = pk_column_index(pk, decoder) else {
+            return Ok(None);
         };
         let mut scratch = RowPackDecodeScratch::default();
         let value = match decoder.decode_column_value(raw, col_idx, &mut scratch) {
@@ -197,6 +189,58 @@ impl<'a> EdgeListView<'a> {
     }
 }
 
+/// The rowpack column holding the primary key.
+pub(crate) fn pk_column_index(pk: &PrimaryKeyMap, decoder: &RowPackDecoder) -> Option<usize> {
+    let columns = &decoder.context().columns;
+    pk.pk_column_index
+        .filter(|&idx| columns.get(idx).is_some_and(|col| col.name == pk.column))
+        .or_else(|| columns.iter().position(|col| col.name == pk.column))
+}
+
+/// The pkmap key of a decoded stored PK `value`, built as a key read back
+/// through Arrow is (`SamplerEngine.canonical_node_mask`).
+pub(crate) fn pk_key_from_value(
+    pk: &PrimaryKeyMap,
+    key_type: KeyType,
+    value: &ValueRef<'_>,
+    column: &ColumnContext,
+) -> anyhow::Result<Key> {
+    let key = match (key_type, value) {
+        (_, ValueRef::Null) => return Err(anyhow!("null primary key")),
+        (KeyType::Int64, ValueRef::String(text))
+            if column.logical_type == IngestedType::Decimal128 =>
+        {
+            decimal_scale(column)
+                .and_then(|scale| decimal128_key_from_text(text, scale))
+                .map(Key::Int)
+        }
+        (KeyType::Int64, ValueRef::Int64(v)) => Some(Key::Int(*v as u64)),
+        (KeyType::Int64, ValueRef::Int32(v)) => Some(Key::Int(*v as i64 as u64)),
+        (KeyType::Int64, ValueRef::UInt64(v)) => Some(Key::Int(*v)),
+        (KeyType::Int64, ValueRef::UInt32(v)) => Some(Key::Int(*v as u64)),
+        (KeyType::VarBytes, ValueRef::String(text))
+            if column.logical_type == IngestedType::Decimal256 =>
+        {
+            diskgraph_core::decimal_key::normalize_base10_key(text.as_bytes())
+                .ok()
+                .map(Key::Bytes)
+        }
+        (KeyType::VarBytes, ValueRef::String(text)) => Some(Key::Bytes(text.as_bytes().to_vec())),
+        (KeyType::VarBytes, ValueRef::Bytes(bytes)) => Some(Key::Bytes(bytes.to_vec())),
+        (KeyType::Uuid | KeyType::Uuid256 | KeyType::Ip, ValueRef::String(text)) => {
+            Some(parse_key_from_str(pk, text)?)
+        }
+        (KeyType::Uuid, ValueRef::Uuid(bytes)) => Some(Key::Uuid(*bytes)),
+        (KeyType::Uuid256, ValueRef::Uuid256(bytes)) => Some(Key::Uuid256(*bytes)),
+        (KeyType::Ip, ValueRef::Ip(bytes)) => Some(Key::Ip(*bytes)),
+        (KeyType::Uuid, ValueRef::Bytes(bytes)) => (*bytes).try_into().ok().map(Key::Uuid),
+        (KeyType::Uuid256, ValueRef::Bytes(bytes)) => (*bytes).try_into().ok().map(Key::Uuid256),
+        (KeyType::Ip, ValueRef::Bytes(bytes)) => (*bytes).try_into().ok().map(Key::Ip),
+        _ => None,
+    };
+    key.ok_or_else(|| anyhow!("{key_type:?} primary key cannot be read from {value:?}"))
+}
+
 /// Compare a lookup `key` against the node's decoded stored PK `value`.
 ///
 /// Returns `Some(bool)` only for genuinely comparable combinations; `None`
@@ -207,7 +251,11 @@ impl<'a> EdgeListView<'a> {
 /// in the two's-complement u64 domain the pkmap keys are built in, so
 /// negative PK values match their own keys. A `Null` stored PK is a genuine
 /// mismatch: the pkmap never maps a key to a node whose PK is NULL.
-fn pk_value_matches(key: &Key, value: &ValueRef<'_>, column: &ColumnContext) -> Option<bool> {
+pub(crate) fn pk_value_matches(
+    key: &Key,
+    value: &ValueRef<'_>,
+    column: &ColumnContext,
+) -> Option<bool> {
     if column.logical_type == IngestedType::Decimal128 {
         let scale = decimal_scale(column)?;
         let stored = match value {
