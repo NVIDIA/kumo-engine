@@ -399,30 +399,6 @@ def test_offsets_shorter_than_a_tick_are_rejected():
                 builder.build()
 
 
-@pytest.mark.parametrize("fields, error", [
-    ({"offsets": [-30, 0]}, "split offset"),
-    ({"timeframe": 30}, "split timeframe"),
-    ({"anchor_start_offset": -30}, "split anchor_start_offset"),
-    ({"timeframe_step": 1}, "split timeframe_step"),
-    ({"timeframe_step": 1, "flexible_boundaries": False}, None),
-    ({"kind": "TimeRangeSplit", "ranges": [(EPOCH_DAY * DAY, (EPOCH_DAY + 1) * DAY)],
-      "timeframe": 30}, "split timeframe"),
-    ({"offsets": [-2, -1], "offset_unit": "months"}, None),
-])
-def test_split_durations_shorter_than_a_tick_are_rejected(fields, error):
-    builder = DiskGraphTTBuilder("hours")
-    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
-    builder.for_each("users", "user_id")
-    builder.split_ratio(SplitSpec(**{
-        "kind": "DateOffsetSplit", "offsets": [-120, -60], "offset_unit": "minutes",
-        "unit": "minutes", "timeframe": 60, **fields}))
-    if error is None:
-        builder.build()
-    else:
-        with pytest.raises(diskgraph.DiskgraphConfigError, match=error):
-            builder.build()
-
-
 HOUR_NS = 3_600 * 10**9
 DAY_NS = DAY * 10**9
 UNBOUNDED = -2**60
@@ -546,3 +522,45 @@ def test_a_flexible_split_without_a_step_is_rejected(off_tick_data, tmp_path, fi
                                   unit="minutes", **fields))
     with pytest.raises(diskgraph.DiskgraphConfigError, match="positive timeframe_step"):
         execute_tt_gen(builder.build(), index, "no_step")
+
+
+def _split_rows(index: str, window: tuple, split: dict, tt_id: str) -> list:
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal(OFF_TICK_ANCHORS, forecast_length=1, unit="nanoseconds")
+    builder.node_prediction()
+    builder.for_each("users", "user_id")
+    builder.set_target_stype("numerical")
+    builder.aggregate("count", EdgeRef("users", "user_id", "events", "user_id"), "count",
+                      time_col="at", window=window, window_unit="minutes")
+    builder.split_ratio(SplitSpec(**split))
+    staging = pathlib.Path(execute_tt_gen(builder.build(), index, tt_id)["staging_dir"])
+    return sorted(((part.relative_to(staging).as_posix(), row)
+                   for part in staging.rglob("*.parquet")
+                   for row in pq.read_table(part).to_pylist()), key=repr)
+
+
+MARCH_9 = 1_709_942_400
+# The splits pquery derives for COUNT(events.*, 90, 120, minutes), and main's truncation of them.
+QUERY_SPLITS = {
+    "TimeRangeSplit": (
+        {"kind": "TimeRangeSplit", "unit": "minutes", "timeframe": 30, "anchor_start_offset": 90,
+         "ranges": [(MARCH_9 + k * 3 * DAY, MARCH_9 + (k + 1) * 3 * DAY) for k in range(3)],
+         "flexible_boundaries": False},
+        {"timeframe": 60, "anchor_start_offset": 60},
+    ),
+    "default": (
+        {"kind": "DateOffsetSplit", "offsets": [-120, 0], "offset_unit": "minutes",
+         "unit": "minutes", "timeframe": 30, "anchor_start_offset": 90,
+         "flexible_boundaries": False},
+        {"timeframe": 0, "anchor_start_offset": 60},
+    ),
+}
+
+
+@pytest.mark.parametrize("split, in_whole_hours", QUERY_SPLITS.values(), ids=QUERY_SPLITS)
+def test_a_split_derived_from_an_off_tick_window_rounds(off_tick_data, tmp_path, split,
+                                                        in_whole_hours):
+    index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
+    rows = _split_rows(index, (90, 120), split, "off_tick")
+    assert rows
+    assert rows == _split_rows(index, (60, 120), {**split, **in_whole_hours}, "whole_hours")
