@@ -6,7 +6,7 @@ const path = require("node:path");
 const { promisify } = require("node:util");
 const execFile = promisify(require("node:child_process").execFile);
 const { check } = require("./graph_ui.cjs");
-const { check: checkExplanations } = require("./explanation_ui.cjs");
+const { check: checkExplanations, PLOTS: EXPLANATION_PLOTS } = require("./explanation_ui.cjs");
 
 const { VerificationError, requireThat, until } = require("./verification.cjs");
 
@@ -112,7 +112,7 @@ async function readReceipt(frame, spec, target) {
     "sampled.html",
     "graph-result.json",
     "explanation-result.json", "explanation-run.tar.gz",
-    ...["gradient", "cohort", "cohort-class-0", "cohort-class-1"].flatMap(kind =>
+    ...EXPLANATION_PLOTS.flatMap(kind =>
       ["png", "svg", "pdf"].map(suffix => `explanation-${kind}.${suffix}`)),
   ];
   requireThat(
@@ -127,7 +127,7 @@ async function readReceipt(frame, spec, target) {
     );
   requireThat(receipt.explanations?.status === "passed",
     "Real training explanations did not pass");
-  for (const kind of ["gradient", "cohort", "cohort-class-0", "cohort-class-1"])
+  for (const kind of EXPLANATION_PLOTS)
     for (const suffix of ["png", "svg", "pdf"])
       requireThat(receipt.uploaded[`explanation-${kind}.${suffix}`] ===
         receipt.explanations.plots[kind].sha256[suffix],

@@ -237,6 +237,7 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
 
     contents = {'graph-result.json': b'{}'}
     from explanation import FILES as EXPLANATION_FILES
+    from explanation import PLOTS
     for name in EXPLANATION_FILES:
         contents[name] = b'retained-explanation'
     for name in ('graph.svg', 'graph.pdf', 'graph.md', 'default.html',
@@ -258,8 +259,7 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
                         suffix: uploaded[f'explanation-{kind}.{suffix}']
                         for suffix in ('png', 'svg', 'pdf')
                     })
-                for kind in ('gradient', 'cohort', 'cohort-class-0',
-                             'cohort-class-1')
+                for kind in PLOTS
             }), exports={
                 suffix: dict(sha256=uploaded['graph.' + suffix])
                 for suffix in ('svg', 'pdf', 'md')

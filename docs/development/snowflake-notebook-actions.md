@@ -10,7 +10,24 @@ candidate wheel.
 | Engine lifecycle | Train/register two versions; reload in fresh processes; predict by version and alias; move the alias; verify tracking, lineage, prediction IDs/schema, drift and evaluation after labels arrive. Includes real denied artifact access; incomplete-artifact checks currently run only in the local profile. |
 | Lifecycle UI | Open the retained lifecycle's runs and model versions in Snowsight; verify status, metrics and epoch history. Reuses existing results without training again. |
 | Notebook graph UI | Render the shared PR172 adtech fixture in a Snowflake notebook; verify schema, relationships, tooltips and controls; reopen saved outputs after kernel shutdown; verify SVG/PDF/Markdown exports. Default display must read no source data, and exports must exclude sample values. |
-| Explanation displays, saved outputs and exports | The graph notebook trains the shared small binary recipe and a three-class categorical recipe with explanations and train/validation refit enabled. Two explicitly selected classes must match their recorded predictions, targets, population shares and title labels; omitted or unknown class selections must fail. A separate process reopens archived artifacts, checks refit attribution and sampled graphs, and renders gradient, binary cohort and both class-selected cohort PNG/SVG/PDF exports. Snowsight verifies live and reopened displays against those exact generated images. |
+| Explanation displays, saved outputs and exports | Train binary, multiclass, multilabel and regression CPU refits. Reopen real archived runs in a fresh process; verify both explicit class selections for each classification dictionary and actual gradient/cohort values. Display and retain ten plots in PNG/SVG/PDF. Check all images live and reopened at 800/1600px widths with light/dark browser color preferences. |
+
+Supplementary deterministic plotting inputs exercise 24 long column labels,
+12 long cohort labels, tied and all-zero scores, and absent observed targets.
+They are marked `deterministic-plot-input` in the private receipt; they do not
+count as generated training artifacts. The two large figures are explicitly
+resized through Matplotlib's returned Figure API. Every figure checks text
+bounds and adjacent tick-label overlap before display/export; SVG/PDF must
+retain titles/axis labels, and PDFs must preserve the figure aspect ratio.
+Browser checks require undistorted decoded images and restore the original
+viewport and color preference after each matrix. Browser color preferences do
+not change Snowsight's account-level theme setting or recolor saved PNGs.
+
+Generation failures, malformed artifacts, model-selection configurations,
+sampled-graph data semantics and cross-version compatibility are API/artifact
+checks rather than distinct notebook rendering paths. They are not qualified
+by these display checks. Managed permission-denied reads and full SVG/PDF
+pixel/layout equivalence also remain unqualified.
 
 These resource names are deliberate test-only allowlist entries, not production
 resources. Keep the browser bot limited to this role and test resources because
@@ -18,21 +35,22 @@ its credential JSON contains both the password and TOTP enrollment secret.
 
 The lifecycle uses 60 users, 1,500 events and two fits of two epochs each. See
 [local lifecycle testing](mlops-validation.md) for the shared fixture and runner.
-The graph UI scenario also runs the existing small explanation recipe (two trials,
-two epochs and train/validation refit); it does not repeat the registry lifecycle.
+The graph UI scenario uses two binary trials and one trial each for multiclass,
+multilabel and regression, with two epochs and train/validation refit. It does not
+repeat the registry lifecycle.
 
 Current gaps: full epoch history in model exports, independently verified
 nonzero drift sensitivity, and interruption of an active remote writer.
 Graph and explanation notebook checks run together; a successful check alone does
 not establish full lifecycle or cross-platform qualification.
 
-The explanation fit archives its retained run and exported model before deleting
+The explanation fit archives all four retained runs and exported models before deleting
 its original scratch directory. A new process reopens that archive through the
 public API and reuses the lifecycle checks for refit attribution, held-out sampled
 graphs and unavailable/incomplete artifacts. The OS read-permission negative stays
 in the local lifecycle; it is excluded from this UI scenario because Snowflake's
 notebook runtime can read chmod-protected files as root. Neither the fit's Python objects nor
-its scratch state is reused. Both generated figures export to PNG, SVG and PDF.
+its scratch state is reused. All ten figures export to PNG, SVG and PDF.
 The browser requires the exact validated PNG bytes and model identity in the live
 notebook and again after kernel shutdown and reopening without execution.
 All exports and the archive are checksum-bound to this notebook attempt and

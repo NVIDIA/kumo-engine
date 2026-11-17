@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from explanation import FILES as EXPLANATION_FILES
+from explanation import PLOTS
 from resources import admit_candidate, candidate_path
 
 MODULES = {
@@ -64,9 +65,7 @@ def collect(receipt, spec, root, key_file):
                     f'explanation-{kind}.{suffix}') != digest:
                 raise ValueError(
                     'Uploaded explanation differs from verified export')
-    if set(explanations.get('plots', {})) != {
-            'gradient', 'cohort', 'cohort-class-0', 'cohort-class-1'
-    }:
+    if set(explanations.get('plots', {})) != set(PLOTS):
         raise ValueError(
             'Binary and class-selected explanation plots are required')
     root = Path(root)
