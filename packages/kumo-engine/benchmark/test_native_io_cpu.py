@@ -70,9 +70,17 @@ def test_truncated_interval_is_not_silently_accepted():
 
 def test_perf_alignment_is_checked_and_not_written_as_payload():
     raw = wait(10, 20, 1)
+    assert interval_payload(raw) == raw
     assert interval_payload(raw + b'\0' * 4) == raw
-    with pytest.raises(ValueError, match='padding'):
-        interval_payload(raw + b'\0\0\0x')
+    assert interval_payload(raw + b'\x01\0\x58\0') == raw
+    changed = raw[:-1] + b'x'
+    assert interval_payload(changed + b'\xff' * 4) == changed
+
+
+@pytest.mark.parametrize('extra_bytes', [1, 2, 3, 5, 6, 7, 8])
+def test_perf_alignment_rejects_unexpected_widths(extra_bytes):
+    with pytest.raises(ValueError, match='length'):
+        interval_payload(wait(10, 20, 1) + b'\0' * extra_bytes)
 
 
 def test_captured_maps_preserve_elf_file_offsets():

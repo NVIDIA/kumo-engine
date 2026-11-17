@@ -79,11 +79,10 @@ class EventBuffer:
 
     def receive(self, cpu: int, pointer: int, size: int) -> None:
         self.received_sizes[size] = self.received_sizes.get(size, 0) + 1
-        # PERF_SAMPLE_RAW can include four zero alignment bytes after this
-        # 72-byte payload. Preserve the exact event payload; reject any other
-        # width or nonzero padding rather than silently truncating events.
-        valid_size = size == EVENT.size or (
-            size == EVENT.size + 4 and ctypes.string_at(pointer + EVENT.size, 4) == b'\0' * 4)
+        # Linux perf_sample_save_raw_data aligns payload + u32 size to u64.
+        # BCC passes that padded RAW size; perf_output_sample skips the four
+        # trailing bytes without initializing them. They are not event data.
+        valid_size = size in (EVENT.size, EVENT.size + 4)
         if not valid_size:
             self.diagnostics['record_size'] += 1
             if self.invalid_sample is None:

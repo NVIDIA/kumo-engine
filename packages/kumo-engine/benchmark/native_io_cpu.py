@@ -179,8 +179,10 @@ def phase_samples(samples: list[dict], frequency: int) -> dict:
 
 
 def interval_payload(sample: bytes) -> bytes:
-    if not INTERVAL.size <= len(sample) <= INTERVAL.size + 7 or any(sample[INTERVAL.size:]):
-        raise ValueError('Unexpected perf sample length or nonzero alignment padding')
+    # Linux perf raw.size aligns payload + its u32 size field to eight bytes.
+    # BCC passes that size through, including four unspecified transport bytes.
+    if len(sample) not in (INTERVAL.size, INTERVAL.size + 4):
+        raise ValueError('Unexpected perf sample length')
     return sample[:INTERVAL.size]
 
 

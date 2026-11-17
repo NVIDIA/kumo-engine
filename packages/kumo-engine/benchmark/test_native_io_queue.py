@@ -33,14 +33,27 @@ def test_invalid_capacity():
         EventBuffer(EVENT.size - 1)
 
 
-def test_perf_alignment_padding_is_checked():
+def test_perf_alignment_bytes_are_not_payload():
     buffer = EventBuffer(EVENT.size * 2)
-    payload = ctypes.create_string_buffer(EVENT.size + 4)
+    # Actual rejected model sample: 72 event bytes plus four unspecified bytes
+    # skipped by perf_output_sample, included in BCC's 76-byte RAW callback.
+    sample = bytes.fromhex(
+        '70ac65eaaa1508000096bc930000ffff70ac65eaaa150800329f090000000000'
+        '0000000000000000010000000000000008000000000000002051040012000000'
+        'a30b00000000000001005800')
+    payload = ctypes.create_string_buffer(sample)
     buffer.receive(0, ctypes.addressof(payload), EVENT.size + 4)
-    assert len(buffer.data) == EVENT.size
-    payload[EVENT.size] = b'x'
-    buffer.receive(0, ctypes.addressof(payload), EVENT.size + 4)
-    assert len(buffer.data) == EVENT.size
+    assert bytes(buffer.data) == sample[:EVENT.size]
+    assert buffer.received_sizes == {76: 1}
+    assert buffer.diagnostics['record_size'] == 0
+
+
+@pytest.mark.parametrize('size', [0, 71, 73, 74, 75, 77, 80])
+def test_perf_unexpected_width_fails(size):
+    buffer = EventBuffer(EVENT.size)
+    payload = ctypes.create_string_buffer(80)
+    buffer.receive(0, ctypes.addressof(payload), size)
+    assert not buffer.data
     assert buffer.diagnostics['record_size'] == 1
 
 
