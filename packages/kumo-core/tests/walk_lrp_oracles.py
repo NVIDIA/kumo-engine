@@ -171,6 +171,8 @@ def forward_trace(module, x_dict, edge_index_dict, num_sampled_nodes_dict=None,
             if index.size(1) == 0:
                 message = torch.zeros(n, weight.size(0), dtype=F64)
                 if conv.bias:
+                    if bias is None:
+                        raise ValueError('A bias flag without a bias parameter')
                     message = message + bias
             else:
                 degree = torch.bincount(index[1], minlength=n)
@@ -341,7 +343,7 @@ class Rewrite:
             if bias is not None:
                 biases[table] = biases[table] + _hat(bias, self.gamma)
         for relation in sorted(layer.edges):
-            source, name, destination = relation
+            source, _, destination = relation
             index = layer.edges[relation]
             conv = model.hetero_convs[t - 1][relation]
             weight, bias = _params(conv.lin)

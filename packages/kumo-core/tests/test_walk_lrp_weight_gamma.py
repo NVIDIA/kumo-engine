@@ -176,17 +176,18 @@ def relhm_batch(seed, *, T=2, channels=3, n=3, k=2, m=2, signed=False, zero_rows
     return x, edges, nodes, counts
 
 
-def tiny(x, head_weight, *, head_bias=None, act=None, root=None):
-    """T = 1 and no edges: `H[1, seed] = act(root(x))` and a one-linear head
-    `(w, b)`, so the walk vector is the head step's split (B2, B3, biases)."""
+def tiny(x, head_weight, *, head_bias=None, act=None, root=None, pre=None):
+    """T = 1 and no edges: `H[1, seed] = act(root(act(pre(x))))` (`pre` an
+    optional bias-free preprocessing linear) and a one-linear head `(w, b)`,
+    so the walk vector is the head step's split (B2, B3, biases)."""
     relation = ('event', 'user_id', 'user')
     module = cast(Any, torch.nn.Module())  # a scoring-module stand-in
     module.entity_table_name = 'user'
     module.train_table_name = 'task'
     channels = len(x)
     module.model = HeteroGNN(channels, 1, metadata=(['user', 'event'], [relation]),
-                             aggr=['mean'], norm=None, bias=False,
-                             learn_skip=root is not None, act=act)
+                             num_pre_mp_layers=0 if pre is None else 1, aggr=['mean'],
+                             norm=None, bias=False, learn_skip=root is not None, act=act)
     module.head = NodePredHead(channels, 1, num_layers=1, norm=None, param_keys=[],
                                bias=head_bias is not None)
     module = module.to(F64).eval()
@@ -197,6 +198,9 @@ def tiny(x, head_weight, *, head_bias=None, act=None, root=None):
         if root is not None:
             for lin in module.model.root_skips[0].lin_dict.values():
                 lin.weight.copy_(tensor(root))
+        if pre is not None:
+            for lin in module.model.lins[0].lin_dict.values():
+                lin.weight.copy_(tensor(pre))
     batch = ({'user': tensor([x]), 'event': torch.zeros(0, channels, dtype=F64)},
              {relation: torch.zeros(2, 0, dtype=torch.long)}, None, None)
     return module, batch
@@ -1151,6 +1155,59 @@ def test_inactive_neurons_are_not_relevant_positions():
     assert diagnostics['head_output_denominator'] == 2.5
 
 
+def test_denominator_margin_by_hand():
+    """The margin is `|S| / sum |terms|` with the absolute value taken per
+    term: h = (1, 1.1) and w = (1, -1) cancel inside the single head route.
+    Gamma 0: S = -0.1 of 2.1; gamma 0.25: S = 0.15 of 2.35, where the output
+    flips and the input that raised the logit receives negative relevance."""
+    module, batch = tiny([1.0, 1.1], [1.0, -1.0])
+    for gamma, total, terms, flipped, walk in ((0.0, -0.1, 2.1, False, (1.0, -1.1)),
+                                               (0.25, 0.15, 2.35, True, (-5 / 6, 11 / 15))):
+        (row, ) = rows_for(module, batch, [config(gamma=gamma, epsilon=1e-300,
+                                                  feature_vectors=True)])
+        assert row['status'] == 'available', row.get('reason')
+        diagnostics = row['diagnostics'][WEIGHT]
+        assert diagnostics['head_output_denominator'] == pytest.approx(total, abs=1e-15)
+        assert diagnostics['head_output_flipped'] is flipped
+        assert diagnostics['min_denominator_margin'] == pytest.approx(abs(total) / terms,
+                                                                      rel=1e-12)
+        (record, ) = row['walks']
+        assert record['input_relevance'] == pytest.approx(list(walk), abs=1e-12)
+
+
+def test_preprocessing_diagnostics_by_hand():
+    """Preprocessing outputs of reachable sources are relevant positions.
+    Identity activations, pre rows (3, -4) and (1, 0) on x = (1, 1), identity
+    root and head (1, 2): five relevant neurons (the output, two
+    message-passing and two preprocessing values). At gamma 1 the value -1
+    gets the total 6 - 4 = 2, a preprocessing flip with margin 2 / 10."""
+    module, batch = tiny([1.0, 1.0], [1.0, 2.0], pre=[[3.0, -4.0], [1.0, 0.0]])
+    expected = {0.0: ({'preprocessing': 0, 'message_passing': 0, 'head': 0}, 1 / 7, 1.0),
+                1.0: ({'preprocessing': 1, 'message_passing': 0, 'head': 0}, 0.2, 2.0)}
+    for gamma, (flips, margin, denominator) in expected.items():
+        (row, ) = rows_for(module, batch, [config(gamma=gamma)])
+        assert row['status'] == 'available', row.get('reason')
+        diagnostics = row['diagnostics'][WEIGHT]
+        assert diagnostics['relevant_neurons'] == 5
+        assert diagnostics['denominator_sign_flips_by_kind'] == flips
+        assert diagnostics['min_denominator_margin'] == pytest.approx(margin, rel=1e-12)
+        assert diagnostics['head_output_denominator'] == pytest.approx(denominator, rel=1e-12)
+        assert diagnostics['max_preactivation_mismatch'] == 0.0
+
+
+def test_isolated_destinations_are_not_relevant_positions():
+    """A layer-1 destination without a route to the seed (a third transaction
+    with no edges) carries no relevance, so its neurons are not checked: B1
+    keeps eight walks and five relevant neurons."""
+    module, (x, edges, nodes, counts) = b1()
+    x = {**x, 'transactions': tensor([[2.0], [3.0], [5.0]])}
+    nodes = {**nodes, 'transactions': [0, 3, 0]}
+    (row, ) = rows_for(module, (x, edges, nodes, counts), [config(gamma=0.25, top_k=100)])
+    assert row['status'] == 'available', row.get('reason')
+    assert row['coverage']['total_walks'] == 8
+    assert row['diagnostics'][WEIGHT]['relevant_neurons'] == 5
+
+
 # Row validation ##################################################################
 
 def mutate(row, change):
@@ -1163,7 +1220,16 @@ def _diagnostics(row):
     return row['diagnostics'][WEIGHT]
 
 
+def _preprocessing_stabilizer_without_preprocessing(row):
+    # Kind totals still sum to the stabilizer residual, so only the method
+    # check can reject it (B1 has no preprocessing step).
+    by_kind = row['ledger']['stabilizer_residual_by_kind']
+    by_kind['message_passing'] -= 1e-12
+    by_kind['preprocessing'] += 1e-12
+
+
 MUTATIONS = {
+    'impossible_preprocessing_stabilizer': _preprocessing_stabilizer_without_preprocessing,
     'contribution_rule': lambda r: r['method_settings'].update(gamma_rule='contribution'),
     'gamma_setting': lambda r: r['method_settings'].update(gamma=0.5),
     'precision_residual': lambda r: r['ledger'].update(

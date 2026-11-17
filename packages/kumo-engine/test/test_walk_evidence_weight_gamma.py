@@ -151,18 +151,29 @@ def test_native_rows_carry_the_b1_bias_hand_values(tmp_path, gamma, selected, fa
 
 def test_negative_logit_head_inversion_is_reported_natively_and_offline(tmp_path):
     """Head bias -9.5 gives z = -0.5: at gamma 0.25 the output denominator is
-    +1.75, every walk changes sign, and both paths report it."""
+    +1.75, every walk changes sign, and both paths report it. The legacy rule
+    derived from the same capture reports the same inversion record (ledger
+    D11), since every rule input of this fixture is nonnegative."""
     module = binary_scoring_module(head_bias=True)
     with torch.no_grad():
         module.head.mlp.lins[0].bias.fill_(-9.5)
-    for gamma, flipped in ((0.0, False), (0.25, True)):
-        native, offline, _ = native_offline_parity(
-            module, config(gamma=gamma, selected_class=True), tmp_path / str(gamma))
+    for gamma, flipped, denominator in ((0.0, False, -0.5), (0.25, True, 1.75)):
+        cfg = config(gamma=gamma, selected_class=True)
+        native, offline, _ = native_offline_parity(module, cfg, tmp_path / str(gamma))
         assert native['status'] == offline['status'] == 'available'
         assert comparable_row(native) == comparable_row(offline)
         diagnostics = native['diagnostics'][WEIGHT]
         assert diagnostics['head_output_flipped'] is flipped
+        assert diagnostics['head_output_denominator'] == denominator
         assert all((w['relevance'] < 0) is flipped for w in native['walks'])
+        captured = capture_record(module, tmp_path / f'legacy-native-{gamma}', cfg)
+        legacy = next(derive_offline(
+            captured, module, WalkAttributionConfig(method=LEGACY, gamma=gamma,
+                                                    selected_class=True),
+            tmp_path / f'legacy-{gamma}').iter_rows())
+        assert legacy['status'] == 'available', legacy.get('reason')
+        assert legacy['diagnostics'] == {LEGACY: {'head_output_denominator': denominator,
+                                                  'head_output_flipped': flipped}}
 
 
 # Native versus offline ##########################################################
@@ -238,7 +249,14 @@ def test_one_capture_derived_with_both_lrp_rules_coincides(tmp_path):
     for item in ('bias_relevance_by_kind', 'stabilizer_residual_by_kind'):
         assert all(abs(new['ledger'][item][k] - old['ledger'][item][k]) <= tol
                    for k in new['ledger'][item])
-    assert new['diagnostics'] is not None and old['diagnostics'] is None
+    # Legacy rows carry the head inversion record (ledger D11, P2 revision 2);
+    # on these nonnegative inputs both rules form the same output total.
+    weight, legacy = new['diagnostics'][WEIGHT], old['diagnostics'][LEGACY]
+    assert list(old['diagnostics']) == [LEGACY]
+    assert sorted(legacy) == ['head_output_denominator', 'head_output_flipped']
+    assert legacy['head_output_flipped'] is weight['head_output_flipped']
+    assert legacy['head_output_denominator'] == pytest.approx(
+        weight['head_output_denominator'], rel=1e-12, abs=1e-12)
 
 
 # Bundle validation ###############################################################

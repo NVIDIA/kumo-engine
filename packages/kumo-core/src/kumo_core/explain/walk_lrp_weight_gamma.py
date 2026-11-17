@@ -172,13 +172,18 @@ def denominator_diagnostics(computation, selection, config):
       the selected output before epsilon; `head_output_flipped`: the
       selected logit is nonzero and `S` has the other sign (`S = 0` counts as
       positive), so every share of the output step is inverted. This happens
-      for negative selected logits when `gamma > 0`; a near-zero `S` instead
-      inflates the shares up to the epsilon bound.
+      for negative selected logits when `gamma > 0`; at gamma 0 it can fire
+      only when the captured logit lies within the capture's rounding of zero
+      (the float64 recomputation then has the other sign). The flag is
+      truthful whenever it fires. A near-zero `S` instead inflates the
+      shares up to the epsilon bound.
     - `denominator_sign_flips` (and by kind): relevant neurons whose
       denominator sign differs from their value's sign. Below the head of a
       ReLU model with nonnegative inputs this needs a precision mismatch.
     - `min_denominator_margin`: minimum of `|S| / sum |terms|`; 1 means no
-      cancellation, values near 0 mean large opposing shares.
+      cancellation, values near 0 mean large opposing shares, whose float64
+      rounding the ledger's accounting tolerance (scaled by the absolute
+      ledger mass) may not see, so ledger closure is weak evidence there.
     - `max_preactivation_mismatch`: maximum of `|captured a - recomputed a|`,
       the gap between the captured forward and the float64 recomputation
       from captured inputs (for example `medium` matmul precision).
