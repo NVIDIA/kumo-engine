@@ -136,11 +136,38 @@ def test_worker_access_blocker_stays_blocked(tmp_path, monkeypatch):
     assert summary['phases']['score']['status'] == 'blocked'
 
 
-@pytest.mark.parametrize(
-    'fault',
-    ['changed_core', 'foreign_core', 'changed_native', 'changed_ingest'])
+def test_installed_native_bytes_must_match_candidate_archive(tmp_path):
+    location = tmp_path / 'site-packages'
+    native = location / 'diskgraph' / '_c.abi3.so'
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b'selected native build')
+    wheel = tmp_path / 'candidate.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.write(native, 'diskgraph/_c.abi3.so')
+    runner.verify_wheel_file(wheel, location, native)
+    native.write_bytes(b'stale native build')
+    with pytest.raises(AssertionError, match='differs from the selected wheel'):
+        runner.verify_wheel_file(wheel, location, native)
+
+
+def test_internal_platform_entry_requires_explicit_execution(tmp_path):
+    with pytest.raises(SystemExit) as error:
+        runner.main([
+            '--platform-config',
+            str(tmp_path / 'profile.json'), '--wheel', 'unused.whl',
+            '--expected-version', '1', '--output-dir',
+            str(tmp_path / 'attempt')
+        ])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('managed', [False, True])
+@pytest.mark.parametrize('fault', [
+    'changed_core', 'foreign_core', 'changed_native', 'changed_ingest',
+    'wrong_hash'
+])
 def test_installed_components_must_be_supplied_by_exact_wheel(
-        tmp_path, monkeypatch, fault):
+        tmp_path, monkeypatch, fault, managed):
     from types import ModuleType
 
     prefix = tmp_path / 'venv'
@@ -180,8 +207,11 @@ def test_installed_components_must_be_supplied_by_exact_wheel(
     monkeypatch.setattr(runner.importlib.metadata, 'distribution',
                         lambda _: dist)
     monkeypatch.setattr(runner.sys, 'prefix', str(prefix))
-    runner.check_install(wheel, '1')
-    if fault == 'foreign_core':
+    runner.check_install(wheel, '1', managed=managed)
+    if fault == 'wrong_hash':
+        direct['archive_info']['hashes']['sha256'] = '0' * 64
+        message = 'Install the exact candidate wheel with pip'
+    elif fault == 'foreign_core':
         dist.files = [name for name in files if name != names['kumo_core']]
         message = 'not supplied by the candidate wheel'
     else:
@@ -193,7 +223,7 @@ def test_installed_components_must_be_supplied_by_exact_wheel(
         (location / target).write_bytes(b'other installed build')
         message = 'differs from the selected wheel'
     with pytest.raises(AssertionError, match=message):
-        runner.check_install(wheel, '1')
+        runner.check_install(wheel, '1', managed=managed)
 
 
 def test_cleanup_failure_is_failed_not_blocked(tmp_path, monkeypatch):
@@ -218,3 +248,126 @@ def test_cleanup_failure_is_failed_not_blocked(tmp_path, monkeypatch):
     assert report['status'] == 'failed'
     assert 'Cannot remove producer scratch' in report['error']
     assert report['phases']['score']['status'] == 'blocked'
+
+
+@pytest.mark.parametrize('ready', [False, True])
+def test_platform_permission_prerequisite_runs_before_any_fit(
+        tmp_path, monkeypatch, ready):
+    root = tmp_path / 'attempt'
+    profile = SimpleNamespace(config=dict(
+        environment='managed', execution_context='snowflake_notebook'))
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: profile)
+    monkeypatch.setattr(runner, 'check_install', lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kwargs: None)
+    phases = []
+
+    def blocked(command, cwd, log, timeout):
+        phase = command[command.index('--phase') + 1]
+        phases.append(phase)
+        runner.write(cwd / (phase + '.json'),
+                     dict(status='passed') if ready else
+                     dict(status='blocked', error='Denied stage not ready'))
+        return 0 if ready else 1
+
+    monkeypatch.setattr(runner, 'execute', blocked)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1)
+    assert runner.run(args) == 1
+    report = runner.read(root / 'summary.json')
+    assert phases == (['negative', 'fit', 'score', 'evaluate']
+                      if ready else ['negative'])
+    assert report['status'] == 'blocked'
+    assert report['phases']['negative']['status'] == ('passed' if ready else 'blocked')
+    assert report['phases']['fit']['status'] == ('passed' if ready else 'blocked')
+    assert report['required_gaps']['exported_epoch_history'][
+        'status'] == 'not implemented'
+
+
+@pytest.mark.parametrize('dtype', ['bool', 'int32', 'Int64'])
+def test_training_row_digest_preserves_column_types(dtype):
+    original = pd.DataFrame({'id': pd.Series([0, 1], dtype='int64')})
+    restored = original.astype({'id': dtype})
+    assert runner.frame_digest(original) != runner.frame_digest(restored)
+    assert runner.frame_digest(original) == runner.frame_digest(original.copy())
+
+
+@pytest.mark.parametrize('fault', ['nan', 'bundle', 'registry', 'epochs'])
+def test_local_fit_tracking_rejects_incomplete_evidence(fault):
+    run = SimpleNamespace(info=SimpleNamespace(status='FINISHED'),
+                          data=SimpleNamespace(tags={'kumo.bundle_id': 'b'}))
+    history = {'train/loss': [(0, 1.0), (1, 0.5)]}
+    registered = SimpleNamespace(tags={'kumo_bundle_id': 'b'})
+    runner.local_fit_record(run, history, registered, 'b')
+    if fault == 'nan':
+        history['train/loss'][1] = (1, float('nan'))
+    elif fault == 'bundle':
+        run.data.tags.clear()
+    elif fault == 'registry':
+        registered.tags.clear()
+    else:
+        history['train/loss'] = [(0, 1.0)]
+    with pytest.raises(AssertionError):
+        runner.local_fit_record(run, history, registered, 'b')
+
+
+@pytest.mark.parametrize('denied', [False, True])
+def test_platform_worker_preserves_original_error_and_receipt(
+        tmp_path, monkeypatch, denied):
+    import importlib
+    monkeypatch.syspath_prepend(str(SCRIPT.parent))
+    helpers = importlib.import_module('wheel_mlops_platform')
+    profile = SimpleNamespace(
+        config=dict(environment='venv', platform='databricks'), model='test',
+        experiment='test', artifact_root='/test', placement=lambda: {})
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: profile)
+    monkeypatch.setattr(runner, 'platform_helpers', lambda: helpers)
+    monkeypatch.setattr(runner, 'check_install', lambda *args: {})
+    monkeypatch.setitem(sys.modules, 'torch',
+                        SimpleNamespace(set_num_threads=lambda _: None))
+    engine = SimpleNamespace(configure=lambda **kwargs: None)
+    monkeypatch.setitem(sys.modules, 'kumo', SimpleNamespace(engine=engine))
+    monkeypatch.setitem(sys.modules, 'kumo.engine', engine)
+
+    def failing_fit(_):
+        error = RuntimeError('original provider failure')
+        if denied:
+            error.status_code = 403
+        raise error
+
+    monkeypatch.setattr(runner, 'fit', failing_fit)
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'wheel',
+                           expected_version='test', phase='fit')
+    assert runner.phase(args) == 1
+    report = runner.read(tmp_path / 'fit.json')
+    assert report['status'] == ('blocked' if denied else 'failed')
+    assert 'original provider failure' in report['error']
+    assert 'AttributeError' not in report['error']
+
+
+def test_final_scratch_failure_overrides_all_passed_phase_receipts(
+        tmp_path, monkeypatch):
+    root = tmp_path / 'attempt'
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: None)
+    monkeypatch.setattr(runner, 'check_install', lambda *args: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *args, **kwargs: None)
+
+    def completed(command, cwd, log, timeout):
+        phase = command[command.index('--phase') + 1]
+        runner.write(cwd / (phase + '.json'), dict(status='passed'))
+        if phase == runner.PHASES[-1]:
+            (cwd / ('scratch-' + phase)).mkdir()
+        return 0
+
+    def cannot_remove(path):
+        raise OSError('Cannot remove final producer scratch')
+
+    monkeypatch.setattr(runner, 'execute', completed)
+    monkeypatch.setattr(runner.shutil, 'rmtree', cannot_remove)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1)
+    assert runner.run(args) == 1
+    report = runner.read(root / 'summary.json')
+    assert report['status'] == 'failed'
+    assert all(phase['status'] == 'passed'
+               for phase in report['phases'].values())
+    assert 'Cannot remove final producer scratch' in report['error']

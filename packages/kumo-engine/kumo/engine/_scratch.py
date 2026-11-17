@@ -18,19 +18,7 @@ so scratch-directory names must be collision-free on their own:
   version is what lets `Graph.snapshot()` reuse an existing build instead
   of re-ingesting.
 
-The root all of these nest under defaults to `~/.cache/kumo-engine`, but is
-overridable via `kumo.engine.configure(scratch_dir=...)` (`kumo/engine/config.py`) --
-e.g. to point `Graph.snapshot()`'s DiskGraph ingest and `Trainer`'s training
-runs at a local NVMe SSD mount instead of the home directory, matching
-`kumo_core.config.NativeRuntimeConfig`'s own `scratch_root`/`artifact_root`
-split ("so adapters can map them to local NVMe and durable storage
-respectively"). A process-wide, mutable module global, not threaded through
-every constructor -- the same tradeoff the cloud SDK's own `Storage` object
-makes, just set once via a function call instead of passed to a `Backend`
-constructor (this package has no `Backend`). Like that object, `configure()`
-is meant to be called once, early -- before constructing any `Graph`/
-`Trainer`/etc. -- not toggled mid-session: nothing here re-reads it after a
-path has already been computed and used.
+The root all of these nest under is `kumo.settings.scratch_dir()`.
 """
 
 import hashlib
@@ -38,40 +26,20 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Iterator, Optional
 
 from kumo_core.chunked_fs import set_spool_dir
 
-_DEFAULT_ROOT = Path.home() / ".cache" / "kumo-engine"
-_root = _DEFAULT_ROOT
+import kumo.settings
+
+# Tests pin the root by patching this.
+_root: Optional[Path] = None
 _scoped_root: ContextVar[Optional[Path]] = ContextVar('kumo_scratch_root',
                                                       default=None)
 
 
-def set_scratch_dir(path: Union[str, Path]) -> None:
-    r"""Overrides the scratch-directory root every helper below nests under.
-    Backs `kumo.engine.configure(scratch_dir=...)`.
-
-    Args:
-        path: a local filesystem path -- DiskGraph ingest and GNN training
-            read and write it directly, the same constraint the cloud SDK's
-            `Storage.scratch` enforces on its own scratch path.
-
-    Raises:
-        ValueError: if `path` isn't a local filesystem path (e.g. a
-            Snowflake stage URI or an `s3://`/`gs://` URI).
-    """
-    text = str(path)
-    if text.startswith('@') or '://' in text:
-        raise ValueError(
-            f"scratch_dir must be a local filesystem path, not {text!r} -- "
-            "DiskGraph ingest and GNN training read and write it directly.")
-    global _root
-    _root = Path(path).expanduser()
-
-
 def get_scratch_dir() -> Path:
-    return _scoped_root.get() or _root
+    return _scoped_root.get() or _root or kumo.settings.scratch_dir()
 
 
 @contextmanager

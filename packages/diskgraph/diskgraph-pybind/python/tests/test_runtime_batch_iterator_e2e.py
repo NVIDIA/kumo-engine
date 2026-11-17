@@ -2450,3 +2450,16 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
         "valid items dominate (96/128); no slot should be masked at this scale — "
         "any mask would imply the resample budget was unexpectedly exhausted"
     )
+
+
+def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_table_fixture):
+    iterator, count = make_runtime_batch_iterator(
+        dataset_ref=seed_table_fixture["manifest_path"], stage="train",
+        sampling_plan=_sampling_plan(), num_workers=1, worker_id=0,
+        shuffle=False, rnd_seed=None, epoch=0, batch_size=3, drop_last=False,
+        rhs_seed_node_type="users", rhs_seed_time=100,
+    )
+    assert count == seed_table_fixture["n_users"]
+    batches = list(iterator)
+    roots = [int(value) for batch in batches for value in batch["task"]["seed_node_ids"].to_pylist()]
+    assert roots == list(range(seed_table_fixture["n_users"]))

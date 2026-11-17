@@ -412,8 +412,7 @@ fn test_fused_sampling() {
         }],
     };
 
-    let req = BatchSamplingRequest {
-
+    let mut req = BatchSamplingRequest {
         dataset_id: DatasetId::nil(),
         seed_nodes: [("User".to_string(), vec![0])].into(),
         seed_timestamps: None,
@@ -443,6 +442,33 @@ fn test_fused_sampling() {
 
     // Batch should contain seed (0) and its unique neighbors (1..20) = 21 rows
     assert_eq!(batch.num_rows(), 21);
+
+    // Compare the combined record read for the source and feature-only reads
+    // for its leaf neighbors with standalone sampling plus feature fetching.
+    req.flags.fused_feature_fetching = false;
+    let mut standalone_state = SamplingState::default();
+    let mut standalone = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+    graph
+        .sampler
+        .sample(&req, &mut standalone_state, &mut standalone)
+        .unwrap();
+    assert_eq!(output.edges, standalone.edges);
+    let ids: Vec<_> = standalone_state.type_states[&0]
+        .nodes
+        .iter()
+        .map(|node| node.global_id)
+        .collect();
+    graph
+        .sampler
+        .fetch_features_for_type(0, &ids, &[], &mut standalone)
+        .unwrap();
+    assert_eq!(standalone.feature_batches.len(), 1);
+    assert_eq!(batch, &standalone.feature_batches[0]);
 }
 
 #[test]
