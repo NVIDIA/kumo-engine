@@ -43,7 +43,7 @@ from kumo_core.callbacks.train_progress_logger import (
 from kumo_core.instrumentation import TrainingInstrumentation, format_error
 from kumo_core.io import filesystem
 from kumo_core.io.json import load_json, save_json
-from kumo_core.job_config import JobConfig, TrainStatus
+from kumo_core.job_config import JobConfig, TrainStatus, TrialStatus
 from kumo_core.model_plan import ModelPlan, _is_inferred, _parse_hop_key
 from kumo_core.modeling.retrieval.mips import require_faiss
 from kumo_core.resolved_task import ResolvedNumericalTask, ResolvedTaskGraph
@@ -96,6 +96,27 @@ def _failed_trials_error_message(status: TrainStatus) -> str:
     if trial_errors:
         message += f". Last trial error: {trial_errors[-1]}"
     return message
+
+
+def _raise_if_no_trial_succeeded(
+    status: TrainStatus,
+    failed_trials: list[TrialStatus],
+    num_experiments: int,
+    task_type: TaskType,
+    home_dir: str,
+) -> None:
+    if any(t.succeed for t in status.trials):
+        return
+    # Save the OOM message only here. A run that goes on can fail later for
+    # another reason, and kumo-auto keeps a saved message.
+    if failed_trials:
+        status.error_msg = construct_gpu_oom_message(
+            num_experiments=num_experiments,
+            failed_trials=failed_trials,
+            task_type=task_type,
+        )
+        status.save(home_dir)
+    raise RuntimeError(_failed_trials_error_message(status))
 
 
 def _resolved_hop_edge_type(
@@ -957,17 +978,9 @@ class AutoTrainer:
             else:
                 logger.warning(f"Failed {len(failed_trials)} AutoML trials")
 
-        if not any(t.succeed for t in status.trials):
-            # Save the OOM message only when it explains the failure. The
-            # kumo-auto handler keeps a saved message for later failures.
-            if len(failed_trials) > 0:
-                status.error_msg = construct_gpu_oom_message(
-                    num_experiments=self.num_experiments,
-                    failed_trials=failed_trials,
-                    task_type=self.task.task_type,
-                )
-                status.save(self.home_dir)
-            raise RuntimeError(_failed_trials_error_message(status))
+        _raise_if_no_trial_succeeded(status, failed_trials,
+                                     self.num_experiments,
+                                     self.task.task_type, self.home_dir)
 
         with self.instrumentation.timing("auto_trainer.run.get_best_trainer",
                                          should_init=init_best_trainer):
