@@ -106,3 +106,33 @@ def test_first_task_name_handles_canonicalized_adls_scheme(monkeypatch):
         ])
 
     assert manager.first_task_name() == 'NA'
+
+
+def test_trials_sorted_numerically_excluding_non_trial_dirs(monkeypatch):
+    home = 'gs://bucket/jobs/trainingjob-1'
+    automl = f'{home}/models/NA/automl'
+    names = sorted([f'version_{i}' for i in range(80)] + [
+        'version_71_refit_trainval',
+        'version_71_refit_full',
+        'failed_trials',
+        'best_trainer.json',
+    ])
+    listing = [f'{automl}/{name}' for name in names]
+    manager = kumo.home.HomeDirManager(home)
+    monkeypatch.setattr(manager, 'first_task_name', lambda: 'NA')
+    monkeypatch.setattr(kumo.home.fsutil, 'listdir',
+                        lambda *_args, **_kwargs: listing)
+
+    assert manager.trials() == [f'{automl}/version_{i}' for i in range(80)]
+
+
+@pytest.mark.parametrize(('trial_dir', 'expected'), [
+    ('gs://bucket/models/NA/automl/version_71', '71'),
+    ('gs://bucket/models/NA/automl/version_71/', '71'),
+    ('/tmp/automl/version_0', '0'),
+    ('gs://bucket/models/NA/automl/version_71_refit_trainval', None),
+    ('gs://bucket/models/NA/automl/failed_trials', None),
+    ('gs://bucket/models/NA/automl/version_', None),
+])
+def test_trial_id(trial_dir, expected):
+    assert kumo.home.HomeDirManager.trial_id(trial_dir) == expected

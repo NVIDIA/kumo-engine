@@ -4,6 +4,7 @@
 
 import os
 import os.path as osp
+import re
 from typing import List, Optional
 
 from kumoapi.train import TrainingStage
@@ -468,7 +469,8 @@ class HomeDirManager:
         return os.path.join(self.tasks_dir, task_name, 'config.json')
 
     def trials(self) -> List[str]:
-        """Get a list of paths corresponding to each automl trial.
+        """Get the paths of the ``version_<N>`` automl trial directories,
+        sorted by ``N``. Refit and other directories are excluded.
         """
         task_name = self.first_task_name()
         if task_name is None:
@@ -477,11 +479,21 @@ class HomeDirManager:
         models_path = osp.join(self.models_dir, task_name, "automl")
         model_config_dirs = fsutil.listdir(models_path)
 
-        def _is_trial_path(path: str) -> bool:
-            splits = path.strip('/').split('/')
-            return splits[-1].startswith('version_')
+        trials = []
+        for path in model_config_dirs:
+            trial_id = self.trial_id(path)
+            if trial_id is not None:
+                trials.append((int(trial_id), path))
+        return [path for _, path in sorted(trials)]
 
-        return list(filter(_is_trial_path, model_config_dirs))
+    @staticmethod
+    def trial_id(trial_dir: str) -> Optional[str]:
+        """Get ``N`` for a ``version_<N>`` automl trial directory, the id
+        used as the key of the AutoML training progress ``trial_progress``.
+        """
+        name = osp.basename(trial_dir.rstrip('/'))
+        match = re.fullmatch(r'version_(\d+)', name)
+        return match.group(1) if match else None
 
     def make_best_trainer_path_V1_and_v2_compat(self,
                                                 best_trainer_path: str) -> str:
