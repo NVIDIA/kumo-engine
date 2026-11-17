@@ -122,6 +122,7 @@ def _client_config():
         workflow_id=lambda workflow_id: workflow_id,
         task_queue=lambda task_queue: task_queue,
         orchestration=object(),
+        max_workflow_id_length=None,
     )
 
 

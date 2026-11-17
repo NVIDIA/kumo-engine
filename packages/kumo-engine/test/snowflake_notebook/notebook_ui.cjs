@@ -10,6 +10,22 @@ const { check: checkExplanations, PLOTS: EXPLANATION_PLOTS } = require("./explan
 
 const { VerificationError, requireThat, until } = require("./verification.cjs");
 
+async function waitForSetup(frame, setup) {
+  await Promise.race([
+    frame
+      .getByText(new RegExp("KUMO_GRAPH_INSTALL_COMPLETE=" + setup))
+      .waitFor({ timeout: 1200000 }),
+    frame
+      .getByRole("listitem")
+      .filter({ has: frame.getByRole("checkbox", { name: "Select cell 1", exact: true }) })
+      .getByText(/Traceback.*Cell In/s)
+      .waitFor({ timeout: 1200000 })
+      .then(() => {
+        throw new VerificationError("Notebook setup failed; inspect its cell output");
+      }),
+  ]);
+}
+
 async function uploadChooser(page, item) {
   const [chooser] = await Promise.all([
     page.waitForEvent("filechooser"),
@@ -434,17 +450,7 @@ async function execute(page, frame, spec, event, output, config, evidence) {
     "Notebook install cell 1 did not acknowledge the run request; inspect its saved cell output",
   );
   event("notebook_install_started", { execution_id: setup });
-  await Promise.race([
-    frame
-      .getByText(new RegExp("KUMO_GRAPH_INSTALL_COMPLETE=" + setup))
-      .waitFor({ timeout: 1200000 }),
-    frame
-      .getByText(/Traceback.*Cell In/s)
-      .waitFor({ timeout: 1200000 })
-      .then(() => {
-        throw new VerificationError("Notebook setup failed; inspect its cell output");
-      }),
-  ]);
+  await waitForSetup(frame, setup);
   await resetKernel(frame, event, config.target.notebook_service);
   await profile(frame, event, config.target.notebook_service);
   const priorOutput = frame.getByText(/KUMO_GRAPH_RESULT=\{/);
@@ -557,8 +563,10 @@ async function verify(page, config, evidence, event, allowed) {
       { mode: 0o600, flag: "wx" },
     );
     config.notebook_creation_started = true;
+    config.notebook_upload_pending = true;
     await chooser.setFiles(spec.path);
     await file.waitFor();
+    config.notebook_upload_pending = false;
   }
   await frame
     .getByRole("list", { name: "Document breadcrumbs", exact: true })
@@ -719,6 +727,17 @@ async function cleanupCreatedNotebook(page, config, event) {
     "Cleanup requires a generated attempt notebook");
   const frame = await workspace(page, event);
   const file = frame.getByRole("treeitem", { name, exact: true });
+  await frame.getByRole("tree").waitFor({ state: "visible", timeout: 90000 });
+  await frame.getByText("Loading...", { exact: true })
+    .waitFor({ state: "hidden", timeout: 90000 });
+  await frame.getByRole("dialog", { name: /upload|import/i })
+    .waitFor({ state: "hidden", timeout: 90000 });
+  requireThat(!config.notebook_upload_pending, "Notebook upload outcome is still pending");
+  await frame.getByRole("progressbar").waitFor({ state: "hidden", timeout: 90000 });
+  if ((await file.count()) === 0) {
+    event("attempt_notebook_already_absent");
+    return { status: "passed", already_absent: true };
+  }
   await file.waitFor();
   await file.dblclick();
   const memory = frame.getByRole("dialog", { name: "High memory usage", exact: true });
@@ -746,6 +765,7 @@ async function cleanupCreatedNotebook(page, config, event) {
 
 module.exports = {
   kernelActive,
+  waitForSetup,
   uploadChooser,
   verify,
   readReceipt,

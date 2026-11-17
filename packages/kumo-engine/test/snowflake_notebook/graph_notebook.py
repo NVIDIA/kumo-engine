@@ -237,8 +237,7 @@ with tarfile.open(ROOT / fixture['name']) as archive:
 sys.path.insert(0, str(ROOT))
 from offline_support import unpack
 wheelhouse = ROOT / 'wheelhouse'
-if not wheelhouse.exists():
-    unpack(ROOT, wheelhouse)
+unpack(ROOT, wheelhouse)
 wheel = ROOT / candidate['candidate']['wheel_file']
 command = [sys.executable, '-m', 'pip', '--isolated', 'install', '--no-index', '--find-links', str(wheelhouse), str(wheel) + '[snowflake]', str(ROOT / pdf['name'])]
 with (ROOT / 'install.log').open('w') as log:

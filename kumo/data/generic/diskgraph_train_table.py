@@ -860,6 +860,7 @@ def generate_train_table_via_diskgraph_ttng(
     downsampling: Optional[dict[str, Any]] = None,
     input_timestamp_unit: TimeUnit,
     target_stype: str,
+    start_time: Optional[int] = None,
 ) -> Tuple[str, str]:
     """TT-NG sibling of :func:`generate_train_table_via_diskgraph`.
 
@@ -932,6 +933,7 @@ def generate_train_table_via_diskgraph_ttng(
                 query, forecast_length, lag_timesteps, year_over_year)
                               if task_type.lower() == 'forecasting' else None),
             index_path_verified=True,
+            start_time=start_time,
         ))
     return result.train_table_path, result.manifest_path
 

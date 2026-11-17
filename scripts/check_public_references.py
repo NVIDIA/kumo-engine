@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -248,7 +249,61 @@ def github_repository(url: str) -> str | None:
     return repository.split("@", maxsplit=1)[0].lower().removesuffix(".git")
 
 
+def notebook_cell_ids(text: str) -> str:
+    """Mask only root cells[*].id values, preserving source line positions."""
+    decoder = json.JSONDecoder()
+    spans: list[tuple[int, int]] = []
+
+    def space(offset: int) -> int:
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        return offset
+
+    def visit(offset: int, path: tuple[str | int, ...]) -> int:
+        offset = space(offset)
+        if text[offset] == '{':
+            offset = space(offset + 1)
+            while text[offset] != '}':
+                key, offset = decoder.raw_decode(text, offset)
+                offset = visit(space(offset) + 1, (*path, key))
+                offset = space(offset)
+                if text[offset] != ',':
+                    break
+                offset = space(offset + 1)
+            return offset + 1
+        if text[offset] == '[':
+            offset, index = space(offset + 1), 0
+            while text[offset] != ']':
+                offset = space(visit(offset, (*path, index)))
+                index += 1
+                if text[offset] != ',':
+                    break
+                offset = space(offset + 1)
+            return offset + 1
+        value, end = decoder.raw_decode(text, offset)
+        if (len(path) == 3 and path[0] == 'cells' and isinstance(path[1], int)
+                and path[2] == 'id' and isinstance(value, str)
+                and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value)):
+            spans.append((offset, end))
+        return end
+
+    try:
+        # Reject malformed JSON before interpreting any path as a cell ID.
+        value = json.loads(text)
+        if not isinstance(value, dict) or not isinstance(
+                value.get('cells'), list):
+            return text
+        visit(0, ())
+    except (ValueError, IndexError, RecursionError):
+        return text
+    for start, end in reversed(spans):
+        text = text[:start] + '"' + 'x' * (end - start - 2) + '"' + text[end:]
+    return text
+
+
 def scan_text(path: str, text: str, *, strict: bool = False) -> list[Finding]:
+    if path.endswith(".ipynb"):
+        text = notebook_cell_ids(text)
     findings: list[Finding] = []
     identifier_rules = (() if path.startswith(IDENTIFIER_RULE_EXEMPT_PREFIXES)
                         else IDENTIFIER_RULES)
@@ -291,10 +346,6 @@ def scan_text(path: str, text: str, *, strict: bool = False) -> list[Finding]:
                         category=category,
                     ))
         for pattern, category, ignored in identifier_rules:
-            if (category == "warehouse account" and path.endswith(".ipynb")
-                    and re.fullmatch(
-                        r'\s*"id"\s*:\s*"[A-Za-z0-9_-]{1,64}"\s*,?\s*', line)):
-                continue
             for match in pattern.finditer(line):
                 value = match.group("value").lower()
                 if value not in ignored:

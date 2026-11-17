@@ -9,4 +9,5 @@
 export interface ModelPlansResponse {
     model_plans: string[];
     advanced_options: string[];
+    trial_ids?: string[];
 }

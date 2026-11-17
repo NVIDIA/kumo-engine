@@ -2186,7 +2186,17 @@ class PreparedBatchPlan:
                         "inspectable output or an explicit encoder"
                     )
 
-    def _collate(self, values: Any, *, epoch: int, seed: int, model=False, requests=()) -> Batch:
+    def _collate(
+        self,
+        values: Any,
+        *,
+        epoch: int,
+        seed: int,
+        model=False,
+        requests=(),
+        columnar=False,
+        deduplicate_edges=False,
+    ) -> Batch:
         declarations = {
             name: value.declarations
             for name, value in self._prepared_inputs.items()
@@ -2206,6 +2216,14 @@ class PreparedBatchPlan:
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
                 )
+                if columnar:
+                    result[name] = self._source.columnar_graph_batch(
+                        self.sample,
+                        graph,
+                        values.runtime_batch,
+                        deduplicate_edges=deduplicate_edges,
+                    )
+                    continue
                 if model and getattr(values, "runtime_batch", None) is not None:
                     result[name] = self._source.sample_graph_batch(
                         self.sample, graph, prepared.state, values.runtime_batch

@@ -57,6 +57,8 @@ const PQTrainingOverview = ({
         queryInfo?.queryProgressStats?.mode === "max"
             ? experimentResults.indexOf(Math.max(...experimentResults))
             : experimentResults.indexOf(Math.min(...experimentResults));
+    const bestTrialId =
+        queryInfo?.queryProgressStats?.trialIds?.[bestExperimentIndex];
 
     const [selectedOption, setSelectedOption] = useState<DropdownOption>({
         value: "",
@@ -152,6 +154,7 @@ const PQTrainingOverview = ({
                                         bestExperimentIndex={
                                             bestExperimentIndex
                                         }
+                                        bestTrialId={bestTrialId}
                                         jobStatus={
                                             queryInfo?.trainingStatus as jobStatus
                                         }

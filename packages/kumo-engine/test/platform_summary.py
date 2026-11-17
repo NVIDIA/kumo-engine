@@ -45,9 +45,37 @@ def status(value):
     return value if isinstance(value, str) and value in STATUSES else 'not_run'
 
 
-def aggregate(value, depth=0):
+def exported_graph(value):
+    result = {}
+    failed = value.get('status') == 'failed' or 'error' in value
+    for name in ('interactive', 'saved_export'):
+        check = value.get(name)
+        result[name] = {
+            'status':
+            status(check.get('status'))
+            if isinstance(check, dict) else 'not_run'
+        }
+        failed = failed or result[name]['status'] == 'failed' or (isinstance(
+            check, dict) and 'error' in check)
+    errors = value.get('browser_errors')
+    if isinstance(errors, list):
+        result['browser_error_count'] = len(errors)
+        failed = failed or bool(errors)
+    passed = (all(result[name]['status'] == 'passed'
+                  for name in ('interactive', 'saved_export'))
+              and isinstance(errors, list) and not errors
+              and value.get('status', 'passed') == 'passed')
+    result[
+        'status'] = 'failed' if failed else 'passed' if passed else 'incomplete'
+    return result
+
+
+def aggregate(value, depth=0, *, graph_export=False):
     if depth > 4 or not isinstance(value, dict):
         return {'status': 'not_run'}
+    if graph_export or any(name in value
+                           for name in ('interactive', 'saved_export')):
+        return exported_graph(value)
     result = {'status': status(value.get('status'))}
     for key, allowed in DIAGNOSTICS.items():
         diagnostic = value.get(key)
@@ -99,7 +127,9 @@ def publish(source, destination, platform, scenario):
         except (OSError, ValueError):
             report['results'][label] = {'status': 'failed'}
         else:
-            report['results'][label] = aggregate(value)
+            report['results'][label] = aggregate(
+                value, graph_export=platform == 'databricks'
+                and label == 'graph')
     if not report['results']:
         report['results']['summary'] = {'status': 'not_run'}
     (destination /

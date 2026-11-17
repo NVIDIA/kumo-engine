@@ -543,7 +543,7 @@ def test_delayed_workspace_tree_cannot_report_notebook_absent():
     program = '''const {cleanupCreatedNotebook}=require(process.argv[1]);
 const locator = {isVisible:async()=>false,click:async()=>{},waitFor:async()=>{},first(){return this;}};
 const file = {count:async()=>0,waitFor:async()=>{throw Error('tree not loaded');}};
-const frame = {getByRole:(role)=>role==='treeitem'?file:locator};
+const frame = {getByRole:(role)=>role==='treeitem'?file:role==='tree'?{waitFor:async()=>{throw Error('tree not loaded')}}:locator};
 const page = {getByRole:(role)=>role==='link'?{...locator,isVisible:async()=>true}:locator,
  frameLocator:()=>frame,addLocatorHandler:async()=>{}};
 const config={notebook:{action:'cleanup',path:'kumo-test-graph-aaaaaaaaaaaa.ipynb'},notebook_creation_started:true};
@@ -577,9 +577,9 @@ const panel={...base,async innerText(){return 'Compute pool: KUMO_TEST_POOL (GEN
   getByRole(){return shutdown;}};
 const deletion={...base,getByRole(){return {...base,async click(){
   if(active||reads<2)throw Error('Deletion before terminal kernel proof');deleted=true;}};}};
-const file={...base,async dblclick(){}};
+const file={...base,async count(){return 1;},async dblclick(){}};
 const dropdown={...base,async click(){loaded=false;}};
-const frame={getByRole(role,opts={}){
+const frame={getByText(){return base;},getByRole(role,opts={}){
  if(role==='treeitem')return file;
  if(opts.name==='Connection status')return connection;
  if(opts.name==='Service List dropdown button')return dropdown;
@@ -789,3 +789,180 @@ def test_blocked_graph_prerequisite_preserves_blocked_status(
                     output=tmp_path / 'blocked', execute=True)
     assert report['status'] == 'blocked'
     assert report['reason'] == 'Notebook capacity unavailable'
+
+
+@pytest.mark.parametrize('framed', [False, True])
+@pytest.mark.parametrize('box', [
+    None, {
+        'width': 0,
+        'height': 20
+    }, {
+        'width': 20,
+        'height': 0
+    }, {
+        'width': 20,
+        'height': 20
+    }
+])
+def test_graph_tooltip_requires_rendered_row_in_each_export_scope(framed, box):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js required for the browser helper')
+    program = r'''const assert=require('node:assert/strict');
+const {check}=require(process.argv[1]);
+const framed=JSON.parse(process.argv[2]),box=JSON.parse(process.argv[3]);
+let ownerScrolled=false,hovered=false;
+const owner={evaluate:async()=>{ownerScrolled=true}};
+const row={count:async()=>1,isVisible:async()=>true,boundingBox:async()=>box,
+ hover:async()=>{hovered=true;throw Error('Hover reached')}};
+const svg={locator:selector=>selector==='.kumo-card-name'
+ ? {filter:()=>({waitFor:async()=>{}})}:row};
+const region={waitFor:async()=>{},boundingBox:async()=>({width:200,height:200}),locator:()=>svg};
+const graph={evaluate:owner.evaluate,getByRole:()=>region};
+const frame={parentFrame:()=>framed?{}:null,frameElement:async()=>owner,
+ locator:()=>({count:async()=>2,nth:()=>graph})};
+const page={frames:()=>[frame]};
+const receipt={status:'passed',runtime:{workspace:true},
+ default_reads:{backend_accesses:0,sample_calls:0},opt_in_reads:{sample_calls:1},
+ canaries:Array(6).fill('test'),schema:{tables:{T:{pkey:'ID',cols:[{name:'ID'}]}},
+ edges:[{src_table:'T',fkey:'ID',dst_table:'T'}]}};
+(async()=>{
+ const rendered=box&&box.width>0&&box.height>0;
+ await assert.rejects(check(page,receipt,'unused','test'),
+  {message:rendered?'Hover reached':'Tooltip row is not rendered'});
+ assert.equal(ownerScrolled,true);
+ assert.equal(hovered,Boolean(rendered));
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([
+        node, '-e', program,
+        str(DIRECTORY / 'graph_ui.cjs'),
+        json.dumps(framed),
+        json.dumps(box)
+    ], check=True)
+
+
+@pytest.mark.parametrize('pending',
+                         [None, 'tree', 'loading', 'upload', 'progress'])
+def test_cleanup_absence_requires_loaded_tree_and_completed_upload(pending):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js required')
+    program = r'''const assert=require('node:assert/strict');
+const {cleanupCreatedNotebook}=require(process.argv[1]);
+const pending=JSON.parse(process.argv[2]);
+const events=[];
+const ready={isVisible:async()=>false,click:async()=>{},first(){return this},
+ waitFor:async()=>{}};
+function barrier(kind){return {...ready,waitFor:async()=>{
+ if(kind===pending)throw Error(kind+' pending');events.push(kind);
+}};}
+const file={count:async()=>0,waitFor:async()=>{throw Error('Absent notebook must not be opened')}};
+const frame={getByText:()=>barrier('loading'),getByRole:(role)=>
+ role==='treeitem'?file:role==='tree'?barrier('tree'):
+ role==='progressbar'?barrier('progress'):ready};
+const page={getByRole:role=>role==='link'?{...ready,isVisible:async()=>true}:ready,
+ frameLocator:()=>frame,addLocatorHandler:async()=>{}};
+const config={notebook:{action:'cleanup',path:'kumo-test-graph-aaaaaaaaaaaa.ipynb'},
+ notebook_creation_started:true,notebook_upload_pending:pending==='upload'};
+(async()=>{
+ if(pending)await assert.rejects(cleanupCreatedNotebook(page,config,()=>{}));
+ else {
+  const result=await cleanupCreatedNotebook(page,config,()=>{});
+  assert.equal(result.status,'passed');assert.equal(result.already_absent,true);
+  assert.ok(events.includes('tree')&&events.includes('loading')&&events.includes('progress'));
+ }
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([
+        node, '-e', program,
+        str(DIRECTORY / 'notebook_ui.cjs'),
+        json.dumps(pending)
+    ], check=True)
+
+
+@pytest.mark.parametrize('install_error', [False, True])
+def test_setup_failure_wait_ignores_stale_graph_cell_traceback(install_error):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js required')
+    program = r'''const assert=require('node:assert/strict');
+const {waitForSetup}=require(process.argv[1]);
+const installError=JSON.parse(process.argv[2]);
+const pending=()=>new Promise(()=>{});
+let scoped=false;
+const cell={getByText:()=>({waitFor:installError?async()=>{}:pending})};
+const frame={getByRole(role,opts){
+ if(role==='checkbox'){assert.equal(opts.name,'Select cell 1');return {};}
+ assert.equal(role,'listitem');return {filter(){scoped=true;return cell}};
+},getByText(text){
+ assert.ok(!String(text).includes('Traceback'),'stale cell-2 traceback was considered');
+ return {waitFor:installError?pending:async()=>{}};
+}};
+(async()=>{
+ if(installError)await assert.rejects(waitForSetup(frame,'a'.repeat(12)),/Notebook setup failed/);
+ else await waitForSetup(frame,'a'.repeat(12));
+ assert.equal(scoped,true);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    subprocess.run([
+        node, '-e', program,
+        str(DIRECTORY / 'notebook_ui.cjs'),
+        json.dumps(install_error)
+    ], check=True)
+
+
+@pytest.mark.parametrize('fault', ['checksum', 'copy_error'])
+def test_failed_wheelhouse_extraction_never_publishes_partial_state(
+        tmp_path, monkeypatch, fault):
+    import hashlib
+    import importlib.util
+    import io
+    import tarfile
+    spec = importlib.util.spec_from_file_location(
+        'offline_wheels', DIRECTORY / 'offline_support.py')
+    offline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(offline)
+    payload = tmp_path / 'payload'
+    payload.mkdir()
+    contents = {'first.whl': b'first', 'second.whl': b'second'}
+    archive = payload / 'wheelhouse.tar'
+    with tarfile.open(archive, 'w') as bundle:
+        for name, data in contents.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            bundle.addfile(member, io.BytesIO(data))
+    manifest = dict(
+        archive_sha256=offline.sha(archive), wheels={
+            name: dict(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+            for name, data in contents.items()
+        })
+    if fault == 'checksum':
+        manifest['wheels']['second.whl']['sha256'] = '0' * 64
+    else:
+        original = offline.shutil.copyfileobj
+        calls = []
+
+        def fail_second(source, output):
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError('interrupted extraction')
+            return original(source, output)
+
+        monkeypatch.setattr(offline.shutil, 'copyfileobj', fail_second)
+    (payload / 'wheelhouse-manifest.json').write_text(json.dumps(manifest))
+    destination = tmp_path / 'wheelhouse'
+    with pytest.raises((OSError, ValueError)):
+        offline.unpack(payload, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob('wheelhouse-pending-*'))
+    monkeypatch.undo()
+    manifest['wheels']['second.whl']['sha256'] = hashlib.sha256(
+        contents['second.whl']).hexdigest()
+    (payload / 'wheelhouse-manifest.json').write_text(json.dumps(manifest))
+    offline.unpack(payload, destination)
+    assert {p.name: p.read_bytes() for p in destination.iterdir()} == contents
+    assert offline.unpack(payload, destination) == manifest
+    (destination / 'second.whl').write_bytes(b'broken')
+    with pytest.raises(ValueError, match='Existing wheelhouse'):
+        offline.unpack(payload, destination)

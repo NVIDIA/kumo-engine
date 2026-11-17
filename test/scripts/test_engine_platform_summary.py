@@ -100,3 +100,90 @@ def test_cleanup_recovery_publishes_statuses_without_original_error_or_paths():
                           browser_cleanup=dict(status='passed'),
                           cleanup_retry=dict(status='passed'))
     assert 'PRIVATE' not in json.dumps(result)
+
+
+def exported_graph_result():
+    return dict(
+        scope='PRIVATE notebook path',
+        interactive=dict(status='passed',
+                         checks=[dict(receipt='PRIVATE', samples=['SECRET'])]),
+        saved_export=dict(status='passed',
+                          checks=[dict(url='https://PRIVATE/?token=SECRET')]),
+        browser_errors=[])
+
+
+def test_databricks_export_dialect_preserves_actual_ui_checks_without_raw_values(
+        tmp_path):
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    (raw / 'ui-result.json').write_text(json.dumps(exported_graph_result()))
+    result = summary.publish(raw, tmp_path / 'public', 'databricks', 'graph')
+    assert result['results']['graph'] == {
+        'status': 'passed',
+        'interactive': {
+            'status': 'passed'
+        },
+        'saved_export': {
+            'status': 'passed'
+        },
+        'browser_error_count': 0
+    }
+    rendered = (tmp_path / 'public/summary.json').read_text()
+    assert 'PRIVATE' not in rendered and 'SECRET' not in rendered
+
+
+@pytest.mark.parametrize('fault', [
+    'interactive-failed', 'saved-failed', 'browser-error',
+    'contradictory-error', 'top-level-failed'
+])
+def test_exported_graph_reports_failures_without_error_contents(fault):
+    value = exported_graph_result()
+    if fault == 'interactive-failed':
+        value['interactive'].update(status='failed', error='PRIVATE assertion')
+    elif fault == 'saved-failed':
+        value['saved_export'].update(status='failed', error='PRIVATE assertion')
+    elif fault == 'browser-error':
+        value['browser_errors'] = ['PRIVATE token=SECRET']
+    elif fault == 'contradictory-error':
+        value['interactive']['error'] = 'PRIVATE assertion'
+    else:
+        value['status'] = 'failed'
+    result = summary.aggregate(value)
+    assert result['status'] == 'failed'
+    assert result['browser_error_count'] == (1
+                                             if fault == 'browser-error' else 0)
+    assert 'PRIVATE' not in json.dumps(result) and 'SECRET' not in json.dumps(
+        result)
+
+
+@pytest.mark.parametrize('fault', [
+    'missing-interactive', 'missing-saved', 'missing-both', 'missing-errors',
+    'invalid-errors', 'invalid-check', 'unknown-status', 'pending', 'scalar'
+])
+def test_incomplete_databricks_graph_receipt_cannot_publish_a_pass(
+        tmp_path, fault):
+    value = exported_graph_result()
+    if fault == 'missing-interactive':
+        del value['interactive']
+    elif fault == 'missing-saved':
+        del value['saved_export']
+    elif fault == 'missing-both':
+        value = dict(status='passed', browser_errors=[])
+    elif fault == 'missing-errors':
+        del value['browser_errors']
+    elif fault == 'invalid-errors':
+        value['browser_errors'] = 'PRIVATE'
+    elif fault == 'invalid-check':
+        value['saved_export'] = 'passed'
+    elif fault == 'unknown-status':
+        value['saved_export']['status'] = 'PRIVATE'
+    elif fault == 'pending':
+        value['saved_export']['status'] = 'pending'
+    else:
+        value = 'PRIVATE'
+    raw = tmp_path / 'raw'
+    raw.mkdir()
+    (raw / 'ui-result.json').write_text(json.dumps(value))
+    result = summary.publish(raw, tmp_path / 'public', 'databricks', 'graph')
+    assert result['results']['graph']['status'] != 'passed'
+    assert 'PRIVATE' not in json.dumps(result)

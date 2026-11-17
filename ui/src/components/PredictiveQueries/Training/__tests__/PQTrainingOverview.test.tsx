@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { AxiosResponse } from "axios";
 import { TrainingWorkflowResponse } from "gen/v0/types";
 import { mockAxiosInstance } from "tests/mockAxios";
 import {
@@ -15,7 +16,7 @@ import {
     verifyTextExists
 } from "tests/testHelpers";
 import { testResponseType } from "tests/testResponseType";
-import { createQueryClient } from "tests/testUtil";
+import { createMockResponse, createQueryClient } from "tests/testUtil";
 
 import { setModelPlanTestResponseType } from "components/Jobs/Training/__tests__/MockFunctions/ModelPlan.mock";
 import { ModelPlan } from "components/PredictiveQueries/Overview/__tests__/MockResponses/ModelPlan";
@@ -25,6 +26,7 @@ import { PredictiveQueryInfo } from "types/predictiveQueries";
 
 import { parseTrainingWorkflowResponse } from "utils/Converters/predictiveQueriesConverter";
 
+import mockModelPlansResponse from "../../../Jobs/Training/__tests__/MockResponses/ModlPlans.test.json";
 import mockWorkflowResponse from "../../../Jobs/Training/__tests__/MockResponses/TrainingWorkflow.test.json";
 import PQTrainingOverview, {
     PQTrainingOverviewProps
@@ -245,5 +247,69 @@ describe("PQTrainingOverview", () => {
         });
         expect(modelHeading).toBeInTheDocument();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("Should show the best trial's plan when an earlier trial has no validation metric", async () => {
+        const workflow = structuredClone(mockWorkflowResponse);
+        workflow.training_job.execution.progress.trial_progress = [
+            {
+                trial_id: "0",
+                best_train_metric: { name: "AUROC", val: 0.7 },
+                best_validation_metric: { name: "AUROC", val: 0.7 }
+            },
+            {
+                trial_id: "1",
+                best_train_metric: { name: "AUROC", val: 0.8 }
+            },
+            {
+                trial_id: "2",
+                best_train_metric: { name: "AUROC", val: 0.9 },
+                best_validation_metric: { name: "AUROC", val: 0.9 }
+            }
+        ] as typeof workflow.training_job.execution.progress.trial_progress;
+        const gappedQueryInfo = parseTrainingWorkflowResponse(
+            workflow as unknown as TrainingWorkflowResponse
+        );
+        gappedQueryInfo.modelPlannerYaml = ModelPlan;
+
+        const planForTrial = (trial: number) =>
+            mockModelPlansResponse.model_plans[0].replace(
+                "lag_timesteps: 0",
+                `lag_timesteps: ${101 + trial}`
+            );
+        const defaultGet = mockAxiosInstance.get.getMockImplementation();
+        mockAxiosInstance.get.mockImplementation((url, data, options) =>
+            url.endsWith("/model_plans")
+                ? Promise.resolve(
+                      createMockResponse({
+                          model_plans: [0, 1, 2].map(planForTrial),
+                          advanced_options: [],
+                          trial_ids: ["0", "1", "2"]
+                      }) as AxiosResponse<unknown>
+                  )
+                : defaultGet!(url, data, options)
+        );
+
+        try {
+            await renderPQTrainingOverview({
+                ...defaultProps,
+                queryInfo: gappedQueryInfo as PredictiveQueryInfo
+            });
+            await checkApiCall();
+
+            expect(
+                await screen.findByRole("button", {
+                    name: "Experiment 3 (BEST)"
+                })
+            ).toBeInTheDocument();
+            const editorContent = screen
+                .getAllByRole("textbox")
+                .map((editor) => editor.textContent)
+                .join(" ");
+            expect(editorContent).toContain("lag_timesteps: 103");
+            expect(editorContent).not.toContain("lag_timesteps: 102");
+        } finally {
+            mockAxiosInstance.get.mockImplementation(defaultGet!);
+        }
     });
 });
