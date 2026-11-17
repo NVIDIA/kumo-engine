@@ -353,7 +353,7 @@ def _materialize(monkeypatch, tmp_path, req):
 
     monkeypatch.setattr(prediction, "write_thin_manifest", thin)
     monkeypatch.setattr(prediction, "write_flat_manifest", flat)
-    monkeypatch.setattr(prediction, "candidate_node_ids",
+    monkeypatch.setattr(prediction, "candidate_row_filter",
                         lambda *args, **kwargs: None)
 
     result = materialize_prediction_task(

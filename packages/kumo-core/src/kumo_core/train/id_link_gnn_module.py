@@ -289,7 +289,7 @@ class IDLinkGNNLightningModule(BaseLinkLightningModule):
 
     def on_predict_start(self):
         super().on_predict_start()
-        if self.datamodule.task_manifest.predict_candidates_path is not None:
+        if self.datamodule.task_manifest.predict_candidate_filter is not None:
             raise ValueError(PAIRWISE_CANDIDATES)
 
     def predict_step(

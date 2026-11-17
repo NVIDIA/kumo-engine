@@ -126,7 +126,8 @@ def _patch_common(monkeypatch, calls, encoders=None):
         'restore_durable_ttng_bundle',
         lambda _durable, local: local,
     )
-    monkeypatch.setattr(mpt, '_link_prediction_candidates', lambda *_: None)
+    monkeypatch.setattr(mpt, '_link_prediction_candidate_filter',
+                        lambda *_: None)
     _patch_feature_schema(monkeypatch)
 
 
@@ -436,9 +437,9 @@ def test_ttng_lp_materialize_threads_candidates(monkeypatch):
     _patch_common(monkeypatch, calls)
     monkeypatch.setattr('kumo.pquery.utils.get_rhs_lp_table',
                         lambda *a, **k: 'items')
-    candidates = object()
-    monkeypatch.setattr(mpt, '_link_prediction_candidates',
-                        lambda *args: requests.append(args) or candidates)
+    row_filter = '{"compare": {}}'
+    monkeypatch.setattr(mpt, '_link_prediction_candidate_filter',
+                        lambda *args: requests.append(args) or row_filter)
     pquery = _lp_pquery()
 
     _materialize(
@@ -450,9 +451,8 @@ def test_ttng_lp_materialize_threads_candidates(monkeypatch):
         train_table_name='train_tt',
     )
 
-    assert requests == [(pquery, TaskType.TEMPORAL_LINK_PREDICTION, '/dg',
-                         'bp-job')]
-    assert calls[0][2]['predict_candidates'] is candidates
+    assert requests == [(pquery, TaskType.TEMPORAL_LINK_PREDICTION, '/dg')]
+    assert calls[0][2]['predict_candidate_filter'] == row_filter
 
 
 def test_ttng_lp_static_not_temporal(monkeypatch):

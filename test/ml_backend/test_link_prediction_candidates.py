@@ -12,7 +12,8 @@ import diskgraph
 import pandas as pd
 import pyarrow as pa
 import pytest
-from kumo_core.link_candidates import candidate_node_ids
+from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
+from kumo_core.link_candidates import candidate_row_filter
 from kumo_core.pquery import (
     NativeGraph,
     NativeGraphColumn,
@@ -27,10 +28,10 @@ from kumo_core.types import TaskType
 from kumo.connector.parquet_connector import ParquetConnector
 from kumo.graph.graph import Graph
 from kumo.graph.utils import map_to_api_graph_definition
+from kumo.platform_errors import as_platform_public_exception
 from kumo.testing.pquery import get_validated_query
 from rest.driver import batch_prediction_job_logic as bpl
 from statedb.config.common import TrainingJobID
-from statedb.utils.errors import PredictionDataMaterializationError
 
 mpt = importlib.import_module(
     'rest.backends.ml_backend.activities.materialize_prediction_task')
@@ -124,22 +125,24 @@ def indexed(tmp_path_factory):
 def _hosted(graph, index_path, condition):
     graph.infer_metadata()
     query = get_validated_query(graph, QUERY.format(condition))
-    return mpt._link_prediction_candidates(
+    return mpt._link_prediction_candidate_filter(
         SimpleNamespace(validated_predictive_query=query, graph=graph),
-        TaskType.TEMPORAL_LINK_PREDICTION, index_path, 'job')
-
-
-def _listed(ids):
-    return None if ids is None else ids.tolist()
+        TaskType.TEMPORAL_LINK_PREDICTION, index_path)
 
 
 def _local(index_path, condition):
     graph = _native_graph()
     parsed = parse_and_validate_query(QUERY.format(condition), graph)
-    return candidate_node_ids(parsed.query, to_api_graph(graph),
-                              task_type=TaskType(parsed.task_type),
-                              index_path=index_path, tt_id='local',
-                              runtime=diskgraph)
+    return candidate_row_filter(parsed.query, to_api_graph(graph),
+                                task_type=TaskType(parsed.task_type),
+                                index_path=index_path, runtime=diskgraph)
+
+
+def _predict_candidates(index_path, row_filter):
+    datamodule = SimpleNamespace(task_manifest=SimpleNamespace(
+        predict_candidate_filter=row_filter, target_node_type='stores',
+        graph_runtime_metadata={'graph_index_path': index_path}))
+    return DiskgraphLightningDataModule.predict_candidates.fget(datamodule)
 
 
 @pytest.mark.parametrize('condition, stores', [
@@ -152,20 +155,26 @@ def test_hosted_and_local_inputs_give_the_same_candidates(
         indexed, condition, stores):
     graph, index_path = indexed
     hosted = _hosted(graph, index_path, condition)
-    local = _local(index_path, condition)
 
-    expected = None if stores is None else diskgraph.SamplerEngine(
-        index_path).lookup_node_ids('stores', pa.array(stores, pa.int64()))
-    assert _listed(hosted) == _listed(local) == expected
+    assert hosted == _local(index_path, condition)
+    candidates = _predict_candidates(index_path, hosted)
+    assert (None if candidates is None else
+            candidates.tolist()) == (None if stores is None else
+                                     diskgraph.SamplerEngine(
+                                         index_path).lookup_node_ids(
+                                             'stores',
+                                             pa.array(stores, pa.int64())))
 
 
 def test_hosted_prediction_without_candidates_is_not_retried(indexed):
     graph, index_path = indexed
+    row_filter = _hosted(graph, index_path, 'stores.RATING > 100')
 
-    with pytest.raises(PredictionDataMaterializationError,
-                       match="No row of table 'stores'") as error:
-        _hosted(graph, index_path, 'stores.RATING > 100')
-    assert error.value.non_retryable
+    with pytest.raises(ValueError, match="No row of table 'stores'") as error:
+        _predict_candidates(index_path, row_filter)
+    public = as_platform_public_exception(error.value)
+    assert public.non_retryable
+    assert "No row of table 'stores'" in public.get_user_message()
 
 
 @pytest.mark.parametrize('module, condition, outcome', [

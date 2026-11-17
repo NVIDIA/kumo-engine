@@ -5,14 +5,10 @@
 
 from __future__ import annotations
 
-import os
-import shutil
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+import json
 from copy import deepcopy
 from typing import Any
 
-import numpy as np
 from kumoapi.graph import GraphDefinition
 from kumoapi.pquery import ValidatedPredictiveQuery
 from kumoapi.pquery.AST import Filter, Join
@@ -20,7 +16,6 @@ from kumopql.rewriting import BPFilterTransformer
 from kumopql.validator.utils import get_rhs_lp_table
 
 from .pquery import ValidatedNativeQuery
-from .sources.cpu import cpu_budget
 from .types import TaskType
 
 PAIRWISE_CANDIDATES = (
@@ -61,22 +56,20 @@ def candidate_query(query: ValidatedPredictiveQuery, graph: GraphDefinition,
     return candidates
 
 
-def candidate_node_ids(
+def candidate_row_filter(
     query: ValidatedPredictiveQuery,
     graph: GraphDefinition,
     *,
     task_type: TaskType,
     index_path: str,
-    tt_id: str,
     runtime: Any,
-) -> np.ndarray | None:
-    r"""Sorted RHS node IDs passing the candidate-table conditions."""
+) -> str | None:
+    r"""The candidate-table conditions compiled to a DiskGraph row filter
+    (JSON) on that table, or ``None`` when every candidate ranks."""
     candidates = candidate_query(query, graph, task_type)
     if candidates is None:
         return None
-    target = candidates.get_final_target_aggregation().target
     table = get_rhs_lp_table(candidates, graph)
-    primary_key = graph.tables[table].pkey
     plan = runtime.DiskGraphPlanCompiler(index_path=index_path).compile(
         query=candidates,
         timestamps=[],
@@ -86,41 +79,7 @@ def candidate_node_ids(
         target_stype=candidates.target_stype.value,
         lp_prediction_mode="RHS",
         lp_rhs_entity_table=table,
-        lp_rhs_entity_column=primary_key,
+        lp_rhs_entity_column=graph.tables[table].pkey,
         list_distinct_target_is_array=True,
     )
-    staging_dir = os.path.join(index_path, "train_tables", f".{tt_id}.staging")
-    try:
-        generated = runtime.execute_tt_gen(plan, index_path, tt_id)
-        engine = runtime.SamplerEngine(index_path)
-        node_ids = np.empty(generated["row_count"], dtype=np.int64)
-
-        def lookup(batch: Any, start: int) -> None:
-            node_ids[start:start + batch.num_rows] = engine.lookup_node_ids(
-                table, batch.column(0))
-
-        mismatch = (f"Candidate generation for {table!r} reported "
-                    f"{node_ids.size} rows but its parquet does not match.")
-        workers = cpu_budget()
-        pending: deque[Future[None]] = deque()
-        start = 0
-        with ThreadPoolExecutor(workers) as pool:
-            for batch in runtime.read_tt_parquet_batches(
-                    generated["tt_parquet_path"], ["ENTITY1"]):
-                if start + batch.num_rows > node_ids.size:
-                    raise RuntimeError(mismatch)
-                if len(pending) == 2 * workers:
-                    pending.popleft().result()
-                pending.append(pool.submit(lookup, batch, start))
-                start += batch.num_rows
-            for future in pending:
-                future.result()
-        if start != node_ids.size:
-            raise RuntimeError(mismatch)
-    finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-    if not node_ids.size:
-        raise ValueError(f"No row of table {table!r} passes "
-                         f"{target.condition}; loosen the target filter.")
-    node_ids.sort()
-    return node_ids[np.r_[True, node_ids[1:] != node_ids[:-1]]]
+    return json.dumps(json.loads(plan)["entity"]["filter"])

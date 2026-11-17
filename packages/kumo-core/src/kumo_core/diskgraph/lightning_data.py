@@ -2169,10 +2169,23 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @property
     def predict_candidates(self) -> "Any | None":
-        """RHS node IDs the target filter admits; ``None`` admits all."""
+        """RHS node IDs passing the target filter's candidate-table
+        conditions; ``None`` admits all."""
         import torch
-        node_ids = self.task_manifest.predict_candidates
-        return None if node_ids is None else torch.from_numpy(node_ids)
+        from kumo_core.diskgraph.stores import rhs_catalog
+        from kumo_core.errors import TrainingValidationError
+        row_filter = self.task_manifest.predict_candidate_filter
+        if row_filter is None:
+            return None
+        table = self.task_manifest.target_node_type
+        node_ids = rhs_catalog(
+            self.task_manifest.graph_runtime_metadata['graph_index_path'],
+            table, row_filter)
+        if not node_ids.size:
+            raise TrainingValidationError(
+                message=f"No row of table {table!r} passes the target "
+                "filter's conditions on it; loosen them.")
+        return torch.from_numpy(node_ids)
 
     def require_single_predict_anchor(self) -> None:
         from kumo_core.training.validation import require_single_anchor

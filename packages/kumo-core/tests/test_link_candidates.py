@@ -3,14 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import os
-from types import SimpleNamespace
 
 import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from kumo_core.link_candidates import candidate_node_ids
+from kumo_core.diskgraph.stores import rhs_catalog
+from kumo_core.link_candidates import candidate_row_filter
 from kumo_core.pquery import (
     NativeGraph,
     NativeGraphColumn,
@@ -107,12 +106,13 @@ def index(tmp_path_factory):
     return str(root / 'index')
 
 
-def _candidates(index, condition, runtime=diskgraph):
+def _candidates(index, condition):
     parsed = parse_and_validate_query(QUERY.format(condition), GRAPH)
-    return candidate_node_ids(parsed.query, to_api_graph(GRAPH),
-                              task_type=TaskType(parsed.task_type),
-                              index_path=index, tt_id='candidates',
-                              runtime=runtime)
+    row_filter = candidate_row_filter(parsed.query, to_api_graph(GRAPH),
+                                      task_type=TaskType(parsed.task_type),
+                                      index_path=index, runtime=diskgraph)
+    return None if row_filter is None else rhs_catalog(index, 'stores',
+                                                       row_filter).tolist()
 
 
 @pytest.mark.parametrize('condition, stores', [
@@ -121,42 +121,19 @@ def _candidates(index, condition, runtime=diskgraph):
     ('NOT (orders.AMOUNT > 5 OR stores.IS_ACTIVE = false)', [0, 2]),
     ('orders.AMOUNT > 5 OR stores.IS_ACTIVE = true', None),
     ('orders.AMOUNT > 5', None),
+    ('stores.RATING > 100', []),
 ])
 def test_candidates_are_the_keyed_rows_passing_candidate_conditions(
         index, condition, stores):
-    ids = _candidates(index, condition)
-
-    assert (None if ids is None else
-            ids.tolist()) == (None if stores is None else
-                              diskgraph.SamplerEngine(index).lookup_node_ids(
-                                  'stores', pa.array(stores, pa.int64())))
+    assert _candidates(index, condition) == (
+        None if stores is None else diskgraph.SamplerEngine(
+            index).lookup_node_ids('stores', pa.array(stores, pa.int64())))
 
 
-def test_no_passing_candidate_is_rejected(index):
-    with pytest.raises(ValueError, match="No row of table 'stores'"):
-        _candidates(index, 'stores.RATING > 100')
-
-
-def test_failed_generation_removes_its_staging_dir(index):
-    def fail(plan, index_path, tt_id):
-        os.makedirs(
-            os.path.join(index_path, 'train_tables', f'.{tt_id}.staging'))
-        raise RuntimeError('generation failed')
-
-    runtime = SimpleNamespace(
-        DiskGraphPlanCompiler=diskgraph.DiskGraphPlanCompiler,
-        execute_tt_gen=fail)
-    with pytest.raises(RuntimeError, match='generation failed'):
-        _candidates(index, 'stores.IS_ACTIVE = true', runtime)
-    assert not os.path.exists(
-        os.path.join(index, 'train_tables', '.candidates.staging'))
-
-
-def test_query_without_a_target_filter_is_not_rewritten(index, monkeypatch):
+def test_query_without_a_target_filter_is_not_rewritten(monkeypatch):
     monkeypatch.setattr('kumo_core.link_candidates.BPFilterTransformer', None)
     parsed = parse_and_validate_query(QUERY.replace(' WHERE {}', ''), GRAPH)
 
-    assert candidate_node_ids(parsed.query, to_api_graph(GRAPH),
-                              task_type=TaskType(parsed.task_type),
-                              index_path=index, tt_id='candidates',
-                              runtime=diskgraph) is None
+    assert candidate_row_filter(parsed.query, to_api_graph(GRAPH),
+                                task_type=TaskType(parsed.task_type),
+                                index_path='unused', runtime=None) is None
