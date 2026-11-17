@@ -50,12 +50,16 @@ model construction and objectives from `profiling/execution/model_execution.py`.
 Its lifecycle adapter also applies a binary involvement head to PRAGMA's user
 representation during finetuning. The local nuFormer `forward_kumo` now removes
 its internal empty-history padding position from emitted logits/hidden states,
-preserving alignment with zero-width Kumo next-token targets. Other copied
-model-family modules remain unchanged.
+preserving alignment with zero-width Kumo next-token targets. Fusion uses an
+encoder-only GraphSAGE: no standalone prediction head or final non-root updates
+are registered, because neither contributes to its root-based prediction.
+Earlier graph layers remain intact. Standalone GraphSAGE is unchanged; the
+copied RelBench class bodies remain unchanged. Fusion checkpoints produced
+before this change contain extra parameters and need to be regenerated.
 Test fixtures adapt `kumo_specs/fixtures.py` and selected `typed_contracts.py`
 builders. Historical Arena validation is not evidence for this port.
 
 GraphSAGE retains [RelBench provenance](graphsage/UPSTREAM.json) and
 [license](graphsage/LICENSE.relbench). PRAGMA retains its licenses and notices;
 see [its source record](pragma/REFERENCE.md). nuFormer and combined retain
-Arena's implementations. Optional PRAGMA text encoders are not used by AML.
+Arena's implementations with the local adaptations described above. Optional PRAGMA text encoders are not used by AML.

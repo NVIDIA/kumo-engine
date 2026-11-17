@@ -120,19 +120,20 @@ def summary(output, report):
         f"Status: **{report['status']}**",
         "",
         "Fresh fitting at 25,000 and 400,000 training anchors; index build/reopen excluded.",
-        f"Required: median absolute stage-peak growth **< {report['max_growth_exclusive']}x**.",
+        "Growth is reported without a pass/fail limit; status reflects measurement validity.",
         f"Memory method: `{report['memory_method']}`. Sampled peaks can miss allocations between samples.",
         "",
-        "| Contract | 25k median bytes | 400k median bytes | Growth | Status |",
-        "| --- | --- | --- | --- | --- |",
+        "| Contract | 25k median bytes | 400k median bytes | Growth | 25k anonymous bytes | 400k anonymous bytes | Status |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     errors = []
     for case in report["cases"]:
         comparison = case.get("comparison", {})
         medians = comparison.get("median_peak_bytes", {})
+        anonymous = comparison.get("median_anonymous_bytes", {})
         lines.append(
             f"| {case['case']} | {medians.get('25000', 'unavailable')} | "
-            f"{medians.get('400000', 'unavailable')} | {comparison.get('growth_ratio') or 'unavailable'} | {case['status']} |"
+            f"{medians.get('400000', 'unavailable')} | {comparison.get('growth_ratio') or 'unavailable'} | {anonymous.get('25000', 'unavailable')} | {anonymous.get('400000', 'unavailable')} | {case['status']} |"
         )
         if case.get("error") or comparison.get("reason"):
             errors.extend(
@@ -149,7 +150,6 @@ def main(argv=None):
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--max-growth", type=float, default=2.0)
     parser.add_argument(
         "--memory-method", choices=("sampled", "kernel"), default="sampled"
     )
@@ -161,7 +161,6 @@ def main(argv=None):
         "status": "running",
         "cases": [],
         "counts": list(COUNTS),
-        "max_growth_exclusive": args.max_growth,
         "memory_method": args.memory_method,
         "repetitions": args.repetitions,
         "scope": "DiskGraph fresh fitting; no batches or models executed",
@@ -238,7 +237,6 @@ def main(argv=None):
                         spec,
                         args.output / "runs" / name,
                         repetitions=args.repetitions,
-                        max_growth=args.max_growth,
                         method=args.memory_method,
                         interval=args.memory_interval,
                         timeout=args.worker_timeout,

@@ -113,6 +113,7 @@ def factory(config, workdir):
         "training",
         "prepared_dir",
         "index_dir",
+        "index_action",
         "load_fitted_state",
         "save_fitted_state",
         "cache_mode",
@@ -242,6 +243,25 @@ def factory(config, workdir):
         inapplicable["source.convert.elapsed_ns"] = (
             "Caller supplied already converted source tables; verified on read"
         )
+    index_action = config.get("index_action")
+    if index_action is not None:
+        if (
+            reference
+            or index_action not in {"build", "reopen"}
+            or not config.get("index_dir")
+        ):
+            raise ValueError(
+                "Index actions require DiskGraph and an explicit index_dir"
+            )
+        exists = Path(config["index_dir"]).exists()
+        if exists != (index_action == "reopen"):
+            raise ValueError(
+                "Build requires a new index; reopen requires the existing index"
+            )
+        if index_action == "build":
+            inapplicable["index.reopen.elapsed_ns"] = (
+                "Separate lifecycle runs measure index reopening"
+            )
     if config.get("index_dir") and Path(config["index_dir"]).exists():
         inapplicable["index.build.elapsed_ns"] = (
             "Caller supplied an existing index; reopen is measured"
@@ -347,6 +367,7 @@ def factory(config, workdir):
         else:
             engine = r.DiskGraphEngine(
                 index=Path(config.get("index_dir", workdir / "index")),
+                ingest="never" if index_action == "reopen" else "if_missing",
                 num_threads=config["threads"],
             )
         return KumoInputs(
@@ -402,7 +423,7 @@ def factory(config, workdir):
         else (lambda: None),
         device=device,
         inapplicable=inapplicable,
-        probe_reopen=not reference,
+        probe_reopen=not reference and index_action is None,
         load_fitted_state=config.get("load_fitted_state"),
         save_fitted_state=config.get("save_fitted_state"),
     )

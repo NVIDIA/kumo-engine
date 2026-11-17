@@ -18,6 +18,8 @@ def runs(large=190):
             "returncode": 0,
             "spec_sha256": "same",
             "peak_host_bytes": peak,
+            "peak_anonymous_bytes": peak // 2,
+            "anonymous_memory": {"status": "available"},
             "memory": {
                 "status": "available",
                 "details": {
@@ -33,14 +35,10 @@ def runs(large=190):
     ]
 
 
-@pytest.mark.parametrize(
-    "peak,expected", [(199, "passed"), (200, "failed"), (201, "failed")]
-)
-def test_threshold_is_strict_and_all_peaks_are_retained(peak, expected):
-    result = fitting.compare(
-        runs(peak), counts=(25000, 400000), repetitions=3, max_growth=2
-    )
-    assert result["status"] == expected
+@pytest.mark.parametrize("peak", [199, 200, 201, 1600])
+def test_growth_is_reported_without_a_limit_and_all_peaks_are_retained(peak):
+    result = fitting.compare(runs(peak), counts=(25000, 400000), repetitions=3)
+    assert result["status"] == "passed"
     assert result["growth_ratio"] == peak / 100
     assert result["peaks_bytes"]["400000"] == [peak] * 3
 
@@ -85,9 +83,7 @@ def test_incomplete_or_incomparable_workers_fail(fault):
         last["peak_host_bytes"] = 0
     elif fault == "exit":
         last["returncode"] = 124
-    result = fitting.compare(
-        selected, counts=(25000, 400000), repetitions=3, max_growth=2
-    )
+    result = fitting.compare(selected, counts=(25000, 400000), repetitions=3)
     assert result["status"] == "failed" and result["growth_ratio"] is None
 
 
@@ -119,13 +115,12 @@ def test_campaign_continues_after_worker_failure_and_isolates_each_size(
 
 
 @pytest.mark.parametrize(
-    "counts,repeat,limit",
+    "counts,repeat",
     [
-        ((25000, 25000), 3, 2),
-        ((25000, 400000), 0, 2),
-        ((25000, 400000), 3, float("nan")),
+        ((25000, 25000), 3),
+        ((25000, 400000), 0),
     ],
 )
-def test_invalid_experiments_are_rejected(counts, repeat, limit):
+def test_invalid_experiments_are_rejected(counts, repeat):
     with pytest.raises(ValueError):
-        fitting.compare([], counts=counts, repetitions=repeat, max_growth=limit)
+        fitting.compare([], counts=counts, repetitions=repeat)

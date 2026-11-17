@@ -74,15 +74,16 @@ payloads, prepared views and indexes are excluded from the artifact.
 
 ## Local evidence
 
-The eleven consolidated development checks produced eight passes, three failures
-and zero skips; both retained controlled-learning tests also passed. PRAGMA
-completed two identical 100-update runs with decreasing loss and
-all trainable tensors updated on the generated fixture. Fusion completed both
-runs reproducibly and reduced loss, but ten trainable tensors never changed;
-that required case fails. The two raw-AML-format fixture cases expose the existing
-decimal-decoding defect. Harness fault injection confirms rejection of nonfinite
-loss/gradients, unused parameters, no optimizer updates and changed trajectories.
-Additional checks verify that ineligible batches do not count as updates and
-that a failed workload does not suppress the other workload or produce a zero exit code.
-These results are not real HI-small or CI training acceptance. Real-data nightly
-execution remains outstanding.
+After integrating the upstream decimal fix and adapting Fusion to use an
+encoder-only GraphSAGE, all 30 focused training, controlled-learning, finetuning
+and checkpoint-resume checks pass with no skips. Both generated and raw-AML-format
+training fixtures retain the original 100-update, every-trainable-parameter,
+loss-decrease and repeatability requirements. Fault injection still rejects
+unused parameters and missing optimizer updates.
+
+Fusion omits the unused standalone graph prediction head and final non-root
+updates. Earlier graph layers remain active. A regression verifies exactly equal
+graph embeddings and predictions against the full graph module with matching
+weights. Old Fusion checkpoints contain the removed parameters and must be
+regenerated. These are local fixture results; real HI-small training must be
+rerun on CI before claiming acceptance of the changed model.

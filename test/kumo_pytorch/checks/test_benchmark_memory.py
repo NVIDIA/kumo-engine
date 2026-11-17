@@ -237,3 +237,31 @@ def test_sampled_method_is_visible_in_report_and_configuration(monkeypatch, tmp_
         json.loads((output / "config.json").read_text())["memory_interval_seconds"]
         == 0.005
     )
+
+
+def test_anonymous_memory_is_separate_and_missing_counter_fails(monkeypatch, tmp_path):
+    from test.kumo_pytorch.benchmarking.memory import SampledAnonymousMemory
+
+    monkeypatch.setattr(CgroupMemory, "validate", lambda self: None)
+    (tmp_path / "memory.current").write_text("999999")
+    (tmp_path / "memory.stat").write_text("file 888888\nanon 1234\nshmem 77\n")
+    collector = SampledAnonymousMemory(tmp_path, interval=1)
+    stream = io.StringIO()
+    recorder = Recorder(stream, observers=(collector,))
+    with recorder.span("ingestion"):
+        pass
+    (tmp_path / "memory.stat").write_text("file 888888\nanon 12\n")
+    with recorder.span("materialization"):
+        pass
+    (tmp_path / "memory.stat").write_text("file 888888\n")
+    with recorder.span("batch.request"):
+        pass
+    peaks = [
+        json.loads(line)
+        for line in stream.getvalue().splitlines()
+        if "peak_anonymous_bytes" in line
+    ]
+    assert [r.get("value") for r in peaks[:2]] == [1234, 12]
+    assert peaks[0]["details"]["method"] == "sampled_cgroup_v2_memory_stat_anon"
+    assert peaks[2]["status"] == "unavailable"
+    assert "anon" in peaks[2]["reason"]

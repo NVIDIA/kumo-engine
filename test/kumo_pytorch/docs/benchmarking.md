@@ -491,3 +491,41 @@ added to equalize those locations, and no batch-equality or model-quality claim
 is made. All three backends retain their actual emitted counts and runtime
 identities. GPU memory/utilization profiling remains outside this timing-only
 comparison, while existing CUDA training campaigns keep their full metric scope.
+
+
+## One index build and two reopens
+
+Run the generic suite with `--index-lifecycle --repetitions 3` to execute three
+separate interpreters per case: build, reopen, reopen. Each measures ingestion,
+materialization and complete selected batch epochs. Fitting is fresh in all
+three runs; the existing fitted-state reuse comparison remains a separate campaign.
+Adapters opting into this mode accept `index_dir`, `index_action` (`build` or
+`reopen`) and `prepared_dir`, and emit exactly one matching `index.build` or
+`index.reopen` timing. Missing timings or unexpected rebuilds fail the campaign.
+The AML adapter refuses an existing build destination or a missing reopen
+index and opens reused indexes with ingestion forbidden. Shared prepared sources
+keep the dataset identity fixed. This protocol is independent of dataset/model.
+
+Index reuse is distinct from OS page-cache warmth. The existing per-epoch cold/
+warm file-page experiments and their recorded residency checks remain enabled;
+no claim that every reopened page is resident is made. The nightly adds this
+experiment for every declared AML combination. Results appear in the job summary
+and the `kumo-pytorch-aml-benchmarks` artifact under `aml-index-lifecycle`, including
+per-worker stage metrics and build/reopen evidence. Index and source payloads
+are excluded from uploads.
+
+## Anonymous-memory peaks
+
+Full-profile reports require `ingestion.peak_anonymous_bytes`,
+`materialization.peak_anonymous_bytes` and `batch_production.peak_anonymous_bytes`
+alongside the existing total host-memory peaks. These sample the cgroup v2
+`memory.stat` `anon` counter, including descendants but excluding file and shmem
+charges. Boundary and periodic readings, intervals and gaps are retained.
+Anonymous peaks are explicitly sampled even when total peaks use `memory.peak`;
+counter refresh can lag allocations and samples can miss short-lived peaks.
+Total and anonymous maxima are independent, not a simultaneous decomposition.
+A missing/malformed counter remains unavailable and fails measurement completeness.
+The Linux collector validation exercises held parent/child anonymous allocations
+and independent stage peaks. Local mocked collectors are not live Linux evidence.
+The fitting-memory experiment also retains anonymous peaks and size medians,
+without introducing a growth threshold.

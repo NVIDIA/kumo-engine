@@ -120,6 +120,7 @@ def test_native_worker_builds_once_and_fits_both_counts_without_reingesting(
     monkeypatch.setenv("KUMO_BENCHMARK_CGROUP", str(tmp_path))
     monkeypatch.setattr(fitting.SampledCgroupMemory, "validate", lambda self: None)
     monkeypatch.setattr(fitting.SampledCgroupMemory, "_read_current", lambda self: 4096)
+    (tmp_path / "memory.stat").write_text("anon 2048\nfile 4096\n")
     before = {
         p.relative_to(tmp_path / "index"): (p.stat().st_size, p.stat().st_mtime_ns)
         for p in (tmp_path / "index").rglob("*")
@@ -129,6 +130,7 @@ def test_native_worker_builds_once_and_fits_both_counts_without_reingesting(
         report = fitting.worker(spec, tmp_path / f"fit-{count}", count=count)
         assert report["status"] == "passed", report
         assert report["actual_count"] == count and report["peak_host_bytes"] == 4096
+        assert report["peak_anonymous_bytes"] == 2048
         assert (
             report["memory"]["details"]["method"] == "sampled_cgroup_v2_memory_current"
         )

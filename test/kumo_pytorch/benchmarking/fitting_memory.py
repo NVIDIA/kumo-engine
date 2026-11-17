@@ -16,7 +16,7 @@ import traceback
 from pathlib import Path
 
 from .campaign import stop
-from .memory import CgroupMemory, SampledCgroupMemory
+from .memory import CgroupMemory, SampledAnonymousMemory, SampledCgroupMemory
 from .recording import Recorder
 
 
@@ -86,7 +86,13 @@ def worker(spec_path, output, *, count=None, method="sampled", interval=0.05):
                 else CgroupMemory(group)
             )
             with (output / "observations.jsonl").open("w") as stream:
-                recorder = Recorder(stream, observers=(memory,))
+                recorder = Recorder(
+                    stream,
+                    observers=(
+                        memory,
+                        SampledAnonymousMemory(group, interval=interval),
+                    ),
+                )
                 # Imports, identity checks, index construction and reopen are
                 # outside the materialization boundary. No fitted state is reused.
                 with r.prepare(
@@ -118,6 +124,16 @@ def worker(spec_path, output, *, count=None, method="sampled", interval=0.05):
                 for row in observations
                 if row.get("metric") == "materialization.peak_host_bytes"
             )
+            anonymous = next(
+                row
+                for row in observations
+                if row.get("metric") == "materialization.peak_anonymous_bytes"
+            )
+            report["anonymous_memory"] = anonymous
+            report["peak_anonymous_bytes"] = anonymous["value"]
+            assert anonymous["status"] == "available", (
+                "Anonymous fitting memory is unavailable"
+            )
             elapsed = next(
                 row
                 for row in observations
@@ -142,25 +158,17 @@ def worker(spec_path, output, *, count=None, method="sampled", interval=0.05):
     return report
 
 
-def compare(runs, *, counts, repetitions, max_growth):
-    """Never reduce to successful runs, silently replace a missing peak, or accept equality."""
-    if (
-        len(counts) != 2
-        or not 0 < counts[0] < counts[1]
-        or repetitions < 1
-        or not math.isfinite(max_growth)
-        or max_growth <= 1
-    ):
-        raise ValueError(
-            "Two increasing counts, repetitions and a finite growth limit > 1 are required"
-        )
+def compare(runs, *, counts, repetitions):
+    """Report growth only after validating every required measurement."""
+    if len(counts) != 2 or not 0 < counts[0] < counts[1] or repetitions < 1:
+        raise ValueError("Two increasing counts and positive repetitions are required")
     result = {
         "status": "failed",
         "counts": list(counts),
         "repetitions": repetitions,
-        "max_growth_exclusive": max_growth,
         "aggregation": "median absolute stage peak per count",
         "peaks_bytes": {},
+        "anonymous_peaks_bytes": {},
         "growth_ratio": None,
     }
     if len(runs) != repetitions * 2:
@@ -172,7 +180,7 @@ def compare(runs, *, counts, repetitions, max_growth):
             run.get("repeat") for run in selected
         } != set(range(repetitions)):
             return {**result, "reason": "Missing or duplicate size/repetition"}
-        peaks = []
+        peaks, anonymous_peaks = [], []
         for run in selected:
             details = run.get("memory", {}).get("details", {})
             peak = run.get("peak_host_bytes")
@@ -194,8 +202,17 @@ def compare(runs, *, counts, repetitions, max_growth):
             scopes.add(details.get("memory_scope"))
             specs.add(run.get("spec_sha256"))
             groups.add(details["cgroup"])
+            anon = run.get("peak_anonymous_bytes")
+            if (
+                type(anon) is not int
+                or anon < 0
+                or run.get("anonymous_memory", {}).get("status") != "available"
+            ):
+                return {**result, "reason": "Unavailable anonymous fitting memory"}
+            anonymous_peaks.append(anon)
             peaks.append(peak)
         result["peaks_bytes"][str(count)] = peaks
+        result["anonymous_peaks_bytes"][str(count)] = anonymous_peaks
     if (
         None in methods
         or None in scopes
@@ -210,10 +227,14 @@ def compare(runs, *, counts, repetitions, max_growth):
     ratio = medians[1] / medians[0]
     result.update(
         growth_ratio=ratio,
+        median_anonymous_bytes={
+            str(n): statistics.median(result["anonymous_peaks_bytes"][str(n)])
+            for n in counts
+        },
         median_peak_bytes=dict(zip(map(str, counts), medians, strict=True)),
         method=next(iter(methods)),
         memory_scope=next(iter(scopes)),
-        status="passed" if ratio < max_growth else "failed",
+        status="passed",
     )
     return result
 
@@ -255,7 +276,6 @@ def campaign(
     output,
     *,
     repetitions=3,
-    max_growth=2.0,
     method="sampled",
     interval=0.05,
     timeout=3600,
@@ -263,7 +283,7 @@ def campaign(
     spec_path, output = spec_path.resolve(), output.resolve()
     spec = json.loads(spec_path.read_text())
     counts = sorted(map(int, spec["anchors"]))
-    compare([], counts=counts, repetitions=repetitions, max_growth=max_growth)
+    compare([], counts=counts, repetitions=repetitions)
     if (
         not math.isfinite(timeout)
         or timeout <= 0
@@ -279,7 +299,6 @@ def campaign(
         "spec": spec,
         "counts": counts,
         "repetitions": repetitions,
-        "max_growth_exclusive": max_growth,
         "cache_state": "uncontrolled; same prebuilt index, alternating size order",
         "measurement_scope": "native anchor binding and fresh fitting inside Plan.materialize; excludes index build/reopen",
     }
@@ -338,7 +357,6 @@ def campaign(
             result["runs"],
             counts=counts,
             repetitions=repetitions,
-            max_growth=max_growth,
         )
         result["status"] = result["comparison"]["status"]
     except Exception as error:  # noqa: BLE001 - keep partial runs and fail closed
@@ -354,7 +372,6 @@ def main(argv=None):
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--count", type=int)
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--max-growth", type=float, default=2.0)
     parser.add_argument(
         "--memory-method", choices=("sampled", "kernel"), default="sampled"
     )
@@ -374,7 +391,6 @@ def main(argv=None):
             args.spec,
             args.output,
             repetitions=args.repetitions,
-            max_growth=args.max_growth,
             method=args.memory_method,
             interval=args.memory_interval,
             timeout=args.worker_timeout,

@@ -125,6 +125,10 @@ class SampledCgroupMemory(CgroupMemory):
     Boundary reads and periodic reads are retained, including sampling gaps.
     """
 
+    metric_suffix = ".peak_host_bytes"
+    method = "sampled_cgroup_v2_memory_current"
+    scope = "cgroup_and_descendants_including_file_cache_and_kernel_charges"
+
     def __init__(self, path, *, interval=0.01, max_samples=100000):
         super().__init__(path)
         if not math.isfinite(interval) or interval <= 0 or max_samples < 2:
@@ -197,10 +201,10 @@ class SampledCgroupMemory(CgroupMemory):
                 except (OSError, ValueError, RuntimeError) as error:
                     failures.append(f"{type(error).__name__}: {error}")
             details = {
-                "method": "sampled_cgroup_v2_memory_current",
+                "method": self.method,
                 "precision": "sampled_maximum_not_kernel_high_water_mark",
                 "limitations": "Allocations between samples may be missed; boundary reads include observation overhead",
-                "memory_scope": "cgroup_and_descendants_including_file_cache_and_kernel_charges",
+                "memory_scope": self.scope,
                 "operation": operation,
                 "cgroup": str(self.path),
                 "sample_interval_seconds": self.interval,
@@ -220,21 +224,45 @@ class SampledCgroupMemory(CgroupMemory):
             }
             if not completed:
                 recorder.measure(
-                    stage + ".peak_host_bytes",
+                    stage + self.metric_suffix,
                     status="error",
                     reason="Measured operation failed",
                     **details,
                 )
             elif failures:
                 recorder.measure(
-                    stage + ".peak_host_bytes",
+                    stage + self.metric_suffix,
                     status="unavailable",
                     reason="; ".join(failures),
                     **details,
                 )
             else:
                 recorder.measure(
-                    stage + ".peak_host_bytes",
+                    stage + self.metric_suffix,
                     max(s["value"] for s in samples),
                     **details,
                 )
+
+
+class SampledAnonymousMemory(SampledCgroupMemory):
+    """Sample memory.stat anon, including descendants; exclude file/shmem charges.
+
+    This is a sampled peak, independent of the total host peak's timestamp.
+    Kernel statistics can lag allocations; it is not an exact allocation peak.
+    """
+
+    metric_suffix = ".peak_anonymous_bytes"
+    method = "sampled_cgroup_v2_memory_stat_anon"
+    scope = "cgroup_and_descendants_anonymous_memory_excluding_file_and_shmem"
+
+    def _read_current(self):
+        fields = dict(
+            line.split()
+            for line in (self.path / "memory.stat").read_text().splitlines()
+        )
+        if "anon" not in fields:
+            raise ValueError("memory.stat has no anon counter")
+        value = int(fields["anon"])
+        if value < 0:
+            raise ValueError("Negative memory.stat anon reading")
+        return value

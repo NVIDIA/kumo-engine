@@ -61,6 +61,14 @@ METRICS.update(
 )
 METRICS.update(
     {
+        f"{stage}.peak_anonymous_bytes": Metric(
+            "bytes", "epoch" if stage == "batch_production" else "run"
+        )
+        for stage in ("ingestion", "materialization", "batch_production")
+    }
+)
+METRICS.update(
+    {
         "source.rows": Metric("rows"),
         "source.bytes": Metric("bytes"),
         "converted.rows": Metric("rows"),

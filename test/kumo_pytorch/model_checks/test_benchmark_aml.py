@@ -128,6 +128,9 @@ def test_training_counts_and_saved_state_reuse(source, workload, family):
     coverage = json.loads((source / "fresh/coverage.json").read_text())["metrics"]
     # CPU single-batch fixture cannot measure Linux peaks or later-batch latency.
     expected_gaps = {
+        "ingestion.peak_anonymous_bytes",
+        "materialization.peak_anonymous_bytes",
+        "batch_production.peak_anonymous_bytes",
         "ingestion.peak_host_bytes",
         "materialization.peak_host_bytes",
         "batch_production.peak_host_bytes",
@@ -171,3 +174,36 @@ def test_training_counts_and_saved_state_reuse(source, workload, family):
     inputs = next(row for row in fresh_rows if row["kind"] == "dataset_inputs")
     assert inputs["anchors"][0]["split"] == "train"
     assert inputs["history_capacity"] == 1
+
+
+def test_build_once_and_two_reopens_measure_all_stages(source):
+    config = {
+        "data_dir": str(source),
+        "family": "graphsage",
+        "workload": "account-involvement-next24h",
+        "anchors_per_split": 1,
+        "batch_size": 1,
+        "threads": 1,
+        "training": False,
+        "index_dir": str(source / "shared-index"),
+        "prepared_dir": str(source / "shared-prepared"),
+    }
+    for i, action in enumerate(("build", "reopen", "reopen")):
+        result = run(
+            factory,
+            dict(config, index_action=action),
+            source / f"lifecycle-{i}",
+            repetitions=1,
+            epochs=2,
+        )
+        assert result["execution_status"] == "completed", result["errors"]
+        measurements = result["measurements"]
+        assert len(measurements[f"index.{action}.elapsed_ns"]) == 1
+        opposite = "reopen" if action == "build" else "build"
+        assert not measurements.get(f"index.{opposite}.elapsed_ns")
+        for stage in ("ingestion", "materialization", "batch_production"):
+            assert all(
+                r["status"] == "available" for r in measurements[f"{stage}.elapsed_ns"]
+            )
+    with pytest.raises(ValueError, match="Build requires"):
+        factory(dict(config, index_action="build"), source / "bad-build")

@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
-from ._relbench import HeteroGraphSAGE, HeteroTemporalEncoder
 from . import _kumo
+from ._relbench import HeteroGraphSAGE, HeteroTemporalEncoder
 from .adapter import GraphBatch
 from .config import GraphSAGEConfig, NodeFeatureSpec
 
@@ -87,11 +87,13 @@ class GraphSAGEModel(nn.Module):
     ``forward_kumo`` consumes Kumo batches directly. Validate on CPU with
     ``validate_kumo_batch`` before transfer, then use ``validate_inputs=False``.
     The legacy ``forward(GraphBatch)`` interface remains available.
+    ``encoder_only=True`` omits the prediction head and final non-root updates;
+    use ``encode_kumo`` or ``encode`` to obtain root embeddings for Fusion.
     Numerical/categorical feature encoding here is a local implementation, not
     RelBench's TensorFrame/ResNet encoder. The GraphSAGE class is unchanged.
     """
 
-    def __init__(self, config: GraphSAGEConfig):
+    def __init__(self, config: GraphSAGEConfig, *, encoder_only: bool = False):
         super().__init__()
         self.config = config
         # Internal names avoid PyTorch/PyG restrictions on user table names.
@@ -110,7 +112,18 @@ class GraphSAGEModel(nn.Module):
             list(self._node_keys.values()), list(self._edge_keys.values()),
             config.channels, aggr=config.aggr, num_layers=config.num_layers,
         )
-        self.head = nn.Linear(config.channels, config.out_channels)
+        if encoder_only:
+            # Fusion consumes only root embeddings. Final non-root outputs have
+            # no subsequent message-passing layer and cannot affect its loss.
+            root = self._node_keys[config.root_type]
+            final = self.gnn.convs[-1].convs
+            for edge in list(final.keys()):
+                if edge[2] != root:
+                    del final[edge]
+            for node in list(self.gnn.norms[-1].keys()):
+                if node != root:
+                    del self.gnn.norms[-1][node]
+        self.head = None if encoder_only else nn.Linear(config.channels, config.out_channels)
 
     def validate_kumo_batch(self, batch, *, input_name="graph") -> None:
         """Check CPU input identities, ownership, fields and temporal bounds.
@@ -160,19 +173,23 @@ class GraphSAGEModel(nn.Module):
                 reverse = (destination, f"rev__{relation}", source)
                 message_edges[self._edge_keys[reverse]] = index.flip(0).contiguous()
         embeddings = self.gnn(x_dict, message_edges)
-        node_embeddings = {name: embeddings[key] for name, key in self._node_keys.items()}
+        node_embeddings = {name: embeddings[key] for name, key in self._node_keys.items() if key in embeddings}
         root = nodes[self.config.root_type]
         seed_index = _kumo.root_indices(root["ids"], root["batch"], metadata["entity_ids"])
         return GraphSAGEEncoding(node_embeddings[self.config.root_type][seed_index], node_embeddings)
 
     def forward_kumo(self, batch, *, input_name="graph", validate_inputs=True) -> GraphSAGEOutput:
         """Return predictions from native Kumo graph fields in request order."""
+        if self.head is None:
+            raise RuntimeError("Encoder-only GraphSAGE must be used through encode_kumo")
         encoding = self.encode_kumo(batch, input_name=input_name, validate_inputs=validate_inputs)
         return GraphSAGEOutput(
             self.head(encoding.seed_embeddings), encoding.seed_embeddings, encoding.node_embeddings,
         )
 
     def forward(self, batch: GraphBatch) -> GraphSAGEOutput:
+        if self.head is None:
+            raise RuntimeError("Encoder-only GraphSAGE must be used through encode")
         encoding = self.encode(batch)
         return GraphSAGEOutput(
             self.head(encoding.seed_embeddings),
@@ -207,6 +224,6 @@ class GraphSAGEModel(nn.Module):
                 x_dict[key] = x_dict[key] + value.to(x_dict[key].dtype)
         edges = {self._edge_keys[edge]: index for edge, index in batch.edge_index_dict.items()}
         embeddings = self.gnn(x_dict, edges)
-        node_embeddings = {name: embeddings[key] for name, key in self._node_keys.items()}
+        node_embeddings = {name: embeddings[key] for name, key in self._node_keys.items() if key in embeddings}
         seeds = node_embeddings[batch.root_type][batch.seed_index]
         return GraphSAGEEncoding(seeds, node_embeddings)

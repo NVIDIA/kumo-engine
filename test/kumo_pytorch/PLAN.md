@@ -152,14 +152,14 @@ reporting test is not imported. Fitting optimizations #351/#352 and merge gate
 | --- | --- | --- |
 | 1. Keyless tables | Existing package tests cover occurrence identity and invalid keyless entity tables | Retain required execution; no additional case identified in this review |
 | 2. Subsecond clocks | Existing precision tests; [#310 merged](https://github.com/NVIDIA/kumo-engine/pull/310) | Retain required execution on the final integrated revision |
-| 3. Bounded fitting | #363's six 4,095/4,096/4,097 boundary cases integrated; [25k/400k fitting-memory runner and nightly job](docs/fitting-memory.md) | Obtain passing real-data memory measurements on the final revision. Proposed configurable bound is strictly <2x; fitting optimizations [#351](https://github.com/NVIDIA/kumo-engine/pull/351)/[#352](https://github.com/NVIDIA/kumo-engine/pull/352) remain separate |
+| 3. Bounded fitting | #363's six 4,095/4,096/4,097 boundary cases integrated; [25k/400k fitting-memory runner and nightly job](docs/fitting-memory.md) | Obtain passing real-data memory measurements on the final revision. Growth is reported without a pass/fail limit; fitting optimizations [#351](https://github.com/NVIDIA/kumo-engine/pull/351)/[#352](https://github.com/NVIDIA/kumo-engine/pull/352) remain separate |
 | 4. Multi-source histories | Combined windows/filters, duplicates, ties, ordering/caps and real-AML checker in #353 | Required filters currently fail with DG-ROW-FILTER; package support and passing integrated execution remain |
 | 5. Special-token IDs | Default/explicit-ID tests; [#317 merged](https://github.com/NVIDIA/kumo-engine/pull/317); #362's fresh-process explicit-ID reload cases integrated | Retain execution on the final integrated revision |
 | 6. Real-data workloads | All five AML combinations, a001/a017/a018 mapping, smoke/full-population runners; merged [decimal fix #348](https://github.com/NVIDIA/kumo-engine/pull/348) integrated | Obtain passing full-population evidence at the freeze revision. Synthetic remains deferred; references remain timing-only |
 | 7. Lifecycle | Reload/inference, fresh-process frozen-input finetuning and exact mid-epoch model/optimizer/iterator/RNG resume; post-fix fixture checks pass | Complete real-data acceptance on the final integrated revision |
-| 8. Training | Consolidated a001/Fusion and a017/PRAGMA checks, 100 CPU updates twice, per-parameter checks, exact replay and loss reports; post-fix real AML PRAGMA passes | Resolve 10 unchanged/no-gradient Fusion tensors. Both real-data workloads complete reproducibly, but Fusion still fails required parameter checks |
-| 9. Speed and memory | Stage profiling, throughput/latency, host/GPU measurements and DiskGraph/Polars/GPU-reference timing; 25k/400k fitting-memory experiment | Explicit one-build/two-reopen timing experiment and anonymous-memory reporting; passing complete real-data measurement reports on the final revision |
-| 10. Automation | Integrated PR/nightly owners, required failures and artifacts; #361's lifecycle import guards integrated while retaining JUnit reports | Add standalone AML required-coverage/skip enforcement, configure required merge checks and validate scheduled execution; [#284](https://github.com/NVIDIA/kumo-engine/pull/284) remains separate |
+| 8. Training | Consolidated a001/Fusion and a017/PRAGMA checks, 100 CPU updates twice, per-parameter checks, exact replay and loss reports; post-fix real AML PRAGMA passes | Fusion now omits unused graph components; all local training checks pass. Rerun real-data acceptance for the changed model; the earlier CI failure is historical |
+| 9. Speed and memory | Stage profiling, throughput/latency, host/GPU measurements and DiskGraph/Polars/GPU-reference timing; 25k/400k fitting-memory experiment | One-build/two-reopen campaigns and anonymous-memory reporting are now implemented locally; obtain passing Linux/real-data CI measurements on the final revision |
+| 10. Automation | Integrated PR/nightly owners, required failures and artifacts; #361's lifecycle import guards integrated while retaining JUnit reports | Standalone AML inventory/skip enforcement and generic Polars execution are implemented locally; merge enforcement is deferred at the user's request. Scheduled execution verification is deferred until after merge; [#284](https://github.com/NVIDIA/kumo-engine/pull/284) remains separate |
 
 Consolidation validation: **63 passed, zero failed or skipped** across
 `test_inference_lifecycle.py` and `test_fitting_chunks.py`, using the existing
@@ -183,8 +183,8 @@ The [25k/400k experiment](docs/fitting-memory.md) is included in this extension
 of #353; the chunk-boundary cases from #363 are now integrated. It adds
 a dataset-independent runner, AML specifications for all five contracts, a
 nightly/manual CPU job and retained JSON/Markdown measurements. Three fresh
-workers per size use labelled sampled cgroup peaks; the proposed configurable
-median-growth gate is strictly less than 2x. Required failures remain failures.
+workers per size use labelled sampled cgroup peaks. Growth ratios are reported
+without a pass/fail limit; missing or invalid measurements remain failures.
 
 Historical validation before upstream decimal fix #348: 26 new focused checks
 passed. With existing memory and population

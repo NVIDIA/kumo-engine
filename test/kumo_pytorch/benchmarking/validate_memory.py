@@ -8,7 +8,6 @@ import argparse
 import hashlib
 import io
 import json
-import mmap
 import os
 import platform
 import subprocess
@@ -17,16 +16,16 @@ import time
 import traceback
 from pathlib import Path
 
-from .memory import CgroupMemory, SampledCgroupMemory
+from .memory import CgroupMemory, SampledAnonymousMemory, SampledCgroupMemory
 from .recording import Recorder
 
 
 def allocate(size, hold=0):
-    with mmap.mmap(-1, size) as memory:
-        for offset in range(0, size, 4096):
-            memory[offset] = 1
-        if hold:
-            time.sleep(hold)
+    memory = bytearray(size)
+    for offset in range(0, size, 4096):
+        memory[offset] = 1
+    if hold:
+        time.sleep(hold)
 
 
 def validate(cgroup, method="kernel"):
@@ -34,10 +33,10 @@ def validate(cgroup, method="kernel"):
     collector = (
         SampledCgroupMemory(cgroup) if method == "sampled" else CgroupMemory(cgroup)
     )
-    hold = 0.1 if method == "sampled" else 0
+    hold = 0.2  # Anonymous peaks are sampled even with kernel total-memory peaks.
     collector.validate()
     stream = io.StringIO()
-    recorder = Recorder(stream, observers=(collector,))
+    recorder = Recorder(stream, observers=(collector, SampledAnonymousMemory(cgroup)))
     baseline = int((cgroup / "memory.current").read_text())
     with recorder.span("ingestion"):
         allocate(64 * 1024**2, hold)
@@ -73,7 +72,20 @@ def validate(cgroup, method="kernel"):
         raise AssertionError("New stage inherited the previous stage's high-water mark")
     if child < child_baseline + 32 * 1024**2:
         raise AssertionError("Exited child's transient allocation was not counted")
+    anon = {
+        r["metric"]: r for r in records if r["metric"].endswith(".peak_anonymous_bytes")
+    }
+    if len(anon) != 3 or any(r["status"] != "available" for r in anon.values()):
+        raise AssertionError(f"Anonymous memory unavailable: {anon}")
+    high_anon = anon["ingestion.peak_anonymous_bytes"]["value"]
+    low_anon = anon["materialization.peak_anonymous_bytes"]["value"]
+    child_anon = anon["batch_production.peak_anonymous_bytes"]["value"]
+    if high_anon < low_anon + 32 * 1024**2 or child_anon < low_anon + 24 * 1024**2:
+        raise AssertionError(
+            "Anonymous collector missed parent/child allocations or retained a prior peak"
+        )
     return {
+        "anonymous_checks": "independent sampled parent and descendant allocation peaks",
         "method": method,
         "held_allocation_seconds": hold,
         "baseline_bytes": baseline,

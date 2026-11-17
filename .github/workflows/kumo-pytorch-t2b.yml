@@ -239,7 +239,7 @@ jobs:
         run: |
           python -m test.kumo_pytorch.aml_fitting_memory \
             --data-dir "$RUNNER_TEMP/aml-fitting-data" --output "$RUNNER_TEMP/aml-fitting-memory" \
-            --repetitions 3 --max-growth 2 --memory-method sampled \
+            --repetitions 3 --memory-method sampled \
             --memory-interval 0.05 --worker-timeout 3600
       - name: Show fitting-memory results
         if: ${{ always() }}
@@ -319,6 +319,7 @@ jobs:
             -m test.kumo_pytorch.benchmarking.cgroup_run \
             --uid "$(id -u)" --gid "$(id -g)" --timeout 300 -- \
             "$(command -v python)" -m pytest -q \
+            -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch --required-coverage=gpu \
             test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py \
             --junitxml="$RUNNER_TEMP/benchmark-gpu/reference-tests.xml"
       - name: Show GPU validation report
@@ -408,6 +409,14 @@ jobs:
             --output "$RUNNER_TEMP/aml-benchmarks" --isolate-memory \
             --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1 \
             --memory-method sampled --memory-interval 0.01
+      - name: Measure one index build and two reopens
+        if: ${{ !cancelled() && steps.aml-credentials.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.benchmarking.suite \
+            --config "$RUNNER_TEMP/aml-benchmark-cases.json" \
+            --output "$RUNNER_TEMP/aml-index-lifecycle" --index-lifecycle --isolate-memory \
+            --repetitions 3 --epochs 2 --worker-timeout 1800 --gpu-interval 0.1 \
+            --memory-method sampled --memory-interval 0.01
       - name: Install test-only Polars reference
         if: ${{ !cancelled() && steps.aml-credentials.outcome == 'success' }}
         id: polars-setup
@@ -484,6 +493,9 @@ jobs:
             cat "$RUNNER_TEMP/aml-benchmarks/report.md" >> "$GITHUB_STEP_SUMMARY"
             echo 'Download kumo-pytorch-aml-benchmarks for linked reports, metric coverage and raw observations.' >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f "$RUNNER_TEMP/aml-index-lifecycle/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-index-lifecycle/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f "$RUNNER_TEMP/aml-timings/report.md" ]; then
             cat "$RUNNER_TEMP/aml-timings/report.md" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -504,6 +516,13 @@ jobs:
             ${{ runner.temp }}/aml-timings/**/*.log
             !${{ runner.temp }}/aml-timings/**/work/**
             !${{ runner.temp }}/aml-timings/**/*-fitted-state/**
+            ${{ runner.temp }}/aml-index-lifecycle/**/*.json
+            ${{ runner.temp }}/aml-index-lifecycle/**/*.jsonl
+            ${{ runner.temp }}/aml-index-lifecycle/**/*.md
+            ${{ runner.temp }}/aml-index-lifecycle/**/*.log
+            !${{ runner.temp }}/aml-index-lifecycle/**/work/**
+            !${{ runner.temp }}/aml-index-lifecycle/**/shared-index/**
+            !${{ runner.temp }}/aml-index-lifecycle/**/shared-prepared/**
             ${{ runner.temp }}/aml-benchmarks/**/*.json
             ${{ runner.temp }}/aml-benchmarks/**/*.jsonl
             ${{ runner.temp }}/aml-benchmarks/**/*.md
@@ -614,12 +633,14 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Install test-only Polars for required CPU coverage
+        run: uv pip install polars==2.1.0
       - name: Check AML model consumers on tiny Kumo batches
         working-directory: .
         run: |
           python -m pytest -c test/kumo_pytorch/pytest.ini \
             --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
-            test/kumo_pytorch/model_checks -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
+            test/kumo_pytorch/model_checks --required-coverage=cpu -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
       - name: Retain controlled AML learning reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}

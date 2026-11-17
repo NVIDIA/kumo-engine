@@ -33,7 +33,8 @@ sampled host peaks. Complete post-fix acceptance remains to be reviewed.
 See the [historical benchmark validation](PLAN.md#gpu-and-sampled-memory-validation),
 [collective CI review](PLAN.md#collective-ci-review) and
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
-See [coverage ownership](PLAN.md#coverage-ownership).
+See [coverage ownership](PLAN.md#coverage-ownership) and
+[required CI coverage](docs/required-coverage.md).
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to
 existing tests and identifies the next AML additions.
 Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishes
@@ -45,8 +46,8 @@ per-parameter updates and retained loss series. Missing behavior fails normally.
 
 The [fitting-memory experiment](docs/fitting-memory.md) adds fresh-process
 25k/400k comparisons for all five AML contracts, using the general cgroup
-measurement runner. Nightly reports retain all repetitions and enforce the
-configurable proposed growth bound of less than 2x. Real-data validation is pending.
+measurement runner. Nightly reports retain all repetitions and growth ratios
+without a pass/fail growth limit; invalid or incomplete measurements still fail.
 
 Development is consolidated in [PR #353](https://github.com/NVIDIA/kumo-engine/pull/353),
 including the lifecycle import guards, fresh-process special-ID cases and fitting

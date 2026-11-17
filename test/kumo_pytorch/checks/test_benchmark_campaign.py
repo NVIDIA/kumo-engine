@@ -105,3 +105,52 @@ def test_isolated_worker_uses_target_identity_after_sudo(monkeypatch, tmp_path):
         str(tmp_path),
     ]
     assert os.environ["HOME"] == "/root"  # Supervisor identity is unchanged.
+
+
+def index_fixture(config, workdir):
+    from pathlib import Path
+
+    from test.kumo_pytorch.checks.test_benchmark import tabular
+
+    workload = tabular(config, workdir)
+
+    def prepare(recorder):
+        action = config["index_action"]
+        path = Path(config["index_dir"])
+        with recorder.span(f"index.{action}"):
+            if action == "build":
+                path.mkdir()
+                (path / "identity").write_text("original-index")
+            else:
+                assert (path / "identity").read_text() == "original-index"
+
+    workload.prepare = prepare
+    return workload
+
+
+def test_one_build_two_reopens_use_same_index_in_fresh_workers(tmp_path):
+    result = run_campaign(
+        "test.kumo_pytorch.checks.test_benchmark_campaign:index_fixture",
+        {},
+        tmp_path / "lifecycle",
+        index_lifecycle=True,
+        epochs=1,
+    )
+    assert result["status"] == "incomplete"  # Fixture does not supply all metrics.
+    checks = result["index_lifecycle"]
+    assert [r["action"] for r in checks] == ["build", "reopen", "reopen"]
+    assert all(r["status"] == "measured" for r in checks)
+    assert len({r["index_path"] for r in checks}) == 1
+    assert len({r["pid"] for r in result["runs"]}) == 3
+
+
+def test_lifecycle_rejects_adapter_that_ignores_index_actions(tmp_path):
+    result = run_campaign(
+        "test.kumo_pytorch.checks.test_benchmark:tabular",
+        {},
+        tmp_path / "bad",
+        index_lifecycle=True,
+        epochs=1,
+    )
+    assert result["status"] == "failed"
+    assert all(r["status"] == "failed" for r in result["index_lifecycle"])

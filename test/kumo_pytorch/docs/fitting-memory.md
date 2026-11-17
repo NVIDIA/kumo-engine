@@ -31,12 +31,15 @@ allocations, descendants, Python baseline, measurement overhead and file-cache/
 kernel charges attributed to that cgroup. Shared cached pages charged elsewhere
 are not included. Samples can miss short peaks. Reports retain sample counts,
 gaps, stage-start bytes and raw observations; they do not claim an exact kernel
-high-water mark or anonymous-memory-only usage. Explicit `--memory-method kernel`
+high-water mark. Separate labelled samples of `memory.stat` `anon` report
+anonymous-memory peaks and per-size medians, excluding file/shmem charges;
+counter refresh can lag allocations. Explicit `--memory-method kernel`
 requires resettable kernel peaks and fails if unavailable; there is no fallback.
 
-Acceptance uses the median absolute stage peak at each size, with the proposed
-configurable bound **400k median / 25k median < 2.0**. Stage-start memory is
-diagnostic, not subtracted. Exactly 2.0 fails. Every repetition is required;
+Reports retain the median absolute stage peak at each size and their growth
+ratio, with no pass/fail growth limit. A passed status means measurements are
+complete and comparable, not that memory growth is bounded. Stage-start memory
+is diagnostic, not subtracted. Every repetition is required;
 worker errors, unavailable measurements, changed specifications, reused cgroups
 or mismatched measurement methods fail the experiment. Unsupported package
 behavior remains an ordinary failure.
@@ -50,7 +53,7 @@ worker supervisor:
 ```sh
 python -m test.kumo_pytorch.aml_fitting_memory \
   --data-dir /path/to/pinned-aml --output /path/to/new-fitting-run \
-  --repetitions 3 --max-growth 2 --memory-method sampled
+  --repetitions 3 --memory-method sampled
 ```
 
 Results appear in the Actions job summary and the

@@ -259,7 +259,7 @@ def report(directory, config, identities, errors):
     memory_rows = [
         row
         for name, rows in observations.items()
-        if name.endswith(".peak_host_bytes")
+        if name.endswith((".peak_host_bytes", ".peak_anonymous_bytes"))
         for row in rows
     ]
     if memory_rows:
@@ -267,7 +267,7 @@ def report(directory, config, identities, errors):
             "",
             "## Host-memory measurement method",
             "",
-            "Peaks include native allocations, descendants, file-cache and kernel charges; they are not RSS.",
+            "Total host peaks include native allocations, descendants, file-cache and kernel charges. Anonymous peaks sample memory.stat anon separately, excluding file/shmem charges; neither is process RSS. Anonymous statistics can lag allocations, and the two peaks need not occur together.",
             "",
             "| Method | Precision | Interval (s) | Samples | Largest gap (ns) |",
             "| --- | --- | --- | --- | --- |",
@@ -342,7 +342,7 @@ def report(directory, config, identities, errors):
                 value = rows[0]["value"]
             else:
                 numbers = [r["value"] for r in rows]
-                if name.endswith(".peak_host_bytes"):
+                if name.endswith((".peak_host_bytes", ".peak_anonymous_bytes")):
                     value = f"peak={max(numbers)}, measured_intervals={len(numbers)}"
                 else:
                     value = f"n={len(rows)}, min={min(numbers)}, median={statistics.median(numbers)}, max={max(numbers)}"

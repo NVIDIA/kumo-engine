@@ -32,7 +32,7 @@ class FusionModel(nn.Module):
     def __init__(self, config: FusionConfig):
         super().__init__()
         self.config = config
-        self.graph_encoder = GraphSAGEModel(config.graph)
+        self.graph_encoder = GraphSAGEModel(config.graph, encoder_only=True)
         self.sequence_encoder = NuFormerModel(config.sequence)
         self.aggregate_encoder = nn.Sequential(
             nn.Linear(2 * config.aggregate_width, config.aggregate_dim),

@@ -90,6 +90,7 @@ def run_campaign(
     repetitions=3,
     epochs=2,
     compare_fitting=False,
+    index_lifecycle=False,
     timeout=3600,
     isolate_memory=False,
     gpu_interval=0.1,
@@ -98,6 +99,12 @@ def run_campaign(
     measurement_profile="full",
 ):
     required_metrics(measurement_profile)
+    if index_lifecycle and (repetitions != 3 or compare_fitting):
+        raise ValueError(
+            "Index lifecycle requires three runs and fresh fitting in each"
+        )
+    if index_lifecycle and {"index_dir", "index_action"} & config.keys():
+        raise ValueError("Index lifecycle owns index paths and actions")
     if (
         type(repetitions) is not int
         or repetitions < 2
@@ -126,6 +133,7 @@ def run_campaign(
             "repetitions": repetitions,
             "epochs": epochs,
             "compare_fitting": compare_fitting,
+            "index_lifecycle": index_lifecycle,
             "isolate_memory": isolate_memory,
             "worker_timeout_seconds": timeout,
             "gpu_interval_seconds": gpu_interval,
@@ -134,11 +142,18 @@ def run_campaign(
         },
     )
     runs, comparisons = [], []
+    index_checks = []
     for repetition in range(repetitions):
         pair = {}
         for mode in ("fresh", "reused") if compare_fitting else ("fresh",):
             name = f"repeat-{repetition}-{mode}"
             selected = dict(config)
+            if index_lifecycle:
+                selected.setdefault("prepared_dir", str(output / "shared-prepared"))
+                selected.update(
+                    index_dir=str(output / "shared-index"),
+                    index_action="build" if repetition == 0 else "reopen",
+                )
             state = output / f"repeat-{repetition}-fitted-state"
             if compare_fitting:
                 selected[
@@ -248,6 +263,31 @@ def run_campaign(
                     else None,
                 }
             )
+            if index_lifecycle:
+                action = selected["index_action"]
+                measurements = result.get("measurements", {}) if result else {}
+                wanted = [
+                    m
+                    for m in measurements.get(f"index.{action}.elapsed_ns", [])
+                    if m["status"] == "available"
+                ]
+                other = "reopen" if action == "build" else "build"
+                forbidden = [
+                    m
+                    for m in measurements.get(f"index.{other}.elapsed_ns", [])
+                    if m["status"] == "available"
+                ]
+                index_checks.append(
+                    {
+                        "run": name,
+                        "action": action,
+                        "index_path": selected["index_dir"],
+                        "status": "measured"
+                        if len(wanted) == 1 and not forbidden
+                        else "failed",
+                        "timings": wanted,
+                    }
+                )
             if result is not None:
                 pair[mode] = result
                 worker_config = json.loads((output / name / "config.json").read_text())
@@ -269,13 +309,16 @@ def run_campaign(
         row["metric_coverage_complete"] and row["epoch_experiments_complete"]
         for row in runs
     )
-    fitting_complete = compare_fitting and all(
-        c["status"] == "measured" for c in comparisons
+    fitting_complete = (
+        index_lifecycle
+        or compare_fitting
+        and all(c["status"] == "measured" for c in comparisons)
     )
     result = {
         "measurement_profile": measurement_profile,
         "status": "failed"
-        if not completed or any(c["status"] == "failed" for c in comparisons)
+        if not completed
+        or any(c["status"] == "failed" for c in comparisons + index_checks)
         else "complete"
         if covered and fitting_complete
         else "incomplete",
@@ -287,6 +330,8 @@ def run_campaign(
         else "pending; see worker cache-condition coverage",
         "runs": runs,
         "fitting_comparisons": comparisons,
+        "index_lifecycle": index_checks,
+        "index_cache_scope": "Build once, reopen the same index twice; OS page-cache state is recorded separately",
     }
     if measurement_profile == "timing":
         result["cold_and_warm_caches"] = (
@@ -310,6 +355,12 @@ def run_campaign(
         )
     lines += [
         "",
+        "## Index build and reuse",
+        "",
+        "```json",
+        json.dumps(index_checks, indent=2),
+        "```",
+        "",
         "## Fitting comparisons",
         "",
         "```json",
@@ -329,6 +380,7 @@ def main(argv=None):
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--compare-fitting", action="store_true")
+    parser.add_argument("--index-lifecycle", action="store_true")
     parser.add_argument("--worker-timeout", type=float, default=3600)
     parser.add_argument("--isolate-memory", action="store_true")
     parser.add_argument("--gpu-interval", type=float, default=0.1)
@@ -355,6 +407,7 @@ def main(argv=None):
         repetitions=args.repetitions,
         epochs=args.epochs,
         compare_fitting=args.compare_fitting,
+        index_lifecycle=args.index_lifecycle,
         timeout=args.worker_timeout,
         isolate_memory=args.isolate_memory,
         gpu_interval=args.gpu_interval,

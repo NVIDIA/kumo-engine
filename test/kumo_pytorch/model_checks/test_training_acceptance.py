@@ -1,6 +1,7 @@
 """Training acceptance harness checks; fixture results are not real-AML acceptance."""
 
 import json
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
@@ -212,3 +213,26 @@ def test_cli_keeps_failed_case_and_runs_the_other(tmp_path, monkeypatch):
     assert report["status"] == "failed"
     assert [case["status"] for case in report["cases"]] == ["failed", "passed"]
     assert (output / "report.md").is_file()
+
+
+@pytest.mark.parametrize("selection,family", [(s, f) for s, f in CASES if f == "combined"])
+def test_fusion_encoder_only_preserves_predictions(selection, family, tmp_path_factory):
+    from test.kumo_pytorch.models.aml import build_model
+    from test.kumo_pytorch.models.graphsage import GraphSAGEModel
+
+    with closing(fit_case(selection, family, "diskgraph", tmp_path_factory)) as cases:
+        task, batch, _, _ = next(cases)
+        model = build_model(task, selection, family, dim=16, max_seq_len=512, seed=17)
+        fusion = model.backbone
+        model.eval()
+        pruned = fusion.graph_encoder
+        full = GraphSAGEModel(pruned.config)
+        missing = full.load_state_dict(pruned.state_dict(), strict=False)
+        assert len(missing.missing_keys) == 10 and not missing.unexpected_keys
+        full.eval()
+        with torch.no_grad():
+            actual = fusion.forward_kumo(batch)
+            fusion.graph_encoder = full
+            expected = fusion.forward_kumo(batch)
+        torch.testing.assert_close(actual.graph_repr, expected.graph_repr, rtol=0, atol=0)
+        torch.testing.assert_close(actual.logits, expected.logits, rtol=0, atol=0)

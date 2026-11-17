@@ -355,7 +355,7 @@ def run(
     write_json(output / "config.json", frozen)
     identities, errors = {}, []
     with (output / "observations.jsonl").open("x") as stream:
-        from .memory import CgroupMemory, SampledCgroupMemory
+        from .memory import CgroupMemory, SampledAnonymousMemory, SampledCgroupMemory
 
         memory = (
             (
@@ -370,7 +370,12 @@ def run(
         recorder = Recorder(
             stream,
             clock=clock,
-            observers=(memory,) if memory is not None else (),
+            observers=(
+                memory,
+                SampledAnonymousMemory(memory_cgroup, interval=memory_interval),
+            )
+            if memory is not None
+            else (),
         )
         for repetition in range(repetitions):
             workload = None
