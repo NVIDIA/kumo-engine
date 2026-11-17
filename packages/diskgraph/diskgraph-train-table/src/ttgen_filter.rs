@@ -14,7 +14,8 @@ use crate::ttgen_resolve::{
     ResolvedStageFilter, ResolvedStageFilterRhs, ResolvedEdge,
 };
 use crate::ttgen_traversal::{
-    dispatch_multicat_source, read_column_value, MulticatDispatchOutcome, MulticatToken,
+    dispatch_multicat_row, node_row, read_column_value, row_column_value, MulticatDispatchOutcome,
+    MulticatToken,
 };
 
 pub(crate) fn is_nullish_filter_value(value: &Option<Value>) -> bool {
@@ -37,6 +38,20 @@ pub fn eval_row_filter(
     current_table: &Arc<TableReader>,
     entity_cols: &[Option<Value>],
 ) -> bool {
+    let row = node_row(current_table, current_node);
+    eval_row_filter_on_row(filter, current_node, current_table, row, entity_cols)
+}
+
+/// [`eval_row_filter`] on the node's row already fetched with [`node_row`],
+/// so a filter over several columns reads the node once.
+pub fn eval_row_filter_on_row(
+    filter: &ResolvedRowFilter,
+    current_node: u64,
+    current_table: &TableReader,
+    row: Option<&[u8]>,
+    entity_cols: &[Option<Value>],
+) -> bool {
+    let eval = |f| eval_row_filter_on_row(f, current_node, current_table, row, entity_cols);
     match filter {
         ResolvedRowFilter::Compare { lhs, op, rhs } => {
             // Membership (CONTAINS / NOT CONTAINS) is element-wise over a
@@ -48,10 +63,10 @@ pub fn eval_row_filter(
                     Some(v) => v,
                     None => return false,
                 };
-                return eval_row_membership(lhs, op, &r, current_node, current_table);
+                return eval_row_membership(lhs, op, &r, current_node, current_table, row);
             }
 
-            let l_opt = resolve_row_lhs(lhs, current_node, current_table);
+            let l_opt = resolve_row_lhs(lhs, current_node, current_table, row);
 
             match op {
                 CompareOp::IsNull => return is_nullish_filter_value(&l_opt),
@@ -69,24 +84,21 @@ pub fn eval_row_filter(
             };
             compare_values(&l, op, &r)
         }
-        ResolvedRowFilter::And(filters) => filters
-            .iter()
-            .all(|f| eval_row_filter(f, current_node, current_table, entity_cols)),
-        ResolvedRowFilter::Or(filters) => filters
-            .iter()
-            .any(|f| eval_row_filter(f, current_node, current_table, entity_cols)),
-        ResolvedRowFilter::Not(f) => !eval_row_filter(f, current_node, current_table, entity_cols),
+        ResolvedRowFilter::And(filters) => filters.iter().all(eval),
+        ResolvedRowFilter::Or(filters) => filters.iter().any(eval),
+        ResolvedRowFilter::Not(f) => !eval(f),
     }
 }
 
 fn resolve_row_lhs(
     lhs: &ResolvedRowFilterLhs,
     current_node: u64,
-    current_table: &Arc<TableReader>,
+    current_table: &TableReader,
+    row: Option<&[u8]>,
 ) -> Option<Value> {
     match lhs {
         ResolvedRowFilterLhs::Column { col_idx, .. } => {
-            read_column_value(current_table, current_node, *col_idx)
+            row_column_value(current_table, row, *col_idx)
         }
         ResolvedRowFilterLhs::Remote { path, col_idx } => {
             resolve_remote_value(path, current_node, *col_idx)
@@ -109,7 +121,8 @@ fn eval_row_membership(
     op: &CompareOp,
     rhs: &Value,
     current_node: u64,
-    current_table: &Arc<TableReader>,
+    current_table: &TableReader,
+    row: Option<&[u8]>,
 ) -> bool {
     let (col_idx, is_multicat) = match lhs {
         ResolvedRowFilterLhs::Column {
@@ -139,7 +152,7 @@ fn eval_row_membership(
     // whole cell and delegate to `compare_values` (`compare_str` does the
     // substring match), matching the behavior of every other scalar op.
     if !is_multicat {
-        let value = match read_column_value(current_table, current_node, col_idx) {
+        let value = match row_column_value(current_table, row, col_idx) {
             Some(v) => v,
             // NULL source fails the filter (tri-state) for both ops.
             None => return false,
@@ -148,20 +161,14 @@ fn eval_row_membership(
     }
 
     let mut any_match = false;
-    let outcome = dispatch_multicat_source(
-        current_table,
-        current_node,
-        col_idx,
-        is_multicat,
-        |tok| {
-            if token_matches(&tok, rhs) {
-                any_match = true;
-                false // early-exit: one match settles Contains
-            } else {
-                true
-            }
-        },
-    );
+    let outcome = dispatch_multicat_row(current_table, row, col_idx, is_multicat, |tok| {
+        if token_matches(&tok, rhs) {
+            any_match = true;
+            false // early-exit: one match settles Contains
+        } else {
+            true
+        }
+    });
 
     match op {
         CompareOp::Contains => any_match,
@@ -194,7 +201,7 @@ fn values_equal(lhs: &Value, rhs: &Value) -> bool {
 fn resolve_row_rhs(
     rhs: &ResolvedRowFilterRhs,
     current_node: u64,
-    _current_table: &Arc<TableReader>,
+    _current_table: &TableReader,
     entity_cols: &[Option<Value>],
 ) -> Option<Value> {
     match rhs {
