@@ -4,6 +4,7 @@
 
 """Native anchor identity/partition and real model-facing GNN parity."""
 
+import json
 from dataclasses import replace
 
 import pyarrow as pa
@@ -165,6 +166,40 @@ def test_unshuffled_mixed_splits_preserve_source_order(native_task, selection, e
             [sid for sid in "e" if sid in expected],
         ]
         assert list(_by_sample(actual)) == [sid for group in groups for sid in group[rank::3]]
+
+
+@pytest.mark.parametrize("num_shards", [1, 2, 3])
+def test_unshuffled_single_split_preserves_order_across_storage_shards(
+    monkeypatch, request, num_shards
+):
+    import diskgraph
+
+    ingest = diskgraph.ingest
+    anchor_ingests = []
+
+    def ingest_with_anchor_shards(config, *args, **kwargs):
+        config = json.loads(config)
+        if config.get("dataset_name") == "anchors":
+            # Reproduce the memory planner increasing anchor storage shards.
+            config["num_shards"] = num_shards
+            anchor_ingests.append(num_shards)
+        return ingest(json.dumps(config), *args, **kwargs)
+
+    monkeypatch.setattr(diskgraph, "ingest", ingest_with_anchor_shards)
+    _, task, _ = request.getfixturevalue("native_task")
+    assert anchor_ingests == [num_shards]
+    batches = list(
+        task.batches(
+            split="train",
+            batch_size=2,
+            shuffle=False,
+            drop_last=False,
+            output_format="model",
+        )
+    )
+    ids = [sid for batch in batches for sid in batch.metadata["sample_ids"]]
+    assert sorted(ids) == sorted("abdf"), "Missing or duplicate anchors"
+    assert ids == list("abdf"), "Storage sharding changed unshuffled anchor order"
 
 
 def _by_sample(batches):
