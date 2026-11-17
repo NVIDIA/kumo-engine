@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fitting reads its anchors in chunks of ``_FIT_CHUNK``; every anchor counts exactly once."""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -23,7 +21,6 @@ def _spent(start: int | None, stop: int) -> api.Aggregate:
     return api.Aggregate(window, "sum", "amount", dtype=api.DType("float64"))
 
 
-# An input and a target fit from per-anchor values, which fitting builds chunk by chunk.
 CONTRACT = api.DataLoaderSpec(
     SCHEMA,
     api.SampleSpec(
@@ -48,7 +45,6 @@ def test_anchors_on_both_sides_of_a_chunk_edge_are_each_fitted_once(
     tmp_path: Path, engine_name: str, anchors: int
 ) -> None:
     users = range(1, anchors + 1)
-    # User u spends u before its anchor at 100 and 10u after it.
     before, after = (datetime.fromtimestamp(at, UTC) for at in (50, 150))
     rows = {
         "users": [{"user_id": user, "score": 0.0} for user in users],
@@ -70,7 +66,6 @@ def test_anchors_on_both_sides_of_a_chunk_edge_are_each_fitted_once(
         spent = task.output("spent").field(name="spent").encoder
         later = task.target("later").field(name="value").encoder
 
-    # The values 1..n have mean (n + 1) / 2 and population variance (n² - 1) / 12.
     mean, scale = (anchors + 1) / 2, sqrt((anchors**2 - 1) / 12)
     assert (spent.mean, spent.scale) == pytest.approx((mean, scale), rel=1e-12)
     assert (later.mean, later.scale) == pytest.approx((10 * mean, 10 * scale), rel=1e-12)
