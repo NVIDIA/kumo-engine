@@ -191,7 +191,7 @@ install_requires = major_dependencies + observability_requires + [
     # 0.11.15 (RUSTSEC-2026-0185) and opentelemetry_sdk 0.32.1
     # (GHSA-w9wp-h8wv-79jx). 1.31.0 fixes a cancel racing a completed sync
     # activity killing an idle pool thread (sdk-python#1648).
-    "temporalio>=1.31,<2",
+    "temporalio>=1.35,<2",
     "zstd>=1.5.6",
     "aiocache==0.12.3",
     # aiobotocore 3.7.0 supports the botocore 1.42.x line pulled in by the boto3
