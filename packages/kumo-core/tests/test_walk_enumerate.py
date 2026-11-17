@@ -258,6 +258,8 @@ def test_rules_without_the_hook_report_no_state_mass():
 def test_a_negative_absolute_mass_is_a_rule_error():
     computation = b1_computation()
     rule = MassReportingRule(computation)
-    rule.absolute_mass = lambda layer, node, state: -1.0
+    # An instance attribute deliberately shadowing the method (setattr keeps
+    # the type checker from reading it as a mistyped assignment).
+    setattr(rule, 'absolute_mass', lambda layer, node, state: -1.0)
     with pytest.raises(ValueError, match='nonnegative'):
         enumerate_walks(computation, rule, max_walks=10000)

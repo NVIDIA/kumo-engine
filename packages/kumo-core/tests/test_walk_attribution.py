@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from typing import cast
+
 import pytest
 import torch
+from torch_geometric.nn.module_dict import ModuleDict
 
 from kumo_core.explain.walk_attribution import (
     WalkAttributionConfig, WalkCapture, UnsupportedWalkAttribution,
@@ -19,8 +22,11 @@ def fixture():
     module.head = NodePredHead(1, 1, num_layers=1, norm=None, param_keys=[])
     module.double().eval()
     with torch.no_grad():
-        module.model.root_skips[0].lin_dict['product'].weight.fill_(2)
-        module.model.root_skips[0].lin_dict['product'].bias.fill_(1)
+        # `lin_dict` is a PyG ModuleDict; nn.Module attribute access types it
+        # as Module, which has no __getitem__ for the type checker.
+        root = cast(ModuleDict, module.model.root_skips[0].lin_dict)
+        root['product'].weight.fill_(2)
+        root['product'].bias.fill_(1)
         module.head.mlp.lins[0].weight.fill_(3)
         module.head.mlp.lins[0].bias.fill_(4)
     return module
@@ -211,15 +217,15 @@ def _golden_preprocessing():
         param.copy_(torch.tensor(values, dtype=torch.float64))
 
     with torch.no_grad():
-        pre = module.model.lins[0].lin_dict
+        pre = cast(ModuleDict, module.model.lins[0].lin_dict)
         put(pre['events'].weight, [[1., -0.5], [0.25, 1.]])
         put(pre['events'].bias, [0.5, -0.25])
         put(pre['entities'].weight, [[0.5, 0.5], [-1., 1.]])
         put(pre['entities'].bias, [0.125, 0.25])
-        conv = module.model.hetero_convs[0][relation].lin
+        conv = cast(ModuleDict, module.model.hetero_convs[0])[relation].lin
         put(conv.weight, [[1., 0.5], [-0.5, 1.]])
         put(conv.bias, [0.25, -0.5])
-        root = module.model.root_skips[0].lin_dict
+        root = cast(ModuleDict, module.model.root_skips[0].lin_dict)
         put(root['events'].weight, [[0.5, 0.], [0., 0.5]])
         put(root['events'].bias, [0., 0.125])
         put(root['entities'].weight, [[1., -0.25], [0.5, 0.75]])

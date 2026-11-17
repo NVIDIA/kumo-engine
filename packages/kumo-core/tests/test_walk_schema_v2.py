@@ -5,12 +5,14 @@
 import copy
 import json
 import math
+from typing import cast
 
 import pytest
 import torch
 from kumoapi.encoder import Index
 from kumoapi.task import TaskType
 from kumoapi.typing import ColStatType
+from torch_geometric.nn.module_dict import ModuleDict
 
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.explain.walk_attribution import (
@@ -765,12 +767,16 @@ def cancellation_module(mixing, hidden=1.0):
     module.head = NodePredHead(2, 1, hidden_channels=2, num_layers=2, norm=None,
                                param_keys=[], bias=False, act=None)
     module = module.double()
+    # double() returns a plain Module to the type checker, so name the
+    # submodules' types; `lin_dict` is a PyG ModuleDict.
+    model = cast(HeteroGNN, module.model)
+    head = cast(NodePredHead, module.head)
     with torch.no_grad():
         if mixing:
-            module.model.root_skips[0].lin_dict['customer'].weight.copy_(
+            cast(ModuleDict, model.root_skips[0].lin_dict)['customer'].weight.copy_(
                 torch.tensor([[0.5, 0.5], [0.625, 0.625]]))
-        module.head.mlp.lins[0].weight.copy_(torch.tensor([[1.0, -1.0], [hidden, 0.0]]))
-        module.head.mlp.lins[1].weight.copy_(torch.tensor([[1.0, 1.0]]))
+        head.mlp.lins[0].weight.copy_(torch.tensor([[1.0, -1.0], [hidden, 0.0]]))
+        head.mlp.lins[1].weight.copy_(torch.tensor([[1.0, 1.0]]))
     x = {'customer': torch.tensor([[1.0, 1.0] if mixing else [1.0, 1.25]],
                                   dtype=torch.float64)}
     return module.eval(), x
