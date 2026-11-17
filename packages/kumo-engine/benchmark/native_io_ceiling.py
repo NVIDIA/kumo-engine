@@ -164,6 +164,29 @@ def parse_reports(text: str) -> list[Record]:
     return reports
 
 
+def read_counts(read: Record, block_bytes: int, depth: int, ramp_seconds: int) -> Record:
+    """fio 3.36 counts issues and completions on opposite sides of ramp reset."""
+    issued = integer(read['total_ios'])
+    size = integer(read['io_bytes'])
+    latency = integer(record(read['clat_ns'])['N'])
+    bound = depth if ramp_seconds else 0
+    if issued <= 0 or size <= 0 or size % block_bytes or latency <= 0:
+        raise ValueError('Invalid fixed-size read counters')
+    completed = size // block_bytes
+    # ioengines.c counts issues; io_u.c counts completed bytes/latencies.
+    # time.c resets ramp statistics without draining at most one queue depth.
+    if (not 0 <= completed - issued <= bound or abs(latency - issued) > bound
+            or abs(completed - latency) > bound):
+        raise ValueError('Read counter difference exceeds ramp queue capacity')
+    bins = record(record(read['clat_ns'])['bins'])
+    if any(integer(value) < 0 for value in bins.values()) or sum(integer(value) for value in bins.values()) != latency:
+        raise ValueError('Completion histogram/sample count mismatch')
+    return {'issued_reads': issued, 'completed_reads': completed, 'latency_samples': latency,
+            'completed_minus_issued': completed - issued, 'latency_minus_issued': latency - issued,
+            'completed_minus_latency': completed - latency, 'ramp_boundary_bound_reads': bound,
+            'completed_read_bytes': size}
+
+
 def parse_fio(report: Record, spec: TrialSpec) -> Record:
     jobs = report.get('jobs')
     if not isinstance(jobs, list) or len(jobs) != spec.jobs:
@@ -182,10 +205,11 @@ def parse_fio(report: Record, spec: TrialSpec) -> Record:
         if int(str(options['bs'])) != spec.block_bytes or int(str(options['iodepth'])) != spec.depth:
             raise ValueError('fio geometry changed')
         seconds = number(read['runtime']) / 1000
-        count = integer(read['total_ios'])
-        size = integer(read['io_bytes'])
-        if seconds < spec.measure_seconds * 0.98 or count <= 0 or size != count * spec.block_bytes:
-            raise ValueError('Incomplete timed read window or byte/count mismatch')
+        counts = read_counts(read, spec.block_bytes, spec.depth, spec.ramp_seconds)
+        count = integer(counts['issued_reads'])
+        size = integer(counts['completed_read_bytes'])
+        if seconds < spec.measure_seconds * 0.98:
+            raise ValueError('Incomplete timed read window')
         for operation in ('write', 'trim'):
             values = record(job[operation])
             if integer(values['total_ios']) or integer(values['io_bytes']):
@@ -196,7 +220,7 @@ def parse_fio(report: Record, spec: TrialSpec) -> Record:
         if not math.isclose(number(read['bw_bytes']), size / seconds, rel_tol=1e-5):
             raise ValueError('fio bandwidth/count/window mismatch')
         clat = record(read['clat_ns'])
-        if integer(clat['N']) != count or number(clat['mean']) <= 0:
+        if number(clat['mean']) <= 0:
             raise ValueError('Incomplete completion-latency observations')
         usage = number(job['usr_cpu']) + number(job['sys_cpu'])
         if not 0 <= usage <= 105:
@@ -211,17 +235,18 @@ def parse_fio(report: Record, spec: TrialSpec) -> Record:
         runtimes.append(seconds)
         iops += rate
         bandwidth += size / seconds
-        outstanding += rate * number(clat['mean']) / 1e9
+        outstanding += integer(counts['latency_samples']) / seconds * number(clat['mean']) / 1e9
         per_job.append({'iops': rate, 'seconds': seconds, 'cpu_percent': usage,
                         'completion_latency_ns': clat, 'submission_latency_ns': read['slat_ns'],
                         'depth_buckets': job['iodepth_level'],
                         'bandwidth_samples': read['bw_samples'], 'bandwidth_mean_kib': read['bw_mean'],
-                        'bandwidth_stddev_kib': read['bw_dev']})
+                        'bandwidth_stddev_kib': read['bw_dev'], 'read_counts': counts})
     if max(runtimes) - min(runtimes) > 1:
         raise ValueError('Job windows are not sufficiently aligned')
     return {'application_read_iops': iops, 'read_bytes_per_second': bandwidth,
             'estimated_application_outstanding': outstanding,
-            'outstanding_semantics': 'Sum of per-job IOPS * mean fio completion latency; not device queue occupancy',
+            'read_counter_semantics': 'fio total_ios/iops count issued reads; io_bytes count completed bytes; ramp reset can retain at most one per-job queue depth of boundary reads; counters are preserved separately',
+            'outstanding_semantics': 'Sum of per-job latency-sample rate * mean fio completion latency; approximate across the bounded ramp boundary; not device queue occupancy',
             'issuer_cpu_percent': cpu, 'issuer_max_cpu_percent': max(cpu), 'per_job': per_job,
             'max_job_bandwidth_cv': max(stability),
             'physical_iops_semantics': 'fio counts application reads; kernel device samples are separately device-wide'}
@@ -237,7 +262,7 @@ def aggregate(rows: list[Record]) -> list[Record]:
         if identity in identities:
             raise ValueError('Duplicate trial coordinate')
         identities.add(identity)
-        grouped[identity[:-1]].append(record(row['metrics']))
+        grouped[identity[:-1]].append(record(row['metrics']) | {'repeat': integer(spec['repeat'])})
     summaries = []
     for (block, jobs, depth, submit, complete), samples in sorted(grouped.items()):
         if len(samples) != 5:
@@ -253,6 +278,10 @@ def aggregate(rows: list[Record]) -> list[Record]:
                               number(sample['read_bytes_per_second']) / 1024**2 for sample in samples),
                           'relative_mad': relative_mad,
                           'max_trial_bandwidth_cv': max(number(sample['max_job_bandwidth_cv']) for sample in samples),
+                          'per_trial_read_counts': [
+                              {'repeat': sample['repeat'],
+                               'per_job': [record(job)['read_counts'] for job in sample['per_job']]}
+                              for sample in sorted(samples, key=lambda sample: integer(sample['repeat']))],
                           'median_max_issuer_cpu_percent': statistics.median(
                               number(sample['issuer_max_cpu_percent']) for sample in samples)})
     return summaries

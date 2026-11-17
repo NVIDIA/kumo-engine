@@ -19,7 +19,8 @@ def fio_report(spec):
         return {'error': 0, 'job options': options,
                 'read': {'runtime': 30000, 'total_ios': 30000, 'io_bytes': 30000 * spec.block_bytes,
                          'iops': 1000.0, 'bw_bytes': 1000 * spec.block_bytes, 'short_ios': 0, 'drop_ios': 0,
-                         'clat_ns': {'N': 30000, 'mean': 100000, 'percentile': {'99.000000': 200000}},
+                         'clat_ns': {'N': 30000, 'mean': 100000, 'percentile': {'99.000000': 200000},
+                                     'bins': {'100000': 30000}},
                          'slat_ns': {'mean': 1000}, 'bw_samples': 60, 'bw_mean': 4000, 'bw_dev': 5},
                 'write': {'total_ios': 0, 'io_bytes': 0}, 'trim': {'total_ios': 0, 'io_bytes': 0},
                 'usr_cpu': 10, 'sys_cpu': 20, 'iodepth_level': {'1': 100}}
@@ -96,6 +97,48 @@ def test_reports_preserve_all_status_objects():
         ceiling.parse_reports(text + 'unexpected diagnostics')
 
 
+def test_recorded_ramp_counter_boundary():
+    spec = ceiling.TrialSpec(4096, 1, 16, 0)
+    report = fio_report(spec)
+    read = report['jobs'][0]['read']
+    # Counts from the retained first live fio 3.36 QD16 qualification.
+    read.update(runtime=30002, total_ios=1714442, io_bytes=7022419968,
+                iops=57144.25705, bw_bytes=234065061)
+    read['clat_ns'].update(N=1714457, bins={'100000': 1714457})
+    result = ceiling.parse_fio(report, spec)
+    counts = result['per_job'][0]['read_counts']
+    assert counts['issued_reads'] == 1714442
+    assert counts['completed_reads'] == 1714458
+    assert counts['latency_samples'] == 1714457
+    assert counts['completed_minus_issued'] == counts['ramp_boundary_bound_reads'] == 16
+    assert counts['completed_minus_latency'] == 1
+    assert result['application_read_iops'] == read['iops']
+    assert result['estimated_application_outstanding'] == pytest.approx(1714457 / 30.002 * .0001)
+
+
+@pytest.mark.parametrize('completed,latency,ramp', [
+    (30017, 30000, 10), (29999, 30000, 10), (30000, 30017, 10),
+    (30000, 29983, 10), (30016, 29999, 10), (30001, 30000, 0), (30000, 30001, 0),
+])
+def test_read_boundary_rejects_capacity_violation(completed, latency, ramp):
+    read = fio_report(ceiling.TrialSpec(4096, 1, 16, 0))['jobs'][0]['read']
+    read['io_bytes'] = completed * 4096
+    read['clat_ns'].update(N=latency, bins={'100000': latency})
+    with pytest.raises(ValueError, match='capacity'):
+        ceiling.read_counts(read, 4096, 16, ramp)
+
+
+def test_read_boundary_rejects_unaligned_bytes_and_bad_histogram():
+    read = fio_report(ceiling.TrialSpec(4096, 1, 16, 0))['jobs'][0]['read']
+    read['io_bytes'] += 1
+    with pytest.raises(ValueError, match='fixed-size'):
+        ceiling.read_counts(read, 4096, 16, 10)
+    read['io_bytes'] -= 1
+    read['clat_ns']['bins']['100000'] -= 1
+    with pytest.raises(ValueError, match='histogram'):
+        ceiling.read_counts(read, 4096, 16, 10)
+
+
 def test_extension_is_predeclared_and_finite():
     assert ceiling.extension_blocks(summary_rows()) == []
     assert ceiling.extension_blocks(summary_rows(high=1100)) == [4096, 8192]
@@ -126,10 +169,14 @@ def test_no_pooled_rates_or_lost_batch_variants():
             rows.append({'spec': dataclasses.asdict(trial), 'metrics': {
                 'application_read_iops': [100, 200, 300, 400, 10000][repeat],
                 'read_bytes_per_second': 4096 * 100, 'issuer_max_cpu_percent': 50,
-                'max_job_bandwidth_cv': .01}})
+                'max_job_bandwidth_cv': .01, 'per_job': [{'read_counts': {
+                    'issued_reads': 30000, 'completed_reads': 30000, 'latency_samples': 30000,
+                    'ramp_boundary_bound_reads': 256}}]}})
     aggregate = ceiling.aggregate(rows)
     assert len(aggregate) == 2
     assert all(value['median_application_read_iops'] == 300 for value in aggregate)
+    assert all([row['repeat'] for row in value['per_trial_read_counts']] == list(range(5))
+               for value in aggregate)
     with pytest.raises(ValueError, match='Duplicate'):
         ceiling.aggregate(rows + [copy.deepcopy(rows[0])])
 
