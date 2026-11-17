@@ -2,8 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from kumo_core.automl.auto_trainer import _failed_trials_error_message
+import pytest
+from kumo_core.automl.auto_trainer import (
+    _failed_trials_error_message,
+    _raise_if_no_trial_succeeded,
+)
 from kumo_core.job_config import TrainStatus, TrialStatus
+from kumo_core.types import TaskType
 
 
 def test_failed_trials_error_includes_last_recorded_cause():
@@ -30,3 +35,38 @@ def test_failed_trials_error_handles_missing_tracebacks():
 
     assert _failed_trials_error_message(
         status) == "Failed to run any AutoML trial"
+
+
+def test_no_oom_message_when_an_earlier_trial_succeeded(tmp_path):
+    oom = TrialStatus(trial=1, batch_size=64)
+    status = TrainStatus(
+        trials=[TrialStatus(trial=0, batch_size=64, succeed=True), oom])
+
+    _raise_if_no_trial_succeeded(status, [oom], 1,
+                                 TaskType.BINARY_CLASSIFICATION, str(tmp_path))
+
+    assert status.error_msg is None
+
+
+def test_no_oom_message_when_another_trial_failed_otherwise(tmp_path):
+    oom = TrialStatus(trial=0, batch_size=64)
+    status = TrainStatus(trials=[oom, TrialStatus(trial=1, batch_size=64)])
+
+    with pytest.raises(RuntimeError):
+        _raise_if_no_trial_succeeded(status, [oom], 2,
+                                     TaskType.BINARY_CLASSIFICATION,
+                                     str(tmp_path))
+
+    assert status.error_msg is None
+
+
+def test_oom_message_when_every_trial_ran_out_of_memory(tmp_path):
+    oom = TrialStatus(trial=0, batch_size=64)
+    status = TrainStatus(trials=[oom])
+
+    with pytest.raises(RuntimeError):
+        _raise_if_no_trial_succeeded(status, [oom], 1,
+                                     TaskType.BINARY_CLASSIFICATION,
+                                     str(tmp_path))
+
+    assert TrainStatus.load(str(tmp_path)).error_msg is not None
