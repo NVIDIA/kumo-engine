@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import gc
 import multiprocessing
-import os
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,12 +52,31 @@ def _status(field: str) -> int:
     raise KeyError(field)
 
 
-def _fit(anchors: int, directory: Path) -> tuple[float, float]:
-    """Run in a new process. Return the peak RSS of fitting and the part it adds, in MiB."""
-    import pyarrow as pa
-    import pyarrow.parquet as pq
+def _engine(index: Path) -> api.DiskGraphEngine:
+    return api.DiskGraphEngine(index=index, num_threads=1, num_shards=1)
 
-    directory.mkdir()
+
+def _fit(dataset: api.Dataset, anchors: Path, index: Path) -> tuple[float, float]:
+    """Return the peak RSS of fitting and the part it adds, in MiB.
+
+    Run it in a new process that only reopens the index. Memory that earlier work in the
+    same process freed would be reused by fitting and hide part of its peak.
+    """
+    with api.prepare(CONTRACT, dataset, _engine(index)) as plan:
+        gc.collect()
+        before = _status("VmRSS")
+        Path("/proc/self/clear_refs").write_text("5")  # reset the peak RSS to the current RSS
+        with plan.materialize(api.AnchorTable(api.Parquet(str(anchors)), "user_id", "at")):
+            peak = _status("VmHWM")
+    return peak / 2**20, (peak - before) / 2**20
+
+
+@pytest.mark.t2b
+@pytest.mark.skipif(not Path("/proc/self/clear_refs").exists(), reason="reads Linux /proc")
+def test_record_fitting_memory_at_25k_and_400k_anchors(tmp_path: Path) -> None:
+    pytest.importorskip("diskgraph")
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
     users = range(1, USERS + 1)
     rows = {
         "users": [{"user_id": user, "score": 0.0} for user in users],
@@ -73,41 +91,23 @@ def _fit(anchors: int, directory: Path) -> tuple[float, float]:
             for step in range(TIMES + 1)
         ],
     }
-    dataset = _write_parquet(rows, directory / "parquet")
-    times = range(100, 100 * (anchors // USERS) + 1, 100)
-    table = pa.table(
-        {
-            "user_id": pa.array([user for _ in times for user in users], pa.int64()),
-            "at": pa.array([at for at in times for _ in users], pa.timestamp("s", tz="UTC")),
-        }
-    )
-    pq.write_table(table, directory / "anchors.parquet")
-    del rows, table
-    anchor_table = api.AnchorTable(api.Parquet(str(directory / "anchors.parquet")), "user_id", "at")
-    engine = api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
-    with api.prepare(CONTRACT, dataset, engine) as plan:
-        gc.collect()
-        before = _status("VmRSS")
-        Path("/proc/self/clear_refs").write_text("5")  # reset the peak RSS to the current RSS
-        with plan.materialize(anchor_table):
-            peak = _status("VmHWM")
-    return peak / 2**20, (peak - before) / 2**20
-
-
-@pytest.mark.t2b
-@pytest.mark.skipif(not Path("/proc/self/clear_refs").exists(), reason="reads Linux /proc")
-def test_record_fitting_memory_at_25k_and_400k_anchors(tmp_path: Path) -> None:
-    pytest.importorskip("diskgraph")
+    dataset = _write_parquet(rows, tmp_path / "parquet")
+    with api.prepare(CONTRACT, dataset, _engine(tmp_path / "index")):
+        pass  # build the index here, outside the measured processes
     results = {}
-    for anchors in (25_000, 400_000):
+    for count in (25_000, 400_000):
+        times = range(100, 100 * (count // USERS) + 1, 100)
+        anchors = tmp_path / f"anchors-{count}.parquet"
+        user_ids = pa.array([user for _ in times for user in users], pa.int64())
+        at = pa.array([time for time in times for _ in users], pa.timestamp("s", tz="UTC"))
+        pq.write_table(pa.table({"user_id": user_ids, "at": at}), anchors)
         context = multiprocessing.get_context("spawn")
         with ProcessPoolExecutor(1, mp_context=context) as pool:
-            results[anchors] = pool.submit(_fit, anchors, tmp_path / str(anchors)).result()
-    line = "Fitting peak RSS on DiskGraph: " + "; ".join(
-        f"{n:,} anchors {peak:.0f} MiB, fitting adds {added:.1f} MiB"
-        for n, (peak, added) in results.items()
+            results[count] = pool.submit(_fit, dataset, anchors, tmp_path / "index").result()
+    print(
+        "Fitting peak RSS on DiskGraph: "
+        + "; ".join(
+            f"{count:,} anchors {peak:.0f} MiB, fitting adds {added:.1f} MiB"
+            for count, (peak, added) in results.items()
+        )
     )
-    print(line)
-    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(summary, "a") as file:
-            file.write(line + "\n")
