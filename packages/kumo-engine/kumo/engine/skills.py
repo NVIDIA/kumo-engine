@@ -48,8 +48,8 @@ install is from another build, and ``python -m kumo.engine.skills --check``
 lists the local installs and exits 1 if any is stale.
 
 This module uses the standard library and ``filelock``, plus
-``databricks-sdk`` for Genie and a Snowpark session for the ``coco`` account
-scopes.
+``databricks-sdk`` (the ``kumo-engine[databricks]`` extra) for Genie and a
+Snowpark session for the ``coco`` account scopes.
 """
 from __future__ import annotations
 
@@ -225,9 +225,18 @@ def stale_skills() -> dict[str, Optional[str]]:
     return {d: b for d, b in installed_skills().items() if b != build}
 
 
+class SkillStaleWarning(UserWarning):
+    r"""A local install of the skill is from another build than this wheel's.
+    """
+
+
 def warn_if_stale() -> None:
     r"""Warns, once per import of ``kumo.engine``, about local installs of the
-    skill from another build than this wheel's."""
+    skill from another build than this wheel's.
+
+    The warning is a :class:`SkillStaleWarning`. Where warnings are errors, it
+    is dropped rather than raised, so it never fails the import.
+    """
     try:
         stale = stale_skills()
     except Exception:  # never let a check of skills break the import
@@ -243,10 +252,13 @@ def warn_if_stale() -> None:
                   'environment, so environments with different kumo-engine '
                   "builds replace each other's; give each project its own "
                   "with scope='project'." if user_dirs & stale.keys() else '')
-        warnings.warn(
-            f'The {SKILL} agent skill is not the one this kumo-engine '
-            f'({bundled_build()}) ships. To update it, run: {listed}.'
-            f'{shared}', stacklevel=2)
+        try:
+            warnings.warn(
+                f'The {SKILL} agent skill is not the one this kumo-engine '
+                f'({bundled_build()}) ships. To update it, run: {listed}.'
+                f'{shared}', SkillStaleWarning, stacklevel=2)
+        except SkillStaleWarning:  # promoted to an error, e.g. by -W error
+            pass
 
 
 def _copy(pkg: Path, skills_dir: Path) -> Path:
@@ -259,7 +271,9 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
     root = skills_dir.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     target = root / SKILL
-    with FileLock(_lock_path(root)):
+    # Readable and writable by every user, whatever the umask, so users
+    # sharing a destination share its lock too.
+    with FileLock(_lock_path(root), mode=0o666):
         staging = Path(tempfile.mkdtemp(prefix=f'.{SKILL}.', dir=root))
         try:
             new, old = staging / SKILL, staging / 'previous'
@@ -281,11 +295,13 @@ def _copy(pkg: Path, skills_dir: Path) -> Path:
 def _lock_path(root: Path) -> Path:
     r"""The lock file for installs into ``root``.
 
-    It is kept in the temporary directory, so none is left among the skills
-    (or in a project's version control).
+    It lives in ``root`` itself: every install into ``root`` derives the same
+    path whatever its user or ``TMPDIR``, and can write there, since it
+    stages there. Agents load only skill folders, so the hidden file is never
+    read as a skill; in a project it is a file to leave out of version
+    control.
     """
-    key = hashlib.sha256(str(root).encode()).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f'{SKILL}-{key}.lock'
+    return root / f'.{SKILL}.lock'
 
 
 def _detect() -> list[str]:
@@ -399,6 +415,8 @@ def install_skills(
     if agent == 'genie' and scope != 'user':
         raise ValueError('genie installs to your workspace skills folder and '
                          f'takes no scope (got scope={scope!r}).')
+    if agent == 'genie':  # before building, so a missing SDK fails fast
+        _import_provider('databricks.sdk', 'databricks')
     with skill_package(host) as pkg:
         if agent == 'genie':
             return [_install_genie(pkg, client)]
@@ -696,15 +714,17 @@ def _install_coco_extension(pkg: Path, session: Any, extension: str,
     Each version is added from a stage folder named after a digest of the
     package, which Snowflake records as the version's source. When the
     default version already holds this package, nothing is published, so
-    reinstalls do not pile up identical versions. A new version is usable
-    only once Snowflake has scanned it, so the install waits for the scan.
+    reinstalls do not pile up identical versions. A version is usable only
+    once Snowflake has scanned it, so the install waits for the scan, of an
+    unchanged version too.
     """
     digest = _digest(pkg)
     for v in _extension_versions(session, extension):
         source = v.get('source_location_uri') or ''
-        if str(v.get('is_default')).lower() == 'true' and \
-                f'/kumo-ds-{digest}-' in source:
-            _report(pkg, extension, note=f'unchanged, {v["name"]}')
+        m = re.search(rf'/(kumo-ds-{digest}-[0-9a-f]+)/', source)
+        if str(v.get('is_default')).lower() == 'true' and m:
+            version = _await_scan(session, extension, m.group(1))
+            _report(pkg, extension, note=f'unchanged, {version}')
             return extension
     session.sql(f'CREATE STAGE IF NOT EXISTS {stage} '
                 "ENCRYPTION=(TYPE='SNOWFLAKE_SSE') "
@@ -816,8 +836,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         ap.error('--scope workspace needs --workspace')
     client = None
     if args.profile:
-        WorkspaceClient = _import_provider('databricks.sdk',
-                                           'databricks').WorkspaceClient
+        try:
+            WorkspaceClient = _import_provider('databricks.sdk',
+                                               'databricks').WorkspaceClient
+        except ImportError as e:
+            ap.exit(1, f'{ap.prog}: error: {e}\n')
         client = WorkspaceClient(profile=args.profile)
     try:
         session = _connect(args.connection) if account else None
@@ -829,7 +852,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                        extension=args.extension, stage=args.stage,
                        client=client)
     # OSError: e.g. a --path through a file, or a directory not writable.
-    except (ValueError, OSError, RuntimeError) as e:
+    # ImportError: genie without the Databricks SDK.
+    except (ValueError, OSError, RuntimeError, ImportError) as e:
         ap.exit(1, f'{ap.prog}: error: {e}\n')
     finally:
         if session is not None:
