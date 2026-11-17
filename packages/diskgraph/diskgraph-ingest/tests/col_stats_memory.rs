@@ -8,7 +8,7 @@
 /// Creates many parquet files × categorical columns each.
 /// Before the fix, the retained HashMap bucket arrays would accumulate
 /// in the unbounded mpsc channel during encode, consuming massive memory.
-/// After the fix (dropping locals in flush_categories), peak RSS during
+/// After the fix (flush_categories frees the local maps), peak RSS during
 /// encode should be close to the no-col-stats baseline.
 use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
