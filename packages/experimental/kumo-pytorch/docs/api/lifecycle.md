@@ -388,6 +388,7 @@ Task.batches(
     world_size: int = 1,
     drop_last: bool | None = None,
     chunk_batches: int = 8,
+    prefetch_batches: int = 0,
     output_format: Literal['inspectable', 'model'] = 'inspectable',
 ) -> TaskBatches
 ```
@@ -412,6 +413,20 @@ and `world_size`; ranks are disjoint before padding. A token budget
 `output_format="model"` refuses raw types without a tensor
 representation before fetching a batch; `"inspectable"` keeps them
 as Arrow arrays. Both emit the same `Batch` structure.
+
+`prefetch_batches=0` runs synchronously (the default). A positive
+integer prepares that many batches ahead on one background CPU thread,
+without changing order, contents or the consumed checkpoint position.
+It works independently of model architecture and output format; device
+transfer and model execution remain with the caller. The buffer limit
+includes a batch being built, but excludes the batch held by the caller
+and any engine-internal buffering. It is not a byte-memory limit.
+
+Use `with task.batches(prefetch_batches=1) as batches:` when stopping
+early. Closing the iterator, task or plan waits for in-flight native
+work before releasing its resources. CPU grad/inference/autocast context
+is captured when iteration starts. Backend observation hooks must
+support producer-thread calls; owning-thread-only hooks need adaptation.
 
 #### `Task.preview`
 
@@ -459,6 +474,7 @@ class TaskBatches(
     *,
     task_fingerprint: str,
     config: Mapping[str, Any],
+    prefetch_batches: int = 0,
 )
 ```
 
@@ -468,6 +484,19 @@ Batches from one pass over a task, resumable from a saved position.
 configuration; `load_state_dict` on a fresh iterator with the same
 configuration continues after them. Resuming replays the skipped batches
 rather than seeking, which is correct but slow for a long pass.
+Prefetch depth is an execution setting and may change when resuming.
+
+#### `TaskBatches.close`
+
+```python
+TaskBatches.close() -> None
+```
+
+Stop iteration and wait for in-flight batch preparation to finish.
+
+Use as a context manager when stopping an epoch early. A native call
+already in progress finishes before its resources can be released.
+If waiting is interrupted, call close again to finish cleanup.
 
 #### `TaskBatches.state_dict`
 

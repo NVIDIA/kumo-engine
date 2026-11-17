@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+import weakref
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
@@ -175,6 +176,7 @@ class Plan:
         self.inference = inference
         self._source: SampleSource | None = source
         self._dataset_fingerprint = _fingerprint(dataset)
+        self._tasks: weakref.WeakSet[Task] = weakref.WeakSet()
 
     def materialize(
         self,
@@ -406,7 +408,7 @@ class Plan:
         except BaseException:
             task_anchors.close()
             raise
-        return Task(
+        task = Task(
             contract=self.contract,
             assembler=assembler,
             anchors=task_anchors,
@@ -415,6 +417,8 @@ class Plan:
             fit=fit,
             has_targets=not input_only,
         )
+        self._tasks.add(task)
+        return task
 
     def _pinned_from_stats(
         self,
@@ -527,8 +531,11 @@ class Plan:
     def close(self) -> None:
         """Release the engine binding. Idempotent."""
 
-        source, self._source = self._source, None
+        source = self._source
         if source is not None:
+            for task in list(self._tasks):
+                task._close_prefetch()
+            self._source = None
             source.close()
 
     def __enter__(self) -> Plan:
