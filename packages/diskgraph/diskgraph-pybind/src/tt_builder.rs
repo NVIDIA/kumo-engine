@@ -838,10 +838,11 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
         && lo != hi
         && dur_from_unit::<U>(lo, unit) == dur_from_unit::<U>(hi, unit)
     {
+        let clock = unit_name(U::UNIT);
         return Err(crate::DiskgraphConfigError::new_err(format!(
-            "the window ({lo}, {hi}] {} is empty on the {} index clock",
+            "the window ({lo}, {hi}] {} is empty on the {clock} index clock. Use a window of \
+             whole {clock}, or a finer timestamp_precision.",
             unit_name(unit),
-            unit_name(U::UNIT)
         )));
     }
     Ok(())
