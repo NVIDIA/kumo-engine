@@ -547,9 +547,10 @@ def _rhs_canonical_node_ids(
     rhs_node_type: str,
     expected_count: int,
 ) -> np.ndarray:
-    """Materialize canonical physical IDs without reading raw PK values."""
+    """Canonical physical IDs, sorted and unique, read by DiskGraph."""
     node_ids = rhs_catalog(index_path, rhs_node_type)
-    _validate_rhs_node_ids(node_ids, expected_count)
+    if len(node_ids) and node_ids[-1] >= expected_count:
+        raise RuntimeError('[TT-NG LP] RHS node-ID catalog is out of range')
     return node_ids
 
 
