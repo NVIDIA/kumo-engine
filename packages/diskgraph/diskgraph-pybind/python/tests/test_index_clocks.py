@@ -382,6 +382,17 @@ def test_windows_shorter_than_a_tick_are_rejected(window, unit):
         builder.build()
 
 
+@pytest.mark.parametrize("clock", CLOCKS)
+@pytest.mark.parametrize("unit", ["days", "weeks"])
+def test_unbounded_past_windows_are_not_rejected_as_sub_tick(clock, unit):
+    builder = DiskGraphTTBuilder(clock)
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.aggregate("orders", EdgeRef("users", "user_id", "orders", "user_id"), "count",
+                      time_col="ordered_at", window=(-2**60, 0), window_unit=unit)
+    builder.build()
+
+
 def test_offsets_shorter_than_a_tick_are_rejected():
     target = json.dumps({"column": {"alias": "c", "table": "users", "column": "user_id"}})
     for clock, offsets, ok in [("seconds", [-1], True), ("days", [-1], False),

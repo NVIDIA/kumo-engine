@@ -426,7 +426,7 @@ impl UnitSystem for Seconds {
         Dur(ns / 1_000_000_000, PhantomData)
     }
     fn dur_from_days(days: i64) -> Dur<Self> {
-        Dur(days * 86_400, PhantomData)
+        Dur(days.saturating_mul(86_400), PhantomData)
     }
     fn dur_raw(dur: Dur<Self>) -> i64 {
         dur.0
@@ -712,6 +712,12 @@ mod tests {
     fn dur_from_days_multiplies() {
         let d = Dur::<Seconds>::from_days(7);
         assert_eq!(d.raw(), 7 * 86_400);
+    }
+
+    #[test]
+    fn seconds_day_durations_saturate_instead_of_wrapping() {
+        assert_eq!(Dur::<Seconds>::from_days(-(1_i64 << 60)).raw(), i64::MIN);
+        assert_eq!(Dur::<Seconds>::from_days(1_i64 << 60).raw(), i64::MAX);
     }
 
     #[test]
