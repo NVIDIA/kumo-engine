@@ -375,7 +375,6 @@ def test_unbounded_lower_window_is_preserved(clock, operation):
 
 @pytest.mark.parametrize("window, unit", [((0, 30), "minutes"), ((-1, 0), "minutes"),
                                           ((-2**60, 30), "minutes"),
-                                          ((60, 90), "minutes"),
                                           ((0, 500), "milliseconds")])
 def test_windows_shorter_than_a_tick_are_rejected(window, unit):
     builder = DiskGraphTTBuilder("hours")
@@ -385,6 +384,18 @@ def test_windows_shorter_than_a_tick_are_rejected(window, unit):
                       time_col="ordered_at", window=window, window_unit=unit)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="window"):
         builder.build()
+
+
+def test_a_window_that_truncates_to_empty_is_rejected():
+    builder = DiskGraphTTBuilder("hours")
+    builder.for_each("users", "user_id")
+    builder.aggregate("orders", EdgeRef("users", "user_id", "orders", "user_id"), "count",
+                      time_col="ordered_at", window=(60, 90), window_unit="minutes")
+    with pytest.raises(diskgraph.DiskgraphConfigError) as error:
+        builder.build()
+    assert str(error.value) == (
+        "the window (60, 90] minutes is empty on the hours index clock. Use a window of whole "
+        "hours, or a finer timestamp_precision.")
 
 
 def test_offsets_shorter_than_a_tick_are_rejected():
