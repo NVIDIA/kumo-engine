@@ -8961,6 +8961,7 @@ impl IngestContext {
             f16_buf,
             key_bufs,
             resolve_overrides,
+            None,
             observer,
         )?;
         {

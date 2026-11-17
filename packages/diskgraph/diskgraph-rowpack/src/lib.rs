@@ -2927,6 +2927,7 @@ impl RowPackEncoder {
             f16_buf,
             key_bufs,
             None,
+            None,
             &mut NoOpObserver,
         )
     }
@@ -2948,6 +2949,8 @@ impl RowPackEncoder {
         // When `Some(slice)`, a non-`None` entry at column `idx` supplies the
         // resolved node-id(s) directly (see [`ResolveOverride`]).
         resolve_overrides: Option<&[ResolveOverride]>,
+        // Columns encoded as null whatever their value, indexed by column.
+        null_columns: Option<&[bool]>,
         observer: &mut O,
     ) -> Result<RowPackRowLens> {
         debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
@@ -2964,6 +2967,11 @@ impl RowPackEncoder {
         let mut bool_writer = BitWriterRef::new(bools);
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if null_columns.is_some_and(|nulls| nulls[idx]) {
+                observer.observe_null(idx);
+                tag_writer.write_bits(0, 2);
+                continue;
+            }
             let tag = match col.logical_type {
                 IngestedType::Bool => {
                     match access_or_parse_failure(access.get_bool(idx), idx, observer) {
