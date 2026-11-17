@@ -124,27 +124,27 @@ override-dependencies = ["fsspec[http]==2026.6.0"]
 # snowflake-connector-python 4.7.1+ (GHSA-5cc2-282f-jjq2 fix) caps pyarrow<24
 # on all Python 3.14 for a crash that only affects free-threaded 3.14t
 # (snowflakedb/snowflake-connector-python#2934). Kumo runs GIL 3.14 and
-# DiskGraph pins pyarrow 24, so this entry restates the 4.7.5 metadata without
-# the cap, pinning the connector at 4.7.5. To move it, copy the new release's
+# DiskGraph pins pyarrow 24, so this entry restates the 4.8.1 metadata without
+# the cap, pinning the connector at 4.8.1. To move it, copy the new release's
 # metadata here. Remove this entry before adopting free-threaded Python.
 [[tool.uv.dependency-metadata]]
 name = "snowflake-connector-python"
-version = "4.7.5"
-requires-python = ">=3.10"
+version = "4.8.1"
+requires-python = ">=3.11"
 provides-extras = ["boto", "azure", "development", "pandas", "secure-local-storage"]
 requires-dist = [
   "asn1crypto<2.0.0,>0.24.0",
   "cryptography>=46.0.5",
-  "pyOpenSSL>=24.0.0",
+  "pyOpenSSL>=25.3.0",
   "pyjwt<3.0.0,>=2.10.1",
   "pytz",
   "requests<3.0.0,>=2.32.4",
   "packaging",
   "charset_normalizer<4,>=2",
   "idna<4,>=3.7",
-  "certifi>=2024.7.4",
+  "certifi>=2026.10.18",
   "typing_extensions<5,>=4.3",
-  "filelock>=3.5",
+  "filelock<5,>=3.12",
   "sortedcontainers>=2.4.0",
   "platformdirs<5.0.0,>=2.6.0",
   "tomlkit",
