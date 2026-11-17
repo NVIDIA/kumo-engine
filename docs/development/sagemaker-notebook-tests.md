@@ -155,11 +155,12 @@ The suite uses account `926922431314`, region `us-west-2`, the existing
 GitHub authenticates with OIDC as `kumo-engine-sagemaker-test-runner`. Its trust
 accepts only this repository's `sagemaker-mlops-test` environment subject and
 `sts.amazonaws.com` audience. There is no AWS access-key secret. That environment
-must require maintainer-team approval, disable admin bypass, and allow only
-explicitly selected branches. Self-approval is permitted for debugging in this
-dedicated test environment. These server-side settings
-and the IAM trust enforce access; the branch-owned preflight is configuration lint.
-Only manual dispatch starts cloud work.
+allows only manual dispatches from `main`, requires independent
+`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and disables
+administrator bypass. The shared environment guard verifies these settings
+before the wheel build and again before AWS authentication. These server-side
+settings and the IAM trust enforce access; the branch-owned preflight is
+configuration lint. Trial branches, wildcards and tags are rejected.
 
 Account provisioning and IAM policy changes are administrator prerequisites
 managed outside this repository. The test runner uses existing resources; it
@@ -252,9 +253,7 @@ current-head Actions run; it has not yet been established for this branch.
 
 Actions validates the built wheel’s metadata before assuming AWS credentials.
 Execution rejects a runtime manifest whose `build.source_commit` does not match
-the committed product sources. Historical or mixed-source candidates cannot qualify. The workflow admits manual dispatch only when the protected environment allows
-the selected branch and a maintainer approves the deployment; the person who
-started the run may approve it in this dedicated test environment.
+the committed product sources. Historical or mixed-source candidates cannot qualify.
 The 150-minute job budget covers the bounded notebook, browser, startup,
 shutdown, and 10-minute terminal cleanup wait. Offline harness regressions can
 run locally without cloud credentials; automatic platform-regression CI remains
@@ -286,9 +285,3 @@ extending notebook execution. `Client.wait` enforces this deadline. Actions allo
 Native Studio save verification adds a unique markdown edit absent from the
 uploaded notebook, observes the dirty state, saves, and requires that edit after
 reopening in a fresh browser context.
-
-The SageMaker workflow accepts manual dispatches only from `main`. Its protected
-`sagemaker-mlops-test` environment allows only `main`, requires independent
-`NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and disables
-administrator bypass. The guard verifies these settings before the wheel build
-and again before AWS authentication; trial branches, wildcards and tags are rejected.

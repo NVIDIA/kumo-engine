@@ -493,6 +493,19 @@ const geometry = { x: [{value:1,pixel:100},{value:2,pixel:200}],
 assert.deepEqual(targetPosition(geometry,1.5,0.6),{x:150,y:260});
 historyPoint(observedCoordinates(geometry),1.5,0.6,['0.6']);
 assert.throws(() => historyPoint(observedCoordinates({...geometry,origin:{x:154,y:260}}),1.5,0.6,['0.6']));
+for (const range of [0.5, 2, 50, 5000]) {
+  for (const height of [300, 400]) {
+    const expected = range * 0.271828;
+    const axes = {x: geometry.x, y: [{value: 0, pixel: height}, {value: range, pixel: 0}]};
+    const target = targetPosition(axes, 1.5, expected);
+    const rounded = {...axes, origin: {x: target.x, y: Math.round(target.y * 100) / 100}};
+    historyPoint(observedCoordinates(rounded), 1.5, expected, [String(expected)]);
+    assert.throws(() => historyPoint(observedCoordinates({...rounded,
+      origin: {...rounded.origin, y: rounded.origin.y + 0.1}}), 1.5, expected, [String(expected)]));
+    const wrongLabel = expected + 2e-5 * Math.max(1, Math.abs(expected));
+    assert.throws(() => historyPoint(observedCoordinates(rounded), 1.5, expected, [String(wrongLabel)]));
+  }
+}
 const csv = 'run_id,key,value,step,timestamp\\nr,train/loss,0.75,1,0\\nr,train/loss,0.6,2,1';
 assert.deepEqual(historyCsv(csv,'r','train/loss',[[1,0.75],[2,0.6]]),[[1,0.75],[2,0.6]]);
 assert.throws(() => historyCsv(csv,'wrong','train/loss',[[1,0.75],[2,0.6]]));

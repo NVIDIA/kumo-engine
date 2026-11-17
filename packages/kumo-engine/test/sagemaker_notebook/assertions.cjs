@@ -88,10 +88,12 @@ function numericLabels(labels) {
 
 function historyPoint(rendered, step, expectedValue, labels) {
   const tolerance = 1e-5 * Math.max(1, Math.abs(expectedValue));
+  const valueTolerance = Math.max(tolerance, rendered.value_tolerance ?? 0);
   const stepTolerance = rendered.step_tolerance ?? 1e-3;
-  if (!Number.isFinite(stepTolerance) || stepTolerance > 0.02 || stepTolerance <= 0 ||
+  if (!Number.isFinite(valueTolerance) ||
+      !Number.isFinite(stepTolerance) || stepTolerance > 0.02 || stepTolerance <= 0 ||
       !Number.isFinite(rendered.step) || Math.abs(rendered.step - step) > stepTolerance ||
-      !Number.isFinite(rendered.value) || Math.abs(rendered.value - expectedValue) > tolerance ||
+      !Number.isFinite(rendered.value) || Math.abs(rendered.value - expectedValue) > valueTolerance ||
       !numericLabels(labels).some(value => Math.abs(value - expectedValue) <= tolerance)) {
     throw new VerificationError('Rendered epoch coordinates or tooltip differ from tracked history');
   }
@@ -131,10 +133,14 @@ function observedCoordinates(geometry) {
   function value([a, b], pixel) {
     return a.value + (pixel - a.pixel) * (b.value - a.value) / (b.pixel - a.pixel);
   }
-  const [a, b] = geometry.x;
+  function unitsPerPixel([a, b]) {
+    return Math.abs((b.value - a.value) / (b.pixel - a.pixel));
+  }
   return { step: value(geometry.x, geometry.origin.x),
     value: value(geometry.y, geometry.origin.y),
-    step_tolerance: Math.min(0.02, 2 * Math.abs((b.value - a.value) / (b.pixel - a.pixel))) };
+    step_tolerance: Math.min(0.02, 2 * unitsPerPixel(geometry.x)),
+    // Plotly rounds tick and marker positions to 0.01 px.
+    value_tolerance: 0.02 * unitsPerPixel(geometry.y) };
 }
 
 function historyCsv(content, run, metric, expected) {
