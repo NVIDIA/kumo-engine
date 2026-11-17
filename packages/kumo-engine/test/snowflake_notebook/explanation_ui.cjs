@@ -12,8 +12,21 @@ async function check(page, receipt, output, label, allowed) {
       report.refit.samples > 0 && report.bundle && report.bundle === report.refit.bundle,
     "Missing actual refit explanations and fresh-process model identity",
   );
+  const multiclass = report.multiclass;
+  requireThat(
+    multiclass?.status === "passed" && multiclass.fresh_process === "passed" &&
+      multiclass.bundle && multiclass.classes?.length === 3 &&
+      multiclass.invalid_selection === "passed" &&
+      multiclass.selected_classes?.length === 2 &&
+      new Set(multiclass.selected_classes).size === 2 &&
+      multiclass.selected_classes.every((name, index) =>
+        multiclass.classes.includes(name) &&
+        report.plots[`cohort-class-${index}`]?.class_name === name &&
+        report.plots[`cohort-class-${index}`]?.title.endsWith(` — ${name}`)),
+    "Missing distinct explicit-class cohort verification",
+  );
   const checks = {};
-  for (const kind of ["gradient", "cohort"]) {
+  for (const kind of ["gradient", "cohort", "cohort-class-0", "cohort-class-1"]) {
     const expected = report.plots[kind];
     requireThat(expected?.sha256?.png, "Missing explanation plot identity");
     let images;

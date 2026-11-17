@@ -112,7 +112,7 @@ async function readReceipt(frame, spec, target) {
     "sampled.html",
     "graph-result.json",
     "explanation-result.json", "explanation-run.tar.gz",
-    ...["gradient", "cohort"].flatMap(kind =>
+    ...["gradient", "cohort", "cohort-class-0", "cohort-class-1"].flatMap(kind =>
       ["png", "svg", "pdf"].map(suffix => `explanation-${kind}.${suffix}`)),
   ];
   requireThat(
@@ -127,7 +127,7 @@ async function readReceipt(frame, spec, target) {
     );
   requireThat(receipt.explanations?.status === "passed",
     "Real training explanations did not pass");
-  for (const kind of ["gradient", "cohort"])
+  for (const kind of ["gradient", "cohort", "cohort-class-0", "cohort-class-1"])
     for (const suffix of ["png", "svg", "pdf"])
       requireThat(receipt.uploaded[`explanation-${kind}.${suffix}`] ===
         receipt.explanations.plots[kind].sha256[suffix],

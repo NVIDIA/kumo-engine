@@ -241,7 +241,7 @@ def settings(root, *, register=False):
         on_error='raise')
 
 
-def graph(root, cutoff):
+def graph(root, cutoff, *, categorical=False):
     """Materialize only the events available at this snapshot's cutoff."""
     import numpy as np
     import pandas as pd
@@ -264,6 +264,9 @@ def graph(root, cutoff):
         pd.Timestamp('2024-01-01') +
         pd.to_timedelta(rng.integers(0, 120, 1500), unit='D'),
     })
+    if categorical:
+        events['KIND'] = np.array(['morning', 'afternoon',
+                                   'evening'])[events.EID % 3]
     events[events.TS < pd.Timestamp(cutoff)].to_parquet(data / 'events.parquet')
     connector = kumo.FileConnector(root_dir=str(data))
     return kumo.Graph(
@@ -326,8 +329,8 @@ def prediction_tracking(cfg, run, expected, *, root=None):
             'Prediction tracking records the wrong model/run identity')
 
 
-def small_plan(seed, trials=1):
-    plan = gpu_helpers().make_plan('binary')
+def small_plan(seed, trials=1, *, task='binary'):
+    plan = gpu_helpers().make_plan(task)
     plan.training_job.manual_seed = seed
     plan.training_job.num_experiments = trials
     plan.optimization.max_epochs = EPOCHS

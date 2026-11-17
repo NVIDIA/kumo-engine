@@ -64,8 +64,11 @@ def collect(receipt, spec, root, key_file):
                     f'explanation-{kind}.{suffix}') != digest:
                 raise ValueError(
                     'Uploaded explanation differs from verified export')
-    if set(explanations.get('plots', {})) != {'gradient', 'cohort'}:
-        raise ValueError('Both explanation plots are required')
+    if set(explanations.get('plots', {})) != {
+            'gradient', 'cohort', 'cohort-class-0', 'cohort-class-1'
+    }:
+        raise ValueError(
+            'Binary and class-selected explanation plots are required')
     root = Path(root)
     root.mkdir(mode=0o700, exist_ok=False)
     with launch.connect(key_file) as connection, connection.cursor() as cursor:

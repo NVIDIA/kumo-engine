@@ -258,7 +258,8 @@ def test_graph_collection_rejects_empty_retained_receipt(monkeypatch, tmp_path):
                         suffix: uploaded[f'explanation-{kind}.{suffix}']
                         for suffix in ('png', 'svg', 'pdf')
                     })
-                for kind in ('gradient', 'cohort')
+                for kind in ('gradient', 'cohort', 'cohort-class-0',
+                             'cohort-class-1')
             }), exports={
                 suffix: dict(sha256=uploaded['graph.' + suffix])
                 for suffix in ('svg', 'pdf', 'md')
