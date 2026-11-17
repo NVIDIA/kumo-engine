@@ -315,6 +315,11 @@ fn oversized_stage_rows_keep_their_task_columns_or_are_dropped() -> Result<()> {
         "dropped 1 row of stage table val_seeds still over the 64 MiB node-data limit \
          without features"
     ));
+    assert!(logs.contains(
+        "1 row of table train_seeds exceeded the 64 MiB node-data limit; \
+         their features are stored as null"
+    ));
+    assert!(!logs.contains("stored with no values"));
     let reader = GraphIndexReader::open(&extension.join("index_metadata.json"), &extension)?;
     let seeds = reader.table("train_seeds").unwrap();
     let row = seeds

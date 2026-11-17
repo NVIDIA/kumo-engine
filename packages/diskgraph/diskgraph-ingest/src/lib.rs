@@ -7870,10 +7870,14 @@ impl IngestContext {
                     }
                     let rows = |count: u64| if count == 1 { "row" } else { "rows" };
                     if oversized_rows > 0 {
+                        let leftover = if self.parent_index_path.is_some() {
+                            ""
+                        } else {
+                            ", and any still over the limit are stored with no values"
+                        };
                         tracing::warn!(
                             "{oversized_rows} {} of table {} exceeded the {} MiB node-data \
-                             limit; their features are stored as null, and any still over \
-                             the limit are stored with no values",
+                             limit; their features are stored as null{leftover}",
                             rows(oversized_rows),
                             table.name,
                             MAX_NODE_DATA_LEN >> 20
