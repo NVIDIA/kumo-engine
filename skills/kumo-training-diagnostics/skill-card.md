@@ -25,7 +25,7 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/diagnostics.md](references/diagnostics.md) <br>
+- [references/diagnostics.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-training-diagnostics/references/diagnostics.md) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 

@@ -320,11 +320,13 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   schema = pa.schema([(keep[f.name], anchor_type(f.type) if keep[f.name] == 'TIMESTAMP' else f.type)
                       for f in scanner.projected_schema])
 
-  def to_column(col, field):     # text in a non-ISO format parses with the entity's timestamp_format
-      if (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT
-              and (pa.types.is_string(col.type) or pa.types.is_large_string(col.type))):
+  def to_column(col, field):     # a cast reads ISO-8601 text; other text needs the entity's format
+      try:
+          return pc.cast(col, field.type)
+      except pa.ArrowInvalid:
+          if not (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT):
+              raise
           return pc.strptime(col, format=ENTITY_TIME_FORMAT, unit=field.type.unit)
-      return pc.cast(col, field.type)
 
   pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
   if isinstance(pop_fs, pyarrow.fs.LocalFileSystem):
@@ -351,7 +353,11 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. `ENTITY_TIME_FORMAT`
   is the `timestamp_format` the entity `Table` declares on its time column
   (`kumoai-reference/references/graph_construction.md`, *A time column must be a real date*), else
-  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The population is
+  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The cast runs
+  first, so ISO text staged as before, fractional seconds included; only text it cannot read is
+  parsed with the format. That format is Kumo's (chrono) syntax, and Arrow's parser rejects
+  `%.f`, `%-m` and `%:z`: if the parse then fails, report the format and the failing value rather
+  than guessing another format. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
   source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
   it, both in the config cell. Each run replaces its `population.parquet`, as Node 1d says. The

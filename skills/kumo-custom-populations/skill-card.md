@@ -25,7 +25,7 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/populations.md](references/populations.md) <br>
+- [references/populations.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-custom-populations/references/populations.md) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 

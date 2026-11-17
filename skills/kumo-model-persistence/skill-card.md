@@ -25,9 +25,9 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/reuse.md](references/reuse.md) <br>
-- [references/retention.md](references/retention.md) <br>
-- [scripts/retain_artifacts.py](scripts/retain_artifacts.py) <br>
+- [references/reuse.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-model-persistence/references/reuse.md) <br>
+- [references/retention.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-model-persistence/references/retention.md) <br>
+- [scripts/retain_artifacts.py](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-model-persistence/scripts/retain_artifacts.py) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 

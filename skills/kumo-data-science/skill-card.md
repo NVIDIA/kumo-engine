@@ -25,12 +25,12 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [accept/intake_contract.md](accept/intake_contract.md) <br>
-- [accept/preflight.md](accept/preflight.md) <br>
-- [accept/batch_inference.md](accept/batch_inference.md) <br>
-- [validate/atomic_question_check.md](validate/atomic_question_check.md) <br>
-- [hosts/generic/adapter.md](hosts/generic/adapter.md) <br>
-- [hosts/generic/runtime.md](hosts/generic/runtime.md) <br>
+- [accept/intake_contract.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/accept/intake_contract.md) <br>
+- [accept/preflight.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/accept/preflight.md) <br>
+- [accept/batch_inference.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/accept/batch_inference.md) <br>
+- [validate/atomic_question_check.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/validate/atomic_question_check.md) <br>
+- [hosts/generic/adapter.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/hosts/generic/adapter.md) <br>
+- [hosts/generic/runtime.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumo-data-science/hosts/generic/runtime.md) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 

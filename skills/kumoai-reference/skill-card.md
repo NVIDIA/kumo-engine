@@ -25,12 +25,12 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/graph_construction.md](references/graph_construction.md) <br>
-- [references/pql_writing.md](references/pql_writing.md) <br>
-- [references/kumo_finetuning_sdk.md](references/kumo_finetuning_sdk.md) <br>
-- [references/task_journeys.md](references/task_journeys.md) <br>
-- [references/outputs.md](references/outputs.md) <br>
-- [references/troubleshooting_signals.md](references/troubleshooting_signals.md) <br>
+- [references/graph_construction.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/graph_construction.md) <br>
+- [references/pql_writing.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/pql_writing.md) <br>
+- [references/kumo_finetuning_sdk.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/kumo_finetuning_sdk.md) <br>
+- [references/task_journeys.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/task_journeys.md) <br>
+- [references/outputs.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/outputs.md) <br>
+- [references/troubleshooting_signals.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/troubleshooting_signals.md) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 
