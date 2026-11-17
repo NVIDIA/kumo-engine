@@ -7,17 +7,18 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from torch_geometric.data import HeteroData
-from kumoapi.task import TaskType
 from kumo_core.encoders.target.numerical import NumericalTargetEncoder
 from kumo_core.explain.local_sensitivity import LocalSensitivity
 from kumo_core.explain.walk_attribution import WalkAttributionConfig
 from kumo_core.modeling.gnn.hetero import HeteroGNN
 from kumo_core.modeling.heads.node_prediction import NodePredHead
 from kumo_core.train.loss import MSELoss
+from kumoapi.task import TaskType
+from torch_geometric.data import HeteroData
+
 from kumo.engine.evidence import EvidenceConfig
-from kumo.engine.evidence.walks import WalkAttributionBundle, attribute_bundle
 from kumo.engine.evidence.bundle import EvidenceValidationError
+from kumo.engine.evidence.walks import WalkAttributionBundle, attribute_bundle
 
 
 def model():

@@ -10,10 +10,12 @@ import pandas as pd
 import pytest
 import torch
 from kumo_core.explain.walk_attribution import (
+    METHOD_MODULES,
     UnsupportedWalkAttribution,
     WalkAttributionConfig,
 )
 from kumo_core.explain.walk_graph import GraphCapture
+from kumo_core.explain.walk_schema import validate_v2_row
 from kumo_core.modeling.gnn.hetero import (
     HeteroGNN,
     HeteroLinear,
@@ -231,17 +233,36 @@ def test_multi_edge_gather_is_a_row_level_rejection(tmp_path):
         assert row['status'] == 'unsupported' and 'multiple incoming' in row['reason']
 
 
-def test_stub_methods_refuse_without_fallback(tmp_path):
-    for method in ('hetero_gnn_lrp_weight_gamma_v1', 'hetero_gnn_gi_degree_t_v1'):
-        module = binary_scoring_module()
+def test_every_method_refuses_or_explains_without_fallback(tmp_path):
+    """Method-agnostic: placeholder and implemented methods alike refuse an
+    out-of-profile module before hooks (raise) or record an `unsupported` row
+    of their own (record); on a module in profile, the row is always the
+    requested method's own. Predictions are never lost."""
+    reference = binary_scoring_module()
+    expected = float(emitted_frame(reference, reference.common_step().detach()).true_prob[0])
+    for method in METHOD_MODULES:
         config = WalkAttributionConfig(method=method)
-        with pytest.raises(UnsupportedWalkAttribution, match='not implemented'):
+        module = binary_scoring_module()
+        module.model.act = 'gelu'  # outside the shared operator profile
+        with pytest.raises(UnsupportedWalkAttribution):
             capture_record(module, tmp_path / f'{method}-raise', config)
+        assert no_hooks(module)
         captured = capture_record(module, tmp_path / f'{method}-record', config,
                                   on_unsupported='record')
         row = captured.record['walk_attribution']
-        assert row['status'] == 'unsupported' and row['method'] == method
-        assert no_hooks(module)
+        assert row['status'] == 'unsupported' and row['reason']
+        assert row['method'] == method and row['config'] == config.to_dict()
+        assert captured.record['prediction'] == expected and no_hooks(module)
+        module = binary_scoring_module()
+        captured = capture_record(module, tmp_path / f'{method}-in-profile', config,
+                                  on_unsupported='record')
+        row = captured.record['walk_attribution']
+        assert row['method'] == method and row['config'] == config.to_dict()
+        assert row['status'] in ('available', 'unsupported')
+        if row['status'] == 'available':
+            assert row['score'] == pytest.approx(9.0) and row['walks']
+            validate_v2_row(row, captured.sample)
+        assert captured.record['prediction'] == expected and no_hooks(module)
 
 
 # Invariance ###################################################################

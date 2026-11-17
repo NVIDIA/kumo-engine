@@ -4,16 +4,15 @@
 """Portable evidence inspection does not load or execute a model."""
 
 from kumo_core.explain.perturbation import RecordRemovalPlan
-
 from kumo_core.explain.walk_attribution import WalkAttributionConfig
 
-from .walks import WalkAttributionBundle
 from .bundle import (
     EvidenceConfig,
     EvidenceValidationError,
     PredictionEvidenceBundle,
     PredictionEvidenceSource,
 )
+from .walks import WalkAttributionBundle
 
 __all__ = [
     'WalkAttributionConfig',

@@ -461,7 +461,20 @@ def test_schema_selection_matrix():
         assert select_schema(config, task.value) == schema
 
 
-def test_registry_and_stub_methods_refuse_without_fallback():
+def out_of_profile():
+    """`fixture()` with an activation outside the shared operator profile,
+    which every registered method refuses (contract 7, ledger D10-1)."""
+    module = fixture()
+    module.model.act = 'gelu'
+    return module
+
+
+def no_hooks(module):
+    return all(not m._forward_hooks and not m._forward_pre_hooks for m in module.modules())
+
+
+def test_registry_and_method_protocol_without_fallback():
+    """Method-agnostic: holds for placeholder and implemented methods alike."""
     from kumo_core.explain.walk_attribution import (
         METHOD_MODULES,
         UnsupportedWalkAttribution,
@@ -470,36 +483,50 @@ def test_registry_and_stub_methods_refuse_without_fallback():
     assert set(METHOD_MODULES) == {'hetero_lrp_gamma_reference_v1',
                                    'hetero_gnn_lrp_weight_gamma_v1',
                                    'hetero_gnn_gi_degree_t_v1'}
-    for method in METHOD_MODULES:
-        module = method_module(method)
-        assert module.METHOD_ID == method
+    modules = {method: method_module(method) for method in METHOD_MODULES}
+    # One implementation per ID: no ID resolves to another method's module.
+    assert len({id(module) for module in modules.values()}) == len(modules)
+    unsupported = out_of_profile()
+    for method, module in modules.items():
+        assert module.METHOD_ID == method and module is method_module(method)
         for name in ('qualify', 'make_rule', 'summarize', 'validate_row'):
             assert callable(getattr(module, name))
-    for method in ('hetero_gnn_lrp_weight_gamma_v1', 'hetero_gnn_gi_degree_t_v1'):
-        stub = method_module(method)
-        config = WalkAttributionConfig(method=method)
-        for call in (lambda: stub.qualify(fixture(), config),
-                     lambda: stub.make_rule(None, None, config),
-                     lambda: stub.summarize(None, None, config, None),
-                     lambda: stub.validate_row({})):
-            with pytest.raises(UnsupportedWalkAttribution,
-                               match=f'^{method} is not implemented$'):
-                call()
+        # Refused by the method itself, before hooks and without mutation,
+        # never by falling back to another rule.
+        with pytest.raises(UnsupportedWalkAttribution):
+            module.qualify(unsupported, WalkAttributionConfig(method=method))
+        assert no_hooks(unsupported) and unsupported.model.act == 'gelu'
     with pytest.raises(ValueError, match='Unknown'):
         method_module('hetero_lrp_mystery_v1')
 
 
 def test_inspection_with_a_method_config_has_no_hooks():
-    from kumo_core.explain.walk_attribution import inspect_walk_capability
+    from kumo_core.explain.walk_attribution import (
+        METHOD_MODULES,
+        inspect_walk_capability,
+    )
+    from kumo_core.explain.walk_graph import architecture_record
     module = fixture()
     report = inspect_walk_capability(module, config=WalkAttributionConfig())
     assert report['supported'] and report['method'] == 'hetero_lrp_gamma_reference_v1'
     assert 'hetero_gnn' in report['qualification']
     assert report['architecture']['gnn_bias'] and report['architecture']['head_bias']
-    stub = inspect_walk_capability(
-        module, config=WalkAttributionConfig(method='hetero_gnn_gi_degree_t_v1'))
-    assert not stub['supported'] and 'not implemented' in stub['reason']
-    assert all(not m._forward_hooks and not m._forward_pre_hooks for m in module.modules())
+    unsupported = out_of_profile()
+    for method in METHOD_MODULES:
+        config = WalkAttributionConfig(method=method)
+        refused = inspect_walk_capability(unsupported, config=config)
+        assert refused['method'] == method and refused['config'] == config.to_dict()
+        assert not refused['supported'] and refused['reason']
+        assert 'architecture' not in refused
+        # Whatever a method decides for the fixture, the report says why.
+        report = inspect_walk_capability(module, config=config)
+        assert report['method'] == method and report['config'] == config.to_dict()
+        if report['supported']:
+            assert report['qualification']
+            assert report['architecture'] == architecture_record(module)
+        else:
+            assert report['reason'] and 'architecture' not in report
+    assert no_hooks(module) and no_hooks(unsupported)
     with pytest.raises(TypeError):
         inspect_walk_capability(module, config={'gamma': 0.0})
 

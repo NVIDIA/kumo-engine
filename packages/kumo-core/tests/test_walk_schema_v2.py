@@ -15,7 +15,10 @@ from kumoapi.typing import ColStatType
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.explain.walk_attribution import (
     DEGREE_T_METHOD,
+    LEGACY_METHOD,
+    METHOD_MODULES,
     WEIGHT_GAMMA_METHOD,
+    UnsupportedWalkAttribution,
     WalkAttributionConfig,
 )
 from kumo_core.explain.walk_binary import (
@@ -229,41 +232,60 @@ def test_binding_with_the_retained_graph(row):
         validate_v2_row(row, sample)
 
 
+def no_hooks(module):
+    return all(not m._forward_hooks and not m._forward_pre_hooks for m in module.modules())
+
+
 def test_rows_without_explanations():
-    config = WalkAttributionConfig(method=WEIGHT_GAMMA_METHOD)
+    """Method-agnostic: every method refuses an out-of-profile module before
+    hooks, and its rows without explanations validate."""
     module = b1_module()
-    cap = GraphCapture(module, config)
-    with pytest.raises(Exception):
-        cap.__enter__()
-    unsupported = {'schema': 'walk_attribution/v2', 'status': 'unsupported',
-                   'reason': f'{WEIGHT_GAMMA_METHOD} is not implemented',
+    module.model.act = 'gelu'  # outside the shared operator profile
+    for method in METHOD_MODULES:
+        config = WalkAttributionConfig(method=method)
+        cap = GraphCapture(module, config)
+        with pytest.raises(UnsupportedWalkAttribution):
+            cap.__enter__()
+        assert no_hooks(module)
+        other = next(m for m in METHOD_MODULES if m != method)
+        for status in ('unsupported', 'failed'):
+            row = {'schema': 'walk_attribution/v2', 'status': status,
+                   'reason': 'activation outside the walk profile',
                    'origin': 'original_forward_attribution', 'prediction_id': ID,
-                   'sample_sha256': SAMPLE_ID, 'method': WEIGHT_GAMMA_METHOD,
-                   'config': config.to_dict()}
-    validate_v2_row(unsupported)
-    with pytest.raises(WalkSchemaError):
-        validate_v2_row({**unsupported, 'walks': [{}]})
-    with pytest.raises(WalkSchemaError):
-        validate_v2_row({**unsupported, 'reason': ''})
+                   'sample_sha256': SAMPLE_ID, 'method': method, 'config': config.to_dict()}
+            validate_v2_row(row)
+            for broken in ({**row, 'walks': [{}]}, {**row, 'reason': ''},
+                           {**row, 'method': other}):
+                with pytest.raises(WalkSchemaError):
+                    validate_v2_row(broken)
 
 
-def test_stub_method_row_is_unsupported_without_hooks():
+def test_every_method_row_is_unsupported_on_an_out_of_profile_graph():
+    """A multi-edge primary-key gather is refused by the shared capture for
+    every method: an `unsupported` row of that method, no fallback, no hooks."""
     module = b1_module()
-    config = WalkAttributionConfig(method=DEGREE_T_METHOD)
-    batch = b1_batch()
+    x, edges, nodes, sampled = b1_batch()
+    edges[ART_REV] = torch.tensor([[0, 0], [0, 0]])  # two gathers into transaction 0
+    sampled = {**sampled, ART_REV: [0, 2]}
     cap = GraphCapture(module, WalkAttributionConfig())
     with cap:
-        logits = b1_forward(module, batch)
+        logits = b1_forward(module, (x, edges, nodes, sampled))
     selection = Selection('regression', 0, 1, None)
-    row = explain_capture(cap, config=config, selection=selection,
-                          output=output_block(selection, module, logits[0]),
-                          sample=b1_sample(), origin='original_forward_attribution',
-                          prediction_id=ID, sample_sha256=SAMPLE_ID,
-                          numerics=row_numerics(NUMERICS, 'float64'))
-    assert row['status'] == 'unsupported'
-    assert row['reason'] == f'{DEGREE_T_METHOD} is not implemented'
-    validate_v2_row(row)
-    assert all(not m._forward_hooks and not m._forward_pre_hooks for m in module.modules())
+    for method in METHOD_MODULES:
+        config = WalkAttributionConfig(method=method)
+        row = explain_capture(cap, config=config, selection=selection,
+                              output=output_block(selection, module, logits[0]),
+                              sample=b1_sample(), origin='original_forward_attribution',
+                              prediction_id=ID, sample_sha256=SAMPLE_ID,
+                              numerics=row_numerics(NUMERICS, 'float64'))
+        assert row['status'] == 'unsupported' and row['method'] == method
+        assert row['config'] == config.to_dict()
+        assert row['reason'] == 'PK gather has multiple incoming occurrences'
+        assert 'walks' not in row
+        assert row['output']['head_output'] == float(logits[0, 0].detach())
+        validate_v2_row(row)
+        json.dumps(row, allow_nan=False)
+    assert no_hooks(module)
 
 
 def test_budget_exhaustion_reports_display_and_search_omissions():
@@ -622,3 +644,55 @@ def test_row_step_key_is_the_step_key_of_the_serialized_route():
     assert sorted(serialized) == sorted(walk_key(walk.steps) for walk in enumeration.walks)
     kinds = {key[1] for walk in serialized for key in walk}
     assert kinds == {'relation', 'self_update'}
+
+
+# Failed rows of a nonfinite model output stay strict JSON (contract 4.2) #####
+
+# A nonfinite layer-2 weight: +inf and nan reach the logit; ReLU turns -inf
+# into a finite logit of 0 while the relevance is still not finite.
+@pytest.mark.parametrize('value,finite_logit', [(math.inf, False), (math.nan, False),
+                                                (-math.inf, True)])
+def test_failed_rows_with_nonfinite_values_are_strict_json(value, finite_logit):
+    for module, config in ((b1_module(), WalkAttributionConfig()),
+                           (binary_b1(), WalkAttributionConfig(selected_class=False))):
+        with torch.no_grad():
+            module.model.hetero_convs[1][FK].lin.weight.fill_(value)
+        row = row_for(module, config)
+        assert row['status'] == 'failed' and row['method'] == LEGACY_METHOD
+        output = row['output']
+        assert (output['head_output'] is not None) == finite_logit
+        if output['binary'] is not None:
+            assert (output['binary']['selected_logit'] is not None) == finite_logit
+        json.dumps(row, allow_nan=False)
+        validate_v2_row(row)
+
+
+# Legacy v2 rows report the head sign inversion (ledger D11) #################
+
+def test_legacy_rows_carry_the_head_inversion_diagnostic(row, binary_row):
+    for built in (row, binary_row):
+        diagnostics = built['diagnostics'][LEGACY_METHOD]
+        assert sorted(diagnostics) == ['head_output_denominator', 'head_output_flipped']
+        assert type(diagnostics['head_output_denominator']) is float
+        assert diagnostics['head_output_flipped'] is False  # gamma 0: S is the folded logit
+        assert diagnostics['head_output_denominator'] == pytest.approx(built['score'],
+                                                                       abs=1e-12)
+        validate_v2_row(json.loads(json.dumps(built, allow_nan=False)), b1_sample())
+
+
+LEGACY_DIAGNOSTIC_MUTATIONS = {
+    'missing': lambda r: r.update(diagnostics=None),
+    'extra_key': lambda r: r['diagnostics'][LEGACY_METHOD].update(margin=1.0),
+    'flag_disagrees': lambda r: r['diagnostics'][LEGACY_METHOD].update(head_output_flipped=True),
+    'flag_type': lambda r: r['diagnostics'][LEGACY_METHOD].update(head_output_flipped=0),
+    'denominator_type': lambda r: r['diagnostics'][LEGACY_METHOD].update(
+        head_output_denominator=1),
+    'denominator_sign': lambda r: r['diagnostics'][LEGACY_METHOD].update(
+        head_output_denominator=-r['diagnostics'][LEGACY_METHOD]['head_output_denominator']),
+}
+
+
+@pytest.mark.parametrize('name', sorted(LEGACY_DIAGNOSTIC_MUTATIONS))
+def test_legacy_head_inversion_mutations_are_rejected(row, name):
+    with pytest.raises(WalkSchemaError):
+        validate_v2_row(mutate(row, LEGACY_DIAGNOSTIC_MUTATIONS[name]), b1_sample())

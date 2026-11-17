@@ -167,13 +167,31 @@ def coordinate(selection):
 
 def minimal_row(status, reason, *, config, origin, prediction_id, sample_sha256,
                 **extra):
-    """An `unsupported` or `failed` row: identity, method and config (4.2)."""
+    """An `unsupported` or `failed` row: identity, method and config (4.2).
+
+    Context fields such as `output` keep their shape, but a nonfinite number
+    (for example the head output of a model whose logit is infinite) becomes
+    null, so every row stays strict JSON.
+    """
     row = {'schema': SCHEMA_V2, 'status': status, 'reason': reason,
            'origin': origin, 'prediction_id': prediction_id,
            'sample_sha256': sample_sha256, 'method': config.method,
            'config': config.to_dict()}
-    row.update({key: value for key, value in extra.items() if value is not None})
+    row.update({key: _finite_or_null(value) for key, value in extra.items()
+                if value is not None})
     return row
+
+
+def _finite_or_null(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite_or_null(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite_or_null(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_finite_or_null(item) for item in value)
+    return value
 
 
 def build_row(computation, enumeration, summary, *, config, selection, output,

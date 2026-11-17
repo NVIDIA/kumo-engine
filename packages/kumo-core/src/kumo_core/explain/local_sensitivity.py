@@ -636,7 +636,7 @@ class LocalSensitivity:
             decoded = module.target_encoder.decode_tensor(
                 module.loss.to_prediction(logits))
             prediction = _plain(decoded.reshape(-1)[0])
-        record = {
+        record: dict[str, Any] = {
             **identity, 'prediction_id': prediction_id,
             'prediction': prediction,
             'origin': 'original_forward',

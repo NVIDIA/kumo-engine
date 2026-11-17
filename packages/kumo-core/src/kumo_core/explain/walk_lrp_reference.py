@@ -16,6 +16,11 @@ decomposition, never a degree-T decomposition.
 `GammaLRPRule`, `lrp_qualify`, `lrp_summary` and `validate_lrp_row` are the
 shared LRP skeleton: a rule differs only in `modified_contribution`, the
 gamma-modified contribution of one linear input.
+
+v2 rows of this rule carry the head sign-inversion diagnostic of ledger D11
+under `diagnostics[METHOD_ID]`, with the field names of the weight-gamma rule:
+`head_output_denominator` and `head_output_flipped` (`head_inversion`).
+v1 rows are unchanged.
 """
 import math
 
@@ -26,6 +31,7 @@ from kumo_core.explain.walk_enumerate import Absorbed
 from kumo_core.explain.walk_graph import F64, structural_qualification
 
 METHOD_ID = LEGACY_METHOD
+HEAD_DIAGNOSTIC_KEYS = ('head_output_denominator', 'head_output_flipped')
 
 
 def lrp_qualify(module, config):
@@ -92,6 +98,21 @@ class GammaLRPRule:
 
     def modified_bias(self, bias):
         return bias + self.gamma * bias.clamp(min=0)
+
+    def head_output_denominator(self):
+        """The folded, gamma-modified total `S` of the selected output before
+        epsilon, formed exactly as `start` forms it at the last head linear."""
+        table, seed = self.computation.seed
+        op = self.computation.head[-1]
+        weight, b = op.weight[table].clone(), op.bias[table]
+        weight[self.output_index] *= self.sign
+        total = torch.zeros(weight.size(0), dtype=F64)
+        total += self.modified_contribution(op.input[table][seed], weight, 1).sum(0)
+        if b is not None:
+            b = b.clone()
+            b[self.output_index] *= self.sign
+            total += self.modified_bias(b)
+        return float(total[self.output_index])
 
     def _split(self, contributions, biases, relevance, kind):
         children, shares, residual = epsilon_split(
@@ -196,8 +217,39 @@ def lrp_summary(computation, config, enumeration, gamma_rule, diagnostics=None):
     return summary
 
 
+def head_inversion(rule):
+    """Ledger D11 head sign inversion of an LRP rule.
+
+    `head_output_denominator` is `S` (`GammaLRPRule.head_output_denominator`);
+    `head_output_flipped` is true when the selected logit is nonzero and `S`
+    has the other sign (`S = 0` counts as positive), so every share of the
+    output step is inverted. This can happen for negative selected logits
+    when `gamma > 0`. None when `S` is not finite.
+    """
+    denominator = rule.head_output_denominator()
+    if not math.isfinite(denominator):
+        return None
+    score = rule.score
+    return {'head_output_denominator': denominator,
+            'head_output_flipped': bool(score != 0 and (denominator >= 0) != (score > 0))}
+
+
+def validate_head_inversion(diagnostics, score):
+    """Types and consistency of a `head_inversion` record (not its value: a
+    tiny logit can change sign between the capture and float64)."""
+    from kumo_core.explain.walk_schema import WalkSchemaError
+    denominator = diagnostics['head_output_denominator']
+    flipped = diagnostics['head_output_flipped']
+    if not (type(denominator) is float and type(flipped) is bool
+            and flipped == (score != 0 and (denominator >= 0) != (score > 0))):
+        raise WalkSchemaError('head_output_flipped follows the head denominator '
+                              'and the selected logit')
+
+
 def summarize(computation, selection, config, enumeration):
-    return lrp_summary(computation, config, enumeration, ContributionGammaRule.gamma_rule)
+    rule = ContributionGammaRule(computation, selection, config)
+    return lrp_summary(computation, config, enumeration, ContributionGammaRule.gamma_rule,
+                       diagnostics=head_inversion(rule))
 
 
 def validate_lrp_row(row, gamma_rule):
@@ -215,4 +267,9 @@ def validate_lrp_row(row, gamma_rule):
 
 
 def validate_row(row):
+    from kumo_core.explain.walk_schema import WalkSchemaError
     validate_lrp_row(row, ContributionGammaRule.gamma_rule)
+    diagnostics = (row['diagnostics'] or {}).get(METHOD_ID)
+    if not isinstance(diagnostics, dict) or sorted(diagnostics) != sorted(HEAD_DIAGNOSTIC_KEYS):
+        raise WalkSchemaError('Legacy v2 rows carry the head inversion diagnostic')
+    validate_head_inversion(diagnostics, row['score'])

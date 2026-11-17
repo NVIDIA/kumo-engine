@@ -553,11 +553,14 @@ class WalkComputation:
 
     # Validation ------------------------------------------------------------
     def _check_layer(self, t, layer, capture):
-        sources = capture.h0 if t == 1 and not capture.preprocess else None
-        if t == 1 and capture.preprocess:
-            sources = capture.preprocess[-1]['post']
-        elif t > 1:
+        if t > 1:
             sources = capture.layers[t - 2].post
+        elif capture.preprocess:
+            sources = capture.preprocess[-1]['post']
+        else:
+            sources = capture.h0
+        if sources is None:  # callers check every earlier capture first
+            raise ValueError(f'Incomplete capture before layer {t}')
         for relation in layer.relations:
             src, _, dst = relation.relation
             full = capture.full_edges.get(relation.relation)

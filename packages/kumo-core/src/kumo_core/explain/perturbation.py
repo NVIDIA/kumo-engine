@@ -147,7 +147,7 @@ def remove_record(sample: dict, group: dict, plan: RecordRemovalPlan) -> dict:
 def reconstruct_batch(sample: dict) -> HeteroData:
     """Restore only supported, non-executable tensor payloads."""
     batch = HeteroData()
-    batch.input_type = sample['seed_table']
+    setattr(batch, 'input_type', sample['seed_table'])
     for table, node in sample['nodes'].items():
         frame, columns = {}, {}
         for name, feature in node['feature_tensors'].items():

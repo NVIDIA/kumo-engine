@@ -265,3 +265,73 @@ def test_selected_output_and_seed_of_a_multiseed_forward():
         sorted(w['relevance'] for w in v1['walks']), rel=1e-12)
     assert close(math.fsum(enumeration.bias.values()), v1['bias_relevance'])
     assert v1['score'] == float(computation.head_output[1]) == -3 * 6 + 4
+
+
+# Head sign inversion (ledger D11) ###########################################
+
+def inversion_module():
+    """x = (1, 1) through identity roots and head weight (3, -3.5): z = -0.5.
+
+    Contribution gamma at the output: z_j = (3, -3.5) becomes (3.75, -3.5)
+    at gamma 0.25, so S = 0.25 has the other sign than the logit and every
+    share of the output step is inverted. With s = -1, z_j = (-3, 3.5) becomes
+    (-3, 4.375) and S = 1.375 keeps the sign of the selected logit 0.5.
+    """
+    module = torch.nn.Module()
+    module.entity_table_name = 'entities'
+    module.model = HeteroGNN(channels=2, num_mp_layers=1, metadata=(['entities'], []),
+                             aggr='sum', act=None, norm=None, bias=False, learn_skip=False)
+    module.head = NodePredHead(2, 1, num_layers=1, norm=None, param_keys=[], bias=False)
+    module.double().eval()
+    with torch.no_grad():
+        module.head.mlp.lins[0].weight.copy_(torch.tensor([[3.0, -3.5]]))
+    x = {'entities': torch.tensor([[1.0, 1.0]], dtype=F64)}
+    return module, lambda: module.head(module.model(dict(x), {})['entities'])
+
+
+@pytest.mark.parametrize('gamma,sign,denominator,flipped,vector', [
+    (0.0, 1, -0.5, False, (3.0, -3.5)),
+    (0.25, 1, 0.25, True, (-7.5, 7.0)),
+    (0.0, -1, 0.5, False, (-3.0, 3.5)),
+    (0.25, -1, 1.375, False, (-3 / 1.375 * 0.5, 4.375 / 1.375 * 0.5)),
+])
+def test_head_inversion_hand_values(gamma, sign, denominator, flipped, vector):
+    module, run = inversion_module()
+    config = WalkAttributionConfig(gamma=gamma, epsilon=1e-12)
+    computation, enumeration = v2_enumeration(module, run, config, sign=sign)
+    selection = Selection('regression', 0, sign, None)
+    assert make_rule(computation, selection, config).head_output_denominator() == denominator
+    summary = summarize(computation, selection, config, enumeration)
+    assert summary['diagnostics'] == {'head_output_denominator': denominator,
+                                      'head_output_flipped': flipped}
+    (walk, ) = enumeration.walks
+    assert close(walk.relevance, sign * -0.5, rel=1e-9)
+    # An inverted output step gives the input that raised the logit negative relevance.
+    assert all(abs(a - b) <= 1e-9 for a, b in zip(walk.input_relevance.tolist(), vector))
+
+
+def test_head_inversion_uses_the_rule_denominator_of_the_output_step():
+    """`head_output_denominator` is the total `epsilon_split` divides by at
+    the selected output, for the legacy rule and for any skeleton subclass."""
+    class WeightLike(GammaLRPRule):
+        gamma_rule = 'weight'
+
+        def modified_contribution(self, inputs, weight, denominator):
+            return inputs[:, None] * (weight + self.gamma * weight.clamp(min=0)).T / denominator
+
+    module, run = random_b1(seed=3, head_layers=2, head_bias=True)
+    config = WalkAttributionConfig(gamma=0.25)
+    cap, _ = capture(module, run)
+    computation = cap.computation()
+    for sign in (1, -1):
+        selection = Selection('regression', 0, sign, None)
+        for rule in (make_rule(computation, selection, config),
+                     WeightLike(computation, selection, config)):
+            table, seed = computation.seed
+            op = computation.head[-1]
+            weight, bias = op.weight[table].clone(), op.bias[table].clone()
+            weight[0] *= sign
+            bias[0] *= sign
+            total = (rule.modified_contribution(op.input[table][seed], weight, 1).sum(0)
+                     + rule.modified_bias(bias))
+            assert rule.head_output_denominator() == float(total[0])

@@ -61,10 +61,10 @@ from kumo.engine.connector import (
 )
 from kumo.engine.evidence import (
     EvidenceConfig,
-    WalkAttributionConfig,
-    WalkAttributionBundle,
     PredictionEvidenceBundle,
     RecordRemovalPlan,
+    WalkAttributionBundle,
+    WalkAttributionConfig,
 )
 from kumo.engine.explain.errors import (
     ExplanationUnavailableError,
@@ -92,8 +92,11 @@ from kumo.engine.uncertainty import (
     CalibrationSpec,
     PredictionIntervalCalibrator,
 )
-# Engine-local training option. It must follow `_quiet`, which imports PyG
-# without its FutureWarning, so isort must not hoist it.
+
+# Load-bearing order: `kumo_core.training.orchestration` imports
+# `torch_geometric.nn`, so this import must follow `_quiet`, which imports PyG
+# under a filter for its unactionable `torch.jit.script` FutureWarning; sorted
+# among the third-party imports above it would run first.
 from kumo_core.training.orchestration import BiasOptions  # isort: skip
 
 __all__ = [
