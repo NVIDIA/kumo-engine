@@ -180,8 +180,9 @@ no value overlap checks, no joins executed.
   `positive_interaction`, `recommended_item`, `positive_label_condition` or `time_window`
   missing, ask for them first — do not read them off the schema.
 - **`table_mode: all-connected [default]`** — every table reachable from the seeds through the
-  proposed links is included. List any table that is **not** reachable so the user can drop it
-  or name a link.
+  proposed links is included, except a table the availability pass excludes as a whole
+  (`SKILL.md` Node 1c: cumulative or end-of-extract values with no earlier versions). List any
+  table that is **not** reachable so the user can drop it or name a link.
 - If the seeds themselves cannot be connected through inferred links, say so and **generate
   nothing** — connecting them would require creating or transforming data.
 
@@ -203,6 +204,10 @@ Links
 - fraud_events.CUSTOMER_ID -> customers.CUSTOMER_ID [inferred]
 - ...
 
+Excluded tables
+- customer_fraud_totals [inferred] — lifetime counts and last-fraud dates as of the extract, no
+  earlier versions; fraud_events carries the same history as dated events
+
 Excluded columns
 - fraud_events.RESOLVED_AT [inferred] — not knowable at the row's EVENT_AT
 - fraud_events.DAYS_TO_RESOLVE [inferred] — duration of an interval that has not ended yet
@@ -216,8 +221,8 @@ Not found
 Confirm, or correct any line (your values take precedence).
 ```
 
-`Excluded columns` and `Not found` are local availability-gate extensions to the confirmation
-format.
+`Excluded tables`, `Excluded columns` and `Not found` are local availability-gate extensions to the
+confirmation format.
 
 ## 9. Never
 
@@ -225,7 +230,9 @@ format.
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
   solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
   result is reported and then discarded; it is never written anywhere and never reaches training.
-- Rank tables by relevance or drop tables the user did not ask to drop.
+- Rank tables by relevance or drop tables the user did not ask to drop. Excluding a table of
+  cumulative or end-of-extract values (`SKILL.md` Node 1c) is an availability exclusion, not a
+  relevance call: propose it under `Excluded tables` at the gate, where the user can overturn it.
 - Proceed to PQL before the proposal is confirmed.
 - Ask the user for columns, types, keys or joins — with one exception: when §0 finds you cannot
   read the source, offering to take its structure from the user is the §0 ask-back. Whatever the
