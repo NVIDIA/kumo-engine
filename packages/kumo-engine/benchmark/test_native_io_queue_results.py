@@ -22,7 +22,9 @@ from native_io_queue_results import (
     REQUEUE,
     UNKNOWN,
     reconstruct,
+    unknown_details,
     validate_collection,
+    validate_unknown,
 )
 
 
@@ -71,6 +73,59 @@ def fixture_record():
                               format=EVENT.format), capture_end_ns=200,
                   derived=reconstruct(raw, 7, clients, 100, 200))
     return raw, row, gate, record
+
+
+def test_unknown_metadata_remains_fatal():
+    value = event(UNKNOWN, 35, pointer=0xffff0000, generation=12, cgroup=0x1201,
+                  operation=1, phase=2, entering=0xfffffff4)
+    raw, clients = sample([value])
+    details = unknown_details(raw, 1)
+    assert details == [dict(timestamp_ns=35, pointer=0xffff0000, start_time_ns=12,
+                            cmd_flags=0x1201, rq_flags=2, remaining_bytes=0,
+                            operation=1, kernel_stack_id=-12, pid=100, cpu=0, sequence=5)]
+    with pytest.raises(ValueError, match='Left-censored/untracked'):
+        reconstruct(raw, 7, clients, 100, 200)
+
+
+@pytest.mark.parametrize('version', [None, 0, True, 2])
+def test_unknown_requires_explicit_encoding(version):
+    with pytest.raises(ValueError, match='encoding'):
+        unknown_details(b'', version)
+
+
+@pytest.mark.parametrize('field,value', [(3, 1 << 32), (4, 1 << 32), (6, 2), (8, 128)])
+def test_unknown_metadata_width_and_stack_bounds(field, value):
+    item = event(UNKNOWN, 30, cgroup=1, operation=1, entering=0)
+    item[field] = value
+    with pytest.raises(ValueError, match='UNKNOWN'):
+        unknown_details(EVENT.pack(*item), 1)
+
+
+def test_unknown_saved_raw_binding():
+    raw, row, gate, record = fixture_record()
+    record['unknown_encoding_version'] = record['ready']['unknown_encoding_version'] = 1
+    record['unknown_provenance'] = dict(encoding_version=1, stack_capacity=128,
+                                        events=[], stacks={}, symbols={}, stack_errors=[])
+    validate_collection(record, row, gate, raw)
+    record['unknown_provenance']['events'] = [dict(operation=1)]
+    with pytest.raises(ValueError, match='UNKNOWN provenance'):
+        validate_collection(record, row, gate, raw)
+
+
+def test_unknown_saved_stack_binding():
+    raw, _ = sample([event(UNKNOWN, 3, cgroup=1, operation=1, entering=7)])
+    record = dict(ready=dict(unknown_encoding_version=1), unknown_encoding_version=1,
+                  unknown_provenance=dict(encoding_version=1, stack_capacity=128,
+                                          events=unknown_details(raw, 1), stacks={'7': [1234]},
+                                          symbols={'1234': 'blk_mq_end_request'}, stack_errors=[]))
+    validate_unknown(record, raw)
+    record['unknown_provenance']['stacks']['7'] = []
+    with pytest.raises(ValueError, match='no kernel PCs'):
+        validate_unknown(record, raw)
+    record['unknown_provenance']['stacks']['7'] = [1234]
+    record['unknown_provenance']['stacks']['8'] = [5678]
+    with pytest.raises(ValueError, match='referenced stacks'):
+        validate_unknown(record, raw)
 
 
 def test_analytic_overlap_and_phase_clip():

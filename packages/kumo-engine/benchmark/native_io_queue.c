@@ -40,6 +40,7 @@ struct trace_state {
 };
 BPF_HASH(requests, u64, struct request_state, REQUEST_CAPACITY);
 BPF_HASH(flush_tokens, u64, struct flush_token, REQUEST_CAPACITY);
+BPF_STACK_TRACE(unknown_stacks, 128);
 BPF_PERCPU_ARRAY(sequence, u64, 1);
 BPF_PERCPU_ARRAY(diagnostics, u64, 10);
 BPF_ARRAY(state, struct trace_state, 1);
@@ -141,6 +142,24 @@ static __always_inline void emit(void *ctx, u32 kind, u64 pointer,
     if (events.perf_submit(ctx, &value, sizeof(value))) diagnostic(6);
 }
 
+static __always_inline void emit_unknown(void *ctx, u64 pointer, u32 operation) {
+    u32 cmd_flags = 0, rq_flags = 0, remaining = 0;
+    struct request_state metadata = {};
+    if (read32(pointer, OFF_REQUEST_CMD_FLAGS, &cmd_flags) ||
+        read32(pointer, OFF_REQUEST_RQ_FLAGS, &rq_flags) ||
+        read32(pointer, OFF_REQUEST_DATA_LEN, &remaining) ||
+        read64(pointer, OFF_REQUEST_START_TIME_NS, &metadata.generation)) return;
+    /* UNKNOWN encoding v1: these are diagnostic fields, never ownership,
+     * completed bytes, or a proved request lifecycle. Preserve negative stack
+     * errors as signed-u32 bits; only this rejected branch collects stacks. */
+    metadata.cgroup = cmd_flags;
+    metadata.bytes = remaining;
+    metadata.operation = operation;
+    metadata.attribution_flags = rq_flags;
+    int stack = unknown_stacks.get_stackid(ctx, 0);
+    emit(ctx, 8, pointer, &metadata, 0, (u32)stack, bpf_ktime_get_ns());
+}
+
 RAW_TRACEPOINT_PROBE(block_rq_issue) {
     if (!enabled()) return 0;
     u64 pointer = ctx->args[0];
@@ -223,7 +242,7 @@ static __always_inline int remove_request(void *ctx, u64 pointer, u32 kind) {
         /* A request merged before its first issue never occupied dispatched
          * depth and need not have an entry in our issue-started lifecycle. */
         if (kind != 5 && device_request(pointer, &operation))
-            emit(ctx, 8, pointer, 0, 0, 0, bpf_ktime_get_ns());
+            emit_unknown(ctx, pointer, operation);
         return 0;
     }
     if (kind == 5 && value->bytes) diagnostic(4);

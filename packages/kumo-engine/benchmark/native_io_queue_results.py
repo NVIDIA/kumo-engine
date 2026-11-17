@@ -17,6 +17,8 @@ EVENT = struct.Struct('<QQQQQIIIIIIQ')
 ISSUE, FINAL, REQUEUE, REISSUE, MERGE, MARK, ANCHOR, UNKNOWN = range(1, 9)
 END, LOGICAL_FLUSH, FLUSH_TOKEN = 9, 10, 11
 FLUSH_SEQ_MASK = 2  # Collector rejects BTF layouts where __RQF_FLUSH_SEQ != 1.
+UNKNOWN_ENCODING = 1
+UNKNOWN_STACK_CAPACITY = 128
 PHASES = {1: 'fit', 2: 'training', 3: 'predict', 4: 'repeat', 5: 'reload', 6: 'e2e'}
 MARKERS = [(6, 1), (1, 1), (2, 1), (2, 0), (1, 0), (3, 1), (3, 0), (6, 0),
            (4, 1), (4, 0), (5, 1), (5, 0)]
@@ -26,6 +28,59 @@ DIAGNOSTICS = ('probe_read_failure', 'missing_read_write_bio', 'request_map_full
                'request_delete_failure', 'perf_submit_failure', 'sequence_map_missing',
                'invalid_flush_token', 'flush_token_delete_failure',
                'perf_lost', 'ram_overflow', 'record_size')
+
+
+def unknown_details(raw: bytes, version: int) -> list[dict]:
+    """Decode diagnostic-only fields; old zero-metadata UNKNOWNs lack a version."""
+    if type(version) is not int or version != UNKNOWN_ENCODING:
+        raise ValueError('Unsupported UNKNOWN diagnostic encoding')
+    if len(raw) % EVENT.size:
+        raise ValueError('Truncated event record')
+    details = []
+    for event in EVENT.iter_unpack(raw):
+        if event[5] != UNKNOWN:
+            continue
+        ts, pointer, start, cmd, remaining, _, operation, flags, stack, pid, cpu, sequence = event
+        if cmd > 0xffffffff or remaining > 0xffffffff or operation != cmd & 255:
+            raise ValueError('Invalid UNKNOWN request metadata widths or operation')
+        signed_stack = stack if stack < 0x80000000 else stack - 0x100000000
+        if signed_stack >= UNKNOWN_STACK_CAPACITY:
+            raise ValueError('UNKNOWN stack ID exceeds bounded map')
+        details.append(dict(timestamp_ns=ts, pointer=pointer, start_time_ns=start,
+                            cmd_flags=cmd, rq_flags=flags, remaining_bytes=remaining,
+                            operation=operation, kernel_stack_id=signed_stack,
+                            pid=pid, cpu=cpu, sequence=sequence))
+    return details
+
+
+def validate_unknown(record: dict, raw: bytes) -> None:
+    """Check versioned provenance without interpreting it as a valid lifecycle."""
+    ready = record['ready']
+    if 'unknown_encoding_version' not in record and 'unknown_encoding_version' not in ready:
+        if 'unknown_provenance' in record:
+            raise ValueError('Unversioned UNKNOWN provenance')
+        return  # Historical captures do not claim diagnostic metadata.
+    version = record.get('unknown_encoding_version')
+    details = unknown_details(raw, version)
+    value = record['unknown_provenance']
+    if (type(ready.get('unknown_encoding_version')) is not int
+            or ready['unknown_encoding_version'] != version
+            or type(value['encoding_version']) is not int or value['encoding_version'] != version
+            or type(value['stack_capacity']) is not int or value['stack_capacity'] != UNKNOWN_STACK_CAPACITY
+            or value['events'] != details or 'unknown_provenance_error' in record):
+        raise ValueError('UNKNOWN provenance version or raw metadata differs')
+    ids = {event['kernel_stack_id'] for event in details}
+    stacks = value['stacks']
+    if (set(stacks) != {str(index) for index in ids if index >= 0}
+            or value['stack_errors'] != sorted(index for index in ids if index < 0)):
+        raise ValueError('UNKNOWN referenced stacks or errors differ')
+    if any(not isinstance(frames, list) or not frames for frames in stacks.values()):
+        raise ValueError('Successful UNKNOWN stack ID has no kernel PCs')
+    if any(type(pc) is not int or pc <= 0 for frames in stacks.values() for pc in frames):
+        raise ValueError('Invalid UNKNOWN kernel PC')
+    if (set(value['symbols']) != {str(pc) for frames in stacks.values() for pc in frames}
+            or any(not isinstance(symbol, str) for symbol in value['symbols'].values())):
+        raise ValueError('UNKNOWN kernel symbol coverage differs')
 
 
 def membership(cgroup: int, target: int, flags: int) -> tuple[int, ...]:
@@ -317,6 +372,7 @@ def validate_collection(record: dict, row: dict, gate: dict, events_bytes: bytes
             or len(events_bytes) > record['event_capacity_bytes'] or ready['event_record_bytes'] != EVENT.size
             or ready['event_capacity_bytes'] != record['event_capacity_bytes']):
         raise ValueError('Raw event hash/count mismatch')
+    validate_unknown(record, events_bytes)
     for name in ('collector_sha256', 'bpf_source_sha256', 'btf_sha256'):
         if (record[name] != ready[name] or len(record[name]) != 64
                 or any(char not in '0123456789abcdef' for char in record[name])):

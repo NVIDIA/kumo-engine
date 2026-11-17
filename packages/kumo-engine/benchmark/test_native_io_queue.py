@@ -11,8 +11,9 @@ from native_io_queue import (
     bio_next_offset,
     flush_layout,
     start_capture,
+    unknown_provenance,
 )
-from native_io_queue_results import EVENT
+from native_io_queue_results import EVENT, UNKNOWN
 
 
 def test_ram_capacity_retains_failure():
@@ -99,13 +100,14 @@ def flush_types():
     return [dict(id=1, kind='STRUCT', name='request', members=[
         dict(name='rq_flags', bits_offset=32, type_id=2),
         dict(name='__data_len', bits_offset=64, type_id=2),
-        dict(name='start_time_ns', bits_offset=128, type_id=3)]),
+        dict(name='start_time_ns', bits_offset=128, type_id=3),
+        dict(name='cmd_flags', bits_offset=0, type_id=2)]),
         dict(id=2, kind='INT', size=4), dict(id=3, kind='INT', size=8),
         dict(id=4, kind='ENUM', values=[dict(name='__RQF_FLUSH_SEQ', val=1)])]
 
 
 def test_flush_layout_proves_fields_and_mask():
-    assert flush_layout(flush_types()) == dict(OFF_REQUEST_RQ_FLAGS=4, OFF_REQUEST_DATA_LEN=8,
+    assert flush_layout(flush_types()) == dict(OFF_REQUEST_CMD_FLAGS=0, OFF_REQUEST_RQ_FLAGS=4, OFF_REQUEST_DATA_LEN=8,
                                                OFF_REQUEST_START_TIME_NS=16, RQF_FLUSH_SEQ_MASK=2)
 
 
@@ -123,3 +125,47 @@ def test_flush_layout_mismatch_fails(mutation):
     mutation(types)
     with pytest.raises(ValueError, match='BTF'):
         flush_layout(types)
+
+
+def test_unknown_harvest_only_referenced_stacks():
+    walked = []
+
+    class Stacks:
+        def walk(self, index):
+            walked.append(index)
+            return [0xffff1000, 0xffff2000]
+
+    class Bpf:
+        def __getitem__(self, name):
+            assert name == 'unknown_stacks'
+            return Stacks()
+
+        def ksym(self, pc):
+            return f'kernel_{pc:x}'.encode()
+
+    def packed(stack):
+        return EVENT.pack(30, 1234, 10, 0x1201, 0, UNKNOWN, 1, 2, stack, 100, 3, 1)
+
+    value = unknown_provenance(Bpf(), packed(7) + packed(0xffffffff - 11))
+    assert walked == [7]
+    assert value['stack_capacity'] == 128
+    assert value['stack_errors'] == [-12]
+    assert value['stacks'] == {'7': [0xffff1000, 0xffff2000]}
+    assert value['symbols'] == {'4294905856': 'kernel_ffff1000', '4294909952': 'kernel_ffff2000'}
+    assert value['events'][0]['cmd_flags'] == 0x1201
+    assert value['events'][0]['start_time_ns'] == 10
+
+
+def test_no_unknown_needs_no_stack_access():
+    assert unknown_provenance({}, b'') == dict(
+        encoding_version=1, stack_capacity=128, events=[], stacks={}, symbols={}, stack_errors=[])
+
+
+def test_unknown_successful_stack_cannot_be_empty():
+    class Stacks:
+        def walk(self, index):
+            return []
+
+    raw = EVENT.pack(30, 1234, 10, 1, 0, UNKNOWN, 1, 0, 7, 100, 3, 1)
+    with pytest.raises(ValueError, match='no kernel PCs'):
+        unknown_provenance({'unknown_stacks': Stacks()}, raw)

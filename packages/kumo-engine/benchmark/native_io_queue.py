@@ -17,7 +17,13 @@ import time
 from pathlib import Path
 from types import ModuleType
 
-from native_io_queue_results import EVENT, reconstruct
+from native_io_queue_results import (
+    EVENT,
+    UNKNOWN_ENCODING,
+    UNKNOWN_STACK_CAPACITY,
+    reconstruct,
+    unknown_details,
+)
 
 from io_utils import fsutil
 
@@ -73,7 +79,7 @@ def flush_layout(types: list[dict]) -> dict:
         raise ValueError('BTF request layout is unavailable')
     by_id = {value['id']: value for value in types}
     offsets = {}
-    for name, width in (('rq_flags', 4), ('__data_len', 4), ('start_time_ns', 8)):
+    for name, width in (('cmd_flags', 4), ('rq_flags', 4), ('__data_len', 4), ('start_time_ns', 8)):
         members = [value for value in requests[0]['members'] if value['name'] == name]
         if len(members) != 1 or members[0]['bits_offset'] % 8 or members[0].get('bitfield_size', 0):
             raise ValueError(f'Unsupported BTF request.{name} layout')
@@ -89,6 +95,20 @@ def flush_layout(types: list[dict]) -> dict:
         raise ValueError('Unsupported BTF RQF_FLUSH_SEQ enum layout')
     offsets['RQF_FLUSH_SEQ_MASK'] = 1 << flags[0]
     return offsets
+
+
+def unknown_provenance(bpf, raw: bytes) -> dict:
+    """Harvest only referenced UNKNOWN stacks before the BPF maps disappear."""
+    details = unknown_details(raw, UNKNOWN_ENCODING)
+    ids = {event['kernel_stack_id'] for event in details}
+    frames = {str(index): list(bpf['unknown_stacks'].walk(index)) for index in sorted(ids) if index >= 0}
+    if any(not stack for stack in frames.values()):
+        raise ValueError('Successful UNKNOWN stack ID has no kernel PCs')
+    symbols = {str(pc): bpf.ksym(pc).decode(errors='replace')
+               for pc in sorted({pc for stack in frames.values() for pc in stack})}
+    return dict(encoding_version=UNKNOWN_ENCODING, stack_capacity=UNKNOWN_STACK_CAPACITY,
+                events=details, stacks=frames, symbols=symbols,
+                stack_errors=sorted(index for index in ids if index < 0))
 
 
 class EventBuffer:
@@ -211,6 +231,7 @@ def collect(args) -> dict:
                 btf_sha256=hashlib.sha256(btf).hexdigest(), btf_offsets=offsets,
                 candidate_helper_sha256=source_hash(str(Path(helpers.__file__))),
                 request_capacity=args.request_capacity, event_capacity_bytes=args.event_capacity_bytes,
+                unknown_encoding_version=UNKNOWN_ENCODING,
                 observer_affinity=sorted(os.sched_getaffinity(0)),
                 capture_semantics='All physical-device request operations; pure target requires a complete unmixed BIO chain (inspection bound8); mixed/unchecked remain device-only. Kernel journal causality is not inferred. Bounded anonymous RAM until STOP/drain')
     record, ready, state = {}, {}, {}
@@ -233,7 +254,8 @@ def collect(args) -> dict:
                      bootstrap_ns=state['bootstrap_ns'], device=device,
                      collector_sha256=meta['collector_sha256'], bpf_source_sha256=meta['bpf_source_sha256'],
                      btf_sha256=meta['btf_sha256'], event_record_bytes=EVENT.size,
-                     event_capacity_bytes=args.event_capacity_bytes)
+                     event_capacity_bytes=args.event_capacity_bytes,
+                     unknown_encoding_version=UNKNOWN_ENCODING)
         write_json(args.ready, ready)
         deadline = time.monotonic() + args.timeout
         while not fsutil.exists(args.stop):
@@ -256,6 +278,7 @@ def collect(args) -> dict:
             if time.monotonic() >= deadline:
                 raise TimeoutError('Device became busy during final capture boundary')
         capture_end = state['end_ns']
+        record['unknown_provenance'] = unknown_provenance(bpf, bytes(buffer.data))
         bpf.cleanup()
         bpf = None
         row = load_json(stop['result_path'])
@@ -278,7 +301,12 @@ def collect(args) -> dict:
         raise
     finally:
         if bpf is not None:
-            bpf.cleanup()
+            try:
+                record['unknown_provenance'] = unknown_provenance(bpf, bytes(buffer.data))
+            except Exception as error:
+                record['unknown_provenance_error'] = f'{type(error).__name__}: {error}'
+            finally:
+                bpf.cleanup()
         raw = bytes(buffer.data)
         fsutil.write_binary(args.events, raw)
         usage = resource.getrusage(resource.RUSAGE_SELF)
