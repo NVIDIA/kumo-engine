@@ -560,9 +560,37 @@ QUERY_SPLITS = {
 
 
 @pytest.mark.parametrize("split, in_whole_hours", QUERY_SPLITS.values(), ids=QUERY_SPLITS)
-def test_a_split_derived_from_an_off_tick_window_rounds(off_tick_data, tmp_path, split,
+def test_a_split_derived_from_an_off_tick_window_rounds(off_tick_data, tmp_path, caplog, split,
                                                         in_whole_hours):
     index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
     rows = _split_rows(index, (90, 120), split, "off_tick")
     assert rows
+    assert _builder_warnings(caplog) == [
+        "The window (90, 120] minutes truncates to (60, 120] minutes on the hours index clock. "
+        "Use a window of whole hours, or a finer timestamp_precision."]
     assert rows == _split_rows(index, (60, 120), {**split, **in_whole_hours}, "whole_hours")
+
+
+@pytest.mark.parametrize("clock, split, truncated", [
+    ("hours", {"offsets": [-90, -60]}, ["offset -90 minutes truncates to -60 minutes"]),
+    ("hours", {"timeframe": 90}, ["timeframe 90 minutes truncates to 60 minutes"]),
+    ("hours", {"timeframe_step": 30}, ["timeframe_step 30 minutes truncates to 0 minutes"]),
+    ("hours", {"timeframe_step": 30, "flexible_boundaries": False}, []),
+    ("hours", {"kind": "TimeRangeSplit", "timeframe": 30, "anchor_start_offset": 90}, []),
+    ("hours", {"kind": "TimeRangeSplit", "timeframe": 90},
+     ["timeframe + anchor_start_offset 90 minutes truncates to 60 minutes"]),
+    ("hours", {"offsets": [-2, -1], "offset_unit": "months"}, []),
+    ("seconds", {"offsets": [-500, 0], "offset_unit": "milliseconds"},
+     ["offset -500 milliseconds truncates to 0 milliseconds"]),
+])
+def test_split_durations_off_the_clock_truncate_with_a_warning(caplog, clock, split, truncated):
+    builder = DiskGraphTTBuilder(clock)
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.split_ratio(SplitSpec(**{
+        "kind": "DateOffsetSplit", "offsets": [-120, -60], "offset_unit": "minutes",
+        "unit": "minutes", "timeframe": 60, **split}))
+    builder.build()
+    assert _builder_warnings(caplog) == [
+        f"The split {t} on the {clock} index clock. Use split durations of whole {clock}, or a "
+        "finer timestamp_precision." for t in truncated]

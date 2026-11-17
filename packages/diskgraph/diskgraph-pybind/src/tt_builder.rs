@@ -723,11 +723,15 @@ impl DiskGraphTTBuilder {
                 Ok(tt::Stage { ops, filter })
             })
             .collect::<PyResult<_>>()?;
-        let truncated: BTreeSet<String> = stages
+        let mut truncated: BTreeSet<String> = stages
             .iter()
             .flat_map(|stage| &stage.ops)
             .filter_map(truncated_window)
             .collect();
+        // A split derived from a truncated window truncates with it.
+        if truncated.is_empty() {
+            truncated.extend(self.split.iter().flat_map(truncated_split::<U>));
+        }
         for message in truncated {
             tracing::warn!("{message}");
         }
@@ -855,12 +859,9 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
     if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
         return None;
     }
-    let in_clock = |value: i64| {
-        if value == UNBOUNDED_LOWER_OFFSET {
-            return value;
-        }
-        let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
-        (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
+    let in_clock = |value: i64| match value {
+        UNBOUNDED_LOWER_OFFSET => value,
+        _ => truncate_to_clock::<U>(value, unit),
     };
     let window = |lo: i64, hi: i64| match lo {
         UNBOUNDED_LOWER_OFFSET => format!("(-inf, {hi}] {}", unit_name(unit)),
@@ -876,6 +877,63 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
             window(lo_in_clock, hi_in_clock),
         )
     })
+}
+
+/// Describes the split durations the clock `U` truncates, as the executor reads
+/// them: a time-range split shifts by `timeframe + anchor_start_offset`.
+fn truncated_split<U: UnitSystem>(split: &SplitSpecArgs) -> Vec<String> {
+    let fixed = |unit: &Option<String>| {
+        parse_time_unit(unit_or(unit, "days"))
+            .ok()
+            .filter(|unit| !matches!(unit, TimeUnit::Months | TimeUnit::Years))
+    };
+    let mut durations = Vec::new();
+    match split.kind.as_deref() {
+        Some("DateOffsetSplit") => {
+            if let Some(unit) = fixed(&split.offset_unit) {
+                durations.extend(split.offsets.iter().flatten().map(|&o| ("offset", o, unit)));
+            }
+            if let Some(unit) = fixed(&split.unit) {
+                let step = split
+                    .timeframe_step
+                    .filter(|_| split.flexible_boundaries.unwrap_or(true));
+                let fields = [
+                    ("timeframe", split.timeframe),
+                    ("anchor_start_offset", split.anchor_start_offset),
+                    ("timeframe_step", step),
+                ];
+                durations.extend(fields.into_iter().filter_map(|(f, v)| Some((f, v?, unit))));
+            }
+        }
+        Some("TimeRangeSplit") => {
+            if let (Some(unit), Some(timeframe)) = (fixed(&split.unit), split.timeframe) {
+                let shift = timeframe.saturating_add(split.anchor_start_offset.unwrap_or(0));
+                durations.push(("timeframe + anchor_start_offset", shift, unit));
+            }
+        }
+        _ => {}
+    }
+    let clock = unit_name(U::UNIT);
+    durations
+        .into_iter()
+        .filter_map(|(field, value, unit)| {
+            let in_clock = truncate_to_clock::<U>(value, unit);
+            let unit = unit_name(unit);
+            (in_clock != value).then(|| {
+                format!(
+                    "The split {field} {value} {unit} truncates to {in_clock} {unit} on the \
+                     {clock} index clock. Use split durations of whole {clock}, or a finer \
+                     timestamp_precision."
+                )
+            })
+        })
+        .collect()
+}
+
+/// `value` in `unit` after the clock `U` truncates it.
+fn truncate_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> i64 {
+    let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
+    (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
 }
 
 fn check_tick<U: UnitSystem>(what: &str, value: i64, unit: TimeUnit) -> PyResult<()> {
