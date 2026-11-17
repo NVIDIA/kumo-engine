@@ -38,17 +38,31 @@ def test_failed_trials_error_handles_missing_tracebacks():
 
 
 def test_no_oom_message_when_a_trial_succeeded(tmp_path):
+    # An earlier run succeeded. The one experiment of this run ran out of
+    # memory.
     oom = TrialStatus(trial=1, batch_size=64)
     status = TrainStatus(
         trials=[TrialStatus(trial=0, batch_size=64, succeed=True), oom])
 
-    _raise_if_no_trial_succeeded(status, [oom], 2,
+    _raise_if_no_trial_succeeded(status, [oom], 1,
                                  TaskType.BINARY_CLASSIFICATION, str(tmp_path))
 
     assert status.error_msg is None
 
 
-def test_oom_message_when_no_trial_succeeded(tmp_path):
+def test_no_oom_message_when_another_trial_failed_otherwise(tmp_path):
+    oom = TrialStatus(trial=0, batch_size=64)
+    status = TrainStatus(trials=[oom, TrialStatus(trial=1, batch_size=64)])
+
+    with pytest.raises(RuntimeError):
+        _raise_if_no_trial_succeeded(status, [oom], 2,
+                                     TaskType.BINARY_CLASSIFICATION,
+                                     str(tmp_path))
+
+    assert status.error_msg is None
+
+
+def test_oom_message_when_every_trial_ran_out_of_memory(tmp_path):
     oom = TrialStatus(trial=0, batch_size=64)
     status = TrainStatus(trials=[oom])
 
