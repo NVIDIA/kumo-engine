@@ -1,19 +1,20 @@
 """Bounded AML save/load and fresh-process inference using Kumo artifact APIs."""
 
 import argparse
-from contextlib import ExitStack, contextmanager
-from dataclasses import replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
-import torch
 import kumo.pytorch.api as r
+import torch
 
+from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .models.aml import build_model
 
 
@@ -68,7 +69,9 @@ def snapshot(task, model, requests, *, batch_size, seed):
     model.eval()
     results = []
     with torch.no_grad():
-        for batch in task.batches(requests, batch_size=batch_size, seed=seed, epoch=0):
+        for batch in task.batches(
+            batch_size=batch_size, seed=seed, epoch=0, output_format="model"
+        ):
             assert batch.targets == {}, "Inference exposed targets"
             assert not batch.metadata["is_padding"].any()
             if model.family == "pragma":
@@ -160,7 +163,9 @@ def reload_and_infer(directory):
         r.prepare(artifact.contract, dataset, engine, inference=True) as plan,
     ):
         with plan.materialize(
-            requests, fitted=artifact.fitted_state, inference=True
+            load_probe_anchors(config["anchor_table"]),
+            fitted=artifact.fitted_state,
+            inference=True,
         ) as task:
             model = build_model(
                 task, config["selection"], config["family"], **config["model"]
@@ -222,7 +227,9 @@ def check_lifecycle(
     task.to_artifact().save(directory / "artifact")
     r.save_weights(directory / "weights.pt", model.state_dict(), task.fitted_state)
     requests = tuple(replace(row, targets=()) for row in requests)
+    anchors = write_probe_anchors(requests, directory / "anchors.parquet")
     config = {
+        "anchor_table": anchors.to_dict(),
         "selection": selection,
         "family": family,
         "model": {"dim": dim, "max_seq_len": max_seq_len, "seed": seed},
@@ -254,7 +261,7 @@ def check_lifecycle(
     with (
         forbid_fitting(),
         plan.materialize(
-            requests, fitted=task.fitted_state, inference=True
+            anchors, fitted=task.fitted_state, inference=True
         ) as inference,
     ):
         expected = snapshot(

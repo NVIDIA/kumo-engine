@@ -15,13 +15,14 @@ import torch
 
 from .aml_inputs import load_selections, requests_for, verify_inputs
 from .aml_source import aml_data_schema
+from .anchor_tables import write_probe_anchors
 from .contracts import build_contract
 from .data import ROOT
 from .involvement import verify_batch
 from .lifecycle import input_digest
 from .masked_values import verify_loss as verify_masked_loss
-from .next_token import verify_loss as verify_next_loss
 from .models.aml import build_model
+from .next_token import verify_loss as verify_next_loss
 from .population import PDF_CASES, write_report
 from .run_aml import positive, prepare
 
@@ -130,7 +131,8 @@ def train_repetition(
             probe = None
             with torch.no_grad():
                 for candidate in task.batches(
-                    requests,
+                    split="train",
+                    output_format="model",
                     batch_size=batch_size,
                     seed=seed,
                     epoch=0,
@@ -153,7 +155,8 @@ def train_repetition(
                 seen = []
                 epoch_start = report["completed_updates"]
                 for batch in task.batches(
-                    requests,
+                    split="train",
+                    output_format="model",
                     batch_size=batch_size,
                     seed=seed,
                     epoch=epoch,
@@ -340,6 +343,7 @@ def run_case(
             aml_data_schema(), family, native=native, max_events=capacity
         )
         (directory / "contract.json").write_text(contract.to_json())
+        anchors = write_probe_anchors(requests, directory / "anchors.parquet")
         with (
             r.prepare(
                 contract,
@@ -347,7 +351,7 @@ def run_case(
                 r.DiskGraphEngine(index=directory / "index", num_threads=1),
             ) as plan,
             plan.materialize(
-                requests,
+                anchors,
                 fit_split="train",
                 encoder_cutoff=report["encoder_cutoff_seconds"],
             ) as task,

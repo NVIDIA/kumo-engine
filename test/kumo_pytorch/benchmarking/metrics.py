@@ -131,6 +131,8 @@ EXTRAS = {
     )
 }
 
+EXTRAS["native.iterator.next.elapsed_ns"] = Metric("ns", "epoch")
+
 CONDITIONS = (
     "steady_state",
     "first_and_later_epochs",

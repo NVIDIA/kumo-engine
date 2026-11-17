@@ -4,6 +4,8 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import torch
 from kumo.pytorch.api import Batch
@@ -100,6 +102,26 @@ def source(tmp_path, monkeypatch):
         split: [{**row, "graph_as_of_time": row["as_of_time"] - 10**9} for row in rows]
         for split, rows in groups.items()
     }
+    for version, source_groups in (("v1", groups), ("v2", graph_groups)):
+        path = (
+            tmp_path
+            / "anchors/aml-data/v8/hi-small/account-daily"
+            / version
+            / "anchors.parquet"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(
+            [row for rows in source_groups.values() for row in rows]
+        )
+        for column in (
+            ("as_of_time", "graph_as_of_time") if version == "v2" else ("as_of_time",)
+        ):
+            table = table.set_column(
+                table.schema.get_field_index(column),
+                column,
+                table[column].cast(pa.timestamp("ns")),
+            )
+        pq.write_table(table, path)
     monkeypatch.setattr(aml_inputs, "verify_inputs", lambda directory: files)
     monkeypatch.setattr(
         aml_inputs,
@@ -110,6 +132,90 @@ def source(tmp_path, monkeypatch):
         },
     )
     return tmp_path
+
+
+@pytest.mark.parametrize("fault", ["native-fallback", "cache-reset"])
+def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    if fault == "native-fallback":
+        # A materialized table alone must not qualify native execution.
+        monkeypatch.setattr(NativeAnchors, "_typed_batches", lambda *a, **kw: iter(()))
+        message = "bypassed the native AnchorTable model iterator"
+    else:
+        original = NativeAnchors._iter
+
+        def reset(self, *args, **kwargs):
+            if kwargs.get("epoch") == 1:
+                self._length_caches.clear()
+                for path in self.path.glob("lengths-*.bin"):
+                    path.unlink()
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(NativeAnchors, "_iter", reset)
+        message = "replaced the native per-anchor length cache"
+    result = run(
+        factory,
+        {
+            "data_dir": str(source),
+            "family": "nuformer",
+            "workload": "next-token-pretrain",
+            "anchors_per_split": 1,
+            "batch_size": 1,
+            "threads": 1,
+            "training": False,
+        },
+        source / "regression",
+        repetitions=1,
+        epochs=2,
+    )
+    assert result["execution_status"] == "failed"
+    assert any(message in row["traceback"] for row in result["errors"])
+    assert not result["native_iterations"][-1]["complete"]
+
+
+def test_native_lengths_cover_every_anchor_across_partial_batches(source):
+    groups = aml_inputs.load_selections(source, limit=1)["v1"]["split"]
+    original = groups["train"][0]
+    groups["train"].extend(
+        {
+            **original,
+            "sample_id": f"extra-{i}",
+            "as_of_time": original["as_of_time"] + i * 86400 * 10**9,
+        }
+        for i in (1, 2)
+    )
+    path = source / "anchors/aml-data/v8/hi-small/account-daily/v1/anchors.parquet"
+    table = pa.Table.from_pylist([row for rows in groups.values() for row in rows])
+    table = table.set_column(
+        table.schema.get_field_index("as_of_time"),
+        "as_of_time",
+        table["as_of_time"].cast(pa.timestamp("ns")),
+    )
+    pq.write_table(table, path)
+    result = run(
+        factory,
+        {
+            "data_dir": str(source),
+            "family": "nuformer",
+            "workload": "next-token-pretrain",
+            "anchors_per_split": 3,
+            "batch_size": 2,
+            "threads": 1,
+            "training": False,
+        },
+        source / "lengths",
+        repetitions=1,
+        epochs=2,
+    )
+    assert result["execution_status"] == "completed", result["errors"]
+    for epoch, evidence in enumerate(result["native_iterations"]):
+        [iterator] = evidence["iterators"]
+        assert iterator["anchors"] == 3 and iterator["batches"] == 2
+        assert iterator["merged_history_batches"] == 2
+        assert iterator["lengths_computed"] == (0 if epoch else 3)
+        assert iterator["length_cache_hits"] == (3 if epoch else 0)
+        assert iterator["length_cache_reused"] == bool(epoch)
 
 
 @pytest.mark.parametrize("workload,family", CASES)
@@ -125,6 +231,17 @@ def test_training_counts_and_saved_state_reuse(source, workload, family):
     }
     fresh = run(factory, config, source / "fresh", repetitions=1, epochs=2)
     assert fresh["execution_status"] == "completed", fresh["errors"]
+    for epoch, evidence in enumerate(fresh["native_iterations"]):
+        assert evidence["complete"] and evidence["typed_calls"] == 1
+        [iterator] = evidence["iterators"]
+        assert iterator["complete"] and iterator["batches"] == 1
+        graph = family in {"graphsage", "combined"}
+        assert iterator["merged_history_batches"] == int(family != "graphsage")
+        assert iterator["length_planning"] == (not graph)
+        if not graph:
+            assert iterator["lengths_computed"] == int(epoch == 0)
+            assert iterator["length_cache_hits"] == int(epoch > 0)
+            assert iterator["length_cache_reused"] == (epoch > 0)
     coverage = json.loads((source / "fresh/coverage.json").read_text())["metrics"]
     # CPU single-batch fixture cannot measure Linux peaks or later-batch latency.
     expected_gaps = {

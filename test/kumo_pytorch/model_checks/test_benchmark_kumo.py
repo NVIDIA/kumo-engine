@@ -12,6 +12,22 @@ from test.kumo_pytorch.benchmarking import BatchCounts, run
 from test.kumo_pytorch.benchmarking.kumo import KumoInputs, kumo_workload
 
 
+def product_anchors(directory, prefix, count):
+    path = directory / "anchors.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {"sample_id": f"{prefix}-{i}", "entity_id": i, "split": "train"}
+                for i in range(count)
+            ]
+        ),
+        path,
+    )
+    return r.AnchorTable(
+        r.Parquet(str(path)), "entity_id", sample_id="sample_id", split="split"
+    )
+
+
 def product_state_factory(config, directory):
     """Importable independent dataset adapter for subprocess/state experiments."""
 
@@ -41,9 +57,7 @@ def product_state_factory(config, directory):
                 }
             ),
         )
-        anchors = tuple(
-            r.SampleRequest(f"item-{i}", i, 100, split="train") for i in range(4)
-        )
+        anchors = product_anchors(directory, "item", 4)
         path = directory / "products.parquet"
         pq.write_table(
             pa.Table.from_pylist([{"id": i, "price": float(i)} for i in range(4)]), path
@@ -53,9 +67,8 @@ def product_state_factory(config, directory):
             r.Dataset({"products": r.Parquet(str(path))}),
             r.DiskGraphEngine(index=directory / "index", num_threads=1),
             anchors,
-            anchors,
             materialize_options={"fit_split": "train"},
-            batch_options={"batch_size": 3},
+            batch_options={"batch_size": 3, "split": "train"},
         )
 
     return kumo_workload(
@@ -137,19 +150,17 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
             else:
                 engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
             recorder.measure("converted.bytes", path.stat().st_size)
-            anchors = tuple(
-                r.SampleRequest(f"product-{i}", i, 100, split="train") for i in range(5)
-            )
+            anchors = product_anchors(workdir, "product", 5)
             return KumoInputs(
                 contract,
                 dataset,
                 engine,
                 anchors,
-                anchors,
                 materialize_options={"fit_split": "train"},
                 reference=backend == "polars",
                 batch_options={
                     "batch_size": 3,
+                    "split": "train",
                     "output_format": "model",
                 },
             )

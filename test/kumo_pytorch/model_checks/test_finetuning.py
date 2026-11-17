@@ -10,6 +10,7 @@ import kumo.pytorch.api as r
 import pytest
 import torch
 
+from test.kumo_pytorch.anchor_tables import write_probe_anchors
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.models.aml import build_model
@@ -156,6 +157,9 @@ def test_fresh_process_refitting_attempt_fails(tmp_path):
     )
     directory = tmp_path / "finetuning"
     directory.mkdir()
+    config["training_anchor_table"] = write_probe_anchors(
+        requests, directory / "anchors.parquet"
+    ).to_dict()
     (directory / "config.json").write_text(json.dumps(config))
     child = subprocess.run(
         [

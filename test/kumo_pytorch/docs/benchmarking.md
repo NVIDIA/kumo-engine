@@ -43,10 +43,21 @@ inside integration-test callbacks validate the interface, not throughput.
 
 [kumo_workload](../benchmarking/kumo.py) implements the lifecycle using public
 Kumo APIs. An `inputs(recorder)` callback returns `KumoInputs` containing the
-contract, dataset, backend, fitting anchors, reusable epoch anchors, materialize
-options and batching options. Select `fit_split` explicitly as required by Kumo.
-The runner owns the epoch argument. Anchors may be tables or reusable request
-collections; do not supply an exhaustible generator as the repeated population.
+contract, dataset, backend, a Parquet `AnchorTable`, materialization options and
+batching options. Select `fit_split` for fitting and `split` for iteration.
+The runner owns the epoch argument. It calls
+`task.batches(split=..., epoch=..., output_format="model")` without requests;
+the task owns its population, shuffling, planning and iteration.
+
+DiskGraph benchmarks fail unless they exhaust the native model iterator.
+Reports retain native iteration and merged-history evidence for each epoch.
+AML sequence-only contracts enable length bucketing: the first epoch must
+compute every anchor length; subsequent epochs must reuse the same native
+cache and report hits for every anchor, with no recomputation. Graph/combined
+contracts retain fixed-size native batching; they do not claim length-cache
+coverage. Exclusive native length-planning time is unavailable in the current
+API. The labelled host iterator boundary includes planning and retrieval and
+must not be added to nested native timings.
 
 An optional `consumer_factory(task, recorder)` creates any model/optimizer and
 returns its step callback. It is not limited to the copied AML consumers.
@@ -56,7 +67,7 @@ success or failure. Prepare and materialize timers remain enclosing calls;
 internal/native phases have separate scoped instrumentation described below.
 
 The native [integration cases](../model_checks/test_benchmark_kumo.py) demonstrate
-a non-AML product dataset and linear model on both InMemory and DiskGraph, with
+a non-AML product dataset and linear model on DiskGraph and the Polars timing reference, with
 two epochs and a partial last batch. They are tiny interface tests, not data-scale
 or model-performance evidence.
 
@@ -64,7 +75,9 @@ or model-performance evidence.
 window, with a separate `state.load` timer. Complete reused state must retain its
 fingerprint. `save_fitted_state` writes a new artifact outside that window;
 existing destinations are rejected. Records retain the state, contract and
-fitting-anchor fingerprints. Partial input-only reuse is labelled separately.
+fitting-anchor fingerprints. Anchor comparisons hash the table binding and
+Parquet bytes independently of each run's temporary path; the package's task
+anchor fingerprint is retained separately. Partial input-only reuse is labelled separately.
 
 ## AML binding and process comparisons
 

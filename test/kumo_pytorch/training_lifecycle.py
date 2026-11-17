@@ -12,6 +12,7 @@ from unittest.mock import patch
 import kumo.pytorch.api as r
 import torch
 
+from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .involvement import verify_batch
 from .lifecycle import forbid_fitting, input_digest
 from .models.aml import build_model
@@ -35,7 +36,8 @@ def update(task, model, optimizer, requests, config, *, epoch):
     batch = next(
         iter(
             task.batches(
-                requests,
+                split="train",
+                output_format="model",
                 batch_size=config["batch_size"],
                 seed=config["seed"],
                 epoch=epoch,
@@ -114,7 +116,10 @@ def resume(directory):
         index=Path(config["index"]), ingest="never", num_threads=config["threads"]
     )
     with forbid_fitting(), r.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state) as task:
+        with plan.materialize(
+            load_probe_anchors(config["training_anchor_table"]),
+            fitted=artifact.fitted_state,
+        ) as task:
             model = involvement_model(task, config)
             model.load_state_dict(
                 r.load_weights(directory / "weights.pt", task.fitted_state), strict=True
@@ -166,6 +171,9 @@ def check_training(lifecycle_directory, requests):
     config["lifecycle_directory"] = str(lifecycle_directory)
     directory = lifecycle_directory.parent / "finetuning"
     directory.mkdir(exist_ok=False)
+    config["training_anchor_table"] = write_probe_anchors(
+        requests, directory / "anchors.parquet"
+    ).to_dict()
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     command = [
         sys.executable,
@@ -241,7 +249,9 @@ def finetune(directory):
         r.prepare(contract, dataset, engine) as plan,
     ):
         with plan.materialize(
-            requests, fitted=artifact.fitted_state.inputs, fit_split="train"
+            load_probe_anchors(config["training_anchor_table"]),
+            fitted=artifact.fitted_state.inputs,
+            fit_split="train",
         ) as task:
             assert task.fitted_state.inputs.fingerprint == frozen
             assert input_digest(task.fitted_state.inputs.to_dict()) == input_state

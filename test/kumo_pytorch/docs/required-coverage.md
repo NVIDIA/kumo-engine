@@ -1,6 +1,6 @@
 # Required AML coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 336 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 339 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
@@ -44,6 +44,24 @@ the required operation. It remains a normal failure. The converted checks passed
 Separately, all **105** focused package checks passed, including the 29 new
 DiskGraph golden boundary checks. These runs use the existing compatible local
 native extension; branch-native CI validation remains separate.
+
+## Native AnchorTable migration
+
+Benchmarking, AML training/evaluation, history checks, inference, finetuning and
+checkpoint continuation now materialize Parquet AnchorTables and iterate the
+owned population without an explicit request argument. Bounded correctness
+probes retain expected records only for independent assertions and table
+projection. The benchmark reuses the streaming population projection directly.
+Three added required cases check native-path rejection, cache-reset rejection,
+and complete per-anchor length reuse across a partial final batch.
+
+This migration exposes a Fusion fresh-process checkpoint failure: aggregate
+materialization changes the internal anchor fingerprint on reload, so
+`TaskBatches.load_state_dict()` rejects the same original population/index as a
+different task. The two Fusion checkpoint cases and the combined raw-AML case
+remain ordinary failures. `restore-fingerprints.json` records both identities;
+the package's check is not bypassed. The pre-existing `DG-ROW-FILTER` failure
+also remains. These are local fixture findings, not full AML/GPU CI results.
 
 ## GitHub merge enforcement
 

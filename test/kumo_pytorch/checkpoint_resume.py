@@ -10,6 +10,7 @@ from pathlib import Path
 import kumo.pytorch.api as r
 import torch
 
+from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .lifecycle import forbid_fitting, input_digest
 from .models.aml import build_model
 from .training_lifecycle import training_requests
@@ -63,7 +64,10 @@ def continuation(directory, *, restore):
             torch.random.fork_rng(devices=[]),
             forbid_fitting(),
             r.prepare(artifact.contract, dataset, engine) as plan,
-            plan.materialize(requests, fitted=artifact.fitted_state) as task,
+            plan.materialize(
+                load_probe_anchors(config["training_anchor_table"]),
+                fitted=artifact.fitted_state,
+            ) as task,
         ):
             torch.manual_seed(config["seed"])
             model = build_model(
@@ -81,6 +85,16 @@ def continuation(directory, *, restore):
             if restore:
                 checkpoint = torch.load(directory / "checkpoint.pt", weights_only=True)
                 optimizer.load_state_dict(checkpoint["optimizer"])
+                (directory / "restore-fingerprints.json").write_text(
+                    json.dumps(
+                        {
+                            "saved": checkpoint["task_fingerprints"],
+                            "restored": dict(task.fingerprints),
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
                 batches.load_state_dict(checkpoint["batches"])
                 torch.set_rng_state(checkpoint["torch_rng"])
                 prefix = checkpoint["prefix"]
@@ -90,6 +104,7 @@ def continuation(directory, *, restore):
                     for _ in range(config["checkpoint_after"])
                 ]
                 checkpoint = {
+                    "task_fingerprints": dict(task.fingerprints),
                     "batches": batches.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "torch_rng": torch.get_rng_state(),
@@ -157,6 +172,7 @@ def check_resume(lifecycle_directory, requests, *, checkpoint_after=1):
         # ordinary model check fits that entire population in a single batch.
         batches={
             "split": "train",
+            "output_format": "model",
             "batch_size": min(config["batch_size"], max(1, len(requests) // 2)),
             "shuffle": True,
             "seed": config["seed"],
@@ -178,6 +194,9 @@ def check_resume(lifecycle_directory, requests, *, checkpoint_after=1):
     )
     directory = lifecycle_directory.parent / "mid-epoch-resume"
     directory.mkdir(exist_ok=False)
+    config["training_anchor_table"] = write_probe_anchors(
+        requests, directory / "anchors.parquet"
+    ).to_dict()
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     continuation(directory, restore=False)
     with (directory / "child.log").open("w") as log:

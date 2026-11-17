@@ -1,5 +1,7 @@
 """Public Kumo API adapter, independent of source schema and model architecture."""
 
+import hashlib
+import json
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
@@ -9,13 +11,27 @@ from typing import Any
 from .interface import Workload, _nothing
 
 
+def anchor_identity(table):
+    """Compare the same Parquet population across independently located runs."""
+    from kumo.pytorch.engines.parquet_anchors import _files
+
+    binding = table.to_dict()
+    binding.pop("source")
+    files = []
+    for path in _files(table.source.path):
+        with open(path, "rb") as stream:
+            files.append(hashlib.file_digest(stream, "sha256").hexdigest())
+    return hashlib.sha256(
+        json.dumps([binding, files], sort_keys=True).encode()
+    ).hexdigest()
+
+
 @dataclass
 class KumoInputs:
     contract: Any
     dataset: Any
     engine: Any
     fitting_anchors: Any
-    epoch_anchors: Any
     materialize_options: Mapping[str, Any] = field(default_factory=dict)
     batch_options: Mapping[str, Any] = field(default_factory=dict)
     reference: bool = False
@@ -39,8 +55,8 @@ def kumo_workload(
     """Build a Workload using any Kumo contract/dataset/backend and model.
 
     ``inputs(recorder) -> KumoInputs`` prepares sources/anchors and records actual
-    input preparation. ``epoch_anchors`` is a reusable anchor table/request
-    collection, not a single-use generator. ``consumer_factory(task, recorder)``
+    input preparation. ``fitting_anchors`` is an AnchorTable owned by the task;
+    ``batch_options`` selects its split. ``consumer_factory(task, recorder)``
     optionally returns ``step(batch, recorder) -> bool`` with its own optimizer.
     Each factory call must create fresh mutable engine/model/optimizer state.
 
@@ -51,7 +67,7 @@ def kumo_workload(
     state = {}
 
     def prepare(recorder):
-        from kumo.pytorch.api import Artifact
+        from kumo.pytorch.api import AnchorTable, Artifact
         from kumo.pytorch.api import prepare as prepare_task
 
         from .kumo_observers import KumoObservers
@@ -61,8 +77,20 @@ def kumo_workload(
             selected = inputs(recorder)
             if not isinstance(selected, KumoInputs):
                 raise TypeError("inputs must return KumoInputs")
+            if not isinstance(selected.fitting_anchors, AnchorTable):
+                raise TypeError(
+                    "Benchmarks require an AnchorTable, not explicit requests"
+                )
+            if selected.batch_options.get("output_format", "model") != "model":
+                raise ValueError("Benchmarks require output_format='model'")
             if "epoch" in selected.batch_options:
                 raise ValueError("The benchmark runner owns epoch selection")
+            if "requests" in selected.batch_options:
+                raise ValueError(
+                    "Select the task's AnchorTable split; explicit requests are not supported"
+                )
+            with recorder.span("anchors.prepare"):
+                anchors_identity = anchor_identity(selected.fitting_anchors)
             state["inputs"] = selected
             if selected.observe is not None:
                 selected.observe(observers)
@@ -122,7 +150,8 @@ def kumo_workload(
             else "partial_reuse",
             fingerprint=task.fitted_state.fingerprint,
             contract_fingerprint=selected.contract.fingerprint,
-            anchors_fingerprint=task.fingerprints["anchors"],
+            anchors_fingerprint=anchors_identity,
+            task_anchors_fingerprint=task.fingerprints["anchors"],
             loaded_from=str(load_fitted_state)
             if load_fitted_state is not None
             else None,
@@ -130,6 +159,7 @@ def kumo_workload(
         )
         state["task"] = task
         state["recorder"] = recorder
+        state["observers"] = observers
         observers.attach_source(
             getattr(getattr(task, "_assembler", None), "_source", None)
         )
@@ -141,12 +171,23 @@ def kumo_workload(
     def batches(epoch):
         selected = state["inputs"]
         recorder = state["recorder"]
-        with recorder.span("reference.plan") if selected.reference else nullcontext():
-            iterator = iter(
-                state["task"].batches(
-                    selected.epoch_anchors, epoch=epoch, **selected.batch_options
-                )
+        options = {"output_format": "model", **selected.batch_options}
+        policy = selected.contract.batch.batching
+        observation = (
+            nullcontext()
+            if selected.reference
+            else state["observers"].native_epoch(
+                epoch,
+                length_planning=policy.max_tokens is not None
+                or policy.bucket_by_length,
             )
+        )
+        with observation:
+            yield from iterate(epoch, selected, recorder, options)
+
+    def iterate(epoch, selected, recorder, options):
+        with recorder.span("reference.plan") if selected.reference else nullcontext():
+            iterator = iter(state["task"].batches(epoch=epoch, **options))
             if selected.prepare_plan is not None:
                 synchronize()
         while True:

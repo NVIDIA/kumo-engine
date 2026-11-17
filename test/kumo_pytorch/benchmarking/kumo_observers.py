@@ -8,6 +8,7 @@ Arena imports and never guesses native work from residual host elapsed time.
 import inspect
 import threading
 from collections.abc import Mapping
+from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 
@@ -22,6 +23,151 @@ class KumoObservers:
         self.patches = []
         self.sources = set()
         self.locked = False
+        self.epoch_observation = None
+        self.length_caches = {}
+
+    @contextmanager
+    def native_epoch(self, epoch, *, length_planning=False):
+        """Require observed native model iteration, not just table materialization."""
+        evidence = {"epoch": epoch, "typed_calls": 0, "iterators": []}
+        self.epoch_observation = evidence
+        complete = False
+        try:
+            yield
+            assert evidence["typed_calls"] and evidence["iterators"], (
+                "Benchmark bypassed the native AnchorTable model iterator"
+            )
+            assert all(row["complete"] for row in evidence["iterators"]), (
+                "Native benchmark iterator was not exhausted"
+            )
+            if length_planning:
+                assert all(row["length_planning"] for row in evidence["iterators"]), (
+                    "Native iterator bypassed the contract's length planning"
+                )
+            complete = True
+        finally:
+            self.recorder.write("native_iteration", complete=complete, **evidence)
+            self.epoch_observation = None
+
+    def _typed_iteration(self, original):
+        @wraps(original)
+        def call(*args, **kwargs):
+            if (
+                self.epoch_observation is not None
+                and threading.get_ident() == self.thread
+            ):
+                assert kwargs["output_format"] == "model"
+                self.epoch_observation["typed_calls"] += 1
+            return original(*args, **kwargs)
+
+        return call
+
+    def _native_iterator(self, original):
+        observer = self
+
+        @wraps(original)
+        def call(owner, stage, **kwargs):
+            if (
+                observer.epoch_observation is None
+                or threading.get_ident() != observer.thread
+            ):
+                return original(owner, stage, **kwargs)
+            with observer.recorder.span("python.plan") as details:
+                details["scope"] = (
+                    "host iterator setup, including native attachment calls; length evaluation occurs in next()"
+                )
+                iterator = original(owner, stage, **kwargs)
+            lengths = kwargs.get("length_planning") is not None
+            history = kwargs.get("history") is not None
+            row = {
+                "stage": stage["name"],
+                "anchors": stage["count"],
+                "batches": 0,
+                "merged_history_batches": 0,
+                "history": history,
+                "length_planning": lengths,
+                "complete": False,
+            }
+            observer.epoch_observation["iterators"].append(row)
+            caches = (
+                {
+                    key: cache
+                    for key, cache in owner._length_caches.items()
+                    if key[0] == stage["name"]
+                }
+                if lengths
+                else {}
+            )
+            if lengths:
+                assert caches, (
+                    "Native length planning did not attach a per-anchor cache"
+                )
+
+            class ObservedIterator:
+                def __iter__(self):
+                    return self
+
+                def __getattr__(self, name):
+                    return getattr(iterator, name)
+
+                def __next__(self):
+                    try:
+                        with observer.recorder.span("native.iterator.next") as details:
+                            details["scope"] = (
+                                "host boundary for native planning, retrieval and history; not an exclusive Rust timer"
+                            )
+                            runtime = next(iterator, None)
+                        if runtime is None:
+                            raise StopIteration
+                    except StopIteration:
+                        if lengths:
+                            computed, hits = iterator.length_planning_stats()
+                            reused = all(
+                                observer.length_caches.get(key) is cache
+                                for key, cache in caches.items()
+                            )
+                            row.update(
+                                lengths_computed=computed,
+                                length_cache_hits=hits,
+                                length_cache_reused=reused,
+                                length_planning_elapsed_ns=None,
+                                length_timing_status="unavailable: native iterator has no exclusive length-planning timer",
+                            )
+                            if observer.epoch_observation["epoch"] > 0:
+                                assert reused, (
+                                    "Later epoch replaced the native per-anchor length cache"
+                                )
+                            if reused:
+                                assert computed == 0 and hits == stage["count"], (
+                                    "Later epoch did not reuse every per-anchor length"
+                                )
+                            else:
+                                assert computed == stage["count"], (
+                                    "First epoch did not plan every anchor length"
+                                )
+                            observer.length_caches.update(caches)
+                        row["complete"] = True
+                        raise
+                    row["batches"] += 1
+                    if history:
+                        assert "history" in runtime and "history_merges" in runtime, (
+                            "Native merged-history iterator output is missing"
+                        )
+                        row["merged_history_batches"] += 1
+                        profile = runtime["history"]
+                        observer.capture(
+                            {
+                                "native_timings_ns": profile.get("timings_ns", {}),
+                                "native_stats": profile.get("stats", {}),
+                            },
+                            "native_iterator",
+                            "last_temporal_profile",
+                        )
+                    return runtime
+
+            return ObservedIterator()
+
+        return call
 
     def patch(self, owner, name, decorate):
         original = getattr(owner, name)
@@ -55,6 +201,10 @@ class KumoObservers:
         try:
             from kumo.pytorch import assembly, encoding, preparation
             from kumo.pytorch.engines import diskgraph
+            from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+            self.patch(NativeAnchors, "_iter", self._native_iterator)
+            self.patch(NativeAnchors, "_typed_batches", self._typed_iteration)
 
             for name, operation in {
                 "_fit_inputs": "input.fit",

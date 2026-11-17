@@ -20,6 +20,7 @@ from .aml_source import (
     prepare_aml_sources,
     prepared_dataset,
 )
+from .anchor_tables import write_probe_anchors
 from .contracts import build_contract
 from .checkpoint_resume import check_resume
 from .data import ROOT
@@ -145,9 +146,11 @@ def run_case(
     }
     engine = r.DiskGraphEngine(index=directory / "index", num_threads=threads)
     with r.prepare(contract, dataset, engine) as plan:
-        task = plan.materialize(
-            requests["train"], fit_split="train", encoder_cutoff=fit_cutoff
+        anchors = write_probe_anchors(
+            tuple(q for split in SPLITS for q in requests[split]),
+            directory / "anchors.parquet",
         )
+        task = plan.materialize(anchors, fit_split="train", encoder_cutoff=fit_cutoff)
         # Ten fields plus a separator per event; use a complete-source bound.
         model = build_model(
             task, selection, family, max_seq_len=11 * capacity, seed=seed
@@ -164,7 +167,11 @@ def run_case(
             seen, batches, weight, numerator = [], 0, 0, 0.0
             evaluation = {"loss_sum": 0.0, "eligible": 0, "invalid": 0, "padding": 0}
             for batch in task.batches(
-                requests[split], batch_size=batch_size, seed=seed, epoch=0
+                split=split,
+                batch_size=batch_size,
+                seed=seed,
+                epoch=0,
+                output_format="model",
             ):
                 if not native and input_reference is not None:
                     verify_task_inputs(
@@ -292,7 +299,9 @@ def run_case(
             native=False,
         ),
     )
-    report["mid_epoch_resume"] = check_resume(directory / "lifecycle", requests["train"])
+    report["mid_epoch_resume"] = check_resume(
+        directory / "lifecycle", requests["train"]
+    )
     report["status"] = "passed"
     report["target_and_loss_checks"] = "passed" if target_checks else "not_checked"
     report["input_membership_and_counts"] = (

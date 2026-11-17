@@ -7,6 +7,7 @@ remain in the existing suite and are not repeated inside timed loader calls.
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 from .benchmarking import BatchCounts
@@ -96,9 +97,10 @@ def factory(config, workdir):
     import torch
     from kumo.pytorch import api as r
 
-    from .aml_inputs import load_selections, requests_for, verify_inputs
+    from .aml_inputs import load_selections, verify_inputs
     from .aml_source import aml_data_schema
     from .contracts import build_contract
+    from .population_anchors import project_population
     from .run_aml import prepare
 
     allowed = {
@@ -340,8 +342,17 @@ def factory(config, workdir):
             groups = anchors[selection["selector"]["anchor_version"]][
                 selection["anchor_binding"]["split_column"]
             ]
-            requests = requests_for(
-                groups["train"], identities, split="train", graph=graph, native=native
+            table, projection = project_population(
+                data_dir
+                / "anchors/aml-data/v8/hi-small/account-daily"
+                / selection["selector"]["anchor_version"]
+                / "anchors.parquet",
+                workdir / "anchors.parquet",
+                identities,
+                graph=graph,
+                native=native,
+                limit=config["anchors_per_split"],
+                splits=("train",),
             )
         recorder.write(
             "dataset_inputs",
@@ -370,21 +381,32 @@ def factory(config, workdir):
                 ingest="never" if index_action == "reopen" else "if_missing",
                 num_threads=config["threads"],
             )
+        contract = build_contract(
+            aml_data_schema(), family, native=native, max_events=capacity
+        )
+        if not graph:
+            contract = replace(
+                contract,
+                batch=replace(
+                    contract.batch,
+                    batching=replace(
+                        contract.batch.batching,
+                        bucket_by_length=True,
+                        length_input="history",
+                    ),
+                ),
+            )
         return KumoInputs(
-            build_contract(
-                aml_data_schema(), family, native=native, max_events=capacity
-            ),
+            contract,
             dataset,
             engine,
-            requests,
-            requests,
+            table,
             materialize_options={
                 "fit_split": "train",
-                "encoder_cutoff": max(
-                    row["as_of_time"] // 10**9 - 1 for row in groups["train"]
-                ),
+                "encoder_cutoff": projection["encoder_cutoff_seconds"],
             },
             batch_options={
+                "split": "train",
                 "batch_size": config["batch_size"],
                 "seed": seed,
                 "output_format": "model",

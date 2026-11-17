@@ -21,6 +21,7 @@ def report(directory, config, identities, errors):
     observations = defaultdict(list)
     epochs = []
     backend_profiles = []
+    native_iterations = []
     gpu_observations = []
     fitting_states = []
     cache_conditions = []
@@ -34,6 +35,8 @@ def report(directory, config, identities, errors):
                 observations[row["metric"]].append(row)
             elif row["kind"] == "epoch_result":
                 epochs.append(row)
+            elif row["kind"] == "native_iteration":
+                native_iterations.append(row)
             elif row["kind"] == "backend_profile":
                 backend_profiles.append(row)
             elif row["kind"].startswith("gpu_"):
@@ -209,6 +212,7 @@ def report(directory, config, identities, errors):
         "errors": errors,
         "measurements": dict(observations),
         "backend_profiles": backend_profiles,
+        "native_iterations": native_iterations,
         "gpu_observations": gpu_observations,
         "fitting_states": fitting_states,
         "cache_conditions": cache_conditions,
@@ -247,6 +251,28 @@ def report(directory, config, identities, errors):
             )
         ]
         lines.append("| " + " | ".join(_text(v) for v in cells) + " |")
+    if native_iterations:
+        lines += [
+            "",
+            "## Native AnchorTable iteration",
+            "",
+            "Length counts verify planning and cache reuse; exclusive length-planning time is unavailable.",
+            "",
+            "| Repetition | Epoch | Native complete | Merged-history batches | Lengths computed | Cache hits | Same cache reused |",
+            "| --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for epoch in native_iterations:
+            for row in epoch["iterators"]:
+                values = [
+                    epoch["scope"]["repetition"],
+                    epoch["epoch"],
+                    epoch["complete"],
+                    row["merged_history_batches"],
+                    row.get("lengths_computed", "not applicable"),
+                    row.get("length_cache_hits", "not applicable"),
+                    row.get("length_cache_reused", "not applicable"),
+                ]
+                lines.append("| " + " | ".join(_text(v) for v in values) + " |")
     if devices:
         lines += [
             "",

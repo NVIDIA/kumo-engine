@@ -14,6 +14,7 @@ import kumo.pytorch.api as r
 
 from .aml_inputs import load_selections, verify_inputs
 from .aml_source import aml_data_schema
+from .anchor_tables import write_probe_anchors
 from .involvement import source_reference
 from .run_aml import positive, prepare
 
@@ -99,6 +100,10 @@ def check_histories(
         )
         for split, rows in groups.items()
     }
+    table = write_probe_anchors(
+        tuple(q for rows in requests.values() for q in rows),
+        directory / "anchors.parquet",
+    )
     anchors = {row["sample_id"]: row for rows in groups.values() for row in rows}
     contract = history_contract(filtered=filtered)
     totals = dict.fromkeys(contract.batch.inputs, 0)
@@ -110,16 +115,14 @@ def check_histories(
             r.DiskGraphEngine(index=directory / "index", num_threads=threads),
         ) as plan,
         plan.materialize(
-            requests["train"],
+            table,
             fit_split="train",
             encoder_cutoff=max(q.as_of_time for q in requests["train"]) - 1,
         ) as task,
     ):
         for split, split_requests in requests.items():
             seen = []
-            for batch in task.batches(
-                split_requests, batch_size=4, output_format="model"
-            ):
+            for batch in task.batches(split=split, batch_size=4, output_format="model"):
                 sample_ids = batch.metadata["sample_ids"]
                 assert not batch.metadata["is_padding"].any(), (
                     "Unexpected sample padding"
