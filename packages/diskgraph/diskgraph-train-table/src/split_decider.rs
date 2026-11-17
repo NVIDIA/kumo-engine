@@ -3170,6 +3170,26 @@ mod tests {
     }
 
     #[test]
+    fn test_flex_boundaries_reject_a_step_that_is_not_positive() {
+        for step in [0, -5] {
+            let mut d: DateOffsetDecider<Seconds> = DateOffsetDecider::new(
+                vec![Dur::from_raw(-14), Dur::from_raw(-7)],
+                Dur::zero(),
+                Some(Dur::from_raw(10)),
+            )
+            .with_flexible_boundaries(true, Some(Dur::from_raw(step)));
+            let entity = Value::Int(0);
+            let target = Value::Int(0);
+            d.accumulate(&sample_row(&entity, Abs::from_raw(0), &target));
+            d.accumulate(&sample_row(&entity, Abs::from_raw(20), &target));
+            d.derive_cutoffs();
+
+            let err = d.validate_derived_cutoffs().unwrap_err();
+            assert!(err.to_string().contains("positive timeframe_step"), "{step}");
+        }
+    }
+
+    #[test]
     fn test_flex_boundaries_default_is_flexible() {
         // The decider built straight from `new` defaults to rigid (the
         // builder opt-in is applied by the executor); but the executor's
