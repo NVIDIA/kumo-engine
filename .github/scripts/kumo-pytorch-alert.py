@@ -7,9 +7,10 @@ Run by .github/workflows/kumo-pytorch-alert.yml for each completed run. A run
 that fails on its first attempt has its failed jobs rerun once. After that, the
 channel hears only about changes: a workflow that starts failing, and one that
 recovers. A run that finishes after a later run of the same workflow is ignored.
-The state last reported for each workflow is kept in a workflow artifact, so
-each change is posted once however often a run is retried; only artifacts this
-workflow uploaded for main in this repository are read. `decide()` is pure;
+Each processed run records the reported state for its workflow in a workflow
+artifact, so each change is posted once however often a run is retried; only
+artifacts this workflow uploaded for main in this repository are read, and
+without one nothing has been reported, so the state is taken as passing. `decide()` is pure;
 everything else reads the run from the environment and the GitHub API.
 """
 
@@ -75,11 +76,8 @@ def state_of(conclusion: str | None) -> str | None:
     return None
 
 
-def decide(conclusion: str, attempt: int, reported: str | None) -> str | None:
-    """What to do about a completed run, given the state last reported.
-
-    `reported` is `passing`, `failing`, or None if nothing is known yet.
-    """
+def decide(conclusion: str, attempt: int, reported: str) -> str | None:
+    """What to do about a completed run, given the state last reported (`passing` or `failing`)."""
     if conclusion in FAILING and attempt == 1:
         return RERUN
     current = state_of(conclusion)
@@ -90,28 +88,16 @@ def decide(conclusion: str, attempt: int, reported: str | None) -> str | None:
     return RECOVERED if reported == FAILING_STATE else None
 
 
-def _deciding(runs: list[Run]) -> list[Run]:
-    return [
-        run
-        for run in runs
-        if run["event"] in EVENTS
+def superseded(runs: list[Run], current_number: int) -> bool:
+    """Whether a later main run has already succeeded or failed."""
+    return any(
+        run["run_number"] > current_number
+        and run["event"] in EVENTS
         and run["head_branch"] == BRANCH
         and run["status"] == "completed"
         and state_of(run["conclusion"]) is not None
-    ]
-
-
-def superseded(runs: list[Run], current_number: int) -> bool:
-    """Whether a later main run has already succeeded or failed."""
-    return any(run["run_number"] > current_number for run in _deciding(runs))
-
-
-def previous_conclusion(runs: list[Run], current_number: int) -> str | None:
-    """The conclusion of the latest earlier main run that succeeded or failed."""
-    earlier = [run for run in _deciding(runs) if run["run_number"] < current_number]
-    if not earlier:
-        return None
-    return max(earlier, key=lambda run: run["run_number"])["conclusion"]
+        for run in runs
+    )
 
 
 def artifact_name(workflow_id: str) -> str:
@@ -197,7 +183,7 @@ def _write_state(state: State) -> None:
         json.dump(state, file)
     if "GITHUB_OUTPUT" in env:
         with open(env["GITHUB_OUTPUT"], "a") as output:
-            output.write("state-changed=true\n")
+            output.write("state-written=true\n")
 
 
 def main() -> int:
@@ -236,8 +222,7 @@ def main() -> int:
         reported = state["state"]
         source = f"reported by run {state['run_number']} attempt {state['run_attempt']}"
     else:
-        reported = state_of(previous_conclusion(runs, number))
-        source = "from the previous run"
+        reported, source = PASSING_STATE, "nothing reported yet"
     outcome = decide(conclusion, attempt, reported)
     print(
         f"{env['WORKFLOW']}: {conclusion} on attempt {attempt}, "
@@ -252,8 +237,7 @@ def main() -> int:
             )
         else:
             print("::notice::No alert webhook is configured; not posting.")
-    if state is None or current != reported:
-        _write_state(State(state=current, run_number=number, run_attempt=attempt))
+    _write_state(State(state=current, run_number=number, run_attempt=attempt))
     return 0
 
 

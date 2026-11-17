@@ -30,16 +30,13 @@ _spec.loader.exec_module(alert)
     (
         ("failure", 1, "passing", alert.RERUN),
         ("failure", 1, "failing", alert.RERUN),
-        ("timed_out", 1, None, alert.RERUN),
         ("failure", 2, "passing", alert.FAILING_NOW),
-        ("failure", 2, None, alert.FAILING_NOW),
         ("timed_out", 3, "passing", alert.FAILING_NOW),
         ("failure", 2, "failing", None),
         ("timed_out", 2, "failing", None),
         ("success", 1, "failing", alert.RECOVERED),
         ("success", 2, "failing", alert.RECOVERED),
         ("success", 2, "passing", None),
-        ("success", 1, None, None),
         ("cancelled", 1, "passing", None),
         ("skipped", 1, "failing", None),
     ),
@@ -52,21 +49,6 @@ def run(number, conclusion, event="push", branch="main", status="completed"):
     return dict(
         run_number=number, conclusion=conclusion, event=event, head_branch=branch, status=status
     )
-
-
-def test_the_previous_run_skips_unfinished_cancelled_and_other_runs():
-    runs = [
-        run(12, "failure"),  # the current run
-        run(11, "cancelled"),
-        run(10, "success", event="workflow_dispatch"),
-        run(9, "failure", status="in_progress"),
-        run(8, "success", branch="other"),
-        run(7, "timed_out"),
-        run(6, "success"),
-    ]
-    assert alert.previous_conclusion(runs, 12) == "timed_out"
-    assert alert.previous_conclusion(runs, 7) == "success"
-    assert alert.previous_conclusion(runs, 6) is None
 
 
 def test_only_a_later_main_run_that_succeeded_or_failed_supersedes():
@@ -187,7 +169,7 @@ def written_state():
         assert not os.path.exists(output)
         return None
     with open(output) as file:
-        assert file.read() == "state-changed=true\n"
+        assert file.read() == "state-written=true\n"
     with open(path) as file:
         return json.load(file)
 
@@ -244,7 +226,7 @@ def test_a_failure_already_reported_is_not_posted_again(environment):
     ]
     assert alert.main() == 0
     assert posts == []
-    assert written_state() is None
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=3)
 
 
 def test_a_rerun_that_passes_after_a_reported_failure_recovers(environment):
@@ -306,7 +288,27 @@ def test_an_artifact_uploaded_by_another_event_is_skipped():
     assert chosen is older
 
 
-def test_without_a_state_artifact_the_previous_run_decides(environment):
+def test_an_unchanged_state_is_checkpointed_so_an_older_attempt_is_ignored(environment):
+    """Saved passing is run 11's; run 12 attempt 3 passes, then its attempt 2 fails late."""
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_ATTEMPT", "3")
+    monkeypatch.setenv("RUN_CONCLUSION", "success")
+    github.runs = [run(12, "success"), run(11, "success")]
+    github.states = [(dict(state="passing", run_number=11, run_attempt=1), False)]
+    assert alert.main() == 0
+    checkpoint = written_state()
+    assert checkpoint == dict(state="passing", run_number=12, run_attempt=3)
+    github.states.append((checkpoint, False))
+    os.remove(os.environ["STATE_PATH"])
+    os.remove(os.environ["GITHUB_OUTPUT"])
+    monkeypatch.setenv("RUN_ATTEMPT", "2")
+    monkeypatch.setenv("RUN_CONCLUSION", "failure")
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+def test_an_expired_state_artifact_is_not_read(environment):
     _, github, posts = environment
     github.states = [(dict(state="failing", run_number=5, run_attempt=2), True)]
     assert alert.main() == 0
@@ -314,9 +316,19 @@ def test_without_a_state_artifact_the_previous_run_decides(environment):
     assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
 
 
-def test_without_a_state_artifact_a_continued_failure_records_without_posting(environment):
+def test_without_a_state_artifact_a_failure_posts_even_after_earlier_failures(environment):
+    """Runs 11 and 12 fail; 11's handler was superseded, so nothing was reported."""
     _, github, posts = environment
-    github.runs = [run(12, "failure"), run(11, "timed_out")]
+    github.runs = [run(12, "failure"), run(11, "failure")]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_a_reported_failure_is_not_posted_again_by_the_next_failing_run(environment):
+    _, github, posts = environment
+    github.runs = [run(12, "failure"), run(11, "failure")]
+    github.states = [(dict(state="failing", run_number=10, run_attempt=2), False)]
     assert alert.main() == 0
     assert posts == []
     assert written_state() == dict(state="failing", run_number=12, run_attempt=2)

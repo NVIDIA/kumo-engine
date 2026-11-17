@@ -251,8 +251,9 @@ never counted as coverage.
 4. Test the machinery itself: wrong answers, accepted refused requests,
    wrong/additional refusal reasons, row reads, malformed records and missing
    native dependencies must fail.
-5. Run the content policy: the expectation changes come with the guarantee
-   change that explains them, and the new golden files are linked from it.
+5. Run the content policy: expectation changes come with a guarantee change,
+   and the new golden files are linked from it. CI checks only that a
+   guarantee changed; a harness owner reviews whether it explains the change.
 6. Run the existing suite (including the doc-code and link tests), style checks
    and the package build on CPU; run the whole suite again with DiskGraph.
 
@@ -363,9 +364,10 @@ uv build --package kumo-pytorch
 python ../../../.github/scripts/kumo-pytorch-policy.py --base origin/main
 ```
 
-The last command runs the content policy against your local `origin/main`
-(fetch it first). kumo-engine's `Linting` workflow checks that every tracked
-`.py`, `.yml`, `.toml` and other file type listed in
+The last command runs the content policy on your commits (`HEAD`) against your
+local `origin/main`, so commit your changes and fetch `origin/main` first.
+kumo-engine's `Linting` workflow checks that every tracked `.py`, `.yml`,
+`.toml` and other file type listed in
 `/scripts/license_header_policy.json` starts with this header, after a shebang
 or encoding line if any (`python scripts/check_license_headers.py` from the
 repository root):
