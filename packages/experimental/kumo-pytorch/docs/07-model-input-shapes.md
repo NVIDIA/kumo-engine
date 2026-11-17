@@ -8,7 +8,9 @@ builds all four from the same underlying tables, changing the sampling
 
 The four shapes follow published models. They reproduce each model's data
 requirements, not its full training recipe or reported results; each section
-states where it deviates.
+states where it deviates. The examples use DiskGraph; shapes requiring unsupported
+joined fields or current events currently raise explicit refusals. Their tests
+remain failures until those behaviors are supported.
 
 | Shape | Per-event output | Across events | Extra inputs | Objective |
 | --- | --- | --- | --- | --- |
@@ -29,6 +31,27 @@ transactions. Times are whole seconds, and every example below predicts at
 second 30, so the transactions at seconds 35 and 40 are the future.
 
 ```python
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+def parquet_data(rows, schema):
+    """Write this example's small, explicitly typed fixture tables."""
+    root = Path("data")
+    root.mkdir(exist_ok=True)
+    sources = {}
+    for table in schema.tables:
+        arrow_schema = pa.schema(
+            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+        )
+        path = root / f"{table.name}.parquet"
+        pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
+        sources[table.name] = api.Parquet(str(path))
+    return api.Dataset(sources)
+
+
 from kumo.pytorch import api
 
 TS = api.DType(name="timestamp", unit="s", timezone="UTC")
@@ -236,7 +259,7 @@ rows = {
         ),
     ],
 }
-dataset = api.Dataset(tables={name: api.InMemoryRows(rows=table) for name, table in rows.items()})
+dataset = parquet_data({name: table for (name, table) in rows.items()}, schema)
 past = api.Rows(path=("user_transactions",), time=api.TimeWindow(column="occurred_at", stop=0))
 users_at_30 = (
     api.SampleRequest(sample_id="user-1-at-30", entity_id=1, as_of_time=30, split="train"),
@@ -246,10 +269,13 @@ users_at_30 = (
 
 def first_batch(sample, batch, anchors=users_at_30):
     contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
-    # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-    with api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan:
+    with api.prepare(
+        contract=contract,
+        dataset=dataset,
+        engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
+    ) as plan:
         with plan.materialize(anchors=anchors, fit_split="train") as task:
-            return next(task.batches(requests=anchors, seed=17))
+            return next(task.batches(seed=17))
 ```
 
 `first_batch` fits the encoders on the training anchors and returns the first

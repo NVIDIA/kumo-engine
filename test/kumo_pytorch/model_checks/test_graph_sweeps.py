@@ -3,15 +3,22 @@
 from dataclasses import replace
 from datetime import timedelta
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.reference_tokens import history_tokens
-from .fixtures import AMLFixture, CUTOFF, VALUE_FIELDS, build_fixture
+
+from .fixtures import (
+    CUTOFF,
+    VALUE_FIELDS,
+    AMLFixture,
+    build_fixture,
+    probe_anchor_table,
+)
 from .test_aml import CASES
 
 T = int(CUTOFF.timestamp())
@@ -172,53 +179,55 @@ def test_aml_graph_degree_and_fanout(source, selection, family, fanout):
     }
     identities = {str(i): i for i in (1, 2, 3)}
     engine = r.DiskGraphEngine(index=index, num_threads=1)
-    with r.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(
-            requests, fit_split="train", encoder_cutoff=T - 1
-        ) as task:
-            fingerprint = task.fitted_state.fingerprint
-            state = task.fitted_state.to_dict()
-            assert all(
-                "FUTURE_ONLY" not in dict(encoder.get("entries", ()))
-                for encoder in state["encoders"].values()
-            )
-            batches = list(task.batches(requests, batch_size=2, seed=7))
-            assert len(batches) == 1
-            batch = batches[0]
-            assert list(batch.metadata["sample_ids"]) == list(anchors)
-            verify_inputs(
-                batch,
-                family,
-                anchors,
-                reference,
-                identities,
-                list(anchors.values()),
-                graph_reference=expected_graph,
-            )
-            assert batch.targets["label"]["valid"].all()
-            assert batch.targets["label"]["values"].flatten().tolist() == [1.0, 0.0]
-            if len(selected) < sum(degrees):
-                # A full-history expectation must reject this intentionally
-                # sampled graph; sequence/count expectations still remain full.
-                with pytest.raises(AssertionError, match="Graph history differs"):
-                    verify_inputs(
-                        batch,
-                        family,
-                        anchors,
-                        reference,
-                        identities,
-                        list(anchors.values()),
-                    )
-            if family == "combined":
-                stream = batch.inputs["history"]
-                for owner, anchor in enumerate(anchors.values()):
-                    tokens = history_tokens(anchor, history(anchor, reference), state)
-                    assert (
-                        stream["value_ids"][owner][stream["valid"][owner]].tolist()
-                        == tokens
-                    )
-            model = build_model(
-                task, selection, family, dim=8, max_seq_len=11 * max(degrees), seed=17
-            )
-            model.backbone.validate_kumo_batch(batch)
-            assert task.fitted_state.fingerprint == fingerprint
+    with (
+        r.prepare(contract, dataset, engine) as plan,
+        plan.materialize(
+            probe_anchor_table(plan, requests), fit_split="train", encoder_cutoff=T - 1
+        ) as task,
+    ):
+        fingerprint = task.fitted_state.fingerprint
+        state = task.fitted_state.to_dict()
+        assert all(
+            "FUTURE_ONLY" not in dict(encoder.get("entries", ()))
+            for encoder in state["encoders"].values()
+        )
+        batches = list(task.batches(batch_size=2, seed=7, output_format="model"))
+        assert len(batches) == 1
+        batch = batches[0]
+        assert list(batch.metadata["sample_ids"]) == list(anchors)
+        verify_inputs(
+            batch,
+            family,
+            anchors,
+            reference,
+            identities,
+            list(anchors.values()),
+            graph_reference=expected_graph,
+        )
+        assert batch.targets["label"]["valid"].all()
+        assert batch.targets["label"]["values"].flatten().tolist() == [1.0, 0.0]
+        if len(selected) < sum(degrees):
+            # A full-history expectation must reject this intentionally
+            # sampled graph; sequence/count expectations still remain full.
+            with pytest.raises(AssertionError, match="Graph history differs"):
+                verify_inputs(
+                    batch,
+                    family,
+                    anchors,
+                    reference,
+                    identities,
+                    list(anchors.values()),
+                )
+        if family == "combined":
+            stream = batch.inputs["history"]
+            for owner, anchor in enumerate(anchors.values()):
+                tokens = history_tokens(anchor, history(anchor, reference), state)
+                assert (
+                    stream["value_ids"][owner][stream["valid"][owner]].tolist()
+                    == tokens
+                )
+        model = build_model(
+            task, selection, family, dim=8, max_seq_len=11 * max(degrees), seed=17
+        )
+        model.backbone.validate_kumo_batch(batch)
+        assert task.fitted_state.fingerprint == fingerprint

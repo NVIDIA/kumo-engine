@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import prepare_rows
 from tests.test_model_history_limits import _Queries, _sample
 from tests.test_model_history_limits import history_data as history_data
 from tests.test_preview import _equal as assert_equal
@@ -46,7 +47,7 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
     rows = [[40, 10], [], [40, 10], [80]] if keep == "first" else [[50, 60], [], [30, 20], [80]]
     if order == "descending":
         rows = [row[::-1] for row in rows]
-    with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
+    with prepare_rows(spec, memory) as plan:
         with plan.materialize(requests, fit_split="train") as task:
             reference = next(task.batches(requests, batch_size=4))
             actual = reference.inputs["history"]
@@ -93,10 +94,7 @@ def test_event_direction_does_not_replace_explicit_sample_selection(history_data
             events={"orders": replace(spec.sample.events["orders"], order="descending", limit=3)},
         ),
     )
-    for dataset, engine in [
-        (memory, api.InMemoryEngine()),
-        (parquet, api.DiskGraphEngine(index=index)),
-    ]:
+    for dataset, engine in [(parquet, api.DiskGraphEngine(index=index))]:
         with api.prepare(spec, dataset, engine) as plan:
             with plan.materialize(requests, fit_split="train") as task:
                 batch = next(
@@ -254,7 +252,7 @@ def test_token_inputs_share_the_same_direction_on_both_paths(history_data, repre
                 },
             ),
         )
-        with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
+        with prepare_rows(spec, memory) as plan:
             with plan.materialize(requests, fit_split="train") as task:
                 reference = next(task.batches(requests, batch_size=4))
         with api.prepare(spec, parquet, api.DiskGraphEngine(index=index)) as plan:
@@ -285,7 +283,7 @@ def test_fitting_is_independent_of_delivery_direction(history_data):
                 },
             ),
         )
-        with api.prepare(spec, memory, api.InMemoryEngine()) as plan:
+        with prepare_rows(spec, memory) as plan:
             with plan.materialize(requests, fit_split="train") as task:
                 states.append(task.bound_contract().batch.inputs["history"].representation)
     assert states[0] == states[1]
@@ -351,19 +349,19 @@ def test_aligned_target_fitting_keeps_canonical_reduction_order(built_samples):
             ),
         )
         if built_samples:
-            from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+            from tests.native_fixtures import NativeSamples
 
             with api.prepare_batch_spec(
                 sample,
                 spec.batch,
-                InMemorySampleBuilder(schema, rows).build(sample, request),
+                NativeSamples(schema, rows).build(sample, request),
                 contract=spec,
             ) as plan:
                 encoder = plan.target(name="labels").field(name="label").encoder
                 states.append((encoder.mean, encoder.scale))
         else:
             dataset = api.Dataset({name: api.InMemoryRows(value) for name, value in rows.items()})
-            with api.prepare(spec, dataset, api.InMemoryEngine()) as plan:
+            with prepare_rows(spec, dataset) as plan:
                 with plan.materialize(request) as task:
                     encoder = task.target(name="labels").field(name="label").encoder
                     states.append((encoder.mean, encoder.scale))

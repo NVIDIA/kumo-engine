@@ -13,6 +13,7 @@ import pytest
 from conformance.assertions import require_engine
 from kumo.pytorch import api
 from kumo.pytorch.assembly import _FIT_CHUNK
+from tests.native_fixtures import request_anchor_table
 from tests.test_anchor_tables import SCHEMA
 from tests.test_diskgraph_backend import _write_parquet
 
@@ -59,7 +60,10 @@ def test_anchors_on_both_sides_of_a_chunk_edge_are_each_fitted_once(
     dataset = _write_parquet(rows, tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
     requests = [api.SampleRequest(f"u{user}", user, 100) for user in users]
-    with api.prepare(CONTRACT, dataset, engine) as plan, plan.materialize(requests) as task:
+    with (
+        api.prepare(CONTRACT, dataset, engine) as plan,
+        plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task,
+    ):
         spent = task.output("spent").field(name="spent").encoder
         later = task.target("later").field(name="value").encoder
 

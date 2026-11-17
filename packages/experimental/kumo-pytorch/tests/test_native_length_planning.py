@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import native_anchor_table
 from tests.test_model_history_limits import history_data as history_data
 from tests.test_preview import _equal
 
@@ -83,7 +84,7 @@ def test_native_planning_without_event_primary_key(
     path = tmp_path / "anchors.parquet"
     owners = [1, 3, 2, 1] * 32
     pq.write_table(pa.table({"entity": owners, "cutoff": [5] * len(owners)}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "cutoff")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     assert not api.check(contract, dataset, engine, anchors=anchors)
     with api.prepare(contract, dataset, engine) as plan:
@@ -187,7 +188,7 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
     )
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"entity": [2, 1] * 3, "cutoff": [10] * 6}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(
         contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
@@ -280,7 +281,7 @@ def test_native_planning_matches_python_and_caches_lengths(
         ),
         path,
     )
-    table = api.AnchorTable(
+    table = native_anchor_table(
         api.Parquet(str(path)), "entity", "cutoff", sample_id="sid", split="split"
     )
     with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
@@ -406,7 +407,7 @@ def test_precomputed_text_lengths_drive_native_budget_without_planning_encoding(
     )
     anchors_path = tmp_path / "text-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 1, 2, 3] * 6, "cutoff": [2, 6, 5, 5] * 6}), anchors_path)
-    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(anchors_path)), "entity", "cutoff")
     with api.prepare(
         api.DataLoaderSpec(schema, sample, batch),
         dataset,
@@ -484,7 +485,7 @@ def test_nested_native_composition_matches_existing_length_policy(
     )
     path = tmp_path / "nested-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 2, 1, 3] * 7, "cutoff": [2, 5, 6, 5] * 7}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
@@ -528,7 +529,7 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
     )
     path = tmp_path / "tail.parquet"
     pq.write_table(pa.table({"entity": [1] * 13, "cutoff": [4] * 13}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(
         api.DataLoaderSpec(schema, sample, spec),
         dataset,
@@ -610,7 +611,7 @@ def test_native_costs_include_derived_hour_and_missing_fields(history_data, tmp_
         api.DiskGraphEngine(index=tmp_path / "hour-index", num_threads=2),
     ) as plan:
         with plan.materialize(
-            api.AnchorTable(api.Parquet(str(path)), "entity", "at"), fit_split=api.ALL_ANCHORS
+            native_anchor_table(api.Parquet(str(path)), "entity", "at"), fit_split=api.ALL_ANCHORS
         ) as task:
             from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
@@ -669,7 +670,7 @@ def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
     )
     path = tmp_path / "constant-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 2, 3], "cutoff": [5, 5, 5]}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(
         api.DataLoaderSpec(schema, sample, batch),
         dataset,
@@ -774,7 +775,7 @@ def test_counting_policies_are_used_by_native_budget_planning(
     )
     anchors_path = tmp_path / "counted-anchors.parquet"
     pq.write_table(pa.table({"entity": [1], "cutoff": [10]}), anchors_path)
-    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "cutoff")
+    anchors = native_anchor_table(api.Parquet(str(anchors_path)), "entity", "cutoff")
     with api.prepare(
         contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
@@ -839,7 +840,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
     )
     path = tmp_path / "row-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 3] * 3, "at": [5] * 6}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "at")
     with api.prepare(
         spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
@@ -891,7 +892,7 @@ def test_native_entity_length_input_is_explicitly_refused(history_data, tmp_path
     )
     path = tmp_path / "entity-anchors.parquet"
     pq.write_table(pa.table({"entity": [1, 3], "at": [5, 5]}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    anchors = native_anchor_table(api.Parquet(str(path)), "entity", "at")
     with api.prepare(
         spec, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
@@ -941,7 +942,7 @@ def test_current_event_length_input_is_refused_before_native_iteration(
 def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     path = tmp_path / "review-anchors.parquet"
     pq.write_table(pa.table({"entity": list(entities), "at": [cutoff] * len(entities)}), path)
-    return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+    return native_anchor_table(api.Parquet(str(path)), "entity", "at")
 
 
 def _reference_batches(task):

@@ -76,7 +76,7 @@ def _tokenizer(task: api.Task) -> str:
     return task.output("transactions").field(name="description").encoder.tokenizer_json
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engine_name):
     dataset, engine = _setup(engine_name, tmp_path)
     expected = train_text(TEXT, [_column("card_transactions", "description", LATEST)])
@@ -88,19 +88,18 @@ def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engi
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
         texts = tmp_path.glob("index/col_stats/*/*.text-*.tokenizer.json")
         published.append({path: path.stat().st_mtime_ns for path in texts})
-    if engine_name == "diskgraph":
-        assert any(".text-" in name for name in statistics["col_stats"])
-        assert published[0] == published[1]
-        (path,) = published[0]
-        assert json.loads(path.read_text())["tokenizer"] == expected
-        umask = os.umask(0)
-        os.umask(umask)
-        assert path.stat().st_mode & 0o777 == 0o666 & ~umask
+    assert any(".text-" in name for name in statistics["col_stats"])
+    assert published[0] == published[1]
+    (path,) = published[0]
+    assert json.loads(path.read_text())["tokenizer"] == expected
+    umask = os.umask(0)
+    os.umask(umask)
+    assert path.stat().st_mode & 0o777 == 0o666 & ~umask
 
 
 def test_both_engines_and_every_thread_count_train_the_same_tokenizer(tmp_path):
     tokenizers = set()
-    for name, threads in (("in_memory", None), ("diskgraph", 1), ("diskgraph", 4)):
+    for name, threads in (("diskgraph", 1), ("diskgraph", 4)):
         dataset, engine = _setup(name, tmp_path / f"{name}-{threads}")
         if threads:
             engine = api.DiskGraphEngine(index=engine.index, num_threads=threads)

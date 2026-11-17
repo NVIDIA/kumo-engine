@@ -27,11 +27,11 @@ from implementation gaps. This rule applies to every remaining criterion.
   GraphSAGE/nuFormer/Fusion involvement, PRAGMA masked-value pretraining and
   nuFormer next-token pretraining. Preserve finite-loss/gradient, every-parameter
   update and loss-decrease checks. See [training acceptance](docs/training-acceptance.md).
-- New correctness tests and coverage sweeps are DiskGraph-only, per the user's
-  2026-11-17 correction. Remove PR-introduced InMemory variants; preserve the
-  pre-existing package tests. Migrate unique InMemory-only acceptance checks to
-  DiskGraph rather than losing their assertions. Polars/GPU timing references
-  remain in scope. See the [golden audit](docs/arena-golden-audit.md).
+- Correctness tests, conformance and runnable examples are DiskGraph-only, per
+  the user's expanded 2026-11-17 instruction. Migrate inherited package tests
+  and retain their independent expected answers. InMemory must never supply an
+  answer or execute indirectly. Polars/GPU timing references remain in scope.
+  See the [golden audit](docs/arena-golden-audit.md).
 - Keep all new test models, workload definitions, fixtures, dataset records and
   tooling under `test/kumo_pytorch/`, outside the installed package.
 - Target roughly 20 minutes end to end by running independent campaigns,
@@ -228,7 +228,7 @@ the nightly; the existing PR/main package workflow remains independent.
 | Owner | Existing coverage to retain | AML addition |
 | --- | --- | --- |
 | Package regressions: `packages/experimental/kumo-pytorch/tests/` | Generic time boundaries, target layouts, masking, padding, encoders, persistence and API regressions | No duplicate generic cases; package defects such as decimal transport get regressions here |
-| Existing nightly conformance job | Goldens, generated properties, dtype coverage and backend comparisons on both engines | AML source/task expectations only; do not recreate the conformance harness |
+| Existing nightly conformance job | DiskGraph goldens, native properties, dtype coverage and batch boundaries; no InMemory execution | AML source/task expectations only; do not recreate the conformance harness |
 | Existing nightly retail lifecycle jobs | Training, persistence, fresh-process inference, serving, finetuning and leakage checks | AML persistence, inference and frozen-input finetuning use the same artifact/weight APIs, followed by optimizer resume; no copied retail checks or thresholds |
 | `test/kumo_pytorch/` | AML acquisition, source mapping, anchors and copied model consumers | Next-24-hour involvement labels, eligible windows, v1/v2 clock translation, sender/receiver/self-transfer histories and loss consumption across the three AML models |
 
@@ -1165,3 +1165,98 @@ The five existing GPU reference tests now run through the actual cgroup launcher
 matching the campaign launch boundary that the previous direct tests missed.
 A subprocess regression also checks cache-path expansion and preserved thread
 configuration. Live Linux/CUDA validation of this follow-up is pending.
+
+
+## Native correctness migration
+
+The user requires DiskGraph to match independent expected answers, with no
+InMemory execution or reference oracle in tests or examples. Package fixtures
+now write typed Parquet, and direct sample tests prepare real native sources.
+Conformance defaults to DiskGraph; all behavior properties remain required.
+Generated aggregate/target answers and sequence selection are calculated from
+fixture rows. Fitted statistics use the declared fitting population. Graph
+checks validate eligible layer-by-layer expansion. Native reload/resume and
+permutation checks retain their stated invariants.
+
+The nightly behavior command remains `--engine diskgraph --no-in-memory` with
+pinned and 12 daily seeds; that flag excludes harness self-tests only. Package
+and DiskGraph workflows run the full native conformance harness. Runtime guards
+reject deprecated engine calls. No new skip, xfail or native gap record is added.
+
+Implementation is complete; native acceptance remains failing. Validation on
+2026-11-17 used the existing compatible local extension, not a rebuild from this
+branch. CI must build and validate the final revision. The earlier 183-check
+conformance result predates this migration and does not establish its acceptance.
+
+- Broad package run: 1,486 passed, 273 failed, five platform skips and three
+  notebook deselections. Follow-up corrections fixed typed Parquet fixtures,
+  API-signature preservation, native validation-message assertions and test
+  artifact isolation. The affected eight modules then had 190 passes and 58
+  ordinary failures. These are separate runs, not an all-green suite.
+- Full conformance: 579 passed and two failed. The harness failure came from
+  patching a function after its callable had been captured; both corrected
+  sharding self-tests pass. The remaining behavior failure is generated
+  sequence tie selection/ordering; its expected answers remain unchanged.
+- Sixteen deliberate answer corruptions are detected, including altered fitted
+  state, encoded values, graph topology and missing supervision. The two clean
+  native backend fixtures also pass. Standalone tooling: 209 passed.
+- Ruff, formatting, documentation links and workflow security pass. Fresh
+  independent review and a scoped review of final fixture corrections have no
+  remaining findings; the latter also ran 22 passing focused checks.
+- Local package build is blocked by installed uv 0.12.15 versus required
+  0.13.7. The repository license-header check also reports pre-existing missing
+  headers in `test/kumo_pytorch/`; that validation preceded the AnchorTable follow-up below.
+  Linux memory, GPU and full nightly execution were not rerun.
+
+Package gaps exposed by migration include unsupported contracts, empty-table
+ingestion, native anchor ordering/identity, worker batch delivery and the
+`ServingAssembler` dependency on InMemoryEngine/InMemorySource. These are ordinary
+failures. Replacing the serving implementation is a separate package change;
+the suite does not bypass its deprecated-engine dependency. No package runtime
+implementation was changed, and this revision is not ready to merge.
+
+## Scoped AnchorTable follow-up
+
+The user limited this migration to the suite and workflows proposed in #353:
+`test/kumo_pytorch`, package tests already added or extended by the PR, and
+their necessary helpers. Unrelated package tests, runnable docs and notebooks
+from the broader audit are outside this follow-up. Earlier authorized InMemory
+removal is preserved. Public API removal remains a separate change.
+
+The AML correctness probes and package sweep/lifecycle callers now project
+bounded fixture records to Parquet AnchorTables before materialization and use
+request-free model iteration. Fit-only populations and held-out populations
+remain separate. Serving requests and explicit output-format comparisons retain
+their own API coverage. Existing inherited helper/example paths are not claimed
+as fully migrated. No runtime implementation or workflow scheduling was changed
+by this follow-up.
+
+Benchmark instrumentation requires native history planning from the contract,
+alongside existing native-iterator exhaustion, length planning and second-epoch
+cache-reuse assertions. Missing history plans are a required failure-injection
+case. Native handoff expectations use authored fixture answers, with exact
+tensor shapes/dtypes and validity masks. Graph harness faults exercise native
+sampling and preserve the distinctions between first-hop ties, later-hop
+cutoffs, fanout and recency.
+
+Local validation (2026-11-17, existing compatible extension; CI rebuild pending):
+
+- Scoped AML correctness/profiling: 188 passed.
+- Required-coverage accounting and automation: 59 passed. Scoped lint and
+  `git diff --check` pass; the scoped direct-call audit finds no explicit
+  `Task.batches(requests)` calls.
+- Native handoff, boundaries, feature/width/fitting/decimal/graph sweeps and
+  initial varlen checks: 201 passed, three failed, three platform skips.
+  Failures expose unshuffled order with two/three storage shards and unsupported
+  `EventsOf` native length planning.
+- Final lifecycle, varlen, source-anchor and multisource checks: 34 passed,
+  45 failed, one CUDA skip. Failures include native length planning, generated
+  anchor fingerprint changes on reload, split metadata differences, unsupported
+  contracts/empty-table ingestion and inherited serving's deprecated backend.
+  They remain ordinary failures, with no new skip/xfail or gap exemptions.
+- Corrected graph harness: 72 passed; both native inference target-read spies
+  also pass. Deliberately disabling tied-root expansion now breaks both tied-hop
+  probes, verifying the final review correction.
+- Three independent review rounds identified mask and fault-injection issues;
+  each was corrected and checked locally. No subsequent clean review or full
+  nightly acceptance is claimed.

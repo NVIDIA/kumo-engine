@@ -134,7 +134,9 @@ def source(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.mark.parametrize("fault", ["native-fallback", "cache-reset"])
+@pytest.mark.parametrize(
+    "fault", ["native-fallback", "cache-reset", "missing-history-plan"]
+)
 def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
     from kumo.pytorch.engines.native_anchors import NativeAnchors
 
@@ -142,7 +144,7 @@ def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
         # A materialized table alone must not qualify native execution.
         monkeypatch.setattr(NativeAnchors, "_typed_batches", lambda *a, **kw: iter(()))
         message = "bypassed the native AnchorTable model iterator"
-    else:
+    elif fault == "cache-reset":
         original = NativeAnchors._iter
 
         def reset(self, *args, **kwargs):
@@ -154,6 +156,22 @@ def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
 
         monkeypatch.setattr(NativeAnchors, "_iter", reset)
         message = "replaced the native per-anchor length cache"
+    else:
+        from test.kumo_pytorch.benchmarking.kumo_observers import KumoObservers
+
+        original = KumoObservers._native_iterator
+
+        def missing_history(self, native):
+            observed = original(self, native)
+
+            def call(owner, stage, **kwargs):
+                kwargs["history"] = None
+                return observed(owner, stage, **kwargs)
+
+            return call
+
+        monkeypatch.setattr(KumoObservers, "_native_iterator", missing_history)
+        message = "omitted the contract's merged-history plan"
     result = run(
         factory,
         {
@@ -170,7 +188,9 @@ def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
         epochs=2,
     )
     assert result["execution_status"] == "failed"
-    assert any(message in row["traceback"] for row in result["errors"])
+    assert any(message in row["traceback"] for row in result["errors"]), result[
+        "errors"
+    ]
     assert not result["native_iterations"][-1]["complete"]
 
 

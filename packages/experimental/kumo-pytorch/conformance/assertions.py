@@ -20,11 +20,10 @@ from conformance.cases import GoldenCase
 from conformance.fixtures import values as fixture_values
 from conformance.registry import DimensionValue
 from kumo.pytorch.api import (
+    NON_TEMPORAL,
     DataLoaderSpec,
     Dataset,
     DiskGraphEngine,
-    InMemoryEngine,
-    InMemoryRows,
     Parquet,
     TableSpec,
     ValidationError,
@@ -81,7 +80,7 @@ def require_engine(engine_name: str) -> None:
 @contextmanager
 def bound_case(
     case: GoldenCase, engine_name: str, *, refusal: bool = False
-) -> Iterator[tuple[Dataset, InMemoryEngine | DiskGraphEngine]]:
+) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
     with bound_tables(
         case.contract, case.tables, engine_name, refusal=refusal, types=case.physical_types
     ) as bound:
@@ -97,17 +96,9 @@ def bound_tables(
     refusal: bool = False,
     parts: int = 1,
     types: Mapping[str, Mapping[str, str]] | None = None,
-) -> Iterator[tuple[Dataset, InMemoryEngine | DiskGraphEngine]]:
+) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
     """Bind rows to an engine; ``parts`` splits each Parquet table into that many files."""
-    if engine_name == "in_memory":
-        dataset = Dataset(
-            {
-                name: InMemoryRows(UnreadableRows() if refusal else list(rows))
-                for name, rows in tables.items()
-            }
-        )
-        yield dataset, InMemoryEngine()
-    elif engine_name == "diskgraph":
+    if engine_name == "diskgraph":
         require_engine(engine_name)
         with tempfile.TemporaryDirectory(prefix="conformance-") as temporary:
             directory = Path(temporary)
@@ -130,6 +121,72 @@ def bound_tables(
             )
     else:
         raise ValueError(f"unknown conformance engine {engine_name!r}")
+
+
+def write_anchor_table(requests, path, *, schema=None):
+    """Project bounded expected records to native anchors, retaining labels and metadata."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch.api import AnchorTable, Parquet
+
+    requests = list(requests)
+    assert not any(row.candidates for row in requests), "candidate projection is not supported"
+    targets = sorted({target.name for row in requests for target in row.targets})
+    metadata = sorted({name for row in requests for name in row.metadata})
+    rows = [
+        {
+            "sample_id": row.sample_id,
+            "entity_id": row.entity_id,
+            "as_of_time": row.as_of_time,
+            "split": row.split,
+            **{
+                f"target_{name}": next((t.value for t in row.targets if t.name == name), None)
+                for name in targets
+            },
+            **{name: row.metadata.get(name) for name in metadata},
+        }
+        for row in requests
+    ]
+    data = (
+        pa.Table.from_pylist(rows)
+        if rows
+        else pa.table(
+            {
+                "sample_id": pa.array([], type=pa.string()),
+                "entity_id": pa.array([], type=pa.int64()),
+                "as_of_time": pa.array([], type=pa.timestamp("s", tz="UTC")),
+                "split": pa.array([], type=pa.string()),
+            }
+        )
+    )
+    clock = data.schema.field("as_of_time")
+    if pa.types.is_integer(clock.type):
+        position = data.schema.get_field_index("as_of_time")
+        data = data.set_column(
+            position, "as_of_time", data["as_of_time"].cast(pa.timestamp("s", tz="UTC"))
+        )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        pq.write_table(data, path)
+    else:
+        existing = pq.read_table(path)
+        assert existing.equals(data.cast(existing.schema)), (
+            "anchor projection path was reused for different rows"
+        )
+    return AnchorTable(
+        Parquet(str(path.resolve())),
+        "entity_id",
+        "as_of_time"
+        if schema is None
+        or any(table.time_column not in (None, NON_TEMPORAL) for table in schema.tables)
+        else None,
+        sample_id="sample_id",
+        split="split" if any(row.split is not None for row in requests) else None,
+        targets={name: f"target_{name}" for name in targets},
+        metadata=metadata,
+    )
 
 
 def write_parquet(

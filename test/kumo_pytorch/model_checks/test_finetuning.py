@@ -16,7 +16,7 @@ from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.training_lifecycle import check_training
 
-from .fixtures import CUTOFF, build_fixture
+from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 from .test_aml import CASES
 
 
@@ -60,7 +60,9 @@ def save_pretrained(directory, selection, family):
                 r.DiskGraphEngine(index=directory / "index", num_threads=1),
             ) as plan,
             plan.materialize(
-                training, fit_split="train", encoder_cutoff=stamp - 1
+                probe_anchor_table(plan, training),
+                fit_split="train",
+                encoder_cutoff=stamp - 1,
             ) as task,
         ):
             model = build_model(
@@ -68,7 +70,7 @@ def save_pretrained(directory, selection, family):
             )
             optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
             result = model.training_step(
-                next(task.batches(training, batch_size=2, seed=17))
+                next(task.batches(batch_size=2, seed=17, output_format="model"))
             )
             assert result.weight > 0 and torch.isfinite(result.loss)
             result.loss.backward()

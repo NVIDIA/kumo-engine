@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
+from tests.native_fixtures import prepare_rows, request_anchor_table
 from tests.test_diskgraph_backend import (
     _fixture_rows,
     _pragma_contract,
@@ -41,12 +42,12 @@ def _check(history: dict) -> None:
         assert node[f"{prefix}max_seqlen"] == int((offsets[1:] - offsets[:-1]).max())
 
 
-def test_in_memory_two_level_packing_carries_cu_seqlens() -> None:
+def test_native_two_level_packing_carries_cu_seqlens() -> None:
     rows = _fixture_rows()
     dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-    with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
-        task = plan.materialize(_requests(), fit_split="train")
-        _check(next(iter(task.batches(_requests(), batch_size=2))).inputs["history"])
+    with prepare_rows(_two_level_contract(), dataset) as plan:
+        task = plan.materialize(request_anchor_table(_requests()), fit_split="train")
+        _check(next(iter(task.batches(batch_size=2, output_format="model"))).inputs["history"])
 
 
 def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
@@ -54,8 +55,8 @@ def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
     parquet = _write_parquet(_fixture_rows(), tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with api.prepare(_two_level_contract(), parquet, engine) as plan:
-        task = plan.materialize(_requests(), fit_split="train")
-        batch = next(iter(task.batches(_requests(), batch_size=2, output_format="model")))
+        task = plan.materialize(request_anchor_table(_requests()), fit_split="train")
+        batch = next(iter(task.batches(batch_size=2, output_format="model")))
         _check(batch.inputs["history"])
 
 
@@ -72,9 +73,13 @@ def test_varlen_attention_consumes_the_metadata_directly() -> None:
 
     rows = _fixture_rows()
     dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-    with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
-        task = plan.materialize(_requests(), fit_split="train")
-        history = next(iter(task.batches(_requests(), batch_size=2))).to("cuda").inputs["history"]
+    with prepare_rows(_two_level_contract(), dataset) as plan:
+        task = plan.materialize(request_anchor_table(_requests()), fit_split="train")
+        history = (
+            next(iter(task.batches(batch_size=2, output_format="model")))
+            .to("cuda")
+            .inputs["history"]
+        )
     tokens = history["field_ids"].numel()
     q = torch.randn(tokens, 2, 64, device="cuda", dtype=torch.bfloat16)
     cu, longest = history["field_cu_seqlens"], history["field_max_seqlen"]

@@ -4,8 +4,8 @@
 
 name: PyTorch — DiskGraph Tests
 
-# Both engines against the same golden cases, the whole suite with no test
-# skipped for a missing import, and every example notebook from a fresh kernel,
+# DiskGraph golden cases, package checks with no test skipped for a missing
+# import, and every example notebook from a fresh kernel,
 # on DiskGraph built from this commit's packages/diskgraph. A third job builds
 # the package and runs the README quick start and the notebooks from its wheel,
 # installed with DiskGraph's into a fresh environment. Runs on DiskGraph changes
@@ -61,12 +61,12 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Both engines against the same golden cases
-        run: python -m conformance --engine all
+      - name: DiskGraph conformance
+        run: python -m conformance --engine diskgraph
       - name: Every test, failing any that skips for a missing dependency
         run: |
           python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
-          python -m pytest -q --require-imports
+          python -m pytest -q --require-imports --ignore=tests/conformance
 
   notebooks:
     name: Examples / Notebooks

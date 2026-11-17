@@ -150,3 +150,27 @@ def sample_histories() -> list[EntityHistory]:
         EntityHistory(1, 3_000, entity, events),
         EntityHistory(2, 3_000, entity, events),
     ]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _native_session_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _native_fixture_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_deprecated_engine():
+    from tests.native_fixtures import forbid_deprecated_engine
+
+    with forbid_deprecated_engine():
+        yield

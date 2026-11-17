@@ -24,7 +24,6 @@ from kumo.pytorch.api import (
     EntitySource,
     EntitySpec,
     Field,
-    InMemoryEngine,
     InMemoryRows,
     Input,
     Parquet,
@@ -45,6 +44,7 @@ from kumo.pytorch.assembly import fit_plan
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
+from tests.native_fixtures import check_rows, native_engine, parquet_dataset, prepare_rows
 
 USERS = TableSpec(
     "users",
@@ -116,9 +116,10 @@ class _RefusesEverything:
 class TestDatasetDescribesDataNotEngines:
     """The correction that shapes everything else: a dataset names bytes."""
 
-    def test_the_same_dataset_is_checked_by_each_engine(self) -> None:
-        assert check(CONTRACT, PARQUET, InMemoryEngine())
-        assert check(CONTRACT, PARQUET, DiskGraphEngine(index="/i")) == ()
+    def test_dataset_source_kinds_are_checked_without_opening(self) -> None:
+        engine = DiskGraphEngine(index="/i")
+        engine.open = lambda *args: pytest.fail("check opened the dataset")
+        assert check(CONTRACT, PARQUET, engine) == ()
 
     def test_a_source_renames_physical_columns_to_logical_ones(self) -> None:
         source = Parquet("/lake/events", columns={"ts": "occurred_at"})
@@ -156,7 +157,7 @@ class TestBindingIsCheckedBeforeAnyDataIsRead:
         assert any("orders" in issue.message for issue in issues)
 
     def test_an_engine_that_cannot_read_the_format_is_refused(self) -> None:
-        issues = check(CONTRACT, IN_MEMORY, DiskGraphEngine(index="/i"))
+        issues = check(CONTRACT, FIXTURE_ROWS, DiskGraphEngine(index="/i"))
         issue = next(item for item in issues if "does not read" in item.message)
         assert "in_memory" in issue.message
         assert issue.code == "DG-SOURCE-KIND"
@@ -188,14 +189,13 @@ class TestEnginesRefuseEarly:
         with pytest.raises(ValidationError):
             prepare(CONTRACT, PARQUET, _RefusesEverything())
 
-    def test_the_in_memory_engine_declares_nothing_unsupported(self) -> None:
-        assert not hasattr(InMemoryEngine(), "unsupported")
-        assert check(CONTRACT, IN_MEMORY, InMemoryEngine()) == ()
+    def test_native_fixture_passes_preflight(self) -> None:
+        assert check_rows(CONTRACT, FIXTURE_ROWS) == ()
 
 
 class TestSelection:
     def test_engines_register_themselves(self) -> None:
-        assert set(available_engines()) >= {"diskgraph", "in_memory"}
+        assert set(available_engines()) >= {"diskgraph"}
 
     def test_a_name_resolves_to_the_same_class_as_construction(self) -> None:
         assert isinstance(engine_from_name("diskgraph", index="/i"), DiskGraphEngine)
@@ -206,57 +206,64 @@ class TestSelection:
 
     def test_registering_a_second_class_under_one_name_is_refused(self) -> None:
         with pytest.raises(ValueError, match="already registered"):
-            register_engine("in_memory", DiskGraphEngine)
+            register_engine("diskgraph", _Stub)
 
     def test_re_registering_the_same_class_is_harmless(self) -> None:
-        register_engine("in_memory", InMemoryEngine)
+        register_engine("diskgraph", DiskGraphEngine)
 
     def test_engines_satisfy_the_engine_protocol(self) -> None:
-        for engine in (InMemoryEngine(), DiskGraphEngine(index="/i"), _RefusesEverything()):
+        for engine in (DiskGraphEngine(index="/i"), _RefusesEverything()):
             assert isinstance(engine, Engine)
 
 
 ROWS = [{"user_id": index, "country": value} for index, value in enumerate(["US", "GB", "US"], 1)]
-IN_MEMORY = Dataset({"users": InMemoryRows(ROWS), "events": InMemoryRows([])})
+FIXTURE_ROWS = Dataset(
+    {
+        "users": InMemoryRows(ROWS),
+        "events": InMemoryRows([{"event_id": 1, "user_id": 1, "occurred_at": 200}]),
+    }
+)
 REQUESTS = tuple(SampleRequest(f"s{i}", entity_id=i, as_of_time=100) for i in (1, 2, 3))
 
 
-class TestTheInMemoryEngineRunsThroughTheSeam:
-    """The first engine behind the boundary, and the proof the boundary works."""
+class TestDiskGraphRunsThroughTheSeam:
+    """Real Parquet sources exercise the public engine boundary."""
 
     def test_a_materialized_task_emits_batches(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
         batch = next(iter(task.batches(REQUESTS)))
         assert list(batch.inputs) == ["values"]
 
     def test_model_output_requires_an_engine_optimized_source(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        with pytest.raises(ValueError, match="does not implement"):
-            next(iter(task.batches(REQUESTS, output_format="model")))
+        engine = TestTheOpenedSourceIsOwned._Counting()
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
+            task = plan.materialize(REQUESTS)
+            with pytest.raises(ValueError, match="does not implement"):
+                next(task.batches(output_format="model"))
 
     def test_output_format_is_explicit(self) -> None:
-        task = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
         with pytest.raises(ValueError, match="inspectable.*model"):
             next(iter(task.batches(REQUESTS, output_format="fast")))
 
     def test_preparing_twice_is_deterministic(self) -> None:
-        first = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
-        second = prepare(CONTRACT, IN_MEMORY, InMemoryEngine()).materialize(REQUESTS)
+        first = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
+        second = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
         assert first.fitted_state == second.fitted_state
         assert first.manifest["artifact_fingerprint"] == second.manifest["artifact_fingerprint"]
         assert first.fingerprints == second.fingerprints
 
     def test_an_engine_refuses_a_source_kind_it_does_not_read(self) -> None:
-        issues = check(CONTRACT, PARQUET, InMemoryEngine())
+        issues = check(CONTRACT, FIXTURE_ROWS, native_engine())
         issue = next(item for item in issues if "does not read" in item.message)
-        assert "parquet" in issue.message
+        assert "in_memory" in issue.message
 
     def test_opening_a_mismatched_source_is_typed_not_guessed(self) -> None:
-        with pytest.raises(TypeError, match="in-memory rows only"):
-            InMemoryEngine().open(PARQUET, SCHEMA)
+        with pytest.raises(TypeError, match="Parquet"):
+            native_engine().open(FIXTURE_ROWS, SCHEMA)
 
     def test_a_source_closes_without_holding_anything(self) -> None:
-        source = InMemoryEngine().open(IN_MEMORY, SCHEMA)
+        source = prepare_rows(CONTRACT, FIXTURE_ROWS)._source
         source.close()
         source.close()
 
@@ -278,7 +285,7 @@ class TestTheOpenedSourceIsOwned:
 
             class _Source:
                 def __init__(self):
-                    self._inner = InMemoryEngine().open(dataset, schema)
+                    self._inner = native_engine().open(dataset, schema)
 
                 def build(self, spec, requests):
                     if engine._fail:
@@ -293,45 +300,46 @@ class TestTheOpenedSourceIsOwned:
 
                 def close(self):
                     engine.closed += 1
+                    self._inner.close()
 
             return _Source()
 
     def test_a_plan_closes_the_source_it_owns(self) -> None:
         engine = self._Counting()
-        plan = prepare(CONTRACT, IN_MEMORY, engine)
+        plan = prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine)
         assert engine.closed == 0
         plan.close()
         assert engine.closed == 1
 
     def test_closing_twice_is_harmless(self) -> None:
         engine = self._Counting()
-        plan = prepare(CONTRACT, IN_MEMORY, engine)
+        plan = prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine)
         plan.close()
         plan.close()
         assert engine.closed == 1
 
     def test_a_plan_is_a_context_manager(self) -> None:
         engine = self._Counting()
-        with prepare(CONTRACT, IN_MEMORY, engine) as plan:
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
             assert next(iter(plan.materialize(REQUESTS).batches(REQUESTS))) is not None
         assert engine.closed == 1
 
     def test_a_failed_materialization_leaves_the_plan_to_its_owner(self) -> None:
         engine = self._Counting(fail=True)
-        with prepare(CONTRACT, IN_MEMORY, engine) as plan:
+        with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
             with pytest.raises(RuntimeError, match="fitting blew up"):
                 plan.materialize(REQUESTS)
             assert engine.closed == 0
         assert engine.closed == 1
 
     def test_a_closed_plan_refuses_to_materialize(self) -> None:
-        plan = prepare(CONTRACT, IN_MEMORY, InMemoryEngine())
+        plan = prepare_rows(CONTRACT, FIXTURE_ROWS)
         plan.close()
         with pytest.raises(ValueError, match="closed"):
             plan.materialize(REQUESTS)
 
     def test_a_plan_built_from_a_borrowed_source_does_not_close_it(self) -> None:
-        source = InMemoryEngine().open(IN_MEMORY, SCHEMA)
+        source = prepare_rows(CONTRACT, FIXTURE_ROWS)._source
         plan = fit_plan(CONTRACT.sample, CONTRACT.batch, REQUESTS, source, contract=CONTRACT)
         plan.close()
         assert next(iter(plan.batches(REQUESTS))) is not None

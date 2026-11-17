@@ -80,6 +80,7 @@
     "model_checks/test_benchmark_aml.py::test_build_once_and_two_reopens_measure_all_stages",
     "model_checks/test_benchmark_aml.py::test_native_lengths_cover_every_anchor_across_partial_batches",
     "model_checks/test_benchmark_aml.py::test_native_path_and_cache_regressions_fail[cache-reset]",
+    "model_checks/test_benchmark_aml.py::test_native_path_and_cache_regressions_fail[missing-history-plan]",
     "model_checks/test_benchmark_aml.py::test_native_path_and_cache_regressions_fail[native-fallback]",
     "model_checks/test_benchmark_aml.py::test_pdf_token_example_excludes_padding_targets_and_parallel_ids",
     "model_checks/test_benchmark_aml.py::test_training_counts_and_saved_state_reuse[account-involvement-next24h-combined]",

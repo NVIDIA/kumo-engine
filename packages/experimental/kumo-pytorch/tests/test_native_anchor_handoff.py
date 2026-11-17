@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native anchor identity/partition and real model-facing GNN parity."""
+"""Native anchor identity/partition and authored model-facing GNN answers."""
 
 import json
 from dataclasses import replace
@@ -14,6 +14,7 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.native_fixtures import native_anchor_table
 
 pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
 
@@ -98,7 +99,7 @@ def native_task(tmp_path, request):
     )
     anchors_path = tmp_path / "anchors.parquet"
     pq.write_table(rows, anchors_path)
-    table = api.AnchorTable(
+    table = native_anchor_table(
         api.Parquet(str(anchors_path)),
         "entity",
         "cutoff",
@@ -213,12 +214,145 @@ def _by_sample(batches):
     return result
 
 
+FIXTURE_ENTITIES = ("u1", "u1", "u2", "u2", "u3", "u1", "u2")
+
+
+def _tensor(value, dtype, shape):
+    assert isinstance(value, torch.Tensor)
+    assert value.dtype == dtype
+    assert tuple(value.shape) == tuple(shape)
+
+
+def _valid(value, shape):
+    _tensor(value, torch.bool, shape)
+    assert value.all()
+
+
+def _fixture_rows(batches, population, *, rank=0, world_size=1):
+    """Validate authored identities/payload and the documented strided partition."""
+    real, ids, count = [], [], 0
+    for batch in batches:
+        positions = []
+        labels = batch.targets["label"]
+        size = len(batch.metadata["sample_ids"])
+        _tensor(labels["values"], torch.float64, (size,))
+        _valid(labels["valid"], (size,))
+        _tensor(batch.metadata["is_padding"], torch.bool, (size,))
+        assert len(batch.metadata["entity_ids"]) == size
+        assert len(batch.metadata["as_of_time"]) == size
+        for i, (sid, padded, metadata) in enumerate(
+            zip(
+                batch.metadata["sample_ids"],
+                batch.metadata["is_padding"].tolist(),
+                batch.metadata["request_metadata"],
+                strict=True,
+            )
+        ):
+            position = metadata["details"]["parts"][0]
+            assert position in population
+            assert metadata["details"] == {"parts": [position, position + 1], "note": None}
+            assert batch.metadata["entity_ids"][i] == FIXTURE_ENTITIES[position]
+            assert batch.metadata["as_of_time"][i] == 25
+            assert labels["values"][i] == position + 1.0
+            if padded:
+                assert sid not in "abcdefg"
+            else:
+                assert sid == "abcdefg"[position]
+                real.append(position)
+            ids.append(sid)
+            positions.append(position)
+            count += 1
+        yield batch, positions
+    assert real == population[rank::world_size]
+    assert count == -(-len(population) // world_size)
+    assert len(ids) == len(set(ids))
+
+
+def _graph_answer(batch, positions):
+    graph = batch.inputs["graph"]
+    users, events = graph["nodes"]["users"], graph["nodes"]["events"]
+    assert set(graph["nodes"]) == {"users", "events"}
+    _tensor(users["batch"], torch.int64, (len(positions),))
+    _tensor(events["ids"], torch.int64, (2 * len(positions),))
+    _tensor(events["batch"], torch.int64, (2 * len(positions),))
+    assert sorted(zip(users["ids"], users["batch"].tolist(), strict=True)) == sorted(
+        (FIXTURE_ENTITIES[position], owner) for owner, position in enumerate(positions)
+    )
+    expected = sorted(
+        (3 * (int(FIXTURE_ENTITIES[position][1:]) - 1) + offset, owner)
+        for owner, position in enumerate(positions)
+        for offset in (0, 1)
+    )
+    assert sorted(zip(events["ids"].tolist(), events["batch"].tolist(), strict=True)) == expected
+    field = events["features"]["amount"]
+    _valid(field["valid"], (2 * len(positions),))
+    _tensor(field["values"], torch.float64, (2 * len(positions),))
+    assert field["values"].tolist() == [float(i) for i in events["ids"].tolist()]
+    assert set(graph["edges"]) == {"activity"}
+    edge = graph["edges"]["activity"]
+    _tensor(edge["index"], torch.int64, (2, 2 * len(positions)))
+    assert (edge["source_type"], edge["destination_type"]) == ("users", "events")
+    assert sorted(
+        (
+            users["ids"][left],
+            int(users["batch"][left]),
+            int(events["ids"][right]),
+            int(events["batch"][right]),
+        )
+        for left, right in edge["index"].t().tolist()
+    ) == sorted(
+        (FIXTURE_ENTITIES[positions[owner]], owner, identity, owner) for identity, owner in expected
+    )
+
+
+def _history_answer(batch, positions, layout, *, merged=False, order="ascending", keep="first"):
+    values = []
+    for position in positions:
+        base = 3 * (int(FIXTURE_ENTITIES[position][1:]) - 1)
+        history = [float(base), float(base + 1)]
+        if merged:
+            history = [float(base), float(base), float(base + 1), float(base + 1)]
+            # EventSource.keep selects by recency before its independent delivery order.
+            history = history[:3] if keep == "first" else history[-3:]
+            if order == "descending":
+                history.reverse()
+        values.append(history)
+    actual = batch.inputs["history"]
+    field = actual["amount"]
+    width = 3 if merged else 2
+    shape = (len(values) * width,) if isinstance(layout, api.Packed) else (len(values), width)
+    _tensor(field["values"], torch.float64, shape)
+    _valid(actual["valid"], shape)
+    _valid(field["valid"], shape)
+    if isinstance(layout, api.Packed):
+        _tensor(actual["offsets"], torch.int64, (len(values) + 1,))
+        assert actual["offsets"].tolist() == list(range(0, width * (len(values) + 1), width))
+        values = [value for history in values for value in history]
+    assert field["values"].tolist() == values
+    if not merged:
+        count = batch.inputs["entity"]["count"]
+        _valid(count["valid"], (len(positions),))
+        _tensor(count["values"], torch.int64, (len(positions),))
+        assert count["values"].tolist() == [2] * len(positions)
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        torch.ones(0, dtype=torch.bool),
+        torch.ones(2),
+        torch.ones((2, 1), dtype=torch.bool),
+        torch.tensor([True, False]),
+    ],
+)
+def test_fixture_oracle_rejects_invalid_masks(mask):
+    with pytest.raises(AssertionError):
+        _valid(mask, (2,))
+
+
 def test_gnn_handoff_reuses_sampling_and_projected_features(native_task, monkeypatch):
     plan, task, table = native_task
     source = task._assembler._source
-    expected = list(
-        task.batches(task._anchors.fetch(frozenset({"train"}), range(4)), output_format="model")
-    )
 
     def unexpected(*args, **kwargs):
         raise AssertionError("GNN hot path repeated sampling or feature fetching")
@@ -238,22 +372,8 @@ def test_gnn_handoff_reuses_sampling_and_projected_features(native_task, monkeyp
     monkeypatch.setattr(source, "build_model_ordered", no_requests)
     actual = list(task.batches(split="train", output_format="model"))
     assert _by_sample(actual) == {"a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0}
-    for old, new in zip(expected, actual, strict=True):
-        assert old.metadata["sample_ids"] == new.metadata["sample_ids"]
-        for table in old.inputs["graph"]["nodes"]:
-            a, b = old.inputs["graph"]["nodes"][table], new.inputs["graph"]["nodes"][table]
-            if isinstance(a["ids"], torch.Tensor):
-                assert torch.equal(a["ids"], b["ids"])
-            else:
-                assert a["ids"] == b["ids"]
-            assert torch.equal(a["batch"], b["batch"])
-            for name, field in a["features"].items():
-                for key, values in field.items():
-                    assert torch.equal(values, b["features"][name][key])
-        assert torch.equal(
-            old.inputs["graph"]["edges"]["activity"]["index"],
-            new.inputs["graph"]["edges"]["activity"]["index"],
-        )
+    for batch, positions in _fixture_rows(actual, [0, 1, 3, 5]):
+        _graph_answer(batch, positions)
 
 
 @pytest.mark.parametrize("world_size", [1, 3, 10])
@@ -292,15 +412,8 @@ def test_native_batch_padding_partial_drop_last_and_resume(native_task, world_si
 def test_native_single_split_padding_keeps_columnar_batch_path(
     native_task, monkeypatch, world_size
 ):
-    from tests.test_preview import _equal
-
     plan, original, table = native_task
     task = plan.materialize(replace(table, split=None), fitted=original.fitted_state)
-    requests = task._anchors.fetch(api.ALL_ANCHORS, range(7))
-    expected = [
-        list(task.batches(requests, rank=rank, world_size=world_size, output_format="model"))
-        for rank in range(world_size)
-    ]
 
     def unexpected(*args, **kwargs):
         raise AssertionError("uneven shard fell back to per-anchor requests")
@@ -309,23 +422,10 @@ def test_native_single_split_padding_keeps_columnar_batch_path(
     monkeypatch.setattr(task._assembler._source, "build_model_ordered", unexpected)
     for rank in range(world_size):
         actual = list(task.batches(rank=rank, world_size=world_size, output_format="model"))
-        assert len(actual) == len(expected[rank])
-        for a, b in zip(expected[rank], actual, strict=True):
-            _equal(a.inputs, b.inputs)
-            _equal(a.targets, b.targets)
-            assert torch.equal(a.metadata["is_padding"], b.metadata["is_padding"])
-            assert a.metadata["request_metadata"] == b.metadata["request_metadata"]
-            # Request batches name padding before splitting; native iteration
-            # names it within the final batch. Real identities must match.
-            for left, right, padded in zip(
-                a.metadata["sample_ids"],
-                b.metadata["sample_ids"],
-                b.metadata["is_padding"],
-                strict=True,
-            ):
-                if not padded:
-                    assert left == right
-            assert len(set(b.metadata["sample_ids"])) == len(b.metadata["sample_ids"])
+        for batch, positions in _fixture_rows(
+            actual, list(range(7)), rank=rank, world_size=world_size
+        ):
+            _graph_answer(batch, positions)
     task.close()
 
 
@@ -422,8 +522,6 @@ def test_invalid_native_anchors_do_not_drop_rows(native_task, tmp_path, column, 
 def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
     native_task, layout, monkeypatch
 ):
-    from tests.test_preview import _equal
-
     original, _, table = native_task
     history = api.Rows(path=("activity",), time=api.TimeWindow("time", None, 0))
     sample = api.SampleSpec(
@@ -455,8 +553,6 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
     with api.prepare(contract, original.dataset, original.engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
             assert isinstance(task._anchors, NativeAnchors)
-            requests = task._anchors.fetch(frozenset({"train"}), range(4))
-            expected = list(task.batches(requests, output_format="model"))
             source = task._assembler._source
             sampler = source._sampler
 
@@ -468,11 +564,8 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
 
             monkeypatch.setattr(source, "_sampler", Guard())
             actual = list(task.batches(split="train", output_format="model"))
-            for old, new in zip(expected, actual, strict=True):
-                _equal(old.inputs, new.inputs)
-                _equal(old.targets, new.targets)
-                assert old.metadata["sample_ids"] == new.metadata["sample_ids"]
-                assert old.metadata["request_metadata"] == new.metadata["request_metadata"]
+            for batch, positions in _fixture_rows(actual, [0, 1, 3, 5]):
+                _history_answer(batch, positions, layout)
 
 
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
@@ -481,8 +574,6 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
 def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
     native_task, monkeypatch, layout, order, keep, rank, world_size
 ):
-    from tests.test_preview import _equal
-
     original, _, table = native_task
     history = api.Rows(path=("activity",), time=api.TimeWindow("time", None, 0))
     sample = api.SampleSpec(
@@ -512,10 +603,6 @@ def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
     )
     with api.prepare(contract, original.dataset, original.engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
-            requests = task._anchors.fetch(frozenset({"train"}), range(4))
-            expected = list(
-                task.batches(requests, rank=rank, world_size=world_size, output_format="model")
-            )
             source = task._assembler._source
 
             def unexpected(*args, **kwargs):
@@ -536,12 +623,10 @@ def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
             actual = list(
                 task.batches(split="train", rank=rank, world_size=world_size, output_format="model")
             )
-            assert len(actual) == len(expected)
-            for a, b in zip(expected, actual, strict=True):
-                _equal(a.inputs, b.inputs)
-                _equal(a.targets, b.targets)
-                assert a.metadata["sample_ids"] == b.metadata["sample_ids"]
-                assert a.metadata["request_metadata"] == b.metadata["request_metadata"]
+            for batch, positions in _fixture_rows(
+                actual, [0, 1, 3, 5], rank=rank, world_size=world_size
+            ):
+                _history_answer(batch, positions, layout, merged=True, order=order, keep=keep)
 
 
 @pytest.mark.parametrize("native_task", ["raw-string"], indirect=True)
@@ -597,7 +682,13 @@ def test_replacing_closed_anchor_task_releases_old_reader(native_task):
     with plan.materialize(table, fitted=fitted) as restored:
         assert restored._anchors._history_engine is plan._source._sampler
         assert set(_base_index_mappings(plan._source._index_path).values()) == {1}
-        assert sum(len(b.metadata["sample_ids"]) for b in restored.batches(split="train")) == 4
+        assert (
+            sum(
+                len(b.metadata["sample_ids"])
+                for b in restored.batches(split="train", output_format="model")
+            )
+            == 4
+        )
 
 
 def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, monkeypatch):

@@ -47,18 +47,9 @@ PINNED_BATCH_BOUNDARIES = {
 #: Pinned here, apart from the parametrization: dropping a property or a seed
 #: batch from conformance.properties leaves a required ID unpassed.
 PINNED_PROPERTIES = {
-    "in_memory": (
-        "delivery",
-        "epoch_trend",
-        "irrelevance",
-        "permutation",
-        "point_in_time",
-        "refusal_timing",
-        "time_shift",
-    ),
     "diskgraph": (
         "delivery",
-        "differential",
+        "aggregate_answers",
         "epoch_trend",
         "irrelevance",
         "partition",
@@ -70,7 +61,6 @@ PINNED_PROPERTIES = {
     ),
 }
 # -- Functional areas: targets, anchors, packing, the model path, fitted state --
-PINNED_PROPERTIES["in_memory"] += ("anchor_splits", "label_window", "packing", "root_availability")
 PINNED_PROPERTIES["diskgraph"] += (
     "anchor_splits",
     "contract_transfer",
@@ -90,15 +80,35 @@ _SAMPLING = (
     "sequence_permutation",
     "sequence_point_in_time",
 )
-PINNED_PROPERTIES["in_memory"] += _SAMPLING
 PINNED_PROPERTIES["diskgraph"] += ("index_layout",)
 PINNED_PROPERTIES["diskgraph"] += (
     *_SAMPLING,
-    "graph_differential",
+    "graph_expected",
     "graph_inference_exact",
-    "sequence_differential",
+    "sequence_expected",
 )
-PINNED_SEEDS = {"in_memory": (0, 1, 2), "diskgraph": (0,)}
+PINNED_SEEDS = {"diskgraph": (0,)}
+# The nightly's behavior-only scope is explicit; the other workflows retain the
+# machinery tests and comparisons. Keep its inventory independent of parametrization.
+NATIVE_MODULES = frozenset(
+    {
+        "test_guarantees.py",
+        "test_properties.py",
+        "test_dtype_matrix.py",
+        "test_field_semantics.py",
+        "test_batch_boundaries.py",
+    }
+)
+PINNED_NATIVE_PROPERTIES = PINNED_PROPERTIES["diskgraph"]
+PINNED_FIELD_SEMANTICS = (
+    "test_calendar_timing_outputs_have_only_explicit_values",
+    "test_aligned_columns_follow_parent_row_removal",
+    "test_complete_reuse_never_fits_or_grows",
+    "test_a_stored_column_fits_on_its_table_rows_not_the_fitting_anchors",
+    "test_exposure_warning_names_overlap_and_masks_only_named_input",
+    "test_physical_dtype_mismatch_fails_during_binding",
+    "test_invalid_output_mode_fails_at_batch_setup",
+)
 PASSED = pytest.StashKey[set[str]]()
 
 
@@ -115,9 +125,14 @@ def add_conformance_options(parser):
     try:
         parser.addoption(
             "--conformance-engine",
-            choices=("in_memory", "diskgraph", "all"),
-            default="in_memory",
-            help="engine whose goldens and properties must execute (default: in_memory)",
+            choices=("diskgraph", "all"),
+            default="diskgraph",
+            help="engine whose goldens and properties must execute (default: diskgraph)",
+        )
+        parser.addoption(
+            "--conformance-no-in-memory",
+            action="store_true",
+            help="require DiskGraph behavior only; forbid InMemory execution",
         )
         parser.addoption("--conformance-complete", action="store_true", help="require every case")
         parser.addoption(
@@ -136,9 +151,38 @@ def add_conformance_options(parser):
 
 
 def pytest_configure(config):
+    if (
+        config.getoption("--conformance-no-in-memory")
+        and config.getoption("--conformance-engine") != "diskgraph"
+    ):
+        raise pytest.UsageError(
+            "--conformance-no-in-memory requires --conformance-engine=diskgraph"
+        )
     config.addinivalue_line(
         "markers", "engine(name): a harness test of one engine, run when that engine is selected"
     )
+
+
+def pytest_ignore_collect(collection_path, config):
+    if config.getoption("--conformance-no-in-memory"):
+        if (
+            collection_path.name.startswith("test_")
+            and collection_path.suffix == ".py"
+            and collection_path.name not in NATIVE_MODULES
+        ):
+            return True
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _forbid_in_memory(request, monkeypatch):
+    from kumo.pytorch.api import InMemoryEngine
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("InMemoryEngine is forbidden in DiskGraph-only conformance")
+
+    for method in ("__init__", "open", "materialize_anchors"):
+        monkeypatch.setattr(InMemoryEngine, method, forbidden)
 
 
 def pytest_collection_modifyitems(config, items):
@@ -147,7 +191,7 @@ def pytest_collection_modifyitems(config, items):
     A selected engine that can't be imported fails them (require_engine), never skips.
     """
     selected = config.getoption("--conformance-engine")
-    engines = ("in_memory", "diskgraph") if selected == "all" else (selected,)
+    engines = ("diskgraph",) if selected == "all" else (selected,)
     items[:] = [
         item
         for item in items
@@ -160,12 +204,13 @@ def pytest_sessionstart(session):
         return
     from conformance.cases import ENGINES, discover_cases
     from conformance.expectations import load_expectations
-    from conformance.properties import obligation_id, obligations
+    from conformance.properties import COMPARISON_PROPERTIES, obligation_id, obligations
     from conformance.registry import REPLAYED
 
     cases, expectations = discover_cases(), load_expectations()
     if cases.keys() != expectations.keys():
         raise pytest.UsageError("every golden case must have independent engine expectations")
+    native_only = session.config.getoption("--conformance-no-in-memory")
     selected = session.config.getoption("--conformance-engine")
     engines = ENGINES if selected == "all" else (selected,)
     session.config.stash[REQUIRED] = {
@@ -177,7 +222,7 @@ def pytest_sessionstart(session):
     pinned = {
         (name, engine, seed)
         for engine in engines
-        for name in PINNED_PROPERTIES[engine]
+        for name in (PINNED_NATIVE_PROPERTIES if native_only else PINNED_PROPERTIES[engine])
         for seed in PINNED_SEEDS[engine]
     }
     session.config.stash[REQUIRED] |= {
@@ -188,11 +233,14 @@ def pytest_sessionstart(session):
                 engines,
                 session.config.getoption("--conformance-seeds"),
                 session.config.getoption("--conformance-seed-start"),
+                include_comparisons=not native_only,
             )
         )
     } | {f"{PROPERTY_TESTS}::test_corpus[{engine}]" for engine in engines}
     session.config.stash[REQUIRED] |= {
-        f"{PROPERTY_TESTS}::test_known_gap[{gap.id}]" for gap in REPLAYED if gap.engine in engines
+        f"{PROPERTY_TESTS}::test_known_gap[{gap.id}]"
+        for gap in REPLAYED
+        if gap.engine in engines and (not native_only or gap.property not in COMPARISON_PROPERTIES)
     }
     session.config.stash[REQUIRED] |= {
         f"{DTYPE_TESTS}::test_scalar_compatibility_and_real_execution[{engine}-{family}-{dtype}]"
@@ -200,6 +248,11 @@ def pytest_sessionstart(session):
         for family in PINNED_ENCODERS
         for dtype in PINNED_DTYPES
     }
+    if native_only:
+        session.config.stash[REQUIRED] |= {
+            f"tests/conformance/test_field_semantics.py::{name}[diskgraph]"
+            for name in PINNED_FIELD_SEMANTICS
+        }
     session.config.stash[PASSED] = set()
     session.config.stash[REQUIRED] |= {
         f"tests/conformance/test_batch_boundaries.py::{test}[{engine}"

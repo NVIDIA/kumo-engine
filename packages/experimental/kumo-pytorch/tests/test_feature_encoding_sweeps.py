@@ -13,6 +13,7 @@ import pytest
 from conformance.assertions import bound_tables
 from conformance.cases import discover_cases
 from kumo.pytorch import api as r
+from tests.native_fixtures import request_anchor_table
 from tests.test_graph_time_and_reductions import ROWS, SCHEMA
 
 
@@ -83,11 +84,12 @@ def test_mixed_feature_widths(engine, width):
     )
     with bound_tables(contract, ROWS, engine) as (dataset, backend):
         with r.prepare(contract, dataset, backend) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 fingerprint = task.fitted_state.fingerprint
                 batches = list(
                     task.batches(
-                        requests,
                         batch_size=2,
                         output_format="model",
                     )
@@ -158,7 +160,11 @@ def test_vocabulary_cardinality_and_shared_state(engine, cardinality, shared):
         expected[name] = {value: i + 2 for i, value in enumerate(ordered)}
     with bound_tables(contract, {"items": rows}, engine) as (dataset, backend):
         with r.prepare(contract, dataset, backend) as plan:
-            with plan.materialize(requests, fit_split="train", encoder_cutoff=100) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema),
+                fit_split="train",
+                encoder_cutoff=100,
+            ) as task:
                 fingerprint = task.fitted_state.fingerprint
                 for name in ("left", "right"):
                     encoder = task.output("entity").field(name=name).encoder
@@ -166,7 +172,6 @@ def test_vocabulary_cardinality_and_shared_state(engine, cardinality, shared):
                     assert len(encoder.entries) == cardinality * (3 if shared else 2) // 2
                 seen = []
                 for batch in task.batches(
-                    requests,
                     batch_size=128,
                     output_format="model",
                 ):
@@ -207,11 +212,12 @@ def test_controlled_bpe_text_lengths(engine, length):
     )
     with bound_tables(contract, {"users": rows}, engine) as (dataset, backend):
         with r.prepare(contract, dataset, backend) as plan:
-            with plan.materialize(requests) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema)
+            ) as task:
                 fingerprint = task.fitted_state.fingerprint
                 batches = list(
                     task.batches(
-                        requests,
                         output_format="model",
                     )
                 )

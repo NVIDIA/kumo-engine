@@ -56,7 +56,6 @@ from kumo.pytorch.api import (  # noqa: E402
     Batch,
     Dataset,
     DiskGraphEngine,
-    InMemoryEngine,
     InMemoryRows,
     SampleRequest,
     ServingAssembler,
@@ -66,6 +65,7 @@ from kumo.pytorch.api import (  # noqa: E402
 from tests.e2e import runs as runs_module  # noqa: E402
 from tests.e2e.runs import FLOWS  # noqa: E402
 from tests.e2e.tiers import TIERS, Tier  # noqa: E402
+from tests.native_fixtures import prepare_rows
 from tests.test_inference_lifecycle import assert_same_batches  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -213,7 +213,7 @@ def future_scores(runs: dict[str, list[Run]], hm: HMDataset, root: Path) -> Futu
 
 @pytest.fixture(scope="session")
 def reference(runs: dict[str, list[Run]], hm: HMDataset) -> dict[str, dict[int, Batch]]:
-    """Reference (in-memory) batch inference for the served requests, over every customer
+    """Native batch inference for the served requests, over every customer
     and article and each served customer's purchases at any time (both contracts reach
     purchases only through their customer; a missing row would fail the checks)."""
 
@@ -514,8 +514,8 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
 ) -> None:
     """Recent sampling orders by time, then primary key (docs/limitations.md).
     When the 16th and 17th most recent purchases share a timestamp, DiskGraph's choice
-    follows its index, so rows added after the cutoff change it, and the in-memory
-    engine compares keys as strings. The GNN's DiskGraph checks above skip those
+    follows its index, so rows added after the cutoff can change it.
+    The GNN's DiskGraph checks above skip those
     samples; when this fails, lift the gap from them."""
 
     times = _purchase_times(hm)
@@ -531,7 +531,7 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     tied_requests = _tie_cut_requests(hm)
     assert tied_requests, "no served request cuts a tie; the gap can no longer be seen here"
     sample_id = min(tied_requests)
-    in_memory = reference["gnn"][sample_id]
+    native = reference["gnn"][sample_id]
     engine = DiskGraphEngine(index=root / "tie-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(
@@ -539,17 +539,29 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
         ) as task:
             (batch,) = list(task.batches(output_format="model"))
     purchases = [
-        set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (in_memory, batch)
+        set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (native, batch)
     ]
     assert len(purchases[0]) == len(purchases[1]) == RECENT_PURCHASES
-    assert purchases[0] != purchases[1]
+    # A tied boundary permits different identities, but never an older event.
+    table = next(table for table in artifact.contract.schema.tables if table.name == "transactions")
+    requested = tied_requests[sample_id]
+    eligible = {
+        row[table.primary_key]: _epoch(row[table.time_column])
+        for row in CustomerRows.open(hm.root).tables["transactions"].to_pylist()
+        if row["customer_id"] == requested.entity_id
+        and _epoch(row[table.time_column]) <= _epoch(requested.as_of_time)
+    }
+    boundary = sorted(eligible.values(), reverse=True)[RECENT_PURCHASES - 1]
+    required = {key for key, at in eligible.items() if at > boundary}
+    allowed = {key for key, at in eligible.items() if at >= boundary}
+    assert all(required <= ids <= allowed for ids in purchases)
 
 
 def test_a_history_batch_without_any_event_assembles(
     runs: dict[str, list[Run]], hm: HMDataset, root: Path
 ) -> None:
     """A customer with no purchase before the cutoff gets a batch with no event, served
-    or scored alone, on either engine. The flows still serve only customers who
+    or scored alone, on DiskGraph. The flows still serve only customers who
     bought before, because their model reads at least one event per batch."""
 
     artifact = Artifact.load(runs["pragma"][0].work / "artifact")
@@ -568,7 +580,7 @@ def test_a_history_batch_without_any_event_assembles(
 def _reference_batches(
     artifact: Artifact, rows: Dataset, requests: list[SampleRequest]
 ) -> dict[int, Batch]:
-    with prepare(artifact.contract, rows, InMemoryEngine()) as plan:
+    with prepare_rows(artifact.contract, rows) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
             batches = task.batches(batch_size=1, seed=0)
             return {int(batch.metadata["sample_ids"][0]): batch for batch in batches}

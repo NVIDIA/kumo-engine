@@ -24,7 +24,6 @@ from kumo.pytorch.api import (
     EntitySpec,
     Field,
     Fields,
-    InMemoryEngine,
     InMemoryRows,
     Input,
     Parquet,
@@ -40,6 +39,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 from kumo.pytorch.contract.sample import GraphLayer, GraphSample, NeighborhoodSpec
+from tests.native_fixtures import check_rows, native_engine, parquet_dataset
 
 SCHEMA = DataSchema(
     (
@@ -143,9 +143,7 @@ def _contract(sample: SampleSpec) -> DataLoaderSpec:
 
 
 def _time_issues(contract: DataLoaderSpec, path: str):
-    issues = check(
-        contract, Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])}), InMemoryEngine()
-    )
+    issues = check_rows(contract, Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])}))
     return [issue for issue in issues if issue.path == path]
 
 
@@ -154,12 +152,15 @@ def _time_issues(contract: DataLoaderSpec, path: str):
 def test_a_value_column_is_refused_as_a_time(shape: str, column: str) -> None:
     build, path = SHAPES[shape]
     contract = _contract(build(column))
-    (issue,) = _time_issues(contract, path)
+    (issue,) = [
+        issue for issue in _time_issues(contract, path) if "timestamp or date32" in issue.message
+    ]
     assert f"events.{column}" in issue.message
     assert "timestamp or date32" in issue.message
     assert issue.suggestion
     dataset = Dataset({"users": InMemoryRows([]), "events": InMemoryRows([])})
-    engine = InMemoryEngine()
+    dataset = parquet_dataset(contract.schema, dataset)
+    engine = native_engine()
     with patch.object(engine, "open", side_effect=AssertionError("opened before refusal")):
         with pytest.raises(ValidationError) as error:
             prepare(contract, dataset, engine)

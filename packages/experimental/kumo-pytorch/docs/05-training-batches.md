@@ -10,6 +10,27 @@ computes for you, is how many purchases the user makes in the 7 days after the
 prediction time.
 
 ```python
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+def parquet_data(rows, schema):
+    """Write this example's small, explicitly typed fixture tables."""
+    root = Path("data")
+    root.mkdir(exist_ok=True)
+    sources = {}
+    for table in schema.tables:
+        arrow_schema = pa.schema(
+            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+        )
+        path = root / f"{table.name}.parquet"
+        pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
+        sources[table.name] = api.Parquet(str(path))
+    return api.Dataset(sources)
+
+
 from kumo.pytorch import api
 
 DAY = 86_400
@@ -63,9 +84,7 @@ sample = api.SampleSpec(
     },
     targets={"next_week": api.Aggregate(source=next_week, operation="count")},
 )
-dataset = api.Dataset(
-    tables={"users": api.InMemoryRows(rows=users), "purchases": api.InMemoryRows(rows=purchases)}
-)
+dataset = parquet_data({"users": users, "purchases": purchases}, schema)
 anchors = [
     api.SampleRequest(
         sample_id=f"user-{u}-day-{day}",
@@ -112,8 +131,11 @@ supplied per request or per anchor-table column.
 ## Fit on the training split
 
 ```python
-# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-plan = api.prepare(contract=contract(api.Padded()), dataset=dataset, engine=api.InMemoryEngine())
+plan = api.prepare(
+    contract=contract(api.Padded()),
+    dataset=dataset,
+    engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
+)
 task = plan.materialize(anchors=anchors, fit_split="train")
 print("train/valid anchors:", task.count(split="train"), task.count(split="valid"))
 batch = next(task.batches(split="train"))
@@ -140,9 +162,10 @@ packed (one flat buffer plus offsets). The sampled events are identical:
 
 ```python
 padded = task.batches(split="valid")
-# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with api.prepare(
-    contract=contract(api.Packed()), dataset=dataset, engine=api.InMemoryEngine()
+    contract=contract(api.Packed()),
+    dataset=dataset,
+    engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
 ) as packed_plan:
     packed_task = packed_plan.materialize(anchors=anchors, fit_split="train")
     packed = next(packed_task.batches(split="valid"))
@@ -182,8 +205,7 @@ print(len(result.samples), "samples;", tuple(result.batch.inputs))
 `task.batches` takes `split` (or explicit `requests`), `batch_size`, `shuffle`,
 `seed`, `epoch`, `rank` and `world_size`. The same arguments give the same
 batches for the same engine, split selection and index, so a run can be resumed or
-reproduced. Native DiskGraph ordering can differ from the in-memory engine;
-selected native split stages shuffle independently and batches do not mix stages.
+reproduced. Native split stages shuffle independently and batches do not mix stages.
 See [native anchor loading](04-engines-and-data.md) for that execution contract.
 
 For multi-process training, ranks receive disjoint anchors. A short rank
@@ -287,11 +309,8 @@ contract as an artifact.
 
 ## Training on the DiskGraph engine
 
-The examples above run on the in-memory engine so they can print small results.
-A real training job reads Parquet files through the DiskGraph engine, and the
-contract doesn't change. Here we write the same users, purchases and anchors to
-Parquet files, and fit on the training split as before. On the DiskGraph engine,
-the anchors are a Parquet `AnchorTable` too.
+The examples use DiskGraph throughout. This variant also writes the anchors to a
+Parquet `AnchorTable`, so DiskGraph owns the population and batch planning.
 
 <!-- test: diskgraph -->
 ```python

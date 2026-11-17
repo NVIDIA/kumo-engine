@@ -5,7 +5,7 @@
 name: PyTorch — Nightly Suite
 
 # The nightly tier: existing package regressions, the end-to-end flows at M,
-# conformance on both engines, and AML checks. Not a required check. Pull
+# DiskGraph-only conformance, and AML checks. Not a required check. Pull
 # requests run it when they change this workflow, the tiers' configuration,
 # shared setup, or the standalone AML testing suite.
 on:  # yamllint disable-line rule:truthy
@@ -834,7 +834,7 @@ jobs:
           fi
           echo "start=$start" >> "$GITHUB_OUTPUT"
           echo "Conformance seed batches $start-$((start + 11)) plus the required ones;" \
-            "reproduce with \`python -m conformance --engine all --seeds 12 --seed-start $start\`" \
+            "reproduce with \`python -m conformance --engine diskgraph --no-in-memory --seeds 12 --seed-start $start\`" \
             >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -842,11 +842,11 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Check every property on the day's seed batches
+      - name: Check DiskGraph behavior without InMemory on the day's seed batches
         env:
           CONFORMANCE_REPROS: ${{ runner.temp }}/conformance-repros
           START: ${{ steps.seeds.outputs.start }}
-        run: python -m conformance --engine all --seeds 12 --seed-start "$START"
+        run: python -m conformance --engine diskgraph --no-in-memory --seeds 12 --seed-start "$START"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ failure() }}
         with:

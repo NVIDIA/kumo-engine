@@ -7,20 +7,29 @@ training benchmarks. Published full-history workload declarations stay intact.
 from dataclasses import replace
 from datetime import timedelta
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.contracts import build_contract, window
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.masked_values import (
     original_tokens,
+)
+from test.kumo_pytorch.masked_values import (
     verify_targets as verify_masked,
 )
+from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.next_token import verify_targets as verify_next
 from test.kumo_pytorch.reference_tokens import history_tokens
-from test.kumo_pytorch.models.aml import build_model
-from .fixtures import AMLFixture, CUTOFF, VALUE_FIELDS, build_fixture
+
+from .fixtures import (
+    CUTOFF,
+    VALUE_FIELDS,
+    AMLFixture,
+    build_fixture,
+    probe_anchor_table,
+)
 from .test_aml import CASES
 
 CASES = [(selection, family) for selection, family in CASES if family != "graphsage"]
@@ -249,10 +258,12 @@ def test_history_sizes_and_selection(source, selection, family, profile):
     engine = r.DiskGraphEngine(index=source["index"], num_threads=1)
     with r.prepare(contract, source["dataset"], engine) as plan:
         with plan.materialize(
-            requests, fit_split="train", encoder_cutoff=T - 1
+            probe_anchor_table(plan, requests), fit_split="train", encoder_cutoff=T - 1
         ) as task:
             fingerprint = task.fitted_state.fingerprint
-            batches = list(task.batches(requests, batch_size=2, seed=7, epoch=0))
+            batches = list(
+                task.batches(batch_size=2, seed=7, epoch=0, output_format="model")
+            )
             assert len(batches) == 1
             batch = batches[0]
             assert list(batch.metadata["sample_ids"]) == list(source["anchors"])

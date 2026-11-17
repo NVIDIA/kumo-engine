@@ -33,8 +33,9 @@ Collection alone does not establish execution acceptance.
 Per the user's 2026-11-17 instruction, 87 InMemory variants were removed from
 the standalone inventory. The cutoff-alignment and fresh-process benchmark-state
 checks now use DiskGraph instead of InMemory, retaining their assertions.
-Polars/GPU timing-reference cases are unchanged. Pre-existing Engine tests are
-not removed; new package sweeps and golden boundary additions use DiskGraph.
+Polars/GPU timing-reference cases are unchanged. The user's later instruction
+also migrates inherited package tests and runnable examples to DiskGraph while
+retaining their required behavior assertions.
 
 Local execution before expanding training acceptance from two combinations to
 five (326 CPU cases): **325 passed, one failed, zero
@@ -132,3 +133,28 @@ cases executed; 412 passed, one required multi-source filter case failed with
 cases were explicitly delegated, not locally validated. Seven subprocess
 fault-injection checks passed. These results use the existing compatible native
 extension; CI must rebuild and validate the final native revision.
+
+
+## Native conformance scope
+
+Correctness / Conformance invokes `python -m conformance --engine diskgraph
+--no-in-memory --seeds 12 --seed-start K`. All native behavior obligations remain
+required. Aggregate answers, fitted statistics, graph expansion and sequence
+selection use fixture-derived expectations, with no reference engine. The flag
+excludes harness self-tests only; package/DiskGraph CI runs those on native
+execution too. Required coverage still fails on missing, skipped or xfailed cases.
+
+Package fixtures and examples use Parquet/DiskGraph. Runtime guards also catch
+indirect legacy calls, including the current ServingAssembler implementation.
+The migration is implemented, with independent expected answers and no new
+skip/xfail/native-gap exemptions. Package acceptance is still failing on native
+support and correctness gaps. See the [validation record](../PLAN.md#native-correctness-migration)
+for broad runs, focused corrections and environment limits. Neither full nightly
+acceptance nor a runtime improvement has been established for this revision.
+
+The [scoped AnchorTable follow-up](../PLAN.md#scoped-anchortable-follow-up)
+covers #353's AML checks and added/extended package tests. The benchmark's
+required fault cases include a missing native history plan; first-epoch length
+planning and second-epoch cache reuse remain enforced. This follow-up does not
+claim repository-wide removal of request-based loading. Native package failures
+remain required failures.

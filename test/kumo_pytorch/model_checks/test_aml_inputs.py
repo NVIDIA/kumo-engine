@@ -1,20 +1,21 @@
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.aml_inputs import SECOND, requests_for, select_anchors
 from test.kumo_pytorch.contracts import build_contract, counts
-from .fixtures import build_fixture
+
+from .fixtures import build_fixture, probe_anchor_table
 
 
 def anchor_file(tmp_path, *, damage=None):
     stamps = [
-        int(datetime(2022, 9, day, tzinfo=timezone.utc).timestamp()) * SECOND
+        int(datetime(2022, 9, day, tzinfo=UTC).timestamp()) * SECOND
         for day in (6, 7, 8, 9)
     ]
     table = pa.table(
@@ -103,8 +104,12 @@ def test_combined_history_matches_unshifted_sequence_and_count_boundaries(tmp_pa
         )
         engine = r.DiskGraphEngine(index=tmp_path / family, num_threads=1)
         with r.prepare(contract, dataset, engine) as plan:
-            task = plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff)
-            batch = next(task.batches(anchors, seed=0))
+            task = plan.materialize(
+                probe_anchor_table(plan, anchors),
+                fit_split="train",
+                encoder_cutoff=cutoff,
+            )
+            batch = next(task.batches(seed=0, output_format="model"))
             histories.append(batch.inputs["history"])
             learned = [
                 value
@@ -128,8 +133,10 @@ def test_combined_history_matches_unshifted_sequence_and_count_boundaries(tmp_pa
     anchors = tuple(replace(a, targets=()) for a in shifted)
     engine = r.DiskGraphEngine(index=tmp_path / "counts", num_threads=1)
     with r.prepare(contract, dataset, engine) as plan:
-        task = plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff)
-        batch = next(task.batches(anchors, batch_size=2))
+        task = plan.materialize(
+            probe_anchor_table(plan, anchors), fit_split="train", encoder_cutoff=cutoff
+        )
+        batch = next(task.batches(batch_size=2, output_format="model"))
         expected = [
             sum(
                 row["account_id"] == a.entity_id

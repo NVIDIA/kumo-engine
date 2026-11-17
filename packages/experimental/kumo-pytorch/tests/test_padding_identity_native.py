@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import native_anchor_table
 
 
 @pytest.fixture(scope="module")
@@ -95,7 +96,7 @@ def _anchor_table(path: Path, names: tuple[str, ...]) -> api.AnchorTable:
         ),
         path,
     )
-    return api.AnchorTable(
+    return native_anchor_table(
         source=api.Parquet(str(path)),
         entity_id="account_id",
         as_of_time="cutoff",

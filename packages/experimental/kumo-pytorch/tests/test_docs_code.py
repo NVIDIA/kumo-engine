@@ -91,11 +91,13 @@ import contextlib, io, json, sys
 blocks = json.load(sys.stdin)
 namespace = {"__name__": "__main__"}
 outputs = []
-for name, line, code in blocks:
-    buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        exec(compile("\\n" * (line - 1) + code, name, "exec"), namespace)
-    outputs.append(buffer.getvalue())
+from tests.native_fixtures import forbid_deprecated_engine
+with forbid_deprecated_engine():
+    for name, line, code in blocks:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            exec(compile("\\n" * (line - 1) + code, name, "exec"), namespace)
+        outputs.append(buffer.getvalue())
 print(json.dumps(outputs))
 """
 

@@ -221,7 +221,7 @@ def generate_sequence_case(
 
 
 def sequence_batch(seed: int, engine: str, property_name: str) -> list[GeneratedCase]:
-    scale: Scale = "XS" if engine == "in_memory" else "S"
+    scale: Scale = "S"
     rows = covering_rows(seed, engine, SEQUENCE_DIMENSIONS, property_name)
     return [generate_sequence_case(seed, index, row, scale) for index, row in rows]
 
@@ -337,12 +337,56 @@ def _same_sequences(before: SequenceAnswer, after: SequenceAnswer, label: str) -
 # -- Properties --------------------------------------------------------------
 
 
-def sequence_differential(case: GeneratedCase, engine: str, position: int) -> None:
-    """DiskGraph delivers the reference's sequences, on each output format."""
-
-    reference = _base(case, "in_memory")["inspectable"]
+def sequence_expected(case: GeneratedCase, engine: str, position: int) -> None:
+    """Both native formats match event selection calculated directly from fixture rows."""
+    expected = {}
+    for request in case.requests:
+        components = {}
+        for name, spec in case.contract.sample.events.items():
+            table = COMPONENT_TABLES[name]
+            rows = [
+                row
+                for row in case.tables[table]
+                if row["user_id"] == request.entity_id and row["at"] <= request.as_of_time
+            ]
+            rows.sort(
+                key=lambda row: (row["at"], row[f"{table[:-1]}_id"]),
+                reverse=spec.order == "descending",
+            )
+            if spec.limit is not None:
+                rows = rows[: spec.limit]
+            components[name] = [
+                (
+                    row["at"],
+                    name,
+                    (
+                        ("amount", row["amount"] is not None, row["amount"]),
+                        (
+                            "delta",
+                            True,
+                            (request.as_of_time - row["at"])
+                            / SECONDS_PER_UNIT[spec.fields["delta"].unit],
+                        ),
+                        ("id", True, row[f"{table[:-1]}_id"]),
+                    ),
+                )
+                for row in rows
+            ]
+        inputs = {}
+        for name, spec in case.contract.batch.inputs.items():
+            source = spec.source
+            events = [event for component in source.events for event in components[component]]
+            events.sort(key=lambda event: (event[0], event[1], event[2][-1][-1]))
+            if source.max_events is not None:
+                events = (
+                    events[: source.max_events]
+                    if source.keep == "first"
+                    else events[-source.max_events :]
+                )
+            inputs[name] = tuple(events)
+        expected[str(request.sample_id)] = inputs
     for output, answer in _base(case, engine).items():
-        _same_sequences(reference, answer, f"{engine} {output} vs reference")
+        _same_sequences(expected, answer, f"{engine} {output} fixture answers")
 
 
 def with_future_events(case: GeneratedCase, rng: random.Random) -> tuple[Tables, set[str]]:
@@ -417,7 +461,7 @@ def sequence_permutation(case: GeneratedCase, engine: str, position: int) -> Non
 
 
 SEQUENCE_CHECKS = {
-    "sequence_differential": sequence_differential,
+    "sequence_expected": sequence_expected,
     "sequence_point_in_time": sequence_point_in_time,
     "sequence_permutation": sequence_permutation,
 }

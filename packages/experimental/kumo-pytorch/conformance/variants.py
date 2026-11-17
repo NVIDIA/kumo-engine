@@ -37,7 +37,6 @@ from kumo.pytorch.api import (
     Graph,
     GraphLayer,
     GraphSample,
-    InMemoryEngine,
     Input,
     NeighborhoodSource,
     NeighborhoodSpec,
@@ -52,7 +51,7 @@ from kumo.pytorch.api import (
     TimeWindow,
 )
 
-Engine = InMemoryEngine | DiskGraphEngine
+Engine = DiskGraphEngine
 Binding = Callable[[Dataset, Engine], tuple[Dataset, Engine]]
 #: What a strategy runs after the preview: the batches it must deliver, or refuse.
 Run = Callable[[Task, tuple[SampleRequest, ...]], Iterable[Batch]]
@@ -197,7 +196,7 @@ def _bound(case: GeneratedCase, bind: Binding) -> Variant:
 
 
 VARIANTS: Mapping[str, Callable[[GeneratedCase], Variant]] = {
-    # Refused by DiskGraph at check(); the reference runs them.
+    # Refused by DiskGraph at check(); keep each refusal explicit.
     "active_interval": _active_interval,
     "clock_override": lambda case: _device_variant(
         case,

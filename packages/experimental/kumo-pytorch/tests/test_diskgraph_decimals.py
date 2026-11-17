@@ -16,6 +16,7 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from tests.native_fixtures import request_anchor_table
 
 
 def feature_source(dtype, values):
@@ -106,25 +107,11 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         bindings[name] = api.Parquet(str(path))
     request = api.SampleRequest("one", 1, start + timedelta(days=1), split="train")
     outputs = []
-    for engine in (
-        api.InMemoryEngine(),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
-    ):
-        dataset = api.Dataset(
-            {name: api.InMemoryRows(table.to_pylist()) for name, table in tables.items()}
-            if isinstance(engine, api.InMemoryEngine)
-            else bindings
-        )
+    for engine in (api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),):
+        dataset = api.Dataset(bindings)
         with api.prepare(contract, dataset, engine) as plan:
-            task = plan.materialize((request,), fit_split="train")
-            batch = next(
-                task.batches(
-                    batch_size=1,
-                    output_format="inspectable"
-                    if isinstance(engine, api.InMemoryEngine)
-                    else output_format,
-                )
-            )
+            task = plan.materialize(request_anchor_table((request,)), fit_split="train")
+            batch = next(task.batches(batch_size=1, output_format=output_format))
             event = batch.inputs["history"]["amount"]
             nodes = batch.inputs["graph"]["nodes"]["events"]
             graph = nodes["features"]["amount"]
@@ -140,8 +127,15 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
                 assert event["valid"].tolist() == [[True, True, False, True]]
             assert dict(zip(ids, graph["valid"].tolist())) == {1: True, 2: True, 3: False, 4: True}
     if encoding == "zscore":
-        torch.testing.assert_close(outputs[0][0], outputs[1][0])
-        assert outputs[0][1] == pytest.approx(outputs[1][1])
+        # Population moments of the three non-null fixture amounts; no engine supplies the oracle.
+        values = [float(value) for value in amounts if value is not None]
+        mean = sum(values) / len(values)
+        std = (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+        expected = [(float(value) - mean) / std if value is not None else 0.0 for value in amounts]
+        torch.testing.assert_close(
+            outputs[0][0], torch.tensor([expected], dtype=outputs[0][0].dtype)
+        )
+        assert outputs[0][1] == pytest.approx(dict(enumerate(expected, 1)))
 
 
 @pytest.mark.parametrize(

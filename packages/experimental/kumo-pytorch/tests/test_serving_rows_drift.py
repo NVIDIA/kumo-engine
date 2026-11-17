@@ -8,7 +8,7 @@ If it were ever narrower than inference, serving code that fetches what it lists
 would silently build other batches. For every golden case and each generated
 family (tabular, graph, sequence), this fetches per anchor exactly the rows the
 spec selects (`tests.serving_fetch`), assembles them with `ServingAssembler`, and
-compares the result with reference (in-memory) batch inference over the whole
+compares the result with DiskGraph batch inference over the whole
 dataset.
 """
 
@@ -31,7 +31,7 @@ from tests.serving_fetch import Tables, fetch
 from tests.test_inference_lifecycle import assert_same_batches
 
 SEED = 7
-ENGINE = "in_memory"
+ENGINE = "diskgraph"
 #: Properties whose generated batch is the shared covering array of its family:
 #: no known gap removes rows from it.
 GRAPH_PROPERTY, SEQUENCE_PROPERTY = "graph_structure", "sequence_point_in_time"
@@ -116,7 +116,7 @@ def _served(server: api.ServingAssembler, case: DriftCase, request: api.SampleRe
 
 
 @pytest.mark.parametrize("case_id", sorted(CASES))
-def test_serving_what_the_spec_lists_equals_reference_batch_inference(case_id: str) -> None:
+def test_serving_what_the_spec_lists_equals_diskgraph_batch_inference(case_id: str) -> None:
     case = CASES[case_id]
     artifact, expected = _run(case)
     server = api.ServingAssembler(artifact)

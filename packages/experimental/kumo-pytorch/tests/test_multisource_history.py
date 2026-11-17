@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import native_anchor_table
 
 
 @pytest.mark.parametrize("filtered", [False, True], ids=["windows", "filters-and-windows"])
@@ -91,7 +92,7 @@ def test_multisource_windows_filters_duplicates_and_ties(tmp_path, filtered, kee
     # A native anchor table exercises the native merge path, not a Python merge.
     anchors_path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"id": [1, 2], "at": [10, 10]}), anchors_path)
-    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "id", "at")
+    anchors = native_anchor_table(api.Parquet(str(anchors_path)), "id", "at")
     with api.prepare(
         spec, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     ) as plan:

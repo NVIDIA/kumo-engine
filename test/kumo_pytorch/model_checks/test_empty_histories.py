@@ -4,23 +4,30 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.involvement import verify_inputs, verify_batch
+from test.kumo_pytorch.involvement import verify_batch, verify_inputs
 from test.kumo_pytorch.masked_values import (
     original_tokens,
-    verify_targets as verify_masked,
+)
+from test.kumo_pytorch.masked_values import (
     verify_loss as masked_loss,
+)
+from test.kumo_pytorch.masked_values import (
+    verify_targets as verify_masked,
+)
+from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.next_token import (
+    verify_loss as next_loss,
 )
 from test.kumo_pytorch.next_token import (
     verify_targets as verify_next,
-    verify_loss as next_loss,
 )
-from test.kumo_pytorch.models.aml import build_model
-from .fixtures import CUTOFF, VALUE_FIELDS, build_fixture
+
+from .fixtures import CUTOFF, VALUE_FIELDS, build_fixture, probe_anchor_table
 from .test_aml import CASES, assert_equal
 
 T = int(CUTOFF.timestamp())
@@ -104,13 +111,19 @@ def test_empty_history_inputs_and_training(source, selection, family, mixed):
     requests = execution(requests)
     contract = build_contract(fixture.schema, family, native=native, max_events=11)
     with r.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(
-            execution(fixture.training), fit_split="train", encoder_cutoff=T - 1
-        ) as task:
+        with (
+            plan.materialize(
+                probe_anchor_table(plan, execution(fixture.training)),
+                fit_split="train",
+                encoder_cutoff=T - 1,
+            ) as fitted,
+            plan.materialize(
+                probe_anchor_table(plan, requests), fitted=fitted.fitted_state
+            ) as task,
+        ):
             fingerprint = task.fitted_state.fingerprint
             batches = list(
                 task.batches(
-                    requests,
                     batch_size=3,
                     seed=7,
                     output_format="model",

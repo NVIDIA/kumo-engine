@@ -1,21 +1,22 @@
 """AML next-token task and copied nuFormer consumer integration."""
 
+import json
+import math
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-import json
-import math
 from pathlib import Path
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.contracts import build_contract
+from test.kumo_pytorch.models.aml import StepResult, build_model
 from test.kumo_pytorch.next_token import selected_labels, verify_loss, verify_targets
 from test.kumo_pytorch.reference_tokens import FIELDS
-from test.kumo_pytorch.models.aml import build_model, StepResult
-from .fixtures import build_fixture, CUTOFF
+
+from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 from .test_aml import assert_equal
 
 SELECTION = next(
@@ -73,10 +74,16 @@ def case(request, tmp_path_factory):
     contract = build_contract(fixture.schema, "nuformer", native=True, max_events=11)
     assert contract.batch.targets["next_token"] == r.NextTokenTarget("history")
     with r.prepare(contract, dataset, engine) as plan:
-        task = plan.materialize(
-            requests[:2], fit_split="train", encoder_cutoff=int(CUTOFF.timestamp()) - 1
+        fitted = plan.materialize(
+            probe_anchor_table(plan, requests[:2]),
+            fit_split="train",
+            encoder_cutoff=int(CUTOFF.timestamp()) - 1,
         )
-        batch = next(task.batches(requests, batch_size=4, seed=7))
+        task = plan.materialize(
+            replace(probe_anchor_table(plan, requests), split=None),
+            fitted=fitted.fitted_state,
+        )
+        batch = next(task.batches(batch_size=4, seed=7, output_format="model"))
         model = build_model(task, SELECTION, "nuformer", dim=8, seed=17).eval()
         yield dict(
             fixture=fixture,
@@ -89,6 +96,8 @@ def case(request, tmp_path_factory):
             model=model,
             contract=contract,
             source=source,
+            dataset=dataset,
+            engine=engine,
         )
 
 
@@ -258,10 +267,18 @@ def test_future_and_evaluation_fields_do_not_change_training_inputs(case):
             if row["event_time"] >= CUTOFF:
                 row["amount_paid"], row["payment_format"] = 123456789.0, "FUTURE_POISON"
     dataset, engine = case["source"](fixture, "future")
-    expected = next(case["task"].batches(case["requests"][:2], batch_size=2))
+    with r.prepare(case["contract"], case["dataset"], case["engine"]) as original:
+        with original.materialize(
+            probe_anchor_table(original, case["requests"][:2]),
+            fitted=case["task"].fitted_state,
+        ) as unchanged:
+            expected = next(unchanged.batches(batch_size=2, output_format="model"))
     with r.prepare(case["contract"], dataset, engine) as plan:
-        task = plan.materialize(case["requests"][:2], fitted=case["task"].fitted_state)
-        actual = next(task.batches(case["requests"][:2], batch_size=2))
+        task = plan.materialize(
+            probe_anchor_table(plan, case["requests"][:2]),
+            fitted=case["task"].fitted_state,
+        )
+        actual = next(task.batches(batch_size=2, output_format="model"))
         assert_equal(actual.inputs, expected.inputs)
         assert_equal(actual.targets, expected.targets)
 
@@ -271,8 +288,12 @@ def test_missing_required_field_fails_explicitly(case):
     request = r.SampleRequest(
         "missing-fields", 4, CUTOFF + timedelta(days=1), split="test"
     )
-    with pytest.raises(ValueError, match="NULL.*missing='error'"):
-        next(case["task"].batches([request]))
+    with r.prepare(case["contract"], case["dataset"], case["engine"]) as plan:
+        with plan.materialize(
+            probe_anchor_table(plan, [request]), fitted=case["task"].fitted_state
+        ) as task:
+            with pytest.raises(ValueError, match="NULL.*missing='error'"):
+                next(task.batches(output_format="model"))
 
 
 def test_scalar_loss_known_values_and_no_second_shift():

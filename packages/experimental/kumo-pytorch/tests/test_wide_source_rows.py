@@ -8,6 +8,7 @@ import pytest
 
 from conformance.assertions import bound_tables
 from kumo.pytorch import api as r
+from tests.native_fixtures import request_anchor_table
 
 
 @pytest.mark.parametrize("engine", ("diskgraph",))
@@ -61,11 +62,12 @@ def test_physical_wide_rows_and_projection(engine, width, sparse):
     requests = tuple(r.SampleRequest(f"row-{i}", i, 100) for i in range(8))
     with bound_tables(contract, {"items": rows}, engine) as (dataset, backend):
         with r.prepare(contract, dataset, backend) as plan:
-            with plan.materialize(requests) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema)
+            ) as task:
                 fingerprint = task.fitted_state.fingerprint
                 seen = []
                 for batch in task.batches(
-                    requests,
                     batch_size=3,
                     output_format="model",
                 ):

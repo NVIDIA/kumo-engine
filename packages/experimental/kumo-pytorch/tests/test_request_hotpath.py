@@ -15,6 +15,7 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.anchors import PositionalAnchors
 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+from tests.native_fixtures import native_anchor_table
 from tests.test_contract_serialization import _contract
 
 
@@ -68,7 +69,7 @@ def test_arrow_batch_fetch_matches_scalar_reader(tmp_path, selection, explicit_i
         path,
     )
     reader = ParquetAnchors(
-        api.AnchorTable(
+        native_anchor_table(
             source=api.Parquet(str(path), columns={"id": "entity"}),
             entity_id="entity",
             sample_id="sid" if explicit_id else None,

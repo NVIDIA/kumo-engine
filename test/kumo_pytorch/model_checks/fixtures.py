@@ -7,11 +7,39 @@ features use native relations; no sender/receiver indicator columns are added.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+
+def probe_anchor_table(plan, expected):
+    """Persist this fixture's expected records beside its native index."""
+    import hashlib
+    import json
+
+    from test.kumo_pytorch.anchor_tables import write_probe_anchors
+
+    expected = tuple(expected)
+    records = [
+        [
+            row.sample_id,
+            row.entity_id,
+            row.as_of_time,
+            row.split,
+            [(target.name, target.value) for target in row.targets],
+            dict(row.metadata),
+        ]
+        for row in expected
+    ]
+    identity = hashlib.sha256(
+        json.dumps(records, sort_keys=True, default=repr).encode()
+    ).hexdigest()
+    return write_probe_anchors(
+        expected, Path(plan.engine.index).parent / f"probe-anchors-{identity}.parquet"
+    )
+
+
 DAY = 86400
-CUTOFF = datetime(2024, 3, 1, tzinfo=timezone.utc)
+CUTOFF = datetime(2024, 3, 1, tzinfo=UTC)
 VALUE_FIELDS = (
     "amount_paid",
     "payment_currency",
@@ -121,8 +149,9 @@ def build_fixture() -> AMLFixture:
         "transactions": transactions,
         "account_events": touches,
     }
-    from test.kumo_pytorch.contracts import schema_columns
     import pyarrow as pa
+
+    from test.kumo_pytorch.contracts import schema_columns
 
     schema = DataSchema(
         tables=tuple(

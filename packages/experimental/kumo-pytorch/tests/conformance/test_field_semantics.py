@@ -37,9 +37,7 @@ from kumo.pytorch.api import (
 def pytest_generate_tests(metafunc):
     if "engine_name" in metafunc.fixturenames:
         selected = metafunc.config.getoption("--conformance-engine")
-        metafunc.parametrize(
-            "engine_name", ("in_memory", "diskgraph") if selected == "all" else (selected,)
-        )
+        metafunc.parametrize("engine_name", ("diskgraph",) if selected == "all" else (selected,))
 
 
 def test_calendar_timing_outputs_have_only_explicit_values(engine_name):

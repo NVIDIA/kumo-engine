@@ -1,18 +1,19 @@
 """Real Kumo-emitted tiny batches; no AWS, Arena imports or full AML run."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-import json
 from pathlib import Path
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
-from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.contracts import build_contract
-from .fixtures import build_fixture
+from test.kumo_pytorch.models.aml import build_model
+
+from .fixtures import build_fixture, probe_anchor_table
 
 SELECTIONS = json.loads((Path(__file__).parents[1] / "workloads/aml.json").read_text())
 CASES = [
@@ -65,14 +66,14 @@ def fit_case(selection, family, backend, tmp_path_factory):
     engine = r.DiskGraphEngine(index=directory / "index", num_threads=1)
     with r.prepare(contract, dataset, engine) as plan:
         task = plan.materialize(
-            anchors,
+            probe_anchor_table(plan, anchors),
             fit_split="train",
             encoder_cutoff=int(
                 max(row.as_of_time for row in fixture.training).timestamp()
             )
             - 1,
         )
-        batch = next(task.batches(anchors, batch_size=2, seed=7, epoch=0))
+        batch = next(task.batches(batch_size=2, seed=7, epoch=0, output_format="model"))
         yield task, batch, selection, family
 
 
@@ -130,8 +131,8 @@ def test_model_construction_is_deterministic_and_does_not_reset_caller_rng(fitte
 def check_graph_v2_clock_and_tensor_adapter_parity(fitted):
     task, batch, selection, family = fitted
     model = build_model(task, selection, family, dim=8).eval()
-    from test.kumo_pytorch.models.graphsage import KumoGraphAdapter
     from test.kumo_pytorch.models.graph_sequence_aggregates import KumoFusionAdapter
+    from test.kumo_pytorch.models.graphsage import KumoGraphAdapter
 
     adapter = (
         KumoGraphAdapter(model.backbone.config, input_name="graph")

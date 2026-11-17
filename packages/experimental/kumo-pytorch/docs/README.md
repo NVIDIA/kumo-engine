@@ -15,7 +15,7 @@ runs if you paste the blocks in sequence.
    embeds.
 4. [Engines and data](04-engines-and-data.md) explains what an engine does,
    how to bind your Parquet files, the DiskGraph engine you use for real data,
-   and the small in-memory engine the guide uses for its examples.
+   and the Parquet fixtures used by the guide.
 5. [Training batches](05-training-batches.md) adds labels, fits encoders on the
    training split, and covers batch layouts, deterministic order and splitting
    work across GPUs.

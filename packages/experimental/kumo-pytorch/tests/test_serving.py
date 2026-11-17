@@ -25,6 +25,7 @@ from conformance.sequence_cases import generate_sequence_case
 from kumo.pytorch import api
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec
 from tests import lifecycle_app
+from tests.native_fixtures import prepare_rows
 from tests.serving_fetch import fetch
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _temporal_contract
 from tests.test_inference_lifecycle import _dataset, assert_same_batches
@@ -43,7 +44,7 @@ def _artifact(
     contract: api.DataLoaderSpec, tables: Tables, requests: Sequence[api.SampleRequest]
 ) -> api.Artifact:
     dataset = api.Dataset({name: api.InMemoryRows(rows) for name, rows in tables.items()})
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         anchors = [replace(request, split=None) for request in requests]
         with plan.materialize(anchors) as task:
             return task.to_artifact()
@@ -200,7 +201,7 @@ CASES: dict[str, Callable[[], tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     contract, tables, requests = CASES[name]()
     artifact = _artifact(contract, tables, requests)
-    dataset, engine = _dataset("in_memory", tables, Path())
+    dataset, engine = _dataset("diskgraph", tables, Path(), schema=contract.schema)
     expected = _batch_inference(artifact, dataset, engine, requests)
     server = api.ServingAssembler(artifact)
     for request in requests:
@@ -229,7 +230,7 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
     # columns, events, two-hop graph and future-row targets
     contract = _temporal_contract(_schema())
     rows = _fixture_rows()
-    dataset, engine = _dataset("in_memory", rows, tmp_path)
+    dataset, engine = _dataset("diskgraph", rows, tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             artifact = task.to_artifact()
@@ -402,7 +403,7 @@ def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler)
         **tables,
         "users": [{**row, "segment": None} for row in tables["users"]],
     }
-    dataset, engine = _dataset("in_memory", blank, Path())
+    dataset, engine = _dataset("diskgraph", blank, Path(), schema=contract.schema)
     request = _request(4)
     expected = _batch_inference(artifact, dataset, engine, [request])[request.sample_id]
     rows = _user_rows(4)

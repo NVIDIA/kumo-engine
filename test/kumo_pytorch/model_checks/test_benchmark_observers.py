@@ -13,7 +13,7 @@ from test.kumo_pytorch.benchmarking.recording import Recorder
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
 
-from .fixtures import build_fixture
+from .fixtures import build_fixture, probe_anchor_table
 
 
 def records(stream):
@@ -156,13 +156,14 @@ def test_real_native_queries_and_python_phases(tmp_path):
                 r.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
             ) as plan:
                 observers.attach_source(plan._source)
-                with plan.materialize(fixture.training, fit_split="train") as task:
+                with plan.materialize(
+                    probe_anchor_table(plan, fixture.training), fit_split="train"
+                ) as task:
                     observers.attach_source(task._assembler._source)
-                    for batch in task.batches(
-                        fixture.training, batch_size=1, output_format="model"
-                    ):
-                        assert len(batch.metadata["sample_ids"]) == 1
-                        digests.append(input_digest(batch))
+                    with observers.native_epoch(0, history=True):
+                        for batch in task.batches(batch_size=1, output_format="model"):
+                            assert len(batch.metadata["sample_ids"]) == 1
+                            digests.append(input_digest(batch))
         observed = {
             row["metric"] for row in records(stream) if row["kind"] == "measurement"
         }
@@ -173,13 +174,13 @@ def test_real_native_queries_and_python_phases(tmp_path):
             dataset,
             r.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
         ) as plan,
-        plan.materialize(fixture.training, fit_split="train") as task,
+        plan.materialize(
+            probe_anchor_table(plan, fixture.training), fit_split="train"
+        ) as task,
     ):
         baseline = [
             input_digest(batch)
-            for batch in task.batches(
-                fixture.training, batch_size=1, output_format="model"
-            )
+            for batch in task.batches(batch_size=1, output_format="model")
         ]
     assert digests == baseline * 2
     observed = {
@@ -193,11 +194,13 @@ def test_real_native_queries_and_python_phases(tmp_path):
         "python.encode.elapsed_ns",
         "python.tokenize.elapsed_ns",
         "native.aggregate.elapsed_ns",
+        "native.sample.elapsed_ns",
+        "native.retrieve.elapsed_ns",
         "rows.decoded",
         "index.bytes",
     } <= observed
     profiles = [row for row in records(stream) if row["kind"] == "backend_profile"]
-    assert any(row["profile_name"] == "last_graph_profile" for row in profiles)
+    assert any(row["profile_name"] == "native_graph" for row in profiles)
     for row in records(stream):
         if row["kind"] == "measurement" and "backend_profile_id" in row["details"]:
             assert any(

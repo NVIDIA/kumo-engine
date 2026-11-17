@@ -15,6 +15,7 @@ import pytest
 
 from conformance.assertions import bound_tables
 from kumo.pytorch import api as r
+from tests.native_fixtures import request_anchor_table
 
 pytestmark = pytest.mark.engine("diskgraph")
 
@@ -24,7 +25,16 @@ def pytest_generate_tests(metafunc):
 
 
 @contextmanager
-def history_task(engine_name, lengths, *, packed=False, max_events=None, fit_all=False, **policy):
+def history_task(
+    engine_name,
+    lengths,
+    *,
+    packed=False,
+    max_events=None,
+    fit_all=False,
+    population_count=None,
+    **policy,
+):
     """Values, labels and histories encode ownership independently of batch order."""
     integer = r.DType("int64")
     schema = r.DataSchema(
@@ -92,7 +102,13 @@ def history_task(engine_name, lengths, *, packed=False, max_events=None, fit_all
     with bound_tables(contract, tables, engine_name) as (dataset, engine):
         with r.prepare(contract, dataset, engine) as plan:
             # Fit on a legal one-event history; batching witnesses need no learned state.
-            yield plan.materialize(requests if fit_all else [requests[-1]]), requests
+            with plan.materialize(
+                request_anchor_table(requests if fit_all else [requests[-1]])
+            ) as fitted:
+                with plan.materialize(
+                    request_anchor_table(requests[:population_count]), fitted=fitted.fitted_state
+                ) as task:
+                    yield task, requests
 
 
 def check_batches(batches, groups, lengths, *, packed=False, cap=None):
@@ -136,8 +152,11 @@ def check_batches(batches, groups, lengths, *, packed=False, cap=None):
 def test_sample_count_boundaries(engine_name, count, drop):
     """G-BATCH-001/002: empty, just below/at/above one and two full batches."""
     lengths = [1] * max(1, count)
-    with history_task(engine_name, lengths, drop_last=drop) as (task, requests):
-        batches = list(task.batches(requests[:count], shuffle=False))
+    with history_task(engine_name, lengths, drop_last=drop, population_count=count) as (
+        task,
+        requests,
+    ):
+        batches = list(task.batches(shuffle=False, output_format="model"))
         stop = count - count % 16 if drop else count
         groups = [list(range(i + 1, min(i + 16, stop) + 1)) for i in range(0, stop, 16)]
         check_batches(batches, groups, lengths)
@@ -150,15 +169,27 @@ def test_sample_count_boundaries(engine_name, count, drop):
 def test_oversized_position_and_exact_budget(engine_name, lengths, packed):
     """G-BATCH-009: a too-long sample is never emitted, wherever it occurs."""
     with history_task(
-        engine_name, [*lengths, 1], packed=packed, max_tokens=6, length_input="history"
+        engine_name,
+        [*lengths, 1],
+        packed=packed,
+        max_tokens=6,
+        length_input="history",
+        population_count=len(lengths),
     ) as (task, requests):
         if lengths == (6,):
             check_batches(
-                list(task.batches(requests[:-1], shuffle=False)), [[1]], lengths, packed=packed
+                list(task.batches(shuffle=False, output_format="model")),
+                [[1]],
+                lengths,
+                packed=packed,
             )
             return
-        with pytest.raises(ValueError, match=r"exceeds Batching\.max_tokens"):
-            for batch in task.batches(requests[:-1], shuffle=False):
+        import diskgraph
+
+        with pytest.raises(
+            (ValueError, diskgraph.DiskgraphConfigError), match=r"exceeds Batching\.max_tokens"
+        ):
+            for batch in task.batches(shuffle=False, output_format="model"):
                 owners = batch.metadata["entity_ids"].tolist()
                 assert all(lengths[i - 1] <= 6 for i in owners), "oversized sample emitted"
                 check_batches([batch], [owners], lengths, packed=packed)
@@ -169,9 +200,14 @@ def test_bucketing_has_exact_padding_cost(engine_name, bucket):
     """G-BATCH-012: the authored four-sample example saves 54 padding slots."""
     lengths = [1, 30, 2, 29]
     with history_task(
-        engine_name, [*lengths, 1], max_samples=2, bucket_by_length=bucket, length_input="history"
+        engine_name,
+        [*lengths, 1],
+        max_samples=2,
+        bucket_by_length=bucket,
+        length_input="history",
+        population_count=len(lengths),
     ) as (task, requests):
-        batches = list(task.batches(requests[:-1], shuffle=False))
+        batches = list(task.batches(shuffle=False, output_format="model"))
         check_batches(batches, [[1, 3], [4, 2]] if bucket else [[1, 2], [3, 4]], lengths)
         allocated = sum(batch.inputs["history"]["valid"].numel() for batch in batches)
         assert allocated - sum(lengths) == (2 if bucket else 56)
@@ -194,8 +230,9 @@ def test_bucketing_uses_truncated_lengths(engine_name):
         max_samples=2,
         bucket_by_length=True,
         length_input="history",
+        population_count=len(lengths),
     ) as (task, requests):
-        batches = list(task.batches(requests[:-1], shuffle=False))
+        batches = list(task.batches(shuffle=False, output_format="model"))
         check_batches(batches, [[2, 1], [3]], lengths, cap=30)
 
 
@@ -203,11 +240,7 @@ def test_bucketing_uses_truncated_lengths(engine_name):
 def test_bucketing_respects_chunk_scope(engine_name, chunks):
     """G-BATCH-014: materialized bucketing sorts within each requested chunk."""
     lengths = [1, 30, 2, 29]
-    with history_task(engine_name, lengths, max_samples=2, fit_all=True) as (baseline, _):
-        ordered = [
-            int(i) for b in baseline.batches(shuffle=False) for i in b.metadata["entity_ids"]
-        ]
-    assert sorted(ordered) == [1, 2, 3, 4]
+    ordered = [1, 2, 3, 4]  # Authored Parquet row order, with shuffle disabled.
     with history_task(
         engine_name,
         lengths,
@@ -216,11 +249,10 @@ def test_bucketing_respects_chunk_scope(engine_name, chunks):
         bucket_by_length=True,
         length_input="history",
     ) as (task, requests):
-        # The stored anchor order may differ by engine. The oracle independently
-        # sorts only within each chunk of the observed unbucketed anchor order.
+        # Sort only within each chunk of the authored anchor order.
         expected = []
         for start in range(0, len(ordered), 2 * chunks):
             chunk = sorted(ordered[start : start + 2 * chunks], key=lambda i: lengths[i - 1])
             expected.extend([chunk[i : i + 2] for i in range(0, len(chunk), 2)])
-        batches = list(task.batches(shuffle=False, chunk_batches=chunks))
+        batches = list(task.batches(shuffle=False, chunk_batches=chunks, output_format="model"))
         check_batches(batches, expected, lengths)

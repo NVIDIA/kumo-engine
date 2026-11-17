@@ -15,6 +15,7 @@ import torch
 from kumo.pytorch import api
 from kumo.pytorch.contract.dtypes import _arrow_values
 from kumo.pytorch.engines.native_anchors import NativeAnchors, _column_values
+from tests.native_fixtures import native_anchor_table
 
 
 @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
@@ -186,7 +187,7 @@ def graph_task(tmp_path, request):
         ),
         anchors,
     )
-    table = api.AnchorTable(
+    table = native_anchor_table(
         api.Parquet(str(anchors)),
         "entity",
         "cutoff",

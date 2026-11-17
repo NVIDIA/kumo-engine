@@ -33,7 +33,14 @@ def write_probe_anchors(expected, path):
                 },
             }
         )
-    pq.write_table(pa.Table.from_pylist(records), path)
+    table = pa.Table.from_pylist(records)
+    if path.exists():
+        existing = pq.read_table(path)
+        assert existing.equals(table.cast(existing.schema)), (
+            "Anchor path reused with different records"
+        )
+    else:
+        pq.write_table(table, path)
     return r.AnchorTable(
         r.Parquet(str(path)),
         "entity_id",

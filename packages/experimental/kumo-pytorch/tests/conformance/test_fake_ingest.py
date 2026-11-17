@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from test_property_harness import Mutant
 
 from conformance.assertions import bound_tables, case_settings, require_engine, write_parquet
 from conformance.cases import REPOSITORY
@@ -60,13 +61,10 @@ from kumo.pytorch.api import (
     Dataset,
     DiskGraphEngine,
     DType,
-    InMemoryEngine,
     Parquet,
     RelationSpec,
     TableSpec,
 )
-from kumo.pytorch.contract.sample import BuiltSample
-from kumo.pytorch.data.records import FieldValue
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 
 Tables = Mapping[str, Sequence[Row]]
@@ -129,7 +127,7 @@ def _leftovers(index: Path) -> list[str]:
 
 def _generated_shapes() -> list[Shape]:
     shapes = []
-    for case in generate_batch(0, "diskgraph") + generate_batch(0, "in_memory"):
+    for case in generate_batch(0, "diskgraph"):
         if case.dimensions["schema_shape.parallel_relation"] == "present":
             continue  # GAP-PARALLEL-FK-DG, checked below
         shards = int(case.dimensions.get("execution.num_shards", 1))
@@ -144,7 +142,7 @@ def _generated_shapes() -> list[Shape]:
             )
         )
     # Every path shape, including depth2_timed, which no obligation generates on either engine.
-    first = generate_batch(0, "in_memory")[0]
+    first = generate_batch(0, "diskgraph")[0]
     for shape in PATHS:
         case = generate_case(0, 0, {**first.dimensions, "schema_shape.path": shape}, "XS")
         shapes.append(Shape(shape, case.contract.schema, case.tables, 3, 4))
@@ -300,7 +298,7 @@ def test_only_the_gap_keeps_parallel_relations_off_diskgraph() -> None:
 
     assert BY_NAME["schema_shape.parallel_relation"].values == ("absent", "present")
     assert active_values("schema_shape.parallel_relation", "diskgraph") == ("absent",)
-    for engine in ("in_memory", "diskgraph"):
+    for engine in ("diskgraph",):
         parallel = set()
         for case in generate_batch(0, engine):
             columns = [
@@ -599,9 +597,6 @@ def test_every_diskgraph_batch_crosses_shards_and_threads(seed: int) -> None:
     cases = generate_batch(seed, "diskgraph")
     assert {tuple(case.dimensions[name] for name in names) for case in cases} == expected
     assert expected == {(1, 1), (1, 4), (3, 1), (3, 4)}
-    assert not any(
-        name in case.dimensions for case in generate_batch(seed, "in_memory") for name in names
-    )
 
 
 def test_every_diskgraph_obligation_sees_every_crossed_setting() -> None:
@@ -616,7 +611,7 @@ def test_every_diskgraph_obligation_sees_every_crossed_setting() -> None:
 
 
 def test_bindings_take_shards_and_threads_from_the_case() -> None:
-    case = generate_batch(0, "in_memory")[0]
+    case = generate_batch(0, "diskgraph")[0]
     with patch("conformance.assertions.require_engine"):
         with case_settings({"execution.num_shards": 3, "execution.num_threads": 4}):
             with bound_tables(case.contract, case.tables, "diskgraph", refusal=True) as bound:
@@ -626,32 +621,12 @@ def test_bindings_take_shards_and_threads_from_the_case() -> None:
             assert (engine.num_shards, engine.num_threads) == (1, 1)
 
 
-class ShardSensitive(InMemoryEngine):
-    """The reference, off by one in every float value when the index has several shards."""
+class ShardSensitive(Mutant):
+    """Corrupt native results only when the index has multiple shards."""
 
-    def __init__(self, num_shards: int):
-        super().__init__()
+    def __init__(self, num_shards):
+        super().__init__("off_by_one" if num_shards > 1 else "none")
         self.num_shards = num_shards
-
-    def open(self, dataset, schema):
-        source = super().open(dataset, schema)
-        build = source.build
-
-        def sharded(spec, requests) -> list[BuiltSample]:
-            built = build(spec, requests)
-            return built if self.num_shards == 1 else [_off_by_one(sample) for sample in built]
-
-        source.build = sharded
-        return source
-
-
-def _off_by_one(sample: BuiltSample) -> BuiltSample:
-    values = tuple(
-        FieldValue(f.key, f.value + 1.0, f.dtype) if isinstance(f.value, float) else f
-        for f in sample.history.entity.values
-    )
-    entity = replace(sample.history.entity, values=values)
-    return replace(sample, history=replace(sample.history, entity=entity))
 
 
 @contextmanager
@@ -661,13 +636,13 @@ def _settings_binding(contract, tables, engine_name, *, refusal=False, parts=1, 
     with patch("conformance.assertions.require_engine"):
         with bound_tables(contract, tables, "diskgraph", refusal=True) as (_, native):
             shards = native.num_shards
-    with bound_tables(contract, tables, "in_memory", refusal=refusal) as (dataset, reference):
-        yield dataset, reference if engine_name == "in_memory" else ShardSensitive(shards)
+    with bound_tables(contract, tables, "diskgraph", refusal=refusal) as (dataset, reference):
+        yield dataset, ShardSensitive(shards)
 
 
 @pytest.mark.parametrize("shards", (1, 3))
-def test_differential_judges_each_case_at_its_own_shards(shards: int, tmp_path: Path) -> None:
-    base = generate_batch(0, "in_memory")[0]
+def test_fixture_oracle_judges_each_case_at_its_own_shards(shards: int, tmp_path: Path) -> None:
+    base = generate_batch(0, "diskgraph")[0]
     settings = {"execution.num_shards": shards, "execution.num_threads": 4}
     case = replace(base, dimensions={**base.dimensions, **settings})
     with (
@@ -675,10 +650,10 @@ def test_differential_judges_each_case_at_its_own_shards(shards: int, tmp_path: 
         patch("conformance.properties.generate_batch", lambda seed, engine: [case]),
     ):
         if shards == 1:
-            run_obligation("differential", "diskgraph", 0, tmp_path)
+            run_obligation("aggregate_answers", "diskgraph", 0, tmp_path)
             return
-        with pytest.raises(PropertyFailure, match="vs reference changed samples"):
-            run_obligation("differential", "diskgraph", 0, tmp_path)
+        with pytest.raises(PropertyFailure, match="fixture answers changed samples"):
+            run_obligation("aggregate_answers", "diskgraph", 0, tmp_path)
         (path,) = tmp_path.glob("repro-*.json")
-        with pytest.raises(PropertyFailure, match="vs reference changed samples"):
+        with pytest.raises(PropertyFailure, match="fixture answers changed samples"):
             replay(load_repro(path))

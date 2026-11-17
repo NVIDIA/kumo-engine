@@ -27,9 +27,14 @@ class KumoObservers:
         self.length_caches = {}
 
     @contextmanager
-    def native_epoch(self, epoch, *, length_planning=False):
+    def native_epoch(self, epoch, *, length_planning=False, history=False):
         """Require observed native model iteration, not just table materialization."""
-        evidence = {"epoch": epoch, "typed_calls": 0, "iterators": []}
+        evidence = {
+            "epoch": epoch,
+            "typed_calls": 0,
+            "iterators": [],
+            "history_required": history,
+        }
         self.epoch_observation = evidence
         complete = False
         try:
@@ -72,13 +77,16 @@ class KumoObservers:
                 or threading.get_ident() != observer.thread
             ):
                 return original(owner, stage, **kwargs)
+            lengths = kwargs.get("length_planning") is not None
+            history = kwargs.get("history") is not None
+            assert history or not observer.epoch_observation["history_required"], (
+                "Native iterator omitted the contract's merged-history plan"
+            )
             with observer.recorder.span("python.plan") as details:
                 details["scope"] = (
                     "host iterator setup, including native attachment calls; length evaluation occurs in next()"
                 )
                 iterator = original(owner, stage, **kwargs)
-            lengths = kwargs.get("length_planning") is not None
-            history = kwargs.get("history") is not None
             row = {
                 "stage": stage["name"],
                 "anchors": stage["count"],

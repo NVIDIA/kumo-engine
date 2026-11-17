@@ -1,20 +1,21 @@
 """Task checks across three models and both engines, using source-level goldens."""
 
-from copy import deepcopy
-from dataclasses import replace
 import json
 import math
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import expected_anchor, verify_batch, verify_inputs
-from test.kumo_pytorch.models.aml import build_model, StepResult
-from .fixtures import build_fixture, CUTOFF
+from test.kumo_pytorch.models.aml import StepResult, build_model
+
+from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 
 T = int(CUTOFF.timestamp())
 RECORDS = json.loads((Path(__file__).parents[1] / "workloads/aml.json").read_text())
@@ -94,8 +95,15 @@ def task_case(request, backend, tmp_path_factory):
 
     dataset, engine = source(fixture, "original")
     with r.prepare(contract, dataset, engine) as plan:
-        task = plan.materialize(requests[:2], fit_split="train", encoder_cutoff=T - 1)
-        batch = next(task.batches(requests, batch_size=8))
+        fitted = plan.materialize(
+            probe_anchor_table(plan, requests[:2]),
+            fit_split="train",
+            encoder_cutoff=T - 1,
+        )
+        task = plan.materialize(
+            probe_anchor_table(plan, requests), fitted=fitted.fitted_state
+        )
+        batch = next(task.batches(batch_size=8, output_format="model"))
         model = build_model(task, selection, family, dim=8, seed=17).eval()
         yield {
             "fixture": fixture,
@@ -191,7 +199,7 @@ def test_confident_bce_float32_rounding():
 def test_distributed_padding_and_no_eligible_examples(task_case):
     case = task_case
     batch = next(
-        case["task"].batches(case["requests"], batch_size=8, rank=1, world_size=2)
+        case["task"].batches(batch_size=8, rank=1, world_size=2, output_format="model")
     )
     assert batch.metadata["is_padding"].any()
     # Existing test_padding_identity_native owns distributed identity/delivery.
@@ -264,8 +272,10 @@ def test_future_and_label_changes_cannot_change_inputs(task_case):
         replace(a, targets=(r.TargetValue("label", 0),)) for a in case["requests"]
     )
     with r.prepare(case["contract"], dataset, engine) as plan:
-        task = plan.materialize(changed_labels, fitted=case["task"].fitted_state)
-        batch = next(task.batches(changed_labels, batch_size=8))
+        task = plan.materialize(
+            probe_anchor_table(plan, changed_labels), fitted=case["task"].fitted_state
+        )
+        batch = next(task.batches(batch_size=8, output_format="model"))
         equal_tree(batch.inputs, case["batch"].inputs)
 
 
@@ -278,8 +288,10 @@ def test_historical_change_is_observable_at_the_correct_token_position(task_case
                 row["payment_format"] = "PAST_CHANGE"
     dataset, engine = case["source"](fixture, "past-change")
     with r.prepare(case["contract"], dataset, engine) as plan:
-        task = plan.materialize(case["requests"], fitted=case["task"].fitted_state)
-        batch = next(task.batches(case["requests"], batch_size=8))
+        task = plan.materialize(
+            probe_anchor_table(plan, case["requests"]), fitted=case["task"].fitted_state
+        )
+        batch = next(task.batches(batch_size=8, output_format="model"))
         check_inputs(case, batch)
         if case["family"] != "graphsage":
             changed = (

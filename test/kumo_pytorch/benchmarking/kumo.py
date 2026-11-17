@@ -169,6 +169,8 @@ def kumo_workload(
                 raise TypeError("consumer_factory must return a callable training step")
 
     def batches(epoch):
+        from kumo.pytorch.api import EventSource
+
         selected = state["inputs"]
         recorder = state["recorder"]
         options = {"output_format": "model", **selected.batch_options}
@@ -180,6 +182,10 @@ def kumo_workload(
                 epoch,
                 length_planning=policy.max_tokens is not None
                 or policy.bucket_by_length,
+                history=any(
+                    isinstance(value.source, EventSource)
+                    for value in selected.contract.batch.inputs.values()
+                ),
             )
         )
         with observation:

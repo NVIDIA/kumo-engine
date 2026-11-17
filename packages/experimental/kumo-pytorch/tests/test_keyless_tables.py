@@ -14,16 +14,16 @@ import kumo.pytorch.api as r
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import build
+from tests.native_fixtures import prepare_rows, preview_rows
 
 
 def _case():
     return load_case(GUARANTEES / "G-KEYLESS-001/golden/C-KEYLESS-001.json")
 
 
-@pytest.fixture(params=("in_memory", "diskgraph"))
+@pytest.fixture(params=("diskgraph",))
 def engine_name(request):
-    if request.param == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     return request.param
 
 
@@ -121,7 +121,7 @@ def test_keyless_entities_are_refused_before_opening(candidate, inferred, engine
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_graph_history_targets_and_features(engine_name, output_format):
@@ -210,13 +210,13 @@ def test_keyless_non_primary_key_relation_remains_valid_on_reference():
     )
     tables = {**case.tables, "users": [{"id": 1, "group": 1}, {"id": 2, "group": 2}]}
     dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    preview = r.preview(contract, dataset, r.InMemoryEngine(), case.requests)
+    preview = preview_rows(contract, dataset, case.requests)
     assert preview.batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
 
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_constant_only_events(engine_name, output_format):
@@ -300,7 +300,7 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
     }
     requests = (r.SampleRequest("tied", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         with plan.materialize(requests) as task:
             offline = next(iter(task.batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
@@ -369,7 +369,7 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     }
     requests = (r.SampleRequest("rounding", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         with plan.materialize(requests) as task:
             offline = next(iter(task.batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
