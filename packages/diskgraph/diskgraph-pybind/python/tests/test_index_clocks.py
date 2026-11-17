@@ -598,9 +598,9 @@ def test_split_durations_off_the_clock_truncate_with_a_warning(caplog, clock, sp
 
 JAN_1_NS = 1_704_067_200 * 10**9
 HALF_HOURLY = [JAN_1_NS + k * HOUR_NS // 2 for k in range(1, 7)]
-REPEATS = ("6 training anchors truncate to 4 ticks of the hours index clock, so the training "
-           "table repeats (entity, anchor) rows up to 2 times. Space anchors by whole hours "
-           "(timeframe_step), or use a finer timestamp_precision.")
+REPEATS = ("6 anchors truncate to 4 ticks of the hours index clock, so the table repeats "
+           "(entity, anchor) rows up to 2 times. Space anchors by whole hours, or use a finer "
+           "timestamp_precision.")
 BEFORE_START = ("start_time 2024-01-01 00:30:00 UTC is not on the hours index clock, so the "
                 "first training anchor truncates to 2024-01-01 00:00:00 UTC, before start_time. "
                 "Align start_time to whole hours, or use a finer timestamp_precision.")

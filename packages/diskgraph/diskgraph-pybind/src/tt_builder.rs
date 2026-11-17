@@ -964,8 +964,8 @@ fn truncated_split<U: UnitSystem>(
         .collect()
 }
 
-/// Describes training anchors that the clock `U` truncates onto a shared tick,
-/// or to before `start_time`.
+/// Describes anchors that the clock `U` truncates onto a shared tick, or to
+/// before the training `start_time`.
 fn truncated_anchors<U: UnitSystem>(temporal: &TemporalArgs) -> Vec<String> {
     let unit = temporal.unit;
     let in_clock = |anchor: i64| {
@@ -981,9 +981,9 @@ fn truncated_anchors<U: UnitSystem>(temporal: &TemporalArgs) -> Vec<String> {
     let mut warnings = Vec::new();
     if let Some(repeats) = ticks.values().copied().max().filter(|&n| n > 1) {
         warnings.push(format!(
-            "{} training anchors truncate to {} ticks of the {clock} index clock, so the \
-             training table repeats (entity, anchor) rows up to {repeats} times. Space anchors \
-             by whole {clock} (timeframe_step), or use a finer timestamp_precision.",
+            "{} anchors truncate to {} ticks of the {clock} index clock, so the table repeats \
+             (entity, anchor) rows up to {repeats} times. Space anchors by whole {clock}, or use \
+             a finer timestamp_precision.",
             anchors.len(),
             ticks.len(),
         ));
