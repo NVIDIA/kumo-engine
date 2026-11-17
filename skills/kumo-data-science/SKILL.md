@@ -7,7 +7,7 @@ description: "Use for KumoAI graphs and predictive models on relational data in 
 
 ## Build marker
 
-**`SKILL-BUILD: 2026-11-17-2ab10b0f-dirty`**
+**`SKILL-BUILD: 2026-11-17-1dc2be3f`**
 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.

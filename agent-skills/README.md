@@ -175,29 +175,35 @@ merge. Run `/nvskills-ci` on reverts too.
 
 ### Before the first publish
 
-None of this exists yet; the catalog publishes nothing until all of it does. The card follows the
-template in NVIDIA/skills `docs/skill-cards.mdx`; the evals follow the `evals/evals.json` of a
-published catalog skill. Each skill needs its own, under `agent-skills/nvskills/`:
+The catalog publishes nothing until all of this is done. Each skill has its own card and evals
+under `agent-skills/nvskills/`. The cards are rendered with the catalog's `skill-card-generator`
+(template in NVIDIA/skills `docs/skill-cards.mdx`) and pass its `validate_submission.py`. The
+evals use the `evals/evals.json` schema of published catalog skills, and assert only behaviour the
+skill's own files document. Each set has one negative case (`expected_skill: null`).
 
 | Skill | Card | Evals |
 |---|---|---|
-| `kumo-data-science` (router) | [ ] `kumo-data-science/skill-card.md` | [ ] `kumo-data-science/evals/evals.json` |
-| `kumoai-reference` | [ ] `kumoai-reference/skill-card.md` | [ ] `kumoai-reference/evals/evals.json` |
-| `kumo-custom-populations` | [ ] `kumo-custom-populations/skill-card.md` | [ ] `kumo-custom-populations/evals/evals.json` |
-| `kumo-graph-visualization` | [ ] `kumo-graph-visualization/skill-card.md` | [ ] `kumo-graph-visualization/evals/evals.json` |
-| `kumo-model-explanations` | [ ] `kumo-model-explanations/skill-card.md` | [ ] `kumo-model-explanations/evals/evals.json` |
-| `kumo-model-persistence` | [ ] `kumo-model-persistence/skill-card.md` | [ ] `kumo-model-persistence/evals/evals.json` |
-| `kumo-model-tuning` | [ ] `kumo-model-tuning/skill-card.md` | [ ] `kumo-model-tuning/evals/evals.json` |
-| `kumo-training-diagnostics` | [ ] `kumo-training-diagnostics/skill-card.md` | [ ] `kumo-training-diagnostics/evals/evals.json` |
+| `kumo-data-science` (router) | [x] `kumo-data-science/skill-card.md` | [x] `kumo-data-science/evals/evals.json` |
+| `kumoai-reference` | [x] `kumoai-reference/skill-card.md` | [x] `kumoai-reference/evals/evals.json` |
+| `kumo-custom-populations` | [x] `kumo-custom-populations/skill-card.md` | [x] `kumo-custom-populations/evals/evals.json` |
+| `kumo-graph-visualization` | [x] `kumo-graph-visualization/skill-card.md` | [x] `kumo-graph-visualization/evals/evals.json` |
+| `kumo-model-explanations` | [x] `kumo-model-explanations/skill-card.md` | [x] `kumo-model-explanations/evals/evals.json` |
+| `kumo-model-persistence` | [x] `kumo-model-persistence/skill-card.md` | [x] `kumo-model-persistence/evals/evals.json` |
+| `kumo-model-tuning` | [x] `kumo-model-tuning/skill-card.md` | [x] `kumo-model-tuning/evals/evals.json` |
+| `kumo-training-diagnostics` | [x] `kumo-training-diagnostics/skill-card.md` | [x] `kumo-training-diagnostics/evals/evals.json` |
 
+- [x] the `NVSKILLS_CI_DISPATCH_TOKEN` repository secret, from the NVSkills CI maintainers;
+      `request-nvskills-ci.yml` fails without it
+- [x] kumo-engine registered with NVSkills CI (NVIDIA/nvskills-ci#112: `main`, external profile,
+      no fork PRs) and the `nv-skills-ci` GitHub App installed
+- [x] the catalog PR to NVIDIA/skills adding `components.d/kumo-engine.yml`, with one `skills:`
+      entry per directory (`path: skills/<skill>/`, `catalog_dir: <skill>`), all eight:
+      NVIDIA/skills#885, a draft. Its `verify-source-onboarding` check verifies only the paths the
+      file lists, and passes only once the signed copy is on `main`
+- [ ] `request-nvskills-ci.yml` on `main` (NVIDIA/kumo-engine#371). `/nvskills-ci` is an
+      `issue_comment` trigger, so it runs only from `main`'s copy
 - [ ] confirmation from the NVSkills CI maintainers that a skill may link to files in a sibling
       skill directory (`kumo-data-science/` reads `kumoai-reference/`). Each directory is signed
       and published as its own skill
-- [ ] the `NVSKILLS_CI_DISPATCH_TOKEN` repository secret, from the NVSkills CI maintainers;
-      `request-nvskills-ci.yml` fails without it
 - [ ] a signed copy on `main`: a PR through steps 1–4 whose `BENCHMARK.md` says PASS in every
       skill directory
-- [ ] the onboarding PR to NVIDIA/skills adding `components.d/kumo-engine.yml`, with one
-      `skills:` entry per directory: `path: skills/<skill>/`, `catalog_dir: <skill>`, all eight.
-      Its `verify-source-onboarding` check verifies only the paths the file lists. It passes only
-      once the signed copy is on `main`.
