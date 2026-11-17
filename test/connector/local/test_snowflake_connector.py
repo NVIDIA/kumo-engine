@@ -19,7 +19,6 @@ import pyarrow.parquet as pq
 import pytest
 from kumoapi.typing import Dtype
 from pyarrow.lib import ArrowInvalid
-from snowflake.connector.connection import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 from snowflake.connector.errors import ProgrammingError
 
@@ -128,20 +127,25 @@ def test_quoted_target_syntax_reaches_the_connection_driver(monkeypatch):
     assert settings['database'] == '"database"'
     assert settings['schema'] == '"schema"'
     assert settings['role'] == '"role"'
+    assert settings['ocsp_fail_open'] is True
 
 
-def test_driver_connection_runs_without_ocsp_checks(monkeypatch):
-    connector = SnowflakeConnector('snowflake', 'acc', 'warehouse', 'db',
-                                   'schema')
-    connector.get_user_pass_or_key = Mock(return_value={
-        'user': 'user',
-        'password': 'password'
-    })
-    monkeypatch.setattr(SnowflakeConnection,
-                        '_SnowflakeConnection__open_connection',
-                        lambda self: None)
+def test_snowpark_sessions_check_certificate_revocation_fail_open(monkeypatch):
+    from kumo_snowflake import session
 
-    assert connector._open().disable_ocsp_checks is True
+    import io_utils.snowflake.session as fsutil_session
+
+    builder = Mock()
+    monkeypatch.setattr(session, 'Session', Mock(builder=builder))
+    monkeypatch.setattr(session, '_authentication', lambda principal: {})
+    monkeypatch.setattr(session, '_target', lambda connector: {})
+    monkeypatch.setattr(fsutil_session, '_get_login_token', lambda: 'token')
+
+    session._connect(None, None)
+
+    assert builder.configs.call_args.args[0]['ocsp_fail_open'] is True
+    assert fsutil_session._build_fsutil_session_parameters(
+    )['ocsp_fail_open'] is True
 
 
 def test_information_schema_names_are_bound_not_interpolated():
@@ -280,6 +284,7 @@ def test_platform_snowpark_builder_gets_syntax_and_cache_gets_identity(
     assert captured['database'] == '"database"'
     assert captured['schema'] == '"schema"'
     assert captured['role'] == '"role"'
+    assert captured['ocsp_fail_open'] is True
 
     key = snowflake_session._credentials_key(connector)
     assert key.warehouse == 'warehouse'

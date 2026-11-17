@@ -362,6 +362,7 @@ def _connect(principal: Principal,
         **_authentication(principal),
         **_target(connector),
         'application': 'nvidia/kumo-engine',
+        'ocsp_fail_open': True,
     }
     try:
         return Session.builder.configs(settings).create()

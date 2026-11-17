@@ -59,6 +59,7 @@ def _build_fsutil_session_parameters() -> Optional[Dict]:
         "token": token,
         "authenticator": 'oauth',
         "client_session_keep_alive": True,
+        "ocsp_fail_open": True,
         "application": get_snowflake_connection_string(),
         "database": SNOWFLAKE_DATABASE,
         "schema": SNOWFLAKE_SCHEMA,
