@@ -256,6 +256,10 @@ class DiskGraphPlanCompiler:
         if split_spec is not None:
             split_spec.validate_for_compiler()
             self.builder.split_ratio(split_spec)
+            if query.query_type.name == "TEMPORAL":
+                window = query.get_combined_date_offset_range()
+                self.builder.target_window(int(window.start or 0), int(window.end),
+                                           str(window.unit))
 
         # 4. What-If (Assuming) — only for training, not prediction.
         # GE's batch_pred_table_generator skips ASSUMING entirely;

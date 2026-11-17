@@ -344,6 +344,7 @@ pub struct DiskGraphTTBuilder {
     prediction_type: tt::PredictionType,
     is_prediction: bool,
     split: Option<SplitSpecArgs>,
+    target_window: Option<(i64, i64, tt::TimeUnit)>,
     stages: Vec<(Vec<BuilderOp>, Option<tt::StageFilter>)>,
     current_ops: Vec<BuilderOp>,
     target_stype: Option<String>,
@@ -387,6 +388,7 @@ impl DiskGraphTTBuilder {
             prediction_type: tt::PredictionType::Node,
             is_prediction: false,
             split: None,
+            target_window: None,
             stages: Vec::new(),
             current_ops: Vec::new(),
             target_stype: None,
@@ -490,6 +492,14 @@ impl DiskGraphTTBuilder {
     /// [`build_split_spec_json`] -- see there for why they are asymmetric.
     fn split_ratio(&mut self, spec: &Bound<'_, PyAny>) -> PyResult<()> {
         self.split = Some(extract_split_spec(spec)?);
+        Ok(())
+    }
+
+    /// The query's combined target window, from which pquery derives its
+    /// default split; split durations derived from it truncate with the window
+    /// and are left to the window warning.
+    fn target_window(&mut self, start: i64, end: i64, unit: &str) -> PyResult<()> {
+        self.target_window = Some((start, end, parse_time_unit(unit)?));
         Ok(())
     }
 
@@ -728,12 +738,15 @@ impl DiskGraphTTBuilder {
                 Ok(tt::Stage { ops, filter })
             })
             .collect::<PyResult<_>>()?;
-        let ops = || stages.iter().flat_map(|stage| &stage.ops);
-        let mut truncated: BTreeSet<String> = ops().filter_map(truncated_window).collect();
-        let windows: Vec<_> = ops().filter_map(window_of).collect();
+        let mut truncated: BTreeSet<String> = stages
+            .iter()
+            .flat_map(|stage| &stage.ops)
+            .filter_map(truncated_window)
+            .collect();
         let forecast_length = self.temporal.as_ref().map_or(1, |t| t.forecast_length);
         if let Some(split) = &self.split {
-            truncated.extend(truncated_split::<U>(split, &windows, forecast_length));
+            let target_window = self.target_window.take();
+            truncated.extend(truncated_split::<U>(split, target_window, forecast_length));
         }
         if !self.is_prediction {
             truncated.extend(self.temporal.iter().flat_map(truncated_anchors::<U>));
@@ -887,11 +900,11 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
 
 /// Describes the split durations the clock `U` truncates, as the executor reads
 /// them: a time-range split shifts by `timeframe + anchor_start_offset`. A
-/// value that pquery derives from the query windows, as in the default split,
-/// is left to the window warning.
+/// value that pquery derives from `target_window`, as in the default split, is
+/// left to the window warning.
 fn truncated_split<U: UnitSystem>(
     split: &SplitSpecArgs,
-    windows: &[(i64, i64, TimeUnit)],
+    target_window: Option<(i64, i64, TimeUnit)>,
     forecast_length: i64,
 ) -> Vec<String> {
     let fixed = |unit: &Option<String>| {
@@ -926,13 +939,7 @@ fn truncated_split<U: UnitSystem>(
         _ => {}
     }
     let derived = |field: &str, value: i64, unit: TimeUnit| {
-        let bounded = || {
-            windows
-                .iter()
-                .filter(|&&(lo, _, u)| u == unit && lo != UNBOUNDED_LOWER_OFFSET)
-        };
-        let (Some(start), Some(end)) = (bounded().map(|w| w.0).min(), bounded().map(|w| w.1).max())
-        else {
+        let Some((start, end, _)) = target_window.filter(|window| window.2 == unit) else {
             return false;
         };
         let timeframe = end.saturating_sub(start);
