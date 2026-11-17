@@ -25,7 +25,7 @@ MANIFEST="${SOURCE}/temporalio/bridge/sdk-core/crates/sdk-core/Cargo.toml"
 sed -i 's/^zip = { version = "8.4"/zip = { version = "=9.0.5"/' "$MANIFEST"
 patch --batch --fuzz=0 -p1 -d "$SOURCE" < /tmp/temporalio-zip.patch
 cargo fetch --locked --manifest-path "${SOURCE}/temporalio/bridge/Cargo.toml"
-for crate in zip-9.0.5 nix-0.31.4 zstd-0.14.4 zstd-safe-8.3.0 zstd-sys-2.1.3+zstd.1.5.7; do
+for crate in zip-9.0.5 nix-0.31.3 zstd-0.14.3 zstd-safe-8.2.0 zstd-sys-2.1.2+zstd.1.5.7; do
     mkdir -p "${SOURCE}/temporalio/bridge/third-party/${crate}"
     cp /root/.cargo/registry/src/*/"${crate}"/LICENSE* \
         "${SOURCE}/temporalio/bridge/third-party/${crate}/"
@@ -43,7 +43,7 @@ wheel, = Path('/tmp/temporalio-wheel').glob('temporalio-*.whl')
 with zipfile.ZipFile(wheel) as archive:
     lock = tomllib.loads(archive.read('temporalio/bridge/Cargo.lock').decode())
     assert any(name.endswith('.so') for name in archive.namelist())
-    for crate in ('zip-9.0.5', 'nix-0.31.4', 'zstd-0.14.4', 'zstd-safe-8.3.0', 'zstd-sys-2.1.3+zstd.1.5.7'):
+    for crate in ('zip-9.0.5', 'nix-0.31.3', 'zstd-0.14.3', 'zstd-safe-8.2.0', 'zstd-sys-2.1.2+zstd.1.5.7'):
         assert any(f'third-party/{crate}/LICENSE' in name for name in archive.namelist())
     assert any(name.endswith('.dist-info/licenses/LICENSE') for name in archive.namelist())
 assert '1.33.0+kumo.zip905' in wheel.name, wheel.name

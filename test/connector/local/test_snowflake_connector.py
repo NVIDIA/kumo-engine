@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 from kumoapi.typing import Dtype
 from pyarrow.lib import ArrowInvalid
+from snowflake.connector.connection import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 from snowflake.connector.errors import ProgrammingError
 
@@ -127,6 +128,20 @@ def test_quoted_target_syntax_reaches_the_connection_driver(monkeypatch):
     assert settings['database'] == '"database"'
     assert settings['schema'] == '"schema"'
     assert settings['role'] == '"role"'
+
+
+def test_driver_connection_runs_without_ocsp_checks(monkeypatch):
+    connector = SnowflakeConnector('snowflake', 'acc', 'warehouse', 'db',
+                                   'schema')
+    connector.get_user_pass_or_key = Mock(return_value={
+        'user': 'user',
+        'password': 'password'
+    })
+    monkeypatch.setattr(SnowflakeConnection,
+                        '_SnowflakeConnection__open_connection',
+                        lambda self: None)
+
+    assert connector._open().disable_ocsp_checks is True
 
 
 def test_information_schema_names_are_bound_not_interpolated():

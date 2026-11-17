@@ -34,9 +34,11 @@ major_dependencies = [
     "pandas==2.3.3",
     # Used directly by kumo.utils.dataclass and REST integration tests.
     "httpx<0.28",
-    # Security floors for transitive HTTP and image dependencies.
+    # Security floors for transitive dependencies.
     "aiohttp>=3.14.4,<4",
+    "oauthlib>=4.0.1",
     "pillow>=13.0.0,<14",
+    "pyasn1>=0.6.5",
     "backoff==2.2.1",
 ]
 
@@ -161,7 +163,6 @@ install_requires = major_dependencies + observability_requires + [
     "google-cloud-storage==3.11.0",
     "google-api-core>=2,<3",
     "google-auth>=2.14.1,<3",
-    "pyasn1>=0.6.5",
     # Required for GCP Secret Manager (IS_GCP_DEPLOY)
     "google-cloud-secret-manager==2.26.0",
     # Required for GCS filesystem in PySpark
@@ -178,7 +179,6 @@ install_requires = major_dependencies + observability_requires + [
     # scripts/update_packages.sh.
     "snowflake-snowpark-python>=1.49",
     "databricks-sql-connector==4.9.0",
-    "oauthlib>=4.0.1",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
     # Remove the compromised emSign root (GHSA-6q48-6c7w-9gw2).

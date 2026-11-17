@@ -1148,6 +1148,48 @@ def test_run_in_isolated_subprocess_times_out_and_raises(monkeypatch):
     assert elapsed < 15, elapsed
 
 
+def test_run_in_isolated_subprocess_starts_one_fork_at_a_time(monkeypatch):
+    active = []
+    peaks = []
+    guard = threading.Lock()
+
+    class FakeResult:
+        def get(self, timeout):
+            return timeout
+
+    class FakePool:
+        def __init__(self, processes):
+            with guard:
+                active.append(processes)
+                peaks.append(len(active))
+            time.sleep(0.05)
+            with guard:
+                active.pop()
+
+        def apply_async(self, func, args):
+            return FakeResult()
+
+        def close(self):
+            pass
+
+        def join(self):
+            pass
+
+    monkeypatch.setattr(parquet_util.multiprocessing, 'get_context',
+                        lambda method: types.SimpleNamespace(Pool=FakePool))
+
+    threads = [
+        threading.Thread(target=parquet_util._run_in_isolated_subprocess,
+                         args=(int, ('7', ))) for _ in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert peaks == [1, 1, 1, 1]
+
+
 def test_s3_branch_routes_through_isolated_subprocess(monkeypatch):
     # The S3 branch must go through the py3.14-safe helper.
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda path: True)
