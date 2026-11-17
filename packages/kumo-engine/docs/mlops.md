@@ -202,6 +202,7 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 - It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
 - `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
+- Run context cleanup stays on the tracking worker, including after a model-logging timeout. If a provider call is blocked, cleanup waits for it to return.
 
 ### What you'll see in MLflow and Snowsight
 

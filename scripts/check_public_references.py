@@ -108,13 +108,13 @@ IDENTIFIER_RULES = (
             r"\bapp\.snowflake\.com/(?:[a-z]{2}-[a-z]+-[0-9](?:\.[a-z]+)?/)?"
             r"(?P<value>[a-z0-9_-]+)/", re.IGNORECASE),
         "warehouse account",
-        SNOWFLAKE_PLACEHOLDER_ACCOUNTS,
+        SNOWFLAKE_PLACEHOLDER_ACCOUNTS | {"_deeplink"},
     ),
     (
         # Legacy account locators are two or three letters and five digits,
         # assigned to an account setting (quoted, unquoted, or typed).
         re.compile(
-            r"\baccount\w*[\"']?\s*(?::\s*\w+\s*)?[:=(]\s*[\"']?"
+            r"(?:\baccount\w*[\"']?\s*(?::\s*\w+\s*)?[:=(]\s*[\"']?|[\"'])"
             r"(?P<value>[a-z]{2,3}[0-9]{5})(?![a-z0-9])", re.IGNORECASE),
         "warehouse account",
         SNOWFLAKE_PLACEHOLDER_ACCOUNTS,
@@ -291,6 +291,10 @@ def scan_text(path: str, text: str, *, strict: bool = False) -> list[Finding]:
                         category=category,
                     ))
         for pattern, category, ignored in identifier_rules:
+            if (category == "warehouse account" and path.endswith(".ipynb")
+                    and re.fullmatch(
+                        r'\s*"id"\s*:\s*"[A-Za-z0-9_-]{1,64}"\s*,?\s*', line)):
+                continue
             for match in pattern.finditer(line):
                 value = match.group("value").lower()
                 if value not in ignored:
