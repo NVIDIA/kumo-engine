@@ -636,12 +636,17 @@ def test_anchors_off_the_clock_warn(caplog, anchors, start_time, is_prediction, 
     assert _builder_warnings(caplog) == warnings
 
 
-def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path):
+def test_a_past_window_split_with_a_zero_step_generates(off_tick_data, tmp_path, caplog):
     index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
     split = {"kind": "DateOffsetSplit", "offsets": [-30, 0], "offset_unit": "minutes",
              "unit": "minutes", "timeframe": 30, "anchor_start_offset": -120}
     rows = _split_rows(index, (-120, -90), split, "off_tick")
     assert rows
+    assert _builder_warnings(caplog) == [
+        f"The split offset -30 minutes truncates to 0 minutes {ROUNDED_SPLIT}",
+        "The window (-120, -90] minutes truncates to (-120, -60] minutes on the hours index "
+        "clock. Use a window of whole hours, or a finer timestamp_precision.",
+    ]
     assert rows == _split_rows(index, (-120, -60), {**split, "offsets": [0, 0], "timeframe": 0},
                                "whole_hours")
 
