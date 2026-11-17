@@ -4,14 +4,18 @@
 
 use anyhow::Result;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray, TimestampSecondArray,
+    Array, ArrayRef, BinaryArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampSecondArray,
 };
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::InMemoryOutput;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_ingest::io::Dest;
 use diskgraph_ingest::stats::IngestStats;
-use diskgraph_ingest::{ingest_with_stats, IngestOptions};
+use diskgraph_ingest::{
+    ingest_stage_extension_with_resolution_and_sidecars, ingest_with_stats, IngestOptions,
+    ResolveKind, ResolveSpec, StageSidecarColumns, StageSpec,
+};
 use diskgraph_rowpack::RowPackDecodeScratch;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -31,6 +35,35 @@ impl std::io::Write for Logs {
     }
 }
 
+/// Runs `ingest` and returns its result with the warnings it logged.
+fn with_logs<T>(ingest: impl FnOnce() -> T) -> (T, String) {
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer({
+            let logs = logs.clone();
+            move || logs.clone()
+        })
+        .with_ansi(false)
+        .finish();
+    let result = tracing::subscriber::with_default(subscriber, ingest);
+    let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    (result, logs)
+}
+
+/// A string of `len` random letters: rowpack LZ4-compresses long strings, so
+/// only a random one stays over the node-data limit.
+fn random_string(len: usize) -> String {
+    let mut state = 1u64;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(b'a' + (state % 26) as u8)
+        })
+        .collect()
+}
+
 fn write_parquet(path: &Path, columns: Vec<(&str, ArrayRef)>) -> Result<()> {
     let batch = RecordBatch::try_from_iter(columns)?;
     let mut writer =
@@ -40,9 +73,9 @@ fn write_parquet(path: &Path, columns: Vec<(&str, ArrayRef)>) -> Result<()> {
     Ok(())
 }
 
-/// Ingests `Owners(owner_id)` and `Items(item_id, created, owner_id, blob_a,
-/// blob_b)`, with `owner_id` a string FK, and returns the stats, warnings and
-/// reader.
+/// Ingests `Owners(owner_id)` and `Items(item_id, created, ended, owner_id,
+/// blob_a, blob_b)`, with `owner_id` a string FK, and returns the stats,
+/// warnings and reader.
 fn ingest_items(
     dir: &Path,
     owner_ids: &[&str],
@@ -59,11 +92,13 @@ fn ingest_items(
     )?;
     let ids: Vec<i64> = (1..=owner_ids.len() as i64).collect();
     let created: Vec<i64> = ids.iter().map(|id| 1000 * id).collect();
+    let ended: Vec<i64> = ids.iter().map(|id| 5000 * id).collect();
     write_parquet(
         &items,
         vec![
             ("item_id", Arc::new(Int64Array::from(ids)) as ArrayRef),
             ("created", Arc::new(TimestampSecondArray::from(created))),
+            ("ended", Arc::new(TimestampSecondArray::from(ended))),
             ("owner_id", Arc::new(StringArray::from(owner_ids.to_vec()))),
             ("blob_a", Arc::new(BinaryArray::from(blobs.to_vec()))),
             ("blob_b", Arc::new(BinaryArray::from(blobs.to_vec()))),
@@ -83,9 +118,11 @@ fn ingest_items(
                 "source": {"type": "parquet", "paths": [items]},
                 "primary_key": "item_id",
                 "create_time": "created",
+                "end_time": "ended",
                 "columns": [
                     {"name": "item_id", "ingested_dtype": "int64"},
                     {"name": "created", "ingested_dtype": "timestamp"},
+                    {"name": "ended", "ingested_dtype": "timestamp"},
                     {"name": "owner_id", "ingested_dtype": "string"},
                     {"name": "blob_a", "ingested_dtype": "bytes"},
                     {"name": "blob_b", "ingested_dtype": "bytes"}
@@ -97,23 +134,15 @@ fn ingest_items(
     let config_path = dir.join("config.json");
     std::fs::write(&config_path, serde_json::to_vec(&config)?)?;
     let output = dir.join("index");
-    let logs = Logs::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer({
-            let logs = logs.clone();
-            move || logs.clone()
-        })
-        .with_ansi(false)
-        .finish();
-    let (_, stats) = tracing::subscriber::with_default(subscriber, || {
+    let (result, logs) = with_logs(|| {
         ingest_with_stats(
             &config_path,
             output.to_str().unwrap(),
             Dest::Local,
             IngestOptions::default(),
         )
-    })?;
-    let logs = String::from_utf8(logs.0.lock().unwrap().clone())?;
+    });
+    let (_, stats) = result?;
     let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output)?;
     Ok((stats, logs, Arc::new(reader)))
 }
@@ -170,13 +199,15 @@ fn oversized_row_keeps_key_time_and_fk_with_null_features() -> Result<()> {
     let owner = batch.column_by_name("owner_id").unwrap();
     let owner = owner.as_any().downcast_ref::<StringArray>().unwrap();
     assert_eq!(owner.value(0), "o1");
-    let created = batch.column_by_name("created").unwrap();
-    assert!(created.is_valid(0));
+    assert!(batch.column_by_name("created").unwrap().is_valid(0));
+    assert!(batch.column_by_name("ended").unwrap().is_valid(0));
     assert!(batch.column_by_name("blob_a").unwrap().is_null(0));
     assert!(batch.column_by_name("blob_b").unwrap().is_null(0));
 
     assert!(!is_valid_at(&items, node, 1999));
     assert!(is_valid_at(&items, node, 2000));
+    assert!(is_valid_at(&items, node, 9999));
+    assert!(!is_valid_at(&items, node, 10000));
     let edges = items.edges_for_node(node)?.relation_segments()?;
     assert_eq!(edges.iter().map(|s| s.count).sum::<u32>(), 1);
     Ok(())
@@ -185,17 +216,8 @@ fn oversized_row_keeps_key_time_and_fk_with_null_features() -> Result<()> {
 #[test]
 fn row_still_over_the_limit_after_nulling_features_is_stored_empty() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    // An FK column is kept, and this value alone is over the limit. It is
-    // random because rowpack LZ4-compresses long strings.
-    let mut state = 1u64;
-    let owner: String = (0..65 << 20)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            char::from(b'a' + (state % 26) as u8)
-        })
-        .collect();
+    // An FK column is kept, and this value alone is over the limit.
+    let owner = random_string(65 << 20);
     let (stats, logs, reader) = ingest_items(dir.path(), &[&owner], &[b"small"])?;
 
     assert_eq!(stats.oversized_rows_counts.get("Items"), Some(&1));
@@ -218,5 +240,92 @@ fn row_still_over_the_limit_after_nulling_features_is_stored_empty() -> Result<(
     let batch = fetch_items(&reader, node);
     assert!(batch.columns().iter().all(|column| column.is_null(0)));
     assert!(is_valid_at(&items, node, 0));
+    Ok(())
+}
+
+fn write_stage(path: &Path, target: &str, blob: &[u8]) -> Result<()> {
+    write_parquet(
+        path,
+        vec![
+            ("ENTITY1", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("TIMESTAMP", Arc::new(TimestampSecondArray::from(vec![500]))),
+            ("TARGET1", Arc::new(StringArray::from(vec![target]))),
+            ("WEIGHT", Arc::new(Float64Array::from(vec![0.5]))),
+            ("blob", Arc::new(BinaryArray::from(vec![blob]))),
+        ],
+    )
+}
+
+#[test]
+fn oversized_stage_rows_keep_their_task_columns_or_are_dropped() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, _, parent) = ingest_items(dir.path(), &["o1"], &[b"small"])?;
+    let train = dir.path().join("train.parquet");
+    let val = dir.path().join("val.parquet");
+    write_stage(&train, "yes", &vec![7u8; 2 * BIG])?;
+    // The target is kept, and this value alone is over the limit.
+    write_stage(&val, &random_string(65 << 20), b"small")?;
+    let columns = [
+        ("ENTITY1", "int64"),
+        ("TIMESTAMP", "timestamp"),
+        ("TARGET1", "string"),
+        ("WEIGHT", "float64"),
+        ("blob", "bytes"),
+    ]
+    .map(|(name, dtype)| {
+        serde_json::from_value(serde_json::json!({"name": name, "ingested_dtype": dtype})).unwrap()
+    });
+    let stage = |name: &str, path: &Path| StageSpec {
+        stage_table_name: name.to_string(),
+        parquet_paths: vec![path.to_path_buf()],
+    };
+    let sidecars = StageSidecarColumns {
+        binary_label_column: None,
+        sample_weight_column: Some("WEIGHT".to_string()),
+    };
+    let extension = dir.path().join("extension");
+    let (result, logs) = with_logs(|| {
+        ingest_stage_extension_with_resolution_and_sidecars(
+            "seeds",
+            &extension,
+            &dir.path().join("index"),
+            &[stage("train_seeds", &train), stage("val_seeds", &val)],
+            [("train_seeds".to_string(), sidecars)].into(),
+            columns.to_vec(),
+            Vec::new(),
+            &[ResolveSpec {
+                src_col: "ENTITY1".to_string(),
+                dst_table: "Items".to_string(),
+                kind: ResolveKind::Scalar,
+                node_id_col: "entity_node_id".to_string(),
+            }],
+            Some(1),
+            false,
+            false,
+        )
+    });
+    let result = result?;
+
+    assert_eq!(
+        result.counts,
+        [("train_seeds".to_string(), 1), ("val_seeds".to_string(), 0)]
+    );
+    assert_eq!(result.input_row_count, 2);
+    assert!(logs.contains(
+        "dropped 1 row of stage table val_seeds still over the 64 MiB node-data limit \
+         without features"
+    ));
+    let reader = GraphIndexReader::open(&extension.join("index_metadata.json"), &extension)?;
+    let seeds = reader.table("train_seeds").unwrap();
+    let row = seeds
+        .decode_node_data_json(&seeds.edges_for_node(0)?)?
+        .unwrap();
+    let item = item_node(&parent.table("Items").unwrap(), "1");
+    assert_eq!(row["ENTITY1"], 1);
+    assert_eq!(row["entity_node_id"], item);
+    assert!(!row["TIMESTAMP"].is_null());
+    assert_eq!(row["TARGET1"], "yes");
+    assert_eq!(row["WEIGHT"], 0.5);
+    assert!(row["blob"].is_null());
     Ok(())
 }

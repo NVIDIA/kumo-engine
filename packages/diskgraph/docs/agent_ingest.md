@@ -172,7 +172,7 @@ Rows with invalid `create_time` (time_col) values are dropped during encode to m
 
 **Why two checks?** The Arrow bitmap only reflects parquet-level nulls. Values that are non-null in parquet but semantically invalid (out-of-range dates, malformed strings) pass the bitmap check but fail during encode. The post-encode tag check catches these. For non-time-col timestamp columns, the invalid value is encoded as a null feature (tag=0) but the row is kept — only the time_col triggers a row drop.
 
-**Reporting**: Dropped rows are counted in `node_data_dropped` (node tables) and `edge_dropped` (edge tables), aggregated into `dropped_rows_counts` in `ingest_stats.json`. Parse failures are recorded in `col_stats.json` via `observe_parse_failure`. A row whose encoded node data exceeds 64 MiB is not dropped: it is re-encoded with only its key, time, FK and task columns (or stored with no values if still over the limit) and counted in `oversized_rows_counts`.
+**Reporting**: Dropped rows are counted in `node_data_dropped` (node tables) and `edge_dropped` (edge tables), aggregated into `dropped_rows_counts` in `ingest_stats.json`. Parse failures are recorded in `col_stats.json` via `observe_parse_failure`. A row whose encoded node data exceeds 64 MiB is not dropped: it is re-encoded with only its key, time, FK and task columns and counted in `oversized_rows_counts`. One still over the limit is stored with no values, or, in a stage table, dropped and counted in `dropped_rows_counts`.
 
 ## Phase 2: PK Map (MPHF Construction)
 
