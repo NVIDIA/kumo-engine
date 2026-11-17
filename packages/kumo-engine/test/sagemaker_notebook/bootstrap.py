@@ -77,9 +77,9 @@ def prepare(config, session=None):
             body = s3.get_object(Bucket=asset['bucket'],
                                  Key=asset['key'])['Body']
             try:
+                body.set_socket_timeout(min(30, download_remaining()))
                 with target.open('wb') as stream:
                     while True:
-                        body.set_socket_timeout(min(30, download_remaining()))
                         chunk = body.read(8 << 20)
                         download_remaining()
                         if not chunk:

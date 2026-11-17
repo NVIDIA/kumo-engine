@@ -1556,6 +1556,51 @@ def test_phase_caps_are_retained_within_shared_work_deadline(tmp_path, monkeypat
     assert budget.WORK_SECONDS == 3000
 
 
+def test_bootstrap_reads_eof_after_http_response_releases_socket(
+        monkeypatch, tmp_path):
+    import hashlib
+    import http.client
+
+    from botocore.response import StreamingBody
+    from urllib3.response import HTTPResponse
+
+    spec = importlib.util.spec_from_file_location('bootstrap_download',
+                                                  HERE / 'bootstrap.py')
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    monkeypatch.setattr(bootstrap.platform, 'machine', lambda: 'x86_64')
+    monkeypatch.setattr(bootstrap.platform, 'libc_ver', lambda:
+                        ('glibc', '2.35'))
+    runtime = tmp_path / 'runtime'
+    monkeypatch.setattr(bootstrap, 'Path', lambda _: runtime)
+    content = b"raise RuntimeError('download complete')\n"
+    stream = io.BytesIO(b'HTTP/1.1 200 OK\r\nContent-Length: ' +
+                        str(len(content)).encode() + b'\r\n\r\n' + content)
+    stream.raw = SimpleNamespace(_sock=Mock())
+    response = http.client.HTTPResponse(
+        SimpleNamespace(makefile=lambda _: stream))
+    response.begin()
+    body = StreamingBody(HTTPResponse(body=response, preload_content=False),
+                         len(content))
+    sts, s3, session = Mock(), Mock(), Mock()
+    sts.get_caller_identity.return_value = dict(
+        Account='123456789012',
+        Arn='arn:aws:sts::123456789012:assumed-role/test-role/session')
+    session.client.side_effect = lambda service, **kwargs: sts if service == 'sts' else s3
+    s3.get_object.return_value = {'Body': body}
+    config = dict(
+        region='us-west-2', account='123456789012', attempt='a' * 12,
+        execution_role='arn:aws:iam::123456789012:role/test-role',
+        assets={'wheel_mlops_lifecycle.py': dict(
+            bucket='test', key='helper', size=len(content),
+            sha256=hashlib.sha256(content).hexdigest())})
+    with pytest.raises(RuntimeError, match='download complete'):
+        bootstrap.prepare(config, session=session)
+    assert (runtime / 'payload/wheel_mlops_lifecycle.py').read_bytes() == content
+    assert response.fp is None
+    stream.raw._sock.settimeout.assert_called_once_with(30)
+
+
 @pytest.mark.parametrize('fault', ['slow_chunks', 'socket_timeout'])
 def test_bootstrap_downloads_cannot_consume_work_reserve(
         monkeypatch, tmp_path, fault):
