@@ -185,6 +185,7 @@ class NativeAnchors:
                                 "split": split_name,
                                 "name": f"stage_{len(by_split)}",
                                 "count": 0,
+                                "latest": [],
                             }
                             stage["path"] = self.path / f"{stage['name']}.parquet"
                             self._stages.append(stage)
@@ -193,11 +194,16 @@ class NativeAnchors:
                                 str(stage["path"])
                             )
                         stage = by_split[split_name]
-                        selected = data.filter(
+                        mask = (
                             pc.is_null(split) if split_name is None else pc.equal(split, split_name)
                         )
+                        selected = data.filter(mask)
                         writers[split_name].write_batch(selected.to_batches()[0])
                         stage["count"] += len(selected)
+                        if table.as_of_time is not None:
+                            # One Arrow scalar per read batch: fitting needs only the
+                            # latest anchor time, not a request per anchor.
+                            stage["latest"].append(pc.max(columns[table.as_of_time].filter(mask)))
                     position += batch.num_rows
         finally:
             for writer in writers.values():
@@ -286,6 +292,18 @@ class NativeAnchors:
 
     def count(self, selection: Any = ALL_ANCHORS) -> int:
         return sum(stage["count"] for stage in self._selection(selection))
+
+    def latest_as_of_time(self, selection: Any) -> Any:
+        """The latest anchor time in the selection, as `fetch` gives it."""
+        stages = self._selection(selection)
+        if self._table.as_of_time is None:
+            return 0
+        pa = self._pa
+        latest = [value for stage in stages for value in stage["latest"]]
+        if not latest:
+            raise ValueError("no anchors in the selection")
+        dtype = self._types[self._table.as_of_time]
+        return _column_values(pa, pa.array([self._pc.max(pa.array(latest))]), dtype)[0]
 
     def _iter(
         self,

@@ -202,3 +202,67 @@ def test_nullable_profile_field_materializes_as_null(tmp_path):
         None,
         *[float(i) for i in range(2, 13)],
     ]
+
+
+@pytest.mark.parametrize("timestamps", [False, True])
+def test_latest_anchor_time_matches_fetched_requests(tmp_path, timestamps):
+    pytest.importorskip("diskgraph")
+    import datetime as dt
+
+    import pyarrow as pa
+
+    from kumo.pytorch.api import ALL_ANCHORS, Dataset, DiskGraphEngine, Encode, Fields, ZScore
+    from kumo.pytorch.column_stats import cutoff_nanos
+    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+    from tests.test_anchor_tables import SCHEMA
+
+    sources = {}
+    for table in SCHEMA.tables:
+        path = tmp_path / (table.name + ".parquet")
+        schema = pa.schema([(name, dtype.to_arrow()) for name, dtype in table.columns.items()])
+        pq.write_table(pa.Table.from_pylist(DATASET.tables[table.name].rows, schema=schema), path)
+        sources[table.name] = Parquet(str(path))
+    rows = [
+        {**row, "at": 100 + (index * 7) % 13, "split": None if index == 5 else row["split"]}
+        for index, row in enumerate(ANCHORS)
+    ]
+    if timestamps:
+        rows = [
+            {
+                **row,
+                "at": dt.datetime.fromtimestamp(row["at"], dt.UTC) + dt.timedelta(microseconds=3),
+            }
+            for row in rows
+        ]
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), path, row_group_size=4)
+    anchors = replace(_table(), source=Parquet(str(path)))
+    contract = _contract()
+    entity = contract.batch.inputs["entity"]
+    fields = tuple(
+        Encode(field=use.field, encoding=ZScore()) for use in entity.representation.fields
+    )
+    contract = replace(
+        contract,
+        batch=replace(
+            contract.batch,
+            inputs={"entity": replace(entity, representation=Fields(fields=fields))},
+        ),
+    )
+    with prepare(
+        contract, Dataset(sources), DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        task = plan.materialize(anchors, fit_split="train")
+        train = frozenset({"train"})
+        fetched = task._anchors.fetch(train, range(task._anchors.count(train)))
+        assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == cutoff_nanos(
+            max(request.as_of_time for request in fetched)
+        )
+        for anchor_task in (task._anchors, ParquetAnchors(task._anchors._table)):
+            for selection in (
+                *map(frozenset, ({"train"}, {"valid"}, {None}, {"train", None})),
+                ALL_ANCHORS,
+            ):
+                fetched = anchor_task.fetch(selection, range(anchor_task.count(selection)))
+                expected = max(request.as_of_time for request in fetched)
+                assert anchor_task.latest_as_of_time(selection) == expected

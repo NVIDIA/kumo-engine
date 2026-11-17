@@ -353,6 +353,7 @@ class Plan:
                     cutoff,
                     exclude=() if input_state is None else input_state.encoders,
                     chosen=chosen,
+                    anchors=task_anchors,
                 )
             )
             reused = {} if fitted is None else fitted.fit
@@ -424,6 +425,7 @@ class Plan:
         *,
         exclude=(),
         chosen=None,
+        anchors: AnchorTask | None = None,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
         column_text = getattr(source, "column_text", None)
@@ -446,7 +448,7 @@ class Plan:
         if not encoders or not fitting:
             return {}, {}
         latest = (
-            cutoff_nanos(max(request.as_of_time for chunk in _chunks(fitting) for request in chunk))
+            cutoff_nanos(_latest_anchor_time(anchors, chosen, fitting))
             if self.contract.requires_anchor_time
             else None
         )
@@ -692,6 +694,18 @@ def _source_issues(
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))
+
+
+def _latest_anchor_time(
+    anchors: AnchorTask | None,
+    chosen: SplitSelection | None,
+    fitting: Sequence[SampleRequest] | _Mapped,
+) -> Any:
+    """The latest fitting anchor time, from anchor columns when the task keeps them."""
+    latest = getattr(anchors, "latest_as_of_time", None)
+    if latest is not None:
+        return latest(chosen)
+    return max(request.as_of_time for chunk in _chunks(fitting) for request in chunk)
 
 
 def _iso(nanos: int) -> str:
