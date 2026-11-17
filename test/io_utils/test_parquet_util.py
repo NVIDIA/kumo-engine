@@ -1148,6 +1148,21 @@ def test_run_in_isolated_subprocess_times_out_and_raises(monkeypatch):
     assert elapsed < 15, elapsed
 
 
+def test_run_in_isolated_subprocess_forks_under_fork_lock(monkeypatch):
+    held = []
+    ctx = multiprocessing.get_context('fork')
+
+    def pool(processes):
+        held.append(parquet_util._FORK_LOCK.locked())
+        return ctx.Pool(processes)
+
+    monkeypatch.setattr(parquet_util.multiprocessing, 'get_context',
+                        lambda method: types.SimpleNamespace(Pool=pool))
+
+    assert parquet_util._run_in_isolated_subprocess(int, ('7', )) == 7
+    assert held == [True]
+
+
 def test_s3_branch_routes_through_isolated_subprocess(monkeypatch):
     # The S3 branch must go through the py3.14-safe helper.
     monkeypatch.setattr(parquet_util.fsutil, 'is_s3', lambda path: True)

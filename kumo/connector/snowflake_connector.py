@@ -388,6 +388,8 @@ class SnowflakeConnector(SQLConnector):
                 True,
                 'login_timeout':
                 5,
+                'ocsp_fail_open':
+                True,
                 'application':
                 get_snowflake_connection_string()
             })
