@@ -338,6 +338,11 @@ def _display_outputs(root, report, display):
     figures.append(('cohort-regression', figure, 'Population share'))
     figures.extend(layout_examples(report))
     for kind, figure, label in figures:
+        if kind.startswith('cohort'):
+            count = len(figure.axes[-1].get_xticklabels())
+            figure.set_size_inches(max(figure.get_figwidth(), count * 1.2),
+                                   figure.get_figheight())
+            figure.tight_layout()
         labels_to_check = check_layout(figure)
         native, metadata = shell.display_formatter.format(figure)
         assert 'image/png' in native, 'Notebook must format the actual Matplotlib figure'
