@@ -178,13 +178,25 @@ def _warn_dropped_rows(root: Path) -> None:
     stats_file = root / "ingest_stats.json"
     if not stats_file.is_file():
         return
-    counts = json.loads(stats_file.read_text()).get("stats", {}).get("dropped_rows_counts", {})
-    dropped = {table: count for table, count in counts.items() if count}
+    stats = json.loads(stats_file.read_text()).get("stats", {})
+    dropped = {
+        table: count for table, count in stats.get("dropped_rows_counts", {}).items() if count
+    }
     if dropped:
         warnings.warn(
             f"DiskGraph index {root} dropped source rows {dropped}; rows with NULL "
             "table clocks are excluded. Counts may include other ingest rejections; "
             "see ingest_stats.json.",
+            UserWarning,
+            stacklevel=3,
+        )
+    oversized = {
+        table: count for table, count in stats.get("oversized_rows_counts", {}).items() if count
+    }
+    if oversized:
+        warnings.warn(
+            f"DiskGraph index {root} has rows over the 64 MiB node-data limit {oversized}; "
+            "their features are stored as null.",
             UserWarning,
             stacklevel=3,
         )
