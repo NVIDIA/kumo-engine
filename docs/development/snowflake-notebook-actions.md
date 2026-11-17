@@ -310,3 +310,7 @@ stage journal preserves that stage while recovery continues for other stages.
 Unknown query state, missing ownership proof, or provider failures preserve the
 attempt. Retention requires matching terminal execution history; attempts whose
 pending intent cannot be proved require private manual inspection.
+
+Explanation figures use a scoped Matplotlib `default` style so provider rcParams
+do not change the baseline; the original notebook style is restored afterward.
+Text bounds and overlapping labels remain strict checks.

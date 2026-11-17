@@ -190,7 +190,8 @@ def check_layout(figure):
         for tick_labels in ticks:
             bounds = [text.get_window_extent(renderer) for text in tick_labels]
             assert all(not left.overlaps(right)
-                       for left, right in zip(bounds, bounds[1:]))
+                       for left, right in zip(bounds, bounds[1:])), (
+                           axis.get_title(), [text.get_text() for text in tick_labels])
     return labels
 
 
@@ -252,6 +253,18 @@ def layout_examples(report):
 
 
 def display_outputs(root, report, display):
+    """Use one scoped plotting baseline without changing the provider notebook style."""
+    import matplotlib.pyplot as plt
+    from IPython import get_ipython
+
+    shell = get_ipython()
+    assert shell is not None, 'Explanation UI checks require a real notebook kernel'
+    shell.run_line_magic('matplotlib', 'inline')
+    with plt.style.context('default'):
+        return _display_outputs(root, report, display)
+
+
+def _display_outputs(root, report, display):
     import matplotlib.pyplot as plt
     from IPython import get_ipython
     from PIL import Image
@@ -262,7 +275,6 @@ def display_outputs(root, report, display):
 
     shell = get_ipython()
     assert shell is not None, 'Explanation UI checks require a real notebook kernel'
-    shell.run_line_magic('matplotlib', 'inline')
     explained = kumo.TrainingExplanations.load(root /
                                                'reopened-run/training-run')
     gradient, axis = explained.plot_gradient(top_k=5)

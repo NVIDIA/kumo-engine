@@ -311,3 +311,7 @@ If resource cleanup succeeds but deleting the empty control directory fails,
 `cleanup.json` records `control_directory_cleanup: pending`. The next sweep
 removes only an empty directory with no pagination token; it does not count
 that as proof of attempt-resource cleanup. Nonempty unsigned directories remain.
+
+Explanation figures use a scoped Matplotlib `default` style so provider rcParams
+do not change the baseline; the original notebook style is restored afterward.
+Text bounds and overlapping labels remain strict checks.

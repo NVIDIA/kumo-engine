@@ -297,3 +297,7 @@ extending notebook execution. `Client.wait` enforces this deadline. Actions allo
 Native Studio save verification adds a unique markdown edit absent from the
 uploaded notebook, observes the dirty state, saves, and requires that edit after
 reopening in a fresh browser context.
+
+Explanation figures use a scoped Matplotlib `default` style so provider rcParams
+do not change the baseline; the original notebook style is restored afterward.
+Text bounds and overlapping labels remain strict checks.
