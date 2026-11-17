@@ -38,8 +38,8 @@ from kumo.pytorch.api import (
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import ALL_REDUCTIONS, Reduce
-from kumo.pytorch.engines.in_memory.graph import GraphRoot, InMemoryGraphSampler
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.graph import GraphRoot, RowGraphSampler
+from kumo.pytorch.rows.samples import RowSampleBuilder
 
 USERS = TableSpec(
     name="users",
@@ -96,7 +96,7 @@ def _neighborhood(**kwargs: object) -> NeighborhoodSpec:
 
 
 def _sampled_event_ids(neighborhood: NeighborhoodSpec, schema: DataSchema = SCHEMA) -> set[int]:
-    sampler = InMemoryGraphSampler(schema, ROWS)
+    sampler = RowGraphSampler(schema, ROWS)
     node_rows, _owners, _edges = sampler._collect(
         "users",
         neighborhood,
@@ -213,7 +213,7 @@ class TestReductions:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = RowSampleBuilder(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         return next((v.value for v in built.history.entity.values if v.key == "value"), None)
 
@@ -230,7 +230,7 @@ class TestReductions:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = RowSampleBuilder(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         return next(value.value for value in built.history.entity.values if value.key == "value")
 
@@ -254,11 +254,11 @@ class TestReductions:
 
     def test_empty_sum_is_zero_but_all_null_sum_is_missing(self) -> None:
         assert (
-            InMemorySampleBuilder._reduce([], Reduce("sum", "amount", dtype=DType("float64")), 100)
+            RowSampleBuilder._reduce([], Reduce("sum", "amount", dtype=DType("float64")), 100)
             == 0.0
         )
         assert (
-            InMemorySampleBuilder._reduce(
+            RowSampleBuilder._reduce(
                 [{"amount": None}], Reduce("sum", "amount", dtype=DType("float64")), 100
             )
             is None
@@ -344,7 +344,7 @@ class TestRecencySemantics:
                 )
             },
         )
-        engine = InMemorySampleBuilder(SCHEMA, ROWS)
+        engine = RowSampleBuilder(SCHEMA, ROWS)
         built = engine.build(spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),))[0]
         assert not [v for v in built.history.entity.values if v.key == "gap"]
 
@@ -402,7 +402,7 @@ class TestExternalStandardDeviationParity:
                 )
             },
         )
-        built = InMemorySampleBuilder(schema, rows).build(
+        built = RowSampleBuilder(schema, rows).build(
             spec, (SampleRequest("s1", entity_id=1, as_of_time=CUTOFF),)
         )[0]
         return next(v.value for v in built.history.entity.values if v.key == "value")
@@ -435,7 +435,7 @@ class TestReducerDispatch:
     def test_an_unknown_operation_raises_rather_than_guessing(self) -> None:
         rows = [{"x": 10}, {"x": 30}]
         with pytest.raises(ValueError, match="unsupported reduction operation 'median'"):
-            InMemorySampleBuilder._reduce(rows, self._unchecked("median"), 0)
+            RowSampleBuilder._reduce(rows, self._unchecked("median"), 0)
 
     def test_the_construction_guard_is_still_the_first_defence(self) -> None:
         with pytest.raises(ValueError, match="unsupported reduction operation"):
@@ -445,6 +445,4 @@ class TestReducerDispatch:
         rows = [{"x": 10}, {"x": 30}]
         for operation in sorted(ALL_REDUCTIONS):
             column = None if operation == "count" else "x"
-            InMemorySampleBuilder._reduce(
-                rows, Reduce(operation, column, dtype=DType("float64")), 100
-            )
+            RowSampleBuilder._reduce(rows, Reduce(operation, column, dtype=DType("float64")), 100)

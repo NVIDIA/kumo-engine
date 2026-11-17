@@ -9,8 +9,9 @@ caller fetched for one or more requests and assemble them, with the requests,
 into the batch format the model was trained on. Fetching, looking up or sampling
 the rows is the caller's job: serving queries no engine or data store. Whatever
 the caller supplies is the whole dataset for that call, read with the in-memory
-engine's semantics under the artifact's fitted state, in inference mode. A
-standard forward pass over the batch answers the requests.
+engine's semantics under the artifact's fitted state, in inference mode, with
+times in the DiskGraph engine's clock. A standard forward pass over the batch
+answers the requests.
 
 `ServingAssembler` does everything that depends only on the artifact when it is
 built: it checks the contract, rebuilds the fitted plan, and derives
@@ -44,9 +45,8 @@ from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import SampleRequest
 from kumo.pytorch.data.records import Scalar
 from kumo.pytorch.dataset import Dataset, InMemoryRows
-from kumo.pytorch.engines.in_memory import InMemoryEngine
-from kumo.pytorch.engines.in_memory.source import InMemorySource
 from kumo.pytorch.preparation import _check, reused_state
+from kumo.pytorch.rows import Clock, RowSource
 from kumo.pytorch.serving_rows import (
     ColumnRole,
     ColumnRows,
@@ -91,19 +91,18 @@ class ServingAssembler:
         print(server.rows_spec)  # which rows to fetch per request
         batches = server.assemble(rows, requests)  # rows the caller fetched; 1+ requests
 
-    Construction checks the contract against the in-memory engine, checks that
-    the fitted state is complete and belongs to this contract, rebuilds the
-    fitted plan in inference mode, and derives `rows_spec`. Nothing there
-    depends on rows, so nothing is repeated per call.
+    Construction checks the contract, checks that the fitted state is complete
+    and belongs to this contract, rebuilds the fitted plan in inference mode,
+    and derives `rows_spec`. Nothing there depends on rows, so nothing is
+    repeated per call.
 
     :param artifact: an artifact written by `Artifact.save` and read by
         `Artifact.load`, or built by `Task.to_artifact`.
     """
 
     def __init__(self, artifact: Artifact) -> None:
-        engine = InMemoryEngine()
         empty = Dataset({table.name: InMemoryRows(()) for table in artifact.contract.schema.tables})
-        contract, issues = _check(artifact.contract, empty, engine)
+        contract, issues = _check(artifact.contract, empty, None)
         if issues:
             raise ValidationError(issues)
         fitted = artifact.fitted_state
@@ -115,6 +114,7 @@ class ServingAssembler:
         input_state, target_encoders = reused_state(contract, fitted, None)
         self.contract: DataLoaderSpec = contract
         self.rows_spec: ServingRowsSpec = ServingRowsSpec.from_contract(contract)
+        self._clock = Clock.of(contract.schema)
         self._plan = fit_plan(
             contract.sample,
             contract.batch,
@@ -161,7 +161,7 @@ class ServingAssembler:
             raise ValueError("serving needs at least one request")
         tables = self._tables(rows)
         self._require_entities(tables, requests)
-        source = InMemorySource(self.contract.schema, tables)
+        source = RowSource(self.contract.schema, tables, self._clock)
         try:
             return list(
                 request_batches(

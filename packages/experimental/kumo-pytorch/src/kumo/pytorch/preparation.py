@@ -92,7 +92,7 @@ def check(
 def _check(
     contract: DataLoaderSpec,
     dataset: Dataset,
-    engine: Engine,
+    engine: Engine | None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -661,7 +661,7 @@ def preview(
 def _binding_issues(
     contract: DataLoaderSpec,
     dataset: Dataset,
-    engine: Engine,
+    engine: Engine | None,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     declared = [table.name for table in contract.schema.tables]
@@ -688,7 +688,7 @@ def _binding_issues(
 
 
 def _source_issues(
-    engine: Engine, sources: Mapping[str, TableSource], path: str
+    engine: Engine | None, sources: Mapping[str, TableSource], path: str
 ) -> tuple[ValidationIssue, ...]:
     check_sources = getattr(engine, "check_sources", None)
     return () if check_sources is None else tuple(check_sources(sources, path))

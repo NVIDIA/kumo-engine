@@ -27,7 +27,7 @@ from kumo.pytorch.contract.sample import (
     TimeWindow,
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.samples import RowSampleBuilder
 
 
 def _field(history, key: str):
@@ -38,7 +38,7 @@ def _event_field(event, key: str):
     return next((field for field in event.fields if field.key == key), None)
 
 
-def _sample_builder() -> InMemorySampleBuilder:
+def _sample_builder() -> RowSampleBuilder:
     schema = DataSchema(
         tables=(
             TableSpec(
@@ -204,7 +204,7 @@ def _sample_builder() -> InMemorySampleBuilder:
         ],
         "transfers": [],
     }
-    return InMemorySampleBuilder(schema, tables)
+    return RowSampleBuilder(schema, tables)
 
 
 def _recipe() -> SampleSpec:

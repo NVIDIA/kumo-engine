@@ -351,12 +351,12 @@ def test_aligned_target_fitting_keeps_canonical_reduction_order(built_samples):
             ),
         )
         if built_samples:
-            from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+            from kumo.pytorch.rows.samples import RowSampleBuilder
 
             with api.prepare_batch_spec(
                 sample,
                 spec.batch,
-                InMemorySampleBuilder(schema, rows).build(sample, request),
+                RowSampleBuilder(schema, rows).build(sample, request),
                 contract=spec,
             ) as plan:
                 encoder = plan.target(name="labels").field(name="label").encoder

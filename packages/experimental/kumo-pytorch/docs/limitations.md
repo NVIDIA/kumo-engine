@@ -16,7 +16,7 @@ meet one yet. The [API reference](api/README.md) covers each declaration.
 | Declarative contract, validation, JSON, fingerprints | Implemented |
 | Point-in-time selection and leakage boundaries | Implemented |
 | Encodings, fitting, layouts, targets, previews | Implemented |
-| Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does |
+| Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does, with times in the DiskGraph engine's clock |
 | `DiskGraphEngine` over local Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
 | `InMemoryEngine` over `InMemoryRows` | Implemented, for trying things out on tiny data |
 | Streaming, prefetch, caching, remote storage | Not implemented |
@@ -291,8 +291,8 @@ labels do not silently enter a shared input vocabulary.
 
 An artifact doesn't include a copy of your data. `Artifact.load` reloads an artifact written by this version; one whose
 manifest records no file digests is refused. Inference mode emits no targets
-and reads no target rows; serving from supplied rows uses the in-memory engine
-and inspectable output.
+and reads no target rows; serving from supplied rows uses the in-memory engine's
+rules and inspectable output.
 
 Batching supports sample limits, actual emitted-position token limits,
 length bucketing, deterministic shuffling, and rank partitioning. Token-budget

@@ -11,7 +11,7 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.assembly import prepare_batch_spec
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.samples import RowSampleBuilder
 from tests.helpers import plan_in_memory
 
 INT, FLOAT, STRING = api.DType("int64"), api.DType("float64"), api.DType("string")
@@ -156,7 +156,7 @@ def test_supplied_label_vocabulary_produces_embedding_indices():
         replace(request, targets=(api.TargetValue(name="churn", value=label),))
         for request, label in zip(requests, ("no", "yes"), strict=True)
     )
-    built = InMemorySampleBuilder(schema, rows).build(sample, requests)
+    built = RowSampleBuilder(schema, rows).build(sample, requests)
     plan = prepare_batch_spec(sample, batch, built, contract=contract)
     output = next(plan.batches(built, batch_size=2))
     assert output.targets["churn"]["values"].tolist() == [2, 3]
@@ -486,7 +486,7 @@ def test_entity_values_can_mix_aggregates_and_derived_values():
             "log_count": api.Derived(operation="log1p", inputs=("count",), dtype=FLOAT),
         },
     )
-    built = InMemorySampleBuilder(schema, rows).build(sample, requests)[0]
+    built = RowSampleBuilder(schema, rows).build(sample, requests)[0]
     values = {field.key: field.value for field in built.history.entity.values}
     assert values["count"] == 2
     assert values["log_count"] == pytest.approx(torch.log1p(torch.tensor(2.0)).item())

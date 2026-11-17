@@ -48,10 +48,10 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.sample import GraphSample
 from kumo.pytorch.engine import GraphRoot
-from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
+from kumo.pytorch.rows.graph import RowGraphSampler
 
 
-class WrongSampler(InMemoryGraphSampler):
+class WrongSampler(RowGraphSampler):
     """The reference graph sampler with exactly one deliberate defect."""
 
     def __init__(self, schema: DataSchema, tables: Mapping[str, Sequence[Row]], engine: "Wrong"):

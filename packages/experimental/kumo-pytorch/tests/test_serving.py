@@ -19,6 +19,7 @@ import torch
 
 import kumo.pytorch.preparation as preparation
 import kumo.pytorch.serving as serving
+from conformance.assertions import bound_tables
 from conformance.cases import discover_cases
 from conformance.graph_cases import generate_graph_case
 from conformance.sequence_cases import generate_sequence_case
@@ -513,3 +514,110 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
         assert _layout(served.inputs) == _layout(model_format[request.sample_id].inputs)
         with torch.no_grad():
             assert served_model(served).shape == (1,)
+
+
+def _diskgraph_inference(
+    contract: api.DataLoaderSpec, tables: Tables, requests: Sequence[api.SampleRequest]
+) -> tuple[api.Artifact, dict[str, api.Batch]]:
+    """An artifact fitted on the DiskGraph engine, and its batch inference, one batch each."""
+
+    pytest.importorskip("diskgraph")
+    with bound_tables(contract, tables, "diskgraph") as (dataset, engine):
+        with api.prepare(contract, dataset, engine) as plan:
+            anchors = [replace(request, split=None) for request in requests]
+            with plan.materialize(anchors) as task:
+                artifact = task.to_artifact()
+        return artifact, _batch_inference(artifact, dataset, engine, requests)
+
+
+@pytest.mark.parametrize("name", ["example", "bounded_window", "event_limit"])
+def test_serving_equals_diskgraph_batch_inference(name: str) -> None:
+    contract, tables, requests = CASES[name]()
+    artifact, expected = _diskgraph_inference(contract, tables, requests)
+    server = api.ServingAssembler(artifact)
+    for request in requests:
+        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
+        assert_same_batches(
+            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
+        )
+
+
+def _clock_case(unit: str) -> tuple[api.DataLoaderSpec, Tables, list[api.SampleRequest]]:
+    """Events a few ticks apart: a one-second window, a recency and event ages."""
+
+    clock, key = api.DType("timestamp", unit=unit, timezone="UTC"), api.DType("int64")
+    schema = api.DataSchema(
+        tables=(
+            api.TableSpec("users", "user_id", {"user_id": key}, time_column=api.NON_TEMPORAL),
+            api.TableSpec(
+                "events",
+                "event_id",
+                {"event_id": key, "user_id": key, "at": clock, "amount": api.DType("float64")},
+                time_column="at",
+            ),
+        ),
+        relations=(api.RelationSpec("user_events", "users", "user_id", "events", "user_id"),),
+    )
+    history = api.Rows(("user_events",), api.TimeWindow("at"))
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("users"),
+        entity_values={
+            "last_second": api.Aggregate(
+                api.Rows(("user_events",), api.TimeWindow("at", -1, 0)), "count", dtype=key
+            ),
+            "age": api.Aggregate(history, "recency", "at", dtype=api.DType("float64")),
+        },
+        events={
+            "events": api.EventSpec(
+                history, {"amount": api.Field("amount"), "age": api.EventTimeDelta()}
+            )
+        },
+    )
+    batch = api.BatchSpec(
+        inputs={
+            "user": api.Input(
+                api.EntitySource(),
+                api.Fields((api.Encode("last_second", api.Raw()), api.Encode("age", api.Raw()))),
+                api.Separate(),
+            ),
+            "events": api.Input(
+                api.EventSource(("events",)),
+                api.Fields(
+                    (api.Encode("amount", api.Raw()), api.Encode("age", api.Raw())),
+                    row=api.Columns(),
+                ),
+                api.Padded(),
+            ),
+        }
+    )
+    per_second = {"us": 10**6, "ns": 10**9}[unit]
+    base = 1_700_000_000 * per_second
+    events = [(1, 1, 7), (2, 1, 5), (3, 1, 2), (4, 1, 9), (5, 1, 2 - per_second), (6, 2, 3)]
+    tables: Tables = {
+        "users": [{"user_id": 1}, {"user_id": 2}],
+        "events": [
+            {"event_id": e, "user_id": u, "at": base + t, "amount": float(e)} for e, u, t in events
+        ],
+    }
+    at = pa.scalar(base + 8, type=pa.timestamp(unit, tz="UTC"))
+    requests = [api.SampleRequest("u1", 1, at), api.SampleRequest("u2", 2, at)]
+    return api.DataLoaderSpec(schema, sample, batch), tables, requests
+
+
+@pytest.mark.parametrize("unit", ["us", "ns"])
+def test_sub_second_clocks_are_served_as_diskgraph_batch_inference(unit: str) -> None:
+    contract, tables, requests = _clock_case(unit)
+    artifact, expected = _diskgraph_inference(contract, tables, requests)
+    server = api.ServingAssembler(artifact)
+    for request in requests:
+        rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
+        assert_same_batches(
+            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
+        )
+    (served,) = server.assemble(
+        fetch(server.rows_spec, artifact.contract.schema, tables, requests[0]), requests[:1]
+    )
+    # Ticks 2 to 7 are within the second before the cutoff at tick 8; tick 9 is after it.
+    assert served.inputs["user"]["last_second"]["values"].tolist() == [3]
+    tick = {"us": 1e-6, "ns": 1e-9}[unit]
+    assert served.inputs["user"]["age"]["values"].tolist() == pytest.approx([tick])

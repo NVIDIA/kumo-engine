@@ -77,10 +77,11 @@ from that user's rows only, for a columns/events/graph contract and a key/value
 token contract; Arrow input; a column that is `None` throughout; the plan built
 once per `ServingAssembler`; and each refusal above. For a model trained on the
 DiskGraph engine, served batches have the same layout as its model-format
-inference batches. No test compares served values directly with the DiskGraph
-engine's batch inference; those values are covered only through the harness's
-differential comparison of batch inference read in process with the DiskGraph
-engine's.
+inference batches. Served values are compared directly with the DiskGraph
+engine's batch inference for the example, a bounded-window and an event-limit
+contract, and contracts on microsecond and nanosecond clocks; other values are
+covered through the harness's differential comparison of batch inference read
+in process with the DiskGraph engine's.
 
 Deployment, request routing and fetching rows online are outside this package.
 

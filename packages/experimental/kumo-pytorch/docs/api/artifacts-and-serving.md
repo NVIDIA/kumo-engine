@@ -214,10 +214,10 @@ print(server.rows_spec)  # which rows to fetch per request
 batches = server.assemble(rows, requests)  # rows the caller fetched; 1+ requests
 ```
 
-Construction checks the contract against the in-memory engine, checks that
-the fitted state is complete and belongs to this contract, rebuilds the
-fitted plan in inference mode, and derives `rows_spec`. Nothing there
-depends on rows, so nothing is repeated per call.
+Construction checks the contract, checks that the fitted state is complete
+and belongs to this contract, rebuilds the fitted plan in inference mode,
+and derives `rows_spec`. Nothing there depends on rows, so nothing is
+repeated per call.
 
 **Parameters**
 

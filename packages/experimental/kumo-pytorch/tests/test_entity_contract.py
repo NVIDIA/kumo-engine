@@ -27,7 +27,7 @@ from kumo.pytorch.api import (
     TimeWindow,
 )
 from kumo.pytorch.contract.batch import BatchSpec, Encode, Fields
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.samples import RowSampleBuilder
 
 
 def test_entity_values_unify_fields_aggregates_and_derived_values() -> None:
@@ -92,7 +92,7 @@ def test_entity_values_unify_fields_aggregates_and_derived_values() -> None:
         version=3,
     )
     contract.validate()
-    built = InMemorySampleBuilder(
+    built = RowSampleBuilder(
         schema,
         {
             "users": [{"user_id": 7, "country": "US"}],

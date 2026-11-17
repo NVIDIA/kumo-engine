@@ -32,7 +32,7 @@ from kumo.pytorch.api import (
     TimeWindow,
 )
 from kumo.pytorch.contract.batch import Encode, Fields
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.samples import RowSampleBuilder
 
 USER = EntitySpec("users", entity_type="user")
 REQUEST = (SampleRequest("s1", 1, 100),)
@@ -66,7 +66,7 @@ def _event_schema(*, clock: str | NonTemporal = "occurred_at") -> DataSchema:
 
 def _build(schema: DataSchema, sample: SampleSpec, tables=None):
     data = tables if tables is not None else {"users": USER_ROWS, "events": EVENT_ROWS}
-    return InMemorySampleBuilder(schema, data).build(sample, REQUEST)[0]
+    return RowSampleBuilder(schema, data).build(sample, REQUEST)[0]
 
 
 def _value(sample, name: str):
