@@ -12,7 +12,8 @@ file-cache experiments. Measurement coverage remains incomplete.
 Full-population coverage remains pending; see [the plan](PLAN.md).
 The [population acceptance runner](docs/population.md) now provides smoke and
 full modes for all five AML combinations. Fixture validation does not establish
-full HI-small acceptance; required graph cases currently expose decimal failures.
+full HI-small acceptance. The upstream decimal fix is integrated; remaining
+required row-filter and Fusion training failures are tracked in the plan.
 The [multi-source history follow-up](PLAN.md#pr-353-follow-up-multi-source-histories)
 adds required filter/cutoff checks and a bounded real-AML run. Unsupported
 required behavior fails normally; current row-filter rejection is not a skip
@@ -25,10 +26,11 @@ source, anchor, task and model integration plus the general benchmark runner.
 Linux memory/cache and GPU collector validations have dedicated nightly jobs.
 The workflow also configures all five bounded AML CUDA benchmark campaigns on
 Engine's existing GPU runner, with per-worker cgroups and fresh/reused fitting.
-CI verified bucket access and executed all five campaigns. With the decimal
-fix deliberately removed, graph workloads fail. All three sequence campaigns
-now pass measurement coverage with longer GPU windows and explicitly labelled
-sampled host peaks. See the [latest benchmark validation](PLAN.md#gpu-and-sampled-memory-validation),
+CI verified bucket access and executed all five campaigns. Earlier runs exposed
+the decimal defect; upstream fix #348 is now integrated. Sequence campaigns
+passed measurement coverage with longer GPU windows and explicitly labelled
+sampled host peaks. Complete post-fix acceptance remains to be reviewed.
+See the [historical benchmark validation](PLAN.md#gpu-and-sampled-memory-validation),
 [collective CI review](PLAN.md#collective-ci-review) and
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
 See [coverage ownership](PLAN.md#coverage-ownership).
@@ -45,6 +47,10 @@ The [fitting-memory experiment](docs/fitting-memory.md) adds fresh-process
 25k/400k comparisons for all five AML contracts, using the general cgroup
 measurement runner. Nightly reports retain all repetitions and enforce the
 configurable proposed growth bound of less than 2x. Real-data validation is pending.
+
+Development is consolidated in [PR #353](https://github.com/NVIDIA/kumo-engine/pull/353),
+including the lifecycle import guards, fresh-process special-ID cases and fitting
+chunk-boundary cases from #361/#362/#363. See the [current requirements status](PLAN.md#12-requirements-status-after-testing-pr-consolidation).
 
 ## Data
 
