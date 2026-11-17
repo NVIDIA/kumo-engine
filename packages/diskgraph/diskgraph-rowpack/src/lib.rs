@@ -5330,9 +5330,8 @@ impl RowPackDecoder {
         &self.ctx
     }
 
-    /// `row`, or an all-null row when `row` is empty. Ingest stores empty node
-    /// data for a row still over `MAX_NODE_DATA_LEN` with its features nulled,
-    /// and indexes built before that did so for every row over the limit.
+    /// `row`, or the all-null row when `row` is empty. Empty node data marks a
+    /// row over `MAX_NODE_DATA_LEN`; readers decode it as the all-null row.
     pub fn row_or_null<'a>(&'a self, row: &'a [u8]) -> &'a [u8] {
         if row.is_empty() {
             &self.null_row
