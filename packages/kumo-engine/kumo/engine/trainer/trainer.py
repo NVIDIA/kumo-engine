@@ -1122,16 +1122,21 @@ class Trainer:
             bundle's ``training-spec.json``.
         run_name: makes the run ids deterministic (``None`` keeps random
             ids). It must match ``[a-z0-9][a-z0-9-]{0,47}``. The trainer's
-            scratch directory is ``trainers/<run_name>`` and the k-th call to
-            ``fit`` (counting from 0) runs as ``<run_name>-fit-<k>``. That run
-            id also names the train-table extension, which DiskGraph's
-            shuffle depends on. So the same data, plan, seed and run name in a
-            fresh scratch directory give the same mini-batch sequence, and,
-            with ``torch.use_deterministic_algorithms(True)``, the same model
-            on the same host and thread layout. ``fit`` raises
-            ``FileExistsError`` if the run directory or the extension already
-            exists. Prediction run ids stay random, and bundles do not record
-            the name.
+            scratch directory is ``trainers/<run_name>``, the k-th call to
+            ``fit`` (counting from 0) runs as ``<run_name>-fit-<k>``, and
+            that run id also names the fit's train-table extension. ``fit``
+            raises ``FileExistsError`` before any work if the run directory
+            or the extension already exists, so each named run needs a fresh
+            scratch directory. Tested on one host and data-loading layout:
+            with caller-supplied training rows, a fresh scratch directory and
+            ``torch.use_deterministic_algorithms(True)``, fits of the same
+            data, plan, seed and run name in separate processes gave
+            bitwise-identical models. Inferred, not tested inside the native
+            code: random extension names changed DiskGraph's training
+            shuffle. ``PredictiveQuery.generate_training_table`` can return
+            its rows in a different order on each call, which changes the
+            model even with a run name. Prediction run ids stay random, and
+            bundles do not record the name.
     """
     def __init__(
         self,
