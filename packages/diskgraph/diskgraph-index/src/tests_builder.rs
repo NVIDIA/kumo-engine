@@ -204,3 +204,67 @@ fn delta_encode_offsets_into_correctness() {
     delta_encode_offsets_into(&[], &mut buf, 2).unwrap();
     assert!(buf.is_empty());
 }
+
+#[test]
+fn gated_budget_admits_the_first_reservation_when_the_gate_is_closed() {
+    let budget = Arc::new(MemoryBudget::with_gate(1 << 20, |_, _| false));
+    let guard = budget.acquire(1024).unwrap();
+    assert_eq!(budget.snapshot().in_use, 1024);
+    drop(guard);
+    assert_eq!(budget.snapshot().in_use, 0);
+}
+
+#[test]
+fn gated_budget_passes_reserved_and_requested_bytes_to_the_gate() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    let budget = Arc::new(MemoryBudget::with_gate(1 << 20, move |reserved, bytes| {
+        log.lock().unwrap().push((reserved, bytes));
+        true
+    }));
+    let _first = budget.acquire(100).unwrap();
+    let _second = budget.acquire(200).unwrap();
+    assert_eq!(seen.lock().unwrap().as_slice(), &[(100, 200)]);
+}
+
+#[test]
+fn gated_budget_waits_until_the_gate_opens() {
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = Arc::clone(&open);
+    let budget = Arc::new(MemoryBudget::with_gate(1 << 20, move |_, _| {
+        gate.load(std::sync::atomic::Ordering::SeqCst)
+    }));
+    let first = budget.acquire(1024).unwrap();
+    let waiter = {
+        let budget = Arc::clone(&budget);
+        std::thread::spawn(move || budget.acquire(1024).map(drop))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!waiter.is_finished());
+    assert!(budget.has_waiters());
+    open.store(true, std::sync::atomic::Ordering::SeqCst);
+    waiter.join().unwrap().unwrap();
+    assert_eq!(budget.snapshot().gate_waits, 1);
+    drop(first);
+}
+
+#[test]
+fn gated_try_acquire_declines_while_the_gate_is_closed() {
+    let budget = Arc::new(MemoryBudget::with_gate(1 << 20, |_, _| false));
+    let _first = budget.try_acquire(100).unwrap();
+    assert!(budget.try_acquire(100).is_none());
+}
+
+#[test]
+fn gated_budget_admits_a_waiter_once_the_other_reservation_is_released() {
+    let budget = Arc::new(MemoryBudget::with_gate(1 << 20, |_, _| false));
+    let first = budget.acquire(1024).unwrap();
+    let waiter = {
+        let budget = Arc::clone(&budget);
+        std::thread::spawn(move || budget.acquire(1024).map(drop))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!waiter.is_finished());
+    drop(first);
+    waiter.join().unwrap().unwrap();
+}

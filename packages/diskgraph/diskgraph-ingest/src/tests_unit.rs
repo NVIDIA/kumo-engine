@@ -641,6 +641,37 @@ fn pk_map_estimate_scales_with_rows() {
 }
 
 #[test]
+fn pk_map_task_estimate_counts_the_build_scratch_of_own_keys() {
+    use crate::mapping::KeyType;
+    use crate::scratch::{estimate_pk_map_bytes, pk_map_task_estimate};
+    let rows = 1_000_000;
+    assert!(
+        pk_map_task_estimate(rows, rows, KeyType::Int64, 0)
+            > estimate_pk_map_bytes(rows, KeyType::Int64, 0)
+    );
+}
+
+#[test]
+fn pk_map_task_estimate_keeps_the_reference_row_bound() {
+    use crate::mapping::KeyType;
+    use crate::scratch::{estimate_pk_map_bytes, pk_map_task_estimate};
+    let union_rows = 30_000_000;
+    assert_eq!(
+        pk_map_task_estimate(union_rows, 1_000_000, KeyType::Int64, 0),
+        estimate_pk_map_bytes(union_rows, KeyType::Int64, 0)
+    );
+}
+
+#[test]
+fn pk_map_alloc_estimate_rounds_buckets_to_a_power_of_two() {
+    use crate::mapping::KeyType;
+    use crate::scratch::estimate_pk_map_alloc_bytes;
+    let below = estimate_pk_map_alloc_bytes(114_000, KeyType::Int64, 0);
+    let above = estimate_pk_map_alloc_bytes(116_000, KeyType::Int64, 0);
+    assert!(above - below > 131_072 * 17);
+}
+
+#[test]
 fn pk_map_estimate_varbytes_respects_avg_len() {
     use crate::mapping::KeyType;
     use crate::scratch::estimate_pk_map_bytes;

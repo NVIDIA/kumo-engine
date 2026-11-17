@@ -62,8 +62,8 @@ pub use crate::progress::{
     ProgressKind, ProgressPhase, TableIndexTotals,
 };
 pub use crate::scratch::{
-    estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
-    EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
+    estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, pk_map_task_estimate,
+    reserve_map, EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
 pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
@@ -95,7 +95,7 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 pub use diskgraph_limits::effective_parallelism;
-use diskgraph_limits::total_memory_bytes;
+use diskgraph_limits::{available_memory_bytes, total_memory_bytes};
 use diskgraph_rowpack::{
     BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats,
     RowPackConfig, RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
@@ -1068,6 +1068,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             rss_peak_gb = observed_peak / 1_073_741_824,
             rss_after_bytes = rss_after_pk_map,
             actual_over_estimate_pct = ratio_pct,
+            gate_waits = ctx.pk_map_gate_waits,
             "pk_map stage complete"
         );
     } else {
@@ -1892,6 +1893,7 @@ mod tests_repopulate_helpers {
             index_threads: None,
             pk_map_estimate_sum: Arc::new(AtomicU64::new(0)),
             pk_map_peak_rss: Arc::new(AtomicU64::new(0)),
+            pk_map_gate_waits: 0,
             index_mem_budget: None,
             num_shards,
             table_rows: HashMap::new(),
@@ -2694,6 +2696,7 @@ struct IngestContext {
     pk_map_estimate_sum: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// High-water mark of RssAnon observed at task milestones during pk_map.
     pk_map_peak_rss: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pk_map_gate_waits: u64,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
     table_rows: HashMap<String, u64>,
@@ -7298,6 +7301,7 @@ impl IngestContext {
             index_threads: options.index_threads,
             pk_map_estimate_sum: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pk_map_peak_rss: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pk_map_gate_waits: 0,
             index_mem_budget,
             num_shards,
             table_rows: HashMap::new(),
@@ -9271,7 +9275,7 @@ impl IngestContext {
         self.pk_null_timestamp_drops.clear();
         let pk_map_budget = total_memory_bytes().map(|total| {
             let budget = (total as f64 * PK_MAP_MEM_BUDGET_FRAC) as u64;
-            std::sync::Arc::new(MemoryBudget::new(budget))
+            std::sync::Arc::new(free_memory_gated_budget(budget, total))
         });
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -9413,7 +9417,8 @@ impl IngestContext {
                         } else {
                             0
                         };
-                        let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
+                        let estimate =
+                            pk_map_task_estimate(union_rows, reserve_rows, key_type, avg_var_bytes);
                         // Track this task's estimate so we can compare the
                         // sum-of-estimates vs the actual peak RSS at end of pk_map.
                         estimate_sum.fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
@@ -9470,7 +9475,7 @@ impl IngestContext {
                             match key_type {
                             KeyType::Int64 => {
                                 {
-                                    let pkmap = scratch;
+                                    let pkmap = &mut *scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Int64);
@@ -9591,7 +9596,7 @@ impl IngestContext {
                             }
                             KeyType::VarBytes => {
                                 {
-                                    let pkmap = scratch;
+                                    let pkmap = &mut *scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::VarBytes);
@@ -9773,7 +9778,7 @@ impl IngestContext {
                             }
                             KeyType::Uuid => {
                                 {
-                                    let pkmap = scratch;
+                                    let pkmap = &mut *scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Uuid);
@@ -9895,7 +9900,7 @@ impl IngestContext {
                             }
                             KeyType::Uuid256 => {
                                 {
-                                    let pkmap = scratch;
+                                    let pkmap = &mut *scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Uuid256);
@@ -10017,7 +10022,7 @@ impl IngestContext {
                             }
                             KeyType::Ip => {
                                 {
-                                    let pkmap = scratch;
+                                    let pkmap = &mut *scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::Ip);
@@ -10138,6 +10143,7 @@ impl IngestContext {
                                 }
                             }
                         }?;
+                        *scratch = PkMapScratch::new();
                         if duplicate_count > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
                             duplicate_counts
@@ -10203,6 +10209,9 @@ impl IngestContext {
         }
         let pool = self.make_pool::<PkMapScratch>(self.pk_map_threads);
         let run_result = run_tasks(std::mem::take(&mut tasks), &pool);
+        self.pk_map_gate_waits = pk_map_budget
+            .as_ref()
+            .map_or(0, |budget| budget.snapshot().gate_waits);
         run_result?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
@@ -15831,6 +15840,57 @@ fn sum_published_dir_bytes(root: &Path) -> Result<u64> {
 fn default_index_mem_budget_bytes() -> Option<u64> {
     let total = total_memory_bytes()?;
     Some((total as f64 * DEFAULT_INDEX_MEM_BUDGET_FRAC) as u64)
+}
+
+fn free_memory_gated_budget(budget: u64, total: u64) -> MemoryBudget {
+    let reserve =
+        ((total as f64 * FREE_MEMORY_RESERVE_FRAC) as u64).max(FREE_MEMORY_RESERVE_MIN_BYTES);
+    let baseline = rss_anon_diag_bytes();
+    MemoryBudget::with_gate(budget, move |reserved, bytes| {
+        available_memory_bytes().is_none_or(|available| {
+            let allocated = rss_anon_diag_bytes().saturating_sub(baseline);
+            free_memory_allows(available, reserved, allocated, bytes, reserve)
+        })
+    })
+}
+
+fn free_memory_allows(
+    available: u64,
+    reserved: u64,
+    allocated: u64,
+    bytes: u64,
+    reserve: u64,
+) -> bool {
+    available.saturating_sub(reserved.saturating_sub(allocated)) >= bytes.saturating_add(reserve)
+}
+
+#[cfg(test)]
+mod free_memory_gate_tests {
+    use super::*;
+
+    const GIB: u64 = 1 << 30;
+
+    fn allows(available: u64, reserved: u64, allocated: u64, bytes: u64) -> bool {
+        free_memory_allows(
+            available * GIB,
+            reserved * GIB,
+            allocated * GIB,
+            bytes * GIB,
+            4 * GIB,
+        )
+    }
+
+    #[test]
+    fn reserved_memory_not_allocated_yet_counts_as_used() {
+        assert!(allows(30, 10, 10, 8));
+        assert!(!allows(30, 22, 2, 8));
+    }
+
+    #[test]
+    fn allocation_above_the_reservation_is_read_from_available_memory() {
+        assert!(!allows(10, 4, 12, 8));
+        assert!(allows(13, 4, 12, 8));
+    }
 }
 
 /// CAS-loop atomic max-update. Used by pk_map peak-RSS sampling.
