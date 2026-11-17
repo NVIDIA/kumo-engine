@@ -90,10 +90,11 @@ wheel, and `python -m kumo.engine.skills --check` lists the local installs and e
 stale. A Cortex Extension gets a new version only when the package changed, and the install waits
 for Snowflake's scan of it, which Cortex Code needs before it installs the version.
 
-`packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every build from a checkout,
-writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel ships as package
-data. In a source checkout `install_skills` builds from `agent-skills/` directly instead, so an
-edit is installed without a rebuild. Each install replaces only its own `kumo-data-science/`
+`packages/kumo-engine/setup.py` calls `package_skill.bundle()` on every wheel or sdist build from
+a checkout, writing all three packages to `kumo/engine/_skills/` (gitignored), which the wheel
+ships as package data. An editable install (`uv sync`, `pip install -e`) skips it and leaves
+`kumo/engine/_skills/` as it was: in a source checkout `install_skills` builds from `agent-skills/`
+directly, so an edit is installed without a rebuild. Each install replaces only its own `kumo-data-science/`
 directory. `tests/test_install_skills.py` covers every agent and scope; the Genie and Snowflake
 account paths run there against fakes.
 
