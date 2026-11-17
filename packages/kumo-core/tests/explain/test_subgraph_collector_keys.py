@@ -51,7 +51,7 @@ def test_foreign_keys_resolve_exact_relation_and_endpoint(
         batch[table].num_nodes = len(values)
         batch[table].pkey = np.array(values, dtype=object)
         batch[table].tf = SimpleNamespace()
-    batch.input_type = 'products'
+    setattr(batch, 'input_type', 'products')
     batch['products'].batch_size = 3
     batch['products'].input_id = torch.arange(3)
     relations = [
