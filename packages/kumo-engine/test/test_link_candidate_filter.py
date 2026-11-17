@@ -119,7 +119,7 @@ def predict(graph):
     ('two_tower', '', AVAILABLE, VALID_AVAILABLE),
     ('context', '', AVAILABLE + ' AND products.RATING > 3', RATED),
     ('context', AVAILABLE, '', VALID),
-    ('context', '', ' WHERE purchases.AMOUNT > 5', 'target filter is'),
+    ('context', '', ' WHERE purchases.AMOUNT > 5', 'without a target filter'),
     ('context', '', ' WHERE products.RATING > 100', 'No row of table'),
     ('context', '', ' WHERE products.RATING = 5.8', 'valid at the prediction'),
     ('pairwise', '', AVAILABLE, 'pairwise model'),

@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.prediction as prediction
+import kumo_core.prediction_options as prediction_options
 import numpy as np
 import pytest
 import torch
@@ -22,6 +23,8 @@ from kumo_core.prediction import (
     materialize_prediction_task,
 )
 from kumo_core.prediction_options import (
+    PredictionQueryContract,
+    prediction_task_type,
     resolve_classification_threshold,
     resolve_num_classes_to_return,
 )
@@ -130,6 +133,25 @@ def test_irrelevant_classification_threshold_is_cleared(threshold):
         threshold,
         binary_required=True,
     ) is None
+
+
+@pytest.mark.parametrize("trained, predicted, message", [
+    (None, "unparsable", "has no training query"),
+    ("plain", "filtered", "query's target filter is 'x', but the model was "
+     "trained without a target filter"),
+    ("filtered", "plain", "query has no target filter, but the model was "
+     "trained with 'x'"),
+])
+def test_prediction_query_keeps_the_trained_contract(monkeypatch, trained,
+                                                     predicted, message):
+    plain = PredictionQueryContract("target", None, "temporal_link_prediction",
+                                    ("users", "id"), "items", 0, ())
+    contracts = {"plain": plain, "filtered": plain._replace(target_filter="x")}
+    monkeypatch.setattr(prediction_options, "prediction_query_contract",
+                        lambda query, _: contracts[query])
+
+    with pytest.raises(ValueError, match=message):
+        prediction_task_type(trained, predicted, {})
 
 
 def request(tmp_path, *, family="node_prediction"):

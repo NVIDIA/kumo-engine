@@ -166,17 +166,21 @@ def prediction_query_contract(
 def prediction_task_type(training_query: str | None, query: str,
                          graph_config: Mapping[str, Any]) -> str:
     r"""The task type, if the trained model can score ``query``."""
-    predicted = prediction_query_contract(query, graph_config)
     if training_query is None:
         raise ValueError("This model has no training query")
+    predicted = prediction_query_contract(query, graph_config)
     trained = prediction_query_contract(training_query, graph_config)
-    for name, expected, actual in zip(predicted._fields, trained, predicted):
-        if expected != actual:
-            raise ValueError(
-                f"The prediction query's {name.replace('_', ' ')} is "
-                f"{actual!r}, but the model was trained with {expected!r}. "
-                "Only the FOR EACH filter and target-filter conditions on "
-                "the candidate table can change.")
+    for field, expected, actual in zip(predicted._fields, trained, predicted):
+        if expected == actual:
+            continue
+        name = field.replace('_', ' ')
+        got = f" has no {name}" if actual is None else f"'s {name} is {actual!r}"
+        trained_with = (f"without a {name}"
+                        if expected is None else f"with {expected!r}")
+        raise ValueError(
+            f"The prediction query{got}, but the model was trained "
+            f"{trained_with}. Only the FOR EACH filter and target-filter "
+            "conditions on the candidate table can change.")
     return predicted.task_type
 
 
