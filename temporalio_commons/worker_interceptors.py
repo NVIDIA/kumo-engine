@@ -53,6 +53,7 @@ from kumo.platform_errors import (
     CORE_PLATFORM_ERROR_TYPES,
     as_platform_public_exception,
 )
+from service_framework.deploy_env_config import bounded_workflow_id
 from service_framework.deploy_stage import _DEPLOY_STAGE, DeployStage
 from temporalio_commons.auto_rpc_exception import _AutoRpcNonRetriableError
 from temporalio_commons.dataclass_converter import KumoPayloadConverter
@@ -60,7 +61,10 @@ from temporalio_commons.heartbeat_utils import (
     DEFAULT_HEARTBEAT_INTERVAL,
     auto_heartbeater,
 )
-from temporalio_commons.temporal_client import ID_SUFFIX_MEMO_FIELD
+from temporalio_commons.temporal_client import (
+    ID_MAX_LENGTH_MEMO_FIELD,
+    ID_SUFFIX_MEMO_FIELD,
+)
 
 from .error_utils import (
     default_non_retryable_error_types,
@@ -591,6 +595,10 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
             return id_suffix
         return None
 
+    def _get_id_max_length(self) -> Optional[int]:
+        payload = self.info().raw_memo.get(ID_MAX_LENGTH_MEMO_FIELD)
+        return int(payload.data.decode()) if payload else None
+
     def _update_activity_retry_policy(self, input: StartActivityInput) -> None:
         is_autorpc = self.info().workflow_type.startswith('RpcWorkflow_')
         if is_autorpc:
@@ -650,6 +658,17 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
             if input.memo:
                 memo.update(input.memo)
             input.memo = memo
+
+        # Children inherit the parent's workflow id length limit, if any.
+        max_length = self._get_id_max_length()
+        if max_length is not None:
+            input.memo = {
+                **(input.memo or {}), ID_MAX_LENGTH_MEMO_FIELD:
+                str(max_length).encode()
+            }
+            suffix = id_suffix or ''
+            base = input.id[:len(input.id) - len(suffix)]
+            input.id = bounded_workflow_id(base, suffix, max_length) + suffix
 
         # Try to propagate workflow task timeout setting from parent.
         if not input.task_timeout:
