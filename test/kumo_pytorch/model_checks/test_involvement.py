@@ -28,7 +28,7 @@ def threads():
     torch.set_num_threads(previous)
 
 
-@pytest.fixture(scope="module", params=("memory", "diskgraph"))
+@pytest.fixture(scope="module", params=("diskgraph",))
 def backend(request):
     return request.param
 
@@ -88,8 +88,6 @@ def task_case(request, backend, tmp_path_factory):
     directory = tmp_path_factory.mktemp(f"involvement-{family}-{backend}")
 
     def source(data, name):
-        if backend == "memory":
-            return data.memory_dataset(), r.InMemoryEngine()
         return data.parquet_dataset(directory / name), r.DiskGraphEngine(
             index=directory / f"{name}-index", num_threads=1
         )

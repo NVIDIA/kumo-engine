@@ -27,11 +27,6 @@ class AMLFixture:
     schema: object
     training: tuple
 
-    def memory_dataset(self):
-        from kumo.pytorch.api import Dataset, InMemoryRows
-
-        return Dataset({name: InMemoryRows(rows) for name, rows in self.tables.items()})
-
     def parquet_dataset(self, destination: Path):
         import pyarrow as pa
         import pyarrow.parquet as pq

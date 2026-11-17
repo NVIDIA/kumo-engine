@@ -39,7 +39,7 @@ def source(request):
 
 
 @pytest.mark.parametrize("fit_count", (8, 64, 512), ids=lambda n: f"fit-{n}")
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 def test_source_rows_and_fitting_anchors(source, tmp_path, fit_count, engine):
     tables, per_root = source
     base = aggregate_contract()
@@ -99,12 +99,9 @@ def test_source_rows_and_fitting_anchors(source, tmp_path, fit_count, engine):
     scale = math.sqrt(math.fsum((value - mean) ** 2 for value in scores) / fit_count)
     assert scale > 0
     assert 0.0 not in scores  # Empty held-out context must remain unknown to vocabulary.
-    if engine == "diskgraph":
-        path = tmp_path / "anchors.parquet"
-        pq.write_table(pa.Table.from_pylist(rows), path, row_group_size=17)
-        anchors = _table(source=r.Parquet(str(path)))
-    else:
-        anchors = _table(source=r.InMemoryRows(rows))
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), path, row_group_size=17)
+    anchors = _table(source=r.Parquet(str(path)))
 
     with bound_tables(contract, tables, engine) as (dataset, backend):
         with r.prepare(contract, dataset, backend) as plan:
@@ -123,7 +120,7 @@ def test_source_rows_and_fitting_anchors(source, tmp_path, fit_count, engine):
                         split=split,
                         batch_size=31,
                         chunk_batches=2,
-                        output_format="model" if engine == "diskgraph" else "inspectable",
+                        output_format="model",
                     ):
                         ids = list(batch.metadata["sample_ids"])
                         seen.extend(ids)

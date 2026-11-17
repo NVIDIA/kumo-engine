@@ -44,16 +44,14 @@ def product_state_factory(config, directory):
         anchors = tuple(
             r.SampleRequest(f"item-{i}", i, 100, split="train") for i in range(4)
         )
+        path = directory / "products.parquet"
+        pq.write_table(
+            pa.Table.from_pylist([{"id": i, "price": float(i)} for i in range(4)]), path
+        )
         return KumoInputs(
             contract,
-            r.Dataset(
-                {
-                    "products": r.InMemoryRows(
-                        [{"id": i, "price": float(i)} for i in range(4)]
-                    )
-                }
-            ),
-            r.InMemoryEngine(),
+            r.Dataset({"products": r.Parquet(str(path))}),
+            r.DiskGraphEngine(index=directory / "index", num_threads=1),
             anchors,
             anchors,
             materialize_options={"fit_split": "train"},
@@ -90,8 +88,6 @@ def test_native_state_comparison_in_fresh_processes(tmp_path):
 @pytest.mark.parametrize(
     "backend,training",
     (
-        ("in_memory", False),
-        ("in_memory", True),
         ("diskgraph", False),
         ("diskgraph", True),
         ("polars", False),
@@ -129,22 +125,18 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
             )
             rows = [{"product_id": i, "price": float(i + 1)} for i in range(5)]
             recorder.measure("source.rows", len(rows))
-            if backend in {"diskgraph", "polars"}:
-                with recorder.span("source.convert"):
-                    path = workdir / "products.parquet"
-                    pq.write_table(pa.Table.from_pylist(rows), path)
-                dataset = r.Dataset({"products": r.Parquet(str(path))})
-                if backend == "polars":
-                    pytest.importorskip("polars")
-                    from test.kumo_pytorch.reference_engine.polars import PolarsEngine
+            with recorder.span("source.convert"):
+                path = workdir / "products.parquet"
+                pq.write_table(pa.Table.from_pylist(rows), path)
+            dataset = r.Dataset({"products": r.Parquet(str(path))})
+            if backend == "polars":
+                pytest.importorskip("polars")
+                from test.kumo_pytorch.reference_engine.polars import PolarsEngine
 
-                    engine = PolarsEngine()
-                else:
-                    engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
-                recorder.measure("converted.bytes", path.stat().st_size)
+                engine = PolarsEngine()
             else:
-                dataset = r.Dataset({"products": r.InMemoryRows(rows)})
-                engine = r.InMemoryEngine()
+                engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
+            recorder.measure("converted.bytes", path.stat().st_size)
             anchors = tuple(
                 r.SampleRequest(f"product-{i}", i, 100, split="train") for i in range(5)
             )
@@ -158,9 +150,7 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
                 reference=backend == "polars",
                 batch_options={
                     "batch_size": 3,
-                    "output_format": "model"
-                    if backend in {"diskgraph", "polars"}
-                    else "inspectable",
+                    "output_format": "model",
                 },
             )
 

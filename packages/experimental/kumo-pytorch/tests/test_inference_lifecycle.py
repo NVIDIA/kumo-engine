@@ -60,6 +60,13 @@ CONTRACTS: dict[str, Callable[[api.DataSchema], api.DataLoaderSpec]] = {
     "explicit_ids": _explicit_id_contract,
 }
 ENGINES = ("in_memory", "diskgraph")
+REFERENCE_CONTRACTS = ("pragma", "temporal")
+CONTRACT_ENGINES = [
+    (contract, engine)
+    for contract in sorted(CONTRACTS)
+    for engine in ENGINES
+    if engine == "diskgraph" or contract in REFERENCE_CONTRACTS
+]
 SEED, EPOCH = 7, 2
 
 
@@ -162,8 +169,7 @@ def _fresh_process(
     )
 
 
-@pytest.mark.parametrize("engine_name", ENGINES)
-@pytest.mark.parametrize("contract_name", sorted(CONTRACTS))
+@pytest.mark.parametrize("contract_name,engine_name", CONTRACT_ENGINES)
 def test_a_fresh_process_rebuilds_the_same_batches(
     tmp_path: Path, contract_name: str, engine_name: str
 ) -> None:
@@ -432,7 +438,7 @@ def test_diskgraph_model_output_inference_matches_inspectable(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("output_format", ["inspectable", "model"])
-@pytest.mark.parametrize("contract_name", sorted(CONTRACTS))
+@pytest.mark.parametrize("contract_name", REFERENCE_CONTRACTS)
 def test_diskgraph_inference_equals_reference_inference(
     tmp_path: Path, contract_name: str, output_format: str
 ) -> None:
@@ -458,7 +464,7 @@ def _rows_for(users: set[int]) -> Rows:
     }
 
 
-@pytest.mark.parametrize("contract_name", sorted(CONTRACTS))
+@pytest.mark.parametrize("contract_name", REFERENCE_CONTRACTS)
 def test_serving_equals_batch_inference(tmp_path: Path, contract_name: str) -> None:
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
@@ -1054,8 +1060,7 @@ def _infer_with(
             return list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH)), task
 
 
-@pytest.mark.parametrize("engine_name", ENGINES)
-@pytest.mark.parametrize("contract_name", sorted(CONTRACTS))
+@pytest.mark.parametrize("contract_name,engine_name", CONTRACT_ENGINES)
 def test_inference_from_the_input_half_equals_inference_from_the_whole_state(
     tmp_path: Path, contract_name: str, engine_name: str
 ) -> None:

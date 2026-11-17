@@ -10,7 +10,7 @@ from conformance.assertions import bound_tables
 from kumo.pytorch import api as r
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("width", (32, 128, 512))
 @pytest.mark.parametrize("sparse", (False, True), ids=("dense-all", "null-heavy-projected"))
 def test_physical_wide_rows_and_projection(engine, width, sparse):
@@ -67,7 +67,7 @@ def test_physical_wide_rows_and_projection(engine, width, sparse):
                 for batch in task.batches(
                     requests,
                     batch_size=3,
-                    output_format="model" if engine == "diskgraph" else "inspectable",
+                    output_format="model",
                 ):
                     ids = list(batch.metadata["sample_ids"])
                     seen.extend(ids)

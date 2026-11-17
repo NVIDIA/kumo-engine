@@ -83,8 +83,9 @@ def test_missing_required_split_is_a_failure(tmp_path):
         select_anchors(path, split_columns=("forecast_split",), limit=1)
 
 
-def test_combined_history_matches_unshifted_sequence_and_count_boundaries():
+def test_combined_history_matches_unshifted_sequence_and_count_boundaries(tmp_path):
     fixture = build_fixture()
+    dataset = fixture.parquet_dataset(tmp_path / "source")
     originals = fixture.training
     shifted = tuple(
         replace(
@@ -100,7 +101,8 @@ def test_combined_history_matches_unshifted_sequence_and_count_boundaries():
         contract = build_contract(
             fixture.schema, family, max_events=len(fixture.tables["transactions"])
         )
-        with r.prepare(contract, fixture.memory_dataset(), r.InMemoryEngine()) as plan:
+        engine = r.DiskGraphEngine(index=tmp_path / family, num_threads=1)
+        with r.prepare(contract, dataset, engine) as plan:
             task = plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff)
             batch = next(task.batches(anchors, seed=0))
             histories.append(batch.inputs["history"])
@@ -124,7 +126,8 @@ def test_combined_history_matches_unshifted_sequence_and_count_boundaries():
         inclusive=True,
     )
     anchors = tuple(replace(a, targets=()) for a in shifted)
-    with r.prepare(contract, fixture.memory_dataset(), r.InMemoryEngine()) as plan:
+    engine = r.DiskGraphEngine(index=tmp_path / "counts", num_threads=1)
+    with r.prepare(contract, dataset, engine) as plan:
         task = plan.materialize(anchors, fit_split="train", encoder_cutoff=cutoff)
         batch = next(task.batches(anchors, batch_size=2))
         expected = [

@@ -16,7 +16,7 @@ from conformance.cases import ENGINES, REPOSITORY
 from conformance.expectations import load_expectations
 from conformance.properties import obligation_id, obligations
 from conformance.registry import REPLAYED
-from tests.conformance.conftest import PINNED_DTYPES, PINNED_ENCODERS
+from tests.conformance.conftest import PINNED_BATCH_BOUNDARIES, PINNED_DTYPES, PINNED_ENCODERS
 
 
 def run_pytest(command, directory):
@@ -68,6 +68,11 @@ def test_required_tests_cannot_become_skipped_success(tmp_path, scenario):
         "skip_known_gap",
         "skip_dtype",
         "missing_dtype",
+        "skip_boundary",
+        "xfail_boundary",
+        "missing_boundary",
+        "ignored_boundary",
+        "deselected_boundary",
     ),
 )
 def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
@@ -131,6 +136,25 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         f"@pytest.mark.parametrize('cell', {dtype_ids!r}, ids=lambda item: item)\n"
         f"def test_scalar_compatibility_and_real_execution(cell):\n    {dtype_body}\n"
     )
+    boundary_source = ["import pytest\n"]
+    for test, variants in PINNED_BATCH_BOUNDARIES.items():
+        boundary_ids = [
+            f"{engine}{'-' + variant if variant else ''}"
+            for engine in ENGINES
+            if engine == "diskgraph"
+            for variant in variants
+        ]
+        if scenario == "missing_boundary":
+            boundary_ids.pop()
+        body = {
+            "skip_boundary": "pytest.skip('required boundary')",
+            "xfail_boundary": "pytest.xfail('required answer is unsupported')",
+        }.get(scenario, "pass")
+        boundary_source.append(
+            f"@pytest.mark.parametrize('case', {boundary_ids!r}, ids=lambda case: case)\n"
+            f"def {test}(case):\n    {body}\n"
+        )
+    (tests / "test_batch_boundaries.py").write_text("".join(boundary_source))
     # Retain a passing test even if the entire public-behavior file is ignored.
     (tests / "test_other.py").write_text("def test_other():\n    pass\n")
     command = [
@@ -146,6 +170,10 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         command.extend(["-k", "not test_public_behavior"])
     elif scenario == "ignored":
         command.append("--ignore=tests/conformance/test_guarantees.py")
+    elif scenario == "ignored_boundary":
+        command.append("--ignore=tests/conformance/test_batch_boundaries.py")
+    elif scenario == "deselected_boundary":
+        command.extend(["-k", "not test_batch_boundaries"])
     elif scenario == "empty":
         command.extend(["-k", "does_not_exist"])
     result = run_pytest(command, tmp_path)

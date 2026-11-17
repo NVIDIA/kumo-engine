@@ -16,7 +16,7 @@ from kumo.pytorch import api as r
 from tests.test_graph_time_and_reductions import ROWS, SCHEMA
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("width", (8, 32, 128))
 def test_mixed_feature_widths(engine, width):
     # Reuse the reduction fixture: values 10 at t=10, 30 at t=40, and a
@@ -89,7 +89,7 @@ def test_mixed_feature_widths(engine, width):
                     task.batches(
                         requests,
                         batch_size=2,
-                        output_format="model" if engine == "diskgraph" else "inspectable",
+                        output_format="model",
                     )
                 )
                 assert len(batches) == 1
@@ -104,7 +104,7 @@ def test_mixed_feature_widths(engine, width):
                 assert task.fitted_state.fingerprint == fingerprint
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("cardinality", (16, 256, 4096))
 @pytest.mark.parametrize("shared", (False, True))
 def test_vocabulary_cardinality_and_shared_state(engine, cardinality, shared):
@@ -168,7 +168,7 @@ def test_vocabulary_cardinality_and_shared_state(engine, cardinality, shared):
                 for batch in task.batches(
                     requests,
                     batch_size=128,
-                    output_format="model" if engine == "diskgraph" else "inspectable",
+                    output_format="model",
                 ):
                     ids = list(batch.metadata["sample_ids"])
                     seen.extend(ids)
@@ -184,7 +184,7 @@ def test_vocabulary_cardinality_and_shared_state(engine, cardinality, shared):
                 assert task.fitted_state.fingerprint == fingerprint
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("length", (16, 128, 1024))
 def test_controlled_bpe_text_lengths(engine, length):
     # Reuse the golden's BPE merges/IDs rather than training an expected answer.
@@ -212,7 +212,7 @@ def test_controlled_bpe_text_lengths(engine, length):
                 batches = list(
                     task.batches(
                         requests,
-                        output_format="model" if engine == "diskgraph" else "inspectable",
+                        output_format="model",
                     )
                 )
                 assert len(batches) == 1

@@ -22,6 +22,11 @@ from implementation gaps. This rule applies to every remaining criterion.
 
 ## Agreed scope
 
+- New correctness tests and coverage sweeps are DiskGraph-only, per the user's
+  2026-11-17 correction. Remove PR-introduced InMemory variants; preserve the
+  pre-existing package tests. Migrate unique InMemory-only acceptance checks to
+  DiskGraph rather than losing their assertions. Polars/GPU timing references
+  remain in scope. See the [golden audit](docs/arena-golden-audit.md).
 - Keep all new test models, workload definitions, fixtures, dataset records and
   tooling under `test/kumo_pytorch/`, outside the installed package.
 - Keep bulk sources and anchors inside the suite's ignored `.data/` directory.

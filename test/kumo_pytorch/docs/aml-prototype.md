@@ -92,7 +92,7 @@ It verifies the selected v1/v2 anchors against the task rules from Arena revisio
   missing labels. Reports retain the loss numerator and counts separately.
 
 The [task fixtures](../model_checks/test_involvement.py) exercise all three models
-on both engines, with positives, negatives, missing targets, padding, zero-target
+on DiskGraph, with positives, negatives, missing targets, padding, zero-target
 backward passes, excluded gradients and deliberately corrupted targets/masks/
 clocks/losses/inputs. Changing future values or labels must leave inputs unchanged;
 changing a historical field must change its expected model input position.
@@ -454,8 +454,8 @@ includes them.
 
 The [package graph sweeps](../../../packages/experimental/kumo-pytorch/tests/test_graph_sweeps.py)
 reuse the existing conformance structure, edge uniqueness and point-in-time
-oracles. **36 cases** cover fan-outs **2, 32 and 128**, one/two/three-hop paths,
-two degree profiles and both existing engines independently. Six root entities
+oracles. **18 cases** cover fan-outs **2, 32 and 128**, one/two/three-hop paths,
+two degree profiles on DiskGraph. Six root entities
 have either 192 eligible events each or degrees `[384, 3, 3, 3, 3, 3]`.
 Distinct timestamps make recent-neighbor membership unambiguous. Reversed source
 order, a row exactly at the inclusive cutoff and future rows exercise ordering
@@ -496,7 +496,7 @@ python -m pytest -c test/kumo_pytorch/pytest.ini \
 ## Feature and encoding coverage sweeps
 
 The [package feature/encoding sweeps](../../../packages/experimental/kumo-pytorch/tests/test_feature_encoding_sweeps.py)
-add **24 cases** through the existing `package-regressions` job:
+add **12 DiskGraph cases** through the existing `package-regressions` job:
 
 | Dimension | Selected sizes | Checks |
 | --- | --- | --- |
@@ -504,10 +504,8 @@ add **24 cases** through the existing `package-regressions` job:
 | Vocabulary cardinality | 16, 256, 4,096 categories per source field | Separate and shared learned state, exact frequency-ordered mappings, missing/unknown values and future-row exclusion |
 | Controlled BPE text length | 16, 128, 1,024 tokens in the longest text | Exact token IDs and piece offsets, shorter/empty/null/unknown texts and validity |
 
-Every case runs independently on both existing engines: DiskGraph model output
-and the in-memory engine's supported inspectable output. No cross-engine batch
-identity is required. Fitted-state fingerprints must remain unchanged during
-delivery.
+Every case runs through DiskGraph model output. Fitted-state fingerprints
+must remain unchanged during delivery.
 
 The width sweep reuses the existing reduction fixture and composes count,
 distinct count, sum, min/max, mean, population variance/std, recency, grouped
@@ -534,9 +532,9 @@ histories are covered separately below; source-row/fit-anchor scaling remains pe
 
 ## Empty histories and wide source rows
 
-[Twenty AML cases](../model_checks/test_empty_histories.py) cover all-empty and
+[Ten AML cases](../model_checks/test_empty_histories.py) cover all-empty and
 mixed empty/nonempty histories across all five workload/model combinations on
-both existing engines. Two available fixture accounts have no transactions;
+DiskGraph. Two available fixture accounts have no transactions;
 encoders are fitted on separate nonempty training accounts. Independent source
 and task checks verify input ownership, graph membership, sequences, aggregates
 and target eligibility before executing the copied model's forward/backward pass.
@@ -550,12 +548,12 @@ Emitted inputs/targets and fitted state must remain unchanged.
 These tests exposed a copied nuFormer consumer bug on both engines: its internal
 empty-history padding position produced one logit position against zero Kumo
 targets. The local `forward_kumo` now returns logits/hidden states at the emitted
-input width. Both formerly failing cases remain ordinary required regressions;
+input width. The DiskGraph case remains an ordinary required regression;
 no skip, expected failure or target rewriting was introduced. The installed
 package and Arena were not changed. See [model provenance](../models/README.md#copied-source).
 
-[Twelve package cases](../../../packages/experimental/kumo-pytorch/tests/test_wide_source_rows.py)
-cover **32/128/512 physical data columns**, plus the primary key, on both engines.
+[Six package cases](../../../packages/experimental/kumo-pytorch/tests/test_wide_source_rows.py)
+cover **32/128/512 physical data columns**, plus the primary key, on DiskGraph.
 Each eight-row table mixes integers, floats and strings. Dense cases emit every
 field; null-heavy cases project every seventh field, including an entirely null
 column. Checks verify exact selected columns, values and validity, missing/unknown
@@ -580,7 +578,7 @@ python -m pytest -c test/kumo_pytorch/pytest.ini \
 
 The [package source/anchor sweeps](../../../packages/experimental/kumo-pytorch/tests/test_source_anchor_sweeps.py)
 cross **64, 1,024 and 16,384 event rows** with **8, 64 and 512 fitting anchors**:
-nine cells on each existing engine, **18 cases** in total. Eight root rows and
+nine cells on DiskGraph, **9 cases** in total. Eight root rows and
 five held-out anchors are additional to those counts. Changing fitting-anchor
 count leaves the source unchanged; changing source size leaves fitting-anchor
 count under its independent parameter.
@@ -596,10 +594,10 @@ Checks verify train-only Z-score mean/population scale and vocabulary membership
 then raw counts/sums, standardized values, vocabulary output, exact split delivery
 and partial batches at size 31. Fitted state must stay unchanged while serving
 train/validation/test. DiskGraph binds full Parquet source/anchor tables and uses
-model output; the in-memory engine uses its supported row bindings and
-inspectable output. No cross-engine batch identity is required.
+model output. No reference-engine execution or batch identity is required.
 
-All 18 cases passed, zero failed/skipped. The existing nightly/PR
+Historically, all 18 two-engine cases passed, zero failed/skipped. Only the nine
+DiskGraph cases remain after the scope correction. The existing nightly/PR
 `package-regressions` command collects the new module. From the package directory:
 
 ```sh

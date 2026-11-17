@@ -4,8 +4,8 @@
 
 """Larger fan-outs/degree shapes reuse the existing graph conformance oracles.
 
-Each engine is checked against source semantics independently; no identical
-batch ordering or physical layout is required across engines.
+DiskGraph is checked against independent source semantics; no reference-engine
+batch ordering or physical layout is required.
 """
 
 from collections import Counter
@@ -71,7 +71,7 @@ def degree_case(profile, path, fanout):
     )
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("profile", ("uniform", "skewed"))
 @pytest.mark.parametrize("path", ("one_hop", "many_to_one", "three_hop"))
 @pytest.mark.parametrize("fanout", (2, 32, 128))

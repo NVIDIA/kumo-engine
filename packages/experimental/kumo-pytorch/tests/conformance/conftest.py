@@ -29,6 +29,21 @@ PINNED_DTYPES = (
     "timestamp",
 )
 PINNED_ENCODERS = ("raw", "vocabulary", "zscore", "buckets", "text")
+# Independent of the test parametrization, so removing a boundary still fails
+# --conformance-complete. These extend existing tests without an Arena runner.
+PINNED_BATCH_BOUNDARIES = {
+    "test_sample_count_boundaries": tuple(
+        f"{drop}-n{n}" for drop in ("keep", "drop") for n in (0, 1, 15, 16, 17, 32, 33)
+    ),
+    "test_oversized_position_and_exact_budget": tuple(
+        f"{layout}-{lengths}"
+        for layout in ("padded", "packed")
+        for lengths in ("7", "1,7", "7,1", "1,2,7", "6")
+    ),
+    "test_bucketing_has_exact_padding_cost": ("unbucketed", "bucketed"),
+    "test_bucketing_uses_truncated_lengths": ("",),
+    "test_bucketing_respects_chunk_scope": ("chunks1", "chunks2"),
+}
 #: Pinned here, apart from the parametrization: dropping a property or a seed
 #: batch from conformance.properties leaves a required ID unpassed.
 PINNED_PROPERTIES = {
@@ -186,6 +201,14 @@ def pytest_sessionstart(session):
         for dtype in PINNED_DTYPES
     }
     session.config.stash[PASSED] = set()
+    session.config.stash[REQUIRED] |= {
+        f"tests/conformance/test_batch_boundaries.py::{test}[{engine}"
+        f"{'-' + variant if variant else ''}]"
+        for engine in engines
+        if engine == "diskgraph"
+        for test, variants in PINNED_BATCH_BOUNDARIES.items()
+        for variant in variants
+    }
 
 
 @pytest.fixture(autouse=True)

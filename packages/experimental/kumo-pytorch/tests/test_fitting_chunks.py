@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from conformance.assertions import require_engine
 from kumo.pytorch import api
 from kumo.pytorch.assembly import _FIT_CHUNK
 from tests.test_anchor_tables import SCHEMA
@@ -39,7 +40,7 @@ CONTRACT = api.DataLoaderSpec(
 )
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 @pytest.mark.parametrize("anchors", (_FIT_CHUNK - 1, _FIT_CHUNK, _FIT_CHUNK + 1))
 def test_anchors_on_both_sides_of_a_chunk_edge_are_each_fitted_once(
     tmp_path: Path, engine_name: str, anchors: int
@@ -54,13 +55,9 @@ def test_anchors_on_both_sides_of_a_chunk_edge_are_each_fitted_once(
             for i, (at, amount) in enumerate(((before, float(user)), (after, 10.0 * user)))
         ],
     }
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
-        dataset = _write_parquet(rows, tmp_path / "parquet")
-        engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
-    else:
-        dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-        engine = api.InMemoryEngine()
+    require_engine(engine_name)
+    dataset = _write_parquet(rows, tmp_path / "parquet")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
     requests = [api.SampleRequest(f"u{user}", user, 100) for user in users]
     with api.prepare(CONTRACT, dataset, engine) as plan, plan.materialize(requests) as task:
         spent = task.output("spent").field(name="spent").encoder

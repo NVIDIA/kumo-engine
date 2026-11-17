@@ -35,6 +35,8 @@ See the [historical benchmark validation](PLAN.md#gpu-and-sampled-memory-validat
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
 See [coverage ownership](PLAN.md#coverage-ownership) and
 [required CI coverage](docs/required-coverage.md).
+The [Arena golden audit](docs/arena-golden-audit.md) maps existing assertion
+owners and records selective boundary-test ports without an Arena dependency.
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to
 existing tests and identifies the next AML additions.
 Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishes
@@ -109,7 +111,7 @@ python -m pytest -c test/kumo_pytorch/pytest.ini \
 ```
 
 The existing nightly checks job runs this command after the shared PyTorch setup.
-It checks all five AML workload/model combinations on tiny emitted batches,
+It checks all five AML workload/model combinations on tiny DiskGraph-emitted batches,
 including raw-file preparation, training updates, masking and v2 graph clocks. It downloads no data
 and does not count as full AML, GPU or performance validation. The raw-file
 checks also verify persistence, inference, frozen-input finetuning and optimizer resume.
@@ -119,17 +121,17 @@ The [history sweeps](docs/aml-prototype.md#history-coverage-sweeps) check
 16/128/1,024-event inputs, explicit caps/windows and merged physical tables.
 The [batching sweeps](docs/aml-prototype.md#batching-coverage-sweeps) check
 32/128/512 samples, partial tails and selected token budgets in 23 cases.
-The [graph sweeps](docs/aml-prototype.md#graph-coverage-sweeps) add 36 package
+The [graph sweeps](docs/aml-prototype.md#graph-coverage-sweeps) add 18 DiskGraph package
 cases for fan-outs 2/32/128 and one-to-three-hop degree profiles, plus 12 AML
 GraphSAGE/combined input cases. Edge-attribute coverage remains unresolved.
 The [feature/encoding sweeps](docs/aml-prototype.md#feature-and-encoding-coverage-sweeps)
-add 24 package cases for 8/32/128 output columns, 16/256/4,096 categories per
+add 12 DiskGraph package cases for 8/32/128 output columns, 16/256/4,096 categories per
 source field and 16/128/1,024-token texts, reusing existing fixtures.
 The [edge-case checks](docs/aml-prototype.md#empty-histories-and-wide-source-rows)
-add 20 AML empty/mixed-history training cases and 12 physical wide-row cases.
+add 10 AML empty/mixed-history training cases and 6 physical wide-row cases.
 They caught a copied nuFormer empty-history output mismatch, now fixed locally.
 The [source/anchor matrix](docs/aml-prototype.md#independent-source-and-fitting-anchor-sweeps)
-adds 18 cases crossing 64/1,024/16,384 event rows with 8/64/512 fitting anchors.
+adds 9 DiskGraph cases crossing 64/1,024/16,384 event rows with 8/64/512 fitting anchors.
 Larger-than-RAM and performance validation remain pending.
 
 Local prototype validation on base `08577147` with the decimal transport fix:

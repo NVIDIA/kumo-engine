@@ -34,7 +34,7 @@ def threads():
     torch.set_num_threads(previous)
 
 
-@pytest.fixture(scope="module", params=("in_memory", "diskgraph"))
+@pytest.fixture(scope="module", params=("diskgraph",))
 def source(request, tmp_path_factory):
     fixture = build_fixture()
     # Existing, available roots with no touching transactions, not absent IDs.
@@ -55,12 +55,9 @@ def source(request, tmp_path_factory):
             for row in fixture.tables["transactions"]
         ]
     }
-    if request.param == "in_memory":
-        dataset, engine = fixture.memory_dataset(), r.InMemoryEngine()
-    else:
-        directory = tmp_path_factory.mktemp("aml-empty-histories")
-        dataset = fixture.parquet_dataset(directory / "sources")
-        engine = r.DiskGraphEngine(index=directory / "index", num_threads=1)
+    directory = tmp_path_factory.mktemp("aml-empty-histories")
+    dataset = fixture.parquet_dataset(directory / "sources")
+    engine = r.DiskGraphEngine(index=directory / "index", num_threads=1)
     return fixture, dataset, engine, reference, request.param
 
 
@@ -116,7 +113,7 @@ def test_empty_history_inputs_and_training(source, selection, family, mixed):
                     requests,
                     batch_size=3,
                     seed=7,
-                    output_format="model" if backend == "diskgraph" else "inspectable",
+                    output_format="model",
                 )
             )
             assert len(batches) == 1

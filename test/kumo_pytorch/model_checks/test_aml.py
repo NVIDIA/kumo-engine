@@ -59,12 +59,10 @@ def fit_case(selection, family, backend, tmp_path_factory):
         native=native,
         max_events=len(fixture.tables["transactions"]),
     )
-    if backend == "memory":
-        dataset, engine = fixture.memory_dataset(), r.InMemoryEngine()
-    else:
-        directory = tmp_path_factory.mktemp("aml-model-inputs")
-        dataset = fixture.parquet_dataset(directory / "source")
-        engine = r.DiskGraphEngine(index=directory / "index", num_threads=1)
+    assert backend == "diskgraph"
+    directory = tmp_path_factory.mktemp("aml-model-inputs")
+    dataset = fixture.parquet_dataset(directory / "source")
+    engine = r.DiskGraphEngine(index=directory / "index", num_threads=1)
     with r.prepare(contract, dataset, engine) as plan:
         task = plan.materialize(
             anchors,
@@ -78,7 +76,7 @@ def fit_case(selection, family, backend, tmp_path_factory):
         yield task, batch, selection, family
 
 
-@pytest.fixture(scope="module", params=("memory", "diskgraph"))
+@pytest.fixture(scope="module", params=("diskgraph",))
 def backend(request):
     return request.param
 

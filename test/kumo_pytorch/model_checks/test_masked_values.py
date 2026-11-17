@@ -40,7 +40,7 @@ def threads():
     torch.set_num_threads(previous)
 
 
-@pytest.fixture(scope="module", params=("memory", "diskgraph"))
+@pytest.fixture(scope="module", params=("diskgraph",))
 def case(request, tmp_path_factory):
     fixture = build_fixture()
     requests = tuple(replace(row, targets=()) for row in fixture.training) + (
@@ -70,8 +70,6 @@ def case(request, tmp_path_factory):
     root = tmp_path_factory.mktemp("masked-aml")
 
     def source(data, name):
-        if request.param == "memory":
-            return data.memory_dataset(), r.InMemoryEngine()
         return data.parquet_dataset(root / name), r.DiskGraphEngine(
             index=root / f"{name}-index", num_threads=1
         )
