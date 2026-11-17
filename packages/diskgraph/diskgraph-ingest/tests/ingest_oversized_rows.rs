@@ -156,8 +156,9 @@ fn oversized_row_keeps_key_time_and_fk_with_null_features() -> Result<()> {
     assert_eq!(stats.oversized_rows_counts.get("Items"), Some(&1));
     assert_eq!(stats.dropped_rows_counts.get("Items"), None);
     assert!(logs.contains(
-        "1 rows of table Items exceeded the 64 MiB node-data limit; \
-         their features are stored as null"
+        "1 row of table Items exceeded the 64 MiB node-data limit; \
+         their features are stored as null, and any still over the limit \
+         are stored with no values"
     ));
 
     let items = reader.table("Items").unwrap();
@@ -182,9 +183,10 @@ fn oversized_row_keeps_key_time_and_fk_with_null_features() -> Result<()> {
 }
 
 #[test]
-fn row_over_the_limit_without_features_has_no_node_data() -> Result<()> {
+fn row_still_over_the_limit_after_nulling_features_is_stored_empty() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    // An FK column is kept, and this value alone is over the limit.
+    // An FK column is kept, and this value alone is over the limit. It is
+    // random because rowpack LZ4-compresses long strings.
     let mut state = 1u64;
     let owner: String = (0..65 << 20)
         .map(|_| {
@@ -194,13 +196,20 @@ fn row_over_the_limit_without_features_has_no_node_data() -> Result<()> {
             char::from(b'a' + (state % 26) as u8)
         })
         .collect();
-    let (stats, _, reader) = ingest_items(dir.path(), &[&owner], &[b"small"])?;
+    let (stats, logs, reader) = ingest_items(dir.path(), &[&owner], &[b"small"])?;
 
     assert_eq!(stats.oversized_rows_counts.get("Items"), Some(&1));
+    assert!(logs.contains("1 row of table Items exceeded the 64 MiB node-data limit"));
     let items = reader.table("Items").unwrap();
     let node = item_node(&items, "1");
-    let raw = items.edges_for_node(node)?.node_data()?;
-    assert_eq!(raw, Some(&[][..]));
+    let view = items.edges_for_node(node)?;
+    assert_eq!(view.node_data()?, Some(&[][..]));
+    let json = items.decode_node_data_json(&view)?.unwrap();
+    assert!(json
+        .as_object()
+        .unwrap()
+        .values()
+        .all(|value| value.is_null()));
     assert_eq!(
         items.validate_pk_at_node(node, &items.parse_pk_key("1")?)?,
         None

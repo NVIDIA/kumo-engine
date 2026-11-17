@@ -7852,8 +7852,10 @@ impl IngestContext {
                     }
                     if oversized_rows > 0 {
                         tracing::warn!(
-                            "{oversized_rows} rows of table {} exceeded the {} MiB node-data \
-                             limit; their features are stored as null",
+                            "{oversized_rows} {} of table {} exceeded the {} MiB node-data \
+                             limit; their features are stored as null, and any still over \
+                             the limit are stored with no values",
+                            if oversized_rows == 1 { "row" } else { "rows" },
                             table.name,
                             MAX_NODE_DATA_LEN >> 20
                         );
