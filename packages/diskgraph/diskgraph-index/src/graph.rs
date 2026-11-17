@@ -1566,7 +1566,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_msgpack(raw)?;
+        let out = decoder.decode_msgpack(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 
@@ -1587,7 +1587,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_json(raw)?;
+        let out = decoder.decode_json(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 

@@ -195,7 +195,7 @@ pub fn read_column_value(
 ) -> Option<Value> {
     let view = table.edges_for_node(node_id).ok()?;
     let decoder = table.node_data_decoder()?;
-    let raw_data = view.node_data().ok()??;
+    let raw_data = decoder.row_or_null(view.node_data().ok()??);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -221,7 +221,7 @@ pub fn read_column_value_nullable(
 ) -> Option<Option<Value>> {
     let view = table.edges_for_node(node_id).ok()?;
     let decoder = table.node_data_decoder()?;
-    let raw_data = view.node_data().ok()??;
+    let raw_data = decoder.row_or_null(view.node_data().ok()??);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -371,6 +371,7 @@ where
     let Ok(Some(raw)) = view.node_data() else {
         return SourceNull;
     };
+    let raw = decoder.row_or_null(raw);
 
     let logical_type = decoder.context().columns[col_idx].logical_type;
 

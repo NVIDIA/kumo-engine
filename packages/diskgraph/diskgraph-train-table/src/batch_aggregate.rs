@@ -2886,7 +2886,8 @@ mod tests {
     #[test]
     fn table_rows_reads_a_row_without_node_data_as_null() {
         // Its FK value alone is over the node-data limit, so ingest stores it
-        // without node data.
+        // without node data. It is random because rowpack LZ4-compresses long
+        // strings.
         let mut state = 1u64;
         let parent: String = (0..65 << 20)
             .map(|_| {
@@ -2935,7 +2936,10 @@ mod tests {
         .unwrap();
         let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output).unwrap();
 
-        let rows = table_rows(&reader.table("Notes").unwrap(), &[0], &[0, 1]).unwrap();
+        let table = reader.table("Notes").unwrap();
+        let rows = table_rows(&table, &[0], &[0, 1]).unwrap();
         assert!(rows.columns().iter().all(|column| column.is_null(0)));
+        let value = crate::ttgen_traversal::read_column_value_nullable(&table, 0, 1);
+        assert_eq!(value, Some(None));
     }
 }
