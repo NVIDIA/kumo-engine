@@ -735,6 +735,53 @@ fn validate_exact_category_count_options(options: &IngestOptions) -> Result<()> 
     Ok(())
 }
 
+#[cfg(unix)]
+pub fn raise_open_file_limit() -> Option<libc::rlim_t> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return None;
+    }
+    if lim.rlim_cur < lim.rlim_max {
+        let old = lim.rlim_cur;
+        lim.rlim_cur = lim.rlim_max;
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+            tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
+            return Some(old);
+        }
+        tracing::info!(old, new = lim.rlim_max, "raised soft RLIMIT_NOFILE");
+    }
+    Some(lim.rlim_cur)
+}
+
+#[cfg(not(unix))]
+pub fn raise_open_file_limit() -> Option<u64> {
+    None
+}
+
+#[cfg(all(test, unix))]
+mod open_file_limit_tests {
+    use super::*;
+
+    #[test]
+    fn raise_open_file_limit_lifts_the_soft_limit_to_the_hard_limit() {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        if lim.rlim_max == libc::RLIM_INFINITY || lim.rlim_max < 2 {
+            return;
+        }
+        let hard = lim.rlim_max;
+        lim.rlim_cur = hard - 1;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
+        assert_eq!(raise_open_file_limit(), Some(hard));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     mut source: GraphConfig,
@@ -746,6 +793,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     success_marker_content: Option<&str>,
     stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    raise_open_file_limit();
     validate_profile_dir(options.profile_dir.as_deref())?;
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
