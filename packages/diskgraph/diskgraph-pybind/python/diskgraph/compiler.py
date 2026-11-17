@@ -120,6 +120,7 @@ class DiskGraphPlanCompiler:
         future_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
         split: Optional[SplitSpec] = None,
+        start_time: Optional[int] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -155,6 +156,8 @@ class DiskGraphPlanCompiler:
             lag_offsets_secs: Optional lag offsets to be used in bp forecasting task.
             yoy_offsets_secs: Optional yoy offsets to be used in bp forecasting task.
             split: Optional canonical SplitSpec. Legacy dict payloads are not supported.
+            start_time: Optional training start time in ``input_timestamp_unit``,
+                for warning when the index clock truncates the first anchor before it.
         """
         task_type = task_type.lower()
         if task_type not in VALID_TASK_TYPES:
@@ -170,7 +173,7 @@ class DiskGraphPlanCompiler:
             unit_str = str(input_timestamp_unit).rsplit('.', 1)[-1].lower()
             self.builder.temporal(
                 timestamps, forecast_length, lag_timesteps,
-                unit=unit_str,
+                unit=unit_str, start_time=start_time,
             )
 
         # 2. Prediction Type detection
@@ -253,6 +256,10 @@ class DiskGraphPlanCompiler:
         if split_spec is not None:
             split_spec.validate_for_compiler()
             self.builder.split_ratio(split_spec)
+            if query.query_type.name == "TEMPORAL":
+                window = query.get_combined_date_offset_range()
+                self.builder.target_window(int(window.start or 0), int(window.end),
+                                           str(window.unit))
 
         # 4. What-If (Assuming) — only for training, not prediction.
         # GE's batch_pred_table_generator skips ASSUMING entirely;
