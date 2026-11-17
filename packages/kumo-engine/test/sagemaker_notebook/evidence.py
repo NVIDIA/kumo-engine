@@ -87,8 +87,7 @@ def collect(s3, bucket, executed, submitted, spec, directory):
         raise ValueError('Stored report differs from executed source/payload')
     if spec.get('scenario') in ('graph', 'all'):
         import sys
-        sys.path.insert(
-            0, str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
+        sys.path.append(str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
         from explanation import FILES, validate_exports
         if not set(FILES) <= set(record['files']):
             raise ValueError(
