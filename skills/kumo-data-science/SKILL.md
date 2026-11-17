@@ -7,7 +7,7 @@ description: "Use for KumoAI graphs and predictive models on relational data in 
 
 ## Build marker
 
-**`SKILL-BUILD: 2026-11-17-7ace05da-dirty`**
+**`SKILL-BUILD: 2026-11-17-2ab10b0f-dirty`**
 
 Quote this string verbatim whenever asked which build of the skill is loaded. If you cannot read
 it from this file, you have not loaded the skill — say so rather than guessing.
@@ -15,6 +15,12 @@ it from this file, you have not loaded the skill — say so rather than guessing
 Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
 Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
+
+## Paths in these files
+
+A path that starts with a skill's name — `kumo-data-science/`, `kumoai-reference/`, or a skill in
+*Routing* below — is in that skill's directory, which sits inside this one or beside it. Any other
+path, such as `accept/` or `hosts/`, is relative to the skill whose file names it.
 
 ## Read the host adapter first
 

@@ -16,6 +16,12 @@ Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
 Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
 
+## Paths in these files
+
+A path that starts with a skill's name — `kumo-data-science/`, `kumoai-reference/`, or a skill in
+*Routing* below — is in that skill's directory, which sits inside this one or beside it. Any other
+path, such as `accept/` or `hosts/`, is relative to the skill whose file names it.
+
 ## Read the host adapter first
 
 Before you answer any request this skill covers — a new model, scoring, a request routed to a

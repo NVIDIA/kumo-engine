@@ -60,7 +60,7 @@ Display the graph in a notebook or save the format the user requests: `.svg` for
 `graph.visualize(EXPORT_PATH, show_cols=True)` also shows ordinary columns in the diagram.
 `EXPORT_PATH` is the path the user named. When they named none, choose one that does not exist yet and report it; when the named file exists, say so and confirm before replacing it.
 Use `layout='standard'` or `layout='compact'` to select an arrangement; the default is `'auto'`.
-Export paths belong to the Python runtime; use `hosts/<host>/runtime.md` for display and file retrieval.
+Export paths belong to the Python runtime; use `kumo-data-science/hosts/<host>/runtime.md` for display and file retrieval.
 
 Keep samples off unless the user requests source values.
 `show_samples=True` queries source data and includes sample values in saved notebook output; file exports omit them.

@@ -220,7 +220,7 @@ table names as `table_names()` returns them and column names as `.columns` retur
 **Never exclude a column by a case-sensitive `!=` against a hand-typed literal.** A filter such as
 `c.name != 'END_DATE'` silently keeps a lower-case `end_date` — the comparison never matches, the
 column is never dropped, and nothing raises. Pass the confirmed `Excluded columns` from preflight
-(`accept/preflight.md` §8) as a literal `column_names=` list built from the catalog's own spelling
+(`kumo-data-science/accept/preflight.md` §8) as a literal `column_names=` list built from the catalog's own spelling
 — it has no hand-typed comparison to get wrong. If a filter is used instead, compare
 case-insensitively: `c.name.lower() != 'end_date'.lower()`.
 
