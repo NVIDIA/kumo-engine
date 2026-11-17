@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 import torch
+from kumo_core.errors import TrainingValidationError
 from kumo_core.train.base_module import (
     DEFAULT_LR_SCHEDULER,
     DEFAULT_LR_SCHEDULER_INTERVAL,
@@ -198,10 +199,10 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         if valid is not None:
             candidates = valid[sorted_membership(valid, candidates)]
         if not candidates.numel():
-            raise ValueError(
-                f"No candidate from table {self.rhs_name!r} is valid at the "
-                "prediction time; check its create and end times and the "
-                "target filter.")
+            raise TrainingValidationError(
+                message=f"No candidate from table {self.rhs_name!r} is valid "
+                "at the prediction time; check its create and end times and "
+                "the target filter.")
         return candidates
 
     def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
