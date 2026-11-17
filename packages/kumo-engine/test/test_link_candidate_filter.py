@@ -20,7 +20,7 @@ AVAILABLE = ' WHERE products.IS_AVAILABLE = true'
 # Even products are available. Odd products 1-29 end on day 40, product 0
 # at the anchor and 2 a second later; product 4 has no create time;
 # products 50-54 open on day 53, 56 at the window end, 58 a second later
-# and 55, 57 and 59 on day 100.
+# and 55, 57 and 59 on day 100. Every other product ends on day 150.
 ENDED = set(range(1, 30, 2))
 VALID = (set(range(1, 55)) - ENDED - {4}) | {56}
 VALID_AVAILABLE = {product for product in VALID if product % 2 == 0}
@@ -41,7 +41,7 @@ def graph(tmp_path_factory):
     created[56] = ANCHOR + pd.Timedelta(days=7)
     created[58] = created[56] + pd.Timedelta(seconds=1)
     created[4] = pd.NaT
-    ended = pd.Series(pd.NaT, index=range(60), dtype='datetime64[ns]')
+    ended = pd.Series(START + pd.Timedelta(days=150), index=range(60))
     ended[list(ENDED)] = START + pd.Timedelta(days=40)
     ended[[0, 2]] = ANCHOR + pd.to_timedelta([0, 1], unit='s')
     customers = pd.DataFrame({'CUSTOMER_ID': range(50)})
@@ -90,7 +90,7 @@ def graph(tmp_path_factory):
 def predict(graph):
     snapshot, trainers = graph.snapshot(), {}
 
-    def predict(module, trained, predicted, count):
+    def predict(module, trained, predicted, count, at=ANCHOR, **options):
         if (module, trained) not in trainers:
             plan = ModelPlan()
             plan.training_job.num_experiments = 1
@@ -105,11 +105,10 @@ def predict(graph):
                         snapshot=snapshot)
             trainers[module, trained] = trainer
         query = kumo.PredictiveQuery(graph=graph, query=QUERY.format(predicted))
-        table = query.generate_prediction_table(snapshot,
-                                                prediction_time=ANCHOR)
+        table = query.generate_prediction_table(snapshot, prediction_time=at)
         trainer = trainers[module, trained]
         return trainer.predict(table, snapshot=snapshot,
-                               num_classes_to_return=count).frame
+                               num_classes_to_return=count, **options).frame
 
     return predict
 
@@ -143,3 +142,14 @@ def test_unfiltered_pairwise_prediction_ignores_the_time_rule(predict):
     frame = predict('pairwise', '', '', 12)
 
     assert set(frame['CLASS'].dropna().astype(int)) & ENDED
+
+
+def test_unfiltered_embeddings_ignore_the_time_rule(predict, tmp_path):
+    output = kumo.PredictionOutputConfig(
+        connector=kumo.FileConnector(root_dir=str(tmp_path)),
+        output_paths={'embeddings': 'embeddings'})
+
+    frame = predict('context', '', '', 12, at=START + pd.Timedelta(days=200),
+                    output_config=output)
+
+    assert len(frame) == 50

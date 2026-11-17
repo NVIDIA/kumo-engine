@@ -186,26 +186,23 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
             self._valid_rhs_node_idx = self._valid_rhs_node_idx.to(self.device)
 
     def tt_ng_valid_rhs_for_stage(self, stage: "Any") -> "Tensor | None":
-        """TT-NG temporal LP: RHS node-ids valid at ``stage``'s seed time, or
-        ``None`` (static LP / no temporal info -> rank the full catalog).
-        Shared by eval AND predict across LP families so both filter
-        consistently. Prediction also applies the target filter."""
+        """VAL/TEST: RHS node-ids valid at the stage time, or ``None`` to rank
+        the full catalog. PRED: also restricted to ``predict_candidates``."""
         valid = self._rhs_valid_at_stage_time(stage)
         if stage != TrainingStage.PRED:
             return valid
         candidates = self.datamodule.predict_candidates
-        if candidates is not None:
-            candidates = candidates.to(self.device)
-            if valid is None:
-                valid = candidates
-            else:
-                valid = valid[sorted_membership(valid, candidates)]
-        if valid is not None and not valid.numel():
+        if candidates is None:
+            return valid
+        candidates = candidates.to(self.device)
+        if valid is not None:
+            candidates = valid[sorted_membership(valid, candidates)]
+        if not candidates.numel():
             raise ValueError(
                 f"No candidate from table {self.rhs_name!r} is valid at the "
-                "prediction time; check its create and end times"
-                f"{'' if candidates is None else ' and the target filter'}.")
-        return valid
+                "prediction time; check its create and end times and the "
+                "target filter.")
+        return candidates
 
     def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
         from kumoapi.train import TrainingStage
