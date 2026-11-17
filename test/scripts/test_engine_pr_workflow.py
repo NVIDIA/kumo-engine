@@ -135,20 +135,24 @@ if Path(sys.argv[0]).name == 'build_wheel.sh':
     ]
 
 
-@pytest.mark.parametrize('event,changes,required,wheel,gpu,expected', [
-    ('push', 'success', 'false', 'skipped', 'skipped', 0),
-    ('push', 'success', 'true', 'success', 'success', 0),
-    ('push', 'failure', 'false', 'skipped', 'skipped', 1),
-    ('push', 'cancelled', '', 'skipped', 'skipped', 1),
-    ('push', 'success', '', 'skipped', 'skipped', 1),
-    ('push', 'success', 'true', 'failure', 'skipped', 1),
-    ('push', 'success', 'true', 'success', 'failure', 1),
-    ('workflow_dispatch', 'skipped', '', 'success', 'success', 0),
-    ('workflow_dispatch', 'skipped', '', 'skipped', 'success', 1),
-    ('pull_request', 'success', 'false', 'skipped', 'skipped', 1),
+@pytest.mark.parametrize('event,changes,required,wheel,lifecycle,gpu,expected', [
+    ('push', 'success', 'false', 'skipped', 'skipped', 'skipped', 0),
+    ('push', 'success', 'true', 'success', 'success', 'success', 0),
+    ('push', 'failure', 'false', 'skipped', 'skipped', 'skipped', 1),
+    ('push', 'cancelled', '', 'skipped', 'skipped', 'skipped', 1),
+    ('push', 'success', '', 'skipped', 'skipped', 'skipped', 1),
+    ('push', 'success', 'true', 'failure', 'skipped', 'skipped', 1),
+    ('push', 'success', 'true', 'success', 'success', 'failure', 1),
+    ('push', 'success', 'true', 'success', 'failure', 'success', 1),
+    ('push', 'success', 'true', 'success', 'skipped', 'success', 1),
+    ('workflow_dispatch', 'skipped', '', 'success', 'success', 'success', 0),
+    ('workflow_dispatch', 'skipped', '', 'success', 'failure', 'success', 1),
+    ('workflow_dispatch', 'skipped', '', 'skipped', 'skipped', 'success', 1),
+    ('pull_request', 'success', 'false', 'skipped', 'skipped', 'skipped', 1),
 ])
-def test_required_check_only_accepts_a_pr_exemption_or_both_successful_jobs(
-        tmp_path, event, changes, required, wheel, gpu, expected):
+def test_required_check_only_accepts_a_pr_exemption_or_all_successful_jobs(
+        tmp_path, event, changes, required, wheel, lifecycle, gpu, expected):
     result = _run('required', EVENT_NAME=event, CHANGES_RESULT=changes,
-                  GPU_REQUIRED=required, WHEEL_RESULT=wheel, GPU_RESULT=gpu)
+                  GPU_REQUIRED=required, WHEEL_RESULT=wheel,
+                  LIFECYCLE_RESULT=lifecycle, GPU_RESULT=gpu)
     assert result.returncode == expected, result.stdout + result.stderr

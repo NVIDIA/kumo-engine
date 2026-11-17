@@ -217,9 +217,9 @@
         },
         "id_space": null,
         "kind": "zscore",
-        "mean": 35.2072,
+        "mean": 35.11,
         "output_dtype": "float32",
-        "scale": 11.6004
+        "scale": 13.0789
       },
       "club": {
         "dtype": {
@@ -452,9 +452,9 @@
             "unit": null
           },
           "kind": "zscore",
-          "mean": 0.0261781,
+          "mean": 0.0257193,
           "output_dtype": "float32",
-          "scale": 0.01581
+          "scale": 0.014995
         }
       }
     }

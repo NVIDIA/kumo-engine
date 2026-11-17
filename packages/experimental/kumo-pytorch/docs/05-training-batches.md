@@ -181,7 +181,10 @@ print(len(result.samples), "samples;", tuple(result.batch.inputs))
 
 `task.batches` takes `split` (or explicit `requests`), `batch_size`, `shuffle`,
 `seed`, `epoch`, `rank` and `world_size`. The same arguments give the same
-batches, so a run can be resumed or reproduced.
+batches for the same engine, split selection and index, so a run can be resumed or
+reproduced. Native DiskGraph ordering can differ from the in-memory engine;
+selected native split stages shuffle independently and batches do not mix stages.
+See [native anchor loading](04-engines-and-data.md) for that execution contract.
 
 For multi-process training, ranks receive disjoint anchors. A short rank
 repeats one of its own anchors to keep step counts equal, and marks the copy in
@@ -206,6 +209,21 @@ for rank in range(2):
 length bucketing and `drop_last`. Token budgets count actual emitted
 positions, padding included, and are refused with `world_size > 1`, where
 ranks could otherwise take different numbers of steps.
+
+For DiskGraph AnchorTable model batches, native length planning currently
+requires a history `EventSource` length input (`collection="history"`) with a
+Packed, Padded or Nested layout. DiskGraph already refuses `SampleSpec.current_events`
+at `check`/`prepare` with `DG-CURRENT-EVENTS`, including when current and history
+components have the same name; current events cannot reach this native planner.
+Other sources, including `EntitySource`, are refused explicitly; this path does
+not silently switch to Python per-anchor planning. Explicit request batches
+and the reference engine retain their existing planner.
+
+Planning uses only the designated length input's merge; other event inputs
+still load normally. Constant-only components have their own fixed costs,
+with text constants counted once when attaching the iterator. Variable text
+components must match their precomputed stored-field recipe; incompatible
+recipes are refused rather than estimated from unrelated table costs.
 
 ## Inputs, targets and devices
 

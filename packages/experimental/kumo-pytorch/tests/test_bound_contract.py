@@ -38,8 +38,8 @@ from kumo.pytorch.api import (
     UseEncoding,
     Vocabulary,
     ZScore,
+    prepare_batch_spec,
 )
-from kumo.pytorch.assembly import fit_plan
 from kumo.pytorch.contract.batch import Encode, Fields
 from tests.helpers import Plans as _Plans
 from tests.helpers import in_memory_dataset
@@ -168,7 +168,8 @@ class TestBoundContract:
 
     def test_binding_needs_a_complete_contract(self) -> None:
         source = InMemoryEngine().open(in_memory_dataset(PRETRAIN_ROWS), SCHEMA)
-        plan = fit_plan(CONTRACT.sample, CONTRACT.batch, REQUESTS, source)
+        built = source.build(CONTRACT.sample, REQUESTS)
+        plan = prepare_batch_spec(CONTRACT.sample, CONTRACT.batch, built)
         with pytest.raises(ValueError, match="complete DataLoaderSpec"):
             plan.bound_contract()
 

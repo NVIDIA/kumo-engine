@@ -445,8 +445,8 @@ def _shift_model_cutoffs(original):
 def _growing_model_work(original):
     calls = []
 
-    def build_model(self, spec, requests, **keywords):
-        result = original(self, spec, requests, **keywords)
+    def build_model(self, *arguments, **keywords):
+        result = original(self, *arguments, **keywords)
         calls.append(1)
         self._last_temporal_profile = {"native_stats": {"profiled": len(calls)}}
         return result
@@ -484,7 +484,7 @@ NATIVE_DEFECTS = (
     ("point_in_time", "build_model_ordered", _shift_model_cutoffs, "future rows", "model PIT"),
     ("fitted_state", "build_model", _shift_model_cutoffs, "tokens: fit inputs", "token fit"),
     ("model_delivery", "_adapt_model_result", _reverse_entity_values, "differs", "M22"),
-    ("model_epoch_trend", "build_model_ordered", _growing_model_work, "!= epoch 2", "model work"),
+    ("model_epoch_trend", "build_model_batch", _growing_model_work, "!= epoch 2", "model work"),
     ("fitted_state", "build_model", _perturb_sum, "columns: fit inputs", "column fit"),
     ("contract_transfer", "bound_contract", _unbound, "fresh process", "lost state"),
     ("packing", "model_lengths", _longer_lengths, "differ by format", "M17"),

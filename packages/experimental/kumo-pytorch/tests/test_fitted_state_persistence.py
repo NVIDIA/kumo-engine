@@ -26,7 +26,12 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from kumo.pytorch import api
-from kumo.pytorch.assembly import ARTIFACT_DIGESTS, artifact_digests, pin_fitted_state
+from kumo.pytorch.assembly import (
+    ARTIFACT_DIGESTS,
+    _fingerprint,
+    artifact_digests,
+    pin_fitted_state,
+)
 from kumo.pytorch.contract._frozen import FrozenMapping
 from tests.reference_models.batch_definitions import BATCH_SPECS
 from tests.reference_models.data_schema import SYNTHETIC_SCHEMA
@@ -323,13 +328,7 @@ def test_an_artifact_with_inconsistent_fitted_state_is_refused(tmp_path: Path) -
     refused(lambda w: edited(w, ("format_version",), 3), "format_version 3")
     refused(lambda w: edited(w, ("fitted_for",), _DELETE), "does not record the contract")
     refused(lambda w: edited(w, ("fit",), ["not", "an", "object"]), "malformed fit record")
-    refused(lambda w: edited(w, ("lengths",), [1]), "malformed length summary")
     refused(lambda w: [w], "not a fitted-state object")
-    refused(lambda w: edited(w, ("lengths",), None), "has no length summary")
-    refused(
-        lambda w: edited(w, ("lengths", "mean"), w["lengths"]["mean"] + 1.0),
-        "length summary in .* is not the one manifest.json records",
-    )
     refused(
         lambda w: edited(w, ("targets", "ghost"), {"bindings": [], "thresholds": {}, "groups": []}),
         r"holds target state for \['ghost'\], but this contract's targets need it for \[\]",
@@ -372,7 +371,8 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
                 "anchors": task.fingerprints["anchors"],
                 "fit_split": ["train"],
             }
-            assert task.fitted_state.fit == {"inputs": record, "targets": record}
+            inputs = {**record, "statistics": task.fitted_state.fit["inputs"]["statistics"]}
+            assert task.fitted_state.fit == {"inputs": inputs, "targets": record}
             trained = task.fitted_state
 
         # more anchors, same training split: the same values from different anchors
@@ -383,7 +383,7 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
 
     artifact = api.Artifact.load(tmp_path / "trained")
     written = json.loads((tmp_path / "trained" / "fitted-state.json").read_text())
-    assert written["fit"] == artifact.fitted_state.fit == {"inputs": record, "targets": record}
+    assert written["fit"] == artifact.fitted_state.fit == {"inputs": inputs, "targets": record}
     assert artifact.manifest["fitted_state_fingerprint"] == trained.fingerprint
 
     rows = _fixture_rows()
@@ -394,17 +394,17 @@ def test_the_fit_record_says_where_state_was_fitted_and_survives_reuse(tmp_path:
             _with_test_anchor(_requests()), fitted=artifact.fitted_state, inference=True
         ) as task:
             assert task.fingerprints["dataset"] != record["dataset"]
-            assert task.fitted_state.fit == {"inputs": record, "targets": record}
+            assert task.fitted_state.fit == {"inputs": inputs, "targets": record}
             task.to_artifact().save(tmp_path / "scored")
         reloaded = api.Artifact.load(tmp_path / "scored").fitted_state
-        assert reloaded.fit == {"inputs": record, "targets": record}
+        assert reloaded.fit == {"inputs": inputs, "targets": record}
         assert reloaded.fingerprint == trained.fingerprint
 
         # reusing the input half only: the targets are fitted, and recorded, here
         with plan.materialize(
             _requests(), fitted=artifact.fitted_state.inputs, fit_split="train"
         ) as task:
-            assert task.fitted_state.fit["inputs"] == record
+            assert task.fitted_state.fit["inputs"] == inputs
             assert task.fitted_state.fit["targets"] == {
                 **record,
                 "dataset": task.fingerprints["dataset"],
@@ -428,7 +428,6 @@ def test_weights_follow_the_fitted_values_not_the_fit_record(tmp_path: Path) -> 
 def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
     tmp_path: Path, contract_name: str
 ) -> None:
-    # pragma sets Batching.length_input, so its length summary reaches batch metadata
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
@@ -452,16 +451,23 @@ def test_a_loaded_state_gives_the_writing_task_batches_and_metadata(
             api.Artifact.load(tmp_path / "artifact")
 
 
-def test_an_artifact_with_a_changed_length_summary_is_refused(tmp_path: Path) -> None:
+def test_an_artifact_written_with_a_length_summary_still_loads(tmp_path: Path) -> None:
     contract = CONTRACTS["pragma"](_schema())
     dataset, engine = _dataset("in_memory", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
+    expected = api.Artifact.load(tmp_path / "artifact")
+    summary = {"input": "events", "count": 2, "mean": 3.0}
     path = tmp_path / "artifact" / "fitted-state.json"
-    written = json.loads(path.read_text())
-    written["lengths"]["mean"] += 1.0
-    path.write_text(json.dumps(written))
-    with pytest.raises(ValueError, match="fitted-state.json does not match the digest"):
-        api.Artifact.load(tmp_path / "artifact")
+    path.write_text(json.dumps({**json.loads(path.read_text()), "lengths": summary}))
+    path = tmp_path / "artifact" / "manifest.json"
+    manifest = {**json.loads(path.read_text()), "lengths": summary}
+    manifest["artifact_fingerprint"] = _fingerprint(
+        {k: v for k, v in manifest.items() if k not in (ARTIFACT_DIGESTS, "artifact_fingerprint")}
+    )
+    path.write_text(json.dumps(manifest))
     _redigest(tmp_path / "artifact")
-    with pytest.raises(ValueError, match="length summary in .* is not the one manifest.json"):
+    assert api.Artifact.load(tmp_path / "artifact") == expected
+    path.write_text(json.dumps({**manifest, "lengths": {**summary, "mean": 4.0}}))
+    _redigest(tmp_path / "artifact")
+    with pytest.raises(ValueError, match="field artifact_fingerprint is not what"):
         api.Artifact.load(tmp_path / "artifact")

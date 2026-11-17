@@ -107,11 +107,11 @@ neighbour.
 | Content | Lifetime and retrieval |
 | --- | --- |
 | Selected checkpoint, encoders/target encoder, trainer config and resolved plan | Complete portable bundle |
-| Graph/task/input manifests, metrics, prediction schema, training specification | Bundle metadata, not source rows or graph storage |
+| Graph/task/input manifests, metrics, optional per-epoch search-trial history, prediction schema, training specification | Bundle metadata, not source rows or graph storage |
 | Graph index, staged source export, generated training and scoring tables | Separate local working state; recreate or explicitly retain as appropriate |
-| Per-trial results, epoch histories, progress, attribution and column analysis | Separate run files; retain selected diagnostics before session teardown |
+| Per-trial results, refit epochs, progress, attribution and column analysis | Separate run files; retain selected diagnostics before session teardown |
 | Predictions and embeddings | Separate selected Parquet outputs or explicit Snowflake writes |
 
-A bundle alone cannot provide absent histories or explanation files. Local scratch paths
+A bundle alone cannot provide an absent history (older bundles), refit epochs, or explanation files. Local scratch paths
 are disposable unless their storage lifetime has been established. Keep retention separate
 from a reusable index cache, which can be rebuilt and is not a portable model bundle.

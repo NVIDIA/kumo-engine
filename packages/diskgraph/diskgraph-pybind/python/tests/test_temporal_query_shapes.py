@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Temporal query output shapes: empty anchor batches and refused projections."""
+"""Temporal query output shapes: empty anchors and identity-only sequences."""
 
 import json
 
@@ -151,12 +151,28 @@ def test_empty_anchor_batch_lengths(events_graph):
 
 
 @pytest.mark.parametrize("method", ["query_temporal", "query_temporal_lengths"])
-def test_zero_column_sequence_is_refused(events_graph, method):
+@pytest.mark.parametrize("empty", [False, True])
+def test_zero_column_sequence_preserves_identity_and_lengths(
+    events_graph, method, empty
+):
     engine, plan = events_graph
-    plan = {**plan, "sequences": [{**plan["sequences"][0], "columns": []}]}
     ids = engine.lookup_node_ids("users", pa.array([1]))
-    with pytest.raises(
-        diskgraph.DiskgraphConfigError,
-        match='sequence "s" must project at least one column',
-    ):
-        getattr(engine, method)({"users": ids}, {"users": [20]}, json.dumps(plan))
+    if empty:
+        ids = ids[:0]
+    cutoffs = [20] * len(ids)
+    expected = getattr(engine, method)(
+        {"users": ids}, {"users": cutoffs}, json.dumps(plan)
+    )
+    plan = {**plan, "sequences": [{**plan["sequences"][0], "columns": []}]}
+    result = getattr(engine, method)(
+        {"users": ids}, {"users": cutoffs}, json.dumps(plan)
+    )
+    sequence, reference = result["sequences"][0], expected["sequences"][0]
+    if method == "query_temporal_lengths":
+        assert sequence["lengths"].to_pylist() == ([] if empty else [3])
+        assert sequence["lengths"].equals(reference["lengths"])
+    else:
+        assert sequence["batch"].num_columns == 0
+        assert sequence["batch"].num_rows == (0 if empty else 3)
+        for name in ("offsets", "node_ids", "timestamps"):
+            assert sequence[name] == reference[name]

@@ -178,3 +178,47 @@ def test_interleaved_components_keep_source_order_and_values():
     assert actual.sources.tolist() == ["orders", "payments", "orders", "payments"]
     assert actual.columns["amount"].to_pylist() == [10.0, 20.0, 40.0, 30.0]
     assert actual.boundaries.tolist() == [0, 3, 4]
+
+
+@pytest.mark.parametrize("keep", ["first", "last"])
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+@pytest.mark.parametrize("limit", [None, 1, 3])
+def test_native_components_bypass_python_sort_without_changing_fields(
+    monkeypatch, keep, order, limit
+):
+    native = pytest.importorskip("diskgraph")
+    if not hasattr(native, "merge_event_streams"):
+        pytest.skip("native event merging is unavailable")
+    values = SimpleNamespace(
+        batch_size=3,
+        events={
+            "orders": ModelSequence(
+                pa.array([0, 3, 3, 4]),
+                pa.array([1, 3, 3, 8]),
+                {"amount": pa.array([None, 2.0, 3.0, 4.0])},
+            ),
+            "payments": ModelSequence(
+                pa.array([0, 2, 3, 3]),
+                pa.array([3, 3, 9]),
+                {"amount": pa.array([10.0, None, 30.0])},
+            ),
+        },
+    )
+    declarations = {
+        "amount": (
+            (("events", "orders", "amount"), DType("float64"), "scalar"),
+            (("events", "payments", "amount"), DType("float64"), "scalar"),
+        )
+    }
+    source = EventSource(events=("payments", "orders"), max_events=limit, keep=keep, order=order)
+    expected = _model_rows(source, values, declarations)
+    values.merge_event_streams = native.merge_event_streams
+
+    def no_sort(*args, **kwargs):
+        raise AssertionError("native component merging must bypass Python lexsort")
+
+    monkeypatch.setattr(np, "lexsort", no_sort)
+    actual = _model_rows(source, values, declarations)
+    assert actual.boundaries.tolist() == expected.boundaries.tolist()
+    assert actual.sources.tolist() == expected.sources.tolist()
+    assert actual.columns["amount"].equals(expected.columns["amount"])

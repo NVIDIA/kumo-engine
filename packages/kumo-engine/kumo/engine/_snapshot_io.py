@@ -496,8 +496,10 @@ def _allocate(staging: Path, files: List[Tuple[str, int]]) -> None:
         (staging / name).parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         try:
-            if size:
+            if size and hasattr(os, 'posix_fallocate'):
                 os.posix_fallocate(fd, 0, size)
+            elif size:  # macOS has no posix_fallocate.
+                os.ftruncate(fd, size)
         finally:
             os.close(fd)
 

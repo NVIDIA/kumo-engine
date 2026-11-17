@@ -2,16 +2,23 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 import datetime
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 from kumo_core.encoders.config import EncodersConfig
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_frame import get_tf
 from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumoapi.typing import Stype
+from kumoapi.encoder import (
+    Datetime,
+    Image,
+    Index,
+    MultiCategorical,
+    Null,
+    Numerical,
+    NumericalList,
+)
+from kumoapi.typing import ColStatType, Stype
 
 
 def test_all_dtypes() -> None:
@@ -55,32 +62,92 @@ def test_all_dtypes() -> None:
         }
     )
 
-    stypes: dict[str, dict[str, Stype]] = defaultdict(dict)
-    stypes["test"]["bool"] = Stype.categorical
-    stypes["test"]["int"] = Stype.numerical
-    stypes["test"]["byte"] = Stype.categorical
-    stypes["test"]["int16"] = Stype.numerical
-    stypes["test"]["int32"] = Stype.categorical
-    stypes["test"]["int64"] = Stype.numerical
-    stypes["test"]["float"] = Stype.numerical
-    stypes["test"]["float32"] = Stype.categorical
-    stypes["test"]["float64"] = Stype.numerical
-    stypes["test"]["string"] = Stype.multicategorical
-    stypes["test"]["binary"] = Stype.categorical
-    stypes["test"]["image"] = Stype.image
-    stypes["test"]["date"] = Stype.timestamp
-    stypes["test"]["time"] = Stype.timestamp
-    stypes["test"]["timedelta"] = Stype.numerical
-    stypes["test"]["floatlist"] = Stype.multicategorical
-    stypes["test"]["intlist"] = Stype.sequence
-    stypes["test"]["stringlist"] = Stype.multicategorical
-    stypes["test"]["unsupported"] = Stype.unsupported
-
-    encoders = EncodersConfig.from_stypes(df_dict, stypes)
+    encoders = EncodersConfig(
+        encoders={
+            "test": {
+                "bool": Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [[True, 2], [False, 1]]}
+                ),
+                "int": Numerical(),
+                "byte": Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [[1, 1], [2, 1], [3, 1]]}
+                ),
+                "int16": Numerical(),
+                "int32": Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [[1, 1], [2, 1], [3, 1]]}
+                ),
+                "int64": Numerical(),
+                "float": Numerical(),
+                "float32": Index(
+                    _stats={
+                        ColStatType.CATEGORY_COUNTS: [
+                            [np.float32(1.1), 1],
+                            [np.float32(2.2), 1],
+                            [np.float32(3.3), 1],
+                        ]
+                    }
+                ),
+                "float64": Numerical(),
+                "string": MultiCategorical(
+                    _stats={
+                        ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
+                        ColStatType.MULTI_CATEGORY_COUNTS: [
+                            ["bar", 1],
+                            ["baz", 1],
+                            ["foo", 1],
+                        ],
+                    }
+                ),
+                "binary": Index(
+                    _stats={
+                        ColStatType.CATEGORY_COUNTS: [
+                            [b"abc", 1],
+                            [b"def", 1],
+                            [b"ghi", 1],
+                        ]
+                    }
+                ),
+                "image": Image(),
+                "date": Datetime(),
+                "time": Datetime(),
+                "timedelta": Numerical(),
+                "floatlist": MultiCategorical(
+                    _stats={
+                        ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
+                        ColStatType.MULTI_CATEGORY_COUNTS: [
+                            [1.1, 1],
+                            [2.2, 1],
+                            [3.3, 1],
+                            [4.4, 1],
+                            [5.5, 1],
+                        ],
+                    }
+                ),
+                "intlist": NumericalList(
+                    _stats={
+                        ColStatType.SEQUENCE_MIN_LENGTH: 3,
+                        ColStatType.SEQUENCE_MAX_LENGTH: 3,
+                    }
+                ),
+                "stringlist": MultiCategorical(
+                    _stats={
+                        ColStatType.MULTI_CATEGORIES_SEPARATOR: None,
+                        ColStatType.MULTI_CATEGORY_COUNTS: [
+                            ["a", 1],
+                            ["b", 1],
+                            ["c", 1],
+                            ["d", 1],
+                            ["e", 1],
+                            ["f", 1],
+                        ],
+                    }
+                ),
+                "unsupported": Null(),
+            }
+        }
+    )
     mappers = {
-        name: TensorMapper.from_encoder(
-            compute_missing_stats_(encoder, df_dict["test"][name])
-        )
+        name: TensorMapper.from_encoder(encoder)
         for name, encoder in encoders["test"].items()
     }
     table = pa.table(

@@ -22,12 +22,15 @@ minimal stand-in for ``datamodule.data`` exposing just what
 datamodule produced the batch.
 """
 
-import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
 from kumo_core.encoders.tensor_frame import get_tf
-from kumo_core.encoders.tensor_mapper import TensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    NumericalTensorMapper,
+    TensorMapper,
+)
 from kumo_core.explain.column_analysis import ColumnAnalysis
 from kumo_core.types import TaskType
 from kumoapi.encoder import Stype
@@ -72,12 +75,9 @@ def _build_batch() -> tuple[HeteroData, _FakeDataModule]:
     categorical) each optionally linked to ORDER rows (hop 1, AMOUNT
     numerical) -- user0 has 2 orders, user1 has 1, user2 has 0, user3 has 1.
     """
-    age_mapper = TensorMapper.from_stype(Stype.numerical,
-                                         pd.Series([18.0, 25.0, 30.0, 50.0]))
-    gender_mapper = TensorMapper.from_stype(Stype.categorical,
-                                            pd.Series(['f', 'm', 'f', 'f']))
-    amount_mapper = TensorMapper.from_stype(
-        Stype.numerical, pd.Series([10.0, 20.0, 30.0, 40.0]))
+    age_mapper = NumericalTensorMapper()
+    gender_mapper = CategoricalTensorMapper(category_counts=[('f', 3), ('m', 1)])
+    amount_mapper = NumericalTensorMapper()
 
     user_tf = get_tf(
         pa.RecordBatch.from_arrays(

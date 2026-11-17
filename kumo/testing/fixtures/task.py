@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import random
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
@@ -14,25 +13,20 @@ import pandas as pd
 import pytest
 from kumo_core.diskgraph.metadata import DiskgraphSchema
 from kumo_core.encoders.config import EncodersConfig, TargetEncoderConfig
-from kumo_core.encoders.selection import compute_missing_stats_
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.features.stores.feature import FeatureStore
 from kumo_core.training.options import allow_array_targets
-from kumo_core.types import ColStatType, TaskType
+from kumo_core.types import TaskType
 from kumoapi.encoder import (
     Datetime,
-    Encoder,
-    Hash,
     Index,
-    MaxLogNumerical,
-    MinLogNumerical,
     MultiCategorical,
-    Null,
+    NAStrategy,
     Numerical,
     NumericalList,
     TextEmbedding,
 )
-from kumoapi.typing import Stype
+from kumoapi.typing import ColStatType, Stype
 from torch import Tensor
 
 
@@ -45,107 +39,30 @@ class TestTableSchema:
     end_time_col: str | None = None
 
 
-def sample_categorical_encoder() -> Encoder:
-    return random.choice([
-        Index(na_strategy='separate'),
-        Index(na_strategy='most_frequent'),
-        Hash(num_components=10),
-    ])
-
-
-def sample_numerical_encoder() -> Encoder:
-    return random.choice([
-        Numerical(scaler=None, na_strategy='mean'),
-        Numerical(scaler='standard', na_strategy='mean'),
-        Numerical(scaler='minmax', na_strategy='mean'),
-        Numerical(scaler='robust', na_strategy='mean'),
-        Numerical(scaler=None, na_strategy='zero'),
-        Numerical(scaler='standard', na_strategy='zero'),
-        Numerical(scaler='minmax', na_strategy='zero'),
-        Numerical(scaler='robust', na_strategy='zero'),
-        MinLogNumerical(na_strategy='mean'),
-        MinLogNumerical(na_strategy='zero'),
-        MaxLogNumerical(na_strategy='mean'),
-        MaxLogNumerical(na_strategy='zero'),
-    ])
-
-
-def sample_multicategorical_encoder(sep: str | None = None) -> Encoder:
-    na_strategy = random.choice(['zero', 'separate', 'most_frequent'])
-    encoder = MultiCategorical(na_strategy=na_strategy)
-    if sep is None:
-        value = "|"
-    else:
-        from kumo.stats import Stats
-
-        value = Stats(value=sep, approx=False)
-    encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] = value
-    return encoder
-
-
-def get_encoder(stype: Stype) -> Encoder:
-    if stype == Stype.numerical:
-        return sample_numerical_encoder()
-    if stype in {Stype.categorical, Stype.ID}:
-        return sample_categorical_encoder()
-    if stype == Stype.multicategorical:
-        return sample_multicategorical_encoder()
-    if stype == Stype.timestamp:
-        return Datetime()
-    if stype == Stype.text:
-        return TextEmbedding()
-    if stype == Stype.sequence:
-        return NumericalList()
-    if stype == Stype.image:
-        return Null()
-    raise NotImplementedError
-
-
-def get_target_encoder(task_type: TaskType) -> Encoder | None:
-    if task_type in {
-            TaskType.BINARY_CLASSIFICATION,
-            TaskType.MULTICLASS_CLASSIFICATION,
-    }:
-        return Index()
-    if task_type in {TaskType.REGRESSION, TaskType.FORECASTING}:
-        return sample_numerical_encoder()
-    if task_type.is_multilabel:
-        encoder = MultiCategorical(na_strategy='zero')
-        if allow_array_targets():
-            encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] = None
-        else:
-            # TODO: Remove this separator as it's not needed for target cols.
-            encoder._stats[ColStatType.MULTI_CATEGORIES_SEPARATOR] = '|'
-        return encoder
-    return None
-
-
 def create_task_data(
     df_dict: dict[str, pd.DataFrame],
     schema_dict: dict[str, TestTableSchema],
-    task_type: TaskType,
+    encoders: EncodersConfig,
     train_table_df: pd.DataFrame,
-    encoder_overrides: dict[str, Encoder] | None = None,
     weight_col: str | None = None,
 ) -> tuple[FeatureStore, DiskgraphSchema, EncodersConfig]:
     """Build model-configuration fixtures with mocked feature-store metadata.
 
     Args:
-        df_dict: Graph-table data used for encoder statistics and primary keys.
+        df_dict: Graph-table data used for primary keys and table sizes.
         schema_dict: Graph column and relation metadata.
-        task_type: Task type selecting the target encoder.
+        encoders: Explicit feature and target encoders, with fixture statistics.
         train_table_df: Training metadata and target values.
-        encoder_overrides: Explicit encoders keyed by table and column.
         weight_col: Optional training-weight column name.
 
     Returns:
-        Mocked feature metadata, graph schema, and computed encoder configuration.
+        Mocked feature metadata, graph schema, and the supplied encoders.
 
     Raises:
-        AssertionError: If the training table has no valid entity keys.
+        AssertionError: If the training table has no valid entity keys or its
+            target encoder is missing.
+        KeyError: If a feature column has no configured encoder.
     """
-
-    encoder_overrides = encoder_overrides or {}
 
     # Convert time columns to `pd.Datetime` ###################################
 
@@ -162,24 +79,9 @@ def create_task_data(
     if "TIME" in train_table_df:
         train_table_df["TIME"] = pd.to_datetime(train_table_df["TIME"])
 
-    # Create Encoders #########################################################
-
-    encoders = EncodersConfig()
-    for table_name, schema in schema_dict.items():
-        encoders[table_name] = {}
-        for col_name, stype in schema.stypes.items():
-            encoder = get_encoder(stype)
-            compute_missing_stats_(encoder, df_dict[table_name][col_name])
-            encoders[table_name][col_name] = encoder_overrides.get(
-                f"{table_name}.{col_name}", encoder
-            )
     encoders["TRAIN_TABLE"] = {}
-
-    target_encoder = get_target_encoder(task_type)
     if "TARGET" in train_table_df:
-        assert target_encoder is not None
-        compute_missing_stats_(target_encoder, train_table_df["TARGET"])
-        encoders.target = TargetEncoderConfig("TARGET", target_encoder)
+        assert encoders.target is not None
 
     mappers = {
         table_name: {
@@ -358,16 +260,78 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
         'TEST_MASK': [False] * 4 + [False] * 4 + [True] * 4,
     })
 
+    encoders = EncodersConfig(
+        encoders={
+            "USERS": {
+                "AGE": Numerical(_stats={ColStatType.MEAN: 35.0}),
+                "GENDER": Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [["female", 3], ["male", 1]]}
+                ),
+            },
+            "ORDERS": {
+                "AMOUNT": Numerical(_stats={ColStatType.MEAN: 20.0}),
+                "TIME": Datetime(
+                    _stats={
+                        ColStatType.MIN: "kumo_timestamp_1990-01-01 00:00:00",
+                        ColStatType.MAX: "kumo_timestamp_1992-01-01 00:00:00",
+                    }
+                ),
+            },
+            "STORES": {
+                "CAT": Index(
+                    _stats={ColStatType.CATEGORY_COUNTS: [["burger", 2], ["pizza", 1]]}
+                ),
+                "MULTI_CAT": MultiCategorical(
+                    _stats={
+                        ColStatType.MULTI_CATEGORIES_SEPARATOR: "|",
+                        ColStatType.MULTI_CATEGORY_COUNTS: [
+                            ["burger", 2],
+                            ["pizza", 2],
+                            ["fries", 1],
+                        ],
+                    }
+                ),
+                "TEXT": TextEmbedding(),
+                "EMBEDDING": NumericalList(
+                    _stats={
+                        ColStatType.SEQUENCE_MIN_LENGTH: 2,
+                        ColStatType.SEQUENCE_MAX_LENGTH: 2,
+                    }
+                ),
+            },
+        }
+    )
+
     if task_type == TaskType.BINARY_CLASSIFICATION:
+        encoders.target = TargetEncoderConfig(
+            "TARGET",
+            Index(_stats={ColStatType.CATEGORY_COUNTS: [[True, 8], [False, 4]]}),
+        )
         train_table_df['TARGET'] = [
             True, True, False, True, False, True, False, True, True, True,
             False, True
         ]
 
     elif task_type == TaskType.MULTICLASS_CLASSIFICATION:
+        encoders.target = TargetEncoderConfig(
+            "TARGET",
+            Index(_stats={ColStatType.CATEGORY_COUNTS: [[0, 4], [1, 4], [2, 4]]}),
+        )
         train_table_df['TARGET'] = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]
 
     elif task_type.is_multilabel:
+        encoders.target = TargetEncoderConfig(
+            "TARGET",
+            MultiCategorical(
+                na_strategy=NAStrategy.ZERO,
+                _stats={
+                    ColStatType.MULTI_CATEGORIES_SEPARATOR: None
+                    if allow_array_targets()
+                    else "|",
+                    ColStatType.MULTI_CATEGORY_COUNTS: [["A", 6], ["C", 6], ["B", 4]],
+                },
+            ),
+        )
         if allow_array_targets():
             train_table_df['TARGET'] = [
                 ['A'],
@@ -400,6 +364,9 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
             ]
 
     elif task_type in {TaskType.REGRESSION, TaskType.FORECASTING}:
+        encoders.target = TargetEncoderConfig(
+            "TARGET", Numerical(_stats={ColStatType.MEAN: 0.2})
+        )
         train_table_df['TARGET'] = [
             0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3
         ]
@@ -414,7 +381,7 @@ def _temporal_task(user_store_graph, task_type) -> tuple[
     return create_task_data(
         df_dict=user_store_graph[0],
         schema_dict=user_store_graph[1],
-        task_type=task_type,
+        encoders=encoders,
         train_table_df=train_table_df,
     )
 
