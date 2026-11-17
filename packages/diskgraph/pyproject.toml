@@ -9,7 +9,7 @@ backend-path = ["diskgraph-pybind"]
 
 [project]
 name = "diskgraph"
-version = "0.1.0"
+version = "0.2.0"
 # 3.11 is the org-wide minimum and the abi3 floor of the native module
 # (see diskgraph-pybind/Cargo.toml pyo3 abi3-py311). A single cp311-abi3
 # wheel installs on 3.11 through 3.14+.

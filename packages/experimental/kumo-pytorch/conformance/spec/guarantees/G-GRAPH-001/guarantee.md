@@ -10,10 +10,10 @@ from the root entity. For every sample:
    (`temporal="inherit"` with a destination clock), only neighbors dated at or
    before the anchor's cutoff are candidates. `strategy="recent"` keeps the
    `fanout` most recent candidates.
-2. **Ties.** Which tied neighbors the engine keeps at the fanout limit is
-   deterministic given the same data. It does not depend on row order, on how
-   the tables are split into files, or on how an index is sharded. Which of the
-   tied neighbors it keeps is otherwise unspecified.
+2. **Ties.** For keyed tables, which tied neighbors the engine keeps at the
+   fanout limit is deterministic given the same data. It does not depend on row
+   order, on how the tables are split into files, or on how an index is sharded.
+   Which of the tied neighbors it keeps is otherwise unspecified.
 3. **Edges.** An edge appears at most once per sample, however many times
    layer-wise expansion reaches it.
 4. **Orientation.** Every edge of a relation points from its left table to its
@@ -21,6 +21,9 @@ from the root entity. For every sample:
    direction or how the index stores it.
 
 Nodes are unique per sample: a row reached more than once is one node.
+Keyless source occurrences remain separate nodes. Their opaque identities and
+equal-time tie breaks are local to the prepared dataset/index, as specified by
+[G-KEYLESS-001](../G-KEYLESS-001/guarantee.md).
 
 ## Boundaries
 

@@ -7,15 +7,15 @@ import weakref
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
-from kumoapi.encoder import TextEmbedding
-
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.encoders.config import EncodersConfig
 from kumo_core.encoders.fused.text import FusedTextEncoder
 from kumo_core.encoders.tensor_mapper import TensorMapper
 from kumo_core.glove import TokenEmbeddingTable, VocabularyIndex
 from kumo_core.train.trainer import Trainer
+from kumoapi.encoder import TextEmbedding
 
 
 class _Words:
@@ -56,7 +56,7 @@ def _use(model: WordsModel):
     trainer.encoders = EncodersConfig({"users": {"bio": TextEmbedding("mine")}})
     encoder = trainer.encoders.encoders["users"]["bio"]
     mapper = TensorMapper.from_encoder(encoder)
-    mapper(pd.Series(["red shoe"]))
+    mapper(pa.array(pd.Series(["red shoe"]), from_pandas=True))
     module = FusedTextEncoder({"bio": encoder}, [], 8, "fuse")
     return store, trainer, encoder, mapper, module
 

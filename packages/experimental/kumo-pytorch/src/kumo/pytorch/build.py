@@ -89,12 +89,12 @@ class Table:
     undeclared column is an ``AttributeError``. As with `TableSpec`, omit
     ``columns`` for Parquet discovery or use ``None`` for an inferred type.
 
-    :param key: the primary key.
+    :param key: the primary key, or ``None`` for a non-entity table.
     :param time: the clock column or ``NON_TEMPORAL``; required.
     """
 
     name: str
-    key: str
+    key: str | None
     columns: Mapping[str, DType | None] | None = None
     time: str | NonTemporal = field(kw_only=True)
 
@@ -270,7 +270,8 @@ def _reduction(operation: SummaryOperation, *, needs_column: bool):
         ":param since: exclusive window start in seconds from the anchor; open when None.\n"
         ":param until: inclusive window end in seconds from the anchor; the destination "
         "clock is inherited.\n"
-        ":param distinct: keep one row per destination primary key."
+        ":param distinct: keep one visit per destination row, using its primary "
+        "key or local occurrence identity for a keyless table."
     )
     return constructor
 

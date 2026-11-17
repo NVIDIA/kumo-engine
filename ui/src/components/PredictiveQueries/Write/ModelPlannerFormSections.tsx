@@ -629,7 +629,7 @@ const TrainingTableGenerationSection = ({
                 <SectionInfoPopover
                     description="Defines how Kumo splits your data into train, validation, and holdout sets."
                     linkText="Training table generation docs"
-                    pageLink="model-planner/"
+                    url={docURLs.ModelPlanner}
                     id="mp-training-table-generation-info"
                 />
             }>
@@ -1171,7 +1171,7 @@ const ColumnProcessingSection = ({
                 <SectionInfoPopover
                     description="Controls how each column in your graph is encoded before being passed to the model. Override the defaults to customize encoding or missing value handling for specific columns."
                     linkText="Column Processing"
-                    pageLink="reference/column_processing/"
+                    url={docURLs.ColumnEncoding}
                     id="mp-column-processing-info"
                 />
             }

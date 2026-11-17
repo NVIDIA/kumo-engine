@@ -12,6 +12,96 @@ use pyo3::prelude::*;
 
 use crate::DiskgraphConfigError;
 
+/// Same clipping policy for planning and token delivery, without token IDs.
+fn clipped_range(
+    first: usize,
+    end: usize,
+    budget: usize,
+    keep_last: bool,
+    boundary: bool,
+    start: &impl Fn(usize) -> usize,
+) -> (usize, usize) {
+    let total = start(end);
+    if total <= budget {
+        return (0, total);
+    }
+    // Binary search logical event starts without allocating one entry per event.
+    // Token packing can represent billions of empty logical events sparsely.
+    let partition = |predicate: &dyn Fn(usize) -> bool| {
+        let (mut lo, mut hi) = (first, end + 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if predicate(start(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    };
+    if keep_last {
+        let limit = total - budget;
+        let candidate = start(partition(&|v| v < limit));
+        (
+            if boundary && candidate != total {
+                candidate
+            } else {
+                limit
+            },
+            total,
+        )
+    } else {
+        let candidate = start(partition(&|v| v <= budget) - 1);
+        (
+            0,
+            if boundary && candidate != 0 {
+                candidate
+            } else {
+                budget
+            },
+        )
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn packed_length(
+    events: &[usize],
+    maximum: usize,
+    keep_last: bool,
+    boundary: bool,
+    separator: bool,
+    between: bool,
+    before: bool,
+    after: bool,
+) -> Result<usize, String> {
+    let reserved = usize::from(before) + usize::from(after);
+    if maximum <= reserved {
+        return Err("token budget must leave room beyond markers".into());
+    }
+    let mut starts = Vec::with_capacity(events.len() + 1);
+    starts.push(0usize);
+    for (i, &tokens) in events.iter().enumerate() {
+        let extra = usize::from(separator && !(between && i + 1 == events.len()));
+        starts.push(
+            starts
+                .last()
+                .unwrap()
+                .checked_add(tokens)
+                .and_then(|v| v.checked_add(extra))
+                .ok_or("token length overflow")?,
+        );
+    }
+    let (lo, hi) = clipped_range(
+        0,
+        events.len(),
+        maximum - reserved,
+        keep_last,
+        boundary,
+        &|i| starts[i],
+    );
+    Ok(hi - lo + reserved)
+}
+
 fn pack(
     offsets: &[i64],
     parts: &[(Int64Array, Int64Array)],
@@ -81,34 +171,7 @@ fn pack(
             }
             low
         };
-        let (mut lo, mut hi) = (0, start(end));
-        if hi - lo > budget {
-            if keep_last {
-                let limit = hi - budget;
-                lo = if event_boundary {
-                    let candidate = start(partition(&|v| v < limit));
-                    if candidate == hi {
-                        limit
-                    } else {
-                        candidate
-                    }
-                } else {
-                    limit
-                };
-            } else {
-                let limit = lo + budget;
-                hi = if event_boundary {
-                    let candidate = start(partition(&|v| v <= limit) - 1);
-                    if candidate == lo {
-                        limit
-                    } else {
-                        candidate
-                    }
-                } else {
-                    limit
-                };
-            }
-        }
+        let (lo, hi) = clipped_range(first, end, budget, keep_last, event_boundary, &start);
         result.extend(bos);
         let mut position = lo;
         let mut event = partition(&|v| v <= lo) - 1;
@@ -188,6 +251,153 @@ pub fn pack_token_stream(
     ))
 }
 
+/// Stable multi-component event merge. Returned indices address the concatenated
+/// input components, so the caller can reuse its existing Arrow field buffers.
+pub(crate) fn event_stream_order(
+    parts: &[(Int64Array, Int64Array, bool)],
+    maximum: Option<usize>,
+    keep_last: bool,
+    descending: bool,
+) -> Result<(Vec<i64>, Vec<i64>), String> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    let samples = parts
+        .first()
+        .map_or(0, |(offsets, _, _)| offsets.len().saturating_sub(1));
+    let mut bases = Vec::with_capacity(parts.len());
+    let mut total = 0;
+    for (offsets, times, ascending) in parts {
+        if offsets.len() != samples + 1
+            || offsets.null_count() != 0
+            || times.null_count() != 0
+            || offsets.value(0) != 0
+            || offsets.value(samples) != times.len() as i64
+            || offsets.values().windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return Err("event streams require aligned non-null offsets and timestamps".into());
+        }
+        for bounds in offsets.values().windows(2) {
+            let rows = &times.values()[bounds[0] as usize..bounds[1] as usize];
+            if rows.windows(2).any(|pair| {
+                if *ascending {
+                    pair[0] > pair[1]
+                } else {
+                    pair[0] < pair[1]
+                }
+            }) {
+                return Err("event stream timestamps do not match their declared order".into());
+            }
+        }
+        bases.push(total);
+        total += times.len();
+    }
+    let mut boundaries = vec![0];
+    let mut selected = Vec::new();
+    for anchor in 0..samples {
+        let mut heap = BinaryHeap::new();
+        let sign = if keep_last { -1_i128 } else { 1 };
+        let key = |component: usize, row: usize| {
+            let (offsets, times, ascending) = &parts[component];
+            let ordinal = if *ascending {
+                row - offsets.value(anchor) as usize
+            } else {
+                offsets.value(anchor + 1) as usize - 1 - row
+            };
+            Reverse((
+                sign * i128::from(times.value(row)),
+                sign * component as i128,
+                sign * ordinal as i128,
+                component,
+                row,
+            ))
+        };
+        let mut available = 0;
+        for (component, (offsets, _, ascending)) in parts.iter().enumerate() {
+            let (start, stop) = (
+                offsets.value(anchor) as usize,
+                offsets.value(anchor + 1) as usize,
+            );
+            available += stop - start;
+            if start != stop {
+                heap.push(key(
+                    component,
+                    if *ascending != keep_last {
+                        start
+                    } else {
+                        stop - 1
+                    },
+                ));
+            }
+        }
+        let begin = selected.len();
+        let count = maximum.map_or(available, |maximum| available.min(maximum));
+        while selected.len() - begin < count {
+            let Reverse((_, _, _, component, row)) = heap.pop().expect("remaining event");
+            selected.push((bases[component] + row) as i64);
+            let (offsets, _, ascending) = &parts[component];
+            let next = if *ascending != keep_last {
+                row.checked_add(1)
+            } else {
+                row.checked_sub(1)
+            };
+            if let Some(next) = next.filter(|&next| {
+                next >= offsets.value(anchor) as usize && next < offsets.value(anchor + 1) as usize
+            }) {
+                heap.push(key(component, next));
+            }
+        }
+        if keep_last != descending {
+            selected[begin..].reverse();
+        }
+        boundaries.push(selected.len() as i64);
+    }
+    Ok((boundaries, selected))
+}
+
+#[pyfunction(signature = (parts, max_events, keep_last, descending))]
+pub fn merge_event_streams(
+    py: Python<'_>,
+    parts: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>, bool)>,
+    max_events: Option<usize>,
+    keep_last: bool,
+    descending: bool,
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    fn column(value: &Bound<'_, PyAny>) -> PyResult<Int64Array> {
+        let array = make_array(ArrayData::from_pyarrow_bound(value)?);
+        if !matches!(
+            array.data_type(),
+            arrow::datatypes::DataType::Int64 | arrow::datatypes::DataType::UInt64
+        ) {
+            return Err(DiskgraphConfigError::new_err(
+                "expected an Arrow integer array",
+            ));
+        }
+        let array = arrow::compute::cast(array.as_ref(), &arrow::datatypes::DataType::Int64)
+            .map_err(|error| DiskgraphConfigError::new_err(error.to_string()))?;
+        Ok(array
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("cast int64")
+            .clone())
+    }
+    let parts = parts
+        .iter()
+        .map(|(offsets, times, ascending)| Ok((column(offsets)?, column(times)?, *ascending)))
+        .collect::<PyResult<Vec<_>>>()?;
+    let (boundaries, order) = py
+        .detach(|| event_stream_order(&parts, max_events, keep_last, descending))
+        .map_err(DiskgraphConfigError::new_err)?;
+    Ok((
+        Int64Array::from(boundaries)
+            .to_data()
+            .to_pyarrow(py)?
+            .unbind(),
+        Int64Array::from(order).to_data().to_pyarrow(py)?.unbind(),
+    ))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(pack_token_stream, m)?)
+    m.add_function(wrap_pyfunction!(pack_token_stream, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_event_streams, m)?)
 }

@@ -30,6 +30,7 @@
 !packages/kumo-snowflake/**
 !packages/kumo-databricks/**
 !packages/kumo-bigquery/**
+!packages/kumo-settings/**
 !async_utils/**
 !common_utils/**
 !io_utils/**

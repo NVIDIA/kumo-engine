@@ -67,7 +67,7 @@ def Count(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `CountDistinct`
 
@@ -93,7 +93,7 @@ def CountDistinct(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Events`
 
@@ -230,7 +230,7 @@ def Max(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Mean`
 
@@ -256,7 +256,7 @@ def Mean(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Min`
 
@@ -282,7 +282,7 @@ def Min(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Mode`
 
@@ -308,7 +308,7 @@ def Mode(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Neighborhood`
 
@@ -375,7 +375,7 @@ def Recency(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Sample`
 
@@ -467,7 +467,7 @@ def StdPopulation(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `StdSample`
 
@@ -493,7 +493,7 @@ def StdSample(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Sum`
 
@@ -519,7 +519,7 @@ def Sum(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `Table`
 
@@ -528,7 +528,7 @@ def Sum(
 ```python
 class Table(
     name: str,
-    key: str,
+    key: str | None,
     columns: Mapping[str, DType | None] | None = None,
     *,
     time: str | NonTemporal,
@@ -543,7 +543,7 @@ undeclared column is an `AttributeError`. As with `TableSpec`, omit
 
 **Parameters**
 
-- `key`: the primary key.
+- `key`: the primary key, or `None` for a non-entity table.
 - `time`: the clock column or `NON_TEMPORAL`; required.
 
 #### `Table.lower`
@@ -578,7 +578,7 @@ def VariancePopulation(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `VarianceSample`
 
@@ -604,7 +604,7 @@ def VarianceSample(
 - `dtype`: optional checked result type; inferred when omitted.
 - `since`: exclusive window start in seconds from the anchor; open when None.
 - `until`: inclusive window end in seconds from the anchor; the destination clock is inherited.
-- `distinct`: keep one row per destination primary key.
+- `distinct`: keep one visit per destination row, using its primary key or local occurrence identity for a keyless table.
 
 ### `contract`
 

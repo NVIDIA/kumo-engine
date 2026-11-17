@@ -42,28 +42,25 @@ pub fn iter_edge(
     src_node: u64,
     sort_key_range: Option<SortKeyWindow>,
 ) -> Vec<EdgeEntry> {
-    let view = match src_table.edges_for_node(src_node) {
-        Ok(v) => v,
-        Err(_) => {
-            return Vec::new();
-        }
-    };
-    let segments = match view.relation_segments() {
-        Ok(s) => s,
-        Err(_) => {
-            return Vec::new();
-        }
-    };
-    let segment = match segments.get(relation_idx) {
-        Some(s) => s,
-        None => {
-            return Vec::new();
-        }
-    };
+    iter_edge_checked(src_table, relation_idx, layout, src_node, sort_key_range)
+        .unwrap_or_default()
+}
 
-    if segment.count == 0 {
-        return Vec::new();
-    }
+/// Fallible counterpart for callers that propagate reader failures.
+pub(crate) fn iter_edge_checked(
+    src_table: &Arc<TableReader>,
+    relation_idx: usize,
+    layout: &RelationLayout,
+    src_node: u64,
+    sort_key_range: Option<SortKeyWindow>,
+) -> crate::errors::TTGenResult<Vec<EdgeEntry>> {
+    use crate::errors::TTGenError;
+    let view = src_table.edges_for_node(src_node)
+        .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    let segments = view.relation_segments()
+        .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    let Some(segment) = segments.get(relation_idx) else { return Ok(Vec::new()); };
+    if segment.count == 0 { return Ok(Vec::new()); }
 
     let entry_bytes = layout.entry_bytes;
     let dst_mask = layout.dst_mask;
@@ -88,7 +85,7 @@ pub fn iter_edge(
         EdgeEntry { dst_node, sort_key }
     };
 
-    match sort_key_range {
+    Ok(match sort_key_range {
         Some((lo, hi)) => {
             // Binary search for the range (lo, hi] within sorted edges.
             // Matches Kumo's temporal join: start < edge_ts AND end >= edge_ts.
@@ -109,7 +106,7 @@ pub fn iter_edge(
             // Return all edges
             (0..num_entries).map(decode_entry).collect()
         }
-    }
+    })
 }
 
 /// Binary search helper: find the first index where predicate is false.

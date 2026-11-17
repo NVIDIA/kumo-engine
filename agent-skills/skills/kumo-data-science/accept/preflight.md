@@ -121,7 +121,14 @@ In order of preference, first match wins:
    per parent.
 
 Rules 1-4 establish a key and name it `[inferred]`. Rule 5 never establishes one: it proposes a
-survivor as `[inferred, unverified]`. Until the user confirms it, the table is treated exactly as
+survivor as `[inferred, unverified]`.
+
+**Probe every key the proposal uses**, not only rule-5 candidates. A key from rules 1-4 (or
+`[supplied]`) that will be an edge destination or the `FOR EACH` entity gets the same read-only
+probe. If `N_DISTINCT < N_NON_NULL` or `N_NON_NULL < N`, keep it in the proposal with the counts
+and list it under `Not found` — "`orders.order_id`: 792 repeated values, 0 nulls" — because Kumo
+keeps one row per key and drops the rest without failing. The user decides: a different key, or
+the source fixed upstream. The agent does not deduplicate or filter. Until the user confirms it, the table is treated exactly as
 keyless — usable as an edge source, but not as an edge destination and not as the `FOR EACH`
 entity. Confirmation is what lifts that restriction, not the existence of a candidate.
 
@@ -216,7 +223,7 @@ format.
 
 - Prepare, transform, aggregate or materialize **model inputs** — joining, cleaning,
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
-  solely as evidence for the proposal: row, distinct and null counts for a candidate key. Its
+  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
   result is reported and then discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.

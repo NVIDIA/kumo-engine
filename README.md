@@ -57,7 +57,7 @@ pip install kumo-engine
 | Python | CPython 3.11 or later |
 | Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
-| GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. |
+| GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
 
 The base package reads and writes local CSV and Parquet files. Optional extras add connectors and additional features; combine them as needed, for example `pip install "kumo-engine[snowflake,text]"`.
@@ -120,7 +120,7 @@ When training completes, the example prints the first five predictions:
 4     752        False    0.939077   0.060923
 ```
 
-`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
+`result.frame` has one row per user, with the predicted label `TARGET_PRED` and the class probabilities `False_PROB` and `True_PROB`. The prediction time defaults to the latest `order_time` in the snapshot, so predictions cover the 30 days after it. Exact values can differ between runs. To use your own data, point `FileConnector` at a directory of CSV or Parquet files.
 
 Next steps:
 
@@ -157,7 +157,9 @@ See the [benchmark report](https://docs.nvidia.com/sdgm/kumo-engine/resources/be
 > [!NOTE]
 > This Kumo Studio information is prerelease and is not yet supported. Stay tuned for the Docker and Kubernetes releases.
 
-Kumo Studio is a self-hosted application with a web UI, a REST API, and a Python client (`kumoai_studio`). Its source, [Docker Compose topology](docker/compose/README.md), and [Helm charts](helm/README.md) are in this repository. See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements).
+Kumo Studio allows enterprise teams to build and run predictive models together. Users can connect data sources, train and evaluate models, run batch predictions, and review job history, all through a web UI or Python SDK. Admins control access to data and models with role-based access control.
+
+Deploy Studio on Kubernetes via [Helm](helm/README.md) or on any compatible Linux host with [Docker Compose](docker/compose/README.md). See the [preliminary documentation](https://docs.nvidia.com/sdgm/kumo-engine/kumo-studio-guide-coming-soon/preliminary-documentation/installation/requirements) for prerequisites and setup.
 
 ## Development and Support
 

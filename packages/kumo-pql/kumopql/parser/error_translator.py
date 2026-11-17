@@ -206,8 +206,11 @@ class ErrorTranslator:
                     'REL_OP should be a valid operation, and CONST is a '
                     'constant. Multiple conditions can be combined with '
                     '"AND", "OR", and "NOT" logical operators. You can refer '
-                    'to our documentation at docs.kumo.ai for more details '
-                    'on allowed operations.')
+                    'to our documentation at '
+                    'https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/'
+                    'kumo-studio-guide-coming-soon/preliminary-documentation/'
+                    'train-model/predictive-query/pquery-structure '
+                    'for more details on allowed operations.')
             if rule_name == 'aggregation':
                 hints.append(
                     'If you were trying to add an aggregation, syntax for '
@@ -216,8 +219,11 @@ class ErrorTranslator:
                     'COLUMN stands for a column name, <start> and <end> are '
                     'integers that stand for time offset, and <time_unit> is '
                     'a valid time unit. You can refer '
-                    'to our documentation at docs.kumo.ai for more details '
-                    'on allowed operations.')
+                    'to our documentation at '
+                    'https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/'
+                    'kumo-studio-guide-coming-soon/preliminary-documentation/'
+                    'train-model/predictive-query/pquery-structure '
+                    'for more details on allowed operations.')
 
         maybe_hints_text = ""
         # avoid repeating hints

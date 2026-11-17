@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 import torch_frame
 import torch_geometric
@@ -28,7 +27,6 @@ ATTR_NAMES = {
     'time',  # Create date
     'end_time',  # End date
     'pkey',  # Primary key
-    'df',  # Raw column data
 }
 
 TRAIN_ATTR_NAMES = {
@@ -262,8 +260,6 @@ class FeatureStore(torch_geometric.data.FeatureStore, ABC):  # type: ignore
             return torch_frame.cat(batches, dim=0)
         elif isinstance(elem, np.ndarray):
             return np.concatenate(batches)
-        elif isinstance(elem, pd.DataFrame):
-            return pd.concat(batches, axis=0).reset_index(drop=True)
         else:  # pragma: no cover
             raise ValueError(f"batch_mode doesn't support type '{type(elem)}'")
 

@@ -4,20 +4,20 @@
 from collections.abc import Generator
 from typing import Literal
 
+import kumo_core.modeling.context as modeling_context
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 import torch
-from kumoapi.encoder import Encoder, TextEmbedding
-from torch_frame.data import MultiNestedTensor
-from torch_geometric.testing import withCUDA
-
-import kumo_core.modeling.context as modeling_context
 from kumo_core import embedding_models
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.encoders.fused.text import FusedTextEncoder
 from kumo_core.encoders.tensor_mapper import TextTensorMapper
 from kumo_core.glove import VocabularyIndex
+from kumoapi.encoder import Encoder, TextEmbedding
+from torch_frame.data import MultiNestedTensor
+from torch_geometric.testing import withCUDA
 
 
 def create_text_tensor_data() -> MultiNestedTensor:
@@ -264,7 +264,7 @@ def test_each_column_uses_its_own_model(
     try:
         feat = MultiNestedTensor.cat([
             TextTensorMapper.from_encoder(encoders[col])(
-                pd.Series(texts[col])) for col in encoders
+                pa.array(texts[col])) for col in encoders
         ], dim=1)
         encoder = FusedTextEncoder(encoders, exclude_cols=[], out_channels=5,
                                    enc_mode=enc_mode)

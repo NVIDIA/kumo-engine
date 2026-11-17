@@ -14,6 +14,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from kumo_core.model_plan import TrainingTableGenerationPlan
+from kumo_core.pquery import ValidatedNativeQuery, _temporal_timestamps
 from kumo_core.types import ColStatType, TaskType
 from kumoapi.pquery import QueryType
 from kumoapi.train import TrainingStage
@@ -26,6 +28,7 @@ from kumo.pquery.utils import get_max_train_rows
 from kumo.stats.stats import Stats
 from kumo.stats.train_table_stats import STATS_PER_TIMEFRAME
 from kumo.task.split import (
+    ApproxDateOffsetSplit,
     BacktestingSplit,
     DateOffsetSplit,
     RandomSplit,
@@ -42,6 +45,39 @@ _SKIP_REASON_FINANCIAL_FULL_SCALE_LITERALS = (
     "is retained by the migrated test_temporal_node_regression_stats sibling.")
 
 NANOSECONDS_PER_SECOND = 1_000_000_000
+
+
+def test_absolute_bounds_generator_parity(create_node_pred_graph, tempdir,
+                                          monkeypatch):
+    graph = create_node_pred_graph('test_graph', tempdir.name)
+    query = ('PREDICT COUNT(TRANSACTIONS.*, 0, 3, days) > 0 '
+             'FOR EACH USERS.USER_ID')
+    options = TrainingTableGenerationPlan(
+        start_time='2023-12-01T00:00:00Z', end_time='2024-02-01T00:00:00Z',
+        timeframe_step=3)
+    available = (pd.Timestamp('2024-01-01'), pd.Timestamp('2024-01-20'), None)
+    studio = TrainingTableGeneratorV2(
+        graph, get_validated_query(graph, query),
+        ApproxDateOffsetSplit([0.8, 0.1, 0.1]),
+        start_time=options.start_time, end_time=options.end_time,
+        timeframe_step=3, use_decoupled_splits=False)
+    monkeypatch.setattr(studio, 'get_default_target_time_range',
+                        lambda: available)
+    monkeypatch.setattr('kumo_core.pquery._temporal_target_time_range',
+                        lambda *_args: available)
+    native_query = ValidatedNativeQuery(
+        query=studio.query, task_type=studio.task_type.value,
+        task_family='node_prediction', entity_table='USERS',
+        entity_column='USER_ID', target_stype=studio.query.target_stype.value,
+        query_type='temporal', rhs_node_type=None, rhs_is_temporal=False,
+        list_distinct_target_is_array=False, forecast_length=1)
+    native, _ = _temporal_timestamps(
+        native_query, '/synthetic-index', options, {},
+        'ApproxDateOffsetSplit', ())
+    expected = [pd.Timestamp(f'2024-01-{day:02}')
+                for day in [17, 14, 11, 8, 5, 2]]
+    assert studio.generate_timestamps() == expected
+    assert [pd.Timestamp(value) for value in native] == expected
 
 
 def test_generate_time_intervals_single_aggr(create_node_pred_graph, tempdir):
@@ -880,9 +916,9 @@ def test_generate_time_intervals_start_end_time_absolute(
     assert task_type == TaskType.BINARY_CLASSIFICATION
 
 
-def test_generate_time_intervals_start_end_time_relative(
+def test_generate_time_intervals_legacy_offsets(
         create_node_pred_graph, tempdir):
-    """Test using relative offsets for start_time and end_time"""
+    """Legacy offsets remain relative to the latest label data."""
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -893,8 +929,8 @@ def test_generate_time_intervals_start_end_time_relative(
         graph,
         validated_query,
         split,
-        start_time=-4,  # 4 days before latest date
-        end_time=-1  # 1 day before latest date
+        train_start_offset=4,
+        train_end_offset=1,
     )
     task_type = generator.task_type
 
@@ -950,44 +986,28 @@ def test_generate_time_intervals_invalid_start_end_time(create_node_pred_graph,
                                          end_time='1990-01-02')
     validation_response = generator.validate_pre_train_table_generate()
     assert not validation_response.ok
-    assert ("start_time (1990-01-04 00:00:00) must be smaller than "
-            "end_time (1990-01-02 00:00:00)"
-            in validation_response.error_message())
-
-    # Test with relative offsets
-    generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-1,  # 1 day before latest
-        end_time=-3  # 3 days before latest
-    )
-    validation_response = generator.validate_pre_train_table_generate()
-    assert not validation_response.ok
-    assert ("start_time must be more negative than end_time"
+    assert ('start_time must be smaller than end_time.'
             in validation_response.error_message())
 
 
-def test_generate_time_intervals_mixed_types_error(create_node_pred_graph,
-                                                   tempdir):
-    """Test error when mixing absolute and relative timestamps"""
+def test_generate_time_intervals_integer_bound_rejected(create_node_pred_graph,
+                                                        tempdir, monkeypatch):
+    """Integer start bounds have an actionable error before generation."""
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'false')
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 1) > 30 '
              'FOR EACH USERS.USER_ID')
     validated_query = get_validated_query(graph, query)
 
     split = DateOffsetSplit([-1, 0], unit=TimeUnit.DAYS, timeframe=1)
-    generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-2,  # Relative offset
-        end_time='1990-01-04'  # Absolute timestamp
-    )
-    validation_response = generator.validate_pre_train_table_generate()
-    assert not validation_response.ok
-    assert ("start_time and end_time must both be offsets or both be timestamps"
-            in validation_response.error_message())
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        TrainingTableGeneratorV2(
+            graph, validated_query, split, start_time=-2, end_time='1990-01-04')
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
+    with pytest.raises(ValueError, match="Integer 'start_time' bounds"):
+        TrainingTableGeneratorV2(
+            graph, validated_query, split, start_time=-2, end_time='1990-01-04',
+            use_decoupled_splits=False)
 
 
 def test_generate_time_intervals_with_legacy_params_error(
@@ -1125,8 +1145,9 @@ def test_generate_timestamps_v2_with_start_end_time(create_node_pred_graph,
 
 
 def test_generate_timestamps_v2_with_relative_start_end_time(
-        create_node_pred_graph, tempdir):
-    """Test generate_timestamps_v2 with relative start_time and end_time"""
+        create_node_pred_graph, tempdir, monkeypatch):
+    """Decoupled integer bounds use the aggregation's time unit."""
+    monkeypatch.setenv('USE_DECOUPLED_SPLITS', 'true')
     graph = create_node_pred_graph('test_graph', tempdir.name)
     query = ('PREDICT SUM(TRANSACTIONS.AMOUNT, 0, 8, hours) > 30 '
              'FOR EACH USERS.USER_ID')
@@ -1139,23 +1160,14 @@ def test_generate_timestamps_v2_with_relative_start_end_time(
         timeframe_size=8,
     )
     generator = TrainingTableGeneratorV2(
-        graph,
-        validated_query,
-        split,
-        start_time=-48,  # 2 days before latest date
-        end_time=-24,  # 1 day before latest date
-        timeframe_step=8,  # 24 hour steps
-    )
-    task_type = generator.task_type
-
-    timestamps = generator.generate_timestamps_v2()
-    # Should only include timestamps between max_date-3 and max_date-1
-    assert timestamps == [
-        pd.Timestamp('1990-01-03 16:00:00'),  # Test
-        pd.Timestamp('1990-01-03 08:00:00'),  # Val
-        pd.Timestamp('1990-01-03 00:00:00'),  # Train
+        graph, validated_query, split, start_time=-48, end_time=-24,
+        timeframe_step=8, use_decoupled_splits=True)
+    assert generator.generate_timestamps_v2() == [
+        pd.Timestamp('1990-01-03 16:00:00'),
+        pd.Timestamp('1990-01-03 08:00:00'),
+        pd.Timestamp('1990-01-03 00:00:00'),
     ]
-    assert task_type == TaskType.BINARY_CLASSIFICATION
+    assert generator.task_type == TaskType.BINARY_CLASSIFICATION
 
 
 def test_generate_timestamps_v2_legacy_params_error(create_node_pred_graph,
@@ -1214,6 +1226,7 @@ def test_non_aligned_time_bounds_keep_newest_window(method):
     from types import MethodType, SimpleNamespace
 
     generator = SimpleNamespace(
+        task_type=TaskType.BINARY_CLASSIFICATION,
         get_default_target_time_range=lambda:
         (pd.Timestamp("2024-01-01"), pd.Timestamp("2024-02-10"), None),
         split=None,

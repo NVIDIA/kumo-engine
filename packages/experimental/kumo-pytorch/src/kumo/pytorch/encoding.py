@@ -11,7 +11,7 @@ import datetime as dt
 import json
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, localcontext
 from functools import cached_property
@@ -49,7 +49,9 @@ def typed_key(dtype: DType, value: Any) -> tuple[str, Any]:
     if dtype.name == "bytes":
         return ("bytes", value.hex())
     if dtype.name == "timestamp":
-        return ("timestamp", int(value.timestamp()))
+        import pyarrow as pa
+
+        return ("timestamp", pa.scalar(value, type=dtype.to_arrow()).cast(pa.int64()).as_py())
     if dtype.name == "date32":
         return ("date32", (value - dt.date(1970, 1, 1)).days)
     return (dtype.name, value)
@@ -64,6 +66,13 @@ def json_value(value: Any) -> Any:
         return {"$decimal": str(value)}
     if isinstance(value, dt.datetime):
         return {"$timestamp": value.isoformat()}
+    # Preserve the existing tagged timestamp form for exact ns scalars too.
+    if type(value).__name__ == "TimestampScalar":
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        if isinstance(value, pa.TimestampScalar):
+            return {"$timestamp": pc.cast(value, pa.string()).as_py()}
     if isinstance(value, dt.date):
         return {"$date": value.isoformat()}
     if isinstance(value, float):
@@ -106,6 +115,14 @@ def unjson_value(value: Any) -> Any:
     if len(value) == 1:
         name = next(iter(value))
         if name in decoders:
+            if name == "$timestamp":
+                text = value[name]
+                fraction = text.partition(".")[2].split("+")[0].split("-")[0].rstrip("Z")
+                if len(fraction) > 6:
+                    import pyarrow as pa
+                    import pyarrow.compute as pc
+
+                    return pc.cast(pa.scalar(text), pa.timestamp("ns", tz="UTC"))
             return decoders[name](value[name])
     return {name: unjson_value(item) for name, item in value.items()}
 
@@ -168,7 +185,9 @@ class FittedEncoder:
     def tokenizer(self):
         from tokenizers import Tokenizer
 
-        return Tokenizer.from_str(self.tokenizer_json)
+        tokenizer = Tokenizer.from_str(self.tokenizer_json)
+        tokenizer.no_padding()
+        return tokenizer
 
     @property
     def roles(self) -> Mapping[str, int]:
@@ -281,17 +300,15 @@ class FittedEncoder:
 
         if isinstance(values, pa.ChunkedArray):
             values = values.combine_chunks()
-        if DType.from_arrow(values.type) != self.dtype:
+        received = DType.from_arrow(values.type)
+        if pa.types.is_timestamp(values.type):
+            received = replace(received, unit=values.type.unit)
+        if received != self.dtype:
             raise ValueError(
                 f"encoder {self.identity}: expected declared {self.dtype}, "
                 f"received Arrow {values.type}"
             )
         if self.dtype.name == "timestamp":
-            if values.type.unit != "s":
-                raise ValueError(
-                    f"encoder {self.identity}: sampled timestamps must already "
-                    "use stored whole seconds"
-                )
             values = pc.cast(values, self.dtype.to_arrow())
         valid = torch.from_numpy(pc.is_valid(values).to_numpy(zero_copy_only=False, writable=True))
         config = self.config
@@ -351,20 +368,91 @@ class FittedEncoder:
                 result[numeric == 0] = 1
             result[~valid.numpy()] = 0
             return {"values": torch.from_numpy(result), "valid": valid}
-        strings = pc.fill_null(values, "").to_pylist()
-        pieces = self.tokenizer.encode_batch(strings)
-        lists = [list(item.ids) for item in pieces]
-        for index in range(len(lists)):
-            if not valid[index]:
-                lists[index] = [self.roles["missing"]]
-            elif not lists[index] and config.empty == "unknown":
-                lists[index] = [self.roles["unknown"]]
-        offsets = np.concatenate(([0], np.cumsum([len(item) for item in lists], dtype=np.int64)))
+        strings, present = pc.fill_null(values, ""), valid.numpy()
+        missing, unknown = (self.roles["missing"],), (self.roles["unknown"],)
+        offsets = np.zeros(len(values) + 1, dtype=np.int64)
+        pieces = np.empty(len(values), dtype=np.int64)
+        for start in range(0, len(values), TEXT_BATCH):
+            batch = strings.slice(start, TEXT_BATCH).to_pylist()
+            for index, encoding in enumerate(self.tokenizer.encode_batch_fast(batch), start):
+                ids = encoding.ids if present[index] else missing
+                if not ids and config.empty == "unknown":
+                    ids = unknown
+                end = offsets[index] + len(ids)
+                if end > len(pieces):
+                    pieces = np.concatenate((pieces, np.empty(max(end, len(pieces)), np.int64)))
+                pieces[offsets[index] : end] = ids
+                offsets[index + 1] = end
         return {
-            "values": torch.tensor([part for item in lists for part in item], dtype=torch.long),
+            "values": torch.from_numpy(pieces[: offsets[-1]].copy()),
             "valid": valid,
             "piece_offsets": torch.from_numpy(offsets),
         }
+
+
+def learned_entries(
+    config: Vocabulary, counts: Mapping[tuple[str, Any], int], actual: Mapping[tuple[str, Any], Any]
+) -> tuple[tuple[Any, int], ...]:
+    ordered = sorted(
+        (key for key in counts if counts[key] >= config.min_frequency),
+        key=lambda key: (-counts[key], key),
+    )
+    if config.max_size is not None:
+        ordered = ordered[: config.max_size]
+    reserved = {config.missing_id, config.unknown_id}
+    available = (index for index in range(len(ordered) + 2) if index not in reserved)
+    return tuple((actual[key], next(available)) for key in ordered)
+
+
+TEXT_BATCH = 65_536
+# Tokenizer training buffers 256 items ahead.
+TRAIN_BATCH = 1_024
+# Bump when the tokenizer settings below or in train_text change; the cache key also
+# names DiskGraph's trainer (diskgraph.TOKENIZER_TRAINER).
+TEXT_RECIPE = 1
+TEXT_SPECIAL_TOKENS = ["[MISSING]", "[UNK]"]
+TEXT_UNKNOWN = "[UNK]"
+
+
+def train_text(config: Text, batches: Iterable[Sequence[str]]) -> str:
+    from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+
+    tokenizer = Tokenizer(models.BPE(unk_token=TEXT_UNKNOWN))
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    tokenizer.train_from_iterator(
+        batches,
+        trainers.BpeTrainer(
+            vocab_size=config.vocabulary_size,
+            min_frequency=config.min_frequency,
+            special_tokens=TEXT_SPECIAL_TOKENS,
+            show_progress=False,
+        ),
+    )
+    return tokenizer.to_str()
+
+
+def _text_batches(values: Iterable[Any], dtype: DType, identity: str) -> Iterator[list[str]]:
+    batch: list[str] = []
+    for value in values:
+        if value is not None:
+            batch.append(dtype.normalize(value, path=f"encoder {identity}"))
+            if len(batch) == TRAIN_BATCH:
+                yield batch
+                batch = []
+    if batch:
+        yield batch
+
+
+def learns_from_values(config: ScalarEncoding, dtype: DType) -> bool:
+    if isinstance(config, Vocabulary):
+        return config.values is None
+    if isinstance(config, ZScore):
+        return config.mean is None and dtype.numeric
+    if isinstance(config, Buckets):
+        return config.bins is not None and dtype.numeric
+    if isinstance(config, Text):
+        return config.state is None and dtype.name == "string"
+    return False
 
 
 def fit_encoder(
@@ -374,26 +462,26 @@ def fit_encoder(
 
     if hasattr(values, "to_pylist"):
         values = values.to_pylist()
-    observed = [
-        dtype.normalize(value, path=f"encoder {identity}") for value in values if value is not None
-    ]
+    observed = (
+        ()
+        if isinstance(config, Text) and config.state is None
+        else [
+            dtype.normalize(value, path=f"encoder {identity}")
+            for value in values
+            if value is not None
+        ]
+    )
     if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
         raise ValueError(f"encoder {identity}: {type(config).__name__} requires a numeric dtype")
     if isinstance(config, Text) and dtype.name != "string":
         raise ValueError(f"encoder {identity}: Text requires string dtype")
     if isinstance(config, Vocabulary):
         if config.values is None:
-            counts = Counter(typed_key(dtype, value) for value in observed)
-            actual = {typed_key(dtype, value): value for value in observed}
-            ordered = sorted(
-                (key for key in counts if counts[key] >= config.min_frequency),
-                key=lambda key: (-counts[key], key),
+            entries = learned_entries(
+                config,
+                Counter(typed_key(dtype, value) for value in observed),
+                {typed_key(dtype, value): value for value in observed},
             )
-            if config.max_size is not None:
-                ordered = ordered[: config.max_size]
-            reserved = {config.missing_id, config.unknown_id}
-            available = (index for index in range(len(ordered) + 2) if index not in reserved)
-            entries = tuple((actual[key], next(available)) for key in ordered)
         else:
             entries = tuple((dtype.normalize(value), index) for value, index in config.values)
             keys = [typed_key(dtype, value) for value, _ in entries]
@@ -440,7 +528,7 @@ def fit_encoder(
             boundaries=tuple(float(value) for value in boundaries),
         )
     if isinstance(config, Text):
-        from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+        from tokenizers import Tokenizer
 
         if config.state is not None:
             tokenizer = Tokenizer.from_str(config.state)
@@ -460,16 +548,8 @@ def fit_encoder(
                     "the tokenizer model's unknown entry"
                 )
         else:
-            tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
-            tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-            tokenizer.train_from_iterator(
-                observed,
-                trainers.BpeTrainer(
-                    vocab_size=config.vocabulary_size,
-                    min_frequency=config.min_frequency,
-                    special_tokens=["[MISSING]", "[UNK]"],
-                    show_progress=False,
-                ),
+            tokenizer = Tokenizer.from_str(
+                train_text(config, _text_batches(values, dtype, identity))
             )
         return FittedEncoder(
             identity=identity, config=config, dtype=dtype, tokenizer_json=tokenizer.to_str()

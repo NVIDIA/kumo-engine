@@ -114,7 +114,7 @@ def test_query_validation(store: DiskgraphFeatureStore) -> None:
         store["items", "y", torch.tensor([0])]
     with pytest.raises(KeyError, match="mini-batch"):
         store["items", "tf", :]
-    with pytest.raises(KeyError, match="Unsupported DiskGraph attribute"):
+    with pytest.raises(KeyError, match="does not exist"):
         store["items", "df", torch.tensor([0])]
     with pytest.raises(NotImplementedError, match="DiskGraph runtime"):
         store.get_node_id("items", np.array([10]))

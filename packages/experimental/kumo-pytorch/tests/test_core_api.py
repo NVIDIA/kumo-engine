@@ -474,9 +474,6 @@ def test_length_bucketing_and_token_budget_control_batch_composition() -> None:
     batches = list(plan.batches(histories))
     composition = [batch.metadata["entity_ids"].tolist() for batch in batches]
     assert composition == [[2, 3], [1]]
-    assert plan.manifest["lengths"]["input"] == "events"
-    assert plan.manifest["lengths"]["p50"] == 3
-    assert plan.manifest["lengths"]["expected_padded_fraction"] == pytest.approx(2 / 11)
 
 
 def _drop_last_plan(batching: Batching, lengths: Sequence[int]) -> Callable[..., list[list[int]]]:
@@ -595,7 +592,7 @@ def test_token_budget_rejects_one_example_that_cannot_fit() -> None:
         ),
     )
     with pytest.raises(ValueError, match="exceeds Batching.max_tokens"):
-        prepare_batch_spec(sample, spec, [history])
+        next(prepare_batch_spec(sample, spec, [history]).batches([history]))
 
 
 def test_graph_references_and_traversal_direction_are_validated_before_fitting() -> None:

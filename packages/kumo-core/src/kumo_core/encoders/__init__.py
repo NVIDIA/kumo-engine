@@ -7,7 +7,6 @@ from .config import EncodersConfig, TargetEncoderConfig
 from .relative_time import RelTimeEncoder
 from .tensor_frame_encoder import HeteroTensorFrameEncoder, TensorFrameEncoder
 from .tensor_mapper import TensorMapper
-from .tensor_mappers import TensorMappers
 from .time import TimeEncoder
 
 __all__ = [
@@ -17,6 +16,5 @@ __all__ = [
     "TargetEncoderConfig",
     "TensorFrameEncoder",
     "TensorMapper",
-    "TensorMappers",
     "TimeEncoder",
 ]

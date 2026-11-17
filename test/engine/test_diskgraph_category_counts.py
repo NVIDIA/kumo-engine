@@ -7,6 +7,7 @@ import json
 from collections import Counter
 
 import pandas as pd
+import pyarrow as pa
 import torch
 from diskgraph import compute_col_stats_for_parquet
 from kumo_core import pquery
@@ -167,7 +168,7 @@ def test_capped_categorical_stats_preserve_legacy_consumer_behavior(tmp_path):
     }
     mapper = TensorMapper.from_encoder(encoder)
     mapped = mapper(
-        pd.Series(
+        pa.array(
             [
                 0.0,
                 -0.0,
@@ -175,7 +176,7 @@ def test_capped_categorical_stats_preserve_legacy_consumer_behavior(tmp_path):
                 last_retained_value,
                 omitted_value,
             ],
-            dtype="float64",
+            type=pa.float64(),
         )).view(-1)
     assert mapped[0].item() == mapped[1].item()
     assert mapped.tolist() == [0, 0, 1, category_limit - 1, -1]

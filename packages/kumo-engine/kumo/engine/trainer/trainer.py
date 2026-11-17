@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import shutil
 import time
 import warnings
@@ -204,6 +205,21 @@ class TrainingResult:
     def id(self) -> Optional[str]:
         """The bundle id."""
         return self.bundle_id
+
+    @property
+    def metric_history(self) -> Optional[Dict[str, Any]]:
+        """Per-epoch metrics for every search trial, or ``None`` if absent.
+
+        Reads the training progress record kept in the bundle. It needs no
+        tracker and excludes refit epochs. A ``fit()`` result reads the file
+        from the trainer scratch directory, so export and reload the model to
+        keep the history after that directory is removed. Non-finite metric
+        values read as ``None``.
+        """
+        path = self.artifact_paths.get('metric_history')
+        return (None if path is None else json.loads(
+            Path(path).read_text(encoding='utf-8'),
+            parse_constant=lambda _: None))
 
     @property
     def manifest(self) -> Optional[ModelManifest]:
@@ -1057,6 +1073,10 @@ def _no_lightning_tip(record: logging.LogRecord) -> bool:
     return not str(record.msg).startswith('💡 Tip')
 
 
+class UnsupportedAcceleratorError(ValueError):
+    """This host cannot run the requested accelerator."""
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1080,6 +1100,14 @@ class Trainer:
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        # Lightning maps 'gpu' to MPS on a Mac, and MPS kernels abort the
+        # process before macOS 15.
+        release = platform.mac_ver()[0]
+        if accelerator in ('gpu', 'mps') and release and int(
+                release.split('.')[0]) < 15:
+            raise UnsupportedAcceleratorError(
+                f'accelerator={accelerator!r} needs macOS 15 or later, but '
+                f"this Mac runs macOS {release}. Use accelerator='cpu'.")
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
@@ -1548,8 +1576,24 @@ class Trainer:
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
-        Scores the query's population at ``prediction_time``, or the
-        ``entities`` given, or a ``prediction_table`` generated beforehand.
+        Pass at most one of the following to choose what to score:
+
+        - ``prediction_time``: the query's population at that time, as for
+          :meth:`PredictiveQuery.generate_prediction_table`. A timezone-naive
+          ``datetime`` is read as UTC, and a timezone-aware one raises
+          ``ValueError``.
+        - ``entities``: the rows to score (see
+          :meth:`PredictionTable.from_source_table`), with these columns:
+
+          - ``ENTITY1``: the key of each entity to score.
+          - ``TIMESTAMP``: each row's anchor time (optional; required for
+            temporal queries and for static queries whose entity table has a
+            time column).
+
+        - ``prediction_table``: a table generated beforehand.
+
+        With none of the three, a temporal query scores its population at the
+        latest timestamp among the tables aggregated in its target.
 
         The trainer must contain fitted state from :meth:`fit`, :meth:`load`,
         or :meth:`load_from_connector`. Without ``output_config``,
