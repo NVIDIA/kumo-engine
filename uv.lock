@@ -71,7 +71,7 @@ overrides = [{ name = "fsspec", extras = ["http"], specifier = "==2026.6.0" }]
 [[manifest.dependency-metadata]]
 name = "snowflake-connector-python"
 version = "4.7.5"
-requires-dist = ["asn1crypto>0.24.0,<2.0.0", "cryptography>=46.0.5", "pyopenssl>=24.0.0", "pyjwt>=2.10.1,<3.0.0", "pytz", "requests>=2.32.4,<3.0.0", "packaging", "charset-normalizer>=2,<4", "idna>=3.7,<4", "certifi>=2024.7.4", "typing-extensions>=4.3,<5", "filelock>=3.5,<4", "sortedcontainers>=2.4.0", "platformdirs>=2.6.0,<5.0.0", "tomlkit", "boto3>=1.24", "botocore>=1.24", "boto3>=1.24 ; extra == 'boto'", "botocore>=1.24 ; extra == 'boto'", "azure-identity>=1.16 ; extra == 'azure'", "cython>=3.1 ; extra == 'development'", "azure-identity>=1.16 ; extra == 'development'", "coverage ; extra == 'development'", "mitmproxy>=12.0.0 ; python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'development'", "more-itertools ; extra == 'development'", "numpy<=2.4.3 ; extra == 'development'", "pendulum!=2.1.1 ; extra == 'development'", "pexpect ; extra == 'development'", "pytest>=8.4,<9 ; extra == 'development'", "pytest-asyncio>=1.4.0,<2 ; extra == 'development'", "pytest-cov ; extra == 'development'", "pytest-rerunfailures<16.0 ; extra == 'development'", "pytest-timeout ; extra == 'development'", "pytest-xdist ; extra == 'development'", "pytzdata ; extra == 'development'", "responses ; extra == 'development'", "pandas>=1.0.0,<3.0.0 ; python_full_version < '3.13' and extra == 'pandas'", "pandas>=2.1.2,<3.0.0 ; python_full_version >= '3.13' and extra == 'pandas'", "pyarrow>=14.0.1 ; extra == 'pandas'", "keyring>=23.1.0,<26.0.0 ; extra == 'secure-local-storage'"]
+requires-dist = ["asn1crypto>0.24.0,<2.0.0", "cryptography>=46.0.5", "pyopenssl>=24.0.0", "pyjwt>=2.10.1,<3.0.0", "pytz", "requests>=2.32.4,<3.0.0", "packaging", "charset-normalizer>=2,<4", "idna>=3.7,<4", "certifi>=2024.7.4", "typing-extensions>=4.3,<5", "filelock>=3.5", "sortedcontainers>=2.4.0", "platformdirs>=2.6.0,<5.0.0", "tomlkit", "boto3>=1.24", "botocore>=1.24", "boto3>=1.24 ; extra == 'boto'", "botocore>=1.24 ; extra == 'boto'", "azure-identity>=1.16 ; extra == 'azure'", "cython>=3.1 ; extra == 'development'", "azure-identity>=1.16 ; extra == 'development'", "coverage ; extra == 'development'", "mitmproxy>=12.0.0 ; python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'development'", "more-itertools ; extra == 'development'", "numpy<=2.4.3 ; extra == 'development'", "pendulum!=2.1.1 ; extra == 'development'", "pexpect ; extra == 'development'", "pytest>=8.4,<9 ; extra == 'development'", "pytest-asyncio>=1.4.0,<2 ; extra == 'development'", "pytest-cov ; extra == 'development'", "pytest-rerunfailures<16.0 ; extra == 'development'", "pytest-timeout ; extra == 'development'", "pytest-xdist ; extra == 'development'", "pytzdata ; extra == 'development'", "responses ; extra == 'development'", "pandas>=1.0.0,<3.0.0 ; python_full_version < '3.13' and extra == 'pandas'", "pandas>=2.1.2,<3.0.0 ; python_full_version >= '3.13' and extra == 'pandas'", "pyarrow>=14.0.1 ; extra == 'pandas'", "keyring>=23.1.0,<26.0.0 ; extra == 'secure-local-storage'"]
 requires-python = ">=3.10"
 provides-extras = ["boto", "azure", "development", "pandas", "secure-local-storage"]
 
@@ -1484,7 +1484,7 @@ wheels = [
 
 [[package]]
 name = "databricks-sql-connector"
-version = "4.5.0"
+version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lz4" },
@@ -1498,9 +1498,9 @@ dependencies = [
     { name = "thrift" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b4/01/7cc496468e38485b5577eec978a72572d9631b15945912cb9f51fd9db241/databricks_sql_connector-4.5.0.tar.gz", hash = "sha256:69f7ac2cc35f77f78c62ffb1aa09dda3aeec3c5037b9d7eddca78ee2e81f046e", size = 239485, upload-time = "2026-09-01T20:08:50.816Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/0b/300b03d183c458384ef890a86347626acc8621140d760848dd915f37c950/databricks_sql_connector-4.9.0.tar.gz", hash = "sha256:e440c671a9f27a72e13d2e1ad88d0c6a25d176aa4528b1b422753b065266a81c", size = 247223, upload-time = "2026-11-04T23:32:24.719Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/a2/7bd3b6f494fc68d4b54bc7ca41061efee078dc4d0ecbadcee2b05dfbfd1c/databricks_sql_connector-4.5.0-py3-none-any.whl", hash = "sha256:2b73a5e3688621873cec90ef27ca367ad30a28a8c03c65472638003440a5408c", size = 265151, upload-time = "2026-09-01T20:08:49.419Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/87/3df7d5b18600adfd331d308e69de8f9676039e618e2dfc8da715eaf08e24/databricks_sql_connector-4.9.0-py3-none-any.whl", hash = "sha256:3b96fe42a392150ef62e1c5b27c678a1f4c200a061f2cf7a13380b411a457425", size = 273228, upload-time = "2026-11-04T23:32:23.285Z" },
 ]
 
 [[package]]
@@ -1685,11 +1685,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.29.5"
+version = "4.2.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e3/ee/29c668c50888588c432a702f7c2e8ee8a0c9e5286028d91f170308d6b2e9/filelock-3.29.5.tar.gz", hash = "sha256:6e6034c57a00a020e767f2614a5539863f056de7e7991d6d1473aef7ff73f156", size = 68927, upload-time = "2026-07-03T03:50:31.818Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/98/771d8ca889f220d7d7e352addf500666368f0fd081c6080a83767580c6e4/filelock-4.2.1.tar.gz", hash = "sha256:c4c937ccac2a813cee448e662a56366cfb374c0f8702e75f295c412cc1c5d5a3", size = 650997, upload-time = "2026-10-17T16:48:14.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/e3/f1fae3647d170919c2cf2a898e77e7d1a4e5c7cae0aed7bb4bd3f5ebff6f/filelock-3.29.5-py3-none-any.whl", hash = "sha256:8af830889ba3a0ffcefbd6c7d2af8a54012058103771f2e10848222f476a1693", size = 45073, upload-time = "2026-07-03T03:50:30.445Z" },
+    { url = "https://files.pythonhosted.org/packages/28/00/db89d339bc4ecdc8087fa7b8607ba22ffc27bf96286f340c9620bea428b3/filelock-4.2.1-py3-none-any.whl", hash = "sha256:7be2662e9e826b9bba28afc0f843a123280d799a2ea44bb5d35ccec67905ae44", size = 162455, upload-time = "2026-10-17T16:48:12.937Z" },
 ]
 
 [[package]]
@@ -2920,6 +2920,7 @@ dependencies = [
     { name = "kumo-snowflake" },
     { name = "mypy-boto3-s3" },
     { name = "numpy" },
+    { name = "oauthlib" },
     { name = "omegaconf" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
@@ -2932,6 +2933,7 @@ dependencies = [
     { name = "protobuf" },
     { name = "psutil" },
     { name = "pyarrow" },
+    { name = "pyasn1" },
     { name = "pydantic" },
     { name = "pydantic-core" },
     { name = "pyinstrument" },
@@ -3116,7 +3118,7 @@ requires-dist = [
     { name = "coverage", marker = "extra == 'test'" },
     { name = "cryptography", specifier = "==50.0.0" },
     { name = "databricks-sdk", specifier = "==0.73.0" },
-    { name = "databricks-sql-connector", specifier = "==4.5.0" },
+    { name = "databricks-sql-connector", specifier = "==4.9.0" },
     { name = "db-dtypes", specifier = "==1.1.1" },
     { name = "deprecated", specifier = "==1.3.1" },
     { name = "diskgraph", editable = "packages/diskgraph" },
@@ -3125,7 +3127,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'rest'", specifier = "==0.138.0" },
     { name = "fifolock", marker = "extra == 'full'", specifier = "==0.0.20" },
     { name = "fifolock", marker = "extra == 'rest'", specifier = "==0.0.20" },
-    { name = "filelock", specifier = "==3.29.5" },
+    { name = "filelock", specifier = "==4.2.1" },
     { name = "flake8", marker = "extra == 'dev'", specifier = "==7.1.2" },
     { name = "fsspec", specifier = "==2026.6.0" },
     { name = "gcsfs", specifier = "==2026.6.0" },
@@ -3170,6 +3172,7 @@ requires-dist = [
     { name = "moto", marker = "extra == 'test'", specifier = "==4.2.14" },
     { name = "mypy-boto3-s3", specifier = "==1.42.94" },
     { name = "numpy", specifier = "==2.3.3" },
+    { name = "oauthlib", specifier = ">=4.0.1" },
     { name = "omegaconf", specifier = "==2.3.0" },
     { name = "opentelemetry-api", specifier = "==1.43.0" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = "==1.43.0" },
@@ -3199,6 +3202,7 @@ requires-dist = [
     { name = "protobuf", specifier = ">=6.33,<8" },
     { name = "psutil", specifier = "==7.2.2" },
     { name = "pyarrow", specifier = ">=18,<25" },
+    { name = "pyasn1", specifier = ">=0.6.5" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-core", specifier = ">=2.33,<3" },
     { name = "pyinstrument", specifier = "==4.6.2" },
@@ -5097,11 +5101,11 @@ wheels = [
 
 [[package]]
 name = "oauthlib"
-version = "3.3.1"
+version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0b/5f/19930f824ffeb0ad4372da4812c50edbd1434f678c90c2733e1188edfc63/oauthlib-3.3.1.tar.gz", hash = "sha256:0f0f8aa759826a193cf66c12ea1af1637f87b9b4622d46e866952bb022e538c9", size = 185918, upload-time = "2025-06-19T22:48:08.269Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/17/2bb072de0b990303c985f26869fd47bb179024a051f47e7f9d208eb92f8e/oauthlib-4.0.1.tar.gz", hash = "sha256:3d73febdb6faa00f277c81fb04be7b7586fb96fc3b7f0b9c772dada69a25ede7", size = 191219, upload-time = "2026-10-31T09:52:58.008Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/9c/92789c596b8df838baa98fa71844d84283302f7604ed565dafe5a6b5041a/oauthlib-3.3.1-py3-none-any.whl", hash = "sha256:88119c938d2b8fb88561af5f6ee0eec8cc8d552b7bb1f712743136eb7523b7a1", size = 160065, upload-time = "2025-06-19T22:48:06.508Z" },
+    { url = "https://files.pythonhosted.org/packages/df/ef/3b8adde1b32a6f540758bff734d3442c621734c83708e5f02b0ba2f43b84/oauthlib-4.0.1-py3-none-any.whl", hash = "sha256:498a298876e996301950a5b053d12c31628bb7b895db03666430c69ce182eb61", size = 161934, upload-time = "2026-10-31T09:52:56.206Z" },
 ]
 
 [[package]]
@@ -5889,11 +5893,11 @@ wheels = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.4"
+version = "0.6.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/7e/3c0da41061a2021cac7cd524fd57092adbe5b515e8bf9005702e366802e2/pyasn1-0.6.5.tar.gz", hash = "sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47", size = 155152, upload-time = "2026-10-27T06:32:49.125Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
+    { url = "https://files.pythonhosted.org/packages/19/1f/3eefd5c84c35cae44549ce1c7f7e58f7945b34f5a6bce07a135438522073/pyasn1-0.6.5-py3-none-any.whl", hash = "sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587", size = 84807, upload-time = "2026-10-27T06:32:48.045Z" },
 ]
 
 [[package]]
@@ -7924,17 +7928,18 @@ wheels = [
 
 [[package]]
 name = "virtualenv"
-version = "21.9.0"
+version = "21.14.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "distlib" },
     { name = "filelock" },
+    { name = "packaging" },
     { name = "platformdirs" },
     { name = "python-discovery" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/5d/42254e91a9203a13d95ab4f5211f4cdda52b82fc3546340f7fb33a642173/virtualenv-21.9.0.tar.gz", hash = "sha256:fa0f2a26fcb6f32b376fc8b2c705b6057366763d5b9e5242d1ab10ecc3279fd3", size = 5372770, upload-time = "2026-09-20T00:29:19.843Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c4/f9/f323b3b6058cff3853b31cf6a49c0425ed797bf9611572ec10d065e08bac/virtualenv-21.14.5.tar.gz", hash = "sha256:c4cb6c13e46b57225a999c7e22a09b163393878facc7ac4c059a57f46faa1647", size = 5467127, upload-time = "2026-10-02T17:42:25.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/e5/9446b7a2a3d73de5f9fcf8f825efe78b071b111729e89f4ac07649b9448b/virtualenv-21.9.0-py3-none-any.whl", hash = "sha256:8c7cde05f630fbedf61758258014a92e6d6d5b4b9c6e6be7279d233f89e09aac", size = 5477625, upload-time = "2026-09-20T00:29:18.065Z" },
+    { url = "https://files.pythonhosted.org/packages/df/93/084f10ebbecdedf7902ed68fbecc903f0e9c5742155bfffb05eccbc071da/virtualenv-21.14.5-py3-none-any.whl", hash = "sha256:b0651e0174982bba17cc6f0aaa2ef496730cb85a3f35eb5d1119d1c904f7d1da", size = 5487482, upload-time = "2026-10-02T17:42:23.38Z" },
 ]
 
 [[package]]

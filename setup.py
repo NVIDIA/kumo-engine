@@ -108,7 +108,7 @@ install_requires = major_dependencies + observability_requires + [
     # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701; 3.29.5 stops
     # unlinking the Unix lock file on release (3.20.4-3.29.4 do), which let
     # two processes lock different inodes at one path. kumo-engine needs it.
-    "filelock==3.29.5",
+    "filelock==4.2.1",
     # cryptography 50 clears CVE-2026-27459 (critical) and the cryptography
     # 38.x CVE set. The historical "newer cryptography rejects legacy-cipher
     # Snowflake keys" concern no longer reproduces: 50.0.0 loads DES3-,
@@ -161,6 +161,7 @@ install_requires = major_dependencies + observability_requires + [
     "google-cloud-storage==3.11.0",
     "google-api-core>=2,<3",
     "google-auth>=2.14.1,<3",
+    "pyasn1>=0.6.5",
     # Required for GCP Secret Manager (IS_GCP_DEPLOY)
     "google-cloud-secret-manager==2.26.0",
     # Required for GCS filesystem in PySpark
@@ -176,7 +177,8 @@ install_requires = major_dependencies + observability_requires + [
     # <3.12, so on 3.14 the resolver must pick >=1.49). Keep in sync with
     # scripts/update_packages.sh.
     "snowflake-snowpark-python>=1.49",
-    "databricks-sql-connector==4.5.0",
+    "databricks-sql-connector==4.9.0",
+    "oauthlib>=4.0.1",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
     # Remove the compromised emSign root (GHSA-6q48-6c7w-9gw2).

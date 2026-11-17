@@ -144,7 +144,7 @@ requires-dist = [
   "idna<4,>=3.7",
   "certifi>=2024.7.4",
   "typing_extensions<5,>=4.3",
-  "filelock<4,>=3.5",
+  "filelock>=3.5",
   "sortedcontainers>=2.4.0",
   "platformdirs<5.0.0,>=2.6.0",
   "tomlkit",

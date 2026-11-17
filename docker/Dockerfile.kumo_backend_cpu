@@ -244,7 +244,7 @@ COPY --from=temporalio-builder /tmp/temporalio-wheel /tmp/temporalio-wheel
 RUN python3 -c "import importlib.metadata as m; assert m.version('temporalio') == '1.33.0', 'Update the Temporal security backport with the locked SDK'" \
  && UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
         --reinstall-package temporalio /tmp/temporalio-wheel/temporalio-*.whl \
- && python3 -c "import temporalio, importlib.metadata as m; import temporalio.bridge.temporal_sdk_bridge; assert temporalio.__version__ == m.version('temporalio') == '1.33.0+kumo.zip901'" \
+ && python3 -c "import temporalio, importlib.metadata as m; import temporalio.bridge.temporal_sdk_bridge; assert temporalio.__version__ == m.version('temporalio') == '1.33.0+kumo.zip905'" \
  && rm -rf /tmp/temporalio-wheel /root/.cache/uv
 
 # Register the local API, PQL, core and source-reader packages as regular
