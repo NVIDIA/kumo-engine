@@ -278,6 +278,13 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
 
   schema = pa.schema([(keep[f.name], anchor_type(f.type) if keep[f.name] == 'TIMESTAMP' else f.type)
                       for f in scanner.projected_schema])
+
+  def to_column(col, field):     # text in a non-ISO format parses with the entity's timestamp_format
+      if (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT
+              and (pa.types.is_string(col.type) or pa.types.is_large_string(col.type))):
+          return pc.strptime(col, format=ENTITY_TIME_FORMAT, unit=field.type.unit)
+      return pc.cast(col, field.type)
+
   pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
   if isinstance(pop_fs, pyarrow.fs.LocalFileSystem):
       pop_fs.create_dir(pop_dir)                              # object stores need no directory
@@ -285,7 +292,7 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   with papq.ParquetWriter(final + '.partial', schema, filesystem=pop_fs) as writer:
       for batch in scanner.to_batches():                     # in batches: bounded memory
           writer.write_batch(pa.RecordBatch.from_arrays(
-              [pc.cast(batch[f.name], t.type) for f, t in zip(batch.schema, schema)],
+              [to_column(batch[f.name], t) for f, t in zip(batch.schema, schema)],
               schema=schema))
   pop_fs.move(final + '.partial', final)                     # replace only once every batch is in
   if POPULATION_PATH.startswith('s3://'):                     # the source's kind, in the §2 forms
@@ -300,7 +307,10 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   ```
 
   `ENTITY_SOURCE` is the entity table's file or directory as preflight listed it, and
-  `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. The population is
+  `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. `ENTITY_TIME_FORMAT`
+  is the `timestamp_format` the entity `Table` declares on its time column
+  (`kumoai-reference/references/graph_construction.md`, *A time column must be a real date*), else
+  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
   source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
   it, both in the config cell. Each run replaces its `population.parquet`, as Node 1d says. The
