@@ -1730,7 +1730,6 @@ pub(crate) fn resolve_path(
     Ok(resolved)
 }
 
-#[allow(clippy::only_used_in_recursion)]
 /// Resolve a row filter over `table`'s own columns, outside any plan.
 pub fn resolve_table_row_filter(
     filter: &RowFilter,
@@ -1741,6 +1740,7 @@ pub fn resolve_table_row_filter(
     resolve_row_filter(filter, reader, table, &ctx, &[])
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn resolve_row_filter(
     filter: &RowFilter,
     reader: &GraphIndexReader,
