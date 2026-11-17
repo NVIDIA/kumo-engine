@@ -142,7 +142,7 @@ def _predict_candidates(index_path, row_filter):
     datamodule = SimpleNamespace(task_manifest=SimpleNamespace(
         predict_candidate_filter=row_filter, target_node_type='stores',
         graph_runtime_metadata={'graph_index_path': index_path}))
-    return DiskgraphLightningDataModule.predict_candidates.fget(datamodule)
+    return DiskgraphLightningDataModule.predict_candidates(datamodule)
 
 
 @pytest.mark.parametrize('condition, stores', [

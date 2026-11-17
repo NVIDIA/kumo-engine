@@ -2167,7 +2167,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         pred = self._stage_seed_time(TrainingStage.PRED)
         return pred if pred is not None else self.test_time
 
-    @property
     def predict_candidates(self) -> "Any | None":
         """RHS node IDs passing the target filter's candidate-table
         conditions; ``None`` admits all."""

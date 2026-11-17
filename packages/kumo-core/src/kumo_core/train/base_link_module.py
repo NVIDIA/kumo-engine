@@ -191,7 +191,7 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         valid = self._rhs_valid_at_stage_time(stage)
         if stage != TrainingStage.PRED:
             return valid
-        candidates = self.datamodule.predict_candidates
+        candidates = self.datamodule.predict_candidates()
         if candidates is None:
             return valid
         candidates = candidates.to(self.device)

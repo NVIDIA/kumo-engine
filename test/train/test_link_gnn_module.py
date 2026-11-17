@@ -225,7 +225,7 @@ def test_static_two_tower_uses_canonical_rhs_catalog() -> None:
     model.register_buffer('canonical_rhs_node_idx', canonical, persistent=False)
 
     with patch.object(LinkGNNLightningModule, 'datamodule',
-                      SimpleNamespace(predict_candidates=None)):
+                      SimpleNamespace(predict_candidates=lambda: None)):
         valid = model.tt_ng_valid_rhs_for_stage(TrainingStage.PRED)
 
     assert valid is not None
