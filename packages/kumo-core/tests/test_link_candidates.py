@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from types import SimpleNamespace
 
 import diskgraph
 import pyarrow as pa
@@ -20,7 +21,7 @@ from kumo_core.pquery import (
 )
 from kumo_core.types import TaskType
 
-INGESTED_DTYPES = {'bool': 'bool', 'float': 'float64'}
+INGESTED_DTYPES = {'bool': 'bool', 'float': 'float64', 'time': 'timestamp'}
 QUERY = ('PREDICT LIST_DISTINCT(orders.STORE_ID WHERE {}, 0, 7, days) '
          'RANK TOP 2 FOR EACH users.USER_ID')
 
@@ -68,7 +69,8 @@ def index(tmp_path_factory):
             'USER_ID': [order % 4 for order in orders],
             'STORE_ID': [order % 4 for order in orders],
             'AMOUNT': [float(order) for order in orders],
-            'TS': [1_704_067_200 + 86_400 * order for order in orders],
+            'TS': pa.array([1_704_067_200 + 86_400 * order for order in orders],
+                           pa.timestamp('s')),
         },
     }
     config = []
@@ -96,7 +98,7 @@ def index(tmp_path_factory):
             } for key in table.foreign_keys],
         })
         if table.time_column is not None:
-            config[-1]['time_column'] = table.time_column
+            config[-1]['create_time'] = table.time_column
     diskgraph.ingest(
         config_json=json.dumps({
             'dataset_name': 'link_candidates',
@@ -128,6 +130,22 @@ def test_candidates_are_the_keyed_rows_passing_candidate_conditions(
     assert _candidates(index, condition) == (
         None if stores is None else diskgraph.SamplerEngine(
             index).lookup_node_ids('stores', pa.array(stores, pa.int64())))
+
+
+@pytest.mark.parametrize('plan', [
+    {'entity': {'filter': None}, 'stages': []},
+    {'entity': {'filter': {}}, 'stages': [{}]},
+])
+def test_conditions_that_are_not_a_row_filter_are_rejected(plan):
+    compiler = SimpleNamespace(compile=lambda **_: json.dumps(plan))
+    runtime = SimpleNamespace(DiskGraphPlanCompiler=lambda **_: compiler)
+    parsed = parse_and_validate_query(QUERY.format('stores.IS_ACTIVE = true'),
+                                      GRAPH)
+
+    with pytest.raises(ValueError, match="table 'stores'"):
+        candidate_row_filter(parsed.query, to_api_graph(GRAPH),
+                             task_type=TaskType(parsed.task_type),
+                             index_path='unused', runtime=runtime)
 
 
 def test_query_without_a_target_filter_is_not_rewritten(monkeypatch):

@@ -82,4 +82,11 @@ def candidate_row_filter(
         lp_rhs_entity_column=graph.tables[table].pkey,
         list_distinct_target_is_array=True,
     )
-    return json.dumps(json.loads(plan)["entity"]["filter"])
+    plan = json.loads(plan)
+    row_filter = plan["entity"]["filter"]
+    if row_filter is None or plan["stages"]:
+        raise ValueError(
+            "The target filter's conditions on table "
+            f"{table!r} ({candidates.get_final_target_aggregation().target}) "
+            "do not compile to a filter on its rows.")
+    return json.dumps(row_filter)
