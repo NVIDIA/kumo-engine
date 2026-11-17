@@ -124,9 +124,14 @@ def test_raw_aml_population_completion(mapped, selection, family, mode, tmp_path
     )
     assert result["status"] == "passed", result.get("traceback", result)
     assert result["full_population_verified"] == (mode == "full")
-    for split in result["splits"].values():
-        assert split["delivered"] == split["expected"] == (3 if mode == "full" else 1)
-        assert split["batches"] == (2 if mode == "full" else 1)
+    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
+    groups = selections[selection["selector"]["anchor_version"]][
+        "split" if native else "forecast_split"
+    ]
+    for name, split in result["splits"].items():
+        expected = len(groups[name]) * 3 if mode == "full" else 1
+        assert split["delivered"] == split["expected"] == expected
+        assert split["batches"] == (expected + 1) // 2
         assert split["status"] == "passed"
 
 

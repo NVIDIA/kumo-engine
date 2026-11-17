@@ -123,6 +123,147 @@ jobs:
           path: ${{ runner.temp }}/benchmark-memory
           retention-days: 14
 
+  aml-training-acceptance:
+    name: PyTorch nightly real AML CPU training acceptance
+    needs: diskgraph-wheel
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-extra: cpu
+      - name: Read pinned AML inputs with the Engine test role
+        id: aml-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify pinned sources and anchors
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
+        run: |
+          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+            --data-dir "$RUNNER_TEMP/aml-training-data" --report "$RUNNER_TEMP/aml-training-acquisition.json"
+      - name: Train a001 and a017 for 100 CPU updates and repeat exactly
+        run: |
+          python -m test.kumo_pytorch.training_acceptance \
+            --data-dir "$RUNNER_TEMP/aml-training-data" --output "$RUNNER_TEMP/aml-training" \
+            --anchors-per-split 32 --batch-size 4
+      - name: Show training acceptance results
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/aml-training/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-training/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain loss curves and per-parameter update reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-training-acceptance
+          path: |
+            ${{ runner.temp }}/aml-training-acquisition.json
+            ${{ runner.temp }}/aml-training/report.json
+            ${{ runner.temp }}/aml-training/report.md
+            ${{ runner.temp }}/aml-training/a*/report.json
+            ${{ runner.temp }}/aml-training/a*/contract.json
+            ${{ runner.temp }}/aml-training/a*/repeat-*/report.json
+            ${{ runner.temp }}/aml-training/a*/repeat-*/loss-curve.csv
+          retention-days: 14
+
+  aml-fitting-memory:
+    name: PyTorch nightly 25k/400k fitting memory
+    needs: diskgraph-wheel
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    env:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      RAYON_NUM_THREADS: '1'
+      POLARS_MAX_THREADS: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-extra: cpu
+      - name: Read pinned AML inputs with the Engine test role
+        id: aml-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify pinned sources and anchors
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
+        run: |
+          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+            --data-dir "$RUNNER_TEMP/aml-fitting-data" --report "$RUNNER_TEMP/aml-fitting-acquisition.json"
+      - name: Compare fresh fitting at 25k and 400k training anchors
+        run: |
+          python -m test.kumo_pytorch.aml_fitting_memory \
+            --data-dir "$RUNNER_TEMP/aml-fitting-data" --output "$RUNNER_TEMP/aml-fitting-memory" \
+            --repetitions 3 --max-growth 2 --memory-method sampled \
+            --memory-interval 0.05 --worker-timeout 3600
+      - name: Show fitting-memory results
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/aml-fitting-memory/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-fitting-memory/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain fitting-memory reports and observations
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-fitting-memory
+          path: |
+            ${{ runner.temp }}/aml-fitting-acquisition.json
+            ${{ runner.temp }}/aml-fitting-memory/report.json
+            ${{ runner.temp }}/aml-fitting-memory/report.md
+            ${{ runner.temp }}/aml-fitting-memory/inputs/*/spec.json
+            ${{ runner.temp }}/aml-fitting-memory/inputs/*/contract.json
+            ${{ runner.temp }}/aml-fitting-memory/runs/*/report.json
+            ${{ runner.temp }}/aml-fitting-memory/runs/*/*.log
+            ${{ runner.temp }}/aml-fitting-memory/runs/*/*/report.json
+            ${{ runner.temp }}/aml-fitting-memory/runs/*/*/observations.jsonl
+          retention-days: 14
+
   benchmark-gpu:
     name: PyTorch nightly GPU measurement validation
     needs: diskgraph-wheel
@@ -487,6 +628,8 @@ jobs:
           path: |
             ${{ runner.temp }}/aml-checks.xml
             ${{ runner.temp }}/aml-checks/**/learning.json
+            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/report.json
+            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/loss-curve.csv
             ${{ runner.temp }}/aml-checks/**/results.json
             ${{ runner.temp }}/aml-checks/**/finetuning/report.json
             ${{ runner.temp }}/aml-checks/**/finetuning/finetune.log

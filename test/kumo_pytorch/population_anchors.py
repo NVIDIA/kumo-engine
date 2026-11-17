@@ -15,10 +15,14 @@ def add_identity(digest, sample_id):
     digest.update(json.dumps(sample_id, ensure_ascii=False).encode() + b"\n")
 
 
-def project_population(path, destination, identities, *, graph, native, limit=None):
+def project_population(
+    path, destination, identities, *, graph, native, limit=None, splits=SPLITS
+):
     """Keep original order, labels and splits; v2 shifts only graph execution clocks."""
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("limit must be positive or None for all eligible anchors")
+    if not splits or len(set(splits)) != len(splits) or not set(splits) <= set(SPLITS):
+        raise ValueError("Select distinct known anchor splits")
     column = "split" if native else "forecast_split"
     columns = ["sample_id", "entity_id", "as_of_time", column, "involvement"]
     if graph:
@@ -39,9 +43,9 @@ def project_population(path, destination, identities, *, graph, native, limit=No
             ("anchor_row_position", pa.int64()),
         ]
     )
-    counts = dict.fromkeys(SPLITS, 0)
-    source_counts = dict.fromkeys(SPLITS, 0)
-    hashes = {split: hashlib.sha256() for split in SPLITS}
+    counts = dict.fromkeys(splits, 0)
+    source_counts = dict.fromkeys(splits, 0)
+    hashes = {split: hashlib.sha256() for split in splits}
     seen, offset, train_cutoff = set(), 0, None
     with pq.ParquetWriter(destination, schema, compression="zstd") as writer:
         for batch in source.iter_batches(columns=columns, batch_size=65536):
@@ -61,8 +65,10 @@ def project_population(path, destination, identities, *, graph, native, limit=No
                 split = row[column]
                 if split is None:
                     continue
-                if split not in counts:
+                if split not in SPLITS:
                     raise ValueError(f"Unknown anchor split: {split}")
+                if split not in counts:
+                    continue
                 if limit is not None and counts[split] >= limit:
                     continue
                 sample_id, entity = row["sample_id"], row["entity_id"]
@@ -108,7 +114,7 @@ def project_population(path, destination, identities, *, graph, native, limit=No
             if limit is not None and all(n == limit for n in counts.values()):
                 break
     if any(n == 0 or (limit is not None and n != limit) for n in counts.values()):
-        raise ValueError("Insufficient required train/valid/test anchors")
+        raise ValueError("Insufficient required anchors in selected splits")
     if limit is None and (
         offset != source.metadata.num_rows or counts != source_counts
     ):

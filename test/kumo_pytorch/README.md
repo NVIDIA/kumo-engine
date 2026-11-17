@@ -37,6 +37,15 @@ existing tests and identifies the next AML additions.
 Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishes
 validated prototype coverage from the outstanding full nightly requirements.
 
+The [real-AML training acceptance job](docs/training-acceptance.md) adds
+100-update CPU checks for a001/Fusion and a017/PRAGMA, with repeatability,
+per-parameter updates and retained loss series. Missing behavior fails normally.
+
+The [fitting-memory experiment](docs/fitting-memory.md) adds fresh-process
+25k/400k comparisons for all five AML contracts, using the general cgroup
+measurement runner. Nightly reports retain all repetitions and enforce the
+configurable proposed growth bound of less than 2x. Real-data validation is pending.
+
 ## Data
 
 Use Python 3.12+ and `boto3>=1.34,<2`. From the repository root:
