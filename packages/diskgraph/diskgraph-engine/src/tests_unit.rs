@@ -1451,6 +1451,7 @@ fn write_adjacency_shard(
     // Each node block: [count u8][len u16][entry_bytes*count edge bytes][node_data].
     let mut f = File::create(dir.join(EDGES_FILENAME)).unwrap();
     let mut lens = Vec::new();
+    assert_eq!(adjacency.len(), node_data.len());
     for (entries, node_data) in adjacency.iter().zip(node_data) {
         let edge_bytes: Vec<u8> = entries
             .iter()

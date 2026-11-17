@@ -323,7 +323,7 @@ fn decode_batch_to_arrow_preserves_requested_projection_order() {
 }
 
 #[test]
-fn null_row_decodes_every_column_as_null() {
+fn empty_row_decodes_every_column_as_null() {
     let types = [
         IngestedType::Int8,
         IngestedType::Int16,
@@ -372,9 +372,12 @@ fn null_row_decodes_every_column_as_null() {
     let decoder = RowPackDecoder::new(ctx).unwrap();
 
     let nulls = vec![ValueRef::Null; types.len()];
-    assert_eq!(decoder.null_row(), encode_row(&encoder, &nulls));
+    assert_eq!(decoder.row_or_null(&[]), encode_row(&encoder, &nulls));
     let batch = decoder
-        .decode_batch_to_arrow(&[decoder.null_row()], &(0..types.len()).collect::<Vec<_>>())
+        .decode_batch_to_arrow(
+            &[decoder.row_or_null(&[])],
+            &(0..types.len()).collect::<Vec<_>>(),
+        )
         .unwrap();
     assert!(batch.columns().iter().all(|c| c.null_count() == 1));
 }

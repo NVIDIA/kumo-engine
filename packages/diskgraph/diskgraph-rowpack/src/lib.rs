@@ -5320,8 +5320,15 @@ impl RowPackDecoder {
         &self.ctx
     }
 
-    pub fn null_row(&self) -> &[u8] {
-        &self.null_row
+    /// `row`, or an all-null row when `row` is empty. Ingest stores empty node
+    /// data for a row still over `MAX_NODE_DATA_LEN` with its features nulled,
+    /// and indexes built before that did so for every row over the limit.
+    pub fn row_or_null<'a>(&'a self, row: &'a [u8]) -> &'a [u8] {
+        if row.is_empty() {
+            &self.null_row
+        } else {
+            row
+        }
     }
 
     pub fn decode_msgpack(&self, row: &[u8]) -> Result<Vec<u8>> {
@@ -7331,7 +7338,13 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         .downcast_mut::<ListBuilder<StringBuilder>>()
     {
         b.append_null();
+        return;
     }
+    debug_assert!(
+        false,
+        "append_null has no case for a {} builder",
+        builder.finish_cloned().data_type()
+    );
 }
 
 /// The bytes the values in a builder from [`make_arrow_builder`] take: string and binary data,

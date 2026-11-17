@@ -2373,11 +2373,7 @@ impl DiskGraphEngine {
         output: &mut impl OutputHandler,
     ) -> Result<()> {
         if let Some(data) = node_data {
-            let data = if data.is_empty() {
-                decoder.null_row()
-            } else {
-                data
-            };
+            let data = decoder.row_or_null(data);
             let context = decoder.context();
             // Drop reserved columns (e.g. WEIGHT) from features via a per-column
             // mask; `flush_fused_features` projects the flush schema to the same
@@ -2559,11 +2555,7 @@ impl DiskGraphEngine {
                                 global_id
                             ))
                         })?;
-                    raw_rows.push(if data.is_empty() {
-                        decoder.null_row()
-                    } else {
-                        data
-                    });
+                    raw_rows.push(decoder.row_or_null(data));
                 }
 
                 let unique_batch = decoder
