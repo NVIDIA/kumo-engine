@@ -189,6 +189,14 @@ def test_failed_parent_cannot_reuse_old_success(modules):
         runner.successful_task(run)
 
 
+def test_shared_explanation_import_keeps_databricks_cleanup_resolvable(modules, monkeypatch):
+    monkeypatch.delitem(sys.modules, 'cleanup', raising=False)
+    cleanup = importlib.import_module('cleanup')
+    assert Path(cleanup.__file__).resolve().parent == DIRECTORY
+    assert hasattr(cleanup, 'AttemptResources')
+    monkeypatch.delitem(sys.modules, 'cleanup', raising=False)
+
+
 @pytest.fixture
 def evidence(modules, tmp_path):
     _, runner = modules

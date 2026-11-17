@@ -21,7 +21,7 @@ from client import APIError, Client, admit_cluster, configuration
 
 HERE = Path(__file__).resolve().parent
 SHARED = HERE.parent / 'snowflake_notebook'
-sys.path.insert(0, str(SHARED))
+sys.path.append(str(SHARED))
 from explanation import FILES as EXPLANATION_FILES  # noqa: E402
 from explanation import validate_exports  # noqa: E402
 
