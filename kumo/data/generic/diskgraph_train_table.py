@@ -728,7 +728,6 @@ def generate_train_table_via_diskgraph(
     train_table_edges_config: Optional[dict[str, Any]] = None,
     input_timestamp_unit: TimeUnit,
     target_stype: str,
-    start_time: Optional[int] = None,
 ) -> Tuple[str, str]:
     """Compile and execute a diskgraph TT plan.
 
@@ -804,7 +803,6 @@ def generate_train_table_via_diskgraph(
         lp_rhs_entity_table=lp_rhs_entity_table,
         lag_offsets_secs=lag_offsets_secs,
         yoy_offsets_secs=yoy_offsets_secs,
-        start_time=start_time,
     )
     time_col_name = _time_col_name_from_plan_json(plan_json)
 

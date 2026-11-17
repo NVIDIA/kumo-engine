@@ -1220,7 +1220,6 @@ class DiskgraphService:
         train_table_edges_config: Optional[dict] = None,
         index_path: Optional[str] = None,
         graph: Any = None,
-        start_time: Optional[int] = None,
     ) -> TrainTableResult:
         """Generate the training table for a PQL query against the snapshot.
 
@@ -1246,8 +1245,6 @@ class DiskgraphService:
             index_path: Override for the diskgraph index path; defaults to
                 the handle's resolved path.
             graph: Optional graph object for label-side enrichment.
-            start_time: Optional training start time in
-                ``input_timestamp_unit``, for the index-clock warnings.
 
         Returns:
             Output parquet path and artifact-bundle manifest path.
@@ -1272,7 +1269,6 @@ class DiskgraphService:
             downsampling=downsampling,
             train_table_edges_config=train_table_edges_config,
             index_path=index_path or self._resolve(handle),
-            start_time=start_time,
         ))
         return TrainTableResult(output_path=out, manifest_path=manifest)
 
