@@ -23,6 +23,7 @@ from .aml_source import (
 )
 from .contracts import GRAPH_TIMESTAMP_FIELD, build_contract
 from .data import ROOT
+from .nightly import selected_cases
 from .population_anchors import add_identity, project_population, projected_rows
 from .run_aml import positive
 
@@ -256,16 +257,15 @@ def main(argv=None):
     parser.add_argument("--smoke-anchors", type=positive)
     parser.add_argument("--batch-size", type=positive, default=4)
     parser.add_argument("--threads", type=positive, default=1)
+    parser.add_argument(
+        "--case", help="Run one catalog binding; omitted runs all bindings"
+    )
     args = parser.parse_args(argv)
+    cases = selected_cases(args.case)
     if args.mode == "full" and args.smoke_anchors is not None:
         parser.error("--smoke-anchors cannot limit a full-population run")
     args.output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(args.threads)
-    cases = [
-        (s, f)
-        for s in json.loads((ROOT / "workloads/aml.json").read_text())
-        for f in s["models"]
-    ]
     report = {
         "status": "running",
         "mode": args.mode,

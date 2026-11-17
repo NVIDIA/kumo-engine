@@ -399,7 +399,7 @@ failure. Individual worker reports can remain incomplete because the enclosing
 campaign owns independent repetitions and paired fitting comparisons.
 
 The Actions summary links to the artifact workflow: download
-`kumo-pytorch-aml-benchmarks`, open `aml-benchmarks/report.md`, then follow case
+`kumo-pytorch-aml-benchmarks`, open the root `report.md`, then follow case
 and worker reports. Artifacts contain JSON/JSONL, Markdown and logs, excluding
 source/index payloads and persisted fitting artifacts. No result is uploaded to
 S3. The CPU PR trigger remains active; real-data CUDA jobs require a schedule
@@ -445,12 +445,13 @@ POLARS_MAX_THREADS=4 python -m test.kumo_pytorch.benchmarking.suite \
 ```
 
 Cases retain the standard `name`, `adapter`, `config` schema. Each backend gets
-its own case and fresh process/state artifacts. Both use the same runner host;
+its own case and fresh process/state artifacts. Backends use separate hosts in
+the same runner group;
 results include runtime/dependency pins, source identities and actual emitted
 counts. Source read/conversion and preparation are timed anew in each worker.
 
 The Actions job summary and `kumo-pytorch-aml-benchmarks` artifact include
-`aml-timings/report.md`, which puts loader campaigns side by side. `timings.json`
+the root `report.md`, which puts loader campaigns side by side. `timings.json`
 retains individual values, medians and ranges, separated by fresh/reused fitting
 and epoch. Only workers that completed execution contribute to summary values;
 failed runs keep their errors and partial observations in linked reports and
@@ -510,7 +511,7 @@ Index reuse is distinct from OS page-cache warmth. The existing per-epoch cold/
 warm file-page experiments and their recorded residency checks remain enabled;
 no claim that every reopened page is resident is made. The nightly adds this
 experiment for every declared AML combination. Results appear in the job summary
-and the `kumo-pytorch-aml-benchmarks` artifact under `aml-index-lifecycle`, including
+and the `kumo-pytorch-aml-benchmarks` artifact under `index/<case>`, including
 per-worker stage metrics and build/reopen evidence. Index and source payloads
 are excluded from uploads.
 
@@ -529,3 +530,36 @@ The Linux collector validation exercises held parent/child anonymous allocations
 and independent stage peaks. Local mocked collectors are not live Linux evidence.
 The fitting-memory experiment also retains anonymous peaks and size medians,
 without introducing a growth threshold.
+
+## Parallel nightly execution
+
+The existing nightly workflow derives its matrix from `workloads/aml.json`:
+
+| Experiment | Independent jobs | Work retained within each job |
+| --- | ---: | --- |
+| Full-profile CUDA training | 5 | Three fresh/reused fitting pairs, two epochs per worker, cold/warm caches |
+| Index lifecycle | 5 | One build followed by two reopens of the same index, two epochs per worker |
+| Loader timing comparisons | 15 | Five bindings across DiskGraph, Polars and GPU; three fresh/reused pairs, two epochs |
+| Fitting memory | 15 | Five bindings times three repetitions; both 25k/400k sizes use the same index within each repetition |
+| Population acceptance | 10 | Five bindings in smoke and full modes; full mode retains every anchor |
+
+Measurements run sequentially within their experiment on a dedicated runner;
+parallel timing jobs do not share a GPU. All timing backends retain the same
+runner group, limits and thread settings. CPU population and real-AML lifecycle
+checks run independently of profiling. Existing package tests, conformance,
+retail lifecycle, GPU collectors and five-model CPU training acceptance remain.
+Matrix jobs use `fail-fast: false`, preserving other evidence after failures.
+
+Each shard uploads a uniquely named `kumo-pytorch-aml-parallel-*` artifact. The
+combined-report job downloads them, rejects missing or mismatched cases and
+repetitions, and retains one `kumo-pytorch-aml-benchmarks` artifact. Its root
+`report.md` links every experiment, and `timings.json`/the timing tables combine
+all three loader backends. Payloads, indexes and fitted-state files are excluded.
+Real-AML lifecycle/history and training acceptance retain their separate artifacts.
+
+Roughly 20 minutes end to end is a target, not a timeout or permission to reduce
+coverage. This layout removes accumulated campaign/repetition time, but runner
+queueing and the slowest individual workload still determine completion. The
+previous combined 400k fit took about 21 minutes by itself; each repetition now
+has its own runner. Cold native builds and full-population execution can also
+exceed the target. A new CI run is required to establish the resulting duration.

@@ -53,6 +53,11 @@ The [fitting-memory experiment](docs/fitting-memory.md) adds fresh-process
 measurement runner. Nightly reports retain all repetitions and growth ratios
 without a pass/fail growth limit; invalid or incomplete measurements still fail.
 
+The [parallel nightly layout](docs/benchmarking.md#parallel-nightly-execution)
+separates independent campaigns, fitting repetitions and population bindings.
+It targets roughly 20 minutes without removing coverage or cutting off valid runs;
+actual duration remains subject to CI validation and runner availability.
+
 Development is consolidated in [PR #353](https://github.com/NVIDIA/kumo-engine/pull/353),
 including the lifecycle import guards, fresh-process special-ID cases and fitting
 chunk-boundary cases from #361/#362/#363. See the [current requirements status](PLAN.md#12-requirements-status-after-testing-pr-consolidation).

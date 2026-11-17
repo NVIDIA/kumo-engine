@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import importlib.metadata
-import json
 import os
 import platform
 import subprocess
@@ -22,6 +21,7 @@ from .aml_source import (
 from .benchmarking.fitting_memory import campaign, digest, save
 from .contracts import build_contract
 from .data import ROOT
+from .nightly import selected_cases
 from .population_anchors import add_identity, project_population, projected_rows
 
 COUNTS = (25000, 400000)
@@ -126,6 +126,12 @@ def summary(output, report):
         "| Contract | 25k median bytes | 400k median bytes | Growth | 25k anonymous bytes | 400k anonymous bytes | Status |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
+    if report.get("selected_repeat") is not None:
+        lines[4:4] = [
+            f"This shard measures repetition {report['selected_repeat']} only. "
+            "The combined nightly report requires all three repetitions.",
+            "",
+        ]
     errors = []
     for case in report["cases"]:
         comparison = case.get("comparison", {})
@@ -155,7 +161,16 @@ def main(argv=None):
     )
     parser.add_argument("--memory-interval", type=float, default=0.05)
     parser.add_argument("--worker-timeout", type=float, default=3600)
+    parser.add_argument(
+        "--case", help="Run one catalog binding; omitted runs all bindings"
+    )
+    parser.add_argument(
+        "--repeat", type=int, help="Run one paired repetition; CI combines all three"
+    )
     args = parser.parse_args(argv)
+    if args.repeat is not None and not 0 <= args.repeat < args.repetitions:
+        parser.error("--repeat must be within --repetitions")
+    cases = selected_cases(args.case)
     args.output.mkdir(parents=True, exist_ok=False)
     report = {
         "status": "running",
@@ -163,6 +178,7 @@ def main(argv=None):
         "counts": list(COUNTS),
         "memory_method": args.memory_method,
         "repetitions": args.repetitions,
+        "selected_repeat": args.repeat,
         "scope": "DiskGraph fresh fitting; no batches or models executed",
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -216,41 +232,43 @@ def main(argv=None):
             counts.update(batch.column(0).to_pylist())
         capacity = max(counts.values())
         del counts
-        for selection in json.loads((ROOT / "workloads/aml.json").read_text()):
-            for family in selection["models"]:
-                name = f"{selection['selector']['workload_id']}-{family}"
-                try:
-                    anchor_path = (
-                        args.data_dir
-                        / f"anchors/aml-data/v8/hi-small/account-daily/{selection['selector']['anchor_version']}/anchors.parquet"
-                    )
-                    spec = make_spec(
-                        dataset,
-                        identities,
-                        anchor_path,
-                        selection,
-                        family,
-                        args.output / "inputs" / name,
-                        capacity=capacity,
-                    )
-                    case = campaign(
-                        spec,
-                        args.output / "runs" / name,
-                        repetitions=args.repetitions,
-                        method=args.memory_method,
-                        interval=args.memory_interval,
-                        timeout=args.worker_timeout,
-                    )
-                except Exception as error:  # noqa: BLE001 - continue other required contracts
-                    case = {
-                        "case": name,
-                        "status": "failed",
-                        "error": str(error),
-                        "traceback": traceback.format_exc(),
-                    }
-                report["cases"].append(case)
-                summary(args.output, report)
-        assert len(report["cases"]) == 5, "Missing required AML fitting contracts"
+        for selection, family in cases:
+            name = f"{selection['selector']['workload_id']}-{family}"
+            try:
+                anchor_path = (
+                    args.data_dir
+                    / f"anchors/aml-data/v8/hi-small/account-daily/{selection['selector']['anchor_version']}/anchors.parquet"
+                )
+                spec = make_spec(
+                    dataset,
+                    identities,
+                    anchor_path,
+                    selection,
+                    family,
+                    args.output / "inputs" / name,
+                    capacity=capacity,
+                )
+                case = campaign(
+                    spec,
+                    args.output / "runs" / name,
+                    repetitions=args.repetitions,
+                    method=args.memory_method,
+                    interval=args.memory_interval,
+                    timeout=args.worker_timeout,
+                    repeat=args.repeat,
+                )
+            except Exception as error:  # noqa: BLE001 - continue other required contracts
+                case = {
+                    "case": name,
+                    "status": "failed",
+                    "error": str(error),
+                    "traceback": traceback.format_exc(),
+                }
+            report["cases"].append(case)
+            summary(args.output, report)
+        assert len(report["cases"]) == len(cases), (
+            "Missing selected AML fitting contracts"
+        )
         report["status"] = (
             "passed"
             if all(c["status"] == "passed" for c in report["cases"])

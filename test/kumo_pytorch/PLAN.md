@@ -34,6 +34,11 @@ from implementation gaps. This rule applies to every remaining criterion.
   remain in scope. See the [golden audit](docs/arena-golden-audit.md).
 - Keep all new test models, workload definitions, fixtures, dataset records and
   tooling under `test/kumo_pytorch/`, outside the installed package.
+- Target roughly 20 minutes end to end by running independent campaigns,
+  population bindings and fitting repetitions on separate CI runners. This is
+  an optimization goal, not a hard cutoff; retain all cases, repetitions and
+  full-population checks. The [parallel layout](docs/benchmarking.md#parallel-nightly-execution)
+  requires a new CI run to validate duration and runner availability.
 - Keep bulk sources and anchors inside the suite's ignored `.data/` directory.
   Fetch exact files from the Arena S3 bucket; no Arena Python or checkout
   dependency. User authorization explicitly permits this shared storage.

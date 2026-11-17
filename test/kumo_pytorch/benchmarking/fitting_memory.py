@@ -279,11 +279,16 @@ def campaign(
     method="sampled",
     interval=0.05,
     timeout=3600,
+    repeat=None,
 ):
     spec_path, output = spec_path.resolve(), output.resolve()
     spec = json.loads(spec_path.read_text())
     counts = sorted(map(int, spec["anchors"]))
     compare([], counts=counts, repetitions=repetitions)
+    if repeat is not None and (
+        type(repeat) is not int or not 0 <= repeat < repetitions
+    ):
+        raise ValueError("Selected repetition is outside the campaign")
     if (
         not math.isfinite(timeout)
         or timeout <= 0
@@ -299,6 +304,8 @@ def campaign(
         "spec": spec,
         "counts": counts,
         "repetitions": repetitions,
+        "selected_repeat": repeat,
+        "all_repetitions_executed": repeat is None,
         "cache_state": "uncontrolled; same prebuilt index, alternating size order",
         "measurement_scope": "native anchor binding and fresh fitting inside Plan.materialize; excludes index build/reopen",
     }
@@ -322,9 +329,9 @@ def campaign(
         if code:
             raise RuntimeError("Index construction failed; see index-build.log")
         expected_spec = digest(spec_path)
-        for repeat in range(repetitions):
-            for count in counts if repeat % 2 == 0 else reversed(counts):
-                run_output = output / f"{count}-repeat-{repeat}"
+        for repetition in range(repetitions) if repeat is None else (repeat,):
+            for count in counts if repetition % 2 == 0 else reversed(counts):
+                run_output = output / f"{count}-repeat-{repetition}"
                 code = launch(
                     [
                         *command,
@@ -347,16 +354,18 @@ def campaign(
                     if report_path.exists()
                     else {"status": "failed", "error": "Worker produced no report"}
                 )
-                run.update(count=count, repeat=repeat, returncode=code)
+                run.update(count=count, repeat=repetition, returncode=code)
                 if run.get("spec_sha256") != expected_spec:
                     run["status"] = "failed"
                     run["error"] = "Worker used a different configuration"
                 result["runs"].append(run)
                 save(output / "report.json", result)
         result["comparison"] = compare(
-            result["runs"],
+            result["runs"]
+            if repeat is None
+            else [dict(run, repeat=0) for run in result["runs"]],
             counts=counts,
-            repetitions=repetitions,
+            repetitions=repetitions if repeat is None else 1,
         )
         result["status"] = result["comparison"]["status"]
     except Exception as error:  # noqa: BLE001 - keep partial runs and fail closed
@@ -372,6 +381,11 @@ def main(argv=None):
     parser.add_argument("--worker", action="store_true")
     parser.add_argument("--count", type=int)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        help="Select one paired repetition for external orchestration",
+    )
     parser.add_argument(
         "--memory-method", choices=("sampled", "kernel"), default="sampled"
     )
@@ -394,6 +408,7 @@ def main(argv=None):
             method=args.memory_method,
             interval=args.memory_interval,
             timeout=args.worker_timeout,
+            repeat=args.repeat,
         )
     return 0 if report["status"] == "passed" else 1
 

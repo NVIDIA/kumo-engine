@@ -56,10 +56,21 @@ python -m test.kumo_pytorch.aml_fitting_memory \
   --repetitions 3 --memory-method sampled
 ```
 
-Results appear in the Actions job summary and the
-`kumo-pytorch-aml-fitting-memory` artifact: `report.md`, structured aggregate and
-worker reports, per-repetition observations, logs and input specifications.
+Results appear in the Actions job summary and the combined
+`kumo-pytorch-aml-benchmarks` artifact under `fitting/<case>`: `report.md`,
+structured aggregate and worker reports, observations, logs and input specifications.
 Payloads and indexes are excluded. Reports retain partial progress on failures.
+
+CI uses `--case <workload-model> --repeat <0|1|2>` to distribute all five bindings
+and three paired repetitions across 15 CPU runners. Each repetition builds one
+index, then fits both population sizes against that index in isolated workers;
+the alternating size order, thread limits and fresh fitting are unchanged.
+No fitted state crosses workers. Per-repetition reports identify their partial
+scope. The final comparison requires all six measurements per binding and
+matching specification hashes, counts, measurement methods and distinct cgroups.
+All repetitions use identical source/output paths on the same runner type;
+specification drift fails rather than being normalized away. Omit the selectors
+to retain the original sequential CLI behavior.
 
 The dataset-independent runner is
 `python -m test.kumo_pytorch.benchmarking.fitting_memory --spec SPEC --output OUT`.

@@ -62,13 +62,15 @@ history checks retain that responsibility.
 
 ## Reports and failures
 
-The nightly executes smoke and full modes using its existing AML download and
-runner. Full runs even if smoke fails, and an ordinary case failure does not
-prevent later cases from being attempted. Source/preparation failures, process
+The nightly executes each binding and mode on a separate CPU runner using the
+same verified AML inputs. Full runs even if smoke fails; matrix jobs disable
+fail-fast so other cases still execute. Source/preparation failures, process
 termination and timeouts remain failed/incomplete execution, never acceptance.
 
 The job summary includes the population table. Download
-`kumo-pytorch-aml-populations` for aggregate and per-case reports and contracts.
+`kumo-pytorch-aml-benchmarks` for aggregate and per-case reports and contracts
+under `smoke/<case>` and `full/<case>`. Per-job evidence is also available in
+`kumo-pytorch-aml-parallel-<mode>-<case>` artifacts.
 Source payloads, projected anchors and indexes are not uploaded. Reports include
 input identities, Engine revision, dirty-checkout status, dependency versions,
 expected/delivered counts, eligible target counts, fitted-state fingerprints,
