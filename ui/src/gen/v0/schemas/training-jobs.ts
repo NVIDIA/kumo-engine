@@ -8793,7 +8793,8 @@ export const GetTrainingJobsModelPlansByIdQueryParams = zod.object({
 
 export const GetTrainingJobsModelPlansByIdResponse = zod.object({
     "model_plans": zod.array(zod.string()),
-    "advanced_options": zod.array(zod.string())
+    "advanced_options": zod.array(zod.string()),
+    "trial_ids": zod.array(zod.string()).optional()
 });
 
 /**

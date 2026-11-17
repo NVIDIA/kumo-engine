@@ -12820,6 +12820,13 @@
                         },
                         "type": "array",
                         "title": "Advanced Options"
+                    },
+                    "trial_ids": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "title": "Trial Ids"
                     }
                 },
                 "type": "object",

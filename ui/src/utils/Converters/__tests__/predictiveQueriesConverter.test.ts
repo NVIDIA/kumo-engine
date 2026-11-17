@@ -485,6 +485,7 @@ describe("generateProgressStatsforChart", () => {
                     label: "Best validation metric"
                 }
             ],
+            trialIds: ["0", "1"],
             xLabel: "Experiments",
             yLabel: "AUROC",
             mode: "test-mode"
@@ -544,6 +545,7 @@ describe("generateProgressStatsforChart", () => {
                     label: "Best validation metric"
                 }
             ],
+            trialIds: ["1"],
             xLabel: "Experiments",
             yLabel: "AUROC",
             mode: ""
