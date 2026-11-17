@@ -22,6 +22,7 @@ on:  # yamllint disable-line rule:truthy
       - 'packages/experimental/kumo-pytorch/tests/e2e/tiers.py'
       - 'packages/experimental/kumo-pytorch/tests/e2e/runs.py'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/workflows/_kumo-pytorch-aml-checks.yml'
       - '.github/workflows/kumo-pytorch-t2b.yml'
 
 permissions:
@@ -755,42 +756,9 @@ jobs:
   aml-model-checks:
     name: Correctness / AML
     needs: diskgraph-wheel
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Install test-only Polars for required CPU coverage
-        run: uv pip install polars==2.1.0
-      - name: Check AML model consumers on tiny Kumo batches
-        working-directory: .
-        run: |
-          python -m pytest -c test/kumo_pytorch/pytest.ini \
-            --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
-            test/kumo_pytorch/model_checks --required-coverage=cpu -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
-      - name: Retain controlled AML learning reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ always() }}
-        with:
-          name: kumo-pytorch-aml-learning
-          path: |
-            ${{ runner.temp }}/aml-checks.xml
-            ${{ runner.temp }}/aml-checks/**/learning.json
-            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/report.json
-            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/loss-curve.csv
-            ${{ runner.temp }}/aml-checks/**/results.json
-            ${{ runner.temp }}/aml-checks/**/finetuning/report.json
-            ${{ runner.temp }}/aml-checks/**/finetuning/finetune.log
-            ${{ runner.temp }}/aml-checks/**/finetuning/child.log
-            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/report.json
-            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/child.log
-            ${{ runner.temp }}/aml-checks/**/coverage.json
-            ${{ runner.temp }}/aml-checks/**/report.md
-          retention-days: 14
+    uses: ./.github/workflows/_kumo-pytorch-aml-checks.yml
+    with:
+      diskgraph-wheel-artifact: diskgraph-wheel
 
   checks:
     name: Lifecycle / H&M / Results
@@ -885,4 +853,29 @@ jobs:
           name: kumo-pytorch-t2b-conformance-repros
           path: ${{ runner.temp }}/conformance-repros
           if-no-files-found: ignore
+          retention-days: 14
+
+  nightly-result:
+    name: Results / Complete Nightly
+    needs: [dataset-tooling, diskgraph-wheel, benchmark-memory, aml-training-acceptance, aml-fitting-memory, benchmark-gpu, benchmark-aml, aml-population, aml-lifecycle, aml-summary, package-regressions, plan, run, aml-model-checks, checks, conformance]
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Account for every required nightly job
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 -m test.kumo_pytorch.automation record --output "$RUNNER_TEMP/nightly-status/status.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-nightly-status
+          path: ${{ runner.temp }}/nightly-status/status.json
+          if-no-files-found: error
           retention-days: 14

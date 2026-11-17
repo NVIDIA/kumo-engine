@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch — AML Checks
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      diskgraph-wheel-artifact:
+        description: DiskGraph wheel built from this run's candidate revision.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Correctness / AML
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/experimental/kumo-pytorch
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
+      - name: Install test-only Polars for required CPU coverage
+        run: uv pip install polars==2.1.0
+      - name: Check AML model consumers on tiny Kumo batches
+        working-directory: .
+        run: |
+          python -m pytest -c test/kumo_pytorch/pytest.ini \
+            --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
+            test/kumo_pytorch/model_checks --required-coverage=cpu -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
+      - name: Retain controlled AML learning reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-aml-learning
+          path: |
+            ${{ runner.temp }}/aml-checks.xml
+            ${{ runner.temp }}/aml-checks/**/learning.json
+            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/report.json
+            ${{ runner.temp }}/aml-checks/**/training-acceptance/**/loss-curve.csv
+            ${{ runner.temp }}/aml-checks/**/results.json
+            ${{ runner.temp }}/aml-checks/**/finetuning/report.json
+            ${{ runner.temp }}/aml-checks/**/finetuning/finetune.log
+            ${{ runner.temp }}/aml-checks/**/finetuning/child.log
+            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/report.json
+            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/child.log
+            ${{ runner.temp }}/aml-checks/**/mid-epoch-resume/restore-fingerprints.json
+            ${{ runner.temp }}/aml-checks/**/coverage.json
+            ${{ runner.temp }}/aml-checks/**/report.md
+          retention-days: 14
+

@@ -65,25 +65,66 @@ also remains. These are local fixture findings, not full AML/GPU CI results.
 
 ## GitHub merge enforcement
 
-Inspection on 2026-11-17 found that main's active repository ruleset requires
-`kumo-core-gpu-ci`, but no PyTorch check. Existing review/code-owner requirements
-must remain intact. The current account has maintain access, not admin access.
-No repository protection settings have been changed.
+PR #353 now owns `kumo-pytorch-gate`; it no longer depends on outdated PR #284.
+The gate runs on every PR. Relevant changes (including `test/kumo_pytorch/**`,
+the shared AML workflow, package/native sources and environment configuration)
+require the package checks, DiskGraph checks, standalone CPU AML inventory and
+suite tooling. A single candidate DiskGraph wheel feeds all three test workflows.
+Unrelated PRs pass through explicit changed-file detection; an API error runs
+checks rather than assuming the PR is unrelated. Required failures, cancellations,
+unexpected skips and failed detection cannot produce a passing gate.
 
-PR #284 owns the proposed always-triggered `kumo-pytorch-gate`. It remains a
-separate PR and must also account for this standalone suite: changes under
-`test/kumo_pytorch/**` need to trigger the relevant checks and the final gate must
-require the CPU AML coverage job. Do not require a path-filtered workflow by
-itself: unrelated PRs may never produce its check. Once the always-triggered gate
-exists and is verified on affected and unrelated PRs, an administrator must add
-its exact context and GitHub Actions integration to the existing required checks,
-preserving `kumo-core-gpu-ci` and all other protections. Until then, merge
-enforcement is **deferred at the user's request**, not implemented by a
-successful local test run.
+The existing package and DiskGraph workflows become reusable and retain their
+push-to-main and manual triggers. Their PR execution is owned by the gate.
+The nightly PR trigger remains. Its AML job calls the same reusable workflow
+as the gate, retaining `--required-coverage=cpu`, Polars and report artifacts.
+No new InMemory tests or package behavior changes are introduced.
 
-Verification of actual scheduled execution is **deferred until after merge**,
-per the user's instruction. Scheduled real-data/GPU execution is distinct from
-PR fixture coverage and must not be claimed from local CPU tests.
+GitHub activation is **pending**, not deferred by preference. The current
+account has maintain access but no admin access. Main's current active ruleset
+requires `kumo-core-gpu-ci`, not the new PyTorch gate. After the gate is merged
+and has reported on both a relevant and an unrelated PR, an administrator can
+create the main-only rule in [merge-gate-ruleset.json](merge-gate-ruleset.json):
+
+```sh
+gh api --method POST repos/NVIDIA/kumo-engine/rulesets \
+  --input test/kumo_pytorch/docs/merge-gate-ruleset.json
+```
+
+This adds `kumo-pytorch-gate` from the GitHub Actions integration; it does not
+replace existing reviews, code-owner requirements, checks or release-branch
+rules. Re-read the active rules before applying it, and avoid adding a duplicate
+if another administrator has already enabled the gate. Known package failures
+must be resolved before the required gate can pass; do not exempt those tests.
+
+## Scheduled-run verification after merge
+
+The nightly's final `Results / Complete Nightly` job accounts for all required
+jobs, even when earlier jobs fail. It writes `kumo-pytorch-nightly-status` with
+the run ID, attempt, commit, trigger and every job result. Missing, skipped,
+cancelled or failed required jobs fail this final check. Matrix campaign reports
+continue to account for each binding and repetition.
+
+Actual schedule verification remains **pending until after merge**. It cannot be
+established by a manual run or unit tests. After the first scheduled main run,
+use its numeric run ID in place of RUN_ID below:
+
+```sh
+gh api repos/NVIDIA/kumo-engine/actions/runs/RUN_ID > scheduled-run.json
+gh run download RUN_ID --repo NVIDIA/kumo-engine \
+  --name kumo-pytorch-nightly-status --dir scheduled-evidence
+python -m test.kumo_pytorch.automation verify-schedule \
+  --run scheduled-run.json --evidence scheduled-evidence/status.json
+```
+
+Run this from the merged checkout. Confirm the run's commit contains the merged
+change (a later main commit is allowed), and inspect the test/training/benchmark
+artifacts. The verifier rejects manual/PR runs, wrong branches/workflows,
+incomplete runs and mismatched revision/run/attempt evidence. It distinguishes
+an automatic trigger from test success: a failed test is reported as failed,
+while missing or skipped required jobs leave execution verification incomplete.
+Keep downloaded evidence outside Git. No scheduled-run acceptance has yet been
+claimed for these changes.
 
 Historical validation before the DiskGraph-only scope change: all 413 CPU
 cases executed; 412 passed, one required multi-source filter case failed with

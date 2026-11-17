@@ -160,8 +160,8 @@ integration `2305e3ba` (including decimal fix #348) and the original commits fro
 [#363](https://github.com/NVIDIA/kumo-engine/pull/363).
 [#367](https://github.com/NVIDIA/kumo-engine/pull/367) was already closed by its
 author in favor of #353's real-AML fitting-memory experiment; its duplicate
-reporting test is not imported. Fitting optimizations #351/#352 and merge gate
-#284 remain separate PRs.
+reporting test is not imported. Fitting optimizations #351/#352 remain separate PRs. The updated merge gate
+is now implemented in #353; outdated #284 is not a dependency.
 
 | Criterion | Implemented / current evidence | Remaining work and relevant PRs |
 | --- | --- | --- |
@@ -174,7 +174,7 @@ reporting test is not imported. Fitting optimizations #351/#352 and merge gate
 | 7. Lifecycle | Reload/inference, fresh-process frozen-input finetuning and exact mid-epoch model/optimizer/iterator/RNG resume; post-fix fixture checks pass | Complete real-data acceptance on the final integrated revision |
 | 8. Training | Consolidated a001/Fusion and a017/PRAGMA checks, 100 CPU updates twice, per-parameter checks, exact replay and loss reports; post-fix real AML PRAGMA passes | Fusion now omits unused graph components; all local training checks pass. Rerun real-data acceptance for the changed model; the earlier CI failure is historical |
 | 9. Speed and memory | Stage profiling, throughput/latency, host/GPU measurements and DiskGraph/Polars/GPU-reference timing; 25k/400k fitting-memory experiment | One-build/two-reopen campaigns and anonymous-memory reporting are now implemented locally; obtain passing Linux/real-data CI measurements on the final revision |
-| 10. Automation | Integrated PR/nightly owners, required failures and artifacts; #361's lifecycle import guards integrated while retaining JUnit reports | Standalone AML inventory/skip enforcement and generic Polars execution are implemented locally; merge enforcement is deferred at the user's request. Scheduled execution verification is deferred until after merge; [#284](https://github.com/NVIDIA/kumo-engine/pull/284) remains separate |
+| 10. Automation | Integrated PR/nightly owners, required failures and artifacts; #361's lifecycle import guards integrated while retaining JUnit reports | Standalone inventory/skip enforcement and generic Polars execution implemented. Updated merge gate and complete-nightly status/evidence checks implemented in #353; 206 tooling checks passed locally. GitHub activation needs an administrator; actual automatic schedule verification needs a post-merge run. See [activation and verification](docs/required-coverage.md#github-merge-enforcement) |
 
 Consolidation validation: **63 passed, zero failed or skipped** across
 `test_inference_lifecycle.py` and `test_fitting_chunks.py`, using the existing
