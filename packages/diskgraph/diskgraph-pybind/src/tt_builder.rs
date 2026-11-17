@@ -743,7 +743,8 @@ impl DiskGraphTTBuilder {
             .flat_map(|stage| &stage.ops)
             .filter_map(truncated_window)
             .collect();
-        let forecast_length = self.temporal.as_ref().map_or(1, |t| t.forecast_length);
+        let forecast_length = matches!(self.prediction_type, tt::PredictionType::Forecasting)
+            .then(|| self.temporal.as_ref().map_or(1, |t| t.forecast_length));
         if let Some(split) = &self.split {
             let target_window = self.target_window.take();
             truncated.extend(truncated_split::<U>(split, target_window, forecast_length));
@@ -905,7 +906,7 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
 fn truncated_split<U: UnitSystem>(
     split: &SplitSpecArgs,
     target_window: Option<(i64, i64, TimeUnit)>,
-    forecast_length: i64,
+    forecast_length: Option<i64>,
 ) -> Vec<String> {
     let fixed = |unit: &Option<String>| {
         parse_time_unit(unit_or(unit, "days"))
@@ -943,10 +944,12 @@ fn truncated_split<U: UnitSystem>(
             return false;
         };
         let timeframe = end.saturating_sub(start);
-        let horizon = forecast_length.saturating_mul(timeframe);
-        let forecast = [1, 2].map(|k| timeframe.saturating_sub(horizon.saturating_mul(k)));
+        let forecast = forecast_length.map(|length| {
+            let horizon = length.saturating_mul(timeframe);
+            [1, 2].map(|k| timeframe.saturating_sub(horizon.saturating_mul(k)))
+        });
         match field {
-            "offset" => value == -end || forecast.contains(&value),
+            "offset" => value == -end || forecast.is_some_and(|offsets| offsets.contains(&value)),
             "timeframe" => value == timeframe,
             "anchor_start_offset" => value == start,
             "timeframe + anchor_start_offset" => value == end,

@@ -636,15 +636,12 @@ def test_anchors_off_the_clock_warn(caplog, anchors, start_time, is_prediction, 
     assert _builder_warnings(caplog) == warnings
 
 
-def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path, caplog):
+def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path):
     index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
     split = {"kind": "DateOffsetSplit", "offsets": [-30, 0], "offset_unit": "minutes",
              "unit": "minutes", "timeframe": 30, "anchor_start_offset": -120}
     rows = _split_rows(index, (-120, -90), split, "off_tick")
     assert rows
-    assert _builder_warnings(caplog) == [
-        "The window (-120, -90] minutes truncates to (-120, -60] minutes on the hours index "
-        "clock. Use a window of whole hours, or a finer timestamp_precision."]
     assert rows == _split_rows(index, (-120, -60), {**split, "offsets": [0, 0], "timeframe": 0},
                                "whole_hours")
 
@@ -653,20 +650,24 @@ ROUNDED_SPLIT = ("on the hours index clock. Use split durations of whole hours, 
                  "timestamp_precision.")
 
 
-@pytest.mark.parametrize("windows, target_window, split, truncated", [
+@pytest.mark.parametrize("windows, target_window, split, forecasting, truncated", [
     # A filter window is not part of the target window pquery derives the default split from.
     ([(0, 90, "minutes"), (-60, 0, "minutes")], (0, 90, "minutes"),
-     {"offsets": [-90, 0], "timeframe": 90, "anchor_start_offset": 0}, []),
+     {"offsets": [-90, 0], "timeframe": 90, "anchor_start_offset": 0}, False, []),
     # pquery combines target windows in the finer unit.
     ([(90, 120, "minutes"), (2, 3, "hours")], (90, 180, "minutes"),
-     {"offsets": [-180, 0], "timeframe": 90, "anchor_start_offset": 90}, []),
-    ([(0, 90, "minutes")], (0, 90, "minutes"), {"offsets": [-45, -15], "timeframe": 90},
+     {"offsets": [-180, 0], "timeframe": 90, "anchor_start_offset": 90}, False, []),
+    ([(-120, -90, "minutes")], (-120, -90, "minutes"),
+     {"offsets": [-30, 0], "timeframe": 30, "anchor_start_offset": -120}, True, []),
+    ([(0, 90, "minutes")], (0, 90, "minutes"), {"offsets": [-45, -15], "timeframe": 90}, False,
      ["offset -15 minutes truncates to 0 minutes", "offset -45 minutes truncates to 0 minutes"]),
 ])
 def test_only_a_split_derived_from_the_target_window_is_left_to_the_window_warning(
-        caplog, windows, target_window, split, truncated):
+        caplog, windows, target_window, split, forecasting, truncated):
     builder = DiskGraphTTBuilder("hours")
     builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    if forecasting:
+        builder.forecasting_prediction()
     builder.for_each("users", "user_id")
     for i, (lo, hi, unit) in enumerate(windows):
         builder.aggregate(f"orders_{i}", EdgeRef("users", "user_id", "orders", "user_id"),
@@ -677,6 +678,23 @@ def test_only_a_split_derived_from_the_target_window_is_left_to_the_window_warni
     builder.build()
     assert [w for w in _builder_warnings(caplog) if w.startswith("The split")] == [
         f"The split {t} {ROUNDED_SPLIT}" for t in truncated]
+
+
+def test_a_written_split_that_matches_a_forecasting_offset_still_warns(caplog):
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.aggregate("orders", EdgeRef("users", "user_id", "orders", "user_id"), "count",
+                      time_col="ordered_at", window=(90, 120), window_unit="minutes")
+    builder.target_window(90, 120, "minutes")
+    builder.split_ratio(SplitSpec(kind="DateOffsetSplit", offsets=[-30, 0],
+                                  offset_unit="minutes", unit="minutes", timeframe=30))
+    builder.build()
+    assert _builder_warnings(caplog) == [
+        f"The split offset -30 minutes truncates to 0 minutes {ROUNDED_SPLIT}",
+        "The window (90, 120] minutes truncates to (60, 120] minutes on the hours index clock. "
+        "Use a window of whole hours, or a finer timestamp_precision.",
+    ]
 
 
 def test_compile_passes_the_target_window(off_tick_data, tmp_path, caplog):
