@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import warnings
@@ -1090,6 +1091,16 @@ def _no_lightning_tip(record: logging.LogRecord) -> bool:
     return not str(record.msg).startswith('💡 Tip')
 
 
+# Named runs (contract C10): lowercase so the derived scratch paths and
+# train-table extension names stay portable.
+_RUN_NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,47}')
+
+
+def _ingest_tt_id(run_id: str) -> str:
+    """The train-table extension a fit ingests under the snapshot's index."""
+    return f'tt-{run_id}'
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1109,6 +1120,18 @@ class Trainer:
             differs from a warm start raises ``ValueError``. Not part of the
             public ``ModelPlan``; non-default options are recorded in the
             bundle's ``training-spec.json``.
+        run_name: makes the run ids deterministic (``None`` keeps random
+            ids). It must match ``[a-z0-9][a-z0-9-]{0,47}``. The trainer's
+            scratch directory is ``trainers/<run_name>`` and the k-th call to
+            ``fit`` (counting from 0) runs as ``<run_name>-fit-<k>``. That run
+            id also names the train-table extension, which DiskGraph's
+            shuffle depends on. So the same data, plan, seed and run name in a
+            fresh scratch directory give the same mini-batch sequence, and,
+            with ``torch.use_deterministic_algorithms(True)``, the same model
+            on the same host and thread layout. ``fit`` raises
+            ``FileExistsError`` if the run directory or the extension already
+            exists. Prediction run ids stay random, and bundles do not record
+            the name.
     """
     def __init__(
         self,
@@ -1117,6 +1140,7 @@ class Trainer:
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
         bias_options: Optional[Any] = None,
+        run_name: Optional[str] = None,
     ):
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
@@ -1125,12 +1149,21 @@ class Trainer:
             from kumo_core.training.orchestration import BiasOptions
             if not isinstance(bias_options, BiasOptions):
                 raise TypeError('bias_options must be BiasOptions or None')
+        if run_name is not None:
+            if not isinstance(run_name, str):
+                raise TypeError('run_name must be a string or None')
+            if _RUN_NAME.fullmatch(run_name) is None:
+                raise ValueError(
+                    'run_name must match [a-z0-9][a-z0-9-]{0,47} (lowercase '
+                    f'letters, digits and dashes), got {run_name!r}')
         self._bias_options = bias_options
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
                                   is not None else EmbeddingModelStore())
-        self._id = new_run_id()
+        self._run_name = run_name
+        self._fit_ordinal = 0
+        self._id = new_run_id() if run_name is None else run_name
         self._training_result: Optional[TrainingResult] = None
         self._snapshot_id: Optional[str] = None
         self._graph_config: Optional[Dict[str, Any]] = None
@@ -1156,6 +1189,11 @@ class Trainer:
         trained modules' configs remain the record of what a bundle holds.
         """
         return self._bias_options
+
+    @property
+    def run_name(self) -> Optional[str]:
+        """The name that fixes this trainer's run ids, or ``None``."""
+        return self._run_name
 
     @property
     def training_table_generation_plan(
@@ -1238,7 +1276,7 @@ class Trainer:
         registry = _connector_registry(settings)
         if registry is not None:
             _require_publisher(registry)
-        run_id = f'{self._id}-fit-{new_run_id()}'
+        run_id = self._next_fit_run_id(snapshot)
         warn = settings is None or settings.on_error == 'warn'
         session = TrackingSession(
             None if settings is None else settings.tracking, warn=warn)
@@ -1298,6 +1336,29 @@ class Trainer:
         raise_on_error(settings, session.error or error,
                        'Trainer.fit (its model is in trainer.result)')
         return result
+
+    def _next_fit_run_id(self, snapshot: GraphSnapshot) -> str:
+        """The next fit's run id: random, or ``<run_name>-fit-<k>``.
+
+        A named run never reuses its run directory or its train-table
+        extension, so it can neither train on nor overwrite another run's
+        data. The check runs before any work, and a refused call consumes no
+        ordinal.
+        """
+        if self._run_name is None:
+            return f'{self._id}-fit-{new_run_id()}'
+        run_id = f'{self._id}-fit-{self._fit_ordinal}'
+        for path in (self.scratch_dir / 'runs' / run_id,
+                     Path(snapshot.index_path) / 'train_tables' /
+                     _ingest_tt_id(run_id)):
+            if path.exists() or path.is_symlink():
+                raise FileExistsError(
+                    f'Named run {run_id!r} already exists at {path}. A named '
+                    'Trainer needs a fresh scratch directory '
+                    '(kumo.engine.configure(scratch_dir=...)) or another '
+                    'run_name.')
+        self._fit_ordinal += 1
+        return run_id
 
     def _fit(
         self,
@@ -1399,7 +1460,7 @@ class Trainer:
             materialize_generated_training_task,
         )
 
-        ingest_tt_id = f'tt-{workflow.run_id}'
+        ingest_tt_id = _ingest_tt_id(workflow.run_id)
         lag_timesteps = inferred_or_missing_type_to_none(
             train_table.generation_plan.lag_timesteps)
         year_over_year = inferred_or_missing_type_to_none(

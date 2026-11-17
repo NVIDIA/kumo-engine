@@ -32,6 +32,7 @@ from kumo_core.explain.walk_schema import (
     explain_capture,
     group_bags,
     row_numerics,
+    row_step_key,
     validate_v2_row,
     walk_key,
 )
@@ -39,6 +40,7 @@ from kumo_core.modeling.calibration import PlatScaling
 from kumo_core.train.loss import BinaryCrossEntropyLoss
 from tests.test_walk_enumerate import PathProductRule
 from tests.test_walk_graph import (
+    ART_REV,
     FK,
     REV,
     b1_batch,
@@ -513,3 +515,110 @@ def test_nonfinite_ledger_fails_the_row_with_serializable_fields(offset):
     assert 'ledger' not in row and 'walks' not in row
     json.dumps(row, allow_nan=False)  # never a nonfinite number in the row
     validate_v2_row(row)
+
+
+# The explained class is the row's own configuration (review m1) ##############
+
+SELECTION_MUTATIONS = {
+    'other_label': lambda r: r['config'].update(selected_class=True),
+    'removed': lambda r: r['config'].pop('selected_class'),
+    'type_changed': lambda r: r['config'].update(selected_class=0),
+    'default_source': lambda r: r['output']['binary'].update(
+        selected_class_source='encoded_positive_default'),
+}
+
+
+@pytest.mark.parametrize('name', sorted(SELECTION_MUTATIONS))
+def test_explained_class_is_bound_to_the_row_config(binary_row, name):
+    broken = mutate(binary_row, SELECTION_MUTATIONS[name])
+    with pytest.raises(WalkSchemaError, match='selected_class'):
+        validate_v2_row(broken, b1_sample())
+
+
+def test_default_selection_and_regression_rows_have_no_configured_class(row):
+    default = row_for(binary_b1(torch.float32), WalkAttributionConfig(feature_vectors=True))
+    binary = default['output']['binary']
+    assert binary['selected_class_source'] == 'encoded_positive_default'
+    assert binary['selected_class_label'] is True and binary['logit_sign'] == 1
+    validate_v2_row(default, b1_sample())
+    for valid in (default, row):
+        broken = mutate(valid, lambda r: r['config'].update(selected_class=True))
+        with pytest.raises(WalkSchemaError, match='select'):
+            validate_v2_row(broken, b1_sample())
+
+
+# Relation steps bound to the retained edges (review m2, contract 4.10) ######
+
+def b1_retained_sample(counts=True):
+    """`b1_sample` plus the edge records Engine retains for B1's batch."""
+    sample = b1_sample()
+    _, edges, _, sampled = b1_batch()
+    sample['edges'] = [{'type': list(kind), 'edge_index': index.tolist(),
+                        'num_sampled_edges': list(sampled[kind]) if counts else None,
+                        'original_edge_index': None} for kind, index in edges.items()]
+    return sample
+
+
+def edge_record(sample, kind):
+    return next(e for e in sample['edges'] if tuple(e['type']) == kind)
+
+
+def add_edge(sample, kind, source, destination, sampled):
+    record = edge_record(sample, kind)
+    record['edge_index'][0].append(source)
+    record['edge_index'][1].append(destination)
+    record['num_sampled_edges'] = sampled
+
+
+# B1's top walk is article -> transaction 0 (gather, layer 1), then
+# transaction 0 -> customer 0 (mean over 2 edges, layer 2).
+EDGE_MUTATIONS = {
+    'extra_seed_edge': (lambda s: add_edge(s, FK, 1, 0, [3, 0]), 'Mean denominator'),
+    'trimmed_at_layer_2': (lambda s: edge_record(s, FK).update(num_sampled_edges=[0, 2]),
+                           'outside the edges of its layer'),
+    'other_source': (lambda s: edge_record(s, FK)['edge_index'][0].reverse(),
+                     'endpoints differ'),
+    'gather_fan_in': (lambda s: add_edge(s, ART_REV, 0, 0, [0, 2]), 'one incoming edge'),
+    'missing_relation': (lambda s: s['edges'].remove(edge_record(s, FK)), 'absent'),
+    'inconsistent_trimming': (lambda s: edge_record(s, FK).update(num_sampled_edges=None),
+                              'Inconsistent edge trimming'),
+}
+
+
+def test_relation_steps_validate_on_the_retained_edges(row, binary_row):
+    for built in (row, binary_row):
+        validate_v2_row(built, b1_retained_sample())
+        validate_v2_row(built, b1_retained_sample(counts=False))  # an untrimmed record
+    steps = [s for w in binary_row['walks'] for s in w['steps'] if s['kind'] == 'relation']
+    assert {(s['operator'], s['denominator']) for s in steps} == {('gather', 1), ('mean', 2)}
+
+
+@pytest.mark.parametrize('name', sorted(EDGE_MUTATIONS))
+def test_retained_edge_mutations_are_rejected(row, name):
+    sample = b1_retained_sample()
+    change, match = EDGE_MUTATIONS[name]
+    change(sample)
+    with pytest.raises(WalkSchemaError, match=match):
+        validate_v2_row(row, sample)
+
+
+def test_mean_denominator_is_the_retained_in_degree(row):
+    broken = copy.deepcopy(row)
+    step = broken['walks'][0]['steps'][1]
+    assert (step['operator'], step['denominator']) == ('mean', 2)
+    step['denominator'] = 3
+    validate_v2_row(broken, b1_sample())  # bounds alone cannot see it
+    with pytest.raises(WalkSchemaError, match='Mean denominator'):
+        validate_v2_row(broken, b1_retained_sample())
+
+
+def test_row_step_key_is_the_step_key_of_the_serialized_route():
+    """The frozen walk key of serialized steps (n8): equal to the route keys."""
+    row, enumeration, _ = toy_rows(WalkAttributionConfig(top_k=10000))
+    reloaded = json.loads(json.dumps(row, allow_nan=False))
+    serialized = [tuple(row_step_key(step) for step in walk['steps'])
+                  for walk in reloaded['walks']]
+    assert len(serialized) == len(enumeration.walks) == len(set(serialized))
+    assert sorted(serialized) == sorted(walk_key(walk.steps) for walk in enumeration.walks)
+    kinds = {key[1] for walk in serialized for key in walk}
+    assert kinds == {'relation', 'self_update'}

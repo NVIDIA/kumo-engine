@@ -5,9 +5,10 @@ default biases and once with `BiasOptions(gnn=False, head=False)`, then
 checks: the effective architecture, bundle records and reload; exact
 prediction parity with and without evidence; class orientation against an
 independent recomputation and a semantic oracle; sign folding for the other
-class; bundle validation; offline replay in-process and in a fresh process
-under the recorded precision; and the refusal of methods that are not
-implemented. A regression phase checks that a fresh-process replay of a
+class; bundle validation, including relation steps and `mean` denominators
+against the retained trimmed graphs; offline replay in-process and in a
+fresh process under the recorded precision; and the refusal of methods that
+are not implemented. A regression phase checks that a fresh-process replay of a
 `medium` capture whose 32-channel linears see more than 8 rows passes with
 the recorded precision applied and fails when the record is overridden.
 
@@ -18,6 +19,7 @@ this gate is accounting and plumbing evidence, not explanation faithfulness.
       --development --output <new directory> [--methods ID,ID] [--gamma 0 0.25]
 """
 import argparse
+import copy
 import hashlib
 import importlib
 import json
@@ -143,6 +145,34 @@ def encoder_boundary(trainer, bundle, records):
             'mode': provenance['numerics']['precision_mode']}
 
 
+def retained_denominators(bundle, records):
+    """Contract 4.10 on the real trimmed graphs: bundle validation binds every
+    displayed relation step to an edge of its layer and every `mean` step to
+    its destination's retained in-degree; a shifted denominator is rejected."""
+    from kumo_core.explain.walk_schema import WalkSchemaError, validate_v2_row
+    rows = steps = largest = rejected = 0
+    for record in records:
+        row = copy.deepcopy(record['walk_attribution'])  # the records stay intact
+        sample = bundle.scoring_graph(record['prediction_id'])
+        mean = [step for walk in row['walks'] for step in walk['steps']
+                if step['kind'] == 'relation' and step['operator'] == 'mean']
+        if not mean:
+            continue
+        rows += 1
+        steps += len(mean)
+        shifted = max(mean, key=lambda step: step['denominator'])
+        largest = max(largest, shifted['denominator'])
+        shifted['denominator'] += 1
+        try:
+            validate_v2_row(row, sample)
+        except WalkSchemaError:
+            rejected += 1
+    check(rows > 0 and largest > 1 and rejected == rows,
+          'a shifted mean denominator is rejected on every row')
+    return {'rows_with_mean_steps': rows, 'mean_steps': steps,
+            'max_denominator': largest, 'rows_rejecting_a_shifted_denominator': rejected}
+
+
 def binary_phase(root, data, label, bias_options, methods, gammas):
     started = time.monotonic()
     report = {'bias_options': None if bias_options is None else bias_options.to_dict()}
@@ -210,6 +240,7 @@ def binary_phase(root, data, label, bias_options, methods, gammas):
     records = list(bundle.iter_numerical_evidence())
     check(len(records) == 24, 'one record per scored user')
     report['encoder_boundary'] = encoder_boundary(restored, bundle, records)
+    report['retained_denominators'] = retained_denominators(bundle, records)
 
     # Orientation, selection and calibration on every row, recomputed from
     # checkpoint tensors independently of the loaded module.

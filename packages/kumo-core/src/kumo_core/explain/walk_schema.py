@@ -418,8 +418,11 @@ def _close(actual, expected, mass):
 def validate_v2_row(row, sample=None, *, method_checks=True):
     """Generic v2 checks (4.10), then the method's `validate_row`.
 
-    With `sample`, bound keys and node ids must match the retained graph.
-    Raises `WalkSchemaError`.
+    With `sample`, bound keys and node ids must match the retained graph;
+    when the sample records edges (Engine's retained samples always do),
+    displayed relation steps must also be edges of their layer there, with
+    `mean` denominators equal to the retained in-degree. Raises
+    `WalkSchemaError`.
     """
     try:
         _validate(row, sample, method_checks)
@@ -475,6 +478,10 @@ def _validate(row, sample, method_checks):
         'diagnostics must be a JSON-safe dict namespaced by the row method')
     if sample is not None:
         _validate_binding(row, sample)
+        # Engine's retained samples record every edge type of the batch;
+        # stand-ins without edge records are checked for keys only.
+        if sample.get('edges'):
+            _validate_denominators(row, sample, T)
     if method_checks:
         try:
             method_module(row['method']).validate_row(row)
@@ -492,6 +499,7 @@ def _validate_output(row, config):
     if output['task_type'] == 'regression':
         _require(output['binary'] is None and row['coordinate'] == 'encoded_model_output',
                  'Regression rows explain the encoded model output')
+        _require(config.selected_class is None, 'Regression rows select no class')
         _require(score == output['head_output'], 'Score must be the head output')
         return
     _require(output['task_type'] == 'binary_classification', 'Unsupported task type')
@@ -515,6 +523,15 @@ def _validate_output(row, config):
     _require((sign == 1) == same_label(selected, positive), 'logit_sign disagrees')
     _require(binary['selected_class_source'] in ('config', 'encoded_positive_default'),
              'Invalid selected_class_source')
+    # The explained class is the row's own configuration (contract 2.4).
+    if binary['selected_class_source'] == 'config':
+        _require(config.selected_class is not None
+                 and same_label(config.selected_class, selected),
+                 'selected_class_label must be the configured selected_class')
+    else:
+        _require(config.selected_class is None and same_label(selected, positive),
+                 'Without a configured selected_class the encoded positive label '
+                 'is explained')
     float32 = row['numerics']['model_dtype'] != 'float64'
     calibration = binary['calibration']
     _require(calibration['weight_floor'] == 0.001, 'Platt weight floor is 0.001')
@@ -820,3 +837,54 @@ def _validate_binding(row, sample):
     for source in row['sources']:
         check(source['table'], source['occurrence'], source['pkey'], True,
               source['node_id'])
+
+
+def _layer_edges(sample, T):
+    """Per relation, the retained `[sources, destinations]` and how many
+    leading edges each message-passing layer uses: `HeteroGNN` drops the
+    last hops' edges from the second layer on when the batch records
+    `num_sampled_edges`."""
+    edges = {tuple(entry['type']): entry for entry in sample['edges']}
+    hops = [entry.get('num_sampled_edges') for entry in edges.values()]
+    trimmed = any(h is not None for h in hops)
+    _require(not trimmed or all(h is not None for h in hops),
+             'Inconsistent edge trimming record in the retained graph')
+    layers = {}
+    for relation, entry in edges.items():
+        index = entry['edge_index']
+        counts = list(entry.get('num_sampled_edges') or [])
+        counts += [0] * max(T - len(counts), 0)
+        total = len(index[1])
+        layers[relation] = (index, [
+            total - (sum(counts[-j] for j in range(1, t)) if trimmed else 0)
+            for t in range(1, T + 1)])
+    return layers
+
+
+def _validate_denominators(row, sample, T):
+    """Displayed relation steps are edges of their layer on the retained
+    graph, a `mean` step divides by its destination's in-degree there and a
+    primary-key gather has exactly one incoming edge (4.10)."""
+    layers, degrees = None, {}
+    for walk in row['walks']:
+        for step in walk['steps']:
+            if step['kind'] != 'relation':
+                continue
+            if layers is None:
+                layers = _layer_edges(sample, T)
+            relation, t = tuple(step['relation']), step['mp_layer']
+            _require(relation in layers, 'Relation absent from the retained graph')
+            (sources, destinations), kept = layers[relation]
+            edge, destination = step['edge_occurrence'], step['destination_occurrence']
+            _require(edge < kept[t - 1], 'Edge occurrence outside the edges of its layer')
+            _require(sources[edge] == step['source_occurrence']
+                     and destinations[edge] == destination,
+                     'Edge occurrence endpoints differ from the retained graph')
+            if (relation, t) not in degrees:
+                degrees[relation, t] = Counter(destinations[:kept[t - 1]])
+            degree = degrees[relation, t][destination]
+            if step['operator'] == 'mean':
+                _require(step['denominator'] == degree,
+                         'Mean denominator differs from the retained in-degree')
+            elif step['operator'] == 'gather':
+                _require(degree == 1, 'A primary-key gather has one incoming edge')
