@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import kumoapi.data_source as data_source_api
 import kumoapi.jobs as jobs_api
 import pytest
+import yaml
 from kumo_core.model_plan import ModelPlan, TrainingTableGenerationPlan
 from kumo_core.types import PredictionArtifactType, TaskType
 from kumo_core.types.schema import FPID
@@ -34,6 +35,7 @@ from kumoapi.typing import Dtype, Stype
 
 from io_utils.fsutil.impl_local import LocalPresignedHelper
 from io_utils.fsutil.uri import LocalURI
+from io_utils.json import to_json
 from kumo.connector.parquet_connector import ParquetConnector
 from kumo.graph import Column, ForeignKey, Graph, Table
 from kumo.train.artifact_manifest import (
@@ -4176,3 +4178,37 @@ async def test_validate_bp_inputs_pred_table_job_status_guard():
     assert PREDICTION_TABLE_JOB_FAILED_TITLE not in [
         error.title for error in running.errors
     ]
+
+
+def test_get_model_plans_per_experiment_returns_trial_ids(tmp_path):
+    automl = tmp_path / 'trainingjob-1' / 'models' / 'NA' / 'automl'
+    max_epochs_by_dir = {
+        'version_0': 1,
+        'version_2': 3,
+        'version_10': 11,
+        'version_2_refit_trainval': 99,
+    }
+    (automl / 'version_1').mkdir(parents=True)
+    for dir_name, max_epochs in max_epochs_by_dir.items():
+        plan = ModelPlan()
+        plan.optimization.max_epochs = max_epochs
+        (automl / dir_name).mkdir()
+        (automl / dir_name / 'model_plan.json').write_text(to_json(plan))
+    pquery = _pquery_driver()
+    pquery.get_training_job = AsyncMock(return_value=None)
+
+    with patch('rest.driver.pquery_api_driver.get_job_base_dir',
+               return_value=str(tmp_path)):
+        response = asyncio.run(
+            pquery.get_model_plans_per_experiment(
+                ctx=None,
+                training_job_id='trainingjob-1',
+                task_type=TaskType.BINARY_CLASSIFICATION,
+                query_type=QueryType.TEMPORAL,
+            ))
+
+    assert response.trial_ids == ['0', '2', '10']
+    assert [
+        yaml.safe_load(plan)['optimization']['max_epochs']
+        for plan in response.model_plans
+    ] == [1, 3, 11]

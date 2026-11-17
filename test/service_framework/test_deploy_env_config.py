@@ -47,7 +47,10 @@ from service_framework._raw_deploy_config import (
     load_raw_deploy_config,
 )
 from service_framework.deploy_env import DEVTEST_NAMESPACE, ENV_KUMO_HOME
-from service_framework.deploy_env_config import DeployEnvConfig
+from service_framework.deploy_env_config import (
+    MAX_WORKFLOW_ID_LENGTH,
+    DeployEnvConfig,
+)
 from service_framework.deploy_stage import DeployStage
 
 _TEST_DATA_DIR = os.path.join(os.path.dirname(__file__), 'test_data')
@@ -787,6 +790,40 @@ class TestIdSuffix:
             instance_id='acme',
         )
         assert cfg.task_queue('ml-train-acme') == 'ml-train-acme'
+
+    def test_long_workflow_id_is_bounded(self):
+        cfg = DeployEnvConfig(
+            deploy_mode=DeployStage.PROD,
+            instance_id='acme',
+            orchestration=CustomTemporalConfig(server_address='temporal:7233'),
+        )
+        long_id = 'table-ingest-' + 'x' * 300
+        bounded = cfg.workflow_id(long_id)
+        assert len(bounded) == MAX_WORKFLOW_ID_LENGTH
+        assert bounded.startswith('table-ingest-xxx')
+        assert bounded.endswith('-acme')
+        assert cfg.workflow_id(bounded) == bounded
+        assert cfg.workflow_id(long_id + '-acme') == bounded
+        assert cfg.workflow_id(long_id[:-1] + 'y') != bounded
+
+    def test_workflow_id_at_limit_is_unchanged(self):
+        cfg = DeployEnvConfig(
+            deploy_mode=DeployStage.PROD,
+            instance_id='acme',
+            orchestration=CustomTemporalConfig(server_address='temporal:7233'),
+        )
+        fits = 'w' * (MAX_WORKFLOW_ID_LENGTH - len('-acme'))
+        assert cfg.workflow_id(fits) == fits + '-acme'
+
+    def test_temporal_cloud_keeps_long_workflow_ids(self):
+        cfg = DeployEnvConfig(
+            deploy_mode=DeployStage.PROD,
+            instance_id='acme',
+            orchestration=TemporalCloudConfig(),
+        )
+        long_id = 'table-ingest-' + 'x' * 300
+        assert cfg.max_workflow_id_length is None
+        assert cfg.workflow_id(long_id) == long_id + '-acme'
 
 
 class TestStorageResolution:
