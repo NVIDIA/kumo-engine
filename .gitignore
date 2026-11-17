@@ -178,3 +178,7 @@ pytest-of-*/
 
 # Built by packages/kumo-engine/setup.py from agent-skills/; ships in the wheel.
 packages/kumo-engine/kumo/engine/_skills/
+
+# PLC local scanner state (developer-local; .plc/security/ stays reviewable)
+.plc/tools/
+plc-evidence.jsonl
