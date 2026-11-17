@@ -619,3 +619,13 @@ def test_anchors_off_the_clock_warn(caplog, anchors, start_time, is_prediction, 
     builder.for_each("users", "user_id")
     builder.build()
     assert _builder_warnings(caplog) == warnings
+
+
+def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path):
+    index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
+    split = {"kind": "DateOffsetSplit", "offsets": [-30, 0], "offset_unit": "minutes",
+             "unit": "minutes", "timeframe": 30, "anchor_start_offset": -120}
+    rows = _split_rows(index, (-120, -90), split, "off_tick")
+    assert rows
+    assert rows == _split_rows(index, (-120, -60), {**split, "offsets": [0, 0], "timeframe": 0},
+                               "whole_hours")
