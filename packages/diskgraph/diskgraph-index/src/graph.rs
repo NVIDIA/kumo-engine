@@ -1814,6 +1814,7 @@ impl TableReader {
             Some(d) => d,
             None => return Ok(true),
         };
+        let raw = decoder.row_or_null(raw);
 
         let clock = decoder.clock();
         // Check create_time_col <= create_ref_ts

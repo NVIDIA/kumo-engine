@@ -450,9 +450,11 @@ fn table_rows(
             .edges_for_node(node_id)
             .map_err(|error| error.to_string())?;
         rows.push(
-            view.node_data()
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            decoder.row_or_null(
+                view.node_data()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            ),
         );
     }
     decoder
