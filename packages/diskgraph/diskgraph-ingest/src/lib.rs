@@ -9007,10 +9007,13 @@ impl IngestContext {
             Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
             None => None,
         };
-        if observer.wants_create_time() {
+        let create_time = if observer.wants_create_time() {
             let time = create_time_col_idx.and_then(|idx| access.get_timestamp(idx).ok().flatten());
             observer.start_row(time);
-        }
+            time
+        } else {
+            None
+        };
         node_tags.clear();
         node_bools.clear();
         node_data.clear();
@@ -9069,7 +9072,15 @@ impl IngestContext {
                         )?
                     };
                 }
-                lens = encode_without_features!(&mut diskgraph_rowpack::NoOpObserver);
+                // Cutoff stats, which observe whole rows, count the encoding stored.
+                lens = if observer.wants_create_time() {
+                    observer.start_row(create_time);
+                    let lens = encode_without_features!(observer);
+                    observer.finish_row(row_len(lens) <= MAX_NODE_DATA_LEN);
+                    lens
+                } else {
+                    encode_without_features!(&mut diskgraph_rowpack::NoOpObserver)
+                };
                 if row_len(lens) > MAX_NODE_DATA_LEN && oversized.stage {
                     oversized.dropped = oversized.dropped.saturating_add(1);
                     *node_data_dropped = node_data_dropped.saturating_add(1);

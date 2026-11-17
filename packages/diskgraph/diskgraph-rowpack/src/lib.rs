@@ -2130,7 +2130,9 @@ pub trait ColumnValueObserver {
     fn observe_beyond_clock(&mut self, col_idx: usize) {
         self.observe_parse_failure(col_idx);
     }
-    /// Whether the encode loop calls `start_row`.
+    /// Whether the encode loop calls `start_row`. Such an observer sees a row
+    /// over the node-data limit twice: its first encoding, finished as not
+    /// stored, then the encoding without features that ingest stores.
     fn wants_create_time(&self) -> bool {
         false
     }
