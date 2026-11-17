@@ -21,7 +21,7 @@ build/
 apps/studio/ui/
 
 # Workspace members the backend images deliberately don't ship
-packages/models/experimental/
+packages/data/kumo-pytorch/
 packages/clients/kumo-engine/
 packages/models/glove-6b-50d/
 

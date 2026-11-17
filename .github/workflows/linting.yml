@@ -160,7 +160,7 @@ jobs:
             packages/contracts/kumo-settings
             packages/integrations/kumo-snowflake
             packages/clients/kumo-engine
-            packages/models/experimental/kumo-pytorch
+            packages/data/kumo-pytorch
             packages/models/glove-6b-50d
           )
           for project in "${projects[@]}"; do

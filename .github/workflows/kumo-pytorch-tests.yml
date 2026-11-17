@@ -10,7 +10,7 @@ name: kumo-pytorch tests
 on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
-      - 'packages/models/experimental/kumo-pytorch/**'
+      - 'packages/data/kumo-pytorch/**'
       - 'packages/data/diskgraph/**'
       - 'development/tooling/scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -19,7 +19,7 @@ on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
     paths:
-      - 'packages/models/experimental/kumo-pytorch/**'
+      - 'packages/data/kumo-pytorch/**'
       - 'packages/data/diskgraph/**'
       - 'development/tooling/scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -46,7 +46,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: packages/models/experimental/kumo-pytorch
+        working-directory: packages/data/kumo-pytorch
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:

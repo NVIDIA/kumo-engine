@@ -34,7 +34,7 @@ dependencies = [
   "tokenizers>=0.22,<1",
   "torch>=2.7,<3",
 ]
-urls = {Homepage = "https://github.com/NVIDIA/kumo-engine/tree/main/packages/models/experimental/kumo-pytorch", Issues = "https://github.com/NVIDIA/kumo-engine/issues", Repository = "https://github.com/NVIDIA/kumo-engine"}
+urls = {Homepage = "https://github.com/NVIDIA/kumo-engine/tree/main/packages/data/kumo-pytorch", Issues = "https://github.com/NVIDIA/kumo-engine/issues", Repository = "https://github.com/NVIDIA/kumo-engine"}
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

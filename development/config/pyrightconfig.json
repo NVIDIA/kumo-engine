@@ -7,7 +7,7 @@
     ],
     "exclude": [
         "../../packages/data/diskgraph/**",
-        "../../packages/models/experimental/kumo-pytorch/**",
+        "../../packages/data/kumo-pytorch/**",
         "../../packages/runtime/kumo-core/**",
         "../../packages/clients/kumo-sdk/**"
     ],

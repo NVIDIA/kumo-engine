@@ -3703,7 +3703,7 @@ provides-extras = ["test", "docs"]
 
 [[package]]
 name = "kumo-pytorch"
-source = { editable = "packages/models/experimental/kumo-pytorch" }
+source = { editable = "packages/data/kumo-pytorch" }
 dependencies = [
     { name = "diskgraph" },
     { name = "numpy" },

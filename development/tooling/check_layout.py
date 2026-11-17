@@ -38,8 +38,8 @@ def main():
         bundle.append(line)
         if 'packages/' + line not in members:
             errors.append(f'Engine bundle input is not a workspace member: {line}')
-    if 'clients/kumo-sdk' in bundle or any('experimental/' in x for x in bundle):
-        errors.append('Remote SDK and experiments must not enter the engine bundle.')
+    if any(x in bundle for x in ['clients/kumo-sdk', 'data/kumo-pytorch']) or any('experimental/' in x for x in bundle):
+        errors.append('Remote SDK, standalone PyTorch API and experiments must not enter the engine bundle.')
     if 'data/diskgraph' in bundle:
         errors.append('DiskGraph must use the separate native build stage.')
     moves = json.loads((ROOT / 'development/repository-moves.json').read_text())['moves']

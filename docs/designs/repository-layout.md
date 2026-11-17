@@ -14,9 +14,9 @@ apps/
   studio/             Application Python packages, frontend and deployment assets
 packages/
   contracts/          Shared schemas, PQL and settings
-  data/               DiskGraph
+  data/               DiskGraph and the PyTorch batch-data API
   runtime/            Shared engine runtime; existing GNN implementation remains here
-  models/             Model artifacts and experimental model integration
+  models/             Model artifacts and model-specific adapters
   integrations/       Source providers and platform integrations
   clients/            Local engine SDK and remote Studio SDK
   ui/                 Reusable web component library
@@ -35,6 +35,12 @@ and distributable agent skills live with `packages/clients/kumo-engine`.
 Existing Studio utility/tool modules remain with Studio because they are part
 of its Python distribution; separating their implementations is a later change.
 Cross-component validation and benchmarks live under `development/`.
+
+`packages/data/kumo-pytorch` exposes the `kumo.pytorch` API for preparing
+relational data as model batches for training and inference. It belongs with
+data execution, alongside DiskGraph. Its experimental status remains in its
+documentation and package metadata; the directory groups describe responsibility.
+Reference models inside that package do not make it a model adapter.
 
 `development/repository-moves.json` records the exact old-to-new path mapping
 and the starting revision. It is a migration record, not a runtime path resolver.

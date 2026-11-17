@@ -29,7 +29,7 @@ kumo-pytorch, so the pragma-fraud and churn examples need nothing more. Then ope
 You can also run every notebook headless, the way kumo-engine's CI does. Set up
 the kumo-engine checkout as described in
 [running the tests and notebooks from a checkout](../docs/installation.md#run-the-tests-and-notebooks-from-a-checkout),
-then, with that environment active, run this from `packages/models/experimental/kumo-pytorch`:
+then, with that environment active, run this from `packages/data/kumo-pytorch`:
 
 ```bash
 python -m pytest -m notebook

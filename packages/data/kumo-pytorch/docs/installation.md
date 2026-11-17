@@ -2,7 +2,7 @@
 
 kumo-pytorch isn't published on PyPI. It lives in the
 [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) repository under
-`packages/models/experimental/kumo-pytorch`, and you install it by building wheels from
+`packages/data/kumo-pytorch`, and you install it by building wheels from
 a checkout of that repository. It needs Python 3.11 or newer, PyTorch 2.7 or
 newer (below 3), and the DiskGraph engine, which is a required dependency built
 from `packages/data/diskgraph` in the same repository. kumo-engine's Rust-based
@@ -91,7 +91,7 @@ uv sync --locked --extra cpu
 uv sync --locked --inexact --no-install-package torch --package kumo-pytorch --extra dev --extra examples
 uv pip install jupyter
 source .venv/bin/activate
-cd packages/models/experimental/kumo-pytorch
+cd packages/data/kumo-pytorch
 python -m pytest -q
 ```
 

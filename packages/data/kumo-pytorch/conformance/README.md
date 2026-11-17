@@ -187,7 +187,7 @@ stage. An earlier error cannot satisfy a later-stage assertion. Public check
 refusals continue to require unreadable source rows, nonexistent Parquet paths,
 an engine-open trap, and the requested path/reason plus a suggestion.
 
-From `packages/models/experimental/kumo-pytorch`, with the kumo-engine environment
+From `packages/data/kumo-pytorch`, with the kumo-engine environment
 described in [installation](../docs/installation.md#run-the-tests-and-notebooks-from-a-checkout)
 active:
 
