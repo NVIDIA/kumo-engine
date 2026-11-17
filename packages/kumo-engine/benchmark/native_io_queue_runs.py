@@ -7,8 +7,10 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import random
+import stat
 import subprocess
 import sys
 import time
@@ -31,6 +33,87 @@ def read_json(path: str) -> dict:
 
 def save_json(path: str, value: dict) -> None:
     fsutil.write_text(path, json.dumps(value, indent=2, allow_nan=False) + '\n')
+
+
+def durable_artifacts(spec: dict, root: str, controller_log: str | None = None) -> list[str]:
+    prefix = spec['result'].removesuffix('.json')
+    paths = list(spec['iops_paths'].values()) + list(spec['observer_paths'].values())
+    paths += [spec['result'], prefix + '.log', prefix + '-resources.json',
+              spec['runtime_prepared_dir'] + '/manifest.json']
+    paths += [root + '/' + name for name in ('plan.json', 'progress.json', 'completion.json')]
+    base = Path(root).resolve()
+    synced = []
+    if controller_log is not None:
+        sys.stdout.flush()
+        # Only the explicitly declared experiment log may live beside root.
+        with fsutil.get_binary_handle(controller_log, 'rb') as handle:
+            os.fsync(handle.fileno())
+        synced.append(controller_log)
+    for path in sorted(set(paths)):
+        if not Path(path).resolve().is_relative_to(base):
+            raise ValueError('Artifact durability is restricted to this owned experiment')
+        if fsutil.exists(path):
+            # fsutil has no durability primitive; fsync on a read fd also
+            # handles the root collector's readable, immutable output files.
+            with fsutil.get_binary_handle(path, 'rb') as handle:
+                os.fsync(handle.fileno())
+            synced.append(path)
+
+    def sync_directory(path: str) -> None:
+        for child in fsutil.listdir(path):
+            if Path(child).is_symlink() or not Path(child).resolve().is_relative_to(base):
+                raise ValueError('Owned artifact directory contains an external link')
+            if fsutil.isdir(child):
+                sync_directory(child)
+        # POSIX directory-fd durability has no fsutil equivalent. This also
+        # persists successful private-clone/work-directory removal metadata.
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    sync_directory(root)
+    return synced
+
+
+def validate_controller(root: str, path: str | None) -> None:
+    metadata = os.fstat(1)
+    if path is None:
+        if stat.S_ISREG(metadata.st_mode):
+            raise ValueError('Redirected controller stdout requires --controller-log')
+        return
+    if os.path.abspath(path) != root + '-controller.log' or Path(path).is_symlink():
+        raise ValueError('Controller log must be the exact owned experiment companion path')
+    declared = os.stat(path)
+    if (not stat.S_ISREG(metadata.st_mode) or
+            (metadata.st_dev, metadata.st_ino) != (declared.st_dev, declared.st_ino)):
+        raise ValueError('Declared controller log is not the redirected stdout file')
+
+
+def quiet_device(path: str, seconds: float, timeout: float) -> dict:
+    from native_io_trace import device_identity
+    if not all(math.isfinite(value) for value in (seconds, timeout)) or not 0 < seconds < timeout:
+        raise ValueError('Device quiet interval must be positive and shorter than its timeout')
+    device = device_identity(path)
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + timeout
+    previous, stable_since, samples = None, None, 0
+    while time.monotonic() < deadline:
+        counters = [int(value) for value in fsutil.read_text(device['sysfs'] + '/stat').split()]
+        if len(counters) < 11 or any(value < 0 for value in counters):
+            raise ValueError('Unsupported physical-device statistics')
+        now = time.monotonic_ns()
+        samples += 1
+        if counters[8] or counters != previous:
+            stable_since = now if counters[8] == 0 else None
+        elif stable_since is not None and (now - stable_since) / 1e9 >= seconds:
+            return {'device': device, 'started_ns': started, 'quiet_started_ns': stable_since,
+                    'ended_ns': now, 'required_seconds': seconds, 'samples': samples,
+                    'stable_counters': counters}
+        previous = counters
+        time.sleep(.05)
+    raise TimeoutError('Physical device did not become quiet before payload release')
 
 
 def file_hash(path: str) -> str:
@@ -193,6 +276,8 @@ def run_service(spec: dict, args: argparse.Namespace, mode: str, pins: dict) -> 
                 validate_identity(ready, gate)
                 if collector.poll() is not None:
                     raise RuntimeError('Observer exited before payload release')
+            durable_artifacts(spec, args.output_dir, args.controller_log)
+            boundary = quiet_device(args.device, args.quiet_seconds, args.quiet_timeout)
             publish_json(paths['release'], {'status': 'READY', 'pid': gate['pid'],
                                             'cgroup_id': gate['cgroup_id']})
             deadline = time.monotonic() + spec['timeout'] + 600
@@ -226,6 +311,7 @@ def run_service(spec: dict, args: argparse.Namespace, mode: str, pins: dict) -> 
     row['queue_observer'] = {'status': 'PASS', 'mode': mode, 'paths': observed,
                              'pins': pins, 'service_unit': unit,
                              'gate': read_json(paths['gate']),
+                             'pre_payload_quiet': boundary,
                              'application_rates': phase_rates(row, None)}
     if mode != 'none':
         row['queue_observer'].update(record_sha256=file_hash(observed['record']),
@@ -295,6 +381,7 @@ def run(args: argparse.Namespace) -> None:
     if not args.execute:
         print(json.dumps(plan, indent=2))
         return
+    validate_controller(args.output_dir, args.controller_log)
     if fsutil.exists(args.output_dir):
         raise FileExistsError('Each experiment must use a fresh output directory')
     fsutil.makedirs(args.output_dir)
@@ -328,7 +415,10 @@ def run(args: argparse.Namespace) -> None:
         try:
             row = run_service(spec, args, mode, pins)
         finally:
-            verify_baseline(clone)
+            try:
+                verify_baseline(clone)
+            finally:
+                durable_artifacts(spec, args.output_dir, args.controller_log)
         validate_work([by_backend[backend], row])
         validate_predictions([by_backend[backend], row], 1e-6)
         rows.append(row)
@@ -339,9 +429,11 @@ def run(args: argparse.Namespace) -> None:
         save_json(args.output_dir + '/progress.json', {
             'completed': len(rows), 'expected': len(order), 'last': spec['result']})
         print(f'PASS {len(rows)}/{len(order)} {repeat} {backend} {mode}', flush=True)
+        durable_artifacts(spec, args.output_dir, args.controller_log)
     save_json(args.output_dir + '/completion.json', {
         'status': 'PASS', 'results': [row['matrix_spec']['result'] for row in rows],
         'pins': pins, 'workload_correctness': 'Exact original work and predictions'})
+    durable_artifacts(spec, args.output_dir, args.controller_log)
 
 
 def main() -> None:
@@ -350,6 +442,7 @@ def main() -> None:
                    'output-dir', 'build-provenance', 'expected-native-sha256', 'python'):
         parser.add_argument('--' + option, required=True)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--controller-log')
     parser.add_argument('--backends', default='mmap,buffered,direct')
     parser.add_argument('--observers', default='none,queue')
     parser.add_argument('--repetitions', type=int, default=5)
@@ -362,6 +455,7 @@ def main() -> None:
     parser.add_argument('--drain-seconds', type=float, default=10.)
     parser.add_argument('--finalize-timeout', type=float, default=300.)
     parser.add_argument('--quiet-seconds', type=float, default=1.)
+    parser.add_argument('--quiet-timeout', type=float, default=30.)
     parser.add_argument('--bcc-python-path', default='/usr/lib/python3/dist-packages')
     parser.add_argument('--frequency', type=int, default=99)
     run(parser.parse_args())
