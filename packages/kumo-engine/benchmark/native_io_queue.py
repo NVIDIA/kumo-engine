@@ -24,7 +24,8 @@ from io_utils import fsutil
 ANCHOR_MAGIC = 0x44475141
 DIAGNOSTICS = ('probe_read_failure', 'missing_read_write_bio', 'request_map_full',
                'invalid_reissue', 'completion_error_or_partial_merge',
-               'request_delete_failure', 'perf_submit_failure', 'sequence_map_missing')
+               'request_delete_failure', 'perf_submit_failure', 'sequence_map_missing',
+               'invalid_flush_token', 'flush_token_delete_failure')
 
 
 def load_json(path: str) -> dict:
@@ -65,6 +66,31 @@ def bio_next_offset(types: list[dict]) -> int:
     return members[0]['bits_offset'] // 8
 
 
+def flush_layout(types: list[dict]) -> dict:
+    """Resolve the metadata used to prove the second, logical flush callback."""
+    requests = [value for value in types if value.get('kind') == 'STRUCT' and value.get('name') == 'request']
+    if len(requests) != 1:
+        raise ValueError('BTF request layout is unavailable')
+    by_id = {value['id']: value for value in types}
+    offsets = {}
+    for name, width in (('rq_flags', 4), ('__data_len', 4), ('start_time_ns', 8)):
+        members = [value for value in requests[0]['members'] if value['name'] == name]
+        if len(members) != 1 or members[0]['bits_offset'] % 8 or members[0].get('bitfield_size', 0):
+            raise ValueError(f'Unsupported BTF request.{name} layout')
+        entry = by_id[members[0]['type_id']]
+        while entry['kind'] in {'TYPEDEF', 'CONST', 'VOLATILE', 'RESTRICT', 'TYPE_TAG'}:
+            entry = by_id[entry['type_id']]
+        if entry['kind'] != 'INT' or entry['size'] != width:
+            raise ValueError(f'Unsupported BTF request.{name} width')
+        offsets['OFF_REQUEST_' + name.strip('_').upper()] = members[0]['bits_offset'] // 8
+    flags = [value['val'] for entry in types if entry.get('kind') in {'ENUM', 'ENUM64'}
+             for value in entry.get('values', []) if value['name'] == '__RQF_FLUSH_SEQ']
+    if flags != [1]:
+        raise ValueError('Unsupported BTF RQF_FLUSH_SEQ enum layout')
+    offsets['RQF_FLUSH_SEQ_MASK'] = 1 << flags[0]
+    return offsets
+
+
 class EventBuffer:
     """Byte capacity is explicit; no event data is written before STOP/drain."""
 
@@ -103,7 +129,7 @@ def start_capture(bpf, buffer: EventBuffer) -> None:
     state = bpf['state']
     key = state.Key(0)
     value = state[key]
-    if value.capture_enabled or value.pending or value.bootstrap_ns or value.end_ns:
+    if value.capture_enabled or value.pending or value.pending_flush or value.bootstrap_ns or value.end_ns:
         raise ValueError('Capture must start from a fresh disabled BPF state')
     value.capture_enabled = 1
     state[key] = value
@@ -117,7 +143,8 @@ def kernel_snapshot(bpf) -> dict:
                              for index, name in enumerate(DIAGNOSTICS)},
                 kernel_records=sum(int(value) for value in sequence[sequence.Key(0)]),
                 pending=int(state.pending), bootstrap_ns=int(state.bootstrap_ns), end_ns=int(state.end_ns),
-                request_entries=len(bpf['requests']))
+                request_entries=len(bpf['requests']), pending_flush=int(state.pending_flush),
+                flush_entries=len(bpf['flush_tokens']))
 
 
 def device_inflight(device: dict) -> int:
@@ -133,7 +160,8 @@ def wait_quiet(bpf, device: dict, seconds: float, deadline: float) -> dict:
         bpf.perf_buffer_poll(timeout=50)
         state = kernel_snapshot(bpf)
         now = time.monotonic()
-        empty = not state['pending'] and not state['request_entries'] and device_inflight(device) == 0
+        empty = (not state['pending'] and not state['request_entries'] and not state['pending_flush']
+                 and not state['flush_entries'] and device_inflight(device) == 0)
         if not empty or state['kernel_records'] != previous:
             quiet_since = None
         elif quiet_since is None:
@@ -166,6 +194,7 @@ def collect(args) -> dict:
         '/usr/sbin/bpftool', '-j', 'btf', 'dump', 'file', '/sys/kernel/btf/vmlinux', 'format', 'raw']))['types']
     offsets = helpers.btf_offsets(types)
     offsets['OFF_BIO_NEXT'] = bio_next_offset(types)
+    offsets.update(flush_layout(types))
     source = str(Path(__file__).with_suffix('.c'))
     constants = dict(offsets, TARGET_CGROUP=gate['cgroup_id'], DEVICE_MAJOR=device['major'],
                      DEVICE_MINOR=device['minor'], REQUEST_CAPACITY=args.request_capacity,
@@ -232,7 +261,8 @@ def collect(args) -> dict:
         row = load_json(stop['result_path'])
         raw = bytes(buffer.data)
         diagnostics = dict(state['diagnostics'], **buffer.diagnostics)
-        if any(diagnostics.values()) or state['pending'] or state['request_entries']:
+        if (any(diagnostics.values()) or state['pending'] or state['request_entries']
+                or state['pending_flush'] or state['flush_entries']):
             raise ValueError('Kernel diagnostics or drain failed')
         if state['kernel_records'] * EVENT.size != len(raw):
             raise ValueError('Kernel/raw event cardinality differs')
@@ -253,6 +283,8 @@ def collect(args) -> dict:
         fsutil.write_binary(args.events, raw)
         usage = resource.getrusage(resource.RUSAGE_SELF)
         record.update(meta, schema_version=1, ready=ready,
+                      final_kernel_state={key: state.get(key) for key in (
+                          'pending', 'request_entries', 'pending_flush', 'flush_entries', 'end_ns')},
                       transport_sizes=buffer.received_sizes, invalid_transport_sample=buffer.invalid_sample,
                       events=dict(path=args.events, sha256=hashlib.sha256(raw).hexdigest(),
                                   bytes=len(raw), records=len(raw) // EVENT.size,

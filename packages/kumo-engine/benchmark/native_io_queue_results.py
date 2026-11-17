@@ -15,7 +15,8 @@ from io_utils import fsutil
 
 EVENT = struct.Struct('<QQQQQIIIIIIQ')
 ISSUE, FINAL, REQUEUE, REISSUE, MERGE, MARK, ANCHOR, UNKNOWN = range(1, 9)
-END = 9
+END, LOGICAL_FLUSH, FLUSH_TOKEN = 9, 10, 11
+FLUSH_SEQ_MASK = 2  # Collector rejects BTF layouts where __RQF_FLUSH_SEQ != 1.
 PHASES = {1: 'fit', 2: 'training', 3: 'predict', 4: 'repeat', 5: 'reload', 6: 'e2e'}
 MARKERS = [(6, 1), (1, 1), (2, 1), (2, 0), (1, 0), (3, 1), (3, 0), (6, 0),
            (4, 1), (4, 0), (5, 1), (5, 0)]
@@ -23,6 +24,7 @@ SCOPES = ('device', 'target', 'mixed_or_unchecked', 'foreign_or_unknown', 'possi
 DIAGNOSTICS = ('probe_read_failure', 'missing_read_write_bio', 'request_map_full',
                'invalid_reissue', 'completion_error_or_partial_merge',
                'request_delete_failure', 'perf_submit_failure', 'sequence_map_missing',
+               'invalid_flush_token', 'flush_token_delete_failure',
                'perf_lost', 'ram_overflow', 'record_size')
 
 
@@ -55,7 +57,9 @@ def ordered_events(raw: bytes):
 def event_order(event: tuple) -> tuple:
     # Generation orders an old final before pointer reuse at the same clock
     # tick. Other simultaneous transitions have zero intervening residence.
-    return (event[0], event[1], event[2], event[10], event[11])
+    # A logical flush callback depends on the earlier DATA completion even
+    # when another CPU observes both within one finite-resolution clock tick.
+    return (event[0], event[1], event[2], int(event[5] == LOGICAL_FLUSH), event[10], event[11])
 
 
 def histogram() -> dict:
@@ -80,7 +84,7 @@ def scope_state() -> dict:
 
 
 def phase_state(start: int, depths: list[int]) -> dict:
-    phase = dict(start_ns=start, **{name: scope_state() for name in SCOPES})
+    phase = dict(start_ns=start, logical_flush_callbacks=0, **{name: scope_state() for name in SCOPES})
     for index, name in enumerate(SCOPES):
         phase[name].update(pending_lifecycle_at_start=depths[2 * index],
                            pending_dispatched_at_start=depths[2 * index + 1])
@@ -135,13 +139,14 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
                 model_pid: int, capture_end_ns: int) -> dict:
     if len(client_marks) != 12:
         raise ValueError('Expected twelve client markers')
-    requests, phases, active = {}, {}, {}
+    requests, phases, active, tokens = {}, {}, {}, {}
     depths, previous, anchor, marker_index, ended = [0] * (2 * len(SCOPES)), None, None, 0, False
     counts = dict(issued=0, final=0, merged=0, requeues=0, reissues=0, bootstrap_unknown=0,
-                  mixed_requests=0, unchecked_bio_tails=0, unattributed_operations=0, clock_tie_events=0)
+                  mixed_requests=0, unchecked_bio_tails=0, unattributed_operations=0, clock_tie_events=0,
+                  flush_tokens=0, logical_flush_callbacks=0)
     for event in ordered_events(raw):
         ts, pointer, generation, cgroup, payload, kind, operation, phase_id, entering, pid, _, _ = event
-        if ended or ts <= 0 or ts > capture_end_ns or kind not in range(1, 10):
+        if ended or ts <= 0 or ts > capture_end_ns or kind not in range(1, 12):
             raise ValueError('Invalid event time or kind')
         counts['clock_tie_events'] += int(previous == ts)
         if previous is not None and anchor is not None:
@@ -154,13 +159,13 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             counts['bootstrap_unknown'] += 1
             continue
         if kind == ANCHOR:
-            if anchor is not None or requests or any(depths):
+            if anchor is not None or requests or tokens or any(depths):
                 raise ValueError('Bootstrap must establish one empty-device epoch')
             anchor = ts
             phases['observation'] = active['observation'] = phase_state(ts, depths)
             continue
         if kind == END:
-            if (anchor is None or requests or any(depths) or set(active) != {'observation'}
+            if (anchor is None or requests or tokens or any(depths) or set(active) != {'observation'}
                     or ts != capture_end_ns or marker_index != 12):
                 raise ValueError('Invalid final drained capture boundary')
             close_phase(active.pop('observation'), ts, depths, requests, target_cgroup)
@@ -185,9 +190,22 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             continue
         if phase_id & ~15:
             raise ValueError('Unsupported BIO attribution flags')
+        if kind == LOGICAL_FLUSH:
+            token = tokens.get(pointer)
+            if (pointer in requests or token is None or not token[5]
+                    or token[:5] != [generation, cgroup, operation, phase_id, payload]
+                    or entering & FLUSH_SEQ_MASK):
+                raise ValueError('Logical flush callback lacks its exact completed DATA token')
+            del tokens[pointer]
+            counts['logical_flush_callbacks'] += 1
+            for phase in active.values():
+                phase['logical_flush_callbacks'] += 1
+            continue
+        if entering and kind != FLUSH_TOKEN:
+            raise ValueError('Unexpected request event metadata')
         members = membership(cgroup, target_cgroup, phase_id)
         if kind == ISSUE:
-            if pointer in requests or generation != ts:
+            if pointer in requests or pointer in tokens or generation != ts:
                 raise ValueError('Duplicate request or invalid generation')
             requests[pointer] = [generation, cgroup, operation, True, phase_id]
             for index, member in enumerate(members):
@@ -201,6 +219,15 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
         request = requests.get(pointer)
         if request is None or request[:3] != [generation, cgroup, operation] or request[4] != phase_id:
             raise ValueError('Request identity/lifecycle mismatch')
+        if kind == FLUSH_TOKEN:
+            if (pointer in tokens or operation != 1 or not request[3]
+                    or not entering & FLUSH_SEQ_MASK or not 0 < payload <= generation):
+                raise ValueError('Invalid flush DATA token or start_time_ns')
+            tokens[pointer] = [generation, cgroup, operation, phase_id, payload, False]
+            counts['flush_tokens'] += 1
+            continue
+        if pointer in tokens and kind != FINAL:
+            raise ValueError('Flush DATA token must precede its physical final')
         if kind == REQUEUE:
             if not request[3]:
                 raise ValueError('Duplicate requeue')
@@ -220,6 +247,10 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
                 raise ValueError('Final completion while requeued')
             if kind == MERGE and payload:
                 raise ValueError('Partial completion followed by merge is unsupported')
+            if pointer in tokens:
+                if operation != 1 or not payload:
+                    raise ValueError('Flush DATA physical completion must have WRITE payload')
+                tokens[pointer][5] = True
             for index, member in enumerate(members):
                 depths[index * 2] -= member
                 depths[index * 2 + 1] -= member * int(request[3])
@@ -240,16 +271,19 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             raise ValueError('Negative queue depth')
     if anchor is None or marker_index != 12 or len(client_marks) != 12:
         raise ValueError('Missing bootstrap or twelve phase markers')
-    if requests or any(depths) or active or not ended:
+    if requests or tokens or any(depths) or active or not ended:
         raise ValueError('Undrained request/phase state')
     if counts['issued'] != counts['final'] + counts['merged']:
         raise ValueError('Request reconciliation failed')
+    if counts['flush_tokens'] != counts['logical_flush_callbacks']:
+        raise ValueError('Flush token reconciliation failed')
     finalize(phases)
     return dict(phases=phases, counts=counts, bootstrap_ns=anchor,
                 latency_definition='First postmerge issue to final callback, including requeue delay; completion-phase assignment',
+                flush_definition='Verified flush DATA is counted once at physical completion; its later token-matched logical callback adds no device depth, payload or latency',
                 idle_definition='No dispatched tracked physical-device requests, including other operations and foreign cgroups; not NAND internal idle',
                 target_definition='Pure target is lower occupancy bound; possible_target adds mixed BIOs containing target and unknown BIO tails/origins as conservative upper bound. No journal-write causality inferred',
-                clock_definition='Observed kernel timestamps, not perfect physical ordering; ties use request pointer/generation/CPU sequence. Marker pointer0 precedes same-tick requests (half-open phase convention); zero-time transitions add no occupancy area',
+                clock_definition='Observed kernel timestamps, not perfect physical ordering; ties use request pointer/generation, physical-before-logical flush, then CPU sequence. Marker pointer0 precedes same-tick requests (half-open phase convention); zero-time transitions add no occupancy area',
                 histogram_definition='Depth keys are exact depths with nanoseconds; log2 bucket0=zero, bucketN=[2**(N-1),2**N)')
 
 
@@ -270,6 +304,12 @@ def validate_collection(record: dict, row: dict, gate: dict, events_bytes: bytes
     if (type(stop['exit_code']) is not int or stop['exit_code'] != 0
             or stop['result_path'] != row['matrix_spec']['result']):
         raise ValueError('STOP must prove successful exit for the exact workload result')
+    state = record.get('final_kernel_state', {})
+    if (set(state) != {'pending', 'request_entries', 'pending_flush', 'flush_entries', 'end_ns'}
+            or any(type(state.get(key)) is not int or state[key] != 0
+                   for key in ('pending', 'request_entries', 'pending_flush', 'flush_entries'))
+            or type(state.get('end_ns')) is not int or state['end_ns'] != record['capture_end_ns']):
+        raise ValueError('Final kernel request/token state was not exactly drained')
     oracle = record['events']
     if (oracle['sha256'] != hashlib.sha256(events_bytes).hexdigest()
             or oracle['bytes'] != len(events_bytes) or oracle['records'] * EVENT.size != len(events_bytes)

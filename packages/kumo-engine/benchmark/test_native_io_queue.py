@@ -6,7 +6,12 @@ import ctypes
 from types import SimpleNamespace
 
 import pytest
-from native_io_queue import EventBuffer, bio_next_offset, start_capture
+from native_io_queue import (
+    EventBuffer,
+    bio_next_offset,
+    flush_layout,
+    start_capture,
+)
 from native_io_queue_results import EVENT
 
 
@@ -59,7 +64,7 @@ def test_perf_unexpected_width_fails(size):
 
 def test_transport_registration_precedes_capture():
     calls = []
-    value = SimpleNamespace(capture_enabled=0, pending=0, bootstrap_ns=0, end_ns=0)
+    value = SimpleNamespace(capture_enabled=0, pending=0, pending_flush=0, bootstrap_ns=0, end_ns=0)
 
     class StateMap:
         Key = int
@@ -88,3 +93,33 @@ def test_bio_chain_offset_uses_actual_btf_pointer():
     types[1]['kind'] = 'INT'
     with pytest.raises(ValueError, match='pointer'):
         bio_next_offset(types)
+
+
+def flush_types():
+    return [dict(id=1, kind='STRUCT', name='request', members=[
+        dict(name='rq_flags', bits_offset=32, type_id=2),
+        dict(name='__data_len', bits_offset=64, type_id=2),
+        dict(name='start_time_ns', bits_offset=128, type_id=3)]),
+        dict(id=2, kind='INT', size=4), dict(id=3, kind='INT', size=8),
+        dict(id=4, kind='ENUM', values=[dict(name='__RQF_FLUSH_SEQ', val=1)])]
+
+
+def test_flush_layout_proves_fields_and_mask():
+    assert flush_layout(flush_types()) == dict(OFF_REQUEST_RQ_FLAGS=4, OFF_REQUEST_DATA_LEN=8,
+                                               OFF_REQUEST_START_TIME_NS=16, RQF_FLUSH_SEQ_MASK=2)
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda t: t[0]['members'][0].update(bits_offset=33),
+    lambda t: t[0]['members'][0].update(bitfield_size=1),
+    lambda t: t[0]['members'].pop(),
+    lambda t: t[1].update(size=8),
+    lambda t: t[2].update(kind='PTR'),
+    lambda t: t[3]['values'][0].update(val=2),
+    lambda t: t[3].update(values=[]),
+])
+def test_flush_layout_mismatch_fails(mutation):
+    types = flush_types()
+    mutation(types)
+    with pytest.raises(ValueError, match='BTF'):
+        flush_layout(types)

@@ -13,6 +13,10 @@ struct request_state {
     u32 active;
     u32 attribution_flags;
 };
+struct flush_token {
+    struct request_state request;
+    u64 start_time;
+};
 struct event {
     u64 timestamp;
     u64 request;
@@ -32,10 +36,12 @@ struct trace_state {
     u64 bootstrap_ns;
     u64 end_ns;
     u64 capture_enabled;
+    u64 pending_flush;
 };
 BPF_HASH(requests, u64, struct request_state, REQUEST_CAPACITY);
+BPF_HASH(flush_tokens, u64, struct flush_token, REQUEST_CAPACITY);
 BPF_PERCPU_ARRAY(sequence, u64, 1);
-BPF_PERCPU_ARRAY(diagnostics, u64, 8);
+BPF_PERCPU_ARRAY(diagnostics, u64, 10);
 BPF_ARRAY(state, struct trace_state, 1);
 BPF_PERF_OUTPUT(events);
 
@@ -140,6 +146,7 @@ RAW_TRACEPOINT_PROBE(block_rq_issue) {
     u64 pointer = ctx->args[0];
     u32 operation = 0, zero = 0;
     if (!device_request(pointer, &operation)) return 0;
+    if (flush_tokens.lookup(&pointer)) { diagnostic(8); return 0; }
     u64 now = bpf_ktime_get_ns();
     struct request_state *old = requests.lookup(&pointer);
     if (old) {
@@ -188,6 +195,31 @@ static __always_inline int remove_request(void *ctx, u64 pointer, u32 kind) {
     u32 zero = 0, operation = 0;
     struct request_state *value = requests.lookup(&pointer);
     if (!value) {
+        struct flush_token *token = flush_tokens.lookup(&pointer);
+        if (token && kind != 2) { diagnostic(8); return 0; }
+        if (token && kind == 2) {
+            u32 flags = 0, remaining = 0;
+            u64 start_time = 0;
+            if (!device_request(pointer, &operation) ||
+                read32(pointer, OFF_REQUEST_RQ_FLAGS, &flags) ||
+                read32(pointer, OFF_REQUEST_DATA_LEN, &remaining) ||
+                read64(pointer, OFF_REQUEST_START_TIME_NS, &start_time)) return 0;
+            if (operation != 1 || flags & RQF_FLUSH_SEQ_MASK || remaining ||
+                !start_time || start_time != token->start_time) {
+                diagnostic(8);
+                return 0;
+            }
+            /* blk_flush_complete_seq restores the already-completed DATA
+             * request and calls blk_mq_end_request again. This is logical
+             * completion, without a second hardware dispatch or payload. */
+            struct request_state metadata = token->request;
+            metadata.bytes = start_time;
+            emit(ctx, 10, pointer, &metadata, 0, flags, bpf_ktime_get_ns());
+            struct trace_state *s = state.lookup(&zero);
+            if (s) __sync_fetch_and_add(&s->pending_flush, -1);
+            if (flush_tokens.delete(&pointer)) diagnostic(9);
+            return 0;
+        }
         /* A request merged before its first issue never occupied dispatched
          * depth and need not have an entry in our issue-started lifecycle. */
         if (kind != 5 && device_request(pointer, &operation))
@@ -195,6 +227,30 @@ static __always_inline int remove_request(void *ctx, u64 pointer, u32 kind) {
         return 0;
     }
     if (kind == 5 && value->bytes) diagnostic(4);
+    if (kind == 2 && value->operation == 1) {
+        u32 flags = 0, remaining = 0;
+        if (read32(pointer, OFF_REQUEST_RQ_FLAGS, &flags)) return 0;
+        if (flags & RQF_FLUSH_SEQ_MASK) {
+            struct flush_token token = {};
+            token.request = *value;
+            if (!value->active || !value->bytes ||
+                read32(pointer, OFF_REQUEST_DATA_LEN, &remaining) ||
+                read64(pointer, OFF_REQUEST_START_TIME_NS, &token.start_time)) {
+                diagnostic(8);
+                return 0;
+            }
+            if (remaining || !token.start_time || token.start_time > value->generation) {
+                diagnostic(8);
+                return 0;
+            }
+            if (flush_tokens.insert(&pointer, &token)) { diagnostic(2); return 0; }
+            struct trace_state *s = state.lookup(&zero);
+            if (s) __sync_fetch_and_add(&s->pending_flush, 1);
+            struct request_state metadata = *value;
+            metadata.bytes = token.start_time;
+            emit(ctx, 11, pointer, &metadata, 0, flags, bpf_ktime_get_ns());
+        }
+    }
     emit(ctx, kind, pointer, value, 0, 0, bpf_ktime_get_ns());
     struct trace_state *s = state.lookup(&zero);
     if (s) __sync_fetch_and_add(&s->pending, -1);
@@ -214,10 +270,10 @@ TRACEPOINT_PROBE(syscalls, sys_enter_prctl) {
     struct trace_state *s = state.lookup(&zero);
     if (!s || !s->capture_enabled) return 0;
     if (args->option == ANCHOR_MAGIC && pid == OBSERVER_PID) {
-        if (!s->pending && !s->bootstrap_ns && args->arg2 == 0) {
+        if (!s->pending && !s->pending_flush && !s->bootstrap_ns && args->arg2 == 0) {
             s->bootstrap_ns = bpf_ktime_get_ns();
             emit(args, 7, 0, 0, 0, 0, s->bootstrap_ns);
-        } else if (!s->pending && s->bootstrap_ns && !s->end_ns && args->arg2 == 1) {
+        } else if (!s->pending && !s->pending_flush && s->bootstrap_ns && !s->end_ns && args->arg2 == 1) {
             s->end_ns = bpf_ktime_get_ns();
             emit(args, 9, 0, 0, 0, 0, s->end_ns);
         }

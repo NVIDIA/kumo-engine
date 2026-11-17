@@ -12,7 +12,9 @@ from native_io_queue_results import (
     END,
     EVENT,
     FINAL,
+    FLUSH_TOKEN,
     ISSUE,
+    LOGICAL_FLUSH,
     MARK,
     MARKERS,
     MERGE,
@@ -62,6 +64,8 @@ def fixture_record():
                   collector_sha256='a' * 64, bpf_source_sha256='b' * 64, btf_sha256='c' * 64,
                   stop=dict(exit_code=0, result_path='/historical/result.json'),
                   diagnostics={name: 0 for name in DIAGNOSTICS}, event_capacity_bytes=10000,
+                  final_kernel_state=dict(pending=0, request_entries=0, pending_flush=0,
+                                          flush_entries=0, end_ns=200),
                   events=dict(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
                               records=len(raw) // EVENT.size, kernel_records=len(raw) // EVENT.size,
                               format=EVENT.format), capture_end_ns=200,
@@ -129,6 +133,63 @@ def test_same_tick_phase_boundary_has_explicit_half_open_convention():
     assert result['phases']['fit']['target']['completed']['read']['latency_ns']['count'] == 1
 
 
+def flush_events():
+    return [event(ISSUE, 35, operation=1),
+            event(FLUSH_TOKEN, 74, generation=35, operation=1, payload=20, entering=2),
+            event(FINAL, 75, generation=35, operation=1, payload=4096),
+            event(LOGICAL_FLUSH, 95, generation=35, operation=1, payload=20)]
+
+
+def test_flush_logical_completion_does_not_extend_device_work():
+    raw, clients = sample(flush_events())
+    result = reconstruct(raw, 7, clients, 100, 200)
+    phase = result['phases']['training']['target']
+    assert phase['dispatched_depth_ns'] == {'0': 20, '1': 40}
+    assert phase['completed']['write']['payload_bytes']['total'] == 4096
+    assert phase['completed']['write']['latency_ns']['total'] == 40
+    assert result['counts']['issued'] == result['counts']['final'] == 1
+    assert result['counts']['flush_tokens'] == result['counts']['logical_flush_callbacks'] == 1
+    assert result['phases']['training']['logical_flush_callbacks'] == 0
+    assert result['phases']['fit']['logical_flush_callbacks'] == 1
+
+
+def test_flush_same_tick_crosscpu_respects_data_dependency():
+    events = flush_events()
+    events[1][0], events[1][10] = 75, 2
+    events[2][10] = 2
+    events[3][0], events[3][10] = 75, 1
+    raw, clients = sample(events)
+    result = reconstruct(raw, 7, clients, 100, 200)
+    assert result['counts']['logical_flush_callbacks'] == 1
+    assert result['phases']['training']['target']['completed']['write']['latency_ns']['count'] == 1
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda e: e[1].__setitem__(4, 0),
+    lambda e: e[1].__setitem__(4, 36),
+    lambda e: e[1].__setitem__(8, 0),
+    lambda e: e[3].__setitem__(4, 21),
+    lambda e: e[3].__setitem__(2, 34),
+    lambda e: e[3].__setitem__(3, 8),
+    lambda e: e[3].__setitem__(6, 0),
+    lambda e: e[3].__setitem__(8, 2),
+    lambda e: e[2].__setitem__(4, 0),
+    lambda e: e[3].__setitem__(0, 74),
+    lambda e: e.pop(1),
+    lambda e: e.pop(3),
+    lambda e: e.insert(2, event(FLUSH_TOKEN, 74, generation=35, operation=1, payload=20, entering=2)),
+    lambda e: e.append(event(ISSUE, 85, operation=1)),
+    lambda e: e.append(event(LOGICAL_FLUSH, 96, generation=35, operation=1, payload=20)),
+    lambda e: e.append(event(UNKNOWN, 96)),
+])
+def test_flush_token_corruption_fails(mutation):
+    events = flush_events()
+    mutation(events)
+    raw, clients = sample(events)
+    with pytest.raises(ValueError):
+        reconstruct(raw, 7, clients, 100, 200)
+
+
 @pytest.mark.parametrize('extra', [
     [event(ISSUE, 35), event(ISSUE, 40)],
     [event(FINAL, 45)],
@@ -163,6 +224,10 @@ def test_saved_record_replays_without_historical_reads():
     lambda r: r['ready'].update(gate_pid=91),
     lambda r: r['stop'].update(exit_code=True),
     lambda r: r['stop'].update(result_path='/other/result.json'),
+    lambda r: r['final_kernel_state'].update(pending_flush=1),
+    lambda r: r['final_kernel_state'].update(flush_entries=1),
+    lambda r: r['final_kernel_state'].update(pending=False),
+    lambda r: r['final_kernel_state'].update(end_ns=201),
     lambda r: r['diagnostics'].update(perf_lost=1),
     lambda r: r.update(diagnostics={}),
     lambda r: r['events'].update(kernel_records=999),
