@@ -216,15 +216,20 @@ class DiskgraphTaskManifest:
         return result
 
     @property
-    def predict_candidates(self) -> np.ndarray | None:
-        """RHS node IDs the target filter admits; ``None`` admits all."""
+    def predict_candidates_path(self) -> str | None:
         relative_path = self.manifest.get("side_artifacts",
                                           {}).get(PREDICT_CANDIDATES)
         if not relative_path:
             return None
         artifact_root = self.manifest.get("artifact_root") or os.path.dirname(
             os.path.abspath(self.manifest_path))
-        return np.load(os.path.join(artifact_root, str(relative_path)))
+        return os.path.join(artifact_root, str(relative_path))
+
+    @property
+    def predict_candidates(self) -> np.ndarray | None:
+        """RHS node IDs the target filter admits; ``None`` admits all."""
+        path = self.predict_candidates_path
+        return None if path is None else np.load(path)
 
     def _split_info(self) -> Mapping[str, Any]:
         relative_path = self.manifest.get("split_info_path")

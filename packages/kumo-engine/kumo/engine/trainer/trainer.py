@@ -988,6 +988,21 @@ def _requested_artifacts(
             {PredictionArtifactType.PREDICTIONS})
 
 
+def _reject_pairwise_candidates(artifacts: Mapping[str, str], query: Any,
+                                graph: Any, task_type: Any) -> None:
+    from kumo_core.io.json import load_json
+    from kumo_core.link_candidates import PAIRWISE_CANDIDATES, candidate_query
+    from kumo_core.pquery import to_api_graph
+    from kumo_core.training.config import LinkPredModuleType, TrainerConfig
+
+    if not task_type.is_link_pred or candidate_query(
+            query, to_api_graph(graph), task_type) is None:
+        return
+    config = load_json(artifacts['trainer_config'], TrainerConfig)
+    if config.module_kwargs.module is LinkPredModuleType.ID:
+        raise ValueError(PAIRWISE_CANDIDATES)
+
+
 def _offset_count(compiler_options: Mapping[str, Any],
                   name: str) -> Optional[int]:
     offsets = compiler_options.get(name)
@@ -1729,6 +1744,8 @@ class Trainer:
                          PredictionArtifactType.EMBEDDINGS)
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        _reject_pairwise_candidates(training_result.artifact_paths,
+                                    parsed.query, native_graph, task_type)
         if num_classes_to_return is None and parsed.query.top_k is None:
             num_classes_to_return = defaults.num_classes_to_return
         requested_classes = num_classes_to_return

@@ -152,6 +152,8 @@ def test_id_gnn_embeddings_request_has_actionable_validation(
             request,
             TaskType.STATIC_LINK_PREDICTION,
             TrainingJobID.make_random_id(),
+            None,
+            None,
         )
 
 
@@ -1317,7 +1319,8 @@ async def test_existing_model_can_score_new_generator_graph(monkeypatch):
     logic._resolve_bp_graph_id = AsyncMock(return_value=(GraphIDv2.compose(
         fpid=FPID('a' * 32)), None))
     logic._gen_pred_table_graph_context = AsyncMock()
-    generated_input = SimpleNamespace(graph_data_compute_input=SimpleNamespace())
+    generated_input = SimpleNamespace(
+        graph_data_compute_input=SimpleNamespace(), predictive_query=None)
     logic.make_batch_prediction_job_input_v2 = AsyncMock(
         return_value=generated_input)
     logic._apply_bp_job_tags = AsyncMock()
@@ -1375,8 +1378,9 @@ async def _create_bp_for_a_model_trained_in(monkeypatch, trained, **kwargs):
     logic._compute_bp_train_options = AsyncMock(return_value=(None, None))
     logic._resolve_bp_graph_id = AsyncMock(return_value=(GraphIDv2.compose(
         fpid=FPID('a' * 32)), None))
-    job_input = SimpleNamespace(graph_data_compute_input=SimpleNamespace(
-        timestamp_precision='seconds'))
+    job_input = SimpleNamespace(
+        graph_data_compute_input=SimpleNamespace(timestamp_precision='seconds'),
+        predictive_query=None)
     logic.make_batch_prediction_job_input_v2 = AsyncMock(return_value=job_input)
     logic._apply_bp_job_tags = AsyncMock()
     monkeypatch.setattr(batch_prediction_job_logic.DELETE_OLD_BP_JOBS,

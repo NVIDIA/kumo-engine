@@ -23,6 +23,10 @@ from .pquery import ValidatedNativeQuery
 from .sources.cpu import cpu_budget
 from .types import TaskType
 
+PAIRWISE_CANDIDATES = (
+    "A pairwise model cannot apply target-filter conditions on the "
+    "candidate table; remove them from the query.")
+
 
 def target_contract(query: ValidatedNativeQuery) -> tuple[str, str | None]:
     r"""The target without its filter, and the conditions a prediction
@@ -42,6 +46,21 @@ def target_contract(query: ValidatedNativeQuery) -> tuple[str, str | None]:
     return str(target), None if kept is None else str(kept)
 
 
+def candidate_query(query: ValidatedPredictiveQuery, graph: GraphDefinition,
+                    task_type: TaskType) -> ValidatedPredictiveQuery | None:
+    r"""The query keeping only its candidate-table conditions, or ``None``
+    when it has none."""
+    if not task_type.is_link_pred or not isinstance(
+            query.get_final_target_aggregation().target, Filter):
+        return None
+    candidates = BPFilterTransformer().generate_bp_query(
+        deepcopy(query), task_type, graph)
+    if not isinstance(candidates.get_final_target_aggregation().target,
+                      Filter):
+        return None
+    return candidates
+
+
 def candidate_node_ids(
     query: ValidatedPredictiveQuery,
     graph: GraphDefinition,
@@ -52,23 +71,19 @@ def candidate_node_ids(
     runtime: Any,
 ) -> np.ndarray | None:
     r"""Sorted RHS node IDs passing the candidate-table conditions."""
-    if not task_type.is_link_pred or not isinstance(
-            query.get_final_target_aggregation().target, Filter):
+    candidates = candidate_query(query, graph, task_type)
+    if candidates is None:
         return None
-    candidate_query = BPFilterTransformer().generate_bp_query(
-        deepcopy(query), task_type, graph)
-    target = candidate_query.get_final_target_aggregation().target
-    if not isinstance(target, Filter):
-        return None
-    table = get_rhs_lp_table(candidate_query, graph)
+    target = candidates.get_final_target_aggregation().target
+    table = get_rhs_lp_table(candidates, graph)
     primary_key = graph.tables[table].pkey
     plan = runtime.DiskGraphPlanCompiler(index_path=index_path).compile(
-        query=candidate_query,
+        query=candidates,
         timestamps=[],
         task_type=task_type.value,
         input_timestamp_unit="nanoseconds",
         is_prediction=True,
-        target_stype=candidate_query.target_stype.value,
+        target_stype=candidates.target_stype.value,
         lp_prediction_mode="RHS",
         lp_rhs_entity_table=table,
         lp_rhs_entity_column=primary_key,

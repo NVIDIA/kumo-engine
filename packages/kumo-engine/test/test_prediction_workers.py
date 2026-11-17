@@ -92,6 +92,8 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                         lambda *args: SimpleNamespace(
                             task_type=task_type.value,
                             query=SimpleNamespace(top_k=None)))
+    monkeypatch.setattr('kumo.engine.trainer.trainer._reject_pairwise_candidates',
+                        lambda *args: None)
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
         lambda **kwargs: object())

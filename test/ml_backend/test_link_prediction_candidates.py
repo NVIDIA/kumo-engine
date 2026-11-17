@@ -4,6 +4,7 @@
 
 import importlib
 import json
+from contextlib import nullcontext
 from test.fixtures.dg_indexed_graph import _build_diskgraph_ingest_config
 from types import SimpleNamespace
 
@@ -20,11 +21,15 @@ from kumo_core.pquery import (
     parse_and_validate_query,
     to_api_graph,
 )
+from kumo_core.training.config import LinkPredModuleType
 from kumo_core.types import TaskType
 
 from kumo.connector.parquet_connector import ParquetConnector
 from kumo.graph.graph import Graph
+from kumo.graph.utils import map_to_api_graph_definition
 from kumo.testing.pquery import get_validated_query
+from rest.driver import batch_prediction_job_logic as bpl
+from statedb.config.common import TrainingJobID
 from statedb.utils.errors import PredictionDataMaterializationError
 
 mpt = importlib.import_module(
@@ -161,3 +166,28 @@ def test_hosted_prediction_without_candidates_is_not_retried(indexed):
                        match="No row of table 'stores'") as error:
         _hosted(graph, index_path, 'stores.RATING > 100')
     assert error.value.non_retryable
+
+
+@pytest.mark.parametrize('module, condition, outcome', [
+    (LinkPredModuleType.ID, 'stores.IS_ACTIVE = true',
+     pytest.raises(ValueError, match='pairwise model')),
+    (LinkPredModuleType.ID, 'orders.AMOUNT > 5', nullcontext()),
+    (LinkPredModuleType.HYBRID, 'stores.IS_ACTIVE = true', nullcontext()),
+])
+def test_hosted_pairwise_rejects_candidate_filters_before_the_job(
+        indexed, monkeypatch, module, condition, outcome):
+    graph, _ = indexed
+    graph.infer_metadata()
+    monkeypatch.setattr(bpl.HomeDirManager, 'get_best_trainer_dir',
+                        lambda *_: '/model')
+    monkeypatch.setattr(
+        'io_utils.json.load_json', lambda *_: SimpleNamespace(
+            module_kwargs=SimpleNamespace(module=module)))
+    query = get_validated_query(graph, QUERY.format(condition))
+
+    with outcome:
+        bpl._validate_trained_model_artifact_support(
+            SimpleNamespace(outputs=[]), TaskType.TEMPORAL_LINK_PREDICTION,
+            TrainingJobID('model'),
+            SimpleNamespace(validated_predictive_query=query),
+            map_to_api_graph_definition(graph))

@@ -138,6 +138,15 @@ def test_prediction_ranks_valid_passing_candidates(predict, module, trained,
     assert set(frame['CLASS'].astype(int)) == expected
 
 
+def test_pairwise_rejects_its_trained_filter_before_materializing(
+        predict, monkeypatch):
+    monkeypatch.setattr('kumo.engine.trainer.trainer._materialize_prediction',
+                        None)
+
+    with pytest.raises(ValueError, match='pairwise model'):
+        predict('pairwise', AVAILABLE, AVAILABLE, 12)
+
+
 def test_unfiltered_pairwise_prediction_ignores_the_time_rule(predict):
     frame = predict('pairwise', '', '', 12)
 
