@@ -70,6 +70,13 @@ class WalkRule(Protocol):
     def finish(self, source: tuple, state: Any) -> tuple[float, Tensor | None, Absorbed]:
         ...
 
+    # Optional (ledger D14), not part of the Protocol so that rules without it
+    # still conform: `absolute_mass(layer, node, state) -> float`, called once
+    # per state after the enumerator is done with it (transferred, left as an
+    # unexpanded prefix, or finished at layer 0), returning the nonnegative
+    # absolute mass the rule handled there. `enumerate_walks` sums it into
+    # `Enumeration.intermediate_state_abs_mass` (None without the hook).
+
 
 @dataclass(frozen=True)
 class CompleteWalk:
@@ -94,6 +101,13 @@ class UnexpandedPrefix:
 
 @dataclass(frozen=True)
 class Enumeration:
+    """The traversal result.
+
+    `walk_vector_abs_mass` is the sum over all complete walks of the L1 norm
+    of their vector at `H_0` (walks without a vector contribute nothing);
+    `intermediate_state_abs_mass` is the sum of the rule's `absolute_mass`
+    hook over every state, or None when the rule has no hook (ledger D14).
+    """
     walks: tuple
     prefixes: tuple
     bias: dict
@@ -102,6 +116,8 @@ class Enumeration:
     stabilizer_terms: dict
     expanded_routes: int
     max_walks: int
+    walk_vector_abs_mass: float = 0.0
+    intermediate_state_abs_mass: float | None = None
 
     @property
     def complete(self):
@@ -117,11 +133,24 @@ def enumerate_walks(computation, rule, *, max_walks):
     the remaining budget of message-passing route expansions, the state
     becomes an unexpanded prefix and later states may still expand. Zero
     relevance is never pruned.
+
+    A rule with the optional `absolute_mass` hook reports, once per state, the
+    absolute mass it handled there; the sums feed the accounting tolerance
+    together with the absolute mass of every walk's vector (ledger D14).
     """
     if type(max_walks) is not int or max_walks < 1:
         raise ValueError('max_walks must be a positive integer')
     bias = {kind: [] for kind in KINDS}
     stabilizer = {kind: [] for kind in KINDS}
+    hook = getattr(rule, 'absolute_mass', None)
+    masses = [] if callable(hook) else None
+
+    def handled(layer, node, state):
+        if masses is not None:
+            value = float(hook(layer, node, state))
+            if value < 0:
+                raise ValueError('absolute_mass must be nonnegative')
+            masses.append(value)
 
     def absorb(absorbed):
         if not isinstance(absorbed, Absorbed):
@@ -143,19 +172,25 @@ def enumerate_walks(computation, rule, *, max_walks):
             if expanded + len(incoming.routes) > max_walks:
                 mass = float(rule.prefix_mass(layer, destination, state))
                 prefixes.append(UnexpandedPrefix(layer, destination, steps, mass))
+                handled(layer, destination, state)
                 continue
             expanded += len(incoming.routes)
             children, absorbed = rule.transfer(layer, destination, state, incoming)
             absorb(absorbed)
+            handled(layer, destination, state)
             if len(children) != len(incoming.routes):
                 raise ValueError('A rule must return one state per route')
             for route, child in zip(incoming.routes, children):
                 following.append((route.source, (route,) + steps, child))
         frontier = following
     walks = []
+    vectors = []
     for source, steps, state in frontier:
         relevance, vector, absorbed = rule.finish(source, state)
         absorb(absorbed)
+        handled(0, source, state)
+        if vector is not None:
+            vectors.append(float(vector.abs().sum()))
         walks.append(CompleteWalk(steps=steps, source=source,
                                   relevance=float(relevance), input_relevance=vector))
     return Enumeration(
@@ -164,4 +199,6 @@ def enumerate_walks(computation, rule, *, max_walks):
         stabilizer={kind: math.fsum(values) for kind, values in stabilizer.items()},
         bias_terms={kind: tuple(values) for kind, values in bias.items()},
         stabilizer_terms={kind: tuple(values) for kind, values in stabilizer.items()},
-        expanded_routes=expanded, max_walks=max_walks)
+        expanded_routes=expanded, max_walks=max_walks,
+        walk_vector_abs_mass=math.fsum(vectors),
+        intermediate_state_abs_mass=None if masses is None else math.fsum(masses))

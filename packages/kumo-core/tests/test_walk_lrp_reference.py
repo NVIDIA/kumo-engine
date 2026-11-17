@@ -335,3 +335,34 @@ def test_head_inversion_uses_the_rule_denominator_of_the_output_step():
             total = (rule.modified_contribution(op.input[table][seed], weight, 1).sum(0)
                      + rule.modified_bias(bias))
             assert rule.head_output_denominator() == float(total[0])
+
+
+# Absolute mass for the accounting tolerance (ledger D14) ####################
+
+@pytest.mark.parametrize('gamma,sign,modified,score_over_total', [
+    (0.25, 1, (3.75, -3.5), 0.5 / 0.25),
+    (0.25, -1, (-3.0, 4.375), 0.5 / 1.375),
+    (0.0, 1, (3.0, -3.5), 1.0),
+    (0.0, -1, (-3.0, 3.5), 1.0),
+])
+def test_skeleton_reports_the_absolute_mass_of_every_state(gamma, sign, modified,
+                                                           score_over_total):
+    """On the inversion fixture every step moves the same shares: m = sum of
+    |modified contributions| * |score / S|. The hook sees the head split and
+    the seed's state and transfer (3m), then the state at H_0 (m)."""
+    module, run = inversion_module()
+    config = WalkAttributionConfig(gamma=gamma, epsilon=1e-12)
+    _, enumeration = v2_enumeration(module, run, config, sign=sign)
+    m = math.fsum(abs(v) for v in modified) * score_over_total
+    assert enumeration.intermediate_state_abs_mass == pytest.approx(4 * m, rel=1e-9)
+    assert enumeration.walk_vector_abs_mass == pytest.approx(m, rel=1e-9)
+
+
+def test_epsilon_split_keeps_its_three_results():
+    """The public split is unchanged by the mass bookkeeping (D14)."""
+    children, shares, residual = epsilon_split(
+        [torch.tensor([[1.0], [-1.0]], dtype=F64)], [torch.tensor([0.5], dtype=F64)],
+        torch.tensor([2.0], dtype=F64), 1e-9)
+    factor = 2.0 / (0.5 + 1e-9)
+    assert children[0].tolist() == [factor, -factor] and shares == [0.5 * factor]
+    assert residual == pytest.approx(2.0 - 0.5 * factor, abs=1e-15)

@@ -264,6 +264,12 @@ def build_row(computation, enumeration, summary, *, config, selection, output,
         'stabilizer_residual': math.fsum(stabilizer_terms),
         'stabilizer_residual_by_kind': dict(enumeration.stabilizer),
         'precision_residual': precision_residual,
+        # Tolerance components (ledger D14): rounding scales with magnitudes
+        # that can cancel before they reach the items above.
+        'walk_vector_abs_mass': float(enumeration.walk_vector_abs_mass),
+        'intermediate_state_abs_mass': (
+            None if enumeration.intermediate_state_abs_mass is None
+            else float(enumeration.intermediate_state_abs_mass)),
         # Score minus every other item, summed exactly from the parts.
         'accounting_error': math.fsum(
             [score, -precision_residual] + [-w.relevance for w in enumeration.walks]
@@ -324,14 +330,24 @@ def build_row(computation, enumeration, summary, *, config, selection, output,
 
 
 def absolute_mass(row):
-    """`A`: absolute ledger mass of a row (4.10)."""
+    """`A`: absolute ledger mass of a row (4.10, ledger D14).
+
+    The displayed walks' absolute relevance, the absolute omissions, the
+    absolute bias and stabilizer items by kind and `abs(precision_residual)`,
+    plus the tolerance components `walk_vector_abs_mass` (the L1 norms of
+    every walk's vector) and `intermediate_state_abs_mass` (every state and
+    split the rule handled, when it reports them). Rows written before these
+    components existed lack them and keep the smaller `A`.
+    """
     ledger = row['ledger']
     return math.fsum(
         [abs(w['relevance']) for w in row['walks']]
         + [ledger['omitted_display_abs_relevance'],
            ledger['omitted_search_abs_prefix_mass'], abs(ledger['precision_residual'])]
         + [abs(v) for v in ledger['bias_relevance_by_kind'].values()]
-        + [abs(v) for v in ledger['stabilizer_residual_by_kind'].values()])
+        + [abs(v) for v in ledger['stabilizer_residual_by_kind'].values()]
+        + [ledger.get('walk_vector_abs_mass') or 0.0,
+           ledger.get('intermediate_state_abs_mass') or 0.0])
 
 
 def row_numerics(numerics, computation_dtype, *, replay_precision_mode=None):
@@ -746,6 +762,7 @@ def _validate_bags(row, walks, keys, coverage, ledger, config, complete, T):
 
 
 def _validate_ledger(row, walks, ledger):
+    _validate_tolerance_components(row, walks, ledger)
     for name in ('bias_relevance', 'stabilizer_residual'):
         by_kind = ledger[f'{name}_by_kind']
         _require(set(by_kind) == set(KINDS), f'{name}_by_kind must list every kind')
@@ -764,6 +781,30 @@ def _validate_ledger(row, walks, ledger):
              'Ledger identity does not close')
     _require(abs(ledger['accounting_error']) <= tolerance(mass),
              'accounting_error exceeds tol(A)')
+
+
+def _validate_tolerance_components(row, walks, ledger):
+    """Ledger D14 components: optional (older rows lack them), never negative,
+    and the vector mass covers every displayed vector (exactly all of them
+    when every walk is displayed)."""
+    vectors = ledger.get('walk_vector_abs_mass')
+    states = ledger.get('intermediate_state_abs_mass')
+    if vectors is None:
+        _require('walk_vector_abs_mass' not in ledger and states is None,
+                 'Tolerance components come together, with a vector mass')
+        return
+    _require(type(vectors) is float and vectors >= 0.0
+             and (states is None or (type(states) is float and states >= 0.0)),
+             'Tolerance components are nonnegative floats')
+    shown = [math.fsum(abs(v) for v in w['input_relevance'])
+             for w in walks if 'input_relevance' in w]
+    if shown:
+        mass = absolute_mass(row)
+        _require(vectors >= math.fsum(shown) - tolerance(mass),
+                 'walk_vector_abs_mass is below the displayed vectors')
+        if len(shown) == row['coverage']['total_walks']:
+            _require(_close(vectors, math.fsum(shown), mass),
+                     'walk_vector_abs_mass is not the vectors of every walk')
 
 
 def _validate_exactness(row, architecture, complete):

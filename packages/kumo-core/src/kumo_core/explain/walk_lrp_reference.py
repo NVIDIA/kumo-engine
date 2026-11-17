@@ -17,6 +17,10 @@ decomposition, never a degree-T decomposition.
 shared LRP skeleton: a rule differs only in `modified_contribution`, the
 gamma-modified contribution of one linear input.
 
+The skeleton also implements the optional enumerator hook `absolute_mass`
+(ledger D14), so the accounting tolerance of every LRP rule covers the
+absolute mass of every intermediate relevance vector and split.
+
 v2 rows of this rule carry the head sign-inversion diagnostic of ledger D11
 under `diagnostics[METHOD_ID]`, with the field names of the weight-gamma rule:
 `head_output_denominator` and `head_output_flipped` (`head_inversion`).
@@ -52,6 +56,15 @@ def epsilon_split(contributions, biases, relevance, epsilon):
     the child relevance vectors, the bias shares and the stabilizer residual
     `sum(relevance - allocated)`.
     """
+    children, shares, residual, _ = _epsilon_split(contributions, biases, relevance,
+                                                   epsilon)
+    return children, shares, residual
+
+
+def _epsilon_split(contributions, biases, relevance, epsilon):
+    """`epsilon_split` plus the absolute mass the split formed: every
+    contribution and bias share and the stabilizer residual, in absolute
+    value (ledger D14). The split's arithmetic is unchanged."""
     total = torch.zeros_like(relevance)
     for z in contributions:
         total += z.sum(0)
@@ -61,16 +74,21 @@ def epsilon_split(contributions, biases, relevance, epsilon):
     factor = relevance / (total + torch.where(total >= 0, eps, -eps))
     allocated = torch.zeros_like(relevance)
     children = []
+    mass = []
     for z in contributions:
         share = z * factor
         allocated += share.sum(0)
         children.append(share.sum(1))
+        mass.append(float(share.abs().sum()))
     shares = []
     for b in biases:
         share = b * factor
         shares.append(float(share.sum()))
         allocated += share
-    return children, shares, float((relevance - allocated).sum())
+        mass.append(float(share.abs().sum()))
+    residual = float((relevance - allocated).sum())
+    mass.append(abs(residual))
+    return children, shares, residual, math.fsum(mass)
 
 
 class GammaLRPRule:
@@ -115,10 +133,25 @@ class GammaLRPRule:
         return float(total[self.output_index])
 
     def _split(self, contributions, biases, relevance, kind):
-        children, shares, residual = epsilon_split(
+        children, shares, residual, mass = _epsilon_split(
             contributions, [self.modified_bias(b) for b in biases], relevance,
             self.epsilon)
+        self.__dict__.setdefault('_pending_mass', []).append(mass)
         return children, Absorbed.of(kind, bias=math.fsum(shares), stabilizer=residual)
+
+    def absolute_mass(self, layer, node, state):
+        """Optional enumerator hook (ledger D14): the absolute mass handled at
+        one state, reported once the enumerator is done with the state.
+
+        The L1 norm of the state's relevance vector plus the absolute shares,
+        bias shares and stabilizer residuals of every split formed since the
+        previous call: the head steps for the seed's state, the state's own
+        transfer, or the preprocessing steps of `finish`. Float64 rounding of
+        a split is bounded by these magnitudes, also when they cancel in the
+        relevance passed on (a near-zero denominator).
+        """
+        pending = self.__dict__.pop('_pending_mass', [])
+        return math.fsum([float(state.abs().sum())] + pending)
 
     def start(self):
         computation = self.computation

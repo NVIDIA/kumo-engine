@@ -27,19 +27,29 @@ from kumo_core.explain.walk_binary import (
     resolve_selection,
 )
 from kumo_core.explain.walk_enumerate import Absorbed, enumerate_walks
-from kumo_core.explain.walk_graph import GraphCapture
+from kumo_core.explain.walk_graph import (
+    GraphCapture,
+    architecture_record,
+    operations_record,
+)
+from kumo_core.explain.walk_lrp_reference import ContributionGammaRule
+from kumo_core.explain.walk_lrp_reference import summarize as legacy_summarize
 from kumo_core.explain.walk_schema import (
     WalkSchemaError,
+    absolute_mass,
     bag_signature,
     build_row,
     explain_capture,
     group_bags,
     row_numerics,
     row_step_key,
+    tolerance,
     validate_v2_row,
     walk_key,
 )
 from kumo_core.modeling.calibration import PlatScaling
+from kumo_core.modeling.gnn.hetero import HeteroGNN
+from kumo_core.modeling.heads.node_prediction import NodePredHead
 from kumo_core.train.loss import BinaryCrossEntropyLoss
 from tests.test_walk_enumerate import PathProductRule
 from tests.test_walk_graph import (
@@ -50,6 +60,7 @@ from tests.test_walk_graph import (
     b1_forward,
     b1_module,
     capture,
+    random_b1,
     toy_t3_module,
 )
 
@@ -696,3 +707,164 @@ LEGACY_DIAGNOSTIC_MUTATIONS = {
 def test_legacy_head_inversion_mutations_are_rejected(row, name):
     with pytest.raises(WalkSchemaError):
         validate_v2_row(mutate(row, LEGACY_DIAGNOSTIC_MUTATIONS[name]), b1_sample())
+
+
+# Accounting tolerance components (ledger D14) ################################
+
+def components(row):
+    ledger = row['ledger']
+    return ledger['walk_vector_abs_mass'], ledger['intermediate_state_abs_mass']
+
+
+def test_rows_record_the_tolerance_components(row, binary_row):
+    for built in (row, binary_row):
+        vectors, states = components(built)
+        assert type(vectors) is float and type(states) is float and states > vectors > 0
+        without = copy.deepcopy(built)
+        del without['ledger']['walk_vector_abs_mass']
+        del without['ledger']['intermediate_state_abs_mass']
+        assert absolute_mass(built) == pytest.approx(absolute_mass(without) + vectors + states)
+        validate_v2_row(without, b1_sample())  # rows written before D14 stay valid
+    # Every walk is displayed with its vector: the mass is exactly theirs.
+    assert binary_row['coverage']['total_walks'] == len(binary_row['walks'])
+    assert components(binary_row)[0] == pytest.approx(math.fsum(
+        abs(v) for w in binary_row['walks'] for v in w['input_relevance']))
+
+
+TOLERANCE_MUTATIONS = {
+    'negative_vectors': lambda r: r['ledger'].update(walk_vector_abs_mass=-1.0),
+    'integer_states': lambda r: r['ledger'].update(intermediate_state_abs_mass=3),
+    'vectors_below_displayed': lambda r: r['ledger'].update(walk_vector_abs_mass=0.0),
+    'states_without_vectors': lambda r: r['ledger'].pop('walk_vector_abs_mass'),
+    'null_vectors': lambda r: r['ledger'].update(walk_vector_abs_mass=None),
+}
+
+
+@pytest.mark.parametrize('name', sorted(TOLERANCE_MUTATIONS))
+def test_tolerance_component_mutations_are_rejected(binary_row, name):
+    with pytest.raises(WalkSchemaError):
+        validate_v2_row(mutate(binary_row, TOLERANCE_MUTATIONS[name]), b1_sample())
+
+
+def cancellation_module(mixing, hidden=1.0):
+    """The P3 reviewer's cancellation cases (review E5 and probe 10).
+
+    One customer, T = 1, identity activations, no biases. At gamma 0.25 the
+    head's hidden neuron 0 (row (1, -1) on H_1 = (1, 1.25)) has a modified
+    total of exactly 0 but nonzero relevance, so its shares are about +-3e8
+    against a score below 1. With an identity root they reach the walk
+    vector (E5, and V4 with hidden weight 0.7); with the channel-mixing root
+    [[0.5, 0.5], [0.625, 0.625]] on x = (1, 1) they cancel at the root step
+    and the walk vector stays small (V5 and V6, hidden weights 0.7 and 0.3).
+    """
+    module = torch.nn.Module()
+    module.entity_table_name = 'customer'
+    module.train_table_name = 'task'
+    module.model = HeteroGNN(2, 1, metadata=(['customer'], []), aggr='mean', norm=None,
+                             bias=False, learn_skip=mixing, act=None)
+    module.head = NodePredHead(2, 1, hidden_channels=2, num_layers=2, norm=None,
+                               param_keys=[], bias=False, act=None)
+    module = module.double()
+    with torch.no_grad():
+        if mixing:
+            module.model.root_skips[0].lin_dict['customer'].weight.copy_(
+                torch.tensor([[0.5, 0.5], [0.625, 0.625]]))
+        module.head.mlp.lins[0].weight.copy_(torch.tensor([[1.0, -1.0], [hidden, 0.0]]))
+        module.head.mlp.lins[1].weight.copy_(torch.tensor([[1.0, 1.0]]))
+    x = {'customer': torch.tensor([[1.0, 1.0] if mixing else [1.0, 1.25]],
+                                  dtype=torch.float64)}
+    return module.eval(), x
+
+
+def cancellation_row(method, mixing, hidden):
+    module, x = cancellation_module(mixing, hidden)
+    config = WalkAttributionConfig(method=method, gamma=0.25, feature_vectors=True)
+    with GraphCapture(module, config) as cap:
+        hidden_rows = module.model(dict(x), {}, {'customer': [1, 0]}, {})
+        logits = module.head(hidden_rows['customer'][:1]).detach()
+    selection = Selection('regression', 0, 1, None)
+    return explain_capture(cap, config=config, selection=selection,
+                           output=output_block(selection, module, logits[0]),
+                           sample={'nodes': {'customer': {'pkeys': [7], 'node_ids': [70]}}},
+                           origin='original_forward_attribution', prediction_id=ID,
+                           sample_sha256=SAMPLE_ID, numerics=row_numerics(NUMERICS, 'float64'))
+
+
+@pytest.mark.parametrize('method', [LEGACY_METHOD, WEIGHT_GAMMA_METHOD])
+@pytest.mark.parametrize('case,mixing,hidden', [
+    ('E5', False, 1.0), ('V4', False, 0.7), ('V5', True, 0.7), ('V6', True, 0.3)])
+def test_cancelling_rows_close_their_ledger_with_the_d14_mass(method, case, mixing, hidden):
+    row = cancellation_row(method, mixing, hidden)
+    assert row['status'] == 'available', row.get('reason')
+    validate_v2_row(row)
+    error = abs(row['ledger']['accounting_error'])
+    vectors, states = components(row)
+    mass = absolute_mass(row)
+    assert error <= tolerance(mass)
+    # Without the D14 components these correct rows would fail ...
+    assert error > tolerance(mass - vectors - states)
+    if mixing:
+        # ... and with only the walk vectors too: the magnitude cancelled
+        # before H_0, so only the intermediate states carry it.
+        assert error > tolerance(mass - states)
+        assert vectors < 2.0 and states > 1e8
+    else:
+        assert vectors > 1e8
+
+
+class LeakyRule(ContributionGammaRule):
+    """Not conserving: the last child of every transfer loses `leak`."""
+    leak = 0.0
+
+    def transfer(self, layer, destination, state, incoming):
+        children, absorbed = super().transfer(layer, destination, state, incoming)
+        children[-1] = children[-1] * (1.0 - self.leak)
+        return children, absorbed
+
+
+def leaky_row(seed, leak):
+    module, run = random_b1(seed, head_layers=2, head_bias=True)
+    cap, logits = capture(module, run)
+    computation = cap.computation()
+    selection = Selection('regression', 0, 1, None)
+    config = WalkAttributionConfig(feature_vectors=True, gamma=0.25)
+    rule = LeakyRule(computation, selection, config)
+    rule.leak = leak
+    enumeration = enumerate_walks(computation, rule, max_walks=config.max_walks)
+    sample = {'nodes': {table: {'pkeys': list(range(len(h))), 'node_ids': list(range(len(h)))}
+                        for table, h in computation.h0.items()}}
+    return build_row(computation, enumeration,
+                     legacy_summarize(computation, selection, config, enumeration),
+                     config=config, selection=selection,
+                     output=output_block(selection, module, logits[0].detach()),
+                     qualification=[], architecture=architecture_record(module),
+                     operations=operations_record(module), sample=sample,
+                     origin='original_forward_attribution', prediction_id=ID,
+                     sample_sha256=SAMPLE_ID, numerics=row_numerics(NUMERICS, 'float64'))
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_a_non_conserving_rule_still_fails_on_ordinary_rows(seed):
+    exact = leaky_row(seed, 0.0)
+    assert exact['status'] == 'available'
+    validate_v2_row(exact)
+    for leak in (1.0, 1e-5):  # a dropped share, and a leak of 1e-5 of one share
+        broken = leaky_row(seed, leak)
+        assert broken['status'] == 'failed'
+        assert broken['reason'] == 'accounting_error_exceeded'
+
+
+def test_methods_without_the_hook_record_only_the_vector_mass():
+    """A rule without the `absolute_mass` hook (degree-T, the toy rules) gains
+    the walk vectors only, and the state component is recorded as null."""
+    row, enumeration, _ = toy_rows(WalkAttributionConfig(method=DEGREE_T_METHOD))
+    assert enumeration.intermediate_state_abs_mass is None
+    assert components(row) == (0.0, None)  # the toy rule has no vectors either
+    validate_v2_row(row, method_checks=False)
+    # B1 (bias-free, f = 9 on eight walks of nonnegative vectors).
+    built = row_for(b1_module(), WalkAttributionConfig(method=DEGREE_T_METHOD,
+                                                       feature_vectors=True))
+    assert built['status'] == 'available', built.get('reason')
+    vectors, states = components(built)
+    assert states is None and vectors == pytest.approx(9.0)
+    validate_v2_row(built, b1_sample())

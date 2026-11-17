@@ -211,3 +211,53 @@ def test_protocol_errors_are_explicit():
         Absorbed(bias={'head': torch.tensor(1.0)})
     absorbed = Absorbed.of('head', bias=1, stabilizer=0.5)
     assert absorbed.bias == {'head': 1.0} and absorbed.stabilizer == {'head': 0.5}
+
+
+# Optional absolute-mass hook (ledger D14) ####################################
+
+class MassReportingRule(PathProductRule):
+    """`PathProductRule` with the optional hook and a vector at `H_0`."""
+
+    def __init__(self, computation):
+        super().__init__(computation)
+        self.calls = []
+
+    def absolute_mass(self, layer, node, state):
+        self.calls.append((layer, node))
+        return abs(state) + 1.0
+
+    def finish(self, source, state):
+        relevance = state * float(self.c.h0[source[0]][source[1]].sum())
+        return relevance, torch.tensor([relevance, -2.0 * relevance], dtype=F64), NONE
+
+
+@pytest.mark.parametrize('max_walks', [10000, 3])
+def test_absolute_mass_hook_reports_every_state_once(max_walks):
+    computation = b1_computation()
+    rule = MassReportingRule(computation)
+    enumeration = enumerate_walks(computation, rule, max_walks=max_walks)
+    # The seed's state plus one child per expanded route, each reported once.
+    assert len(rule.calls) == 1 + enumeration.expanded_routes
+    assert rule.calls[0] == (computation.T, computation.seed)
+    finished = [call for call in rule.calls if call[0] == 0]
+    assert len(finished) == len(enumeration.walks)
+    assert len(rule.calls) - len(finished) >= len(enumeration.prefixes)
+    assert enumeration.intermediate_state_abs_mass >= len(rule.calls)
+    assert enumeration.walk_vector_abs_mass == pytest.approx(
+        math.fsum(3.0 * abs(w.relevance) for w in enumeration.walks))
+
+
+def test_rules_without_the_hook_report_no_state_mass():
+    computation = b1_computation()
+    enumeration = enumerate_walks(computation, PathProductRule(computation),
+                                  max_walks=10000)
+    assert enumeration.intermediate_state_abs_mass is None
+    assert enumeration.walk_vector_abs_mass == 0.0  # no vectors either
+
+
+def test_a_negative_absolute_mass_is_a_rule_error():
+    computation = b1_computation()
+    rule = MassReportingRule(computation)
+    rule.absolute_mass = lambda layer, node, state: -1.0
+    with pytest.raises(ValueError, match='nonnegative'):
+        enumerate_walks(computation, rule, max_walks=10000)

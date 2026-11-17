@@ -108,9 +108,12 @@ def frame(result):
 
 
 def comparable(row):
-    """A walk row without the fields that legitimately differ on replay."""
+    """A walk row without the fields that legitimately differ on replay
+    (origin, numerics and the replay differences). Method `diagnostics` are
+    computed from the captured forward alone, so they must agree too (D14c)."""
     keep = ('walks', 'sources', 'ledger', 'score', 'output', 'coverage',
-            'exactness', 'architecture', 'operations', 'seed', 'method_settings')
+            'exactness', 'architecture', 'operations', 'seed', 'method_settings',
+            'diagnostics')
     return {key: row[key] for key in keep}
 
 
