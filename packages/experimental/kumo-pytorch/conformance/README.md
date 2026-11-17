@@ -222,6 +222,7 @@ the tolerances in this table, each named in the comparison code:
 |---|---|---|
 | Mean, variance and standard deviation (`SUMMATION_DEPENDENT`) compare within `MOMENT_TOLERANCE`, relative and absolute 1e-12; the engines sum in different orders, and the largest measured difference is 4 ULP (relative 5e-16) | `properties.py` | G-CALC-001: floating means and moments are approximate |
 | Fitted-state floats compare within the same `MOMENT_TOLERANCE` (`state_differences` in `fitted_state`) | `properties.py` | G-CALC-001: the fitted means and moments are approximate floating results |
+| Buckets cuts over stored columns compare by rank among the values they fit on, within `BUCKET_RANKS` = 3 (`fitted_state`); they are t-digest quantiles, each within 1.5 ranks of the exact cut, and the digest depends on the index's shard count | `properties.py` | Buckets fits on DiskGraph's approximate t-digest quantiles |
 | A sample with a tie at a fanout limit compares the clocks of the root's first-layer neighbors, not which tied neighbors are kept (`_same_up_to_ties`) | `graph_cases.py` | G-GRAPH-001 rule 2: which tied neighbor is kept is unspecified |
 
 The in-memory engine builds no index, reads no Parquet binding and has no model

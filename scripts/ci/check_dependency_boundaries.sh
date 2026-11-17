@@ -44,6 +44,7 @@ PACKAGES=(
   "packages/kumo-gcs:src:kumo_gcs::kumoapi|google"
   "packages/kumo-adls:src:kumo_adls::"
   "packages/kumo-s3:src:kumo_s3::botocore|kumoapi|pydantic"
+  "packages/kumo-settings:src:kumo::"
 )
 
 # Module names deptry can't infer correctly from the distribution name.

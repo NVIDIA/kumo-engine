@@ -276,10 +276,9 @@ def test_fitted_state_is_written_inspectably_in_the_artifact(tmp_path):
     task = Plans(schema, tables).prepare(_sample(), _tokens(), [SampleRequest("u1", 1, 100)])
     task.to_artifact().save(tmp_path)
     written = json.loads((tmp_path / "fitted-state.json").read_text())
-    fit, lengths, fitted_for = written.pop("fit"), written.pop("lengths"), written.pop("fitted_for")
+    fit, fitted_for = written.pop("fit"), written.pop("fitted_for")
     assert written == task.fitted_state
     assert fit == task.fitted_state.fit
-    assert lengths == task.manifest["lengths"]
     assert fitted_for == {
         "inputs": task.contract.input_fingerprint,
         "contract": task.contract.fingerprint,

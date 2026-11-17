@@ -252,6 +252,7 @@ def test_scan_reports_company_infrastructure_identifiers(
         'import { Button } from "@kumo-ai/ui-catalog/button"',
         "https://{account}.snowflakecomputing.com",
         "https://app.snowflake.com/myaccount/#/data",
+        "https://app.snowflake.com/_deeplink/#/experiments",
         "s3://kumo-public-datasets/movielens/ratings.parquet",
         "s3://customer-bucket/data and gs://example-bucket/data",
         "/home/runner/work and /home/ubuntu/.cache and ~/data and $HOME/x",
@@ -317,3 +318,16 @@ def test_diff_scan_works_in_a_blobless_clone_without_lazy_fetch(
     monkeypatch.setenv("GIT_NO_LAZY_FETCH", "1")
 
     assert scan_repository(clone, diff=(base, head)) == []
+
+
+def test_scan_reports_account_locator_in_notebook_identity_tuple():
+    findings = scan_text("notebook.py", "identity == ('" + "abc54321', 'TEST_USER')")
+    assert any(f.category == 'warehouse account' and f.host == 'abc54321'
+               for f in findings)
+
+
+def test_notebook_cell_ids_are_not_accounts():
+    locator = 'bea' + '90923'
+    assert scan_text('example.ipynb', f'  "id": "{locator}",') == []
+    assert scan_text('example.ipynb', f'  "account": "{locator}",')
+    assert scan_text('settings.py', f'account = "{locator}"')

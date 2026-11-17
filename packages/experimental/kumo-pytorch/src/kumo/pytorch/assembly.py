@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass, replace
 from dataclasses import field as dataclass_field
@@ -54,8 +54,14 @@ from kumo.pytorch.contract.batch import (
 )
 from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary, ZScore
 from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
-from kumo.pytorch.contract.dtypes import DType
-from kumo.pytorch.contract.sample import BuiltSample, SampleRequest, SampleSpec
+from kumo.pytorch.contract.dtypes import DType, _arrow_values
+from kumo.pytorch.contract.sample import (
+    BuiltSample,
+    ExternalTarget,
+    SampleRequest,
+    SampleSpec,
+    _normalize_supplied_targets,
+)
 from kumo.pytorch.data.masking import mask_event_values
 from kumo.pytorch.data.model import ModelSourceBatch
 from kumo.pytorch.data.records import EntityHistory, Event, cutoff_to_epoch
@@ -65,6 +71,7 @@ from kumo.pytorch.encoding import (
     OutputBinding,
     fit_encoder,
     json_value,
+    learns_from_values,
     typed_key,
     unjson_value,
 )
@@ -80,6 +87,24 @@ from kumo.pytorch.output import (
 from kumo.pytorch.spec import sample_without_targets
 
 HistoryInput = EntityHistory | BuiltSample
+_FIT_CHUNK = 4096
+
+
+def _chunks(values: Any) -> Any:
+    return (values[start : start + _FIT_CHUNK] for start in range(0, len(values), _FIT_CHUNK))
+
+
+class _Mapped:
+    """``self[i:j]`` is ``function(items[i:j])``, computed when sliced."""
+
+    def __init__(self, function: Any, items: Any) -> None:
+        self._function, self._items = function, items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: slice) -> Any:
+        return self._function(self._items[index])
 
 
 def _history(value: HistoryInput) -> EntityHistory:
@@ -90,9 +115,11 @@ def _sample_id(value: HistoryInput) -> str | int:
     return value.sample_id if isinstance(value, BuiltSample) else value.entity_id
 
 
-def _targets(value: HistoryInput) -> dict[str, Any]:
+def _targets(value: HistoryInput | SampleRequest) -> dict[str, Any]:
     return (
-        {item.name: item.value for item in value.targets} if isinstance(value, BuiltSample) else {}
+        {item.name: item.value for item in value.targets}
+        if isinstance(value, (BuiltSample, SampleRequest))
+        else {}
     )
 
 
@@ -114,7 +141,7 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (tuple, list)):
         return [_jsonable(item) for item in value]
     if hasattr(value, "to_pylist"):
-        return {"dtype": str(value.type), "values": json_value(value.to_pylist())}
+        return {"dtype": str(value.type), "values": json_value(_arrow_values(value))}
     return json_value(value)
 
 
@@ -340,40 +367,63 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
                 columns=columns,
                 sources=np.full(int(boundaries[-1]), name, dtype=object),
             )
-    lengths = [
-        np.diff(item.offsets.to_numpy(zero_copy_only=False).astype(np.int64))
-        for _, item in sequences
-    ]
-    owners = np.concatenate([np.repeat(np.arange(values.batch_size), size) for size in lengths])
-    times = np.concatenate(
-        [item.timestamps.to_numpy(zero_copy_only=False) for _, item in sequences]
-    )
-    ranks = np.concatenate(
-        [
-            np.full(len(item.timestamps), rank, dtype=np.int64)
-            for rank, (_, item) in enumerate(sequences)
-        ]
-    )
-    within = np.concatenate(
-        [
-            np.arange(len(item.timestamps)) * (1 if item.order == "ascending" else -1)
+    merge_key = (tuple(source.events), source.max_events, source.keep, source.order)
+    premerged = getattr(values, "merged_events", {}).get(merge_key)
+    if premerged is not None or getattr(values, "merge_event_streams", None) is not None:
+        native_bounds, native_order = (
+            premerged
+            if premerged is not None
+            else values.merge_event_streams(
+                [
+                    (item.offsets, item.timestamps, item.order == "ascending")
+                    for _, item in sequences
+                ],
+                source.max_events,
+                source.keep == "last",
+                source.order == "descending",
+            )
+        )
+        bounds = native_bounds.to_numpy(zero_copy_only=False)
+        order = native_order.to_numpy(zero_copy_only=False)
+        ends = np.cumsum([len(item.timestamps) for _, item in sequences])
+        components = np.searchsorted(ends, order, side="right")
+        selected_sources = np.asarray([name for name, _ in sequences], dtype=object)[components]
+    else:
+        lengths = [
+            np.diff(item.offsets.to_numpy(zero_copy_only=False).astype(np.int64))
             for _, item in sequences
         ]
-    )
-    names = np.concatenate(
-        [np.full(len(item.timestamps), name, dtype=object) for name, item in sequences]
-    )
-    order = np.lexsort((within, ranks, times, owners))
-    counts = np.bincount(owners[order], minlength=values.batch_size)
-    starts = offsets(counts)[:-1]
-    kept = counts if source.max_events is None else np.minimum(counts, source.max_events)
-    if source.keep == "last":
-        starts += counts - kept
-    bounds = offsets(kept)
-    positions = np.arange(int(bounds[-1])) - np.repeat(bounds[:-1], kept)
-    if source.order == "descending":
-        positions = np.repeat(kept, kept) - 1 - positions
-    order = order[np.repeat(starts, kept) + positions]
+        owners = np.concatenate([np.repeat(np.arange(values.batch_size), size) for size in lengths])
+        times = np.concatenate(
+            [item.timestamps.to_numpy(zero_copy_only=False) for _, item in sequences]
+        )
+        ranks = np.concatenate(
+            [
+                np.full(len(item.timestamps), rank, dtype=np.int64)
+                for rank, (_, item) in enumerate(sequences)
+            ]
+        )
+        within = np.concatenate(
+            [
+                np.arange(len(item.timestamps)) * (1 if item.order == "ascending" else -1)
+                for _, item in sequences
+            ]
+        )
+        names = np.concatenate(
+            [np.full(len(item.timestamps), name, dtype=object) for name, item in sequences]
+        )
+        order = np.lexsort((within, ranks, times, owners))
+        counts = np.bincount(owners[order], minlength=values.batch_size)
+        starts = offsets(counts)[:-1]
+        kept = counts if source.max_events is None else np.minimum(counts, source.max_events)
+        if source.keep == "last":
+            starts += counts - kept
+        bounds = offsets(kept)
+        positions = np.arange(int(bounds[-1])) - np.repeat(bounds[:-1], kept)
+        if source.order == "descending":
+            positions = np.repeat(kept, kept) - 1 - positions
+        order = order[np.repeat(starts, kept) + positions]
+        selected_sources = names[order]
     columns = {}
     for name, resolved in declarations.items():
         dtype = resolved[0][1]
@@ -391,7 +441,7 @@ def _model_rows(source: Any, values: ModelSourceBatch, declarations: Mapping[str
             for component, item in sequences
         ]
         columns[name] = pc.take(pa.concat_arrays(parts), pa.array(order))
-    return _Rows(boundaries=bounds, columns=columns, sources=names[order])
+    return _Rows(boundaries=bounds, columns=columns, sources=selected_sources)
 
 
 def _eligible(rows: _Rows, representation: Fields, declarations: Mapping[str, Any]) -> _Rows:
@@ -614,47 +664,40 @@ def _encoder_identity(input_name: str, use: Encode) -> str:
     )
 
 
+def _graph_encoder_identity(input_name: str, table: str, use: Encode) -> str:
+    return (
+        _identity("shared", use.encoding.name)
+        if isinstance(use.encoding, UseEncoding)
+        else _identity("inputs", input_name, "graph", table, use.field)
+    )
+
+
 def _fit_inputs(
     sample: SampleSpec,
     spec: BatchSpec,
-    values: Any,
+    declarations: Mapping[str, Any],
+    values_for: Any,
     contract: Any,
     *,
     model: bool = False,
     source: Any = None,
-    requests=(),
+    pinned: Mapping[str, FittedEncoder] = MappingProxyType({}),
 ) -> _InputState:
     import pyarrow as pa
 
-    declarations = _declarations(sample, spec, contract, [] if model else values)
-    rows = _rows_for_inputs(spec, declarations, values, model=model)
-    contributions = {}
+    slots = {}
     definitions = {}
     field_names = {name: {} for name in spec.field_names}
     graph_fields = {}
     for name in sorted(spec.inputs):
         value = spec.inputs[name]
         if not isinstance(value.representation, Fields):
-            graph = SimpleNamespace(
-                source=value.source.name, node_fields=value.representation.node_fields
-            )
-            roots = [
-                GraphRoot(
-                    _sample_id(item), _history(item).entity_id, _history(item).evaluation_time
-                )
-                for item in values
-            ]
-            observed = source.fit_graph_fields(sample, graph, roots)
             graph_fields[name] = {}
             tables = {table.name: table for table in contract.schema.tables}
             for table, group in value.representation.node_fields.items():
                 graph_fields[name][table] = {}
                 for use in group.fields:
-                    identity = (
-                        _identity("shared", use.encoding.name)
-                        if isinstance(use.encoding, UseEncoding)
-                        else _identity("inputs", name, "graph", table, use.field)
-                    )
+                    identity = _graph_encoder_identity(name, table, use)
                     dtype = tables[table].columns[use.field]
                     config = (
                         spec.encodings[use.encoding.name]
@@ -666,16 +709,10 @@ def _fit_inputs(
                             f"encoder {identity}: sharing requires identical declared dtypes"
                         )
                     definitions[identity] = (config, dtype)
-                    contributions.setdefault(identity, []).extend(observed[(table, use.field)])
+                    if identity not in pinned and learns_from_values(config, dtype):
+                        slots[(name, table, use.field)] = identity
                     graph_fields[name][table][use.field] = identity
             continue
-        fitting_rows = rows[name]
-        if isinstance(value.representation.row, Composite):
-            fitting_rows = (
-                _model_rows(value.source, values, declarations[name])
-                if model
-                else _record_rows(value.source, values, declarations[name])
-            )
         for use in value.representation.fields:
             identity = _encoder_identity(name, use)
             dtype = declarations[name][use.field][0][1]
@@ -687,16 +724,70 @@ def _fit_inputs(
             if identity in definitions and definitions[identity][1] != dtype:
                 raise ValueError(f"encoder {identity}: sharing requires identical declared dtypes")
             definitions[identity] = (config, dtype)
-            column = fitting_rows.columns[use.field]
-            if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
-                column = column.flatten()
-            contributions.setdefault(identity, []).extend(column.to_pylist())
+            if identity not in pinned and learns_from_values(config, dtype):
+                slots[(name, use.field)] = identity
             if value.representation.field_names is not None:
                 field_names[value.representation.field_names].update(
                     {tuple(item[0]): 0 for item in declarations[name][use.field]}
                 )
+    observed = {slot: [] for slot in slots}
+    composites = {
+        name: Counter()
+        for name, value in spec.inputs.items()
+        if isinstance(value.representation, Fields)
+        and isinstance(value.representation.row, Composite)
+        and value.representation.row.vocabulary is None
+    }
+    for name, value in spec.inputs.items():
+        graph_slots = [slot for slot in observed if slot[0] == name]
+        if isinstance(value.representation, Graph) and graph_slots:
+            graph = SimpleNamespace(
+                source=value.source.name, node_fields=value.representation.node_fields
+            )
+            graph_cutoff = getattr(source, "_cutoff", cutoff_to_epoch)
+            roots = [
+                GraphRoot(request.sample_id, request.entity_id, graph_cutoff(request.as_of_time))
+                for requests in _chunks(values_for(None))
+                for request in requests
+            ]
+            found = source.fit_graph_fields(sample, graph, roots)
+            for slot in graph_slots:
+                observed[slot].extend(found[slot[1:]])
+    builds = composites or any(
+        isinstance(spec.inputs[slot[0]].representation, Fields) for slot in observed
+    )
+    for values in _chunks(values_for(sample_without_targets(sample))) if builds else ():
+        rows = _rows_for_inputs(spec, declarations, values, model=model)
+        for name, value in spec.inputs.items():
+            if not isinstance(value.representation, Fields):
+                continue
+            fitting_rows = rows[name]
+            if isinstance(value.representation.row, Composite):
+                fitting_rows = (
+                    _model_rows(value.source, values, declarations[name])
+                    if model
+                    else _record_rows(value.source, values, declarations[name])
+                )
+            for use in value.representation.fields:
+                if (name, use.field) in observed:
+                    column = fitting_rows.columns[use.field]
+                    if pa.types.is_list(column.type) or pa.types.is_large_list(column.type):
+                        column = column.flatten()
+                    observed[(name, use.field)].extend(_arrow_values(column))
+            if name in composites:
+                columns = (rows[name].columns[use.field] for use in value.representation.fields)
+                composites[name].update(
+                    zip(*(_arrow_values(column) for column in columns), strict=True)
+                )
+    contributions = {}
+    for slot, identity in slots.items():
+        contributions.setdefault(identity, []).extend(observed[slot])
     encoders = {
-        name: fit_encoder(identity=name, config=config, dtype=dtype, values=contributions[name])
+        name: pinned[name]
+        if name in pinned
+        else fit_encoder(
+            identity=name, config=config, dtype=dtype, values=contributions.get(name, ())
+        )
         for name, (config, dtype) in sorted(definitions.items())
     }
     field_names = {
@@ -725,16 +816,12 @@ def _fit_inputs(
         composite = None
         if isinstance(value.representation.row, Composite):
             config = value.representation.row
-            columns = {field: column.to_pylist() for field, column in rows[name].columns.items()}
-            keys = [
-                tuple(
-                    _component_key(bindings[use.field], columns[use.field][index])
-                    for use in value.representation.fields
-                )
-                for index in range(rows[name].size)
-            ]
             if config.vocabulary is None:
-                counts = Counter(keys)
+                counts = Counter()
+                for key, count in composites[name].items():
+                    parts = zip(value.representation.fields, key, strict=True)
+                    key = tuple(_component_key(bindings[use.field], part) for use, part in parts)
+                    counts[key] += count
                 ordered = sorted(counts, key=lambda key: (-counts[key], key))[: config.top_k]
                 composite = {key: index + 2 for index, key in enumerate(ordered)}
             else:
@@ -812,11 +899,15 @@ def _allocate_spaces(
         members[space_name][encoder.identity] = (encoder.local_ids, encoder.roles)
     spaces = {}
     for name, definition in spec.id_spaces.items():
-        role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
-            set(definition.specials) - set(ROLE_ORDER)
-        )
-        roles = {role: index for index, role in enumerate(role_names)}
-        cursor = len(roles)
+        if definition.special_ids:
+            roles = dict(definition.special_ids)
+            cursor = max(roles.values()) + 1
+        else:
+            role_names = [role for role in ROLE_ORDER if role in definition.specials] + sorted(
+                set(definition.specials) - set(ROLE_ORDER)
+            )
+            roles = {role: index for index, role in enumerate(role_names)}
+            cursor = len(roles)
         mappings = {}
         for identity, (ids, local_roles) in sorted(members[name].items()):
             inverse_roles = {value: role for role, value in local_roles.items()}
@@ -883,12 +974,15 @@ def _encoded_column(binding: OutputBinding, column: Any, *, model=False) -> dict
     return binding.encode_arrow(column, model=model)
 
 
-def _encoded_rows(encoded: dict[str, Any], boundaries: np.ndarray, layout: Any) -> dict[str, Any]:
+def _encoded_rows(
+    encoded: dict[str, Any], boundaries: np.ndarray, layout: Any, *, value_pad=0, field_pad=0
+) -> dict[str, Any]:
     """Lay out scalar rows; expanding fields keep explicit piece/occurrence boundaries."""
     if "occurrence_offsets" in encoded or "piece_offsets" in encoded:
         return {**encoded, "offsets": torch.from_numpy(boundaries.copy())}
+    fills = {"values": value_pad, "field_ids": field_pad, "valid": False, "field_valid": False}
     return {
-        name: layout_array(item, boundaries, layout, fill=False if name == "valid" else 0)
+        name: layout_array(item, boundaries, layout, fill=fills.get(name, 0))
         for name, item in encoded.items()
     }
 
@@ -899,9 +993,11 @@ def _column_output(
     result = {}
     entity = isinstance(prepared.spec.source, EntitySource)
     layout = prepared.spec.layout
+    group = prepared.spec.representation
+    field_space = state.spaces.get(group.field_space) if state is not None else None
     for field, binding in prepared.state.items():
         encoded = _encoded_column(binding, rows.columns[field], model=model)
-        group = prepared.spec.representation
+        value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
         if group.field_names is not None:
             if state is None:
                 raise ValueError("field-name column output requires its fitted mapping state")
@@ -910,7 +1006,7 @@ def _column_output(
                 field,
                 rows,
                 state.field_names[group.field_names],
-                state.spaces.get(group.field_space),
+                field_space,
             )
             owned = np.ones(rows.size, dtype=bool)
             if prepared.declarations[field][0][0][0] in {"events", "current_events"}:
@@ -924,7 +1020,13 @@ def _column_output(
             encoded["field_ids"] = torch.from_numpy(ids.copy())
             encoded["field_valid"] = torch.from_numpy(owned.copy())
         if not entity:
-            encoded = _encoded_rows(encoded, rows.boundaries, layout)
+            encoded = _encoded_rows(
+                encoded,
+                rows.boundaries,
+                layout,
+                value_pad=value_pad,
+                field_pad=field_space.roles.get("pad", 0) if field_space else 0,
+            )
         result[field] = encoded
     if not entity:
         result["valid"] = layout_array(
@@ -942,7 +1044,8 @@ def _field_ids(
     names: Mapping[Any, int],
     space: FittedSpace | None,
 ) -> np.ndarray:
-    result = np.zeros(rows.size, dtype=np.int64)
+    pad = space.roles.get("pad", 0) if space is not None else 0
+    result = np.full(rows.size, pad, dtype=np.int64)
     for identity, _dtype, _cardinality in prepared.declarations[field]:
         index = names[tuple(identity)]
         if space is not None:
@@ -966,7 +1069,7 @@ def _token_rows(
 
     group = prepared.spec.representation
     if isinstance(group.row, Composite):
-        raw = {use.field: rows.columns[use.field].to_pylist() for use in group.fields}
+        raw = {use.field: _arrow_values(rows.columns[use.field]) for use in group.fields}
         keys = [
             tuple(
                 _component_key(prepared.state[use.field], raw[use.field][index])
@@ -1199,6 +1302,8 @@ def _token_output(
     )
     space = state.spaces.get(space_name)
     pad = space.roles.get("pad", 0) if space is not None else 0
+    field_space = state.spaces.get(group.field_space)
+    field_pad = field_space.roles.get("pad", 0) if field_space is not None else 0
     targets = {}
     masked_targets = [
         (target_name, target)
@@ -1257,20 +1362,28 @@ def _token_output(
             targets[target_name] = answers
             tokens = tokens.select(indices, new_bounds)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(prepared.spec.source, EntitySource):
         tokens = tokens.select(np.arange(len(tokens.values)), tokens.boundaries[rows.boundaries])
         _masked_layout(targets, tokens.boundaries, prepared.spec.layout)
         return tokens.output(
-            prepared.spec.layout, pad=pad, field_ids=group.field_names is not None
+            prepared.spec.layout,
+            pad=pad,
+            field_ids=group.field_names is not None,
+            field_pad=field_pad,
         ), targets
     if isinstance(group.row, Composite):
         return tokens.select(np.arange(len(tokens.values)), rows.boundaries).output(
             prepared.spec.layout, pad=pad, field_ids=False
         ), targets
     layout = prepared.spec.layout
-    result = tokens.output(layout.fields, pad=pad, field_ids=group.field_names is not None)
+    result = tokens.output(
+        layout.fields, pad=pad, field_ids=group.field_names is not None, field_pad=field_pad
+    )
     if "offsets" in result:
         result["field_offsets"] = result.pop("offsets")
     lengths = np.diff(rows.boundaries)
@@ -1297,9 +1410,9 @@ def _raw_targets(
 ):
     if isinstance(values, ModelSourceBatch):
         if field is not None:
-            return values.row_targets[source].fields[field].to_pylist()
+            return _arrow_values(values.row_targets[source].fields[field])
         column = values.targets[source]
-        return column.to_pylist() if hasattr(column, "to_pylist") else list(column)
+        return _arrow_values(column) if hasattr(column, "to_pylist") else list(column)
     result = []
     for value in values:
         records = value.candidates.get(candidate, ()) if candidate else (value,)
@@ -1347,7 +1460,8 @@ def fitted_target_names(spec: BatchSpec) -> list[str]:
 def _fit_targets(
     sample: SampleSpec,
     spec: BatchSpec,
-    values: Any,
+    declarations: Mapping[str, Any],
+    values_for: Any,
     state: _InputState,
     contract: Any,
     *,
@@ -1358,27 +1472,13 @@ def _fit_targets(
 
     if reused:
         _check_reused_target_spaces(spec, state)
-    declarations = _declarations(sample, spec, contract, [] if model else values)
-    rows = _rows_for_inputs(spec, declarations, values, model=model)
-    contributors, definitions, uses, thresholds, groups = {}, {}, {}, {}, {}
+    slots, derived, definitions, uses, groups = {}, {}, {}, {}, {}
     for name in sorted(spec.targets):
         target = spec.targets[name]
         if isinstance(target, (MaskedValuesTarget, NextTokenTarget)):
             continue
         if isinstance(target, MatchingGroupTarget):
-            parent = rows[target.input]
-            columns = {field: parent.columns[field].to_pylist() for field in target.fields}
-            keys = [
-                tuple(
-                    typed_key(
-                        state.prepared_inputs[target.input].state[field].encoder.dtype,
-                        columns[field][index],
-                    )
-                    for field in target.fields
-                )
-                for index in range(parent.size)
-            ]
-            groups[name] = {key: index for index, key in enumerate(sorted(set(keys)))}
+            groups[name] = set()
             uses[name] = []
             continue
         fields_ = (
@@ -1390,7 +1490,6 @@ def _fit_targets(
         for use in fields_:
             if isinstance(target, AlignedEventTarget):
                 dtype = declarations[target.input][use.field][0][1]
-                observed = rows[target.input].columns[use.field].to_pylist()
             else:
                 candidate = (
                     spec.inputs[target.input].source.name
@@ -1408,16 +1507,10 @@ def _fit_targets(
                     else _record_target_dtype(
                         sample,
                         target.source,
-                        values,
+                        values_for(sample),
                         candidate=candidate,
                         field=use.field if isinstance(target, StructuredTarget) else None,
                     )
-                )
-                observed = _raw_targets(
-                    values,
-                    target.source,
-                    field=use.field if isinstance(target, StructuredTarget) else None,
-                    candidate=candidate,
                 )
             identity = (
                 _identity("shared", use.encoding.name)
@@ -1430,31 +1523,11 @@ def _fit_targets(
                 else use.encoding
             )
             definitions[identity] = (config, dtype)
-            contributors.setdefault(identity, []).extend(observed)
+            if identity not in state.encoders and learns_from_values(config, dtype):
+                slots[(name, use.field)] = identity
         if isinstance(target, AlignedEventTarget):
-            for derived in target.derived:
-                observed = rows[target.input].columns[derived.field].to_pylist()
-                numeric = [float(value) for value in observed if value is not None]
-                threshold = (
-                    derived.threshold
-                    if derived.threshold is not None
-                    else float(np.median(numeric))
-                    if numeric
-                    else 0.0
-                )
-                if not np.isfinite(numeric).all() or not np.isfinite(threshold):
-                    raise ValueError(f"target {name!r}: threshold values must be finite")
-                thresholds.setdefault(name, {})[derived.name] = threshold
-                above = (
-                    (lambda value: value > threshold)
-                    if derived.comparison == "greater_than"
-                    else (lambda value: value >= threshold)
-                )
-                labels = [
-                    None if value is None else derived.above if above(value) else derived.below
-                    for value in observed
-                ]
-                use = Encode(field=derived.name, encoding=derived.encoding)
+            for item in target.derived:
+                use = Encode(field=item.name, encoding=item.encoding)
                 uses[name].append(use)
                 identity = (
                     _identity("shared", use.encoding.name)
@@ -1466,8 +1539,97 @@ def _fit_targets(
                     if isinstance(use.encoding, UseEncoding)
                     else use.encoding
                 )
-                definitions[identity] = (config, derived.dtype)
-                contributors.setdefault(identity, []).extend(labels)
+                definitions[identity] = (config, item.dtype)
+                derived[(name, item.name)] = item
+                if identity not in state.encoders and learns_from_values(config, item.dtype):
+                    slots[(name, item.name)] = identity
+    observed = {
+        key: []
+        for key in (*slots, *(key for key, item in derived.items() if item.threshold is None))
+    }
+    learned = {name for name, _ in observed} | set(groups)
+    reads_rows = any(
+        isinstance(spec.targets[name], (AlignedEventTarget, MatchingGroupTarget, CandidateTarget))
+        for name in learned
+    )
+    computed = any(
+        not isinstance(sample.targets.get(spec.targets[name].source), ExternalTarget)
+        for name in learned
+        if isinstance(spec.targets[name], (LabelTarget, StructuredTarget))
+    )
+    if reads_rows:
+        built = sample
+    elif computed:
+        built = replace(
+            sample,
+            entity_values={},
+            dated_entity_values={},
+            events={},
+            current_events={},
+            neighborhoods={},
+        )
+    else:
+        built = None
+    for values in _chunks(values_for(built)) if learned else ():
+        rows = _rows_for_inputs(spec, declarations, values, model=model) if reads_rows else {}
+        for name in groups:
+            target = spec.targets[name]
+            bindings = state.prepared_inputs[target.input].state
+            columns = [_arrow_values(rows[target.input].columns[field]) for field in target.fields]
+            groups[name].update(
+                tuple(
+                    typed_key(bindings[field].encoder.dtype, value)
+                    for field, value in zip(target.fields, row, strict=True)
+                )
+                for row in zip(*columns, strict=True)
+            )
+        for name, field in observed:
+            target = spec.targets[name]
+            if isinstance(target, AlignedEventTarget):
+                column = derived[(name, field)].field if (name, field) in derived else field
+                observed[(name, field)].extend(_arrow_values(rows[target.input].columns[column]))
+            else:
+                observed[(name, field)].extend(
+                    _raw_targets(
+                        values,
+                        target.source,
+                        field=field if isinstance(target, StructuredTarget) else None,
+                        candidate=spec.inputs[target.input].source.name
+                        if isinstance(target, CandidateTarget)
+                        else None,
+                    )
+                )
+    groups = {
+        name: {key: index for index, key in enumerate(sorted(keys))}
+        for name, keys in groups.items()
+    }
+    thresholds = {}
+    for (name, field), item in derived.items():
+        raw = observed.get((name, field), [])
+        numeric = [float(value) for value in raw if value is not None]
+        threshold = (
+            item.threshold
+            if item.threshold is not None
+            else float(np.median(numeric))
+            if numeric
+            else 0.0
+        )
+        if not np.isfinite(numeric).all() or not np.isfinite(threshold):
+            raise ValueError(f"target {name!r}: threshold values must be finite")
+        thresholds.setdefault(name, {})[field] = threshold
+        if (name, field) in slots:
+            above = (
+                (lambda value: value > threshold)
+                if item.comparison == "greater_than"
+                else (lambda value: value >= threshold)
+            )
+            observed[(name, field)] = [
+                None if value is None else item.above if above(value) else item.below
+                for value in raw
+            ]
+    contributors = {}
+    for key, identity in slots.items():
+        contributors.setdefault(identity, []).extend(observed[key])
     encoders = dict(state.encoders)
     for identity, (config, dtype) in sorted(definitions.items()):
         if identity in encoders:
@@ -1476,7 +1638,7 @@ def _fit_targets(
                 raise ValueError(f"target encoder {identity}: incompatible shared encoding")
             continue  # Input-shared encoders never collect target observations.
         encoders[identity] = fit_encoder(
-            identity=identity, config=config, dtype=dtype, values=contributors[identity]
+            identity=identity, config=config, dtype=dtype, values=contributors.get(identity, ())
         )
     target_states = {}
     target_members = []
@@ -1597,7 +1759,7 @@ def _target_outputs(
         target = spec.targets[name]
         if isinstance(target, MatchingGroupTarget):
             columns = {
-                field: rows[target.input].columns[field].to_pylist() for field in target.fields
+                field: _arrow_values(rows[target.input].columns[field]) for field in target.fields
             }
             bindings = inputs[target.input].state
             keys = [
@@ -1617,6 +1779,7 @@ def _target_outputs(
             )
             output = {}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 raw = _raw_targets(
                     values,
                     target.source,
@@ -1627,7 +1790,10 @@ def _target_outputs(
                 if isinstance(target, CandidateTarget):
                     parent = rows[target.input]
                     encoded = _encoded_rows(
-                        encoded, parent.boundaries, spec.inputs[target.input].layout
+                        encoded,
+                        parent.boundaries,
+                        spec.inputs[target.input].layout,
+                        value_pad=value_pad,
                     )
                     if isinstance(spec.inputs[target.input].layout, Packed):
                         encoded["offsets"] = torch.from_numpy(parent.boundaries.copy())
@@ -1644,10 +1810,11 @@ def _target_outputs(
             output = {}
             derived_by_name = {item.name: item for item in target.derived}
             for field, binding in state.bindings.items():
+                value_pad = binding.destination.roles.get("pad", 0) if binding.destination else 0
                 if field in derived_by_name:
                     derived = derived_by_name[field]
                     threshold = state.thresholds[field]
-                    raw = parent.columns[derived.field].to_pylist()
+                    raw = _arrow_values(parent.columns[derived.field])
                     labels = [
                         None
                         if value is None
@@ -1664,7 +1831,10 @@ def _target_outputs(
                 else:
                     encoded = binding.encode_arrow(parent.columns[field], model=model)
                 output[field] = _encoded_rows(
-                    encoded, parent.boundaries, spec.inputs[target.input].layout
+                    encoded,
+                    parent.boundaries,
+                    spec.inputs[target.input].layout,
+                    value_pad=value_pad,
                 )
             if isinstance(spec.inputs[target.input].layout, Packed):
                 output["offsets"] = torch.from_numpy(parent.boundaries.copy())
@@ -1708,8 +1878,6 @@ class PreparedBatchPlan:
         contract: Any = None,
         schema_fingerprint=None,
         contract_fingerprint=None,
-        fitting_values=(),
-        length_summary=None,
         inference=False,
     ):
         self.inference = inference
@@ -1803,9 +1971,6 @@ class PreparedBatchPlan:
             },
             "fitted_state_fingerprint": _fingerprint(self.fitted_state),
         }
-        self.manifest["lengths"] = (
-            self._length_summary(fitting_values) if length_summary is None else length_summary
-        )
         self.manifest["artifact_fingerprint"] = _fingerprint(self.manifest)
 
     def output(self, *, name: str) -> OutputView:
@@ -2041,14 +2206,19 @@ class PreparedBatchPlan:
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
                 )
+                if model and getattr(values, "runtime_batch", None) is not None:
+                    result[name] = self._source.sample_graph_batch(
+                        self.sample, graph, prepared.state, values.runtime_batch
+                    )
+                    continue
                 roots = (
                     [
                         GraphRoot(
                             request.sample_id,
                             request.entity_id,
-                            cutoff_to_epoch(request.as_of_time),
+                            cutoff,
                         )
-                        for request in requests
+                        for request, cutoff in zip(requests, values.evaluation_times, strict=True)
                     ]
                     if model
                     else [
@@ -2097,6 +2267,11 @@ class PreparedBatchPlan:
                 "sample_ids": values.sample_ids,
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor(values.evaluation_times),
+                **(
+                    {"timestamp_unit": values.timestamp_unit}
+                    if values.timestamp_unit != "seconds"
+                    else {}
+                ),
                 "splits": values.splits,
                 "request_metadata": values.request_metadata,
             }
@@ -2105,6 +2280,11 @@ class PreparedBatchPlan:
                 "sample_ids": tuple(_sample_id(value) for value in values),
                 "entity_ids": entity_ids,
                 "as_of_time": torch.tensor([_history(value).evaluation_time for value in values]),
+                **(
+                    {"timestamp_unit": self._source._clock}
+                    if getattr(self._source, "_clock", "seconds") != "seconds"
+                    else {}
+                ),
                 "splits": tuple(
                     value.metadata.get("split") if isinstance(value, BuiltSample) else None
                     for value in values
@@ -2189,31 +2369,6 @@ class PreparedBatchPlan:
         if isinstance(layout, Packed):
             return sum(lengths[index] for index in indices)
         return len(indices) * max(lengths[index] for index in indices)
-
-    def _length_summary(self, values):
-        name = self.spec.batching.length_input
-        count = values.batch_size if isinstance(values, ModelSourceBatch) else len(values)
-        if name is None or not count:
-            return None
-        lengths = self._measure_values(values, name, model=isinstance(values, ModelSourceBatch))
-        order = sorted(lengths, key=lambda index: (lengths[index], index))
-        chunks = self._compose_batches(
-            order, lengths, self.spec.batching, self.spec.batching.max_samples
-        )
-        actual = sum(lengths.values())
-        capacity = sum(self._batch_cost(chunk, lengths, name) for chunk in chunks)
-        return {
-            "input": name,
-            "count": count,
-            "mean": float(np.mean(list(lengths.values()))),
-            **{
-                f"p{percentile}": int(
-                    np.percentile(list(lengths.values()), percentile, method="nearest")
-                )
-                for percentile in (0, 25, 50, 75, 90, 95, 100)
-            },
-            "expected_padded_fraction": float(capacity - actual) / capacity if capacity else 0.0,
-        }
 
     def _compose_batches(self, order, lengths, policy, max_samples):
         batches, current = [], []
@@ -2367,8 +2522,11 @@ def prepare_batch_spec(
     if not fitting_values:
         raise ValueError("at least one fitting sample is required")
     fitting_spec = _fitting_batch_spec(spec)
-    state = _fit_inputs(sample, fitting_spec, fitting_values, contract)
-    state, targets = _fit_targets(sample, fitting_spec, fitting_values, state, contract)
+    declarations = _declarations(sample, fitting_spec, contract, fitting_values)
+    state = _fit_inputs(sample, fitting_spec, declarations, lambda _: fitting_values, contract)
+    state, targets = _fit_targets(
+        sample, fitting_spec, declarations, lambda _: fitting_values, state, contract
+    )
     state = replace(
         state,
         prepared_inputs={
@@ -2376,9 +2534,7 @@ def prepare_batch_spec(
             for name, value in state.prepared_inputs.items()
         },
     )
-    return PreparedBatchPlan(
-        sample, spec, state, targets, contract=contract, fitting_values=fitting_values
-    )
+    return PreparedBatchPlan(sample, spec, state, targets, contract=contract)
 
 
 def _model_retrieval_sample(sample: SampleSpec, spec: BatchSpec) -> SampleSpec:
@@ -2389,23 +2545,26 @@ def _model_retrieval_sample(sample: SampleSpec, spec: BatchSpec) -> SampleSpec:
         for value in spec.inputs.values()
         if isinstance(value.source, EventSource) and value.source.collection == "history"
     ]
-    consumers = Counter(name for source in sources for name in source.events)
-    bounded = {}
+    consumers = defaultdict(list)
     for source in sources:
-        if (
-            len(source.events) != 1
-            or type(source.max_events) is not int
-            or source.max_events > np.iinfo(np.intp).max
-        ):
-            continue
-        name = source.events[0]
+        for name in source.events:
+            consumers[name].append(source)
+    bounded = {}
+    for name, uses in consumers.items():
         event = sample.events[name]
-        if consumers[name] != 1 or event.limit is not None or event.order != "ascending":
+        if event.limit is not None:
+            continue  # An explicit event limit defines membership before model capping.
+        if any(type(use.max_events) is not int for use in uses):
             continue
+        if len({use.keep for use in uses}) != 1:
+            continue
+        limit = max(use.max_events for use in uses)
+        if limit > np.iinfo(np.intp).max:
+            continue
+        # The global first/last K cannot contain an event outside the first/last
+        # K of its component. Bound each component before native feature decoding.
         bounded[name] = replace(
-            event,
-            limit=source.max_events,
-            order="ascending" if source.keep == "first" else "descending",
+            event, limit=limit, order="ascending" if uses[0].keep == "first" else "descending"
         )
     return replace(sample, events={**sample.events, **bounded}) if bounded else sample
 
@@ -2433,15 +2592,21 @@ def fit_plan(
     contract=None,
     input_state=None,
     target_encoders=None,
-    length_summary=None,
     inference=False,
+    pinned=MappingProxyType({}),
 ) -> PreparedBatchPlan:
     """Fit one plan by reading raw samples through a source.
 
     ``input_state`` and ``target_encoders`` reuse previously fitted state
     instead of fitting it; whatever is not supplied is fitted on
-    ``fitting_requests``. ``inference`` requires both, and builds samples
-    without their row-computed targets so no target row is read.
+    ``fitting_requests``, except the input encoders in ``pinned``. ``inference``
+    requires both, and builds samples without their row-computed targets so no
+    target row is read.
+
+    Samples are built in chunks of ``_FIT_CHUNK`` requests, only for encodings
+    that learn from values, and only their observations are kept: inputs build
+    without their targets, targets build alone unless they read input rows, and
+    supplied labels are read from the requests.
     """
 
     needs_fitting = input_state is None or target_encoders is None
@@ -2459,26 +2624,32 @@ def fit_plan(
             for value in spec.inputs.values()
         )
     )
-    values = (
-        (
-            source.build_model(sample, fitting_requests)
-            if model
-            else source.build(sample, fitting_requests)
-        )
-        if needs_fitting
-        else []
-    )
+
+    def values_for(sample_spec):
+        def read(requests):
+            requests = [
+                replace(request, targets=_normalize_supplied_targets(sample, request.targets))
+                for request in requests
+            ]
+            if sample_spec is None:
+                return requests
+            return (source.build_model if model else source.build)(sample_spec, requests)
+
+        return _Mapped(read, fitting_requests)
+
     reused = input_state is not None
     fitting_spec = _fitting_batch_spec(spec)
+    declarations = _declarations(sample, fitting_spec, contract, ()) if needs_fitting else {}
     if input_state is None:
         input_state = _fit_inputs(
             sample,
             fitting_spec,
-            values,
+            declarations,
+            values_for,
             contract,
             model=model,
             source=source,
-            requests=fitting_requests,
+            pinned=pinned,
         )
     else:
         input_state = replace(
@@ -2488,9 +2659,20 @@ def fit_plan(
                 for name, value in input_state.prepared_inputs.items()
             },
         )
+    if pinned:
+        # Target-only statistics pins reuse the same fitter and target-space
+        # construction; no selected label values need to be collected.
+        input_state = replace(input_state, encoders={**pinned, **input_state.encoders})
     if target_encoders is None:
         input_state, target_encoders = _fit_targets(
-            sample, fitting_spec, values, input_state, contract, model=model, reused=reused
+            sample,
+            fitting_spec,
+            declarations,
+            values_for,
+            input_state,
+            contract,
+            model=model,
+            reused=reused,
         )
     else:
         encoders, spaces = dict(input_state.encoders), dict(input_state.spaces)
@@ -2531,14 +2713,12 @@ def fit_plan(
         contract=contract,
         schema_fingerprint=schema_fingerprint,
         contract_fingerprint=contract_fingerprint,
-        fitting_values=values,
-        length_summary=None if needs_fitting else length_summary,
         inference=inference,
     )
 
 
 def restore_fitted_state(
-    contract: Any, serialized: Mapping[str, Any], lengths: Mapping[str, Any] | None = None
+    contract: Any, serialized: Mapping[str, Any]
 ) -> tuple[_InputState, dict[str, _TargetState], dict[str, Any], Any]:
     """Rebuild a contract's fitted state from its written form, reading no data.
 
@@ -2549,8 +2729,8 @@ def restore_fitted_state(
     silently refitted or dropped. A state without ``targets`` is the input half.
 
     Returns the input state (what the inputs depend on), the target state, the
-    manifest the state gives with ``lengths`` as its length summary, and the
-    bound contract: the contract with that state's encodings pinned.
+    manifest the state gives, and the bound contract: the contract with that
+    state's encodings pinned.
     """
 
     spec = contract.batch
@@ -2645,7 +2825,6 @@ def restore_fitted_state(
         contract=contract,
         schema_fingerprint=_fingerprint(contract.schema),
         contract_fingerprint=contract.fingerprint,
-        length_summary=lengths,
     )
     expected = json.loads(json.dumps({"targets": {}, **serialized}, sort_keys=True))
     actual = json.loads(json.dumps(restored.fitted_state, sort_keys=True))
@@ -2655,7 +2834,7 @@ def restore_fitted_state(
 
 
 #: What a written fitted-state file keeps beside the fitted values, outside every fingerprint.
-WRITTEN_BESIDE_STATE = ("fit", "lengths", "fitted_for")
+WRITTEN_BESIDE_STATE = ("fit", "fitted_for")
 
 
 def pin_fitted_state(contract: Any, serialized: Mapping[str, Any]) -> Any:
@@ -2663,7 +2842,8 @@ def pin_fitted_state(contract: Any, serialized: Mapping[str, Any]) -> Any:
 
     What `PreparedBatchPlan.bound_contract` pins, read from the written state
     rather than the fitted objects; refused as `restore_fitted_state` refuses.
-    ``serialized`` may be a written file, with what it keeps beside the state.
+    ``serialized`` may be a file this version's `Artifact.save` wrote, with what it keeps
+    beside the state.
     """
 
     state = {key: value for key, value in serialized.items() if key not in WRITTEN_BESIDE_STATE}

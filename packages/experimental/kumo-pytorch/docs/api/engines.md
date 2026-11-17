@@ -298,6 +298,7 @@ class DiskGraphEngine(
     num_threads: int | None = None,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
+    encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
 )
 ```
 
@@ -328,6 +329,7 @@ step, before any data is read.
 - `num_threads`: native sampling threads.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
+- `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
 
 #### `DiskGraphEngine.check_contract`
 
@@ -457,6 +459,16 @@ scans. Stored values keep their
 declared types, and declared primary keys must be unique and non-NULL.
 Equal-time graph neighbors at a fanout limit are ordered by the `repr` of
 their primary keys, or by source occurrence ordinal for a keyless table.
+
+#### `InMemoryEngine.check_contract`
+
+*staticmethod*
+
+```python
+InMemoryEngine.check_contract(contract)
+```
+
+Refuse declared subsecond clocks, which this reference cannot retain.
 
 #### `InMemoryEngine.check_sources`
 
