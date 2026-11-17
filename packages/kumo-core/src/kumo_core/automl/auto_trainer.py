@@ -107,9 +107,6 @@ def _raise_if_no_trial_succeeded(
 ) -> None:
     if any(t.succeed for t in status.trials):
         return
-    # No trial succeeded, so this run tried every experiment. Save the OOM
-    # message only if all of them ran out of memory: kumo-auto keeps a saved
-    # message, so a job that fails for another reason must not get it.
     if failed_trials and len(failed_trials) == num_experiments:
         status.error_msg = construct_gpu_oom_message(
             num_experiments=num_experiments,

@@ -37,9 +37,7 @@ def test_failed_trials_error_handles_missing_tracebacks():
         status) == "Failed to run any AutoML trial"
 
 
-def test_no_oom_message_when_a_trial_succeeded(tmp_path):
-    # An earlier run succeeded. The one experiment of this run ran out of
-    # memory.
+def test_no_oom_message_when_an_earlier_trial_succeeded(tmp_path):
     oom = TrialStatus(trial=1, batch_size=64)
     status = TrainStatus(
         trials=[TrialStatus(trial=0, batch_size=64, succeed=True), oom])
