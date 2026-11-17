@@ -685,7 +685,6 @@ def test_compile_passes_the_target_window(off_tick_data, tmp_path, caplog):
     target.target = Join(rhs_target=Column(fqn="events.event_id"), lhs_key="users.user_id",
                          rhs_key="events.user_id")
     query = ValidatedPredictiveQuery(entity_ast=Column(fqn="users.user_id"), target_ast=target)
-    query._query_type = "TEMPORAL"
     index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
     DiskGraphPlanCompiler(index_path=index).compile(
         query=query, timestamps=OFF_TICK_ANCHORS, task_type="regression",
