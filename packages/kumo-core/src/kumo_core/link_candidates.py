@@ -99,18 +99,24 @@ def candidate_node_ids(
             node_ids[start:start + batch.num_rows] = engine.lookup_node_ids(
                 table, batch.column(0))
 
+        mismatch = (f"Candidate generation for {table!r} reported "
+                    f"{node_ids.size} rows but its parquet does not match.")
         workers = cpu_budget()
         pending: deque[Future[None]] = deque()
         start = 0
         with ThreadPoolExecutor(workers) as pool:
             for batch in runtime.read_tt_parquet_batches(
                     generated["tt_parquet_path"], ["ENTITY1"]):
+                if start + batch.num_rows > node_ids.size:
+                    raise RuntimeError(mismatch)
                 if len(pending) == 2 * workers:
                     pending.popleft().result()
                 pending.append(pool.submit(lookup, batch, start))
                 start += batch.num_rows
             for future in pending:
                 future.result()
+        if start != node_ids.size:
+            raise RuntimeError(mismatch)
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
     if not node_ids.size:
