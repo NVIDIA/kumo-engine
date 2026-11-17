@@ -1287,7 +1287,7 @@ class DiskGraphSource:
         finally:
             self._runtime_batch = previous
 
-    def columnar_graph_batch(self, sample, spec, runtime):
+    def columnar_graph_batch(self, sample, spec, runtime, *, deduplicate_edges=False):
         """Expose sampled Arrow buffers without per-node Python or tensor assembly."""
         from kumo.pytorch.contract.batch import ColumnarEdges, ColumnarGraph, ColumnarNodes
 
@@ -1348,16 +1348,29 @@ class DiskGraphSource:
                 left, right = right, left
             parts[name].append(pa.record_batch([left, right], names=["source", "destination"]))
         empty = pa.schema([("source", pa.uint64()), ("destination", pa.uint64())])
-        edges = {
-            name: ColumnarEdges(
-                self._relations[name].left_table,
-                self._relations[name].right_table,
+        edges = {}
+        for name in sorted(relations):
+            index = (
                 pa.Table.from_batches(parts[name])
                 if parts[name]
-                else pa.Table.from_batches([], schema=empty),
+                else pa.Table.from_batches([], schema=empty)
             )
-            for name in sorted(relations)
-        }
+            if deduplicate_edges and len(index) > 1:
+                # Opt-in materialization; the default retains native edge chunks.
+                pairs = _first_occurrences(
+                    np.stack([column.to_numpy() for column in index.columns])
+                )
+                index = pa.table(
+                    {
+                        field.name: pa.array(values, type=field.type)
+                        for field, values in zip(index.schema, pairs, strict=True)
+                    }
+                )
+            edges[name] = ColumnarEdges(
+                self._relations[name].left_table,
+                self._relations[name].right_table,
+                index,
+            )
         return ColumnarGraph(sample.entity.table, nodes, edges)
 
     def build_model_batch(self, spec, runtime, anchors, compiled):

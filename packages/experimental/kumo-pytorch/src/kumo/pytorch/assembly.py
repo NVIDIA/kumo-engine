@@ -2187,7 +2187,15 @@ class PreparedBatchPlan:
                     )
 
     def _collate(
-        self, values: Any, *, epoch: int, seed: int, model=False, requests=(), columnar=False
+        self,
+        values: Any,
+        *,
+        epoch: int,
+        seed: int,
+        model=False,
+        requests=(),
+        columnar=False,
+        deduplicate_edges=False,
     ) -> Batch:
         declarations = {
             name: value.declarations
@@ -2210,7 +2218,10 @@ class PreparedBatchPlan:
                 )
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(
-                        self.sample, graph, values.runtime_batch
+                        self.sample,
+                        graph,
+                        values.runtime_batch,
+                        deduplicate_edges=deduplicate_edges,
                     )
                     continue
                 if model and getattr(values, "runtime_batch", None) is not None:

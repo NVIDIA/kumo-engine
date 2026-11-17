@@ -52,10 +52,13 @@ def _compare(actual, expected):
             )
 
 
+@pytest.mark.parametrize("deduplicate_edges", [False, True])
 @pytest.mark.parametrize("world_size", [1, 3, 7])
 @pytest.mark.parametrize("shuffle", [False, True])
 @pytest.mark.parametrize("drop_last", [False, True])
-def test_columnar_parity_and_lifetime(graph_task, monkeypatch, world_size, shuffle, drop_last):
+def test_columnar_parity_and_lifetime(
+    graph_task, monkeypatch, world_size, shuffle, drop_last, deduplicate_edges
+):
     task = graph_task
     options = dict(world_size=world_size, shuffle=shuffle, drop_last=drop_last, seed=5)
     expected = [list(task.batches(rank=rank, **options)) for rank in range(world_size)]
@@ -68,7 +71,14 @@ def test_columnar_parity_and_lifetime(graph_task, monkeypatch, world_size, shuff
         patch.setattr(task._assembler._source, "_graph_output", forbidden)
         patch.setattr(task._assembler._source, "build_model_batch", forbidden)
         actual = [
-            list(task.batches(rank=rank, output_format="columnar", **options))
+            list(
+                task.batches(
+                    rank=rank,
+                    output_format="columnar",
+                    deduplicate_edges=deduplicate_edges,
+                    **options,
+                )
+            )
             for rank in range(world_size)
         ]
     # Comparing after all iterators finish also checks native buffer lifetime.
@@ -77,6 +87,10 @@ def test_columnar_parity_and_lifetime(graph_task, monkeypatch, world_size, shuff
         for batch, previous in zip(batches, old, strict=True):
             _compare(batch, previous)
             _compare(batch.to("cpu"), previous)
+            if deduplicate_edges:
+                for edge in batch.inputs["graph"].edges.values():
+                    pairs = _pairs(edge)
+                    assert len(pairs) == len(set(pairs))
 
 
 def test_columnar_reuses_native_buffers(graph_task, monkeypatch):
@@ -84,10 +98,14 @@ def test_columnar_reuses_native_buffers(graph_task, monkeypatch):
     original = source.columnar_graph_batch
     captured = []
 
-    def capture(sample, spec, runtime):
+    def capture(sample, spec, runtime, **kwargs):
         captured.append(runtime)
-        return original(sample, spec, runtime)
+        return original(sample, spec, runtime, **kwargs)
 
+    def forbidden(*args, **kwargs):
+        raise AssertionError("default columnar output attempted deduplication")
+
+    monkeypatch.setattr("kumo.pytorch.engines.diskgraph._first_occurrences", forbidden)
     monkeypatch.setattr(source, "columnar_graph_batch", capture)
     batches = list(graph_task.batches(output_format="columnar"))
     for batch, runtime in zip(batches, captured, strict=True):
@@ -134,26 +152,42 @@ def test_columnar_rejects_requests(graph_task):
         graph_task.batches(requests=[], output_format="columnar")
 
 
-def test_columnar_resume_and_closed_task_buffers(graph_task):
+@pytest.mark.parametrize("deduplicate_edges", [False, True])
+def test_columnar_resume_and_closed_task_buffers(graph_task, deduplicate_edges):
     task = graph_task
-    first = task.batches(output_format="columnar", shuffle=True, seed=9)
+    first = task.batches(
+        output_format="columnar", shuffle=True, seed=9, deduplicate_edges=deduplicate_edges
+    )
     next(first)
     state = first.state_dict()
+    changed = task.batches(
+        output_format="columnar", shuffle=True, seed=9, deduplicate_edges=not deduplicate_edges
+    )
+    with pytest.raises(ValueError, match="different batch configuration"):
+        changed.load_state_dict(state)
     expected = list(first)
-    resumed = task.batches(output_format="columnar", shuffle=True, seed=9)
+    resumed = task.batches(
+        output_format="columnar", shuffle=True, seed=9, deduplicate_edges=deduplicate_edges
+    )
     resumed.load_state_dict(state)
     actual = list(resumed)
     assert [b.metadata["sample_ids"] for b in actual] == [
         b.metadata["sample_ids"] for b in expected
     ]
+    for batch, previous in zip(actual, expected, strict=True):
+        for name, edge in batch.inputs["graph"].edges.items():
+            assert edge.index.equals(previous.inputs["graph"].edges[name].index)
     snapshots = [b.inputs["graph"].nodes["events"].features.to_pylist() for b in actual]
     task.close()
     assert [b.inputs["graph"].nodes["events"].features.to_pylist() for b in actual] == snapshots
 
 
+@pytest.mark.parametrize("deduplicate_edges", [False, True])
 @pytest.mark.parametrize("pk_left", [True, False])
 @pytest.mark.parametrize("directions", [("forward",), ("reverse",), ("forward", "reverse")])
-def test_columnar_self_relations_follow_declared_endpoints(tmp_path, pk_left, directions):
+def test_columnar_self_relations_follow_declared_endpoints(
+    tmp_path, pk_left, directions, deduplicate_edges
+):
     import pyarrow.parquet as pq
 
     from conformance.assertions import bound_tables
@@ -217,7 +251,14 @@ def test_columnar_self_relations_follow_declared_endpoints(tmp_path, pk_left, di
         plan.materialize(api.AnchorTable(api.Parquet(str(anchors)), "id", "cutoff")) as task,
     ):
         old = next(iter(task.batches(batch_size=2)))
-        graph = next(iter(task.batches(batch_size=2, output_format="columnar"))).inputs["graph"]
+        raw = next(task.batches(batch_size=2, output_format="columnar")).inputs["graph"]
+        graph = next(
+            task.batches(
+                batch_size=2, output_format="columnar", deduplicate_edges=deduplicate_edges
+            )
+        ).inputs["graph"]
+        if deduplicate_edges:
+            assert _pairs(graph.edges["parent"]) == list(dict.fromkeys(_pairs(raw.edges["parent"])))
     node = graph.nodes["accounts"]
     edge = graph.edges["parent"]
     assert node.ids.to_pylist()[:2] == [2, 2]
@@ -258,3 +299,75 @@ def test_columnar_refuses_non_raw_and_token_budget(graph_task, monkeypatch, unsu
         )
     with pytest.raises(ValueError, match="columnar"):
         graph_task.batches(output_format="columnar")
+
+
+def _pairs(edge):
+    return list(zip(edge.index["source"].to_pylist(), edge.index["destination"].to_pylist()))
+
+
+@pytest.mark.parametrize("dtype", [pa.uint32(), pa.uint64()])
+@pytest.mark.parametrize("selection", [[], [0], [1, 0, 1, 0]])
+def test_columnar_stable_deduplication_across_chunks(graph_task, monkeypatch, dtype, selection):
+    source = graph_task._assembler._source
+    original = source.columnar_graph_batch
+    raw_graphs = []
+
+    def capture(sample, spec, runtime, **kwargs):
+        graph = runtime["graphs"]["main"]
+        parts = []
+        for edge in graph["edge_index_dict"]:
+            # Reorder and repeat valid pairs within and across native chunks.
+            assert len(edge["src"]) >= 2
+            part = {
+                **edge,
+                "src": edge["src"].take(pa.array(selection, type=pa.int64())).cast(dtype),
+                "dst": edge["dst"].take(pa.array(selection, type=pa.int64())).cast(dtype),
+            }
+            parts.extend([part, part] if len(selection) > 1 else [part])
+        runtime = {**runtime, "graphs": {"main": {**graph, "edge_index_dict": parts}}}
+        raw_graphs.append(original(sample, spec, runtime))
+        return original(sample, spec, runtime, **kwargs)
+
+    monkeypatch.setattr(source, "columnar_graph_batch", capture)
+    batch = next(graph_task.batches(batch_size=5, output_format="columnar", deduplicate_edges=True))
+    for name, edge in batch.inputs["graph"].edges.items():
+        raw = raw_graphs[0].edges[name]
+        pairs = _pairs(raw)
+        assert _pairs(edge) == list(dict.fromkeys(pairs))
+        assert edge.index.schema == raw.index.schema
+        assert edge.index["source"].type == dtype
+        if len(selection) > 1:
+            assert len(pairs) > len(_pairs(edge))
+            assert pairs[0] != pairs[1]
+
+
+def test_columnar_deduplication_keeps_repeated_entities_separate(graph_task):
+    raw = next(graph_task.batches(batch_size=5, output_format="columnar")).inputs["graph"]
+    graph = next(
+        graph_task.batches(batch_size=5, output_format="columnar", deduplicate_edges=True)
+    ).inputs["graph"]
+    edge = graph.edges["activity"]
+    assert _pairs(edge) == list(dict.fromkeys(_pairs(raw.edges["activity"])))
+    nodes = graph.nodes
+    by_identity = {}
+    for left, right in _pairs(edge):
+        owner = nodes[edge.source_type].owners[left].as_py()
+        assert owner == nodes[edge.destination_type].owners[right].as_py()
+        identity = (
+            nodes[edge.source_type].ids[left].as_py(),
+            nodes[edge.destination_type].ids[right].as_py(),
+        )
+        by_identity.setdefault(identity, set()).add(owner)
+    assert any(len(owners) > 1 for owners in by_identity.values())
+
+
+@pytest.mark.parametrize("output_format", ["inspectable", "model"])
+def test_deduplication_option_requires_columnar(graph_task, output_format):
+    with pytest.raises(ValueError, match="deduplicate_edges requires columnar"):
+        graph_task.batches(output_format=output_format, deduplicate_edges=True)
+
+
+@pytest.mark.parametrize("value", [1, None, "false"])
+def test_deduplication_option_requires_bool(graph_task, value):
+    with pytest.raises(ValueError, match="deduplicate_edges must be a bool"):
+        graph_task.batches(output_format="columnar", deduplicate_edges=value)

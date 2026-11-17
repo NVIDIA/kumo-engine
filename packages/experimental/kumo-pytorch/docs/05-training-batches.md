@@ -406,8 +406,12 @@ cutoffs do not share graph occurrences. The root table starts with one root
 per batch example, in batch order. Edge endpoints index the node tables in
 **declared left-to-right orientation**, including reverse traversal and
 self-relations. They contain only sampled links. The same selected pair can
-appear in multiple chunks; take the union when the consumer needs unique
-edges. Chunks do not identify traversal direction or discovery radius.
+appear in multiple chunks. Consumers can normalize these pairs while building
+their payload, or pass `deduplicate_edges=True` to `batches` for unique pairs
+per relation in first-occurrence order. This opt-in step materializes edge
+arrays and adds deduplication work; the default `False` retains native chunks.
+Deduplication preserves separate examples, including repeated entity IDs.
+Chunks do not identify traversal direction or discovery radius.
 
 Feature columns contain exactly the requested Raw fields, in declaration order
 and declared types. Primary-key identity is available separately in `ids`.

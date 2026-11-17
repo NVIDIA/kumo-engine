@@ -776,6 +776,7 @@ class NativeAnchors:
         world_size,
         drop_last,
         output_format,
+        deduplicate_edges=False,
     ):
         """One native iterator call per batch; no request objects or re-batching."""
         from dataclasses import replace
@@ -909,6 +910,7 @@ class NativeAnchors:
                         seed=seed,
                         model=True,
                         columnar=True,
+                        deduplicate_edges=deduplicate_edges,
                     )
                 )
                 continue
@@ -1116,6 +1118,7 @@ class NativeAnchors:
         world_size: int,
         drop_last: bool | None,
         output_format: str,
+        deduplicate_edges: bool = False,
     ):
         """Read native anchor batches and retain the existing fitted assembler.
 
@@ -1233,6 +1236,7 @@ class NativeAnchors:
                     world_size=world_size,
                     drop_last=policy.drop_last if drop_last is None else drop_last,
                     output_format=output_format,
+                    deduplicate_edges=deduplicate_edges,
                 )
             return
 

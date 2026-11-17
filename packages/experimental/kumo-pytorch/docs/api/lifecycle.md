@@ -389,6 +389,7 @@ Task.batches(
     drop_last: bool | None = None,
     chunk_batches: int = 8,
     output_format: Literal['inspectable', 'model', 'columnar'] = 'inspectable',
+    deduplicate_edges: bool = False,
 ) -> TaskBatches
 ```
 
@@ -419,7 +420,10 @@ materialized DiskGraph anchors, one graph input with explicit Raw
 fields, fixed sample counts, and a selection contained in one split.
 Other sample values, targets, entity filters and availability checks
 are refused before iteration. Shuffle, sharding, padding, drop-last
-and resume retain their normal semantics.
+and resume retain their normal semantics. By default, selected edge pairs
+may repeat across native chunks. `deduplicate_edges=True` is available
+only for columnar output: it allocates edge arrays to retain the first
+occurrence of each pair per relation, preserving example isolation.
 
 #### `Task.preview`
 

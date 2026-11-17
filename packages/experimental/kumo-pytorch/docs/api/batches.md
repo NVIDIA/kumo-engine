@@ -326,8 +326,11 @@ Selected edges in declared left-to-right relation orientation.
 Endpoints always belong to the same example. Only edges selected by the
 sampling layers are included, never all links among returned nodes.
 Reverse traversals are reoriented, including self-relations. Chunks may
-repeat a pair selected in both directions; consumers needing unique edges
-should take their union. Chunk order is not traversal provenance.
+repeat a pair selected in both directions. Consumers must normalize these
+pairs or request `Task.batches(..., deduplicate_edges=True)` to retain
+the first occurrence per relation, at the cost of edge-array allocation.
+Deduplication uses node positions, preserving separate examples even when
+entity IDs repeat. Chunk order is not traversal provenance.
 
 ### `Columns`
 
