@@ -2882,4 +2882,60 @@ mod tests {
             ScalarValue::String(value) if value == "a"
         ));
     }
+
+    #[test]
+    fn table_rows_reads_a_row_without_node_data_as_null() {
+        // Its FK value alone is over the node-data limit, so ingest stores it
+        // without node data.
+        let mut state = 1u64;
+        let parent: String = (0..65 << 20)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'a' + (state % 26) as u8)
+            })
+            .collect();
+        let batch = RecordBatch::try_from_iter([
+            (
+                "note_id",
+                Arc::new(StringArray::from(vec!["n1"])) as ArrayRef,
+            ),
+            ("parent", Arc::new(StringArray::from(vec![parent]))),
+        ])
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.parquet");
+        let file = std::fs::File::create(&notes).unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let config = dir.path().join("config.json");
+        let config_json = serde_json::json!({
+            "dataset_name": "notes",
+            "tables": [{
+                "name": "Notes",
+                "source": {"type": "parquet", "paths": [notes]},
+                "primary_key": "note_id",
+                "columns": [
+                    {"name": "note_id", "ingested_dtype": "string"},
+                    {"name": "parent", "ingested_dtype": "string"}
+                ],
+                "fkeys": [{"src_column": "parent", "dst_table": "Notes"}]
+            }]
+        });
+        std::fs::write(&config, config_json.to_string()).unwrap();
+        let output = dir.path().join("index");
+        diskgraph_ingest::ingest_with_stats(
+            &config,
+            output.to_str().unwrap(),
+            diskgraph_ingest::io::Dest::Local,
+            diskgraph_ingest::IngestOptions::default(),
+        )
+        .unwrap();
+        let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output).unwrap();
+
+        let rows = table_rows(&reader.table("Notes").unwrap(), &[0], &[0, 1]).unwrap();
+        assert!(rows.columns().iter().all(|column| column.is_null(0)));
+    }
 }
