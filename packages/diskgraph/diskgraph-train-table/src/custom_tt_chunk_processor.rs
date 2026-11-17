@@ -220,6 +220,28 @@ fn read_weight_f64(arr: &dyn Array, idx: usize) -> Result<f64, WeightFault> {
     Ok(weight)
 }
 
+/// Projected, bounded reader shared by custom training tables and scalar materialization.
+pub fn read_projected_parquet(
+    path: &Path,
+    row_groups: Option<&[usize]>,
+    columns: Option<&[String]>,
+    batch_size: Option<usize>,
+) -> TTGenResult<parquet::arrow::arrow_reader::ParquetRecordBatchReader> {
+    let mut builder = ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(path)?)?;
+    if let Some(groups) = row_groups { builder = builder.with_row_groups(groups.to_vec()); }
+    if let Some(names) = columns {
+        let indices = names.iter().map(|name| builder.schema().index_of(name))
+            .collect::<Result<Vec<_>, _>>().map_err(|e| TTGenError::SchemaError(e.to_string()))?;
+        let mask = ProjectionMask::roots(builder.parquet_schema(), indices);
+        builder = builder.with_projection(mask);
+    }
+    if let Some(size) = batch_size {
+        if size == 0 { return Err(TTGenError::InvalidPlan("batch_size must be positive".into())); }
+        builder = builder.with_batch_size(size);
+    }
+    Ok(builder.build()?)
+}
+
 /// Determine the `OutputMode` for a custom-TT job by peeking at the
 /// customer parquet's schema. For Forecasting, this picks up
 /// AUTOREGRESSION_COL and (optionally) YOY_COL dtypes from the actual
@@ -730,17 +752,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
         let file = std::fs::File::open(custom_tt_parquet)?;
         let probe = ParquetRecordBatchReaderBuilder::try_new(file)?;
         let parquet_schema = probe.parquet_schema().clone();
-        // We need ENTITY1, TIMESTAMP and any of {TARGET1, autoregression, yoy}
-        // present in the file. Project all columns: customer parquets are
-        // narrow (5-10 cols at the wide-format spec). Keeping it simple.
-        let projection = ProjectionMask::all();
-        // Reopen for the actual read: ParquetRecordBatchReaderBuilder
-        // consumes self when building the reader.
-        let file2 = std::fs::File::open(custom_tt_parquet)?;
-        let reader = ParquetRecordBatchReaderBuilder::try_new(file2)?
-            .with_row_groups(row_groups.to_vec())
-            .with_projection(projection)
-            .build()?;
+        let reader = read_projected_parquet(custom_tt_parquet, Some(row_groups), None, None)?;
         // Ensure the parquet has every ENTITYk before iterating. (Cheap
         // precondition check that yields a clearer error than a mid-row
         // panic.) TIMESTAMP is NOT required: STATIC custom tasks omit it and

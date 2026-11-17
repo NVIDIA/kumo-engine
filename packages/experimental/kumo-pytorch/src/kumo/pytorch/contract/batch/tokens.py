@@ -13,6 +13,7 @@ from typing import Any, Literal
 from kumo.pytorch.contract.batch._common import _mapping
 
 ROLE_ORDER = ("pad", "unknown", "missing", "mask", "entity", "event", "separator", "bos", "eos")
+MAX_SPECIAL_ID = 65_535
 
 
 @dataclass(frozen=True)
@@ -23,14 +24,18 @@ class IdSpace:
     values are equal; uses of one shared encoder get one. Declared roles have
     stable IDs, allocated in ``pad``, ``unknown``, ``missing``, ``mask``,
     ``entity``, ``event``, ``separator``, ``bos``, ``eos`` order, then custom
-    names lexically. Members' local missing and unknown IDs map to the matching
-    final roles; ordinary entries never collide with roles. Only discrete
-    encoders can join.
+    names lexically, unless ``special_ids`` chooses them. Members' local
+    missing and unknown IDs map to the matching final roles; ordinary entries
+    never collide with roles. Only discrete encoders can join.
 
     :param specials: role name to its display label.
+    :param special_ids: role name to its final ID, for every declared role or
+        none. IDs are distinct integers from 0 to 65,535. Gaps
+        between them stay reserved; ordinary entries start after the largest.
     """
 
     specials: Mapping[str, str] = field(default_factory=dict)
+    special_ids: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if any(
@@ -38,7 +43,28 @@ class IdSpace:
             for name, label in self.specials.items()
         ):
             raise ValueError("ID-space role names and labels must be non-empty strings")
+        if self.special_ids:
+            missing = sorted(set(self.specials) - set(self.special_ids))
+            extra = sorted(set(self.special_ids) - set(self.specials))
+            if missing or extra:
+                raise ValueError(
+                    "special_ids must name exactly the declared roles"
+                    f" (missing {missing}, unknown {extra})"
+                )
+            owners: dict[int, str] = {}
+            for role, index in sorted(self.special_ids.items()):
+                if type(index) is not int or not 0 <= index <= MAX_SPECIAL_ID:
+                    raise ValueError(
+                        f"special ID for role {role!r} must be an integer from 0 to "
+                        f"{MAX_SPECIAL_ID}; ordinary IDs start after the largest special ID"
+                    )
+                if index in owners:
+                    raise ValueError(
+                        f"roles {owners[index]!r} and {role!r} cannot share special ID {index}"
+                    )
+                owners[index] = role
         object.__setattr__(self, "specials", _mapping(self.specials))
+        object.__setattr__(self, "special_ids", _mapping(self.special_ids))
 
 
 @dataclass(frozen=True)

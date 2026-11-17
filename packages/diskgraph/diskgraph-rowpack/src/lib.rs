@@ -2110,8 +2110,16 @@ pub(crate) fn train_bpe_dict(
 /// When enabled, a real observer (e.g. `FileColStats`) collects streaming statistics.
 pub trait ColumnValueObserver {
     fn observe_i64(&mut self, col_idx: usize, value: i64);
+    fn observe_u64(&mut self, col_idx: usize, value: u64) {
+        self.observe_i64(col_idx, value as i64);
+    }
     fn observe_f64(&mut self, col_idx: usize, value: f64);
     fn observe_string(&mut self, col_idx: usize, value: &str);
+    fn observe_bytes(&mut self, _col_idx: usize, _value: &[u8]) {}
+    /// A decimal value; `text` renders it exactly.
+    fn observe_decimal(&mut self, col_idx: usize, value: f64, _text: &dyn Fn() -> String) {
+        self.observe_f64(col_idx, value);
+    }
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
     fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView);
@@ -2122,6 +2130,14 @@ pub trait ColumnValueObserver {
     fn observe_beyond_clock(&mut self, col_idx: usize) {
         self.observe_parse_failure(col_idx);
     }
+    /// Whether the encode loop calls `start_row`.
+    fn wants_create_time(&self) -> bool {
+        false
+    }
+    /// Called before a row's values, with its create time in index-clock ticks.
+    fn start_row(&mut self, _create_time: Option<i64>) {}
+    /// Called after a row's values, with whether the index stores them.
+    fn finish_row(&mut self, _stored: bool) {}
 }
 
 /// Zero-sized observer that does nothing. LLVM eliminates all calls via monomorphization.
@@ -3077,7 +3093,7 @@ impl RowPackEncoder {
                     match value {
                         None => 0u8,
                         Some(v) => {
-                            observer.observe_i64(idx, v as i64);
+                            observer.observe_u64(idx, v);
                             match &col.encoding {
                                 ColumnEncoding::Int {
                                     signed,
@@ -3242,6 +3258,7 @@ impl RowPackEncoder {
                     #[allow(clippy::manual_unwrap_or_default)]
                     if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
                         match access.with_bytes(idx, |v| {
+                            observer.observe_bytes(idx, v);
                             if let Some(len) = fixed_len {
                                 if *len == v.len() {
                                     data.extend_from_slice(v);
@@ -3354,7 +3371,11 @@ impl RowPackEncoder {
                                 ..
                             } = &col.encoding
                             {
-                                observer.observe_f64(idx, v as f64 / 10_f64.powi(*scale));
+                                observer.observe_decimal(
+                                    idx,
+                                    v as f64 / 10_f64.powi(*scale),
+                                    &|| format_decimal_i128(v, *scale),
+                                );
                                 if *bytes == 0 || *bytes > 16 {
                                     return Err(anyhow!("rowpack decimal size mismatch"));
                                 }
@@ -3376,6 +3397,12 @@ impl RowPackEncoder {
                                 ..
                             } = &col.encoding
                             {
+                                let decimal = arrow_buffer::i256::from_le_bytes(v);
+                                let value =
+                                    decimal_i256_to_f64(decimal, *scale).unwrap_or(f64::NAN);
+                                observer.observe_decimal(idx, value, &|| {
+                                    format_decimal_i256(decimal, *scale)
+                                });
                                 if *bytes == 0 || *bytes > 32 {
                                     return Err(anyhow!("rowpack decimal size mismatch"));
                                 }
@@ -6789,7 +6816,7 @@ pub(crate) fn apply_decimal_scale_i256(value: arrow_buffer::i256, scale: i32) ->
     out
 }
 
-pub(crate) fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
+pub fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
     if scale == 0 {
         return value as f64;
     }
@@ -6799,7 +6826,7 @@ pub(crate) fn decimal_i128_to_f64(value: i128, scale: i32) -> f64 {
     (value as f64) * 10_f64.powi(-scale)
 }
 
-pub(crate) fn decimal_i256_to_f64(value: arrow_buffer::i256, scale: i32) -> Option<f64> {
+pub fn decimal_i256_to_f64(value: arrow_buffer::i256, scale: i32) -> Option<f64> {
     let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
     let mut v = out.to_f64()?;
     if scale == 0 {
@@ -6821,7 +6848,7 @@ fn pow10_i128(exp: u32) -> i128 {
     out
 }
 
-pub(crate) fn format_decimal_i128(value: i128, scale: i32) -> String {
+pub fn format_decimal_i128(value: i128, scale: i32) -> String {
     let negative = value.is_negative();
     let mut digits = value.unsigned_abs().to_string();
     if scale <= 0 {
@@ -6858,7 +6885,7 @@ pub(crate) fn format_decimal_i128(value: i128, scale: i32) -> String {
     out
 }
 
-pub(crate) fn format_decimal_i256(value: arrow_buffer::i256, scale: i32) -> String {
+pub fn format_decimal_i256(value: arrow_buffer::i256, scale: i32) -> String {
     let out = BigInt::from_signed_bytes_le(&value.to_le_bytes());
     let negative = out.sign() == num_bigint::Sign::Minus;
     let mut digits = out.abs().to_string();
@@ -7277,6 +7304,38 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
     {
         b.append_null();
     }
+}
+
+/// The bytes the values in a builder from [`make_arrow_builder`] take: string and binary data,
+/// list elements, and 8 per other value.
+pub fn builder_value_bytes(builder: &dyn arrow_array::builder::ArrayBuilder) -> usize {
+    use arrow_array::builder::*;
+    let any = builder.as_any();
+    if let Some(b) = any.downcast_ref::<StringBuilder>() {
+        return b.values_slice().len();
+    }
+    if let Some(b) = any.downcast_ref::<BinaryBuilder>() {
+        return b.values_slice().len();
+    }
+    if let Some(b) = any.downcast_ref::<ListBuilder<StringBuilder>>() {
+        return b.values_ref().values_slice().len();
+    }
+    macro_rules! list_elements {
+        ($($builder:ty),*) => {
+            $(if let Some(b) = any.downcast_ref::<ListBuilder<$builder>>() {
+                return std::mem::size_of_val(b.values_ref().values_slice());
+            })*
+        };
+    }
+    list_elements!(
+        Float32Builder,
+        Float64Builder,
+        Int8Builder,
+        Int16Builder,
+        Int32Builder,
+        Int64Builder
+    );
+    builder.len() * 8
 }
 
 pub fn make_arrow_builder(

@@ -109,7 +109,12 @@ from rest.config.batch_prediction_job import (
 )
 from rest.config.ml_backend import JobState
 from service_framework.deploy_env_config import deploy_env
-from statedb.config.common import DataSnapshot, JobEventLogEntry, JobType
+from statedb.config.common import (
+    DataSnapshot,
+    JobEventLogEntry,
+    JobFailureInfo,
+    JobType,
+)
 from statedb.utils.errors import PredictionOutputProcessingError
 from temporalio_commons.auto_rpc_exception import RpcError as _RpcError
 from temporalio_commons.process_pool_utils import run_with_async_caller_loop
@@ -1732,7 +1737,7 @@ class SnapshotActivities:
         this GPU worker into a shared managed-volume prefix. Other output
         types retain the durable Kumo artifact path.
         """
-        from kumo_core.job_config import PredictionConfig
+        from kumo_core.job_config import PredictionConfig, PredStatus
 
         from kumo.train.artifact_manifest import (
             PREDICTION_ARTIFACT_MANIFEST_VERSION,
@@ -2010,12 +2015,27 @@ class SnapshotActivities:
                             ignore_errors=True,
                         )
 
+                    failure_info = None
+                    if job_state == JobState.FAILED:
+                        # kumo-pred saves its curated message and traceback
+                        # in the shared home dir, and release deletes this
+                        # pod with its log, so return them to the workflow.
+                        try:
+                            status = await asyncio.to_thread(
+                                PredStatus.load, runtime_config.home_dir)
+                            failure_info = JobFailureInfo(
+                                message=status.error_msg or '',
+                                stacktrace=status.stacktrace or '')
+                        except Exception:
+                            log.warning('Could not load the prediction status',
+                                        exc_info=True)
                     return PredictionShardResult(
                         state=job_state,
                         databricks_uploads=[
                             upload for _, upload in completed_uploads
                         ],
                         artifact_manifest=artifact_manifest,
+                        failure_info=failure_info,
                     )
                 except BaseException:
                     for connector_spec, upload in completed_uploads:

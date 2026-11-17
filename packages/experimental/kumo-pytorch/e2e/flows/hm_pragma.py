@@ -234,7 +234,13 @@ class PragmaEncoder(nn.Module):
 
         fields = self.tokens(events["field_ids"]) + self.tokens(events["value_ids"])
         summary = self.event_summary.expand(fields.shape[0], 1, WIDTH)
-        valid = torch.cat((torch.ones_like(events["valid"][:, :1]), events["valid"]), 1)
+        valid = torch.cat(
+            (
+                torch.ones((fields.shape[0], 1), dtype=torch.bool, device=fields.device),
+                events["valid"],
+            ),
+            1,
+        )
         encoded = self.fields(torch.cat((summary, fields), 1), valid)
         # Each event row's calendar parts, read at its (sample, position) in the history.
         parts = batch.inputs["history_calendar"]
@@ -271,6 +277,9 @@ class MaskedValueModel(nn.Module):
     def loss(self, batch: Batch) -> torch.Tensor:
         _, context = self.encoder(batch)
         target = batch.targets["masked"]
+        if not target["valid"].any():
+            # An all-empty history batch has no masked-value supervision.
+            return self.encoder.tokens.weight.sum() * 0
         logits = context[target["valid"]] @ self.encoder.tokens.weight.T
         return F.cross_entropy(logits, target["values"][target["valid"]])
 
@@ -311,11 +320,15 @@ def pretrain(data: Path, work: Path, seed: int, epochs: int = PRETRAIN_EPOCHS) -
                 for batch in task.batches(
                     split="train", epoch=epoch, seed=seed, shuffle=True, output_format="model"
                 ):
+                    if not batch.targets["masked"]["valid"].any():
+                        continue
                     loss = model.loss(batch)
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
                     total, steps = total + loss.item(), steps + 1
+                if steps == 0:
+                    raise ValueError("pretraining epoch has no masked-value supervision")
                 history.append({"epoch": epoch, "masked_value_loss": total / steps})
                 print(f"pretrain: epoch {epoch} masked-value loss {total / steps:.4f}")
             clock.lap("fit")
