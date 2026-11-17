@@ -5,14 +5,13 @@
 language: en-US
 early_access: false
 
+tone_instructions: >-
+  Be direct, technical, brief. No praise, emojis, headings, style or formatting
+  comments. Prefix findings: critical (correctness/security/data loss), important
+  (must fix), suggestion (optional).
+
 reviews:
   profile: quiet
-
-  tone_instructions: |
-    Be direct, technical, brief. No praise, emojis, or headings.
-    Prefix every comment with one of: critical (correctness, security,
-    data loss), important (must fix), suggestion (optional).
-    Do not comment on style or formatting.
 
   high_level_summary: false
   high_level_summary_in_walkthrough: false
@@ -70,6 +69,43 @@ reviews:
     - "!**/*_pb2.pyi"
 
   path_instructions:
+    - path: "**"
+      instructions: |
+        Apply docs/development/code-review.md to changed behavior and affected
+        callers. Verify the observed problem, causal fix and owning abstraction
+        against source; a smaller fix or no change may be right. Check contracts,
+        resource ownership/scaling, failure paths, usability and independent
+        behavioral evidence where relevant. Trace actual representations and
+        reachable paths before claiming a defect. Report only actionable,
+        evidence-backed regressions or material design flaws with a trigger,
+        consequence and correction. Label uncertainty as a question; do not
+        invent a defect, demand speculative generalization, or request benchmarks
+        or design documents merely because a category changed. CI owns style.
+    - path: "packages/diskgraph/**"
+      instructions: |
+        Check persisted-format and Python/native contracts, ID and timestamp
+        domains, shard/worker coverage, ordering, error timing and old-index
+        compatibility. For performance changes, inspect allocations and I/O per
+        row/batch/worker/process, warm versus cold state and end-to-end effects.
+        Equivalence tests should exercise the changed branch, including boundary
+        and degenerate cases; random workload size alone is not branch coverage.
+        Verify claims against the writer, reader and real memory representation.
+    - path: "packages/kumo-engine/**"
+      instructions: |
+        Trace public API through runtime, saved bundle, reload and prediction,
+        plus affected tracking/registry/connector adapters. Preserve model/data
+        identity, effective configuration and source immutability. Check defaults,
+        optional dependencies, unsupported cases, actionable errors and whether
+        examples exercise the installed interface. Passing mocked delegation is
+        not evidence of a working artifact or user lifecycle.
+    - path: "packages/experimental/kumo-pytorch/**"
+      instructions: |
+        Check native/reference output parity, fitted/restored state, temporal
+        leakage, empty/keyless inputs, ragged/padded layouts and resource cleanup
+        where changed. Derive budget/memory claims from actual tensors and index
+        maps, not an imagined dense representation. Test reused caches and later
+        epochs when affected. Separate loader/kernel timing from training claims;
+        reject unsupported paths explicitly rather than silently changing meaning.
     - path: "kumo/**/*.py"
       instructions: |
         For dead-code findings, consider only code added by this pull request,
@@ -109,25 +145,28 @@ reviews:
       - name: "Change map design review"
         mode: "warning"
         instructions: |
-          Read the PR conversation comment starting with the marker
-          <!-- kumo-pr-change-map -->. Review its Change map as a proposed
-          design, using the linked
-          problem and repository code as evidence. Assess whether each change
-          is necessary, belongs at the right abstraction layer, and preserves
-          relevant behavior. Look for the observed failure or explicitly requested
-          release requirement, inspected existing behavior, smallest sufficient
-          change, focused verification and stopping condition in that same
-          comment. Keep optional refinements separate; file coverage and nonempty
-          prose do not establish necessity. Challenge the implementation when the proposed
-          design is wrong; do not merely ask to rewrite the table to match it.
-          Also identify misleading explanations or omitted material behavior.
-          At <=1000 additions plus deletions, expect function or non-function
-          scope descriptions; larger PRs may use file-level descriptions.
-          The deterministic PR change table check handles file coverage. Do
-          not enumerate every symbol or repeat its formatting findings. Give
-          concrete evidence and a suggested correction for substantive issues;
-          distinguish uncertain design questions from proven defects. Do not
-          assume that agreement between the table and code proves correctness.
+          Review the PR description, linked problem/design when accessible,
+          change-map comment (<!-- kumo-pr-change-map -->) and code together.
+          If linked context or that comment is unavailable, use the PR body
+          and checked-in design and state the limit; missing context alone is
+          not a proven defect.
+          Apply docs/development/code-review.md. Is the problem demonstrated or
+          the requested behavior clear? Does this change address its cause at
+          the right layer, reuse the existing contract, and stop at the needed
+          scope? Consider simpler alternatives and material tradeoffs; do not
+          invent requirements or require a new document, issue or benchmark.
+          Check omitted behavior and compatibility, and whether validation and
+          performance claims establish what they say. For broader designs trace
+          data/control flow, ownership, lifecycle and failure recovery across
+          components. An accurate file table or much prose is not design proof.
+          Report concrete causal/design flaws with repository evidence and a
+          suggested correction; distinguish questions and unavailable evidence
+          from proven defects. No change needed is a valid outcome. Preserve the
+          existing change-map scope convention (function/non-function scope at
+          <=1000 additions plus deletions; file-level allowed above that).
+          The deterministic change-table check owns coverage and formatting;
+          do not repeat it or enumerate every symbol. Keep optional refinements
+          separate and do not duplicate inline findings.
       - name: "PR size"
         mode: "warning"
         instructions: |
@@ -158,6 +197,11 @@ reviews:
           resource or include the required information in this repository.
 
 knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - files: "docs/development/code-review.md"
+        applyTo: "**"
   learnings:
     scope: local
     approval_delay: 0
