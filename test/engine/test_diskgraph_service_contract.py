@@ -1514,8 +1514,10 @@ def test_generate_train_table_delegates(monkeypatch):
         train_table_edges_config=None,
         input_timestamp_unit=TimeUnit.Nanoseconds,
         target_stype='numerical',
+        start_time=1_704_067_200 * 10**9,
     )
     assert captured['index_path'] == '/tmp/dg-contract-test/gk/v4'
+    assert captured['start_time'] == 1_704_067_200 * 10**9
     assert result.output_path == 'out/path'
     assert result.manifest_path == 'manifest/path'
 
