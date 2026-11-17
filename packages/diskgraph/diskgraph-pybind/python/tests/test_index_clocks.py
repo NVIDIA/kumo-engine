@@ -594,3 +594,28 @@ def test_split_durations_off_the_clock_truncate_with_a_warning(caplog, clock, sp
     assert _builder_warnings(caplog) == [
         f"The split {t} on the {clock} index clock. Use split durations of whole {clock}, or a "
         "finer timestamp_precision." for t in truncated]
+
+
+JAN_1_NS = 1_704_067_200 * 10**9
+HALF_HOURLY = [JAN_1_NS + k * HOUR_NS // 2 for k in range(1, 7)]
+REPEATS = ("6 training anchors truncate to 4 ticks of the hours index clock, so the training "
+           "table repeats (entity, anchor) rows up to 2 times. Space anchors by whole hours "
+           "(timeframe_step), or use a finer timestamp_precision.")
+BEFORE_START = ("start_time 2024-01-01 00:30:00 UTC is not on the hours index clock, so the "
+                "first training anchor truncates to 2024-01-01 00:00:00 UTC, before start_time. "
+                "Align start_time to whole hours, or use a finer timestamp_precision.")
+
+
+@pytest.mark.parametrize("anchors, start_time, is_prediction, warnings", [
+    (HALF_HOURLY, HALF_HOURLY[0], False, [REPEATS, BEFORE_START]),
+    (HALF_HOURLY, HALF_HOURLY[1], False, [REPEATS]),
+    (HALF_HOURLY, None, True, []),
+    (HALF_HOURLY[1::2], JAN_1_NS, False, []),
+])
+def test_anchors_off_the_clock_warn(caplog, anchors, start_time, is_prediction, warnings):
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal(anchors, forecast_length=1, unit="nanoseconds", start_time=start_time)
+    builder.set_is_prediction(is_prediction)
+    builder.for_each("users", "user_id")
+    builder.build()
+    assert _builder_warnings(caplog) == warnings

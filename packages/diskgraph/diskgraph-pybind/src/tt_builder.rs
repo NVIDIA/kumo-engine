@@ -14,7 +14,7 @@
 //! plan_json = b.build()
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pyo3::prelude::*;
 use pyo3::types::PyList;
@@ -353,6 +353,7 @@ pub struct DiskGraphTTBuilder {
 struct TemporalArgs {
     timestamps: Vec<i64>,
     unit: tt::TimeUnit,
+    start_time: Option<i64>,
     forecast_length: i64,
     lag_timesteps: Option<i64>,
 }
@@ -453,19 +454,23 @@ impl DiskGraphTTBuilder {
     }
 
     /// Set anchor timestamps. `unit` declares the source unit of the raw i64
-    /// values (e.g. "seconds", "nanoseconds"). Rust converts to the index
-    /// unit system internally.
-    #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None, unit="seconds"))]
+    /// values (e.g. "seconds", "nanoseconds"), and of the training
+    /// `start_time`. Rust converts to the index unit system internally.
+    #[pyo3(signature = (
+        timestamps, forecast_length, lag_timesteps=None, unit="seconds", start_time=None
+    ))]
     fn temporal(
         &mut self,
         timestamps: Vec<i64>,
         forecast_length: i64,
         lag_timesteps: Option<i64>,
         unit: &str,
+        start_time: Option<i64>,
     ) -> PyResult<()> {
         self.temporal = Some(TemporalArgs {
             timestamps,
             unit: parse_time_unit(unit)?,
+            start_time,
             forecast_length,
             lag_timesteps,
         });
@@ -732,6 +737,9 @@ impl DiskGraphTTBuilder {
         if truncated.is_empty() {
             truncated.extend(self.split.iter().flat_map(truncated_split::<U>));
         }
+        if !self.is_prediction {
+            truncated.extend(self.temporal.iter().flat_map(truncated_anchors::<U>));
+        }
         for message in truncated {
             tracing::warn!("{message}");
         }
@@ -928,6 +936,52 @@ fn truncated_split<U: UnitSystem>(split: &SplitSpecArgs) -> Vec<String> {
             })
         })
         .collect()
+}
+
+/// Describes training anchors that the clock `U` truncates onto a shared tick,
+/// or to before `start_time`.
+fn truncated_anchors<U: UnitSystem>(temporal: &TemporalArgs) -> Vec<String> {
+    let unit = temporal.unit;
+    let in_clock = |anchor: i64| {
+        let ticks = abs_from_unit::<U>(anchor, unit).raw() as i128;
+        (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
+    };
+    let anchors: BTreeSet<i64> = temporal.timestamps.iter().copied().collect();
+    let mut ticks: BTreeMap<i64, usize> = BTreeMap::new();
+    for &anchor in &anchors {
+        *ticks.entry(in_clock(anchor)).or_default() += 1;
+    }
+    let clock = unit_name(U::UNIT);
+    let mut warnings = Vec::new();
+    if let Some(repeats) = ticks.values().copied().max().filter(|&n| n > 1) {
+        warnings.push(format!(
+            "{} training anchors truncate to {} ticks of the {clock} index clock, so the \
+             training table repeats (entity, anchor) rows up to {repeats} times. Space anchors \
+             by whole {clock} (timeframe_step), or use a finer timestamp_precision.",
+            anchors.len(),
+            ticks.len(),
+        ));
+    }
+    if let (Some(start), Some(&first)) = (temporal.start_time, anchors.first()) {
+        if first >= start && in_clock(first) < start {
+            warnings.push(format!(
+                "start_time {} is not on the {clock} index clock, so the first training anchor \
+                 truncates to {}, before start_time. Align start_time to whole {clock}, or use \
+                 a finer timestamp_precision.",
+                utc(start, unit),
+                utc(in_clock(first), unit),
+            ));
+        }
+    }
+    warnings
+}
+
+fn utc(value: i64, unit: TimeUnit) -> String {
+    let (secs, nanos) = split_parts(value, unit);
+    chrono::DateTime::from_timestamp(secs, nanos).map_or_else(
+        || format!("{value} {}", unit_name(unit)),
+        |time| time.to_string(),
+    )
 }
 
 /// `value` in `unit` after the clock `U` truncates it.

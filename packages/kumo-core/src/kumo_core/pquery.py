@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from dataclasses import replace
@@ -26,7 +25,6 @@ from numbers import Integral
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from diskgraph import read_col_stats
-from diskgraph.compiler import index_timestamp_unit
 from kumoapi.common import ValidationResponse
 from kumoapi.encoder import EncoderType
 from kumoapi.graph import (
@@ -1157,31 +1155,12 @@ def _temporal_timestamps(
     return tuple(timestamp.value for timestamp in timestamps), fixed_boundaries
 
 
-def _warn_truncated_anchors(timestamps: Sequence[int], index_path: str,
-                            options: TrainingTableGenerationPlan) -> None:
-    if not timestamps:
-        return
-    clock = index_timestamp_unit(index_path)
-    tick = Timedelta(1, unit=clock).value
-    anchors = sorted(set(timestamps))
-    ticks = Counter(anchor // tick for anchor in anchors)
-    if len(ticks) < len(anchors):
-        logger.warning(
-            '%d training anchors truncate to %d ticks of the %s index clock, '
-            'so the training table repeats (entity, anchor) rows up to %d '
-            'times. Space anchors by whole %s (timeframe_step), or use a '
-            'finer timestamp_precision.', len(anchors), len(ticks), clock,
-            max(ticks.values()), clock)
+def _absolute_start_time(options: TrainingTableGenerationPlan) -> int | None:
     start = inferred_or_missing_type_to_none(options.start_time)
-    start_time = (None if start is None or isinstance(start, Integral) else
-                  parse_time_bound(start, 'start_time'))
-    first = anchors[0] // tick * tick
-    if isinstance(start_time, Timestamp) and first < start_time.value:
-        logger.warning(
-            'start_time %s is not on the %s index clock, so the first '
-            'training anchor truncates to %s, before start_time. Align '
-            'start_time to whole %s, or use a finer timestamp_precision.',
-            start_time, clock, Timestamp(first), clock)
+    if start is None or isinstance(start, Integral):
+        return None
+    start_time = parse_time_bound(start, 'start_time')
+    return start_time.value if isinstance(start_time, Timestamp) else None
 
 
 def _column_encoder_stats(
@@ -1513,6 +1492,7 @@ def build_native_pquery_task_plan(
     split, split_family = _split_options(query, graph, options)
     lag_timesteps, compiler_options = _forecast_options(query, options)
     resolved_timestamps: tuple[int, ...] = ()
+    start_time: int | None = None
     if not supplied_rows:
         if query.query_type == "static":
             if timestamps:
@@ -1531,8 +1511,7 @@ def build_native_pquery_task_plan(
                 purpose=purpose,
             )
             if purpose is TaskPlanPurpose.TRAINING:
-                _warn_truncated_anchors(resolved_timestamps, graph_index_path,
-                                        options)
+                start_time = _absolute_start_time(options)
             if fixed_boundaries:
                 split = {**split, "flexible_boundaries": False}
     entity_table = graph.table(query.entity_table)
@@ -1560,6 +1539,7 @@ def build_native_pquery_task_plan(
         rhs_is_temporal=query.rhs_is_temporal,
         compiler_options=compiler_options,
         index_path_verified=True,
+        start_time=start_time,
     )
     extension_path = os.path.join(graph_index_path, "train_tables", tt_id)
     task_dataset = TaskDatasetMaterializeSpec(
