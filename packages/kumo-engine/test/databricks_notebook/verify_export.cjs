@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('../snowflake_notebook/browser/node_modules/playwright');
+const explanations = require('../snowflake_notebook/explanation_ui.cjs');
 const shared = require('../snowflake_notebook/graph_ui.cjs');
 
 async function verify(root) {
@@ -29,7 +30,8 @@ async function verify(root) {
         const checks = mode === 'interactive'
           ? await shared.check(page, receipt, root, 'export', true, true)
           : await shared.checkSaved(page, receipt, root);
-        report[mode] = { status: 'passed', checks };
+        const plots = await explanations.check(page, receipt, root, `databricks-${mode}`);
+        report[mode] = { status: 'passed', checks, explanations: plots };
       } catch (error) {
         report[mode] = { status: 'failed', error: error.message };
         if (page) await page.screenshot({ path: path.join(root, mode + '-failure.png'), fullPage: true, timeout: 5000 }).catch(() => {});

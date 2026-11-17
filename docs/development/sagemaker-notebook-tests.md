@@ -66,6 +66,18 @@ Snowflake graph helper. It checks the schema and relationships, instruments
 default rendering for sample/backend reads, exercises explicit sample previews,
 and validates sample-free exports. `all` runs both scenarios in one notebook.
 
+The graph notebook also runs the shared binary, multiclass, multilabel and
+regression explanation recipes. Seven plots use actual retained training runs;
+three marked deterministic plotting inputs cover layout boundaries only. All ten
+plots and 30 PNG/SVG/PDF exports retain Snowflake's value, explicit-class,
+text-layout and checksum checks. Both the executed notebook export and native
+Studio initial/saved/reopened views run the same 800/1600px light/dark browser
+color-preference matrix. Native checks are scoped to the selected notebook panel.
+Browser preference does not change the Studio account theme. Generation failures,
+malformed artifacts, GPU execution and cross-version compatibility remain separate
+API/training qualification work.
+
+
 ## Evidence and UI
 
 The executed notebook prints a receipt that binds its attempt, source commit,

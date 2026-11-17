@@ -76,6 +76,16 @@ def test_collect_binds_saved_output_to_executed_receipt(modules, execution,
                                           Key='test/outputs/result.json')
 
 
+def test_graph_evidence_requires_explanation_inventory(modules, execution,
+                                                       tmp_path):
+    execution.spec['scenario'] = 'graph'
+    s3 = Mock()
+    s3.get_object.return_value = {'Body': io.BytesIO(execution.content)}
+    with pytest.raises(ValueError, match='Missing explanation artifacts'):
+        modules.evidence.collect(s3, 'test-bucket', execution.executed,
+                                 execution.submitted, execution.spec, tmp_path)
+
+
 @pytest.mark.parametrize('change', [
     'source', 'unexecuted', 'cell-error', 'duplicate', 'attempt', 'unsafe-file'
 ])
@@ -566,6 +576,7 @@ def test_partial_or_invalid_lifecycle_cannot_qualify_ui(modules,
 
 @pytest.mark.parametrize('dirty', [
     'sagemaker_notebook/browser.cjs', 'snowflake_notebook/graph_ui.cjs',
+    'snowflake_notebook/explanation_ui.cjs',
     'snowflake_notebook/browser/package-lock.json',
     'snowflake_notebook/verification.cjs', 'platform_candidate.py'
 ])
@@ -578,6 +589,7 @@ def test_dirty_browser_sources_cannot_reuse_committed_provenance(
         'sagemaker_notebook/run.py', 'sagemaker_notebook/browser.cjs',
         'sagemaker_notebook/requirements.txt', 'pr172/inputs.json',
         'snowflake_notebook/graph_ui.cjs',
+        'snowflake_notebook/explanation_ui.cjs',
         'snowflake_notebook/verification.cjs', 'platform_candidate.py',
         'snowflake_notebook/browser/package.json',
         'snowflake_notebook/browser/package-lock.json'

@@ -9,7 +9,7 @@ const PLOTS = ["gradient", "cohort", "cohort-class-0", "cohort-class-1",
   "cohort-multilabel-0", "cohort-multilabel-1", "cohort-regression",
   "gradient-layout", "gradient-zero", "cohort-layout"];
 
-async function checkPlots(page, receipt, output, label, allowed) {
+async function checkPlots(page, receipt, output, label, allowed, scope) {
   const report = receipt.explanations;
   requireThat(
     report?.status === "passed" && report.fresh_process === "passed" &&
@@ -46,8 +46,8 @@ async function checkPlots(page, receipt, output, label, allowed) {
     let images;
     await until(page, async () => {
       images = [];
-      for (const frame of page.frames()) {
-        for (const image of await frame.locator("img").all()) {
+      for (const root of (scope.root ? [scope.root] : page.frames())) {
+        for (const image of await root.locator("img").all()) {
           const source = await image.getAttribute("src");
           if (!source?.startsWith("data:image/png;base64,")) continue;
           const sha = createHash("sha256")
@@ -78,7 +78,7 @@ async function checkPlots(page, receipt, output, label, allowed) {
   return { status: "passed", ...checks };
 }
 
-async function check(page, receipt, output, label, allowed) {
+async function check(page, receipt, output, label, allowed = async () => true, scope = {}) {
   const originalViewport = page.viewportSize();
   requireThat(originalViewport, "Explanation matrix requires an explicit browser viewport");
   const originalScheme = await page.evaluate(() =>
@@ -93,7 +93,7 @@ async function check(page, receipt, output, label, allowed) {
           matchMedia(`(prefers-color-scheme: ${scheme})`).matches, colorScheme),
         "Browser did not apply the requested color preference");
         const proof = await checkPlots(page, receipt, output,
-          `${label}-${width}-${colorScheme}`, allowed);
+          `${label}-${width}-${colorScheme}`, allowed, scope);
         variants.push({ width, preferred_color_scheme: colorScheme, ...proof });
       }
     }

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { createHash } = require('node:crypto');
 const graph = require('../snowflake_notebook/graph_ui.cjs');
+const explanations = require('../snowflake_notebook/explanation_ui.cjs');
 const { safeSnapshot, frontendFailure, VerificationError, verificationMessage } = require('./assertions.cjs');
 
 function requireThat(value, message) {
@@ -173,6 +174,9 @@ async function main(input) {
     report.initial_receipt = await verifyReceipt(panel, input.receipt);
     mark('native-graph-controls');
     if (input.graph) report.initial = await graph.check(page, input.graph, output, 'studio-initial', true, true, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
+    if (input.graph) report.initial_explanations = await explanations.check(
+      page, input.graph, output, 'studio-initial',
+      async () => authenticated && safePage(page.url(), input.space_url), { root: panel });
     const saveProbe = `KUMO_SAVE_PROBE=${input.receipt.attempt}-${input.invocation}`;
     requireThat(!content.toString().includes(saveProbe), 'Save probe already exists in the upload');
     await writeSaveProbe(page, frame, panel, saveProbe, mark);
@@ -197,6 +201,9 @@ async function main(input) {
     report.save_probe = 'passed';
     report.reopened_receipt = await verifyReceipt(panel, input.receipt);
     if (input.graph) report.reopened = await graph.checkSaved(page, input.graph, output, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
+    if (input.graph) report.reopened_explanations = await explanations.check(
+      page, input.graph, output, 'studio-reopened',
+      async () => authenticated && safePage(page.url(), input.space_url), { root: panel });
     requireThat(errors.length === 0, 'Native Studio browser emitted an uncaught frontend error');
     report.uploaded_notebook = filename;
     report.uploaded_sha256 = input.notebook_sha256;

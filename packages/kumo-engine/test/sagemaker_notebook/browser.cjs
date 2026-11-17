@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { chromium } = require('../snowflake_notebook/browser/node_modules/playwright');
 const graph = require('../snowflake_notebook/graph_ui.cjs');
+const explanations = require('../snowflake_notebook/explanation_ui.cjs');
 const { historyPoint, renderedGeometry, targetPosition, observedCoordinates,
   historyCsv, VerificationError, verificationMessage, captureAllowed, frontendFailure, safeSnapshot, apiFailure } = require('./assertions.cjs');
 
@@ -181,6 +182,7 @@ async function main(input) {
       const page = await pageIn(context);
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       const first = await graph.checkSaved(page, receipt, output);
+      first.explanations = await explanations.check(page, receipt, output, 'sagemaker-export');
       noErrors();
       await context.close();
       report.stage = 'notebook-export-reopened';
@@ -188,6 +190,7 @@ async function main(input) {
       const reopened = await pageIn(freshContext);
       await reopened.goto(url, { waitUntil: 'domcontentloaded' });
       const second = await graph.checkSaved(reopened, receipt, output);
+      second.explanations = await explanations.check(reopened, receipt, output, 'sagemaker-export-reopened');
       noErrors();
       await freshContext.close();
       report.notebook_export = { status: 'passed', scope: 'saved-export', initial: first, reopened: second };

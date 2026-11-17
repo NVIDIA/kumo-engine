@@ -23,6 +23,21 @@ EXPORTS = tuple(f'explanation-{kind}.{suffix}' for kind in PLOTS
 FILES = (*EXPORTS, 'explanation-result.json', 'explanation-run.tar.gz')
 
 
+def validate_exports(report, inventory):
+    """Require every generated/edge plot and its three checksummed exports."""
+    if report.get('status') != 'passed' or set(report.get('plots',
+                                                          {})) != set(PLOTS):
+        raise ValueError('Complete explanation plot verification is required')
+    for kind in PLOTS:
+        hashes = report['plots'][kind].get('sha256', {})
+        if set(hashes) != {'png', 'svg', 'pdf'}:
+            raise ValueError('All explanation export formats are required')
+        for suffix, digest in hashes.items():
+            if inventory.get(f'explanation-{kind}.{suffix}') != digest:
+                raise ValueError(
+                    'Explanation export differs from its verified plot')
+
+
 def fit(root):
     import torch
     from wheel_mlops_lifecycle import (

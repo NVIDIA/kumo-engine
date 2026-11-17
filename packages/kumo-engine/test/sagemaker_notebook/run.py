@@ -29,6 +29,7 @@ SOURCES = {
     'sagemaker_runtime.py': HERE / 'runtime.py',
     'sagemaker_budget.py': HERE / 'budget.py',
     'graph_fixture.py': SHARED / 'graph_fixture.py',
+    'explanation.py': SHARED / 'explanation.py',
     'kernel-requirements.txt': HERE / 'kernel-requirements.txt',
 }
 
@@ -41,8 +42,9 @@ def committed_sources():
         | set(HERE.glob('*.txt')) | set(HERE.glob('*.cjs'))
         | {
             HERE / 'browser.cjs', HERE / 'requirements.txt', SHARED /
-            'graph_ui.cjs', SHARED / 'verification.cjs', HERE.parent /
-            'platform_candidate.py', SHARED / 'browser/package.json', SHARED /
+            'graph_ui.cjs', SHARED / 'explanation_ui.cjs', SHARED /
+            'verification.cjs', HERE.parent / 'platform_candidate.py', SHARED /
+            'browser/package.json', SHARED /
             'browser/package-lock.json', HERE.parent / 'pr172/inputs.json'
         })
     contents, hashes = {}, {}
@@ -329,7 +331,7 @@ def browser_diagnostics(root):
         HERE / name
         for name in ('browser.cjs', 'studio_browser.cjs', 'assertions.cjs')
     ]
-    sources += [SHARED / 'graph_ui.cjs']
+    sources += [SHARED / 'graph_ui.cjs', SHARED / 'explanation_ui.cjs']
     literals = set()
     for source in sources:
         # Never interpolate browser/provider data into a diagnostic message.

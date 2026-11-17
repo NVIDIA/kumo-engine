@@ -89,6 +89,8 @@ def execute(config):
                 graph = load('graph_fixture', 'graph_fixture.py')
                 result = graph.exercise(root / 'graph', fixture,
                                         display=display)
+                from explanation import exercise as explain
+                result['explanations'] = explain(root / 'graph', display)
                 result.update(runtime=dict(report['runtime'], notebook=True),
                               execution_id=report['execution_id'])
                 report['graph'] = result

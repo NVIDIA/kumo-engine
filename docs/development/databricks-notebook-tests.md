@@ -2,12 +2,13 @@
 
 These tests run the same graph scenario as the
 [Snowflake notebook tests](snowflake-notebook-actions.md), using the unchanged shared
-PR172 adtech fixture and an identified candidate wheel. Graph checks do not train
-a model; the separate lifecycle scenario performs two small fits.
+PR172 adtech fixture and an identified candidate wheel. The graph notebook also
+trains the shared binary, multiclass, multilabel and regression explanation
+recipes; registry lifecycle verification remains a separate scenario.
 
 The runner stages checksum-addressed assets in a dedicated test volume, imports a
 new notebook, submits it through the Jobs API, and polls for completion. The notebook
-installs the wheel with its Databricks extra, restarts Python, verifies the installed
+installs the wheel with its Databricks and plots extras, restarts Python, verifies the installed
 code, and calls the shared `graph_fixture.exercise()` with `IPython.display.display`.
 
 The kernel checks all nine tables, 52 columns and ten relationships. Default display
@@ -24,6 +25,16 @@ and checks retained schema and previews. Screenshots, receipts, outputs and asse
 are saved in the output directory. This does not check live workspace-editor
 reopening, native experiment/registry pages, or complete dependency
 compatibility. Pip logs remain evidence even when they report dependency conflicts.
+
+The graph notebook also invokes the shared explanation scenario. Seven plots
+come from real training artifacts; three explicitly marked deterministic plotting
+inputs cover long labels, many columns/cohorts, tied/zero scores and absent targets.
+The ten plots and 30 PNG/SVG/PDF exports use the same value, explicit-class,
+layout and checksum checks as Snowflake. Playwright verifies the actual Jobs
+export twice in fresh browser contexts, at 800/1600px with light/dark browser
+color preferences, including image proportions and restored browser settings.
+This is exported notebook UI coverage, not live workspace-editor coverage.
+Browser preference does not change the Databricks account theme.
 
 ## Authentication and test resources
 
