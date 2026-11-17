@@ -22,7 +22,7 @@ DiskGraph engine and takes under a minute on a laptop CPU.
 
 See [running the examples](../README.md#running-them) for what to install. Then
 open `walkthrough.ipynb` from this folder, or run it headless from
-`packages/data/kumo-pytorch` with the test environment active:
+`packages/experimental/kumo-pytorch` with the test environment active:
 
 ```bash
 python -m pytest -m notebook -k churn

@@ -6,8 +6,9 @@ its own manifest, tests and documentation.
 | Group | Responsibility |
 | --- | --- |
 | `contracts/` | API schemas, PQL and settings |
-| `data/` | DiskGraph storage/execution and the PyTorch batch-data API |
+| `data/` | DiskGraph storage, ingest, sampling and training-table execution |
 | `runtime/` | Shared training/prediction runtime and existing GNN code |
+| `experimental/` | Experimental standalone packages, including the PyTorch data API |
 | `models/` | Model artifacts and model-specific adapters |
 | `integrations/` | Source providers and platform-specific integrations |
 | `clients/` | Local engine SDK and remote Studio SDK |

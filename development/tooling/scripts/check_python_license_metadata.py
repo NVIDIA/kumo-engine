@@ -88,7 +88,7 @@ DISTRIBUTIONS = (
                      ("LICENSE", )),
     DistributionSpec("packages/clients/kumo-engine/pyproject.toml", "kumo-engine",
                      ("LICENSE", )),
-    DistributionSpec("packages/data/kumo-pytorch/pyproject.toml",
+    DistributionSpec("packages/experimental/kumo-pytorch/pyproject.toml",
                      "kumo-pytorch", ("LICENSE", )),
     DistributionSpec("packages/models/glove-6b-50d/pyproject.toml", "kumo-glove-6b-50d",
                      ("LICENSE", "THIRD-PARTY.txt"),

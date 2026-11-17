@@ -55,10 +55,10 @@ def test_wheel_builds_all_first_party_packages_from_monorepo(
         (package / 'pyproject.toml').touch()
     # The standalone PyTorch API is a workspace member but is not bundled,
     # even if its parent grouping directory had a pyproject.toml.
-    experimental = repo / 'packages/data/kumo-pytorch'
+    experimental = repo / 'packages/experimental/kumo-pytorch'
     experimental.mkdir(parents=True)
     (experimental / 'pyproject.toml').touch()
-    (repo / 'packages/data/pyproject.toml').touch()
+    (repo / 'packages/experimental/pyproject.toml').touch()
     diskgraph = repo / 'packages/data/diskgraph'
     (diskgraph / 'diskgraph-pybind').mkdir(parents=True, exist_ok=True)
     (diskgraph / 'diskgraph-pybind/Cargo.toml').touch()

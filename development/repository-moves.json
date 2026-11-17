@@ -35,7 +35,6 @@
     "packages/kumo-bigquery": "packages/integrations/kumo-bigquery",
     "packages/kumo-databricks": "packages/integrations/kumo-databricks",
     "packages/kumo-snowflake": "packages/integrations/kumo-snowflake",
-    "packages/experimental/kumo-pytorch": "packages/data/kumo-pytorch",
     "tools/glove-6b-50d": "packages/models/glove-6b-50d",
     "agent-skills": "packages/clients/kumo-engine/agent-skills",
     "examples": "packages/clients/kumo-engine/examples",

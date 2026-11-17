@@ -113,7 +113,7 @@ packages/clients/kumo-engine/examples/*_prediction
 # Any test notebooks
 *.ipynb
 # Example notebooks of the experimental kumo-pytorch package are source.
-!packages/data/kumo-pytorch/examples/*/walkthrough.ipynb
+!packages/experimental/kumo-pytorch/examples/*/walkthrough.ipynb
 
 
 
