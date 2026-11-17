@@ -163,7 +163,7 @@ jobs:
         run: |
           python -m test.kumo_pytorch.data fetch --dataset hi-small \
             --data-dir "$RUNNER_TEMP/aml-training-data" --report "$RUNNER_TEMP/aml-training-acquisition.json"
-      - name: Train a001 and a017 for 100 CPU updates and repeat exactly
+      - name: Train all five AML model-workload combinations for 100 CPU updates and repeat exactly
         run: |
           python -m test.kumo_pytorch.training_acceptance \
             --data-dir "$RUNNER_TEMP/aml-training-data" --output "$RUNNER_TEMP/aml-training" \
@@ -183,10 +183,10 @@ jobs:
             ${{ runner.temp }}/aml-training-acquisition.json
             ${{ runner.temp }}/aml-training/report.json
             ${{ runner.temp }}/aml-training/report.md
-            ${{ runner.temp }}/aml-training/a*/report.json
-            ${{ runner.temp }}/aml-training/a*/contract.json
-            ${{ runner.temp }}/aml-training/a*/repeat-*/report.json
-            ${{ runner.temp }}/aml-training/a*/repeat-*/loss-curve.csv
+            ${{ runner.temp }}/aml-training/*/report.json
+            ${{ runner.temp }}/aml-training/*/contract.json
+            ${{ runner.temp }}/aml-training/*/repeat-*/report.json
+            ${{ runner.temp }}/aml-training/*/repeat-*/loss-curve.csv
           retention-days: 14
 
   aml-fitting-memory:

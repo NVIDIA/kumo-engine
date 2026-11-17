@@ -43,8 +43,10 @@ Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishe
 validated prototype coverage from the outstanding full nightly requirements.
 
 The [real-AML training acceptance job](docs/training-acceptance.md) adds
-100-update CPU checks for a001/Fusion and a017/PRAGMA, with repeatability,
-per-parameter updates and retained loss series. Missing behavior fails normally.
+100-update CPU checks for all five AML workload/model combinations: GraphSAGE,
+nuFormer and Fusion involvement, PRAGMA masked-value pretraining and nuFormer
+next-token pretraining. Each repeats twice, with per-parameter updates, loss
+decrease and retained loss series. Missing behavior fails normally.
 
 The [fitting-memory experiment](docs/fitting-memory.md) adds fresh-process
 25k/400k comparisons for all five AML contracts, using the general cgroup

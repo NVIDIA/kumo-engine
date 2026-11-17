@@ -1,4 +1,4 @@
-"""Real-AML, 100-update CPU training acceptance for a001 and a017."""
+"""Real-AML, 100-update CPU training acceptance for all five model/task bindings."""
 
 import argparse
 import csv
@@ -19,13 +19,35 @@ from .contracts import build_contract
 from .data import ROOT
 from .involvement import verify_batch
 from .lifecycle import input_digest
-from .masked_values import verify_loss
+from .masked_values import verify_loss as verify_masked_loss
+from .next_token import verify_loss as verify_next_loss
 from .models.aml import build_model
-from .population import write_report
+from .population import PDF_CASES, write_report
 from .run_aml import positive, prepare
 
 STEPS = 100
-CASES = {"combined": "a001", "pragma": "a017"}
+CASES = {
+    ("account-involvement-next24h", "graphsage"),
+    ("account-involvement-next24h", "nuformer"),
+    ("account-involvement-next24h", "combined"),
+    ("masked-value-pretrain", "pragma"),
+    ("next-token-pretrain", "nuformer"),
+}
+
+
+def training_cases(selections):
+    cases = [
+        (selection, family)
+        for selection in selections
+        for family in selection["models"]
+    ]
+    identities = [
+        (selection["selector"]["workload_id"], family) for selection, family in cases
+    ]
+    assert len(identities) == len(CASES) and set(identities) == CASES, (
+        "Training acceptance requires each of the five AML model/workload combinations exactly once"
+    )
+    return cases
 
 
 @contextmanager
@@ -46,17 +68,22 @@ def deterministic_cpu(seed):
         torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
 
 
-def measured_loss(model, batch, family, labels, *, audit=False):
+def measured_loss(model, batch, workload, labels, *, audit=False):
     assert not batch.metadata["is_padding"].any(), "Unexpected sample padding"
     result = model.training_step(batch)
     assert result.weight >= 0, "Negative eligible-target count"
     assert torch.isfinite(result.loss), "Nonfinite loss"
     assert torch.isfinite(result.logits).all(), "Nonfinite logits"
     assert result.loss.device.type == "cpu", "Training acceptance must run on CPU"
-    if audit and family == "combined":
-        verify_batch(batch, result, labels)
-    elif audit:
-        verify_loss(batch, result)
+    if audit:
+        if workload == "account-involvement-next24h":
+            verify_batch(batch, result, labels)
+        elif workload == "masked-value-pretrain":
+            verify_masked_loss(batch, result)
+        elif workload == "next-token-pretrain":
+            verify_next_loss(batch, result)
+        else:
+            raise ValueError(f"Unknown training objective: {workload}")
     return result
 
 
@@ -75,10 +102,11 @@ def train_repetition(
     write_report(directory, report)
     try:
         with deterministic_cpu(seed):
+            workload = selection["selector"]["workload_id"]
             assert requests and all(q.split == "train" for q in requests)
             labels = (
                 {q.sample_id: q.targets[0].value for q in requests}
-                if family == "combined"
+                if workload == "account-involvement-next24h"
                 else {}
             )
             frozen = task.fitted_state.fingerprint
@@ -110,7 +138,7 @@ def train_repetition(
                     drop_last=False,
                 ):
                     baseline = measured_loss(
-                        model, candidate, family, labels, audit=True
+                        model, candidate, workload, labels, audit=True
                     )
                     if baseline.weight:
                         probe = candidate
@@ -138,7 +166,7 @@ def train_repetition(
                     batch_hash = input_digest(
                         (batch.inputs, batch.targets, batch.metadata)
                     )
-                    result = measured_loss(model, batch, family, labels)
+                    result = measured_loss(model, batch, workload, labels)
                     if not result.weight:
                         report["zero_target_batches"].append(
                             {
@@ -195,7 +223,7 @@ def train_repetition(
                 epoch += 1
             model.eval()
             with torch.no_grad():
-                final = measured_loss(model, probe, family, labels, audit=True)
+                final = measured_loss(model, probe, workload, labels, audit=True)
                 report["final_loss"] = final.loss.item()
                 assert final.weight == report["probe_eligible"], "Probe targets changed"
             assert (
@@ -275,9 +303,11 @@ def run_case(
     batch_size=4,
 ):
     directory.mkdir(parents=True, exist_ok=False)
+    workload = selection["selector"]["workload_id"]
     report = {
         "status": "running",
-        "pdf_case": CASES[family],
+        "case_id": f"{workload}-{family}",
+        "pdf_case": PDF_CASES.get((workload, family)),
         "family": family,
         "selector": selection["selector"],
         "device": "cpu",
@@ -292,20 +322,22 @@ def run_case(
     }
     write_report(directory, report)
     try:
-        graph = family == "combined"
+        assert (workload, family) in CASES, "Unselected training combination"
+        graph = family in {"graphsage", "combined"}
+        native = workload != "account-involvement-next24h"
         groups = selections[selection["selector"]["anchor_version"]][
-            "forecast_split" if graph else "split"
+            selection["anchor_binding"]["split_column"]
         ]
         rows = groups["train"]
         requests = requests_for(
-            rows, identities, split="train", graph=graph, native=not graph
+            rows, identities, split="train", graph=graph, native=native
         )
         report["training_anchors"] = rows
         report["encoder_cutoff_seconds"] = (
             max(row["as_of_time"] // 10**9 for row in rows) - 1
         )
         contract = build_contract(
-            aml_data_schema(), family, native=not graph, max_events=capacity
+            aml_data_schema(), family, native=native, max_events=capacity
         )
         (directory / "contract.json").write_text(contract.to_json())
         with (
@@ -385,34 +417,34 @@ def main(argv=None):
                 ROOT / "contracts.py",
                 ROOT / "involvement.py",
                 ROOT / "masked_values.py",
+                ROOT / "next_token.py",
+                ROOT / "workloads/aml.json",
             ]
             + sorted((ROOT / "models").rglob("*.py"))
         }
         write_report(args.output, report)
+        cases = training_cases(json.loads((ROOT / "workloads/aml.json").read_text()))
         files = verify_inputs(args.data_dir)
         report["inputs"] = list(files.values())
         selections = load_selections(args.data_dir, limit=args.anchors_per_split)
         dataset, identities, _, capacity = prepare(
             args.data_dir, args.output / "prepared", selections, files
         )
-        for selection in json.loads((ROOT / "workloads/aml.json").read_text()):
-            for family in selection["models"]:
-                if family not in CASES:
-                    continue
-                report["cases"].append(
-                    run_case(
-                        dataset,
-                        identities,
-                        selections,
-                        selection,
-                        family,
-                        directory=args.output / CASES[family],
-                        capacity=capacity,
-                        batch_size=args.batch_size,
-                    )
+        for selection, family in cases:
+            report["cases"].append(
+                run_case(
+                    dataset,
+                    identities,
+                    selections,
+                    selection,
+                    family,
+                    directory=args.output
+                    / f"{selection['selector']['workload_id']}-{family}",
+                    capacity=capacity,
+                    batch_size=args.batch_size,
                 )
-                write_report(args.output, report)
-        assert {c["pdf_case"] for c in report["cases"]} == {"a001", "a017"}
+            )
+            write_report(args.output, report)
         report["status"] = (
             "passed"
             if all(c["status"] == "passed" for c in report["cases"])
@@ -439,7 +471,7 @@ def main(argv=None):
     for case in report["cases"]:
         repeats = case["repetitions"]
         lines.append(
-            f"| {case['pdf_case']} / {case['family']} | {case['status']} | {case.get('reproducible', 'not measured')} | {[x['completed_updates'] for x in repeats]} | {[(x.get('initial_loss'), x.get('final_loss')) for x in repeats]} |"
+            f"| {case['case_id']} | {case['status']} | {case.get('reproducible', 'not measured')} | {[x['completed_updates'] for x in repeats]} | {[(x.get('initial_loss'), x.get('final_loss')) for x in repeats]} |"
         )
         for repeat, result in enumerate(repeats):
             failed = [
@@ -451,7 +483,7 @@ def main(argv=None):
                 lines.extend(
                     [
                         "",
-                        f"{case['pdf_case']} repeat {repeat}: unchanged/no-gradient parameters: "
+                        f"{case['case_id']} repeat {repeat}: unchanged/no-gradient parameters: "
                         + ", ".join(failed),
                     ]
                 )

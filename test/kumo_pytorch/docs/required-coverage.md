@@ -1,6 +1,6 @@
 # Required AML coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 326 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 336 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
@@ -10,6 +10,11 @@ inventory. Missing/deleted cases, unexpected additions, collection-time skips,
 missing imports, deselection of required cases, runtime skips and xfails fail
 execution. Required test bodies must execute; setup failures remain failures.
 Ordinary test assertions are unchanged. Local focused runs may omit the option.
+
+The expanded training-acceptance module contributes 22 required CPU cases:
+two fixture paths for all five combinations, plus harness and model-regression
+checks. All 22 pass after removing unused final non-root branches from the
+standalone GraphSAGE test model; see [training acceptance](training-acceptance.md).
 
 When intentionally adding or renaming cases, collect from the repository root:
 
@@ -31,7 +36,8 @@ checks now use DiskGraph instead of InMemory, retaining their assertions.
 Polars/GPU timing-reference cases are unchanged. Pre-existing Engine tests are
 not removed; new package sweeps and golden boundary additions use DiskGraph.
 
-Local execution of the revised CPU inventory: **325 passed, one failed, zero
+Local execution before expanding training acceptance from two combinations to
+five (326 CPU cases): **325 passed, one failed, zero
 skipped**, with five GPU cases explicitly delegated. The failure remains
 `test_raw_aml_multisource_history[filters-and-windows]`: `DG-ROW-FILTER` rejects
 the required operation. It remains a normal failure. The converted checks passed.

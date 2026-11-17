@@ -51,11 +51,11 @@ Its lifecycle adapter also applies a binary involvement head to PRAGMA's user
 representation during finetuning. The local nuFormer `forward_kumo` now removes
 its internal empty-history padding position from emitted logits/hidden states,
 preserving alignment with zero-width Kumo next-token targets. Fusion uses an
-encoder-only GraphSAGE: no standalone prediction head or final non-root updates
-are registered, because neither contributes to its root-based prediction.
-Earlier graph layers remain intact. Standalone GraphSAGE is unchanged; the
-copied RelBench class bodies remain unchanged. Fusion checkpoints produced
-before this change contain extra parameters and need to be regenerated.
+encoder-only GraphSAGE with no standalone prediction head. Both standalone
+GraphSAGE and Fusion omit final non-root updates, which cannot contribute to
+their root-based predictions. Earlier graph layers remain intact; the copied
+RelBench class bodies remain unchanged. GraphSAGE and Fusion checkpoints produced
+before their respective changes contain extra parameters and must be regenerated.
 Test fixtures adapt `kumo_specs/fixtures.py` and selected `typed_contracts.py`
 builders. Historical Arena validation is not evidence for this port.
 

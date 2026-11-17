@@ -87,7 +87,8 @@ class GraphSAGEModel(nn.Module):
     ``forward_kumo`` consumes Kumo batches directly. Validate on CPU with
     ``validate_kumo_batch`` before transfer, then use ``validate_inputs=False``.
     The legacy ``forward(GraphBatch)`` interface remains available.
-    ``encoder_only=True`` omits the prediction head and final non-root updates;
+    Final updates produce only root embeddings, which feed the prediction.
+    ``encoder_only=True`` also omits the prediction head;
     use ``encode_kumo`` or ``encode`` to obtain root embeddings for Fusion.
     Numerical/categorical feature encoding here is a local implementation, not
     RelBench's TensorFrame/ResNet encoder. The GraphSAGE class is unchanged.
@@ -112,17 +113,16 @@ class GraphSAGEModel(nn.Module):
             list(self._node_keys.values()), list(self._edge_keys.values()),
             config.channels, aggr=config.aggr, num_layers=config.num_layers,
         )
-        if encoder_only:
-            # Fusion consumes only root embeddings. Final non-root outputs have
-            # no subsequent message-passing layer and cannot affect its loss.
-            root = self._node_keys[config.root_type]
-            final = self.gnn.convs[-1].convs
-            for edge in list(final.keys()):
-                if edge[2] != root:
-                    del final[edge]
-            for node in list(self.gnn.norms[-1].keys()):
-                if node != root:
-                    del self.gnn.norms[-1][node]
+        # Both standalone prediction and Fusion consume only root embeddings.
+        # Final non-root outputs have no later layer and cannot affect the loss.
+        root = self._node_keys[config.root_type]
+        final = self.gnn.convs[-1].convs
+        for edge in list(final.keys()):
+            if edge[2] != root:
+                del final[edge]
+        for node in list(self.gnn.norms[-1].keys()):
+            if node != root:
+                del self.gnn.norms[-1][node]
         self.head = None if encoder_only else nn.Linear(config.channels, config.out_channels)
 
     def validate_kumo_batch(self, batch, *, input_name="graph") -> None:

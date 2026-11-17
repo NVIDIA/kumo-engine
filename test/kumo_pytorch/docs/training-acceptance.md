@@ -1,10 +1,22 @@
 # Real-AML CPU training acceptance
 
-Criterion 8 uses the existing AML HI-small v8 bindings: a001 with FusionModel
-(the combined consumer, v2 forecast anchors), and a017 with NativePragmaModel
-(PRAGMA masked-value pretraining, v1 split anchors). No model parameters are
-removed or frozen to make acceptance pass. Existing controlled fixture learning
-tests and task-correctness tests keep their current owners.
+Training acceptance covers all five AML HI-small v8 model/workload combinations.
+This extends criterion 8's original Fusion/a001 and PRAGMA/a017 requirement at
+the user's request. Every combination has the same acceptance rules.
+
+| Workload | Consumer | Anchors / split |
+| --- | --- | --- |
+| Account involvement | GraphSAGE | v2 / forecast_split |
+| Account involvement | nuFormer | v1 / forecast_split |
+| Account involvement | Fusion/combined (a001) | v2 / forecast_split |
+| Masked-value pretraining | PRAGMA (a017) | v1 / split |
+| Next-token pretraining | nuFormer (a018) | v1 / split |
+
+All preparation uses DiskGraph. Graph cases retain the shifted v2 cutoff;
+sequence-only classification retains its external involvement labels. Each task
+uses its own independent binary, masked-value or next-token loss check.
+Acceptance does not freeze or exclude parameters to make checks pass. Existing
+controlled fixture learning and task-correctness tests keep their current owners.
 
 ## Run and selection
 
@@ -53,14 +65,16 @@ task; this is a reproducibility check, not a fresh-process lifecycle test.
 
 Missing support, unused parameters, nonfinite values, insufficient loss decrease
 and nondeterminism are ordinary failures. A completed but failing first repeat
-does not suppress the second repeat or the other workload.
+does not suppress the second repeat or the other workloads. The runner rejects
+a missing, duplicated or substituted model/workload combination.
 
 ## CI and reports
 
 `PyTorch nightly real AML CPU training acceptance` runs on `ubuntu-24.04` using
 the existing CPU setup, DiskGraph wheel and Engine AWS test role. It runs on
-schedule/manual dispatch independently of the GPU benchmark queue. Its two
-workload runs each perform two 100-update repeats. Fixture coverage also runs
+schedule/manual dispatch independently of the GPU benchmark queue. Its five
+workload/model runs each perform two 100-update repeats: 1,000 updates total.
+Fixture coverage also runs
 in the existing PR/nightly AML model-check job.
 
 The job summary records the tested revision. Download
@@ -71,8 +85,28 @@ maximum absolute change. Reports include source identities, selected anchors,
 configuration, dependency versions, test/model source hashes and dirty-checkout status. Partial progress
 is saved every 10 updates and remains running/failed, never accepted. Source
 payloads, prepared views and indexes are excluded from the artifact.
+Case directories and report IDs use `<workload_id>-<model_family>`, distinguishing
+nuFormer's two tasks. PDF IDs remain optional provenance rather than case identity.
 
 ## Local evidence
+
+Expanded five-case fixture validation: **22 passed, zero failed, zero skipped**.
+All five combinations pass on generated and raw-AML-format fixtures, including
+two deterministic 100-update repeats, loss decrease and updates to every
+trainable tensor. The checks exposed eight unused final-layer non-root tensors
+in standalone GraphSAGE. Its test-model architecture now omits those branches,
+as Fusion already did. Exact-output regressions compare root embeddings and
+predictions against the original full graph module for both models. The
+acceptance gates remain unchanged, with no parameter freezes or exclusions.
+Old standalone GraphSAGE checkpoints must be regenerated.
+
+An additional 41 focused model, learning, finetuning, checkpoint-resume and AML
+benchmark checks pass with no failures or skips. Local runs use the current
+Python sources with the existing compatible native extension; CI must rebuild
+and validate the branch's native revision.
+
+This is not real HI-small acceptance. All five cases still need the nightly CPU
+job. The original evidence below covers the earlier two-model version.
 
 After integrating the upstream decimal fix and adapting Fusion to use an
 encoder-only GraphSAGE, all 30 focused training, controlled-learning, finetuning

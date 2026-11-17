@@ -22,6 +22,11 @@ from implementation gaps. This rule applies to every remaining criterion.
 
 ## Agreed scope
 
+- All five AML model/workload combinations require two deterministic 100-update
+  CPU training repetitions, per the user's expanded training requirement:
+  GraphSAGE/nuFormer/Fusion involvement, PRAGMA masked-value pretraining and
+  nuFormer next-token pretraining. Preserve finite-loss/gradient, every-parameter
+  update and loss-decrease checks. See [training acceptance](docs/training-acceptance.md).
 - New correctness tests and coverage sweeps are DiskGraph-only, per the user's
   2026-11-17 correction. Remove PR-introduced InMemory variants; preserve the
   pre-existing package tests. Migrate unique InMemory-only acceptance checks to
