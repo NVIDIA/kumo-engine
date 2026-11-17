@@ -621,11 +621,31 @@ def test_anchors_off_the_clock_warn(caplog, anchors, start_time, is_prediction, 
     assert _builder_warnings(caplog) == warnings
 
 
-def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path):
+def test_a_past_window_forecasting_split_generates(off_tick_data, tmp_path, caplog):
     index = _ingest(tmp_path / "hours", "hours", _off_tick_tables(off_tick_data))
     split = {"kind": "DateOffsetSplit", "offsets": [-30, 0], "offset_unit": "minutes",
              "unit": "minutes", "timeframe": 30, "anchor_start_offset": -120}
     rows = _split_rows(index, (-120, -90), split, "off_tick")
     assert rows
+    assert _builder_warnings(caplog) == [
+        "The window (-120, -90] minutes truncates to (-120, -60] minutes on the hours index "
+        "clock. Use a window of whole hours, or a finer timestamp_precision."]
     assert rows == _split_rows(index, (-120, -60), {**split, "offsets": [0, 0], "timeframe": 0},
                                "whole_hours")
+
+
+def test_a_written_split_warns_beside_a_rounded_window(caplog):
+    builder = DiskGraphTTBuilder("hours")
+    builder.temporal([EPOCH_DAY * DAY], forecast_length=1, unit="seconds")
+    builder.for_each("users", "user_id")
+    builder.aggregate("orders", EdgeRef("users", "user_id", "orders", "user_id"), "count",
+                      time_col="ordered_at", window=(0, 90), window_unit="minutes")
+    builder.split_ratio(SplitSpec(kind="DateOffsetSplit", offsets=[-45, -15],
+                                  offset_unit="minutes", unit="minutes", timeframe=90))
+    builder.build()
+    remedy = "on the hours index clock. Use {} of whole hours, or a finer timestamp_precision."
+    assert _builder_warnings(caplog) == [
+        "The split offset -15 minutes truncates to 0 minutes " + remedy.format("split durations"),
+        "The split offset -45 minutes truncates to 0 minutes " + remedy.format("split durations"),
+        "The window (0, 90] minutes truncates to (0, 60] minutes " + remedy.format("a window"),
+    ]

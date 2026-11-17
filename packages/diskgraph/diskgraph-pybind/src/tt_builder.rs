@@ -728,14 +728,12 @@ impl DiskGraphTTBuilder {
                 Ok(tt::Stage { ops, filter })
             })
             .collect::<PyResult<_>>()?;
-        let mut truncated: BTreeSet<String> = stages
-            .iter()
-            .flat_map(|stage| &stage.ops)
-            .filter_map(truncated_window)
-            .collect();
-        // A split derived from a truncated window truncates with it.
-        if truncated.is_empty() {
-            truncated.extend(self.split.iter().flat_map(truncated_split::<U>));
+        let ops = || stages.iter().flat_map(|stage| &stage.ops);
+        let mut truncated: BTreeSet<String> = ops().filter_map(truncated_window).collect();
+        let windows: Vec<_> = ops().filter_map(window_of).collect();
+        let forecast_length = self.temporal.as_ref().map_or(1, |t| t.forecast_length);
+        if let Some(split) = &self.split {
+            truncated.extend(truncated_split::<U>(split, &windows, forecast_length));
         }
         if !self.is_prediction {
             truncated.extend(self.temporal.iter().flat_map(truncated_anchors::<U>));
@@ -888,8 +886,14 @@ fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
 }
 
 /// Describes the split durations the clock `U` truncates, as the executor reads
-/// them: a time-range split shifts by `timeframe + anchor_start_offset`.
-fn truncated_split<U: UnitSystem>(split: &SplitSpecArgs) -> Vec<String> {
+/// them: a time-range split shifts by `timeframe + anchor_start_offset`. A
+/// value that pquery derives from the query windows, as in the default split,
+/// is left to the window warning.
+fn truncated_split<U: UnitSystem>(
+    split: &SplitSpecArgs,
+    windows: &[(i64, i64, TimeUnit)],
+    forecast_length: i64,
+) -> Vec<String> {
     let fixed = |unit: &Option<String>| {
         parse_time_unit(unit_or(unit, "days"))
             .ok()
@@ -921,9 +925,31 @@ fn truncated_split<U: UnitSystem>(split: &SplitSpecArgs) -> Vec<String> {
         }
         _ => {}
     }
+    let derived = |field: &str, value: i64, unit: TimeUnit| {
+        let bounded = || {
+            windows
+                .iter()
+                .filter(|&&(lo, _, u)| u == unit && lo != UNBOUNDED_LOWER_OFFSET)
+        };
+        let (Some(start), Some(end)) = (bounded().map(|w| w.0).min(), bounded().map(|w| w.1).max())
+        else {
+            return false;
+        };
+        let timeframe = end.saturating_sub(start);
+        let horizon = forecast_length.saturating_mul(timeframe);
+        let forecast = [1, 2].map(|k| timeframe.saturating_sub(horizon.saturating_mul(k)));
+        match field {
+            "offset" => value == -end || forecast.contains(&value),
+            "timeframe" => value == timeframe,
+            "anchor_start_offset" => value == start,
+            "timeframe + anchor_start_offset" => value == end,
+            _ => false,
+        }
+    };
     let clock = unit_name(U::UNIT);
     durations
         .into_iter()
+        .filter(|&(field, value, unit)| !derived(field, value, unit))
         .filter_map(|(field, value, unit)| {
             let in_clock = truncate_to_clock::<U>(value, unit);
             let unit = unit_name(unit);
