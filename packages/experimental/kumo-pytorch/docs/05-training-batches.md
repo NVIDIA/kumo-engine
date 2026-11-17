@@ -387,18 +387,61 @@ For consumers that build their own model representation, a materialized
 DiskGraph task can expose sampled graph columns without first encoding them
 into tensor/mask dictionaries:
 
+Reuse the schema, Parquet dataset and anchor table above with a graph-only
+contract. Select the training split because the anchor table contains both
+training and validation rows.
+
+<!-- test: diskgraph -->
 ```python
-# graph_task has one Graph input named "graph", explicit Raw node fields,
-# and anchors materialized from an AnchorTable.
-for batch in graph_task.batches(batch_size=1024, output_format="columnar"):
-    graph = batch.inputs["graph"]  # api.ColumnarGraph
-    roots = graph.nodes[graph.root_type]
-    root_ids = roots.ids.slice(0, batch.batch_size)
-    for table_name, nodes in graph.nodes.items():
-        features = nodes.features  # pyarrow.Table; NULLs stay in validity bitmaps
-        example_positions = nodes.owners  # indexes into batch.metadata["sample_ids"]
-    for relation_name, edges in graph.edges.items():
-        selected_pairs = edges.index  # Arrow columns: source, destination
+graph_contract = api.DataLoaderSpec(
+    schema=schema,
+    sample=api.SampleSpec(
+        entity=api.EntitySpec(table="users"),
+        neighborhoods={
+            "history": api.NeighborhoodSpec(
+                layers=(
+                    api.GraphLayer(
+                        samples=(api.GraphSample("user_purchases", 4, strategy="recent"),)
+                    ),
+                )
+            )
+        },
+    ),
+    batch=api.BatchSpec(
+        inputs={
+            "graph": api.Input(
+                source=api.NeighborhoodSource("history"),
+                representation=api.Graph(
+                    node_fields={
+                        "users": api.Fields((api.Encode("segment", api.Raw()),)),
+                        "purchases": api.Fields((api.Encode("amount", api.Raw()),)),
+                    }
+                ),
+                layout=None,
+            )
+        },
+        batching=api.Batching(max_samples=1024),
+    ),
+)
+with (
+    api.prepare(graph_contract, parquet, engine) as graph_plan,
+    graph_plan.materialize(anchors=anchor_table, fit_split="train") as graph_task,
+):
+    for batch in graph_task.batches(split="train", output_format="columnar"):
+        graph = batch.inputs["graph"]  # api.ColumnarGraph
+        roots = graph.nodes[graph.root_type]
+        root_ids = roots.ids.slice(0, batch.batch_size)
+        for table_name, nodes in graph.nodes.items():
+            features = nodes.features  # pyarrow.Table; NULLs stay in validity bitmaps
+            example_positions = nodes.owners  # indexes into batch.metadata["sample_ids"]
+        for relation_name, edges in graph.edges.items():
+            selected_pairs = edges.index  # Arrow columns: source, destination
+    print("training roots:", root_ids.to_pylist())
+```
+
+<!-- test: output -->
+```text
+training roots: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
 ```
 
 Node rows are occurrences within an example: repeated anchors and different
