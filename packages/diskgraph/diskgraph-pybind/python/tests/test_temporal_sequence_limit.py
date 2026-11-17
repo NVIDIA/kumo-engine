@@ -128,6 +128,16 @@ def query(history_graph, plan, output_format="inspectable"):
     )
 
 
+def query_lengths(history_graph, plan):
+    engine = history_graph[0]
+    ids = engine.lookup_node_ids("users", pa.array([1, 2, 3, 1]))
+    return engine.query_temporal_lengths(
+        {"users": ids},
+        {"users": [1_700_000_010, 1_700_000_010, 1_700_000_008, 1_700_000_005]},
+        json.dumps(plan),
+    )
+
+
 @pytest.mark.parametrize("output_format", ["inspectable", "model"])
 def test_integer_sum_uses_integer_output_even_for_empty_history(
     history_graph, output_format
@@ -251,9 +261,14 @@ def test_limited_sequence_matches_source(history_graph, order, limit, distinct):
     assert result["batch"].to_pylist() == expected
 
 
-def test_limit_reduces_feature_decoding_but_keeps_boundary_ties(history_graph):
-    limited = query(history_graph, plan_for(history_graph))
-    full = query(history_graph, plan_for(history_graph, limit=None))
+@pytest.mark.parametrize("distinct", [True, False])
+def test_limit_reduces_feature_decoding_but_keeps_boundary_ties(
+    history_graph, distinct
+):
+    limited = query(history_graph, plan_for(history_graph, distinct=distinct))
+    full = query(history_graph, plan_for(history_graph, limit=None, distinct=distinct))
+    # An exact clock reads only the capped edges and their boundary tie run.
+    assert limited["stats"]["edges_visited"] < full["stats"]["edges_visited"]
     assert limited["stats"]["rows_decoded"] < full["stats"]["rows_decoded"]
     # A timestamp tie may straddle the limit: all tied keys must reach the old
     # primary-key sorter, not just whichever edges happen to be encountered first.
@@ -375,16 +390,24 @@ def test_randomized_limits_match_aggregate_shared_full_frame(history_graph):
             frame["start_seconds"] = None
         if rng.integers(4) == 0:
             frame["stop_seconds"] = None
+        if rng.integers(3) == 0:
+            limit = [None, int(rng.integers(1, 110))][int(rng.integers(2))]
+            plan["sequences"].append(
+                dict(plan["sequences"][0], name="other", limit=limit)
+            )
         reference = copy.deepcopy(plan)
         # A full-window consumer prevents early row pruning.
         reference["aggregates"] = [
             {"name": "all_rows", "frame": "f", "operation": "count"}
         ]
-        actual = query(history_graph, plan)["sequences"][0]
-        expected = query(history_graph, reference)["sequences"][0]
-        for key in ("name", "offsets", "timestamps", "node_ids"):
-            assert actual[key] == expected[key]
-        assert actual["batch"].equals(expected["batch"])
+        actual = query(history_graph, plan)["sequences"]
+        expected = query(history_graph, reference)["sequences"]
+        lengths = query_lengths(history_graph, plan)["sequences"]
+        for a, b, length in zip(actual, expected, lengths, strict=True):
+            for key in ("name", "offsets", "timestamps", "node_ids"):
+                assert a[key] == b[key]
+            assert a["batch"].equals(b["batch"])
+            assert length["lengths"].to_pylist() == np.diff(a["offsets"]).tolist()
 
 
 @pytest.mark.parametrize("limit", [0, -1])
@@ -433,6 +456,8 @@ def test_duplicate_source_keys_preserve_distinct_and_repeated_rows(
                 for key in ("offsets", "timestamps", "node_ids"):
                     assert a[key] == b[key]
                 assert a["batch"].equals(b["batch"])
+                lengths = query_lengths(duplicate_graph, plan)["sequences"][0]
+                assert lengths["lengths"].to_pylist() == np.diff(a["offsets"]).tolist()
 
 
 @pytest.fixture(

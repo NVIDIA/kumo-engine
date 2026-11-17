@@ -23,6 +23,7 @@ use arrow::array::{
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow_array::{RecordBatch, RecordBatchOptions};
+use diskgraph_core::indexed_range::partition_point_by;
 use diskgraph_core::indexed_time_range::{unclipped_bucket_end, IndexedTimeRange};
 use diskgraph_core::metadata::EdgeSortKeyMetadata;
 use diskgraph_core::sortkey::SortKeyDecoder;
@@ -35,6 +36,7 @@ use diskgraph_core::tt_builder::{
 };
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
+use diskgraph_index::layout::RelationSegment;
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
@@ -527,14 +529,20 @@ fn scalar_at(array: &dyn Array, row: usize) -> Result<ScalarValue, String> {
     ))
 }
 
+type RelationColumns = (Vec<u64>, Vec<u64>, Option<usize>);
+
+/// With an exact clock and no sentinel keys, also returns the in-window edge
+/// count, and `recent` keeps only the newest or oldest edges holding `limit` (distinct)
+/// destinations, plus their boundary timestamp's tie run for the existing sort.
 fn relation_columns(
     table: &TableReader,
     relation_name: &str,
     node_id: u64,
     include_sort_keys: bool,
     window: Option<(&IndexedTimeRange, Option<i64>, Option<i64>, &str)>,
+    recent: Option<(usize, SequenceOrder, bool)>,
     edges_visited: &mut u64,
-) -> Result<(Vec<u64>, Vec<u64>), String> {
+) -> Result<RelationColumns, String> {
     let relation_id = table
         .relations()
         .iter()
@@ -556,9 +564,24 @@ fn relation_columns(
         .find(|segment| segment.layout.relation_id as usize == relation_id)
         .ok_or_else(|| format!("relation {relation_name:?} has no physical segment"))?;
     let keys = EdgeUnpacker::new(segment.data, &segment.layout);
-    let ranges = window.map_or([0..keys.len(), 0..0, 0..0], |(clock, lower, upper, _)| {
+    let mut ranges = window.map_or([0..keys.len(), 0..0, 0..0], |(clock, lower, upper, _)| {
         clock.candidate_ranges(keys.len(), lower, upper, |i| keys.key_at(i))
     });
+    let in_window = window
+        .filter(|(clock, ..)| clock.is_exact() && ranges[0].is_empty() && ranges[2].is_empty())
+        .map(|_| ranges[1].len());
+    if let (Some((limit, order, distinct)), Some((clock, ..)), Some(count)) =
+        (recent, window, in_window)
+    {
+        let interior = ranges[1].clone();
+        let take = if distinct {
+            distinct_span(segment, interior.clone(), limit, order)
+        } else {
+            limit.min(count)
+        };
+        let time = |i| clock.decoder().decode(keys.key_at(i)).0;
+        ranges[1] = with_boundary_ties(interior, take, order, time);
+    }
     let candidates = ranges.iter().map(|range| range.len()).sum();
     let mut destinations = Vec::with_capacity(candidates);
     let mut sort_keys = if include_sort_keys {
@@ -586,7 +609,64 @@ fn relation_columns(
             *edges_visited = edges_visited.saturating_add(count as u64);
         }
     }
-    Ok((destinations, sort_keys))
+    Ok((destinations, sort_keys, in_window))
+}
+
+/// How many edges from the newest (descending) or oldest (ascending) end of
+/// `range` hold `limit` distinct destinations, or all of them.
+fn distinct_span(
+    segment: &RelationSegment<'_>,
+    range: std::ops::Range<usize>,
+    limit: usize,
+    order: SequenceOrder,
+) -> usize {
+    let mut seen = HashSet::<u64>::new();
+    let mut walked = 0;
+    let mut destination_buffer = [0u64; 256];
+    let mut sort_key_buffer = [0u64; 256];
+    while seen.len() < limit && walked < range.len() {
+        let take = (limit - seen.len()).min(range.len() - walked).min(256);
+        let batch = match order {
+            SequenceOrder::Descending => range.start + walked..range.start + walked + take,
+            SequenceOrder::Ascending => range.end - walked - take..range.end - walked,
+        };
+        let bytes =
+            batch.start * segment.layout.entry_bytes..batch.end * segment.layout.entry_bytes;
+        let mut unpacker = EdgeUnpacker::new(&segment.data[bytes], &segment.layout);
+        unpacker.unpack_batch(
+            &mut destination_buffer[..take],
+            &mut sort_key_buffer[..take],
+        );
+        seen.extend(&destination_buffer[..take]);
+        walked += take;
+    }
+    walked
+}
+
+/// The `take` newest (descending) or oldest (ascending) positions of a
+/// descending `range`, extended over every edge tied with the boundary time.
+fn with_boundary_ties(
+    range: std::ops::Range<usize>,
+    take: usize,
+    order: SequenceOrder,
+    time: impl Fn(usize) -> Option<i64>,
+) -> std::ops::Range<usize> {
+    if take == 0 {
+        return range.start..range.start;
+    }
+    match order {
+        SequenceOrder::Descending => {
+            let cut = range.start + take;
+            let boundary = time(cut - 1);
+            range.start..cut + partition_point_by(range.end - cut, |i| time(cut + i) >= boundary)
+        }
+        SequenceOrder::Ascending => {
+            let cut = range.end - take;
+            let boundary = time(cut);
+            let newer = partition_point_by(cut - range.start, |i| time(range.start + i) > boundary);
+            range.start + newer..range.end
+        }
+    }
 }
 
 fn relation_destinations(
@@ -600,12 +680,14 @@ fn relation_destinations(
 ) -> Result<Vec<u64>, String> {
     // Coarse keys only admit candidates: row refinement must precede any cap.
     let sequence = sequence.filter(|_| window.is_some_and(|(clock, ..)| clock.is_exact()));
-    let (mut destinations, keys) = relation_columns(
+    let recent = sequence.and_then(|sequence| Some((sequence.limit?, sequence.order, distinct)));
+    let (mut destinations, keys, _) = relation_columns(
         table,
         relation_name,
         node_id,
         sequence.is_some(),
         window,
+        recent,
         &mut stats.edges_visited,
     )?;
     if let (Some(sequence), Some((clock, ..))) = (sequence, window) {
@@ -1400,12 +1482,14 @@ fn aggregate_kind(frame: &MaterializedFrame, plan: &AggregatePlan) -> Option<Sca
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn count_frame(
     reader: &GraphIndexReader,
     plan: &FramePlan,
     root_type: &str,
     roots: &[u64],
     cutoffs: &[i64],
+    limit: Option<usize>,
     timings: &mut LengthTimings,
     stats: &mut LengthStats,
 ) -> Result<Vec<usize>, String> {
@@ -1417,6 +1501,13 @@ fn count_frame(
             .clone()
     });
 
+    let recent = match (hops.len(), plan.distinct, limit) {
+        // Limit 0 unpacks nothing: the exact window's size is the count.
+        (1, false, _) => Some((0, SequenceOrder::Descending, false)),
+        (1, true, Some(limit)) => Some((limit, SequenceOrder::Descending, true)),
+        _ => None,
+    };
+    let mut counted = vec![None; roots.len()];
     let traversal_started = Instant::now();
     let mut rows_by_anchor = Vec::with_capacity(roots.len());
     for (anchor, &root) in roots.iter().enumerate() {
@@ -1437,14 +1528,17 @@ fn count_frame(
             let table = &edge.src_table;
             let mut next = Vec::new();
             for (node_id, _) in frontier {
-                let (destinations, sort_keys) = relation_columns(
+                let (destinations, sort_keys, in_window) = relation_columns(
                     table.as_ref(),
                     &table.relations()[edge.relation_idx].name,
                     node_id,
                     true,
                     window,
+                    recent,
                     &mut stats.edges_visited,
                 )?;
+                counted[anchor] =
+                    in_window.filter(|_| recent.is_some_and(|(.., distinct)| !distinct));
                 next.extend(destinations.into_iter().zip(sort_keys));
             }
             frontier = next;
@@ -1529,6 +1623,9 @@ fn count_frame(
             }
         }
     }
+    for (length, counted) in lengths.iter_mut().zip(counted) {
+        *length = counted.unwrap_or(*length);
+    }
     timings.time_filter = timings
         .time_filter
         .saturating_add(elapsed_ns(filter_started));
@@ -1611,12 +1708,18 @@ pub fn execute_lengths(
                     sequence.name, sequence.frame
                 )
             })?;
+            let limit = plan
+                .sequences
+                .iter()
+                .filter(|other| other.frame == sequence.frame)
+                .try_fold(0, |limit, other| Some(limit.max(other.limit?)));
             let lengths = count_frame(
                 reader,
                 frame,
                 root_type,
                 roots,
                 cutoffs,
+                limit,
                 &mut timings,
                 &mut stats,
             )?;
@@ -2588,6 +2691,20 @@ fn execute_query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn boundary_ties_extend_the_slice_to_either_end() {
+        let times = [9, 8, 8, 8, 7, 5, 5];
+        let time = |i: usize| Some(times[i]);
+        let ties = |take, order| with_boundary_ties(0..times.len(), take, order, time);
+        assert_eq!(ties(0, SequenceOrder::Descending), 0..0);
+        assert_eq!(ties(2, SequenceOrder::Descending), 0..4);
+        assert_eq!(ties(4, SequenceOrder::Descending), 0..4);
+        assert_eq!(ties(7, SequenceOrder::Descending), 0..7);
+        assert_eq!(ties(1, SequenceOrder::Ascending), 5..7);
+        assert_eq!(ties(3, SequenceOrder::Ascending), 4..7);
+        assert_eq!(ties(5, SequenceOrder::Ascending), 1..7);
+    }
 
     #[test]
     fn integer_time_values_use_the_scalar_clock_but_ids_do_not() {

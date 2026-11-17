@@ -257,14 +257,18 @@ def test_coarse_refinement_ties_and_complete_aggregates(tmp_path, unit, bits, we
                 assert lengths["sequences"][0]["lengths"].to_pylist() == expected_lengths
 
 
-@pytest.mark.parametrize("index_clock", ["seconds", "milliseconds", "microseconds",
-                                         "nanoseconds", "hours", "days"])
-def test_index_clock_units_preserve_seconds_query_bounds(tmp_path, index_clock):
+# Subsecond time keys use the full key width and leave no room for a weight.
+@pytest.mark.parametrize("index_clock,weighted", [
+    *[(clock, False) for clock in ["seconds", "milliseconds", "microseconds",
+                                   "nanoseconds", "hours", "days"]],
+    ("hours", True)])
+def test_index_clock_units_preserve_seconds_query_bounds(tmp_path, index_clock, weighted):
     # Whole-day source times are exactly representable in every index clock.
     day = 86400
     times = [day * value for value in [-3, -2, -1, 0, 1, 1, 2, 3]]
     engine, reverse, _, _, _ = build_graph(
-        tmp_path, unit="hour", bits=8, index_clock=index_clock, times_override=times)
+        tmp_path, unit="hour", bits=8, index_clock=index_clock, times_override=times,
+        weighted=weighted)
     roots = engine.lookup_node_ids("users", pa.array([1, 2, 1]))
     cutoffs = [0, 0, day + 1379]
     for lower, upper in [(None, 0), (-day, 0), (0, day), (-2 * day, 2 * day)]:
