@@ -32,7 +32,7 @@ def layout_array(values: Any, boundaries: np.ndarray, layout: Any, *, fill: Any 
     positions = np.arange(int(boundaries[-1])) - np.repeat(boundaries[:-1], lengths)
     if isinstance(values, torch.Tensor):
         result = torch.full((len(lengths), width, *values.shape[1:]), fill, dtype=values.dtype)
-        result[owners, positions] = values
+        result[torch.from_numpy(owners), torch.from_numpy(positions)] = values
         return result
     if isinstance(values, pa.ChunkedArray):
         values = values.combine_chunks()

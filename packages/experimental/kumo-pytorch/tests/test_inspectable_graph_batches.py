@@ -26,7 +26,6 @@ def test_timestamp_columns_preserve_values_and_resolve_timezone_once(monkeypatch
     values = pa.chunked_array(
         [[1699162200 * scale + 1, None], [1699165800 * scale, -1, -1000, 0]], type=dtype
     )
-    expected = _arrow_values(values)
     attempts = []
 
     class MissingPytz:
@@ -38,6 +37,8 @@ def test_timestamp_columns_preserve_values_and_resolve_timezone_once(monkeypatch
 
     monkeypatch.delitem(sys.modules, "pytz", raising=False)
     monkeypatch.setattr(sys, "meta_path", [MissingPytz(), *sys.meta_path])
+    expected = _arrow_values(values)
+    attempts.clear()
     actual = _column_values(pa, values, dtype)
     assert len(attempts) <= 1  # independent of row count, including missing optional pytz
     _equal(actual, expected)

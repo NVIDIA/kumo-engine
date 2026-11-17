@@ -412,6 +412,22 @@ impl TimestampFormatParser {
         }
     }
 
+    /// Epoch seconds of an eight-digit integer that `%Y%m%d` reads as a valid
+    /// date, without formatting it as text.
+    pub(crate) fn parse_compact_ymd_int(&self, value: i64) -> Option<i64> {
+        if !matches!(self.kind, TimestampFormatKind::CompactYmd)
+            || !(10_000_000..=99_999_999).contains(&value)
+        {
+            return None;
+        }
+        let date = NaiveDate::from_ymd_opt(
+            (value / 10_000) as i32,
+            (value / 100 % 100) as u32,
+            (value % 100) as u32,
+        )?;
+        Some(date.and_hms_opt(0, 0, 0)?.and_utc().timestamp())
+    }
+
     pub(crate) fn parse_date(&self, value: &str) -> Option<i32> {
         let secs = self.parse_timestamp(value)?;
         Some(days_from_secs(secs))
