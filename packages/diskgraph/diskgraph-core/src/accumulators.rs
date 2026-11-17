@@ -1940,6 +1940,7 @@ impl SharedColumnCounts {
 // ---------------------------------------------------------------------------
 
 /// Per-file local category counts for a single column.
+#[derive(Default)]
 pub struct LocalColumnCounts {
     pub counts: HashMap<u64, u64>,
     pub strings: HashMap<u64, String>,
