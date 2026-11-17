@@ -87,8 +87,10 @@ otherwise offer a new table, or dropping the existing one first (a write, confir
 other). Databricks OVERWRITE replaces the table, columns included.
 
 BigQuery OVERWRITE replaces the table's rows and schema with one `WRITE_TRUNCATE` job
-(`kumo_bigquery.write`). It keeps column descriptions and policy tags, but BigQuery drops the
-table's row access policies with it, so every reader of the table then sees every prediction row. Before offering OVERWRITE onto an existing BigQuery table, list its policies
+(`kumo_bigquery.write`). It keeps the descriptions and policy tags of columns that keep their name,
+type and mode (a tag on a FLOAT64 `TARGET_PRED` is gone once a classification run writes a different
+type), but BigQuery drops the table's row access policies with it, so every reader of the table then
+sees every prediction row. Before offering OVERWRITE onto an existing BigQuery table, list its policies
 (`bq ls --row_access_policies <project>:<dataset>.<table>`, or ask the user). When it has any, say
 so at the gate and offer a new table, with the access controls it needs, instead.
 
