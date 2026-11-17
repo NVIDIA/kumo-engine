@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from copy import deepcopy
 from typing import Any
 
@@ -72,22 +74,32 @@ def candidate_node_ids(
         lp_rhs_entity_column=primary_key,
         list_distinct_target_is_array=True,
     )
-    generated = runtime.execute_tt_gen(plan, index_path, tt_id)
+    staging_dir = os.path.join(index_path, "train_tables", f".{tt_id}.staging")
     try:
+        generated = runtime.execute_tt_gen(plan, index_path, tt_id)
         engine = runtime.SamplerEngine(index_path)
+        node_ids = np.empty(generated["row_count"], dtype=np.int64)
 
-        def lookup(batch: Any) -> np.ndarray:
-            return np.asarray(engine.lookup_node_ids(table, batch.column(0)),
-                              dtype=np.int64)
+        def lookup(batch: Any, start: int) -> None:
+            node_ids[start:start + batch.num_rows] = engine.lookup_node_ids(
+                table, batch.column(0))
 
-        batches = runtime.read_tt_parquet_batches(generated["tt_parquet_path"],
-                                                  ["ENTITY1"])
-        with ThreadPoolExecutor(cpu_budget()) as pool:
-            parts = [np.empty(0, dtype=np.int64), *pool.map(lookup, batches)]
+        workers = cpu_budget()
+        pending: deque[Future[None]] = deque()
+        start = 0
+        with ThreadPoolExecutor(workers) as pool:
+            for batch in runtime.read_tt_parquet_batches(
+                    generated["tt_parquet_path"], ["ENTITY1"]):
+                if len(pending) == 2 * workers:
+                    pending.popleft().result()
+                pending.append(pool.submit(lookup, batch, start))
+                start += batch.num_rows
+            for future in pending:
+                future.result()
     finally:
-        shutil.rmtree(generated["staging_dir"], ignore_errors=True)
-    node_ids = np.sort(np.concatenate(parts))
+        shutil.rmtree(staging_dir, ignore_errors=True)
     if not node_ids.size:
         raise ValueError(f"No row of table {table!r} passes "
                          f"{target.condition}; loosen the target filter.")
+    node_ids.sort()
     return node_ids[np.r_[True, node_ids[1:] != node_ids[:-1]]]
