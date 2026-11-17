@@ -110,17 +110,132 @@ class LocalSensitivity:
         self.failure: str | None = None
 
     def explain_start(self, module, datamodule, stage):
-        if (module.task_type != TaskType.REGRESSION
+        from kumo_core.explain.walk_attribution import (
+            SCHEMA_V1, UnsupportedWalkAttribution, WalkAttributionConfig,
+            WalkCapture, select_schema)
+        from kumo_core.explain.walk_graph import capture_numerics
+        self.binary = module.task_type == TaskType.BINARY_CLASSIFICATION
+        if self.binary:
+            if self.numerical_sensitivity:
+                # It differentiates a decoded scalar (contract section 7).
+                raise ValueError('Numerical sensitivity requires scalar MSE '
+                                 'regression; binary evidence requires it off')
+        elif (module.task_type != TaskType.REGRESSION
                 or not isinstance(module.loss, MSELoss) or
                 not isinstance(module.target_encoder, NumericalTargetEncoder)):
             raise ValueError('local_sensitivity requires scalar MSE regression '
                              'with a numerical target encoder')
         if module.device.type != 'cpu':
             raise ValueError('local_sensitivity requires CPU execution')
-        if self.walk_config is not None and self.walk_on_unsupported == 'raise':
-            from kumo_core.explain.walk_attribution import WalkAttributionConfig, WalkCapture
-            with WalkCapture(module, WalkAttributionConfig(**self.walk_config)):
+        self.config = (None if self.walk_config is None else
+                       WalkAttributionConfig(**self.walk_config))
+        self.schema = (None if self.config is None else
+                       select_schema(self.config, module.task_type))
+        self.legacy = self.schema in (None, SCHEMA_V1) and not self.binary
+        # The record coordinate of a binary task uses the default selection
+        # (encoded class 1); a walk config may select the other class.
+        self.record_selection = self.record_failure = None
+        self.walk_selection = self.walk_selection_failure = None
+        if not self.legacy:
+            from kumo_core.explain.walk_binary import resolve_selection
+            try:
+                self.record_selection = resolve_selection(
+                    module, WalkAttributionConfig(
+                        output_index=0 if self.config is None else self.config.output_index))
+            except UnsupportedWalkAttribution as error:
+                if self.walk_on_unsupported == 'raise':
+                    raise
+                self.record_failure = str(error)
+        if self.config is not None and not self.legacy:
+            from kumo_core.explain.walk_attribution import method_module
+            from kumo_core.explain.walk_binary import resolve_selection
+            try:
+                self.walk_selection = resolve_selection(module, self.config)
+                # Qualification raises before any hook is registered.
+                method_module(self.config.method).qualify(module, self.config)
+            except UnsupportedWalkAttribution as error:
+                if self.walk_on_unsupported == 'raise':
+                    raise
+                self.walk_selection_failure = str(error)
+        if self.walk_config is not None and self.legacy and self.walk_on_unsupported == 'raise':
+            with WalkCapture(module, self.config):
                 pass
+        if self.binary:
+            self._binary_provenance(module, datamodule)
+        else:
+            self._regression_provenance(module, datamodule)
+        # Precision of the original forward, applied again by offline replay.
+        self.provenance['numerics'] = capture_numerics()
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if any(self.root.iterdir()):
+                raise FileExistsError('Evidence destination must be empty')
+            with (self.root / '.capture-owner').open('x') as owner:
+                owner.write(str(self.provenance['run_id']))
+            self.owns_sink = True
+            (self.root / 'rows').mkdir(exist_ok=True)
+            (self.root / 'samples').mkdir(exist_ok=True)
+            self._write_manifest(complete=False)
+            (self.root / 'index.jsonl').write_text('')
+        except OSError:
+            self.failure = 'local_artifact_write_failed'
+            logger.warning(
+                'Local sensitivity sink unavailable; predictions continue')
+
+    def _temporal_boundary(self):
+        return {
+            'sampler': 'at_or_before_seed_time',
+            'strict_validation':
+            'source_time_strictly_before_prediction_cutoff',
+            'coordinate': 'unix_nanoseconds_from_native_sampler',
+            'source_time_columns': {
+                table: node.get('time_column')
+                for table, node in self.provenance.get(
+                    'model_reconstruction', {}).get(
+                        'feature_schema', {}).get('node_types', {}).items()
+            },
+        }
+
+    def _sampling_plan(self):
+        # Sampling plans may be dataclasses/pydantic objects in native runtimes.
+        plan = self.provenance['sampling_plan']
+        if hasattr(plan, 'model_dump'):
+            self.provenance['sampling_plan'] = plan.model_dump(mode='json')
+        elif hasattr(plan, '__dataclass_fields__'):
+            from dataclasses import asdict
+            self.provenance['sampling_plan'] = asdict(plan)
+
+    def _binary_provenance(self, module, datamodule):
+        from kumo_core.explain.walk_binary import calibration_record
+        selection = self.record_selection
+        self.provenance.update({
+            'schema_version': 1,
+            'method': None,
+            'origin': 'original_forward',
+            'raw_value_coordinate': 'numerical_tensor_mapper_output',
+            'signed_method': None,
+            'input_coordinate': None,
+            'output_coordinate': 'encoded_positive_class_probability',
+            'numerical_sensitivity': False,
+            'temporal_boundary': self._temporal_boundary(),
+            'device': 'cpu',
+            'loss': type(module.loss).__name__,
+            'batch_size': 1,
+            'sampler_seed': getattr(datamodule, 'base_seed', None),
+            'sampling_plan': getattr(datamodule, 'sampling_plan', None),
+            'target_transform': None,
+            'task_type': 'binary_classification',
+            'binary_output': None if selection is None else {
+                'label_mapping': [dict(e) for e in selection.binary.label_mapping],
+                'target_encoder_reverse': selection.binary.target_encoder_reverse,
+                'encoded_positive_label': selection.binary.encoded_positive_label,
+                'calibration': calibration_record(module),
+            },
+            'binary_output_failure': self.record_failure,
+        })
+        self._sampling_plan()
+
+    def _regression_provenance(self, module, datamodule):
         self.provenance.update({
             'schema_version':
             1,
@@ -138,18 +253,7 @@ class LocalSensitivity:
             'decoded_model_output',
             'numerical_sensitivity':
             self.numerical_sensitivity,
-            'temporal_boundary': {
-                'sampler': 'at_or_before_seed_time',
-                'strict_validation':
-                'source_time_strictly_before_prediction_cutoff',
-                'coordinate': 'unix_nanoseconds_from_native_sampler',
-                'source_time_columns': {
-                    table: node.get('time_column')
-                    for table, node in self.provenance.get(
-                        'model_reconstruction', {}).get(
-                            'feature_schema', {}).get('node_types', {}).items()
-                },
-            },
+            'temporal_boundary': self._temporal_boundary(),
             'device':
             'cpu',
             'loss':
@@ -166,28 +270,7 @@ class LocalSensitivity:
                 'log_transform': module.target_encoder.log_transform,
             },
         })
-        # Sampling plans may be dataclasses/pydantic objects in native runtimes.
-        plan = self.provenance['sampling_plan']
-        if hasattr(plan, 'model_dump'):
-            self.provenance['sampling_plan'] = plan.model_dump(mode='json')
-        elif hasattr(plan, '__dataclass_fields__'):
-            from dataclasses import asdict
-            self.provenance['sampling_plan'] = asdict(plan)
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            if any(self.root.iterdir()):
-                raise FileExistsError('Evidence destination must be empty')
-            with (self.root / '.capture-owner').open('x') as owner:
-                owner.write(str(self.provenance['run_id']))
-            self.owns_sink = True
-            (self.root / 'rows').mkdir(exist_ok=True)
-            (self.root / 'samples').mkdir(exist_ok=True)
-            self._write_manifest(complete=False)
-            (self.root / 'index.jsonl').write_text('')
-        except OSError:
-            self.failure = 'local_artifact_write_failed'
-            logger.warning(
-                'Local sensitivity sink unavailable; predictions continue')
+        self._sampling_plan()
 
     def _write_manifest(self, *, complete: bool):
         if not self.owns_sink:
@@ -216,7 +299,13 @@ class LocalSensitivity:
                 WalkAttributionConfig, WalkCapture, UnsupportedWalkAttribution)
             try:
                 self.walk_failure = None
-                self.walk_capture = WalkCapture(module, WalkAttributionConfig(**self.walk_config))
+                if not self.legacy:
+                    from kumo_core.explain.walk_graph import GraphCapture
+                    if self.walk_selection_failure is not None:
+                        raise UnsupportedWalkAttribution(self.walk_selection_failure)
+                    self.walk_capture = GraphCapture(module, self.config)
+                else:
+                    self.walk_capture = WalkCapture(module, WalkAttributionConfig(**self.walk_config))
                 self.walk_capture.__enter__()
             except Exception as error:
                 self.walk_failure_unsupported = isinstance(error, UnsupportedWalkAttribution)
@@ -442,8 +531,7 @@ class LocalSensitivity:
                 if hasattr(encoder, '_saved_tensors'):
                     del encoder._saved_tensors
 
-    @staticmethod
-    def _identity(batch, step_output):
+    def _identity(self, batch, step_output):
         seed = batch[batch.input_type]
         task_row_id = _plain(seed.get('input_id'))
         if not isinstance(task_row_id, list) or len(task_row_id) != 1:
@@ -452,7 +540,9 @@ class LocalSensitivity:
             'entity': _plain(step_output['pkey'][0]),
             'time_ns': _plain(step_output.get('time')),
             'task_row_id': task_row_id,
-            'output_coordinate': 'scalar',
+            # A binary record is identified by the raw head logit it explains.
+            'output_coordinate': ('encoded_logit' if getattr(self, 'binary', False)
+                                  else 'scalar'),
         }
 
     def _temporal_validation(self, sample, identity):
@@ -506,16 +596,49 @@ class LocalSensitivity:
             'unix_nanoseconds'
         }
 
+    def _v2_row(self, module, logits, record, sample, prediction_id):
+        """The walk_attribution/v2 row of one original scoring forward."""
+        from kumo_core.explain.walk_binary import output_block
+        from kumo_core.explain.walk_graph import capture_numerics
+        from kumo_core.explain.walk_schema import (
+            explain_capture, minimal_row, row_numerics)
+        identity = dict(config=self.config, origin='original_forward_attribution',
+                        prediction_id=prediction_id,
+                        sample_sha256=record['sample_sha256'])
+        numerics = row_numerics(capture_numerics(),
+                                str(logits.dtype).removeprefix('torch.'))
+        if self.walk_capture is None:
+            if self.walk_failure_unsupported:
+                return minimal_row('unsupported', self.walk_failure, **identity)
+            return minimal_row('failed', self.walk_failure or 'walk_capture_failed',
+                               **identity)
+        if record['graph_status'] != 'available':
+            return minimal_row('failed', 'original_graph_missing', **identity)
+        try:
+            output = output_block(self.walk_selection, module, logits[0])
+        except Exception as error:
+            return minimal_row('failed', f'{type(error).__name__}: {error}', **identity)
+        return explain_capture(self.walk_capture, selection=self.walk_selection,
+                               output=output, sample=sample, numerics=numerics,
+                               **identity)
+
     def _record_step(self, batch, module, step_output, batch_idx):
         identity = self._identity(batch, step_output)
         prediction_id = _digest([self.provenance['run_id'], identity])
         if (self.root / 'rows' / f'{prediction_id}.json').exists():
             raise ValueError('Duplicate prediction identity')
-        decoded = module.target_encoder.decode_tensor(
-            module.loss.to_prediction(step_output['logits']))
+        logits = step_output['logits']
+        if self.binary:
+            from kumo_core.explain.walk_binary import emitted_probabilities
+            # The emitted True_PROB, from the module's own calibrator and loss.
+            prediction = float(emitted_probabilities(module, logits)[0, 1])
+        else:
+            decoded = module.target_encoder.decode_tensor(
+                module.loss.to_prediction(logits))
+            prediction = _plain(decoded.reshape(-1)[0])
         record = {
             **identity, 'prediction_id': prediction_id,
-            'prediction': _plain(decoded.reshape(-1)[0]),
+            'prediction': prediction,
             'origin': 'original_forward',
             'sample_sha256': None,
             'cells': [],
@@ -524,6 +647,14 @@ class LocalSensitivity:
             'graph_status': 'failed',
             'graph_reason': None
         }
+        if not self.legacy:
+            # Non-legacy records only (legacy v1 records keep their bytes).
+            from kumo_core.explain.walk_binary import output_block
+            if self.binary:
+                record['prediction_coordinate'] = 'encoded_positive_class_probability'
+            record['output'] = (None if self.record_selection is None else
+                                output_block(self.record_selection, module, logits[0]))
+        sample = None
         try:
             sample = self._sample(batch, module)
             sample_sha256 = _digest(sample)
@@ -540,7 +671,10 @@ class LocalSensitivity:
                 'status': 'unavailable',
                 'reason': 'original_graph_capture_failed'
             }
-        if self.walk_config is not None:
+        if self.walk_config is not None and not self.legacy:
+            record['walk_attribution'] = self._v2_row(module, logits, record,
+                                                      sample, prediction_id)
+        elif self.walk_config is not None:
             from kumo_core.explain.walk_attribution import UnsupportedWalkAttribution
             try:
                 if self.walk_capture is None:
@@ -559,7 +693,7 @@ class LocalSensitivity:
                 record['walk_attribution'] = {'status': 'failed', 'reason': 'walk_capture_failed'}
             record['walk_attribution'].update(
                 origin='original_forward_attribution', prediction_id=prediction_id,
-                sample_sha256=record['sample_sha256'], config=self.walk_config,
+                sample_sha256=record['sample_sha256'], config=self.config.to_dict(),
                 method='hetero_lrp_gamma_reference_v1')
         try:
             if self.numerical_sensitivity:
@@ -625,10 +759,13 @@ class LocalSensitivity:
 
 
 def load_scoring_module(model_dir: str, provenance: dict[str, Any]):
-    """Reconstruct the frozen scalar scorer without reopening its source data.
+    """Reconstruct the frozen scorer without reopening its source data.
 
-    The caller supplies a trusted model bundle. Evidence is declarative JSON;
-    only the existing trusted checkpoint loading path loads model weights.
+    Supports MSE regression and BCE binary classification; a binary module
+    is returned with its restored calibrator. The bundle hash is verified
+    before loading. The caller supplies a trusted model bundle. Evidence is
+    declarative JSON; only the existing trusted checkpoint loading path loads
+    model weights.
     """
     from types import SimpleNamespace
 
@@ -646,8 +783,9 @@ def load_scoring_module(model_dir: str, provenance: dict[str, Any]):
         raise ValueError('Scoring model does not match retained evidence')
     spec = provenance['model_reconstruction']
     task = ResolvedNumericalTask.from_dict(spec['task'])
-    if task.task_type != TaskType.REGRESSION:
-        raise ValueError('Retained scorer requires scalar regression')
+    if task.task_type not in (TaskType.REGRESSION, TaskType.BINARY_CLASSIFICATION):
+        raise ValueError('Retained scorer requires scalar regression or '
+                         'binary classification')
     trainer = DiskgraphNestedTrainer.load(
         task, model_dir, diskgraph_task_dataset_bundle_dir='',
         infer_config_path=False, encoders=load_encoders(model_dir),
@@ -668,6 +806,11 @@ def load_scoring_module(model_dir: str, provenance: dict[str, Any]):
         train_table_name=spec['metadata']['train_table_name'],
         ckpt_path=trainer.best_ckpt)
     module = trainer.pl_model
-    if not isinstance(module.loss, MSELoss):
+    if task.task_type == TaskType.BINARY_CLASSIFICATION:
+        from kumo_core.train.loss import BinaryCrossEntropyLoss
+        if not isinstance(module.loss, BinaryCrossEntropyLoss):
+            raise ValueError('Retained binary scorer requires '
+                             'BinaryCrossEntropyLoss')
+    elif not isinstance(module.loss, MSELoss):
         raise ValueError('Retained scorer requires scalar MSE regression')
     return module.cpu().eval()

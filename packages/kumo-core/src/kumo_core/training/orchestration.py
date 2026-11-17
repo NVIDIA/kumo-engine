@@ -65,6 +65,68 @@ class ResolvedTrainingInput:
 
 
 @dataclass(frozen=True)
+class BiasOptions:
+    """Engine-local switches for additive biases of trained linears.
+
+    ``gnn`` controls every ``HeteroGNN`` linear: pre-message-passing linears,
+    relation convolutions and learned root skips. ``head`` controls the
+    ``NodePredHead`` MLP linears. Encoder and normalization parameters are not
+    affected. ``BiasOptions()`` builds exactly the default modules. The saved
+    module configs, not this object, record what a trained bundle contains.
+    These switches are not part of the public ``ModelPlan``.
+    """
+
+    gnn: bool = True
+    head: bool = True
+
+    def __post_init__(self) -> None:
+        for name in ("gnn", "head"):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"BiasOptions.{name} must be a bool")
+
+    @property
+    def is_default(self) -> bool:
+        return self.gnn and self.head
+
+    def to_dict(self) -> dict[str, bool]:
+        return {"gnn": self.gnn, "head": self.head}
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "BiasOptions":
+        if not isinstance(value, Mapping):
+            raise TypeError("bias options must be a mapping")
+        unknown = sorted(set(value) - {"gnn", "head"})
+        if unknown:
+            raise ValueError(f"Unknown bias options: {unknown}")
+        return cls(**value)
+
+
+def validate_bias_options(options: BiasOptions, model_plan: Any,
+                          task_type: Any) -> None:
+    """Raise ``ValueError`` when the selected model or head cannot honor
+    ``options``, so a switch is never silently ignored."""
+    from kumoapi.model_plan import GraphTransformerModelPlan
+
+    from kumo_core.types import TaskType
+
+    if not isinstance(options, BiasOptions):
+        raise TypeError("bias_options must be BiasOptions")
+    architecture = getattr(model_plan, "model_architecture", None)
+    models = getattr(architecture, "model", None)
+    if not options.gnn and any(
+            isinstance(model, GraphTransformerModelPlan)
+            for model in (models if isinstance(models, list) else [])):
+        raise ValueError("BiasOptions(gnn=False) requires the HeteroGNN "
+                         "model; GraphTransformer has no bias switch.")
+    task_type = TaskType(task_type)
+    if not options.head and (task_type.is_link_pred
+                             or task_type == TaskType.FORECASTING):
+        raise ValueError("BiasOptions(head=False) requires NodePredHead; "
+                         "link prediction and forecasting heads have no "
+                         "bias switch.")
+
+
+@dataclass(frozen=True)
 class CallableTrainingOptions:
     random_state_seed: int | None = None
     debug: bool = False
@@ -75,6 +137,13 @@ class CallableTrainingOptions:
     warm_start_trainer_dir: str | None = None
     binary_classification_threshold: float | None = None
     target_edges: tuple[float, ...] = ()
+    # ``None`` keeps the defaults, or inherits a warm start's actual flags.
+    bias_options: BiasOptions | None = None
+
+    def __post_init__(self) -> None:
+        if (self.bias_options is not None
+                and not isinstance(self.bias_options, BiasOptions)):
+            raise TypeError("bias_options must be BiasOptions or None")
 
 
 def _no_op() -> None:
@@ -296,6 +365,7 @@ def _create_auto_trainer(
         overwrite_train_table_edge=options.overwrite_train_table_edge,
         diskgraph_task_dataset_bundle_dir=(
             training_input.task_dataset_bundle_dir),
+        bias_options=options.bias_options,
     )
 
 

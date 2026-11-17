@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import os.path as osp
+import re
 import time
 import traceback
 import warnings
@@ -85,6 +86,43 @@ from torch_geometric.sampler import NumNeighbors
 
 logger = logging.getLogger(__name__)
 _eval_fn = {'min': min, 'max': max}
+
+# Trained linears whose bias the Engine-local `BiasOptions` control. Only the
+# `model.` and `head.` prefixes count: encoder parameters and the calibrator
+# (`calibrator.weight_and_bias`) are outside both switches.
+_GNN_LINEAR = re.compile(
+    r'model\.(hetero_convs\.\d+\..+\.lin'
+    r'|(lins|root_skips)\.\d+\.lin_dict\..+)\.(weight|bias)\Z')
+_HEAD_LINEAR = re.compile(r'head\.mlp\.lins\.\d+\.(weight|bias)\Z')
+
+
+def _linear_bias_flag(keys: list[str], pattern: re.Pattern) -> bool:
+    matched = [key for key in keys if pattern.match(key)]
+    weights = {key.rsplit('.', 1)[0] for key in matched
+               if key.endswith('.weight')}
+    biases = {key.rsplit('.', 1)[0] for key in matched if key.endswith('.bias')}
+    if not weights:
+        return True  # No such linears: the switch does not apply.
+    if biases and biases != weights:
+        raise ValueError('The warm-start checkpoint mixes linears with and '
+                         'without biases; its bias flags are undefined.')
+    return bool(biases)
+
+
+def checkpoint_bias_options(checkpoint_path: str) -> Any:
+    r"""Return the actual `BiasOptions` of a trained checkpoint.
+
+    The flags are read from the state-dict keys of the checkpoint's
+    `HeteroGNN` and `NodePredHead` linears, never from a plan or option.
+    """
+    from kumo_core.train.checkpoint import load_kumo_checkpoint
+    from kumo_core.training.orchestration import BiasOptions
+    with filesystem.open_file(checkpoint_path, 'rb') as handle:
+        state = load_kumo_checkpoint(handle, map_location='cpu')['state_dict']
+    # `torch.compile` wraps modules as `<name>._orig_mod`.
+    keys = [key.replace('._orig_mod.', '.') for key in state]
+    return BiasOptions(gnn=_linear_bias_flag(keys, _GNN_LINEAR),
+                       head=_linear_bias_flag(keys, _HEAD_LINEAR))
 
 
 def _failed_trials_error_message(status: TrainStatus) -> str:
@@ -211,6 +249,11 @@ class AutoTrainer:
         home_dir: The home directory used to resolve ``root_dir`` and to
             load/save :class:`TrainStatus`. If ``None``, the runtime supplies
             its default.
+        bias_options: Engine-local
+            :class:`~kumo_core.training.orchestration.BiasOptions`. ``None``
+            builds the default biased modules, or inherits the actual flags of
+            the ``checkpoint_path`` warm start; an explicit option that
+            differs from a warm start raises ``ValueError``.
     """
     def __init__(
         self,
@@ -223,6 +266,7 @@ class AutoTrainer:
         checkpoint_path: str | None = None,
         home_dir: str | None = None,
         checkpoint_encoder_dir: str | None = None,
+        bias_options: Any = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -241,6 +285,7 @@ class AutoTrainer:
         self.checkpoint_encoder_dir = checkpoint_encoder_dir
         self.max_tries = max_tries
         self.min_retry_batch_size = min_retry_batch_size
+        self.bias_options = self._resolve_bias_options(bias_options)
         # Resolve the process-global home dir once at the boundary, then
         # thread the concrete value through the instance. Production callers
         # pass an explicit ``home_dir``; direct test constructions fall back
@@ -315,6 +360,32 @@ class AutoTrainer:
                 with contextlib.suppress(FileNotFoundError):
                     os.remove(f)
 
+    def _resolve_bias_options(self, requested: Any) -> Any:
+        r"""Resolve the Engine-local bias switches before any trial runs.
+
+        A switch the selected model or head cannot honor raises instead of
+        being ignored. A warm-start checkpoint fixes the architecture.
+        """
+        from kumo_core.training.orchestration import (
+            BiasOptions,
+            validate_bias_options,
+        )
+        if requested is not None and not isinstance(requested, BiasOptions):
+            raise TypeError('bias_options must be BiasOptions or None')
+        if self.checkpoint_path is not None:
+            inherited = checkpoint_bias_options(self.checkpoint_path)
+            if requested is None:
+                requested = inherited
+            elif requested != inherited:
+                raise ValueError(
+                    f'bias_options {requested.to_dict()} conflict with the '
+                    f'warm-start checkpoint, whose linears have '
+                    f'{inherited.to_dict()}; omit bias_options to inherit '
+                    f'them.')
+        resolved = requested if requested is not None else BiasOptions()
+        validate_bias_options(resolved, self.space, self.task.task_type)
+        return resolved
+
     @property
     def val_tune_metric(self) -> str:
         return TrainingStage.VAL.add_stage_prefix(self.tune_metric)
@@ -331,9 +402,15 @@ class AutoTrainer:
             use_seq_id=arch_cfg.use_seq_id[0],
         )
 
+    def _bias_flags(self) -> tuple[bool, bool]:
+        # Stubbed instances (tests that bypass `__init__`) keep the defaults.
+        options = getattr(self, 'bias_options', None)
+        return (True, True) if options is None else (options.gnn, options.head)
+
     def _get_model(self, cfg: ModelPlan) -> HeteroGNN | GraphTransformer:
         arch_cfg = cfg.model_architecture
         model_cfg = cfg.model_architecture.model[0]
+        gnn_bias, _ = self._bias_flags()
 
         if isinstance(cfg.neighbor_sampling.num_neighbors[0], list):
             num_hops = len(cfg.neighbor_sampling.num_neighbors[0])
@@ -343,6 +420,10 @@ class AutoTrainer:
             num_hops = cfg.neighbor_sampling.num_neighbors[0].num_hops()
 
         if isinstance(model_cfg, GraphTransformerModelPlan):
+            if not gnn_bias:
+                raise ValueError('BiasOptions(gnn=False) requires the '
+                                 'HeteroGNN model; GraphTransformer has no '
+                                 'bias switch.')
             positional_encodings = []
             if isinstance(model_cfg.positional_encodings, list):
                 positional_encodings = [
@@ -372,6 +453,7 @@ class AutoTrainer:
             dropout=model_cfg.dropout[0],
             act=arch_cfg.activation[0],
             norm=arch_cfg.normalization[0],
+            bias=gnn_bias,
         )
 
     def _get_head(
@@ -379,6 +461,12 @@ class AutoTrainer:
         cfg: ModelPlan,
     ) -> NodePredHead | LinkPredHead:
         arch_cfg = cfg.model_architecture
+        _, head_bias = self._bias_flags()
+        if not head_bias and (self.task.task_type.is_link_pred
+                              or self.task.task_type == TaskType.FORECASTING):
+            raise ValueError('BiasOptions(head=False) requires NodePredHead; '
+                             'link prediction and forecasting heads have no '
+                             'bias switch.')
 
         prediction_time_encodings = arch_cfg.prediction_time_encodings
         if isinstance(prediction_time_encodings, list):
@@ -409,6 +497,7 @@ class AutoTrainer:
             act=arch_cfg.activation[0],
             norm=arch_cfg.normalization[0],
             prediction_time_encodings=prediction_time_encodings,
+            bias=head_bias,
         )
 
     def _get_past_encoder(self, cfg: ModelPlan) -> SequenceEncoder:

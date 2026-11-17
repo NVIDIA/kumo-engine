@@ -44,7 +44,9 @@ class EvidenceConfig:
 
     def __post_init__(self):
         if self.walk_attribution is not None:
-            from kumo_core.explain.walk_attribution import WalkAttributionConfig
+            from kumo_core.explain.walk_attribution import (
+                WalkAttributionConfig,
+            )
             if not isinstance(self.walk_attribution, WalkAttributionConfig):
                 raise TypeError(
                     'walk_attribution must be WalkAttributionConfig')
@@ -409,18 +411,26 @@ class PredictionEvidenceBundle:
                              source['column']]).decode()
                         db.execute('INSERT INTO sources VALUES (?, ?)',
                                    (key, _json(source).decode()))
+                    binary = manifest['native_provenance'].get(
+                        'model_reconstruction', {}).get('task', {}).get(
+                            'task_type') == 'binary_classification'
                     prediction_count = 0
                     for prediction in self.iter_predictions():
                         prediction_count += 1
                         identifier = prediction.get(
                             'PREDICTION_ID', prediction.get('prediction_id'))
                         if identifier is not None:
-                            value = prediction.get('TARGET_PRED')
-                            if (isinstance(value, bool)
-                                    or not isinstance(value, (int, float))
-                                    or not math.isfinite(value)):
-                                raise EvidenceValidationError(
-                                    'Nonfinite or nonscalar emitted prediction')
+                            if binary:
+                                # Evidence binds the emitted encoded class-1
+                                # probability, never a thresholded label.
+                                value = _emitted_class_probability(prediction)
+                            else:
+                                value = prediction.get('TARGET_PRED')
+                                if (isinstance(value, bool)
+                                        or not isinstance(value, (int, float))
+                                        or not math.isfinite(value)):
+                                    raise EvidenceValidationError(
+                                        'Nonfinite or nonscalar emitted prediction')
                             import pandas as pd
                             entity = prediction.get('ENTITY',
                                                     prediction.get('ENTITY1'))
@@ -431,8 +441,7 @@ class PredictionEvidenceBundle:
                                     prediction['TIMESTAMP']).value
                             db.execute(
                                 'INSERT INTO predictions VALUES (?, ?, ?, ?, ?)',
-                                (_identifier(identifier),
-                                 prediction.get('TARGET_PRED'),
+                                (_identifier(identifier), value,
                                  _json(entity).decode(), cutoff,
                                  _json(prediction.get('TASK_ROW_ID')).decode()))
                     counts = Counter()
@@ -452,13 +461,22 @@ class PredictionEvidenceBundle:
                                             ) != 'original_forward_attribution':
                                 raise EvidenceValidationError(
                                     'Walk attribution identity mismatch')
-                            if walk.get('status') in ('available', 'truncated'):
+                            if walk.get('schema') == 'walk_attribution/v2':
+                                _validate_v2_walk(self, identifier, detail, walk)
+                            elif walk.get('status') in ('available', 'truncated'):
                                 from .walks import validate_result
                                 validate_result(walk)
                             elif walk.get('status') not in ('unsupported',
                                                             'failed'):
                                 raise EvidenceValidationError(
                                     'Invalid walk availability')
+                        record_binary = (detail.get('output') or {}).get('binary')
+                        if record_binary is not None and record_binary[
+                                'emitted_encoded_positive_probability'] != detail[
+                                    'prediction']:
+                            raise EvidenceValidationError(
+                                'Record probability not bound to the emitted '
+                                'True_PROB')
                         if any(
                                 detail.get(key) != value
                                 for key, value in row.items()):
@@ -839,6 +857,45 @@ class PredictionEvidenceBundle:
         finally:
             os.close(descriptor)
             lock.unlink(missing_ok=True)
+
+
+def _emitted_class_probability(prediction):
+    """Binary rows emit `False_PROB` and `True_PROB`; return `True_PROB`."""
+    probabilities = (prediction.get('True_PROB'), prediction.get('False_PROB'))
+    for value in probabilities:
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not 0 <= value <= 1):
+            raise EvidenceValidationError('Invalid emitted class probability')
+    if abs(probabilities[0] + probabilities[1] - 1) > 1e-6:
+        raise EvidenceValidationError(
+            'Emitted class probabilities do not sum to one')
+    label = prediction.get('TARGET_PRED')
+    if label is not None and not isinstance(label, bool):
+        raise EvidenceValidationError('Binary TARGET_PRED must be null or bool')
+    return probabilities[0]
+
+
+def _validate_v2_walk(bundle, identifier, detail, walk):
+    """A native v2 row: valid on its retained graph and bound to the record.
+
+    The row's emitted class-1 probability must equal the record's
+    `prediction`, itself bound bitwise to the emitted `True_PROB`.
+    """
+    from .walks import validate_v2
+    sample = (bundle.scoring_graph(identifier) if walk.get('status') in (
+        'available', 'incomplete') else None)
+    validate_v2(walk, sample)
+    output, record_output = walk.get('output'), detail.get('output')
+    if output is None or walk.get('status') not in ('available', 'incomplete'):
+        return
+    if record_output is not None and (
+            record_output['head_output'] != output['head_output']):
+        raise EvidenceValidationError('Walk and record logits differ')
+    binary = output.get('binary')
+    if binary is not None and (binary['emitted_encoded_positive_probability']
+                               != detail['prediction']):
+        raise EvidenceValidationError(
+            'Walk probability not bound to the emitted True_PROB')
 
 
 def _seal(root, manifest):

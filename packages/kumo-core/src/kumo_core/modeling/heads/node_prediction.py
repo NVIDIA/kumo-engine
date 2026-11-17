@@ -34,6 +34,8 @@ class NodePredHead(Module, ConfigMixin):
             parameters instead of point predictions.
         prediction_time_encodings: If set to :obj:`True`, will use temporal
             encodings of training/prediction table timestamps.
+        bias: If set to :obj:`False`, the MLP linears learn no additive bias.
+            Configs saved before this argument existed load as :obj:`True`.
     """
     LAZY_ATTRS = {'in_channels', 'out_channels', 'param_keys'}
 
@@ -49,10 +51,13 @@ class NodePredHead(Module, ConfigMixin):
         norm: str | None = 'batch_norm',
         param_keys: list[str] | None = None,
         prediction_time_encodings: bool = False,
+        bias: bool = True,
     ) -> None:
+        # `bias` stays last: `Module.__init__` maps positional arguments by
+        # signature order.
         super().__init__(in_channels, out_channels, hidden_channels,
                          num_layers, dropout, act, act_first, norm, param_keys,
-                         prediction_time_encodings)
+                         prediction_time_encodings, bias)
 
     def init_modules(self) -> None:
         in_channels = self.in_channels
@@ -78,6 +83,7 @@ class NodePredHead(Module, ConfigMixin):
             act_first=self.act_first,
             norm=self.norm,
             norm_kwargs=norm_kwargs,
+            bias=self.bias,
         )
 
     def reset_parameters(self) -> None:

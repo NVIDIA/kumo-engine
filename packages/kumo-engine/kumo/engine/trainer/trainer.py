@@ -1102,6 +1102,13 @@ class Trainer:
             name. Defaults to the installed ones (``kumo-engine[text]``).
         accelerator: Lightning device selection: ``auto`` (default), ``cpu``,
             ``gpu``, or ``mps``. Applies to training and prediction.
+        bias_options: Engine-local :class:`BiasOptions` switching off the
+            additive biases of the GNN linears (``gnn``) or the node
+            prediction head (``head``). ``None`` keeps the defaults, or
+            inherits a warm start's actual flags; an explicit option that
+            differs from a warm start raises ``ValueError``. Not part of the
+            public ``ModelPlan``; non-default options are recorded in the
+            bundle's ``training-spec.json``.
     """
     def __init__(
         self,
@@ -1109,10 +1116,16 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
+        bias_options: Optional[Any] = None,
     ):
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        if bias_options is not None:
+            from kumo_core.training.orchestration import BiasOptions
+            if not isinstance(bias_options, BiasOptions):
+                raise TypeError('bias_options must be BiasOptions or None')
+        self._bias_options = bias_options
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
@@ -1134,6 +1147,15 @@ class Trainer:
     @model_plan.setter
     def model_plan(self, model_plan: ModelPlan) -> None:
         self._model_plan = model_plan
+
+    @property
+    def bias_options(self) -> Optional[Any]:
+        """The requested :class:`BiasOptions`, or ``None`` for the defaults.
+
+        A loaded bundle restores its recorded non-default options. The
+        trained modules' configs remain the record of what a bundle holds.
+        """
+        return self._bias_options
 
     @property
     def training_table_generation_plan(
@@ -1325,6 +1347,10 @@ class Trainer:
                 bundle_task_type(warm_start_artifacts),
             )
         _validate_model_plan(model_plan, workflow, train_table)
+        if self._bias_options is not None:
+            from kumo_core.training.orchestration import validate_bias_options
+            validate_bias_options(self._bias_options, model_plan,
+                                  TaskType(workflow.query.task_type))
         materialized = self._materialize_training(workflow, train_table,
                                                   run_dir, effective_plan)
         tracking.start(lambda: fit_spec(FitContext(
@@ -1445,7 +1471,7 @@ class Trainer:
                 accelerator=self._accelerator, instrumentation=events),
             options=CallableTrainingOptions(
                 binary_classification_threshold=threshold,
-                target_edges=edges),
+                target_edges=edges, bias_options=self._bias_options),
         )
         explanation_root = explanation_trial(
             result.best_trainer.original_log_dir,
@@ -1504,6 +1530,17 @@ class Trainer:
         from kumo_core.artifacts import bundle_id_from_manifest
 
         effective_plan = model_plan if model_plan is not None else self._model_plan
+        # Record the trained modules' actual flags; a requested option the
+        # trained modules do not carry is a defect, never a silent fallback.
+        effective_bias = _bundle_bias_options(
+            training_result.artifact_paths.get('trainer_config'))
+        if effective_bias is None:
+            effective_bias = self._bias_options
+        if (self._bias_options is not None and effective_bias is not None
+                and effective_bias != self._bias_options):
+            raise RuntimeError(
+                f'Trained modules carry bias flags {effective_bias.to_dict()} '
+                f'but {self._bias_options.to_dict()} were requested.')
         write_training_spec(
             training_result.bundle_dir,
             predictive_query=predictive_query,
@@ -1512,6 +1549,9 @@ class Trainer:
             training_table_generation=training_table_generation,
             graph_config=graph_config,
             timestamp_precision=timestamp_precision,
+            bias_options=(None if effective_bias is None
+                          or effective_bias.is_default else
+                          effective_bias.to_dict()),
         )
         if scoring_defaults is not None:
             write_scoring_defaults(training_result.bundle_dir,
@@ -1779,13 +1819,22 @@ class Trainer:
                      and task_type is TaskType.BINARY_CLASSIFICATION else
                      resolve_classification_threshold(
                          task_type, binary_classification_threshold))
-        if local_sensitivity and task_type is not TaskType.REGRESSION:
+        # Binary evidence explains the class logit; numerical sensitivity
+        # differentiates a decoded scalar and stays regression-only
+        # (contract section 7),
+        # as does the legacy `local_sensitivity=True` flag.
+        binary_evidence = (task_type is TaskType.BINARY_CLASSIFICATION
+                           and evidence is not None
+                           and evidence.numerical_sensitivity is None)
+        if (local_sensitivity and task_type is not TaskType.REGRESSION
+                and not binary_evidence):
             if evidence is not None and evidence.on_unsupported == 'record':
                 evidence_reason = 'unsupported_task'
                 local_sensitivity = False
             else:
                 raise ValueError(
-                    'Original evidence requires scalar MSE regression')
+                    'Original evidence requires scalar MSE regression, or '
+                    'binary classification without numerical sensitivity')
         artifacts = _requested_artifacts(output_config)
         artifact_type = (PredictionArtifactType.PREDICTIONS
                          if PredictionArtifactType.PREDICTIONS in artifacts else
@@ -1864,7 +1913,7 @@ class Trainer:
                 evidence is None or evidence.numerical_sensitivity is not None,
                 'walk_attribution':
                 (None if evidence is None or evidence.walk_attribution is None
-                 else vars(evidence.walk_attribution)),
+                 else evidence.walk_attribution.to_dict()),
                 'local_sensitivity_on_unsupported':
                 evidence.on_unsupported if evidence is not None else 'raise'
             } if local_sensitivity else {}),
@@ -1875,7 +1924,8 @@ class Trainer:
         try:
             if explanations:
                 from kumo_core.prediction_explanations import (
-                    explain_prediction, )
+                    explain_prediction,
+                )
 
                 support = explain_prediction(
                     materialized=materialized, model_dir=model_dir,
@@ -1918,7 +1968,9 @@ class Trainer:
                             'batch_size':
                             batch_size,
                             'coordinate':
-                            'decoded_model_output',
+                            ('encoded_positive_class_probability'
+                             if task_type is TaskType.BINARY_CLASSIFICATION
+                             else 'decoded_model_output'),
                         }, sort_keys=True, default=str).encode()).hexdigest(),
             } if evidence is not None else {})
         manifest = _run_manifest.start(
@@ -2098,7 +2150,19 @@ class Trainer:
         metrics_path = bundle_dir / 'metrics.json'
         metrics = (json.loads(metrics_path.read_text(
             encoding='utf-8')) if metrics_path.is_file() else {})
-        trainer = cls(plan, embedding_models, accelerator=accelerator)
+        from kumo_core.training.orchestration import BiasOptions
+
+        # Old bundles lack the key and restore the defaults.
+        recorded = getattr(spec, 'bias_options', None)
+        bias_options = (None if recorded is None else
+                        BiasOptions.from_dict(recorded))
+        actual = _bundle_bias_options(paths.get('trainer_config'))
+        if actual is not None and actual != (bias_options or BiasOptions()):
+            raise ValueError(
+                f'{bundle_dir}: training-spec.json records bias options '
+                f'{recorded} but model/config.json has {actual.to_dict()}.')
+        trainer = cls(plan, embedding_models, accelerator=accelerator,
+                      bias_options=bias_options)
         trainer._snapshot_id = spec.snapshot_id
         trainer._graph_config = spec.graph_config
         trainer._timestamp_precision = spec.timestamp_precision
@@ -2117,6 +2181,27 @@ class Trainer:
             scoring_defaults=read_scoring_defaults(bundle_dir, paths),
             _trainer=trainer)
         return trainer
+
+
+def _bundle_bias_options(config_path: Optional[str]) -> Optional[Any]:
+    """Actual bias flags of a bundle's trained modules, from their configs.
+
+    Returns ``None`` when the trainer config is unavailable. Models and heads
+    without a bias switch count as biased, the defaults.
+    """
+    if config_path is None or not Path(config_path).is_file():
+        return None
+    from kumo_core.training.orchestration import BiasOptions
+    config = json.loads(Path(config_path).read_text(encoding='utf-8'))
+
+    def flag(part: Any, target: str) -> bool:
+        if not isinstance(part, Mapping) or not str(part.get(
+                '_target_', '')).endswith(target):
+            return True
+        return bool(part.get('bias', True))
+
+    return BiasOptions(gnn=flag(config.get('model'), '.HeteroGNN'),
+                       head=flag(config.get('head'), '.NodePredHead'))
 
 
 def _encoders(bundle_dir: Path) -> Any:

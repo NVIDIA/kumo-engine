@@ -26,6 +26,24 @@ class UnsupportedWalkAttribution(ValueError):
     """The complete computation is outside the qualified rule profile."""
 
 
+LEGACY_METHOD = 'hetero_lrp_gamma_reference_v1'
+WEIGHT_GAMMA_METHOD = 'hetero_gnn_lrp_weight_gamma_v1'
+DEGREE_T_METHOD = 'hetero_gnn_gi_degree_t_v1'
+#: Registered walk methods and their lazily imported implementation modules.
+#: Each module exports METHOD_ID, qualify, make_rule, summarize, validate_row
+#: (contract section 10). Unknown IDs never fall back to the legacy rule.
+METHOD_MODULES = {
+    LEGACY_METHOD: 'kumo_core.explain.walk_lrp_reference',
+    WEIGHT_GAMMA_METHOD: 'kumo_core.explain.walk_lrp_weight_gamma',
+    DEGREE_T_METHOD: 'kumo_core.explain.walk_degree_t',
+}
+SCHEMA_V1 = 'walk_attribution/v1'
+SCHEMA_V2 = 'walk_attribution/v2'
+LEGACY_CONFIG_KEYS = ('gamma', 'epsilon', 'max_walks', 'top_k', 'output_index')
+_ADDED_DEFAULTS = (('method', LEGACY_METHOD), ('feature_vectors', False),
+                   ('bags', False), ('selected_class', None))
+
+
 @dataclass(frozen=True)
 class WalkAttributionConfig:
     gamma: float = 0.0
@@ -33,6 +51,11 @@ class WalkAttributionConfig:
     max_walks: int = 10000
     top_k: int = 20
     output_index: int = 0
+    # Fields added after walk_attribution/v1; defaults keep v1 behavior.
+    method: str = LEGACY_METHOD
+    feature_vectors: bool = False
+    bags: bool = False
+    selected_class: bool | int | str | None = None
 
     def __post_init__(self):
         for name in ('gamma', 'epsilon'):
@@ -45,6 +68,51 @@ class WalkAttributionConfig:
             value = getattr(self, name)
             if type(value) is not int or value < (0 if name == 'output_index' else 1):
                 raise ValueError(f'Invalid {name}')
+        if type(self.method) is not str or self.method not in METHOD_MODULES:
+            raise ValueError(f'Unknown walk attribution method: {self.method!r}')
+        for name in ('feature_vectors', 'bags'):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f'{name} must be a bool')
+        if self.selected_class is not None and type(self.selected_class) not in (bool, int, str):
+            raise ValueError('selected_class must be None, bool, int or str')
+        if self.method == DEGREE_T_METHOD and (self.gamma != 0.0 or self.epsilon != 1e-9):
+            raise ValueError('GNN-GI has no gamma rule or stabilizer: use gamma=0 and the default epsilon')
+        if self.bags and self.method != DEGREE_T_METHOD:
+            raise ValueError(f'bags=True requires {DEGREE_T_METHOD}')
+
+    def to_dict(self):
+        """The five v1 keys always, added keys only when not at their default.
+
+        Default configurations therefore serialize exactly as v1 did, and
+        `WalkAttributionConfig(**config.to_dict())` reproduces the config.
+        """
+        result = {name: getattr(self, name) for name in LEGACY_CONFIG_KEYS}
+        for name, default in _ADDED_DEFAULTS:
+            value = getattr(self, name)
+            if type(value) is not type(default) or value != default:
+                result[name] = value
+        return result
+
+
+def select_schema(config, task_type):
+    """`walk_attribution/v1` only for the legacy method, a regression task and
+    a configuration with exactly the five v1 keys; v2 otherwise."""
+    from kumoapi.task import TaskType
+    if (config.method == LEGACY_METHOD and TaskType(task_type) == TaskType.REGRESSION
+            and tuple(config.to_dict()) == LEGACY_CONFIG_KEYS):
+        return SCHEMA_V1
+    return SCHEMA_V2
+
+
+def method_module(method):
+    """Import the registered implementation module of `method`."""
+    import importlib
+    if method not in METHOD_MODULES:
+        raise ValueError(f'Unknown walk attribution method: {method!r}')
+    module = importlib.import_module(METHOD_MODULES[method])
+    if getattr(module, 'METHOD_ID', None) != method:
+        raise ValueError(f'{METHOD_MODULES[method]} does not implement {method}')
+    return module
 
 
 def _copy(x):
@@ -265,8 +333,15 @@ class WalkCapture:
         return {'schema': 'walk_attribution/v1', 'method': 'hetero_lrp_gamma_reference_v1', 'coordinate': 'encoded_model_output', 'input_coordinate': 'encoded_node_features', 'output_index': self.config.output_index, 'score': score, 'gamma': self.config.gamma, 'epsilon': self.config.epsilon, 'walks': walks, 'bias_relevance': bias_total, 'stabilizer_residual': residual, 'omitted_signed_relevance': omitted, 'expanded_routes': expanded, 'truncated': truncated, 'complete': not truncated, 'search': 'bounded_exhaustive', 'accounting_error': score - sum(w['relevance'] for w in walks) - bias_total - residual - omitted}
 
 
-def inspect_walk_capability(module):
-    """Return an operator qualification record without running the model."""
+def inspect_walk_capability(module, config=None):
+    """Return an operator qualification record without running the model.
+
+    Without `config` this is the frozen v1 record. With a config it reports
+    that method's qualification codes and the architecture read from actual
+    parameters. No hooks are registered either way.
+    """
+    if config is not None:
+        return _inspect_method(module, config)
     try:
         WalkCapture(module).validate()
     except (UnsupportedWalkAttribution, AttributeError) as error:
@@ -278,3 +353,18 @@ def inspect_walk_capability(module):
             'qualification': 'reference_operator_profile',
             'qualified_devices': ['cpu'],
             'device_qualified': all(p.device.type == 'cpu' for p in module.parameters())}
+
+
+def _inspect_method(module, config):
+    from kumo_core.explain.walk_graph import architecture_record
+    if not isinstance(config, WalkAttributionConfig):
+        raise TypeError('config must be WalkAttributionConfig')
+    record = {'method': config.method, 'config': config.to_dict(),
+              'qualified_devices': ['cpu'],
+              'device_qualified': all(p.device.type == 'cpu' for p in module.parameters())}
+    try:
+        codes = method_module(config.method).qualify(module, config)
+    except (UnsupportedWalkAttribution, AttributeError) as error:
+        return {**record, 'supported': False, 'reason': str(error)}
+    return {**record, 'supported': True, 'qualification': list(codes),
+            'architecture': architecture_record(module)}

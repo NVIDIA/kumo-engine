@@ -92,8 +92,12 @@ from kumo.engine.uncertainty import (
     CalibrationSpec,
     PredictionIntervalCalibrator,
 )
+# Engine-local training option. It must follow `_quiet`, which imports PyG
+# without its FutureWarning, so isort must not hoist it.
+from kumo_core.training.orchestration import BiasOptions  # isort: skip
 
 __all__ = [
+    "BiasOptions",
     "EvidenceConfig",
     "WalkAttributionConfig",
     "WalkAttributionBundle",

@@ -45,6 +45,9 @@ class TrainingSpec:
     training_table_generation: Dict[str, Any]
     graph_config: Optional[Dict[str, Any]] = None
     timestamp_precision: str = 'seconds'
+    # Engine-local bias switches (`BiasOptions.to_dict()`), present only when
+    # they differ from the defaults, so default bundles keep their bytes.
+    bias_options: Optional[Dict[str, bool]] = None
 
 
 def write_training_spec(
@@ -56,6 +59,7 @@ def write_training_spec(
     training_table_generation: TrainingTableGenerationPlan,
     graph_config: Optional[Dict[str, Any]] = None,
     timestamp_precision: str = 'seconds',
+    bias_options: Optional[Dict[str, bool]] = None,
 ) -> None:
     r"""Write an integrity-covered training spec into a completed bundle."""
     from kumo_core.artifacts import add_bundle_file
@@ -69,12 +73,15 @@ def write_training_spec(
         training_table_generation=to_json_dict(training_table_generation),
         graph_config=graph_config,
         timestamp_precision=timestamp_precision,
+        bias_options=bias_options,
     )
+    data = asdict(spec)
+    if data['bias_options'] is None:
+        del data['bias_options']
     spec_path = bundle_dir / SPEC_FILE
     atomic_write_bytes(
         spec_path,
-        (json.dumps(asdict(spec), indent=2, sort_keys=True) +
-         '\n').encode('utf-8'),
+        (json.dumps(data, indent=2, sort_keys=True) + '\n').encode('utf-8'),
     )
     add_bundle_file(bundle_dir, SPEC_ROLE, SPEC_FILE)
 
@@ -109,6 +116,7 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
         training_table_generation=data['training_table_generation'],
         graph_config=data.get('graph_config'),
         timestamp_precision=data.get('timestamp_precision', 'seconds'),
+        bias_options=data.get('bias_options'),
     )
 
 

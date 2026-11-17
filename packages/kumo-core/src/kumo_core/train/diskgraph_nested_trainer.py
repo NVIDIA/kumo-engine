@@ -1420,8 +1420,10 @@ class DiskgraphNestedTrainer(Trainer):
         ``Trainer.predict_v2`` but sources metadata from the bundle / ``self.task``
         and keys output on ``pkey`` (no ``arange``).
         """
-        if local_sensitivity is not None and self.task.task_type != TaskType.REGRESSION:
-            raise ValueError('local_sensitivity requires scalar MSE regression')
+        if local_sensitivity is not None and self.task.task_type not in (
+                TaskType.REGRESSION, TaskType.BINARY_CLASSIFICATION):
+            raise ValueError('local_sensitivity requires scalar MSE regression '
+                             'or BCE binary classification')
         emit_embeddings = bool(return_embeddings)
         emit_predictions = bool(return_predictions)
         if not emit_embeddings and not emit_predictions:
@@ -1492,8 +1494,13 @@ class DiskgraphNestedTrainer(Trainer):
             old_explainers = self.pl_model.explainers
             old_grad_enabled = torch.is_grad_enabled()
             from kumo_core.explain.local_sensitivity import LocalSensitivity
-            from kumo_core.train.loss import MSELoss
-            if (self.task.task_type != TaskType.REGRESSION
+            from kumo_core.train.loss import BinaryCrossEntropyLoss, MSELoss
+            if self.task.task_type == TaskType.BINARY_CLASSIFICATION:
+                # FocalLoss is a sibling class and stays rejected.
+                if not isinstance(self.pl_model.loss, BinaryCrossEntropyLoss):
+                    raise ValueError('Binary evidence requires '
+                                     'BinaryCrossEntropyLoss')
+            elif (self.task.task_type != TaskType.REGRESSION
                     or not isinstance(self.pl_model.loss, MSELoss)):
                 raise ValueError('local_sensitivity requires scalar MSE regression')
             self.datamodule.eval_loader_kwargs['batch_size'] = 1

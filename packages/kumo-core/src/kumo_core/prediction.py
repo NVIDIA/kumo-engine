@@ -632,8 +632,16 @@ def _score_prediction_shard(
                 **bundle_fingerprints(config.model_dir),
             },
         }
-    if config.local_sensitivity_dir is not None and (
-            task.task_type.value != 'regression' or trainer.loss not in (None, 'mse', 'mse_loss')):
+    def evidence_supported():
+        if task.task_type.value == 'regression':
+            return trainer.loss in (None, 'mse', 'mse_loss')
+        # Binary evidence explains the BCE class logit; numerical
+        # sensitivity stays regression-only.
+        return (task.task_type.value == 'binary_classification'
+                and trainer.loss in (None, 'binary_cross_entropy_loss')
+                and not config.numerical_sensitivity)
+
+    if config.local_sensitivity_dir is not None and not evidence_supported():
         if config.local_sensitivity_on_unsupported != 'record':
             raise ValueError('local_sensitivity requires scalar MSE regression')
         root = Path(config.local_sensitivity_dir)
