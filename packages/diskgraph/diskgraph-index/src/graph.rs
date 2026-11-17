@@ -1649,20 +1649,20 @@ impl TableReader {
         let missing = || anyhow!("table {} has no primary-key index", self.node_type);
         let pk = self.primary_key_map.as_ref().ok_or_else(missing)?;
         let key_type = self.pk_map.as_ref().ok_or_else(missing)?.key_type();
-        let decoder = self.node_data_decoder.as_ref().ok_or_else(missing)?;
+        let decoder = self
+            .node_data_decoder
+            .as_ref()
+            .ok_or_else(|| anyhow!("table {} has no rowpack decoder", self.node_type))?;
         let col_idx = crate::layout::pk_column_index(pk, decoder).ok_or_else(missing)?;
         let column = &decoder.context().columns[col_idx];
-        let value = decoder.decode_column_value(row, col_idx, scratch)?;
-        let key = crate::layout::pk_key_from_value(pk, key_type, &value, column)
-            .with_context(|| format!("{} node {node_id}", self.node_type))?;
-        if self.pk_candidate(&key)? != Some(node_id) {
-            return Ok(false);
-        }
-        let verifiable = self
-            .node_data_compression
-            .as_ref()
-            .is_some_and(|compression| compression.codec == "rowpack");
-        Ok(!verifiable || crate::layout::pk_value_matches(&key, &value, column) != Some(false))
+        let node = || format!("{} node {node_id}", self.node_type);
+        let value = decoder
+            .decode_column_value(row, col_idx, scratch)
+            .with_context(node)?;
+        let key =
+            crate::layout::pk_key_from_value(pk, key_type, &value, column).with_context(node)?;
+        Ok(self.pk_candidate(&key)? == Some(node_id)
+            && crate::layout::pk_value_matches(&key, &value, column) != Some(false))
     }
 
     /// Check whether `node_id` is the canonical (first-occurrence) node for its

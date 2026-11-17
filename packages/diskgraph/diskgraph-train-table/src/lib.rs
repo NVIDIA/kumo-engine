@@ -11,7 +11,6 @@ pub mod ttgen_resolve;
 pub mod ttgen_row_aggregate;
 pub mod ttgen_stats;
 pub mod ttgen_traversal;
-pub mod rhs_catalog;
 pub mod tt_stage_ingest;
 pub mod errors;
 pub mod pass_b;
@@ -25,5 +24,6 @@ pub mod manifest;
 pub mod pseudo_time;
 pub mod split_stats;
 pub mod kumo_contract_bridge;
+pub mod rhs_catalog;
 
 pub mod batch_aggregate;

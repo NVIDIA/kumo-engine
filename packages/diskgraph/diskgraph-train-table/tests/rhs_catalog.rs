@@ -242,6 +242,12 @@ fn rhs_catalog_keeps_canonical_rows_passing_the_filter() {
     }
     let none = compare("id", CompareOp::Gt, Value::Int(5));
     assert!(catalog(&reader, "items", Some(&none), 2).is_empty());
+    let empty_row = reader
+        .table("items")
+        .unwrap()
+        .is_canonical_row(3, &[], &mut Default::default())
+        .unwrap_err();
+    assert!(format!("{empty_row:#}").starts_with("items node 3: "));
 }
 
 #[test]
