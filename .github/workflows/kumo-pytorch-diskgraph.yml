@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch DiskGraph
+name: PyTorch — DiskGraph Tests
 
 # Both engines against the same golden cases, the whole suite with no test
 # skipped for a missing import, and every example notebook from a fresh kernel,
@@ -39,10 +39,11 @@ concurrency:
 
 jobs:
   diskgraph-wheel:
+    name: Setup / DiskGraph Build
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   diskgraph:
-    name: kumo-pytorch-diskgraph
+    name: Correctness / DiskGraph
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -65,7 +66,7 @@ jobs:
           python -m pytest -q --require-imports
 
   notebooks:
-    name: kumo-pytorch-notebooks
+    name: Examples / Notebooks
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -87,7 +88,7 @@ jobs:
         run: python -m pytest -m notebook --require-imports -q --durations=0
 
   install:
-    name: kumo-pytorch-install
+    name: Installation / Package
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 30

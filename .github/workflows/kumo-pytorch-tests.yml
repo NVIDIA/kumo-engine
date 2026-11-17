@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch tests
+name: PyTorch — Package Tests
 
 # kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
 # suite, style and the package build. The in-memory engine computes column
@@ -36,10 +36,11 @@ concurrency:
 
 jobs:
   diskgraph-wheel:
+    name: Setup / DiskGraph Build
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   cpu:
-    name: kumo-pytorch-tests
+    name: Correctness / Package Tests
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45

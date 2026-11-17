@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch nightly end-to-end
+name: PyTorch — Nightly Suite
 
 # The nightly tier: existing package regressions, the end-to-end flows at M,
 # conformance on both engines, and AML checks. Not a required check. Pull
@@ -40,7 +40,7 @@ defaults:
 
 jobs:
   dataset-tooling:
-    name: PyTorch nightly dataset tooling checks
+    name: Setup / Dataset Tools
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -66,10 +66,11 @@ jobs:
           retention-days: 14
 
   diskgraph-wheel:
+    name: Setup / DiskGraph Build
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   benchmark-memory:
-    name: PyTorch nightly Linux memory and file-cache validation
+    name: Profiler / Host Memory
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -124,7 +125,7 @@ jobs:
           retention-days: 14
 
   aml-training-acceptance:
-    name: PyTorch nightly real AML CPU training acceptance
+    name: Training / AML / Acceptance
     needs: diskgraph-wheel
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -190,7 +191,8 @@ jobs:
           retention-days: 14
 
   aml-fitting-memory:
-    name: AML fitting / ${{ matrix.case }} / repeat ${{ matrix.repeat }}
+    name: >-
+      Memory / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / Repeat ${{ fromJSON('[1,2,3]')[matrix.repeat] }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
@@ -286,7 +288,7 @@ jobs:
           retention-days: 14
 
   benchmark-gpu:
-    name: PyTorch nightly GPU measurement validation
+    name: Profiler / GPU Metrics
     needs: diskgraph-wheel
     # NVIDIA runners do not accept pull_request jobs. Manual dispatch permits
     # validation of a reviewed internal branch before merging it into main.
@@ -357,7 +359,8 @@ jobs:
           retention-days: 14
 
   benchmark-aml:
-    name: AML ${{ matrix.mode }} / ${{ matrix.case }}
+    name: >-
+      Benchmark / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / ${{ fromJSON('{"training":"Training","index":"Index Reuse","timing-diskgraph":"DiskGraph","timing-polars":"Polars","timing-gpu":"GPU Reference"}')[matrix.mode] || matrix.mode }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     # Each measurement has its own runner; do not contend for one GPU.
@@ -475,7 +478,8 @@ jobs:
           retention-days: 14
 
   aml-population:
-    name: AML ${{ matrix.mode }} population / ${{ matrix.case }}
+    name: >-
+      Population / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / ${{ matrix.mode == 'full' && 'Full' || 'Smoke' }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
@@ -548,7 +552,7 @@ jobs:
           retention-days: 14
 
   aml-lifecycle:
-    name: PyTorch nightly real AML lifecycle and histories
+    name: Lifecycle / AML
     needs: diskgraph-wheel
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
@@ -630,7 +634,7 @@ jobs:
           retention-days: 14
 
   aml-summary:
-    name: PyTorch nightly combined AML report
+    name: Results / AML Summary
     needs: [plan, benchmark-aml, aml-fitting-memory, aml-population, aml-lifecycle, aml-training-acceptance]
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
@@ -672,7 +676,7 @@ jobs:
           retention-days: 14
 
   package-regressions:
-    name: Kumo PyTorch package correctness and regression tests
+    name: Correctness / Package Tests
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -697,7 +701,7 @@ jobs:
           retention-days: 14
 
   plan:
-    name: Plan the nightly end-to-end runs
+    name: Setup / Nightly Plan
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -721,7 +725,7 @@ jobs:
           PYCODE
 
   run:
-    name: Nightly end-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size M)
+    name: Lifecycle / H&M / ${{ matrix.flow == 'gnn' && 'GNN' || 'PRAGMA' }} / Seed ${{ matrix.seed }}
     needs: [diskgraph-wheel, plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 75
@@ -749,7 +753,7 @@ jobs:
           retention-days: 14
 
   aml-model-checks:
-    name: PyTorch nightly AML correctness and model training
+    name: Correctness / AML
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -789,7 +793,7 @@ jobs:
           retention-days: 14
 
   checks:
-    name: kumo-pytorch-t2b
+    name: Lifecycle / H&M / Results
     needs: [diskgraph-wheel, run]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -843,7 +847,7 @@ jobs:
           retention-days: 14
 
   conformance:
-    name: kumo-pytorch-t2b-conformance
+    name: Correctness / Conformance
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 60
