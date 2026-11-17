@@ -9,6 +9,7 @@ import pytest
 from native_io_queue import (
     EventBuffer,
     bio_next_offset,
+    empty_flush_layout,
     flush_layout,
     start_capture,
     unknown_provenance,
@@ -169,3 +170,37 @@ def test_unknown_successful_stack_cannot_be_empty():
     raw = EVENT.pack(30, 1234, 10, 1, 0, UNKNOWN, 1, 0, 7, 100, 3, 1)
     with pytest.raises(ValueError, match='no kernel PCs'):
         unknown_provenance({'unknown_stacks': Stacks()}, raw)
+
+
+def empty_types():
+    return flush_types() + [
+        dict(id=5, kind='TYPEDEF', name='bool', type_id=6),
+        dict(id=6, kind='INT', name='_Bool', size=1),
+        dict(id=7, kind='PTR', type_id=1),
+        dict(id=8, kind='FUNC_PROTO', ret_type_id=5, params=[dict(name='rq', type_id=7)]),
+        dict(id=9, kind='FUNC', name='blk_insert_flush', type_id=8),
+        dict(id=10, kind='ENUM', values=[dict(name=name, val=value) for name, value in (
+            ('REQ_OP_WRITE', 1), ('__REQ_PREFLUSH', 18), ('__REQ_FUA', 17), ('__REQ_SYNC', 11))])]
+
+
+def test_empty_flush_entry_signature_and_enums():
+    value = empty_flush_layout(empty_types())
+    assert value['signature'] == 'bool(struct request *)'
+    assert value['function_type_id'] == 9 and value['request_type_id'] == 1
+    assert value['enums']['__REQ_PREFLUSH'] == 18
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda t: t[8].update(name='missing'),
+    lambda t: t[7].update(params=[]),
+    lambda t: t[5].update(size=4),
+    lambda t: t[6].update(kind='INT'),
+    lambda t: t[0].update(name='bio'),
+    lambda t: t[9]['values'][1].update(val=19),
+    lambda t: t[9]['values'].pop(),
+])
+def test_empty_flush_btf_mismatch_fails(mutation):
+    types = empty_types()
+    mutation(types)
+    with pytest.raises(ValueError, match='BTF'):
+        empty_flush_layout(types)

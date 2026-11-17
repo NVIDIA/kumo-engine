@@ -16,6 +16,8 @@ struct request_state {
 struct flush_token {
     struct request_state request;
     u64 start_time;
+    u32 empty;
+    u32 cmd_flags;
 };
 struct event {
     u64 timestamp;
@@ -160,6 +162,41 @@ static __always_inline void emit_unknown(void *ctx, u64 pointer, u32 operation) 
     emit(ctx, 8, pointer, &metadata, 0, (u32)stack, bpf_ktime_get_ns());
 }
 
+int kprobe__blk_insert_flush(struct pt_regs *ctx) {
+    if (!enabled()) return 0;
+    u64 pointer = PT_REGS_PARM1(ctx), start_time = 0;
+    u32 operation = 0, cmd_flags = 0, flags = 0, remaining = 0, zero = 0;
+    if (!device_request(pointer, &operation) || operation != 1) return 0;
+    if (read32(pointer, OFF_REQUEST_CMD_FLAGS, &cmd_flags) ||
+        read32(pointer, OFF_REQUEST_DATA_LEN, &remaining)) return 0;
+    if (remaining || !(cmd_flags & REQ_PREFLUSH_MASK)) return 0;
+    /* Anchor before PREFLUSH is cleared: a zero-DATA original never dispatches
+     * and may complete synchronously inside this function (policy0). */
+    if (cmd_flags & REQ_FUA_MASK) { diagnostic(8); return 0; }
+    if (read32(pointer, OFF_REQUEST_RQ_FLAGS, &flags) ||
+        read64(pointer, OFF_REQUEST_START_TIME_NS, &start_time)) return 0;
+    u64 now = bpf_ktime_get_ns();
+    if (requests.lookup(&pointer) || flush_tokens.lookup(&pointer) ||
+        flags & RQF_FLUSH_SEQ_MASK || !start_time || start_time > now) {
+        diagnostic(8);
+        return 0;
+    }
+    struct flush_token token = {};
+    token.empty = 1;
+    token.start_time = start_time;
+    token.cmd_flags = cmd_flags;
+    token.request.generation = now;
+    token.request.operation = operation;
+    token.request.attribution_flags = flags;
+    if (flush_tokens.insert(&pointer, &token)) { diagnostic(2); return 0; }
+    struct trace_state *s = state.lookup(&zero);
+    if (s) __sync_fetch_and_add(&s->pending_flush, 1);
+    struct request_state metadata = token.request;
+    metadata.bytes = start_time;
+    emit(ctx, 12, pointer, &metadata, 0, cmd_flags, now);
+    return 0;
+}
+
 RAW_TRACEPOINT_PROBE(block_rq_issue) {
     if (!enabled()) return 0;
     u64 pointer = ctx->args[0];
@@ -217,7 +254,7 @@ static __always_inline int remove_request(void *ctx, u64 pointer, u32 kind) {
         struct flush_token *token = flush_tokens.lookup(&pointer);
         if (token && kind != 2) { diagnostic(8); return 0; }
         if (token && kind == 2) {
-            u32 flags = 0, remaining = 0;
+            u32 flags = 0, remaining = 0, cmd_flags = 0;
             u64 start_time = 0;
             if (!device_request(pointer, &operation) ||
                 read32(pointer, OFF_REQUEST_RQ_FLAGS, &flags) ||
@@ -228,12 +265,21 @@ static __always_inline int remove_request(void *ctx, u64 pointer, u32 kind) {
                 diagnostic(8);
                 return 0;
             }
-            /* blk_flush_complete_seq restores the already-completed DATA
-             * request and calls blk_mq_end_request again. This is logical
-             * completion, without a second hardware dispatch or payload. */
+            if (token->empty) {
+                if (read32(pointer, OFF_REQUEST_CMD_FLAGS, &cmd_flags)) return 0;
+                u32 expected = (token->cmd_flags & ~REQ_PREFLUSH_MASK) | REQ_SYNC_MASK;
+                if (cmd_flags != expected || flags != token->request.attribution_flags) {
+                    diagnostic(8);
+                    return 0;
+                }
+            }
+            /* This completes either an entry-anchored zero-DATA original or
+             * an already-completed DATA original restored by the flush
+             * sequence. Neither logical callback adds a physical dispatch. */
             struct request_state metadata = token->request;
             metadata.bytes = start_time;
-            emit(ctx, 10, pointer, &metadata, 0, flags, bpf_ktime_get_ns());
+            emit(ctx, token->empty ? 13 : 10, pointer, &metadata, 0,
+                 token->empty ? cmd_flags : flags, bpf_ktime_get_ns());
             struct trace_state *s = state.lookup(&zero);
             if (s) __sync_fetch_and_add(&s->pending_flush, -1);
             if (flush_tokens.delete(&pointer)) diagnostic(9);

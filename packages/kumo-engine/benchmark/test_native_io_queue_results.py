@@ -9,6 +9,8 @@ import pytest
 from native_io_queue_results import (
     ANCHOR,
     DIAGNOSTICS,
+    EMPTY_FLUSH_DONE,
+    EMPTY_FLUSH_ENTRY,
     END,
     EVENT,
     FINAL,
@@ -24,6 +26,7 @@ from native_io_queue_results import (
     reconstruct,
     unknown_details,
     validate_collection,
+    validate_empty_protocol,
     validate_unknown,
 )
 
@@ -126,6 +129,85 @@ def test_unknown_saved_stack_binding():
     record['unknown_provenance']['stacks']['8'] = [5678]
     with pytest.raises(ValueError, match='referenced stacks'):
         validate_unknown(record, raw)
+
+
+def empty_pair(start=35, end=75, allocation=12, pointer=8):
+    return [event(EMPTY_FLUSH_ENTRY, start, pointer=pointer, generation=start, cgroup=0,
+                  operation=1, payload=allocation, phase=0x100, entering=0x40001, cpu=1),
+            event(EMPTY_FLUSH_DONE, end, pointer=pointer, generation=start, cgroup=0,
+                  operation=1, payload=allocation, phase=0x100, entering=0x801)]
+
+
+@pytest.mark.parametrize('start,end', [(35, 75), (35, 35), (3, 4)])
+def test_empty_flush_sync_async_never_changes_physical_metrics(start, end):
+    physical = [event(ISSUE, 40), event(FINAL, 70, generation=40, payload=4096)]
+    raw, clients = sample(physical)
+    baseline = reconstruct(raw, 7, clients, 100, 200)
+    raw, clients = sample(physical + empty_pair(start, end, allocation=min(12, start)))
+    result = reconstruct(raw, 7, clients, 100, 200)
+    assert result['counts']['empty_flush_entries'] == result['counts']['empty_logical_callbacks'] == 1
+    for name, phase in baseline['phases'].items():
+        for scope in ('device', 'target', 'possible_target', 'mixed_or_unchecked', 'foreign_or_unknown'):
+            assert result['phases'][name][scope] == phase[scope]
+
+
+def test_empty_flush_allocation_reuse_after_completion():
+    raw, clients = sample(empty_pair() + empty_pair(80, 85, allocation=79))
+    assert reconstruct(raw, 7, clients, 100, 200)['counts']['empty_logical_callbacks'] == 2
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda e: e.pop(0),
+    lambda e: e.pop(),
+    lambda e: e.append(e[1].copy()),
+    lambda e: e.insert(1, e[0].copy()),
+    lambda e: e[0].__setitem__(2, 34),
+    lambda e: e[0].__setitem__(4, 0),
+    lambda e: e[0].__setitem__(4, 36),
+    lambda e: e[0].__setitem__(8, 0x60001),
+    lambda e: e[0].__setitem__(8, 0x20001),
+    lambda e: e[0].__setitem__(7, 0x102),
+    lambda e: e[0].__setitem__(6, 0),
+    lambda e: e[1].__setitem__(4, 13),
+    lambda e: e[1].__setitem__(2, 36),
+    lambda e: e[1].__setitem__(7, 0),
+    lambda e: e[1].__setitem__(8, 1),
+    lambda e: e[1].__setitem__(8, 0x40801),
+    lambda e: e[1].__setitem__(3, 7),
+    lambda e: e.insert(1, event(ISSUE, 45, pointer=8)),
+])
+def test_empty_flush_invalid_lifecycles_fail(mutation):
+    values = empty_pair()
+    mutation(values)
+    raw, clients = sample(values)
+    with pytest.raises(ValueError):
+        reconstruct(raw, 7, clients, 100, 200)
+
+
+def test_separate_physical_flush_still_occupies_device():
+    physical = [event(ISSUE, 45, pointer=9, operation=2),
+                event(FINAL, 65, pointer=9, operation=2, generation=45)]
+    raw, clients = sample(empty_pair() + physical)
+    training = reconstruct(raw, 7, clients, 100, 200)['phases']['training']
+    assert training['device']['completed']['other']['latency_ns']['count'] == 1
+    assert training['device']['dispatched_depth_ns'] == {'0': 40, '1': 20}
+
+
+def empty_protocol():
+    return dict(version=1, function='blk_insert_flush', signature='bool(struct request *)',
+                function_type_id=9, prototype_type_id=8, request_type_id=1, bool_type_id=5,
+                enums=dict(REQ_OP_WRITE=1, __REQ_PREFLUSH=18, __REQ_FUA=17, __REQ_SYNC=11, __RQF_FLUSH_SEQ=1))
+
+
+def test_empty_flush_saved_protocol_binding():
+    raw, _ = sample(empty_pair())
+    record = dict(empty_flush_protocol=empty_protocol(), ready=dict(empty_flush_protocol=empty_protocol()))
+    validate_empty_protocol(record, raw)
+    record['empty_flush_protocol']['enums']['__REQ_PREFLUSH'] = 19
+    with pytest.raises(ValueError, match='signature/enums'):
+        validate_empty_protocol(record, raw)
+    with pytest.raises(ValueError, match='BTF protocol binding'):
+        validate_empty_protocol(dict(ready={}), raw)
 
 
 def test_analytic_overlap_and_phase_clip():

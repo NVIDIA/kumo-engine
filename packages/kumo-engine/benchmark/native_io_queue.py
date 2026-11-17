@@ -111,6 +111,44 @@ def unknown_provenance(bpf, raw: bytes) -> dict:
                 stack_errors=sorted(index for index in ids if index < 0))
 
 
+def empty_flush_layout(types: list[dict]) -> dict:
+    """Prove the new kprobe signature and the exact command-flag transform."""
+    by_id = {entry['id']: entry for entry in types}
+
+    def resolve(index: int) -> dict:
+        value = by_id[index]
+        while value['kind'] in {'TYPEDEF', 'CONST', 'VOLATILE', 'RESTRICT', 'TYPE_TAG'}:
+            value = by_id[value['type_id']]
+        return value
+
+    functions = [entry for entry in types if entry.get('kind') == 'FUNC'
+                 and entry.get('name') == 'blk_insert_flush']
+    if len(functions) != 1:
+        raise ValueError('BTF blk_insert_flush entry function is unavailable')
+    function = functions[0]
+    proto = by_id[function['type_id']]
+    if proto['kind'] != 'FUNC_PROTO' or len(proto['params']) != 1:
+        raise ValueError('Unsupported BTF blk_insert_flush signature')
+    result = by_id[proto['ret_type_id']]
+    base = resolve(result['id'])
+    pointer = resolve(proto['params'][0]['type_id'])
+    if (result.get('name') != 'bool' or base['kind'] != 'INT' or base['size'] != 1
+            or pointer['kind'] != 'PTR'):
+        raise ValueError('Unsupported BTF blk_insert_flush result or argument')
+    request = resolve(pointer['type_id'])
+    if request['kind'] != 'STRUCT' or request.get('name') != 'request':
+        raise ValueError('BTF blk_insert_flush argument is not struct request')
+    expected = dict(REQ_OP_WRITE=1, __REQ_PREFLUSH=18, __REQ_FUA=17, __REQ_SYNC=11, __RQF_FLUSH_SEQ=1)
+    for name, number in expected.items():
+        values = [value['val'] for entry in types if entry.get('kind') in {'ENUM', 'ENUM64'}
+                  for value in entry.get('values', []) if value['name'] == name]
+        if values != [number]:
+            raise ValueError(f'Unsupported BTF empty PREFLUSH enum {name}')
+    return dict(version=1, function='blk_insert_flush', signature='bool(struct request *)',
+                function_type_id=function['id'], prototype_type_id=proto['id'],
+                request_type_id=request['id'], bool_type_id=result['id'], enums=expected)
+
+
 class EventBuffer:
     """Byte capacity is explicit; no event data is written before STOP/drain."""
 
@@ -215,9 +253,13 @@ def collect(args) -> dict:
     offsets = helpers.btf_offsets(types)
     offsets['OFF_BIO_NEXT'] = bio_next_offset(types)
     offsets.update(flush_layout(types))
+    empty_protocol = empty_flush_layout(types)
     source = str(Path(__file__).with_suffix('.c'))
     constants = dict(offsets, TARGET_CGROUP=gate['cgroup_id'], DEVICE_MAJOR=device['major'],
                      DEVICE_MINOR=device['minor'], REQUEST_CAPACITY=args.request_capacity,
+                     REQ_PREFLUSH_MASK=1 << empty_protocol['enums']['__REQ_PREFLUSH'],
+                     REQ_FUA_MASK=1 << empty_protocol['enums']['__REQ_FUA'],
+                     REQ_SYNC_MASK=1 << empty_protocol['enums']['__REQ_SYNC'],
                      MARKER_MAGIC=helpers.MARKER_MAGIC, ANCHOR_MAGIC=ANCHOR_MAGIC, OBSERVER_PID=os.getpid())
     program = '\n'.join(f'#define {key} {value}ULL' for key, value in constants.items())
     program += '\n' + fsutil.read_text(source)
@@ -232,6 +274,7 @@ def collect(args) -> dict:
                 candidate_helper_sha256=source_hash(str(Path(helpers.__file__))),
                 request_capacity=args.request_capacity, event_capacity_bytes=args.event_capacity_bytes,
                 unknown_encoding_version=UNKNOWN_ENCODING,
+                empty_flush_protocol=empty_protocol,
                 observer_affinity=sorted(os.sched_getaffinity(0)),
                 capture_semantics='All physical-device request operations; pure target requires a complete unmixed BIO chain (inspection bound8); mixed/unchecked remain device-only. Kernel journal causality is not inferred. Bounded anonymous RAM until STOP/drain')
     record, ready, state = {}, {}, {}
@@ -255,6 +298,7 @@ def collect(args) -> dict:
                      collector_sha256=meta['collector_sha256'], bpf_source_sha256=meta['bpf_source_sha256'],
                      btf_sha256=meta['btf_sha256'], event_record_bytes=EVENT.size,
                      event_capacity_bytes=args.event_capacity_bytes,
+                     empty_flush_protocol=empty_protocol,
                      unknown_encoding_version=UNKNOWN_ENCODING)
         write_json(args.ready, ready)
         deadline = time.monotonic() + args.timeout

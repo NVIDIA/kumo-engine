@@ -16,7 +16,9 @@ from io_utils import fsutil
 EVENT = struct.Struct('<QQQQQIIIIIIQ')
 ISSUE, FINAL, REQUEUE, REISSUE, MERGE, MARK, ANCHOR, UNKNOWN = range(1, 9)
 END, LOGICAL_FLUSH, FLUSH_TOKEN = 9, 10, 11
+EMPTY_FLUSH_ENTRY, EMPTY_FLUSH_DONE = 12, 13
 FLUSH_SEQ_MASK = 2  # Collector rejects BTF layouts where __RQF_FLUSH_SEQ != 1.
+REQ_PREFLUSH_MASK, REQ_FUA_MASK, REQ_SYNC_MASK = 1 << 18, 1 << 17, 1 << 11
 UNKNOWN_ENCODING = 1
 UNKNOWN_STACK_CAPACITY = 128
 PHASES = {1: 'fit', 2: 'training', 3: 'predict', 4: 'repeat', 5: 'reload', 6: 'e2e'}
@@ -83,6 +85,23 @@ def validate_unknown(record: dict, raw: bytes) -> None:
         raise ValueError('UNKNOWN kernel symbol coverage differs')
 
 
+def validate_empty_protocol(record: dict, raw: bytes) -> None:
+    """New software-only events require a pinned entry-probe ABI, never inference."""
+    value, ready = record.get('empty_flush_protocol'), record['ready'].get('empty_flush_protocol')
+    if value is None and ready is None:
+        if any(event[5] in (EMPTY_FLUSH_ENTRY, EMPTY_FLUSH_DONE) for event in EVENT.iter_unpack(raw)):
+            raise ValueError('Empty PREFLUSH events lack their BTF protocol binding')
+        return
+    enums = dict(REQ_OP_WRITE=1, __REQ_PREFLUSH=18, __REQ_FUA=17, __REQ_SYNC=11, __RQF_FLUSH_SEQ=1)
+    if (value != ready or value['version'] != 1 or type(value['version']) is not int
+            or value['function'] != 'blk_insert_flush' or value['signature'] != 'bool(struct request *)'
+            or value['enums'] != enums
+            or any(type(index) is not int for index in value['enums'].values())
+            or any(type(value[name]) is not int or value[name] <= 0 for name in (
+                'function_type_id', 'prototype_type_id', 'request_type_id', 'bool_type_id'))):
+        raise ValueError('Empty PREFLUSH entry signature/enums differ')
+
+
 def membership(cgroup: int, target: int, flags: int) -> tuple[int, ...]:
     pure = int(cgroup == target and flags & 7 == 0)
     mixed = int(bool(flags & 3))
@@ -114,7 +133,7 @@ def event_order(event: tuple) -> tuple:
     # tick. Other simultaneous transitions have zero intervening residence.
     # A logical flush callback depends on the earlier DATA completion even
     # when another CPU observes both within one finite-resolution clock tick.
-    return (event[0], event[1], event[2], int(event[5] == LOGICAL_FLUSH), event[10], event[11])
+    return (event[0], event[1], event[2], int(event[5] in (LOGICAL_FLUSH, EMPTY_FLUSH_DONE)), event[10], event[11])
 
 
 def histogram() -> dict:
@@ -139,7 +158,8 @@ def scope_state() -> dict:
 
 
 def phase_state(start: int, depths: list[int]) -> dict:
-    phase = dict(start_ns=start, logical_flush_callbacks=0, **{name: scope_state() for name in SCOPES})
+    phase = dict(start_ns=start, logical_flush_callbacks=0, empty_logical_callbacks=0,
+                 **{name: scope_state() for name in SCOPES})
     for index, name in enumerate(SCOPES):
         phase[name].update(pending_lifecycle_at_start=depths[2 * index],
                            pending_dispatched_at_start=depths[2 * index + 1])
@@ -194,14 +214,14 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
                 model_pid: int, capture_end_ns: int) -> dict:
     if len(client_marks) != 12:
         raise ValueError('Expected twelve client markers')
-    requests, phases, active, tokens = {}, {}, {}, {}
+    requests, phases, active, tokens, empty_tokens = {}, {}, {}, {}, {}
     depths, previous, anchor, marker_index, ended = [0] * (2 * len(SCOPES)), None, None, 0, False
     counts = dict(issued=0, final=0, merged=0, requeues=0, reissues=0, bootstrap_unknown=0,
                   mixed_requests=0, unchecked_bio_tails=0, unattributed_operations=0, clock_tie_events=0,
-                  flush_tokens=0, logical_flush_callbacks=0)
+                  flush_tokens=0, logical_flush_callbacks=0, empty_flush_entries=0, empty_logical_callbacks=0)
     for event in ordered_events(raw):
         ts, pointer, generation, cgroup, payload, kind, operation, phase_id, entering, pid, _, _ = event
-        if ended or ts <= 0 or ts > capture_end_ns or kind not in range(1, 12):
+        if ended or ts <= 0 or ts > capture_end_ns or kind not in range(1, 14):
             raise ValueError('Invalid event time or kind')
         counts['clock_tie_events'] += int(previous == ts)
         if previous is not None and anchor is not None:
@@ -214,13 +234,13 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             counts['bootstrap_unknown'] += 1
             continue
         if kind == ANCHOR:
-            if anchor is not None or requests or tokens or any(depths):
+            if anchor is not None or requests or tokens or empty_tokens or any(depths):
                 raise ValueError('Bootstrap must establish one empty-device epoch')
             anchor = ts
             phases['observation'] = active['observation'] = phase_state(ts, depths)
             continue
         if kind == END:
-            if (anchor is None or requests or tokens or any(depths) or set(active) != {'observation'}
+            if (anchor is None or requests or tokens or empty_tokens or any(depths) or set(active) != {'observation'}
                     or ts != capture_end_ns or marker_index != 12):
                 raise ValueError('Invalid final drained capture boundary')
             close_phase(active.pop('observation'), ts, depths, requests, target_cgroup)
@@ -243,6 +263,26 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
                 close_phase(active.pop(name), ts, depths, requests, target_cgroup)
             marker_index += 1
             continue
+        if kind == EMPTY_FLUSH_ENTRY:
+            if (not pointer or pointer in requests or pointer in tokens or pointer in empty_tokens
+                    or generation != ts or cgroup or operation != 1 or not 0 < payload <= generation
+                    or entering & 255 != 1 or not entering & REQ_PREFLUSH_MASK
+                    or entering & REQ_FUA_MASK or phase_id & FLUSH_SEQ_MASK):
+                raise ValueError('Invalid empty PREFLUSH entry or allocation identity')
+            empty_tokens[pointer] = [generation, payload, phase_id, entering]
+            counts['empty_flush_entries'] += 1
+            continue
+        if kind == EMPTY_FLUSH_DONE:
+            token = empty_tokens.get(pointer)
+            if (token is None or pointer in requests or pointer in tokens or cgroup or operation != 1
+                    or token[:3] != [generation, payload, phase_id]
+                    or entering != ((token[3] & ~REQ_PREFLUSH_MASK) | REQ_SYNC_MASK)):
+                raise ValueError('Empty PREFLUSH completion lacks its exact entry token')
+            del empty_tokens[pointer]
+            counts['empty_logical_callbacks'] += 1
+            for phase in active.values():
+                phase['empty_logical_callbacks'] += 1
+            continue
         if phase_id & ~15:
             raise ValueError('Unsupported BIO attribution flags')
         if kind == LOGICAL_FLUSH:
@@ -260,7 +300,7 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             raise ValueError('Unexpected request event metadata')
         members = membership(cgroup, target_cgroup, phase_id)
         if kind == ISSUE:
-            if pointer in requests or pointer in tokens or generation != ts:
+            if pointer in requests or pointer in tokens or pointer in empty_tokens or generation != ts:
                 raise ValueError('Duplicate request or invalid generation')
             requests[pointer] = [generation, cgroup, operation, True, phase_id]
             for index, member in enumerate(members):
@@ -326,16 +366,18 @@ def reconstruct(raw: bytes, target_cgroup: int, client_marks: list[dict],
             raise ValueError('Negative queue depth')
     if anchor is None or marker_index != 12 or len(client_marks) != 12:
         raise ValueError('Missing bootstrap or twelve phase markers')
-    if requests or tokens or any(depths) or active or not ended:
+    if requests or tokens or empty_tokens or any(depths) or active or not ended:
         raise ValueError('Undrained request/phase state')
     if counts['issued'] != counts['final'] + counts['merged']:
         raise ValueError('Request reconciliation failed')
     if counts['flush_tokens'] != counts['logical_flush_callbacks']:
         raise ValueError('Flush token reconciliation failed')
+    if counts['empty_flush_entries'] != counts['empty_logical_callbacks']:
+        raise ValueError('Empty PREFLUSH entry/callback reconciliation failed')
     finalize(phases)
     return dict(phases=phases, counts=counts, bootstrap_ns=anchor,
                 latency_definition='First postmerge issue to final callback, including requeue delay; completion-phase assignment',
-                flush_definition='Verified flush DATA is counted once at physical completion; its later token-matched logical callback adds no device depth, payload or latency',
+                flush_definition='Verified flush DATA counts once physically; token-matched DATA logical callbacks and entry-anchored zero-DATA PREFLUSH originals add no physical depth, payload or latency',
                 idle_definition='No dispatched tracked physical-device requests, including other operations and foreign cgroups; not NAND internal idle',
                 target_definition='Pure target is lower occupancy bound; possible_target adds mixed BIOs containing target and unknown BIO tails/origins as conservative upper bound. No journal-write causality inferred',
                 clock_definition='Observed kernel timestamps, not perfect physical ordering; ties use request pointer/generation, physical-before-logical flush, then CPU sequence. Marker pointer0 precedes same-tick requests (half-open phase convention); zero-time transitions add no occupancy area',
@@ -373,6 +415,7 @@ def validate_collection(record: dict, row: dict, gate: dict, events_bytes: bytes
             or ready['event_capacity_bytes'] != record['event_capacity_bytes']):
         raise ValueError('Raw event hash/count mismatch')
     validate_unknown(record, events_bytes)
+    validate_empty_protocol(record, events_bytes)
     for name in ('collector_sha256', 'bpf_source_sha256', 'btf_sha256'):
         if (record[name] != ready[name] or len(record[name]) != 64
                 or any(char not in '0123456789abcdef' for char in record[name])):
