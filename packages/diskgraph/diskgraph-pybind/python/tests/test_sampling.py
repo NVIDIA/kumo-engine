@@ -11,6 +11,7 @@ from pathlib import Path
 import diskgraph as diskgraph_py
 from diskgraph import DiskgraphConfigError
 import pyarrow as pa
+import pyarrow.parquet as pq
 import threading
 import time
 from decimal import Decimal
@@ -73,6 +74,47 @@ def test_lookup_node_ids_refuses_unknown_types_and_null_keys(orders_graph):
         engine.lookup_node_ids("not_a_table", pa.array(["u1"]))
     with pytest.raises(DiskgraphDataError, match="null primary key"):
         engine.lookup_node_ids("users", pa.array(["u1", None]))
+
+
+def test_oversized_row_keeps_its_primary_key(tmp_path):
+    """Link prediction's candidate catalog reads the key of every item."""
+    blob = b"x" * (33 << 20)
+    items = tmp_path / "items.parquet"
+    pq.write_table(pa.table({
+        "item_id": ["i1", "i2"],
+        "blob_a": pa.array([b"small", blob]),
+        "blob_b": pa.array([b"small", blob]),
+    }), items)
+    diskgraph_py.ingest(
+        config_json=json.dumps({
+            "dataset_name": "oversized_rows",
+            "num_shards": 1,
+            "tables": [{
+                "name": "items",
+                "columns": [
+                    {"name": "item_id", "ingested_dtype": "string"},
+                    {"name": "blob_a", "ingested_dtype": "bytes"},
+                    {"name": "blob_b", "ingested_dtype": "bytes"},
+                ],
+                "primary_key": "item_id",
+                "source": {"type": "parquet", "paths": [str(items)]},
+            }],
+        }),
+        output_dir=str(tmp_path / "index"),
+    )
+
+    engine = diskgraph_py.SamplerEngine(str(tmp_path / "index"))
+    node_ids = engine.lookup_node_ids("items", pa.array(["i1", "i2"]))
+    [batch] = [event["batch"] for event in engine.fetch_features([{
+        "node_type": "items",
+        "node_ids": node_ids,
+        "feature_names": ["item_id", "blob_a"],
+    }]) if event["type"] == "feature"]
+    assert batch.column("item_id").to_pylist() == ["i1", "i2"]
+    assert batch.column("blob_a").to_pylist() == [b"small", None]
+    assert engine.canonical_node_mask(
+        "items", node_ids, batch.column("item_id")
+    ) == [True, True]
 
 
 def test_canonical_node_mask_uses_typed_primary_keys(orders_graph,
