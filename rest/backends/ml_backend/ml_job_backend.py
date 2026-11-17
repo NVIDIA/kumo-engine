@@ -1318,8 +1318,12 @@ class MLJobBackend:
                 k: v
                 for k, v in results.items() if v.status == job_status
             }
-        # Sort by job start_time (chronologically) and keep most recent N jobs
-        sorted_jobs = sorted(results.items(), key=lambda e: e[1].start_time)
+        # Sort by job start_time (chronologically) and keep most recent N jobs.
+        # Jobs that never started have no start_time and go last.
+        started = sorted((e for e in results.items() if e[1].start_time),
+                         key=lambda e: e[1].start_time)
+        queued = [e for e in results.items() if not e[1].start_time]
+        sorted_jobs = started + queued
         if limit:
             sorted_jobs = sorted_jobs[-limit:]
         return dict(sorted_jobs)

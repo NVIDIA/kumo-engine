@@ -265,6 +265,88 @@ def test_prepared_plan_reuses_typed_operations_across_chunks(numeric_graph):
         prepared.execute(roots, [1000])
 
 
+@pytest.mark.parametrize("clock,scale", [
+    ("milliseconds", 1000), ("microseconds", 1_000_000),
+    ("nanoseconds", 1_000_000_000),
+])
+@pytest.mark.parametrize("representation", ["aggregate", "row_aggregate", "explicit_seconds"])
+def test_scalar_plan_clock_controls_cutoffs_and_timestamp_results(
+    numeric_graph, clock, scale, representation
+):
+    engine, relation = numeric_graph
+    operations = [("count", None), ("sum", "value"), ("max", "time")]
+    if representation == "aggregate":
+        builder = diskgraph.DiskGraphTTBuilder()
+        builder.for_each("users", "id")
+        builder.node_prediction()
+        for operation, column in operations:
+            builder.aggregate(
+                operation, diskgraph.EdgeRef("users", "id", "events", "owner"),
+                operation, target_col=column, time_col="time", window=(-50, 0),
+                window_unit="seconds",
+            )
+        plan = json.loads(builder.build())
+    else:
+        frame = program(relation)["frames"][0]
+        frame.update(start_seconds=-50, columns=["value", "time"])
+        if representation == "explicit_seconds":
+            frame["cutoff_unit"] = "seconds"
+        plan = staged({"frames": [frame], "aggregates": [
+            {"name": operation, "frame": frame["name"],
+             "operation": operation, "column": column}
+            for operation, column in operations
+        ]})
+    plan["timestamp_unit"] = clock
+    result_scale = 1 if representation == "explicit_seconds" else scale
+    roots = engine.lookup_node_ids("users", pa.array([6, 1, 6], type=pa.int64()))
+    cutoffs = [550 * result_scale] * 3
+    # Select seconds (500, 550], preserve duplicate anchors, and return the
+    # timestamp maximum in the cutoff clock rather than silently using seconds.
+    expected = {
+        "count": [50, 0, 50],
+        "sum": [sum(i for i in range(501, 551) if i % 7), 0.0,
+                sum(i for i in range(501, 551) if i % 7)],
+        "max": [550 * result_scale, None, 550 * result_scale],
+    }
+    prepared = engine.prepare_aggregate_plan("users", json.dumps(plan))
+    results = [
+        prepared.execute(roots, cutoffs, anchor_batch_size=1),
+        engine.query_aggregate_plan(
+            {"users": roots}, {"users": cutoffs}, json.dumps(plan), anchor_batch_size=2
+        ),
+    ]
+    for result in results:
+        assert {name: array.to_pylist() for name, array in values(result).items()} == expected
+
+
+@pytest.mark.parametrize("clock", ["months", "years", "minutes"])
+def test_scalar_plan_rejects_unsupported_top_level_clocks(numeric_graph, clock):
+    engine, relation = numeric_graph
+    plan = staged(program(relation))
+    plan["timestamp_unit"] = clock
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="fixed index clock"):
+        engine.prepare_aggregate_plan("users", json.dumps(plan))
+
+
+@pytest.mark.parametrize("selection", ["row_filter", "limit", "target_entity_table"])
+def test_nonseconds_plan_tag_keeps_pql_selection_guard(numeric_graph, selection):
+    engine, relation = numeric_graph
+    plan = staged(program(relation))
+    plan["timestamp_unit"] = "milliseconds"
+    for op in plan["stages"][0]["ops"]:
+        op["row_aggregate"]["rows"]["cutoff_unit"] = "seconds"
+    reduction = plan["stages"][0]["ops"][0]["row_aggregate"]["reduction"]
+    reduction["semantics"] = {"all_null_sum_is_zero": True, "keep_first_equal": False}
+    reduction[selection] = {
+        "row_filter": {"compare": {"lhs": {"column": "value"}, "op": "gt",
+                                   "rhs": {"constant": {"float": 0.0}}}},
+        "limit": 1,
+        "target_entity_table": "events",
+    }[selection]
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="matching seconds"):
+        engine.prepare_aggregate_plan("users", json.dumps(plan))
+
+
 @pytest.mark.parametrize("limit", [None, 1])
 def test_pql_filtered_scalar_preserves_filter_and_limit(numeric_graph, limit):
     import diskgraph
@@ -295,6 +377,8 @@ def test_query_cutoff_clock_must_be_shared_by_all_frames(numeric_graph, second_u
     roots = {"users": engine.lookup_node_ids("users", pa.array([6], type=pa.int64()))}
     with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
         engine.query_temporal(roots, {"users": [1000]}, json.dumps(plan), output_format="model")
+    with pytest.raises(Exception, match="all frames in a query must use the same cutoff_unit"):
+        engine.prepare_aggregate_plan("users", json.dumps(staged(plan)))
 
 
 @pytest.mark.parametrize("timed", [False, True])

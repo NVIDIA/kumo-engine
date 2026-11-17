@@ -148,6 +148,39 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
     "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
 )
 def test_decimal_transport_rejects_invalid_or_lossy_values(text):
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {
+        "events": SimpleNamespace(
+            columns={"amount": api.DType("decimal128", precision=38, scale=10)}
+        )
+    }
+    with pytest.raises(pa.ArrowInvalid):
+        source._decode_decimal_array("events", "amount", pa.array([text]))
+
+
+@pytest.mark.parametrize(
+    "dtype,values",
+    [
+        (api.DType("string"), pa.array(["10.0300000000", None])),
+        (api.DType("int64"), pa.array([1, None])),
+        (
+            api.DType("decimal128", precision=38, scale=10),
+            pa.array([Decimal("10.0300000000"), None], type=pa.decimal128(38, 10)),
+        ),
+    ],
+)
+def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
+    assert source._decode_decimal_array("events", "amount", values) is values
+
+
+@pytest.mark.parametrize(
+    "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
+)
+def test_decimal_feature_fetch_rejects_invalid_or_lossy_values(text):
     source = feature_source(api.DType("decimal128", precision=38, scale=10), pa.array([text]))
     with pytest.raises(pa.ArrowInvalid):
         source._feature_arrays("events", [1], ("amount",))
@@ -164,7 +197,7 @@ def test_decimal_transport_rejects_invalid_or_lossy_values(text):
         ),
     ],
 )
-def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
+def test_decimal_feature_fetch_leaves_other_arrays_unchanged(dtype, values):
     source = feature_source(dtype, values)
     result = source._feature_arrays("events", list(range(len(values))), ("amount",))["amount"]
     assert result.equals(values)
