@@ -505,6 +505,34 @@
       "file_sets": [
         "synthetic-medium-public"
       ]
+    },
+    "synthetic-medium-ltv": {
+      "dataset_id": "pragma-synthetic-medium",
+      "dataset_version": "v1",
+      "population": "ltv_positive_6m",
+      "anchor_versions": [
+        "v2"
+      ],
+      "source_bytes": 17606082087,
+      "accepted_identity": {
+        "source_manifest_sha256": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34",
+        "source_representation": "Nine original public tables; evaluation-only truth and mutable final profile fields are excluded from inputs."
+      },
+      "files": [
+        {
+          "key": "anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/manifest.json",
+          "bytes": 5939,
+          "sha256": "f4104482db59b17636857aae08971a39c85ab875b1ae9a201c91cde157576b4a"
+        },
+        {
+          "key": "anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/anchors.parquet",
+          "bytes": 10903428,
+          "sha256": "e4723b0ce9f69f8930cec2cee5ebc928465284b8bf91d57073c46835f4d9b2e1"
+        }
+      ],
+      "file_sets": [
+        "synthetic-medium-public"
+      ]
     }
   },
   "file_sets": {

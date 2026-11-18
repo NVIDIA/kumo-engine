@@ -240,6 +240,7 @@ def project_binding(path, destination, identities, binding, **options):
     _, graph, native, rules = validate_binding(binding)
     schema = pq.ParquetFile(path).schema_arrow
     types = {
+        "BOOLEAN": pa.bool_(),
         "INTEGER": pa.int32(),
         "DECIMAL(38,10)": pa.decimal128(38, 10),
         "DOUBLE": pa.float64(),

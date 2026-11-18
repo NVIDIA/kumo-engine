@@ -169,3 +169,20 @@ def sequence_capacity(binding, events):
         default=0,
     )
     return (fields + 5) * events
+
+
+def graph_layout(inputs):
+    """Resolve node fields and root relations for single- or multi-table graphs."""
+    graph = inputs["graph"]
+    if "nodes" in graph:
+        return graph["nodes"], graph["relations"], graph.get("reverse_hop", False)
+    node = graph["node_table"]
+    return {node: graph}, dict.fromkeys(graph["relations"], node), True
+
+
+def aggregate_fields(inputs):
+    return [entry[0] for entry in inputs["aggregates"]] + [
+        name
+        for name, query in inputs.get("aggregate_queries", {}).items()
+        if query.get("model", True)
+    ]

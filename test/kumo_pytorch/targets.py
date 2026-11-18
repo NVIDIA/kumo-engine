@@ -34,6 +34,11 @@ def source_target_rows(binding, path, projected):
         "prediction_time_ns": anchor["time"],
         "split": anchor["split"],
         **{name: rule["column"] for name, rule in rules.items()},
+        **{
+            rule["threshold"]["column"]: rule["threshold"]["column"]
+            for rule in rules.values()
+            if "threshold" in rule
+        },
     }
     wanted = {row["anchor_row_position"] for row in projected}
     source, offset, result = pq.ParquetFile(path), 0, {}
@@ -69,6 +74,16 @@ def verify_target_projection(binding, projected, original):
         )
     for name, rule in target_rules(binding).items():
         value = original[name]
+        if "threshold" in rule:
+            source = original[rule["threshold"]["column"]]
+            assert source is not None and isfinite(source), (
+                "Threshold source must be finite"
+            )
+            assert type(value) is bool and value == (
+                source > rule["threshold"]["value"]
+            ), (
+                f"{original['sample_id']}: {name} disagrees with original threshold source {source!r}"
+            )
         expected = (
             value
             if value is None or rule["kind"] == "category"
@@ -140,6 +155,10 @@ def target_value(value, rule):
         if not isinstance(value, Decimal) or not value.is_finite():
             raise ValueError(f"{column} must preserve a finite source decimal")
         value = float(value)
+    elif kind == "binary" and rule.get("dtype") == "BOOLEAN":
+        if type(value) is not bool:
+            raise ValueError(f"{column} must be boolean or null")
+        value = int(value)
     elif type(value) not in (int, float):
         raise ValueError(f"{column} must be numeric or null")
     if not isfinite(value) or abs(value) > 3.4028234663852886e38:

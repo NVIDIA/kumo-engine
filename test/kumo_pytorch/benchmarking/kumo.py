@@ -325,6 +325,7 @@ def factory(config, workdir):
     from ..bindings import (
         contract_for,
         dataset_definition,
+        graph_layout,
         load_bindings,
         profile,
     )
@@ -654,7 +655,7 @@ def factory(config, workdir):
         inputs=inputs,
         count=lambda batch: counts(
             batch,
-            event_tables=(profile(binding, "input")["graph"]["node_table"],)
+            event_tables=tuple(graph_layout(profile(binding, "input"))[0])
             if family in {"graphsage", "combined"}
             else (),
         ),

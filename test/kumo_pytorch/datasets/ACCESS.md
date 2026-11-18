@@ -38,3 +38,14 @@ the HI Small grant. The policy was reread and matched the approved addition;
 both original statements, including the owner restriction, were unchanged.
 No IAM role policy, list, write or wildcard access was added. Effective downloads
 by the CI role still require verification in a LI Medium run.
+
+## Synthetic Medium access
+
+[ci-synthetic-medium-read-policy.json](ci-synthetic-medium-read-policy.json)
+records separately approved read grants for the shared nine public-table prefixes,
+source manifest, weekly-customer v1 anchors, weekly-account v1 anchors and LTV v2
+anchors. The downloader verifies all selected objects against exact size and hash
+pins and needs no bucket listing or writes. S04 adds only the LTV anchor Parquet
+and manifest to the existing access; that two-object addition was applied and
+verified by rereading the bucket policy. Effective CI-role downloads remain a
+run-time check.

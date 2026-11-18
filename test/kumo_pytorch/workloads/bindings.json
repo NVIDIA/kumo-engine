@@ -693,7 +693,7 @@
     },
     {
       "ref": "S04",
-      "binding_id": "kumo-binding-a53f69f20fa7930d17ea648a3c074f6eb02e881b8d131dd9a98fb2c2458925fa",
+      "binding_id": "suite:S04:aggregates-v1",
       "selector": {
         "anchor_version": "v2",
         "dataset_id": "pragma-synthetic-medium",
@@ -701,7 +701,7 @@
         "population": "ltv_positive_6m",
         "workload_id": "ltv_positive_6m"
       },
-      "input_variant": "default",
+      "input_variant": "aggregates",
       "representation": "combined",
       "split_column": "split",
       "targets": {
@@ -717,8 +717,95 @@
           }
         }
       },
-      "campaigns": [],
-      "pending": "Dataset sources, contracts and execution are not yet ported."
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "base_binding_id": "kumo-binding-a53f69f20fa7930d17ea648a3c074f6eb02e881b8d131dd9a98fb2c2458925fa",
+      "inputs": "customer-fusion-history",
+      "task": "positive-lifetime-value",
+      "anchors": "onboarding-forecast-graph",
+      "source_view": "ltv",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 128
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:combined_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F03",
+          "F04",
+          "F05",
+          "F06",
+          "F07",
+          "F08",
+          "F10",
+          "F11",
+          "F14"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original customer identity, onboarding prediction clock and strict v2 execution clock.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "graph_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F04",
+              "F08",
+              "F11"
+            ],
+            "description": "Original event identities and values, root-to-event edges, sample ownership and complete historical membership independent of tensor order.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "history_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F03",
+              "F07",
+              "F08",
+              "F10",
+              "F11"
+            ],
+            "description": "Complete original customer event records, derived ages/calendar, scalar encodings, separators and positions; equal-time permutations only.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "aggregate_values": {
+            "features": [
+              "F05",
+              "F06",
+              "F07",
+              "F08",
+              "F11"
+            ],
+            "description": "35 exact base counts, richer reductions, grouped/nested counts and ratios; independent masks, raw checks and training-only normalization.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "stored_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Original LTV label equals gross_profit > 0, exact float32 transport, validity and stored-target encoding.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          }
+        }
+      }
     },
     {
       "ref": "M01",
@@ -1275,6 +1362,9 @@
               "key": "customer_id"
             }
           }
+        },
+        "ltv": {
+          "inventory": "synthetic-medium-ltv"
         }
       }
     }
@@ -1777,6 +1867,20 @@
     "next-token-pretrain": {
       "kind": "next_token",
       "targets": {}
+    },
+    "positive-lifetime-value": {
+      "kind": "stored",
+      "targets": {
+        "label": {
+          "kind": "binary",
+          "column": "label",
+          "dtype": "BOOLEAN",
+          "threshold": {
+            "column": "gross_profit",
+            "value": 0.0
+          }
+        }
+      }
     }
   },
   "input_profiles": {
@@ -2288,6 +2392,802 @@
           "empty": "empty"
         }
       }
+    },
+    "customer-fusion-history": {
+      "variant": "aggregates",
+      "root_table": "roots",
+      "root_type": "customer",
+      "families": [
+        [
+          "card_txns",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "mcc",
+              "mcc",
+              "categorical"
+            ],
+            [
+              "channel",
+              "channel",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "transfers",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "transfer_type",
+              "transfer_type",
+              "categorical"
+            ],
+            [
+              "cross_border",
+              "cross_border",
+              "categorical"
+            ],
+            [
+              "direction",
+              "direction",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "logins",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "ip_region",
+              "ip_region",
+              "categorical"
+            ],
+            [
+              "success",
+              "success",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "profile_changes",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "change_type",
+              "change_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "disputes",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "reason",
+              "reason",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "lifelong_events",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "event_type",
+              "event_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "plan_events",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "plan",
+              "plan",
+              "categorical"
+            ]
+          ]
+        ]
+      ],
+      "graph": {
+        "nodes": {
+          "card_txns": {
+            "numerical": [
+              "amount"
+            ],
+            "categorical": [
+              "source_kind",
+              "mcc",
+              "channel"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "transfers": {
+            "numerical": [
+              "amount"
+            ],
+            "categorical": [
+              "source_kind",
+              "transfer_type",
+              "cross_border",
+              "direction"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "logins": {
+            "numerical": [],
+            "categorical": [
+              "source_kind",
+              "ip_region",
+              "success"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "profile_changes": {
+            "numerical": [],
+            "categorical": [
+              "source_kind",
+              "change_type"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "disputes": {
+            "numerical": [],
+            "categorical": [
+              "source_kind",
+              "reason"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "lifelong_events": {
+            "numerical": [],
+            "categorical": [
+              "source_kind",
+              "event_type"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "plan_events": {
+            "numerical": [],
+            "categorical": [
+              "source_kind",
+              "plan"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          }
+        },
+        "relations": {
+          "root_card_txns": "card_txns",
+          "root_transfers": "transfers",
+          "root_logins": "logins",
+          "root_profile_changes": "profile_changes",
+          "root_disputes": "disputes",
+          "root_lifelong_events": "lifelong_events",
+          "root_plan_events": "plan_events"
+        },
+        "reverse_hop": false
+      },
+      "aggregates": [
+        [
+          "all_history_card_txns_count",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_transfers_count",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_logins_count",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_profile_changes_count",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_disputes_count",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_lifelong_events_count",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_plan_events_count",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "24h_card_txns_count",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_transfers_count",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_logins_count",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_profile_changes_count",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_disputes_count",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_lifelong_events_count",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_plan_events_count",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "7d_card_txns_count",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_transfers_count",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_logins_count",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_profile_changes_count",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_disputes_count",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_lifelong_events_count",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_plan_events_count",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "30d_card_txns_count",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_transfers_count",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_logins_count",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_profile_changes_count",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_disputes_count",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_lifelong_events_count",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_plan_events_count",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "180d_card_txns_count",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_transfers_count",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_logins_count",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_profile_changes_count",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_disputes_count",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_lifelong_events_count",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          -15552000
+        ],
+        [
+          "180d_plan_events_count",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          -15552000
+        ]
+      ],
+      "aggregate_queries": {
+        "card_amount_sum": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "sum",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_mean": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "mean",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_min": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "min",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_max": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "max",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_std_population": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "std_population",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_var_population": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "var_population",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_distinct_mcc": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "count_distinct",
+          "column": "mcc",
+          "dtype": "int64"
+        },
+        "card_distinct_channel": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "count_distinct",
+          "column": "channel",
+          "dtype": "int64"
+        },
+        "card_channel_mode": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "mode",
+          "column": "channel",
+          "categorical": true,
+          "model": false,
+          "dtype": "string"
+        },
+        "card_recency_at_execution": {
+          "source": {
+            "family": "card_txns",
+            "start": -2592000
+          },
+          "operation": "recency",
+          "column": "event_time",
+          "model": false,
+          "dtype": "float64"
+        },
+        "prediction_offset": {
+          "constant": 1.0,
+          "model": false,
+          "dtype": "float64"
+        },
+        "card_recency_seconds": {
+          "derived": "add",
+          "inputs": [
+            "card_recency_at_execution",
+            "prediction_offset"
+          ],
+          "dtype": "float64"
+        },
+        "recent_card_share": {
+          "derived": "divide",
+          "inputs": [
+            "24h_card_txns_count",
+            "30d_card_txns_count"
+          ],
+          "dtype": "float64"
+        },
+        "card_mcc_groups": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "mcc"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_mcc_max_count": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "mcc"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_channel_groups": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "channel"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_channel_max_count": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "channel"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_mcc_channel_groups": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "mcc",
+              "channel"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_mcc_channel_max_count": {
+          "source": {
+            "source": {
+              "family": "card_txns",
+              "start": -2592000
+            },
+            "keys": [
+              "mcc",
+              "channel"
+            ],
+            "values": {
+              "n": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_mean_channels_per_mcc": {
+          "source": {
+            "source": {
+              "source": {
+                "family": "card_txns",
+                "start": -2592000
+              },
+              "keys": [
+                "mcc",
+                "channel"
+              ],
+              "values": {
+                "n": {
+                  "operation": "count"
+                }
+              }
+            },
+            "keys": [
+              "mcc"
+            ],
+            "values": {
+              "channels": {
+                "operation": "count"
+              }
+            }
+          },
+          "operation": "mean",
+          "column": "channels",
+          "dtype": "float64"
+        }
+      }
     }
   },
   "anchor_profiles": {
@@ -2330,6 +3230,17 @@
       "split": "split",
       "time_unit": "ns",
       "execution_offset_seconds": 0
+    },
+    "onboarding-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "time_unit": "ns",
+      "split": "split",
+      "version": "v2",
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "root_time_offset_seconds": 2419200
     }
   }
 }

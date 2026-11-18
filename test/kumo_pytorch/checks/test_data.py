@@ -51,6 +51,7 @@ def test_manifest_has_exact_starter_inputs():
         "li-large",
         "synthetic-medium-customers",
         "synthetic-medium-accounts",
+        "synthetic-medium-ltv",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -278,6 +279,47 @@ def test_account_binding_reuses_public_sources_with_distinct_roots_and_anchors()
     }
     assert binding["binding_id"] == "suite:S01:bpe-v1"
     assert binding["base_binding_id"].endswith("abbca33")
+
+
+def test_combined_binding_reuses_sources_and_only_adds_ltv_anchor_access():
+    from test.kumo_pytorch.bindings import (
+        dataset_definition,
+        load_bindings,
+        profile,
+    )
+
+    catalog = load_bindings()
+    binding = catalog["S04"]
+    assert len([ref for ref in catalog if ref.startswith("S04")]) == 1
+    definition = dataset_definition(binding)
+    assert (
+        definition["source_options"]
+        == dataset_definition(catalog["S02"])["source_options"]
+    )
+    manifest = data.load_manifest()
+    base, selected = [
+        {row["key"]: row for row in manifest["datasets"][name]["files"]}
+        for name in ("synthetic-medium-customers", "synthetic-medium-ltv")
+    ]
+    assert len(base) == len(selected) == 1613
+    shared = base.keys() & selected.keys()
+    assert len(shared) == 1611 and all(base[key] == selected[key] for key in shared)
+    extra = selected.keys() - base.keys()
+    assert len(extra) == 2 and all("ltv_positive_6m/v2/" in key for key in extra)
+    grant = json.loads(
+        (SUITE / "datasets/ci-synthetic-medium-read-policy.json").read_text()
+    )["Statement"][2]
+    assert grant["Action"] == "s3:GetObject" and grant["Effect"] == "Allow"
+    assert set(grant["Resource"]) == {
+        f"arn:aws:s3:::{manifest['bucket']}/{key}" for key in extra
+    }
+    assert binding["binding_id"] == "suite:S04:aggregates-v1"
+    assert binding["base_binding_id"].endswith("8925fa")
+    assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
+    inputs = profile(binding, "input")
+    assert len(inputs["aggregates"]) == 35
+    assert len(inputs["graph"]["nodes"]) == 7
+    assert "F06" in binding["feature_checks"]["features"]
 
 
 def test_required_files_are_not_silently_omitted_on_partial_failure(tmp_path):

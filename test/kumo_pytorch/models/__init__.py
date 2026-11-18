@@ -160,7 +160,7 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
     Vocabulary dimensions come from a fitted Kumo task, never evaluation data.
     These small prototype dimensions are not paper-size configurations.
     """
-    from ..bindings import binding_for
+    from ..bindings import aggregate_fields, binding_for, graph_layout
     from ..bindings import profile as input_profile
     from ..bindings import task_definition
     from ..population_anchors import validate_binding
@@ -233,24 +233,26 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
                 NodeFeatureSpec,
             )
 
-            graph_profile = profile["graph"]
-            node = graph_profile["node_table"]
+            nodes, relations, _ = graph_layout(profile)
             root = profile["root_table"]
-            fields = task.output_schema["inputs"]["graph"][node]
+            fields = task.output_schema["inputs"]["graph"]
             graph = GraphSAGEConfig(
                 node_features={
                     root: NodeFeatureSpec(),
-                    node: NodeFeatureSpec(
-                        numerical={name: 1 for name in graph_profile["numerical"]},
-                        categorical={
-                            name: fields[name]["vocabulary_size"]
-                            for name in graph_profile["categorical"]
-                        },
-                        timestamp=graph_profile["timestamp"],
-                    ),
+                    **{
+                        node: NodeFeatureSpec(
+                            numerical={name: 1 for name in graph_profile["numerical"]},
+                            categorical={
+                                name: fields[node][name]["vocabulary_size"]
+                                for name in graph_profile["categorical"]
+                            },
+                            timestamp=graph_profile["timestamp"],
+                        )
+                        for node, graph_profile in nodes.items()
+                    },
                 },
                 edge_types=tuple(
-                    (root, relation, node) for relation in graph_profile["relations"]
+                    (root, relation, node) for relation, node in relations.items()
                 ),
                 root_type=root,
                 channels=dim,
@@ -269,7 +271,7 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
                     FusionConfig(
                         graph,
                         sequence,
-                        {entry[0]: 1 for entry in profile["aggregates"]},
+                        dict.fromkeys(aggregate_fields(profile), 1),
                         aggregate_dim=dim // 2,
                         fusion_dim=dim,
                         out_channels=channels,

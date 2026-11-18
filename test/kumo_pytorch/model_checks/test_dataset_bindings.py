@@ -380,3 +380,47 @@ def test_graph_bound_uses_its_actual_relation(tmp_path):
     output.mkdir()
     *_, capacity = prepare_binding(root, output, binding, files, limit=None)
     assert capacity == 4  # buyer degree is only two; seller's four rows must survive.
+
+
+def test_unrelated_multitable_graph_uses_the_shared_model_and_runner(tmp_path):
+    root, files, binding = shop(tmp_path, "combined")
+    path = root / "refunds.parquet"
+    path.write_bytes((root / "purchases.parquet").read_bytes())
+    files[path.name] = {
+        "key": path.name,
+        "bytes": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    binding["dataset"]["tables"]["refunds"] = {
+        **binding["dataset"]["tables"]["purchases"],
+        "path": path.name,
+    }
+    binding["dataset"]["relations"].append(
+        ["refunds", "customers", "customer", "refunds", "buyer"]
+    )
+    fields = binding["inputs"]["graph"]
+    binding["inputs"]["graph"] = {
+        "nodes": {"purchases": fields, "refunds": fields},
+        "relations": {"purchases": "purchases", "refunds": "refunds"},
+        "reverse_hop": False,
+    }
+    output = tmp_path / "multi-graph"
+    output.mkdir()
+    dataset, anchors, population, mapping, capacity = prepare_binding(
+        root, output, binding, files, limit=None
+    )
+    report = run_case(
+        dataset,
+        anchors,
+        population,
+        binding,
+        output,
+        mode="training",
+        capacity=capacity,
+        mapping=mapping,
+        batch_size=3,
+        seed=17,
+    )
+    assert report["status"] == "passed", report.get("traceback", report)
+    assert report["reproducible"]
+    assert [row["completed_updates"] for row in report["repeats"]] == [100, 100]

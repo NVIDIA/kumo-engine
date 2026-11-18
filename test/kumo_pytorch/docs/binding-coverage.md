@@ -12,15 +12,14 @@ Its Engine audit revision `9432cddf` is historical provenance; execution must
 test the PR's actual revision. [bindings.json](../workloads/bindings.json) pins
 the 16 PDF bindings plus E05, the existing supervised HI Small nuFormer case.
 It retains selectors, representations, split columns, target meanings and source
-catalog hashes. E05 and extended contracts such as S01 have suite identities, not new Arena
+catalog hashes. E05 and extended contracts such as S01/S04 have suite identities, not new Arena
 registrations. Extended contracts retain their original `base_binding_id` as
 provenance. Registration is not execution coverage.
 
 ## Base bindings
 
 GraphSAGE/combined use v2 anchors; PRAGMA/nuFormer use v1. Dataset versions are
-independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or `trx` for MBD; S01 uses the suite
-BPE extension.
+independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or `trx` for MBD; S01 uses the suite BPE extension and S04 the richer/grouped-aggregate extension.
 
 | Ref | Dataset / population | Workload | Model | Status / next work |
 | --- | --- | --- | --- | --- |
@@ -36,7 +35,7 @@ BPE extension.
 | S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | One BPE contract with required source checks and shared campaigns; real-data CI pending |
 | S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Native customer-history correctness, training, delivery and lifecycle registered; real-data CI pending |
 | S03 | Synthetic / weekly-account | aml_graph_user_last30d | GraphSAGE | Port event-membership graph and retrospective binary target |
-| S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Port positive six-month LTV task including richer/grouped aggregates |
+| S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Required positive-LTV task with richer/grouped aggregates and four shared campaigns; real-data CI pending |
 | M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
 | M02 | MBD / transaction-forecast | next-transaction-amount-currency | PRAGMA | Port mixed targets and independent validity |
 | M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Port event type/subtype targets including auxiliary target checks |
@@ -53,13 +52,13 @@ Previously enabled coverage remains in place.
 | Base | Additional declarations and assertions |
 | --- | --- |
 | S01 | BPE on an existing string field such as dispute reason; shared compatible encoders across event families; capacity for extra pieces. Adds F09, broadens F10. |
-| S04 | Amount reductions, distinct counts, mode, recency, grouped/nested counts by mcc/channel and ratios. Adds F06, broadens F05/F07. Loader outputs first; training needs explicit model changes. |
+| S04 | Amount reductions, distinct counts, mode, recency, grouped/nested counts by mcc/channel and ratios. Adds F06, broadens F05/F07. Raw outputs are checked; numerical outputs enter the shared Combined model. |
 | M03 | Composite tokens, packed output, aligned labels from withheld fields, threshold labels and matching-group IDs. Withhold target fields from every exposing input. Adds F16, broadens F10/F11. Loader checks first. |
 | M04 | Separately named Kumo-generated future count, checked against stored labels on valid anchors using the exact registered window. Adds F15. Loader checks first. |
 
 F01 identity, F02 point-in-time history and F08 scalar encodings apply throughout.
 F03 sequences, F04 graphs, F05 aggregates, F07 derived values, F10 tokens and F11
-layouts apply where declared. Existing aggregate coverage means counts only;
+layouts apply where declared. L01 aggregate coverage means counts only; S04 adds reductions and grouping;
 existing token/layout tests do not certify every option. F12 masked prediction,
 F13 next-token prediction and F14 supervised targets keep separate assertions.
 F17 candidates remains a documented limitation with refusal checks, not successful
@@ -199,17 +198,17 @@ anchor's identity/order, clocks, target values and masks, with a partial report
 written every 100 batches. It is a delivery campaign, not full-dataset training.
 Full-population acceptance is recorded only after all three splits finish.
 
-The categorized binding matrices use the candidate DiskGraph wheel for 34 jobs:
+The categorized binding matrices use the candidate DiskGraph wheel for 38 jobs:
 HI Small's five bindings × training/smoke/full, and LI Medium's four bindings ×
-training/full, plus L01 bounded correctness, lifecycle and source histories, and S01/S02 correctness, training, full delivery and lifecycle. Each publishes JSON/Markdown reports;
-training adds loss curves and checkpoints. The summary requires all 34 reports and verifies
+training/full, plus L01 bounded correctness, lifecycle and source histories, and S01/S02/S04 correctness, training, full delivery and lifecycle. Each publishes JSON/Markdown reports;
+training adds loss curves and checkpoints. The summary requires all 38 reports and verifies
 their revision, binding identity and completion.
 Declared early refusals are labelled separately from executed campaigns.
 
 HI Small's five bindings additionally retain fitting-memory checks (three
 repetitions each), but no longer enable model profiling, index-reuse timing or
 DiskGraph/Polars/GPU loader timings. L01 retains its four benchmark campaigns.
-The combined summary therefore requires 43 reports: 34 dataset campaigns,
+The combined summary therefore requires 47 reports: 38 dataset campaigns,
 four L01 benchmarks and five combined HI Small fitting-memory reports.
 
 Local tiny-fixture validation does not establish real LI acceptance or runtime
@@ -251,8 +250,8 @@ without adding dataset-specific runner or profiler adapters.
 Existing focused HI fixtures and lifecycle/history CLIs retain their expected
 answers and domain scenarios. They are not templates to copy for another dataset.
 L01 enables the shared lifecycle helpers and benchmark adapter; other LI
-bindings retain their existing campaign scope. Synthetic/MBD entries remain explicitly pending; complex
-validity rules and contract variants still need implementation.
+bindings retain their existing campaign scope. Other Synthetic/MBD entries remain
+pending; complex validity rules and contract variants still need implementation.
 
 
 ## L01 campaign expansion
@@ -326,8 +325,7 @@ These results do not replace a real-data Linux/GPU nightly run.
 
 The first Synthetic row in *dataset-model-feature-coverage 3.pdf* uses the registered
 `customer-next-token-pretrain` binding, weekly-customer v1 anchors and dataset v1.
-Its binding ID ends in `ca3566e`. S01/PRAGMA is described below; S04/Combined
-with richer/grouped aggregates remains next. S03 is not selected by this PDF.
+Its binding ID ends in `ca3566e`. S01/PRAGMA and S04/Combined are described below. S03 is not selected by this PDF.
 
 The existing catalog, downloader, native anchor projector, nuFormer model,
 training checks, lifecycle checks and categorized workflow matrices are reused.
@@ -433,3 +431,67 @@ preflight with CPU training. No Synthetic timing campaign is enabled.
 Correctness, training, full-population and lifecycle campaigns are required.
 Real-data CI execution, storage/runtime measurements and full-population
 acceptance remain pending; local fixtures do not establish those results.
+
+## S04 / Synthetic Medium / Combined
+
+One binding, `suite:S04:aggregates-v1`, extends the registered positive six-month
+LTV task (base ID ending `8925fa`). It shares S02's customer source view and uses
+the pinned `ltv_positive_6m/v2` anchors. Prediction is 28 days after onboarding;
+graph execution uses `T-1s` so whole-second events at `T` remain excluded.
+History ages and recency outputs are restored to the original prediction clock.
+The original anchor label must equal `gross_profit > 0` before float32 transport.
+This checks the stored threshold, not the financial simulation generating profit.
+
+The shared contract/model builders now accept multiple graph node types. S04
+samples all seven historical event families from the customer root, with no
+counterparty expansion. It combines their graph features with the complete token
+history, 35 base counts (seven families across five windows) and numerical
+aggregate additions. The extension declares amount sum/mean/min/max/population
+spread, distinct merchant-category/channel counts, mode, recency, grouped counts,
+nested channel counts by merchant category and a recent-history ratio. Mode and
+intermediate values are preparation checks; the other numerical outputs enter
+the existing Combined aggregate encoder. No extra model wrapper is introduced.
+
+| Required assertion | Features | Independent answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original root/sample identities, onboarding prediction time and v2 execution clock |
+| `graph_values` | F01, F02, F04, F08, F11 | Original source identities, ownership, historical membership, encoded features and connectivity, independent of tensor order |
+| `history_values` | F01, F02, F03, F07, F08, F10, F11 | Complete original event records, age/calendar, scalar tokens, separators, positions and allowed equal-time permutations |
+| `aggregate_values` | F05, F06, F07, F08, F11 | Python reductions/groups over original rows; exact raw counts and masks, numerical tolerances and train-only normalization |
+| `stored_targets` | F14 | Original profit threshold and projected label, eligibility and binary target encoding |
+
+`aggregate_features.py` supplies independent reduction answers. `graph_features.py`
+reuses the package's keyed-graph assertion with original source rows; it imports
+no reference engine. The existing history oracle handles both next-token and
+supervised sequences. Hand-calculated fixtures cover unequal groups, each window
+boundary, zero denominators, empty recent histories, cutoff/future poison values,
+allowed tensor permutations and rejected corruption. Numerical comparisons keep
+integer counts exact; float64 reductions allow 2e-12 relative/absolute rounding,
+and float32 normalization uses the existing 2e-6 bound. Raw output dtypes come
+from declarations, independent of fitted state. Mode checks verify train-only
+vocabulary fitting and encoded outputs; unseen categories map to UNKNOWN, which
+does not distinguish their original strings. A native three-way tied-mode fixture
+checks the declared value-order rule with a known category.
+
+The four campaigns use the same workers, RTX storage preflight and CPU training
+as S01/S02. The inventory shares their 1,611 public/source-manifest objects and
+adds only the LTV v2 manifest and 10,903,428-byte anchor payload (206,776 anchors).
+The approved two-object GetObject grant was applied and reread successfully.
+No workflow or package-runtime change is required; no Synthetic timing campaign
+is enabled. Real-data execution and storage measurements remain for CI.
+
+Local native fixtures execute smoke, full delivery and two reproducible 100-update
+training runs. Fresh-process finetuning and reload/inference run, but mid-epoch
+iterator resume reports the existing package error, `this state was saved for a
+different task`. That lifecycle test remains required and failing. The harness
+also now hashes empty/singleton broadcast tensors correctly and uses the existing
+scalar binary loss oracle in fresh-process finetuning.
+
+Validation on the compatible local native extension: 37 of 38 S04 cases pass;
+the required lifecycle case fails as above. The broader native regression has
+194 passes and three Combined resume failures (S04, HI Small and LI Medium).
+All 347 harness checks pass, and all 591 required CPU cases collect exactly
+(five GPU cases remain delegated). Formatting, license and documentation checks
+pass. Two independent review rounds leave no remaining findings after adding
+dtype-corruption regressions and native mode-tie coverage. These are local
+fixture results, not real-data CI acceptance.

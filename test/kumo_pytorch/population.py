@@ -27,7 +27,7 @@ from .aml_source import (
     prepare_aml_sources,
     prepared_dataset,
 )
-from .bindings import binding_for
+from .bindings import binding_for, graph_layout
 from .bindings import profile as binding_profile
 from .bindings import selected_bindings
 from .bindings import selection as binding_selection
@@ -116,7 +116,9 @@ def check_delivery(batch, expected, *, graph_clocks=None):
         for name, field in (
             graph_clocks or {"transactions": GRAPH_TIMESTAMP_FIELD}
         ).items():
-            nodes = batch.inputs["graph"]["nodes"][name]
+            nodes = batch.inputs["graph"]["nodes"].get(name)
+            if nodes is None:
+                continue
             times = nodes["features"][field]["values"].flatten()
             cutoffs = batch.metadata["as_of_time"][nodes["batch"]]
             assert (times <= cutoffs).all(), (
@@ -192,11 +194,16 @@ def verify_batch_for(binding, batch, expected, state):
             batch, expected, native=True, family=family, state=state
         )
         return {task["kind"]: eligible}
-    graph = binding_profile(binding, "input").get("graph")
+    inputs = binding_profile(binding, "input")
     rows = check_delivery(
         batch,
         expected,
-        graph_clocks={graph["node_table"]: graph["timestamp"]} if graph else None,
+        graph_clocks={
+            node: fields["timestamp"]
+            for node, fields in graph_layout(inputs)[0].items()
+        }
+        if "graph" in inputs
+        else None,
     )
     return verify_stored_batch(task, batch, rows, state)
 

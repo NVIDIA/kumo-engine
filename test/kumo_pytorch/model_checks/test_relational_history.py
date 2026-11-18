@@ -45,7 +45,11 @@ def inputs(tmp_path, *, homogeneous=False, binding_ref="S02"):
         prefix + "customers/part-00000.parquet",
         {
             "customer_id": [10, 20],
-            "onboarded_at": [STAMP - 86400] * 2,
+            "onboarded_at": [
+                STAMP
+                - profile(binding, "anchor").get("root_time_offset_seconds", 86400)
+            ]
+            * 2,
             "risk_tier": [999, 999],
         },
     )
@@ -90,7 +94,8 @@ def inputs(tmp_path, *, homogeneous=False, binding_ref="S02"):
         values["final_risk"] = [999] * 5
         write(prefix + family + "/part-00000.parquet", values)
     anchor = definition["anchor_path"].format(
-        population=binding["selector"]["population"], version="v1"
+        population=binding["selector"]["population"],
+        version=binding["selector"]["anchor_version"],
     )
     write(
         anchor,
@@ -101,6 +106,17 @@ def inputs(tmp_path, *, homogeneous=False, binding_ref="S02"):
             else ["10", "20", "10", "10", "20"],
             "as_of_time": pa.array([STAMP * 10**9] * 5, pa.timestamp("ns")),
             "split": ["train", "train", "train", "valid", "test"],
+            **(
+                {
+                    "graph_as_of_time": pa.array(
+                        [(STAMP - 1) * 10**9] * 5, pa.timestamp("ns")
+                    ),
+                    "label": [True, False, True, True, False],
+                    "gross_profit": [10.0, -5.0, 10.0, 10.0, -5.0],
+                }
+                if binding_ref == "S04"
+                else {}
+            ),
         },
     )
     if homogeneous:

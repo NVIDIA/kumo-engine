@@ -81,8 +81,12 @@ def update(task, model, optimizer, requests, config, *, epoch):
             task.fitted_state.to_dict(),
         )
         kind = task_definition(binding)["kind"]
-        if kind == "stored":
+        if kind == "stored" and isinstance(result.logits, dict):
             verify_stored_loss(binding, batch, result)
+        elif kind == "stored":
+            verify_batch(
+                batch, result, {sample: row["label"] for sample, row in records.items()}
+            )
         elif kind == "next_token":
             from .next_token import verify_loss
 

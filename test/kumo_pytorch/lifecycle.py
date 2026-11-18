@@ -46,15 +46,12 @@ def input_digest(value):
     def add(item):
         if isinstance(item, torch.Tensor):
             digest.update(str((item.dtype, tuple(item.shape))).encode())
-            digest.update(
-                item.detach()
-                .cpu()
-                .contiguous()
-                .reshape(-1)
-                .view(torch.uint8)
-                .numpy()
-                .tobytes()
-            )
+            values = item.detach().cpu().contiguous().reshape(-1)
+            # Empty/singleton broadcasts can be contiguous with stride zero.
+            # Byte views still require unit stride, independent of values.
+            if values.stride(0) != 1:
+                values = values.clone(memory_format=torch.contiguous_format)
+            digest.update(values.view(torch.uint8).numpy().tobytes())
         elif isinstance(item, dict):
             for key in sorted(item):
                 digest.update(repr(key).encode())

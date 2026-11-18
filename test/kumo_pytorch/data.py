@@ -464,7 +464,7 @@ def prepare_binding(
 
     from kumo.pytorch.api import Dataset, Parquet
 
-    from .bindings import dataset_definition, profile, resolve
+    from .bindings import dataset_definition, graph_layout, profile, resolve
     from .population_anchors import project_binding, projected_rows
 
     definition = dataset_definition(binding)
@@ -580,12 +580,9 @@ def prepare_binding(
                 capacity += population_bound
         graph_capacity = 1
         if binding["representation"] in {"graphsage", "combined"}:
-            for relation in inputs["graph"]["relations"]:
+            for relation, node in graph_layout(inputs)[1].items():
                 edge = relations[relation]
-                if (
-                    edge[1] != inputs["root_table"]
-                    or edge[3] != inputs["graph"]["node_table"]
-                ):
+                if edge[1] != inputs["root_table"] or edge[3] != node:
                     raise ValueError(
                         f"Graph profile requires a direct root-to-node relation: {relation}"
                     )

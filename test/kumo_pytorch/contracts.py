@@ -57,7 +57,7 @@ def build_contract(schema, family, *, native=False, max_events, profile=None):
     )
     if not graph:
         return seq
-    agg = counts(schema, profile["root_table"], profile["aggregates"], inclusive=True)
+    agg = aggregate_contract(schema, profile, inclusive=True)
     return replace(
         seq,
         sample=replace(
@@ -289,6 +289,82 @@ def counts(schema, root, declarations, *, normalize=True, inclusive=False):
     )
 
 
+def aggregate_contract(schema, profile, *, inclusive=False):
+    from .bindings import aggregate_fields
+
+    base = counts(
+        schema, profile["root_table"], profile["aggregates"], inclusive=inclusive
+    )
+    queries = profile.get("aggregate_queries", {})
+    if not queries:
+        return base
+    families = {name: (path, clock) for name, path, clock, _ in profile["families"]}
+
+    def source(spec):
+        if "keys" in spec:
+            return r.GroupBy(
+                source(spec["source"]),
+                tuple(spec["keys"]),
+                {
+                    name: r.Reduce(reduction["operation"], reduction.get("column"))
+                    for name, reduction in spec["values"].items()
+                },
+            )
+        path, clock = families[spec["family"]]
+        return r.Rows(path, window(clock, spec.get("start"), inclusive=inclusive))
+
+    values = dict(base.sample.entity_values)
+    assert not set(values).intersection(queries), "Duplicate aggregate declaration"
+    for name, query in queries.items():
+        dtype = r.DType(query["dtype"])
+        if "derived" in query:
+            value = r.Derived(query["derived"], tuple(query["inputs"]), dtype=dtype)
+        elif "constant" in query:
+            value = r.Constant(query["constant"], dtype)
+        else:
+            value = r.Aggregate(
+                source(query["source"]),
+                query["operation"],
+                query.get("column"),
+                dtype=dtype,
+            )
+        values[name] = value
+    return replace(
+        base,
+        sample=replace(base.sample, entity_values=values),
+        batch=replace(
+            base.batch,
+            inputs={
+                "aggregates": r.Input(
+                    r.EntitySource(),
+                    r.Fields(
+                        tuple(
+                            r.Encode(name, r.ZScore())
+                            for name in aggregate_fields(profile)
+                        )
+                    ),
+                    r.Separate(),
+                ),
+                "aggregate_checks": r.Input(
+                    r.EntitySource(),
+                    r.Fields(
+                        tuple(
+                            r.Encode(
+                                name,
+                                r.Vocabulary()
+                                if queries.get(name, {}).get("categorical")
+                                else r.Raw(),
+                            )
+                            for name in values
+                        )
+                    ),
+                    r.Separate(),
+                ),
+            },
+        ),
+    )
+
+
 def aml_graph(schema, *, max_transactions, inclusive=False, profile=None):
     if type(max_transactions) is not int or max_transactions < 1:
         raise ValueError(
@@ -305,29 +381,36 @@ def aml_graph(schema, *, max_transactions, inclusive=False, profile=None):
         from .bindings import profile as input_profile
 
         profile = input_profile(load_bindings()["E01"], "input")
-    graph = profile["graph"]
-    neighborhood = r.NeighborhoodSpec(
-        (
-            r.GraphLayer(
-                tuple(
-                    r.GraphSample(role, max_transactions) for role in graph["relations"]
+    from .bindings import graph_layout
+
+    nodes, relations, reverse_hop = graph_layout(profile)
+    layers = [
+        r.GraphLayer(
+            tuple(
+                r.GraphSample(
+                    role, max_transactions, time_column=nodes[node].get("time_column")
                 )
-            ),
+                for role, node in relations.items()
+            )
+        )
+    ]
+    if reverse_hop:
+        layers.append(
             r.GraphLayer(
-                tuple(
-                    r.GraphSample(role, 1, direction="reverse")
-                    for role in graph["relations"]
-                )
-            ),
+                tuple(r.GraphSample(role, 1, direction="reverse") for role in relations)
+            )
         )
-    )
-    features = r.Fields(
-        tuple(
-            [r.Encode(name, r.ZScore()) for name in graph["numerical"]]
-            + [r.Encode(name, r.Vocabulary()) for name in graph["categorical"]]
-            + [r.Encode(graph["timestamp"], r.Raw())]
+    neighborhood = r.NeighborhoodSpec(tuple(layers))
+    features = {
+        node: r.Fields(
+            tuple(
+                [r.Encode(name, r.ZScore()) for name in graph["numerical"]]
+                + [r.Encode(name, r.Vocabulary()) for name in graph["categorical"]]
+                + [r.Encode(graph["timestamp"], r.Raw())]
+            )
         )
-    )
+        for node, graph in nodes.items()
+    }
     return r.DataLoaderSpec(
         schema,
         r.SampleSpec(
@@ -338,7 +421,7 @@ def aml_graph(schema, *, max_transactions, inclusive=False, profile=None):
             {
                 "graph": r.Input(
                     r.NeighborhoodSource("history_graph"),
-                    r.Graph({graph["node_table"]: features}),
+                    r.Graph(features),
                     None,
                 )
             }

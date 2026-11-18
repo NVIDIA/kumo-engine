@@ -43,9 +43,17 @@ def source_events(binding, mapping, root_ids):
     parent_roots = {accounts[key] for key in root_ids} if owned_roots else root_ids
     selected_roots = pa.array(sorted(parent_roots), pa.int64())
     children = defaultdict(set)
+    all_children = defaultdict(list)
     for key, parent in accounts.items():
+        all_children[parent].append(key)
         if key in root_ids:
             children[parent].add(key)
+    slots = {
+        key: slot
+        for keys in all_children.values()
+        for slot, key in enumerate(sorted(keys))
+    }
+    fanout = max(map(len, all_children.values()), default=1)
     result = defaultdict(list)
     selected_families = {f[0] for f in profile(binding, "input")["families"]}
     for family, spec in options["events"].items():
@@ -125,6 +133,10 @@ def source_events(binding, mapping, root_ids):
                             {
                                 "family": family,
                                 "source_id": identity,
+                                "mapped_id": identity * fanout + slots[root]
+                                if owned_roots and owner["kind"] == "direct"
+                                else identity * 2
+                                + int(directions.get(root) == "incoming"),
                                 "time": row[spec["time"]],
                                 "values": values,
                             }
@@ -150,22 +162,25 @@ def event_tokens(event, cutoff, fields, state):
     return tuple(encoded_value(state, name, values[name]) for name in selected)
 
 
-def verify_sequence(batch, anchors, events, fields, state, *, targets):
+def verify_sequence(batch, anchors, events, fields, state, *, targets, native=True):
     import torch
 
     stream = batch.inputs["history"]
-    target = batch.targets["next_token"]
-    assert set(batch.inputs) == {"history"} and set(batch.targets) == {"next_token"}
+    target = batch.targets["next_token"] if native else None
+    if native:
+        assert set(batch.inputs) == {"history"} and set(batch.targets) == {"next_token"}
     assert set(stream) == {"value_ids", "valid", "position_ids", "source_event_indices"}
-    assert stream["valid"].dtype == target["valid"].dtype == torch.bool
+    assert stream["valid"].dtype == torch.bool
     assert stream["valid"].ndim == 2
     for name in ("value_ids", "position_ids", "source_event_indices"):
         assert (
             stream[name].dtype == torch.int64
             and stream[name].shape == stream["valid"].shape
         )
-    assert target["values"].dtype == torch.int64
-    assert target["values"].shape == target["valid"].shape == stream["valid"].shape
+    if native:
+        assert target["valid"].dtype == torch.bool
+        assert target["values"].dtype == torch.int64
+        assert target["values"].shape == target["valid"].shape == stream["valid"].shape
     assert stream["valid"].shape[0] == len(batch.metadata["sample_ids"])
     roles = state["spaces"]["history"]["roles"]
     source_offset = 0
@@ -175,24 +190,28 @@ def verify_sequence(batch, anchors, events, fields, state, *, targets):
         history = [e for e in events[anchor["entity_id"]] if e["time"] < cutoff]
         valid = stream["valid"][i]
         expected_records = [event_tokens(e, cutoff, fields, state) for e in history]
-        size = max(sum(map(len, expected_records)) + len(history) - 2, 0)
+        size = max(sum(map(len, expected_records)) + len(history) - 1 - int(native), 0)
         assert valid.tolist() == [True] * size + [False] * (len(valid) - size), (
             "Token coverage/padding differs"
         )
-        assert torch.equal(valid, target["valid"][i]), "Next-token eligibility differs"
+        if native:
+            assert torch.equal(valid, target["valid"][i]), (
+                "Next-token eligibility differs"
+            )
         assert (stream["value_ids"][i][~valid] == roles["pad"]).all()
-        assert (target["values"][i][~valid] == -100).all()
+        if native:
+            assert (target["values"][i][~valid] == -100).all()
         assert not stream["position_ids"][i][valid].any(), (
             "Scalar field positions differ"
         )
         actual = stream["value_ids"][i][valid].tolist()
-        labels = target["values"][i][valid].tolist()
+        labels = target["values"][i][valid].tolist() if native else []
         if targets:
             assert actual[1:] == labels[:-1], "Next-token labels shifted incorrectly"
         # Recover the original full stream including the terminal target. Whole
         # event records may permute only within one timestamp group.
         complete = actual + labels[-1:]
-        assert len(complete) == (size + 1 if history else 0)
+        assert len(complete) == (size + int(native) if history else 0)
         records = []
         if complete:
             records = [[]]
@@ -218,7 +237,7 @@ def verify_sequence(batch, anchors, events, fields, state, *, targets):
             if j:
                 expected_indices.append(-1)
             expected_indices.extend([source_offset + j] * len(record))
-        assert indices == expected_indices[:-1], (
+        assert indices == (expected_indices[:-1] if native else expected_indices), (
             "History source ownership/layout differs"
         )
         source_offset += len(history)
@@ -259,6 +278,70 @@ def sequence_features(binding, projection, mapping, state, *, mode):
         mode,
         checks,
         {r["sample_id"]: r["split"] for r in rows},
+    )
+
+
+def combined_features(binding, projection, mapping, state, *, mode):
+    from .aggregate_features import aggregate_check
+    from .bindings import graph_layout
+    from .graph_features import graph_check
+    from .population import check_delivery
+    from .targets import (
+        source_target_rows,
+        verify_stored_batch,
+        verify_target_projection,
+    )
+
+    rows = [
+        row
+        for split in ("train", "valid", "test")
+        for row in projected_rows(projection, split)
+    ]
+    anchors = {row["sample_id"]: row for row in rows}
+    assert all(str(row["entity_id"]) == row["registered_entity_id"] for row in rows)
+    originals = source_target_rows(binding, mapping["anchor_source"]["path"], rows)
+    for row in rows:
+        verify_target_projection(binding, row, originals[row["anchor_row_position"]])
+    inputs = profile(binding, "input")
+    events = source_events(binding, mapping, {row["entity_id"] for row in rows})
+    prediction_anchors = {
+        sample: {**row, "as_of_time": row["prediction_time_ns"] // 10**9}
+        for sample, row in anchors.items()
+    }
+    names = list(
+        dict.fromkeys(
+            alias for _, _, _, fields in inputs["families"] for alias, _, _ in fields
+        )
+    )
+    checks = {
+        "identity_cutoff": lambda batch: check_delivery(
+            batch,
+            iter(anchors[s] for s in batch.metadata["sample_ids"]),
+            graph_clocks={
+                node: fields["timestamp"]
+                for node, fields in graph_layout(inputs)[0].items()
+            },
+        ),
+        "graph_values": graph_check(binding, mapping, anchors, events, state),
+        "history_values": lambda batch: verify_sequence(
+            batch,
+            prediction_anchors,
+            events,
+            ("age_range", *names, "hour", "weekday", "day"),
+            state,
+            targets=False,
+            native=False,
+        ),
+        "aggregate_values": aggregate_check(inputs, events, anchors, state),
+        "stored_targets": lambda batch: verify_stored_batch(
+            binding, batch, [anchors[s] for s in batch.metadata["sample_ids"]], state
+        ),
+    }
+    return FeatureChecks(
+        binding["feature_checks"],
+        mode,
+        checks,
+        {row["sample_id"]: row["split"] for row in rows},
     )
 
 

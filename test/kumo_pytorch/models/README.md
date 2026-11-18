@@ -9,6 +9,7 @@ These models belong to the repository testing suite, outside the installed
 | account-involvement-next24h | nuFormer | token history | Binary cross-entropy |
 | account-involvement-next24h | combined | graph, token history, twelve counts | Binary cross-entropy |
 | masked-value-pretrain | PRAGMA | nested field history, calendar, elapsed time | Masked-value cross-entropy, smoothing 0.1 |
+| ltv_positive_6m (S04) | combined | seven event node types, token history, 35 counts and numerical aggregate additions | Binary cross-entropy |
 | next-token-pretrain | nuFormer | token history | Next-token cross-entropy |
 
 [model factory](__init__.py) builds a consumer from a fitted Kumo task and an entry in
