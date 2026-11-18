@@ -44,10 +44,17 @@ async function handleKernelDialogs(page, frame, mark) {
 }
 
 async function showFileBrowser(frame) {
-  if (!await frame.locator('.jp-FileBrowser').isVisible()) {
+  const browser = frame.locator('.jp-FileBrowser');
+  const deadline = Date.now() + 60000;
+  while (!await browser.isVisible() && Date.now() < deadline) {
     await frame.getByRole('tab', { name: /^File Browser(?:\s|$)/ }).click();
+    try {
+      await browser.waitFor({ state: 'visible', timeout: 3000 });
+    } catch (error) {
+      if (error.name !== 'TimeoutError') throw error;
+    }
   }
-  await frame.locator('.jp-FileBrowser').waitFor({ state: 'visible' });
+  requireThat(await browser.isVisible(), 'Studio file browser did not become visible');
 }
 
 async function openNotebook(frame, filename, mark) {
