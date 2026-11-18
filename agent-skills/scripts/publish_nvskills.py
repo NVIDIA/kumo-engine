@@ -31,7 +31,11 @@ and eval dataset. Three kinds of file sit in each published skill directory:
 * the catalog files that NVSkills requires and that we write: the skill's `skill-card.md` and
   `evals/*.json`. Their source is `agent-skills/nvskills/<skill>/`, and they are copied in on
   every run. A catalog file must belong to a skill and may not replace a package file. Once that
-  source exists, the build fails unless every skill has both, so the sync never drops one;
+  source exists, the build fails unless every skill has both, so the sync never drops one.
+  The card is the exception to "every run": NVSkills CI rewrites it when it signs, adding the
+  evaluation results, so once a skill's directory holds a `skill.oms.sig` its card is NVSkills
+  CI's. A refresh then leaves it as it is and `--check` does not compare it. The source card
+  seeds a skill's first card; to change a signed one, edit `skills/<skill>/skill-card.md`;
 * `BENCHMARK.md` and `skill.oms.sig`, which NVSkills CI writes into the pull request. They are
   never edited here, and the build fails if the package or the catalog files carry either
   name at any depth. A refresh leaves them in place at any depth, so they describe the previous
@@ -203,14 +207,24 @@ def not_ready(catalog_files: Path = CATALOG_FILES) -> list[str]:
         return missing(build(Path(tmp), catalog_files))
 
 
-def files(root: Path) -> dict[str, bytes]:
-    """Map each file under `root` that we own to its bytes, with the build stamp normalized."""
+def signed_cards(root: Path) -> frozenset[str]:
+    """The cards under `root` that NVSkills CI rewrote when it signed their skill."""
+    return frozenset(f'{skill}/{CARD}' for skill in skill_dirs(root)
+                     if (root / skill / 'skill.oms.sig').is_file()
+                     and (root / skill / CARD).is_file())
+
+
+def files(root: Path, kept: frozenset[str] = frozenset()) -> dict[str, bytes]:
+    """Map each file under `root` that we own to its bytes, with the build stamp normalized.
+
+    `kept` names files NVSkills CI owns besides the signed ones: they are left out.
+    """
     if not root.is_dir():
         return {}
     out = {}
     for path in sorted(root.rglob('*')):
         rel = path.relative_to(root).as_posix()
-        if path.is_file() and path.name not in SIGNED:
+        if path.is_file() and path.name not in SIGNED and rel not in kept:
             data = path.read_bytes()
             if rel == f'{ROUTER}/SKILL.md':
                 text = package_skill.MARKER.sub('SKILL-BUILD: x', data.decode('utf-8'))
@@ -221,9 +235,10 @@ def files(root: Path) -> dict[str, bytes]:
 
 def stale(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list[str]:
     """Return what `dest` would gain, lose or change if it were refreshed now."""
+    kept = signed_cards(dest)
     with tempfile.TemporaryDirectory() as tmp:
-        want = files(build(Path(tmp), catalog_files))
-    have = files(dest)
+        want = files(build(Path(tmp), catalog_files), kept)
+    have = files(dest, kept)
     return ([f'+ {p}' for p in sorted(want.keys() - have.keys())]
             + [f'- {p}' for p in sorted(have.keys() - want.keys())]
             + [f'~ {p}' for p in sorted(want.keys() & have.keys()) if want[p] != have[p]])
@@ -234,16 +249,18 @@ def publish(dest: Path = PUBLISHED, catalog_files: Path = CATALOG_FILES) -> list
     changes = stale(dest, catalog_files)
     if not changes:
         return []
+    kept = signed_cards(dest)
     with tempfile.TemporaryDirectory() as tmp:
         root = build(Path(tmp), catalog_files)
         if dest.is_dir():
             for path in sorted(dest.rglob('*'), reverse=True):
-                if path.is_file() and path.name not in SIGNED:
+                rel = path.relative_to(dest).as_posix()
+                if path.is_file() and path.name not in SIGNED and rel not in kept:
                     path.unlink()
                 elif path.is_dir() and not any(path.iterdir()):
                     path.rmdir()
         for path in sorted(root.rglob('*')):
-            if path.is_file():
+            if path.is_file() and path.relative_to(root).as_posix() not in kept:
                 target = dest / path.relative_to(root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, target)

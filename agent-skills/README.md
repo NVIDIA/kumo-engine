@@ -151,7 +151,8 @@ and eval dataset:
 | Path, in each of the eight skill directories | Written by |
 |---|---|
 | everything else | `agent-skills/scripts/publish_nvskills.py`: the `generic` package |
-| `skill-card.md`, `evals/` | copied from `agent-skills/nvskills/<skill>/`, e.g. `agent-skills/nvskills/kumo-model-tuning/skill-card.md` |
+| `evals/` | copied from `agent-skills/nvskills/<skill>/`, e.g. `agent-skills/nvskills/kumo-model-tuning/evals/evals.json` |
+| `skill-card.md` | first from `agent-skills/nvskills/<skill>/`; NVSkills CI rewrites it when it signs, adding the evaluation results, and from then on a refresh leaves it alone. To change a signed card, edit `skills/<skill>/skill-card.md` in your PR |
 | `BENCHMARK.md`, `skill.oms.sig` | NVSkills CI, in your PR; never by hand |
 
 Once `agent-skills/nvskills/` exists, the build fails unless every skill has both a card and an
@@ -201,7 +202,7 @@ skill's own files document. Each set has one negative case (`expected_skill: nul
       entry per directory (`path: skills/<skill>/`, `catalog_dir: <skill>`), all eight:
       NVIDIA/skills#885, a draft. Its `verify-source-onboarding` check verifies only the paths the
       file lists, and passes only once the signed copy is on `main`
-- [ ] `request-nvskills-ci.yml` on `main` (NVIDIA/kumo-engine#371). `/nvskills-ci` is an
+- [x] `request-nvskills-ci.yml` on `main` (NVIDIA/kumo-engine#371). `/nvskills-ci` is an
       `issue_comment` trigger, so it runs only from `main`'s copy
 - [ ] confirmation from the NVSkills CI maintainers that a skill may link to files in a sibling
       skill directory (`kumo-data-science/` reads `kumoai-reference/`). Each directory is signed

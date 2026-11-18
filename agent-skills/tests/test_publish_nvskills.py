@@ -146,6 +146,24 @@ def test_publish_keeps_signed_files_and_drops_files_no_longer_shipped(tmp_path: 
         assert path.read_text() == 'from NVSkills CI\n'
 
 
+def test_a_signed_skill_keeps_the_card_nvskills_ci_wrote(tmp_path: Path,
+                                                        catalog: Path) -> None:
+    """NVSkills CI rewrites a skill's card when it signs; the source card only seeds it."""
+    dest = tmp_path / 'skills'
+    publish_nvskills.publish(dest, catalog)
+    signed, unsigned = dest / 'kumo-model-tuning', dest / 'kumoai-reference'
+    (signed / 'skill.oms.sig').write_text('from NVSkills CI\n')
+    for skill in (signed, unsigned):
+        (skill / 'skill-card.md').write_text('## Description\n\n## Evaluation Results\n')
+
+    assert publish_nvskills.stale(dest, catalog) == ['~ kumoai-reference/skill-card.md']
+    (dest / ROUTER / 'SKILL.md').write_text('edited by hand\n')
+    publish_nvskills.publish(dest, catalog)
+    assert (signed / 'skill-card.md').read_text() == '## Description\n\n## Evaluation Results\n'
+    assert (unsigned / 'skill-card.md').read_text() == '## Description\n'
+    assert publish_nvskills.stale(dest, catalog) == []
+
+
 def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: Path) -> None:
     dest = tmp_path / 'skills'
     publish_nvskills.publish(dest, catalog)
