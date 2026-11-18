@@ -185,7 +185,11 @@ read.
 The index holds rows, key maps and relations. It holds no anchors, labels or
 fitted encoders, so several contracts over the same tables can share one index.
 By default, fitting keeps column statistics of encoders over stored columns in
-the index's `col_stats/`, so that directory must be writable. Supply an external
+the index's `col_stats/`, so that directory must be writable. For the ordinary
+`DiskGraphEngine(index=...)` constructor, omitting `work_dir` or explicitly setting
+it to the index path uses this same layout and reuses the same caches. Paths that
+resolve to the index, including symlinks, are equivalent. Other paths inside the
+index are rejected. Supply an external
 `work_dir` to put newly computed statistics and task state there instead. Each encoder
 cutoff has one directory there, with a `<table>.col_stats.json` file per table.
 A later fit at the same cutoff computes only the columns and statistics those

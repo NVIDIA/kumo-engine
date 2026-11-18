@@ -496,3 +496,78 @@ def test_connector_versions_allow_restage_but_reject_changes(indexed, tmp_path):
             api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions=changed))
     with pytest.raises(ValueError, match="every dataset table"):
         api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions={}))
+
+
+@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink"])
+@pytest.mark.parametrize("explicit_first", [False, True])
+def test_explicit_index_work_dir_reuses_legacy_state(
+    indexed, tmp_path, monkeypatch, alias, explicit_first
+):
+    index, _, dataset, spec, anchors = indexed
+    if alias == "relative":
+        monkeypatch.chdir(tmp_path)
+        work = Path("index")
+    elif alias == "symlink":
+        work = tmp_path / "index-alias"
+        work.symlink_to(index, target_is_directory=True)
+    else:
+        work = index
+    encoder = TableColumnEncoder(
+        api.Text(vocabulary_size=300, min_frequency=1),
+        api.DType("string"),
+        (("events", "note"),),
+    )
+
+    def run(explicit):
+        options = {"work_dir": work} if explicit else {}
+        engine = api.DiskGraphEngine(index=index, num_threads=1, **options)
+        with api.prepare(spec, dataset, engine) as plan:
+            source = plan._source
+            stats = source.column_stats([("events", "value", "numerical")], 20 * 10**9)
+            tokenizer, name = source.column_text(encoder, 20 * 10**9)
+            lengths = source.token_lengths("events", [("note", tokenizer, 0)], [], 20 * 10**9)
+            _, values = read_token_lengths(index, {"file": lengths, "constant": 0})
+            assert all((index / "col_stats" / path).is_file() for path in stats.files)
+            assert (index / "col_stats" / name).is_file()
+            with plan.materialize(anchors) as task:
+                assert any((index / "train_tables").iterdir())
+                assert any((index / "tasks").iterdir())
+                graph = next(iter(task.batches(output_format="columnar"))).inputs["graph"]
+                assert set(graph.nodes["events"].ids.to_pylist()) == {"a", "b", "d"}
+            assert not list((index / "train_tables").iterdir())
+            assert not list((index / "tasks").iterdir())
+            return stats, tokenizer, name, lengths, values.tolist()
+
+    expected = run(explicit_first)
+    before = inventory(index)
+
+    def unexpected_compute(*args, **kwargs):
+        pytest.fail("existing in-index cache must be reused")
+
+    for function in ("cutoff_col_stats", "train_tokenizer", "token_lengths"):
+        monkeypatch.setattr(diskgraph, function, unexpected_compute)
+    assert run(not explicit_first) == expected
+    assert inventory(index) == before
+    assert not (index / "cache").exists()
+
+
+@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink", "nested"])
+def test_adopted_indexes_require_external_work_dir(indexed, tmp_path, monkeypatch, alias):
+    index, _, _, _, _ = indexed
+    if alias == "relative":
+        monkeypatch.chdir(tmp_path)
+        work = Path("index")
+    elif alias == "symlink":
+        work = tmp_path / "index-alias"
+        work.symlink_to(index, target_is_directory=True)
+    else:
+        work = index if alias == "absolute" else index / "work"
+    with pytest.raises(ValueError, match="outside"):
+        api.DiskGraphEngine.from_index(index, work_dir=work)
+    with pytest.raises(ValueError, match="outside"):
+        api.DiskGraphEngine.from_snapshot(
+            SimpleNamespace(index_path=index, id="test"), work_dir=work
+        )
+    if alias == "nested":
+        with pytest.raises(ValueError, match="outside"):
+            api.DiskGraphEngine(index=index, work_dir=work)
