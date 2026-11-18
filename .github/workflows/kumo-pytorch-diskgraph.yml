@@ -14,6 +14,11 @@ on:  # yamllint disable-line rule:truthy
   pull_request:
     paths:
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -23,6 +28,11 @@ on:  # yamllint disable-line rule:truthy
     branches: [main]
     paths:
       - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/kumo-engine/**'
+      - 'packages/kumo-core/**'
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-pql/**'
+      - 'packages/kumo-settings/**'
       - 'packages/diskgraph/**'
       - 'scripts/diskgraph'
       - '.github/workflows/_diskgraph-wheel.yml'
@@ -150,3 +160,26 @@ jobs:
         run: |
           ../fresh/bin/python -m pytest -p no:cacheprovider -m notebook --require-imports -q \
             --durations=0 tests/test_notebooks.py
+      - name: Build the engine and its workspace dependencies as wheels
+        working-directory: .
+        run: |
+          set -euo pipefail
+          for package in kumo-api kumo-pql kumo-settings kumo-core kumo-engine; do
+            uv build --wheel --package "$package" --out-dir "$RUNNER_TEMP/engine-wheels"
+          done
+          cp packages/kumo-engine/test/test_pytorch_snapshot.py "$RUNNER_TEMP/stage/tests/"
+      - name: Install the engine wheels alongside PyTorch and DiskGraph
+        working-directory: ${{ runner.temp }}
+        run: |
+          uv pip install --python fresh/bin/python --torch-backend cpu engine-wheels/*.whl
+          uv pip check --python fresh/bin/python
+      - name: Connector snapshot to columnar batches, from installed wheels
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          ../fresh/bin/python -I -c '
+          import pathlib, sys
+          import diskgraph, kumo.engine, kumo.pytorch, kumo_core, kumoapi, kumopql, kumo.settings
+          for module in (diskgraph, kumo.engine, kumo.pytorch, kumo_core, kumoapi, kumopql, kumo.settings):
+              assert pathlib.Path(module.__file__).is_relative_to(sys.prefix), module.__file__
+          '
+          ../fresh/bin/python -m pytest -p no:cacheprovider -q --require-imports tests/test_pytorch_snapshot.py
