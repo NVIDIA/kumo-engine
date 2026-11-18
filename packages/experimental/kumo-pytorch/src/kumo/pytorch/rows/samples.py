@@ -4,11 +4,9 @@
 
 """Build `BuiltSample`s from tables held as Python mappings.
 
-Straightforward scans and joins, chosen so the file is easy to read. The
-in-memory engine is a test tool and a toy for small data, so speed is not a goal.
-
-This is not an `Engine` in the protocol sense — `InMemoryEngine` is. This is
-what that engine ends up calling once `InMemorySource` has opened a dataset.
+Straightforward scans and joins over the rows given, with times counted in one
+`Clock`. Serving assembles requests with it, and the in-memory engine reads
+its datasets with it.
 """
 
 from __future__ import annotations
@@ -58,11 +56,10 @@ from kumo.pytorch.data.records import (
     Event,
     FieldValue,
     Scalar,
-    cutoff_to_epoch,
-    timestamp_to_epoch,
 )
+from kumo.pytorch.rows.clock import SECONDS, Clock
 
-__all__ = ["InMemorySampleBuilder"]
+__all__ = ["RowSampleBuilder"]
 
 
 @dataclass(frozen=True)
@@ -97,19 +94,17 @@ def _compare_values(left: Scalar, operation: ComparisonOperation, right: Scalar)
     raise ValueError(f"unsupported comparison operation {operation!r}")
 
 
-class InMemorySampleBuilder:
-    """Execute sample recipes over small in-memory tables.
-
-    The straightforward scans and joins are intentional: the in-memory engine
-    favors plain code over speed.
-    """
+class RowSampleBuilder:
+    """Execute sample recipes over tables held as Python mappings."""
 
     def __init__(
         self,
         schema: DataSchema,
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
+        clock: Clock = SECONDS,
     ):
         self.schema = schema
+        self._clock = clock
         self._table_specs = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         missing = set(self._table_specs) - set(tables)
@@ -272,7 +267,7 @@ class InMemorySampleBuilder:
         targets = {
             target.name: target for target in _normalize_supplied_targets(recipe, request.targets)
         }
-        cutoff = cutoff_to_epoch(request.as_of_time)
+        cutoff = self._clock.cutoff(request.as_of_time)
         entity_row = self._entity(recipe.entity, request.entity_id, cutoff)
         entity_values: list[FieldValue] = []
         for name in _value_evaluation_order(recipe.entity_values):
@@ -483,12 +478,12 @@ class InMemorySampleBuilder:
         time_column = self._rows_clock(entity.table, spec)
         if time_column is not None:
             lower = (
-                cutoff + spec.time.start
+                cutoff + self._clock.ticks(spec.time.start)
                 if spec.time is not None and spec.time.start is not None
                 else None
             )
             upper = (
-                cutoff + spec.time.stop
+                cutoff + self._clock.ticks(spec.time.stop)
                 if spec.time is not None and spec.time.stop is not None
                 else cutoff
                 if spec.time is None
@@ -509,12 +504,12 @@ class InMemorySampleBuilder:
         if interval.end_column not in row.values:
             raise ValueError(f"{row.table!r} row is missing {interval.end_column!r}")
         end = row.values[interval.end_column]
-        return start < cutoff and (end is None or timestamp_to_epoch(end) > cutoff)
+        return start < cutoff and (end is None or self._clock.stored(end) > cutoff)
 
     def _timestamp(self, row: _Row, column: str) -> int:
         if column not in row.values or row.values[column] is None:
             raise ValueError(f"{row.table!r} row has no timestamp in {column!r}")
-        return timestamp_to_epoch(row.values[column])
+        return self._clock.stored(row.values[column])
 
     def _field_values(
         self,
@@ -572,7 +567,9 @@ class InMemorySampleBuilder:
         cutoff: int,
     ) -> FieldValue | None:
         rows = self._evaluate_source(entity, spec.source, cutoff)
-        result = self._reduce(rows, Reduce(spec.operation, spec.column, dtype=spec.dtype), cutoff)
+        result = self._reduce(
+            rows, Reduce(spec.operation, spec.column, dtype=spec.dtype), cutoff, self._clock
+        )
         if result is None:
             return None
         return FieldValue(name, spec.dtype.normalize(result, path=f"aggregate.{name}"), spec.dtype)
@@ -614,7 +611,7 @@ class InMemorySampleBuilder:
             output = dict(zip(source.keys, key, strict=True))
             for name, reduction in source.values.items():
                 output[name] = reduction.dtype.normalize(
-                    self._reduce(grouped[key], reduction, cutoff), path=f"group.{name}"
+                    self._reduce(grouped[key], reduction, cutoff, self._clock), path=f"group.{name}"
                 )
             result.append(output)
         return result
@@ -624,6 +621,7 @@ class InMemorySampleBuilder:
         rows: Sequence[Mapping[str, Any]],
         spec: Reduce,
         cutoff: int,
+        clock: Clock = SECONDS,
     ) -> Any | None:
         if spec.operation == "count":
             return len(rows)
@@ -651,8 +649,8 @@ class InMemorySampleBuilder:
         if not values:
             return None
         if spec.operation == "recency":
-            latest = max(timestamp_to_epoch(value) for value in values)
-            return float(cutoff - latest)
+            latest = max(clock.stored(value) for value in values)
+            return clock.seconds(cutoff - latest)
         if spec.operation == "sum":
             if spec.dtype.name == "float64":
                 total = 0.0
@@ -824,7 +822,9 @@ class InMemorySampleBuilder:
             elif isinstance(field, EventTimeDelta):
                 values.append(
                     FieldValue(
-                        field_name, float(cutoff - timestamp) / field.seconds_per_unit, field.dtype
+                        field_name,
+                        self._clock.seconds(cutoff - timestamp) / field.seconds_per_unit,
+                        field.dtype,
                     )
                 )
             else:

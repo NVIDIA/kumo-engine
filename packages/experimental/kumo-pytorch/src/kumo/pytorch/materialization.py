@@ -22,6 +22,7 @@ from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
 from kumo.pytorch.dataset import Dataset, Parquet, _local_parquet_files
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
+from kumo.pytorch.rows.clock import Clock
 
 _MANIFEST = "index_manifest.json"
 _MANIFEST_VERSION = 3
@@ -318,25 +319,7 @@ def _compile_diskgraph_config(
             "tables": [configs[name] for name in sorted(configs)],
             "num_shards": num_shards,
             "edge_format": "binary",
-            # Keep declared event precision in the shared graph clock. Whole-
-            # second schemas retain the historical seconds default.
-            "timestamp_unit": {
-                "s": "seconds",
-                "ms": "milliseconds",
-                "us": "microseconds",
-                "ns": "nanoseconds",
-            }[
-                max(
-                    (
-                        dtype.unit
-                        for table in schema.tables
-                        for dtype in table.columns.values()
-                        if dtype.name == "timestamp"
-                    ),
-                    key={"s": 0, "ms": 1, "us": 2, "ns": 3}.get,
-                    default="s",
-                )
-            ],
+            "timestamp_unit": Clock.of(schema).unit,
         },
         relation_mapping,
         source_types,

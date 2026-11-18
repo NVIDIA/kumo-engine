@@ -12,10 +12,10 @@ that what the spec lists is enough to rebuild batch inference.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
-from kumo.pytorch.api import DataSchema, SampleRequest
-from kumo.pytorch.data.records import cutoff_to_epoch, timestamp_to_epoch
+from kumo.pytorch.api import DataSchema, DType, SampleRequest
+from kumo.pytorch.rows import Clock
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec, TableRoute
 
 __all__ = ["Row", "Tables", "fetch"]
@@ -35,7 +35,8 @@ def fetch(
         name: [dict(row) for row in rows] if keys[name] is None else rows
         for name, rows in tables.items()
     }
-    cutoff = cutoff_to_epoch(request.as_of_time)
+    clock = Clock.of(schema)
+    cutoff = clock.cutoff(request.as_of_time)
     fetched: dict[str, dict[object, Row]] = {}
     routes = sorted(
         ((table.name, route) for table in spec.tables.values() for route in table.routes),
@@ -43,9 +44,10 @@ def fetch(
     )
     for name, route in routes:
         rows = _joined(sources[name], route.join, request, fetched)
-        rows = _windowed(rows, route, cutoff)
+        ticks = _ticks(clock, next(table for table in schema.tables if table.name == name).columns)
+        rows = _windowed(rows, route, cutoff, clock, ticks)
         if route.limit is not None:
-            rows = _limited(rows, route.limit, route.join)
+            rows = _limited(rows, route.limit, route.join, ticks)
         bucket = fetched.setdefault(name, {})
         for row in rows:
             identity = row[keys[name]] if keys[name] is not None else id(row)
@@ -75,25 +77,36 @@ def _joined(
     return [row for row in rows if row[join.column] in values]
 
 
-def _seconds(value: object) -> int:
-    if value is None:
-        raise ValueError("a time column the spec filters on has a NULL")
-    return timestamp_to_epoch(value)
+def _ticks(clock: Clock, columns: Mapping[str, DType]) -> Callable[[Row, str], int]:
+    def ticks(row: Row, column: str) -> int:
+        if row[column] is None:
+            raise ValueError("a time column the spec filters on has a NULL")
+        return clock.stored(columns[column].normalize(row[column]))
+
+    return ticks
 
 
-def _windowed(rows: list[Row], route: TableRoute, cutoff: int) -> list[Row]:
+def _windowed(
+    rows: list[Row],
+    route: TableRoute,
+    cutoff: int,
+    clock: Clock,
+    ticks: Callable[[Row, str], int],
+) -> list[Row]:
     if route.time_column is None:
         return rows
     start, stop = (None, 0) if route.window is None else (route.window.start, route.window.stop)
     return [
         row
         for row in rows
-        if (start is None or _seconds(row[route.time_column]) > cutoff + start)
-        and (stop is None or _seconds(row[route.time_column]) <= cutoff + stop)
+        if (start is None or ticks(row, route.time_column) > cutoff + clock.ticks(start))
+        and (stop is None or ticks(row, route.time_column) <= cutoff + clock.ticks(stop))
     ]
 
 
-def _limited(rows: list[Row], limit: RowLimit, join: RowsJoin) -> list[Row]:
+def _limited(
+    rows: list[Row], limit: RowLimit, join: RowsJoin, ticks: Callable[[Row, str], int]
+) -> list[Row]:
     groups: dict[object, list[Row]] = {}
     for row in rows:
         groups.setdefault(None if limit.per == "request" else row[join.column], []).append(row)
@@ -101,15 +114,13 @@ def _limited(rows: list[Row], limit: RowLimit, join: RowsJoin) -> list[Row]:
     for members in groups.values():
         ordered = sorted(
             members,
-            key=lambda row: _seconds(row[limit.time_column]),
+            key=lambda row: ticks(row, limit.time_column),
             reverse=limit.order == "newest",
         )
         if len(ordered) > limit.count:
-            boundary = _seconds(ordered[limit.count - 1][limit.time_column])
+            boundary = ticks(ordered[limit.count - 1], limit.time_column)
             ordered = ordered[: limit.count] + [
-                row
-                for row in ordered[limit.count :]
-                if _seconds(row[limit.time_column]) == boundary
+                row for row in ordered[limit.count :] if ticks(row, limit.time_column) == boundary
             ]
         kept.extend(ordered)
     return kept

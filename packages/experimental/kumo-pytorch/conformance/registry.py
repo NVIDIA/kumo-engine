@@ -547,7 +547,7 @@ IN_MEMORY_DIVERGENCES: tuple[KnownGap, ...] = (
         "point_in_time",
         {"schema_shape.path": ("depth2_timed",)},
         "the cutoff applies only at the destination, so rows reached through an "
-        "intermediate row dated after the cutoff leak (engines/in_memory/samples.py _select_rows)",
+        "intermediate row dated after the cutoff leak (rows/samples.py _select_rows)",
         "conformance/in_memory_divergences/repro-aec68015a13dd97d.json",
         "a0: {'count': 16, 'count_distinct': 3",
     ),

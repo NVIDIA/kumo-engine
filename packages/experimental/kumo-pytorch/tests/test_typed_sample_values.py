@@ -27,7 +27,7 @@ from kumo.pytorch.contract.sample import (
     sample_value_types,
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from kumo.pytorch.rows.samples import RowSampleBuilder
 
 
 @pytest.mark.parametrize(
@@ -58,7 +58,7 @@ def test_source_values_keep_their_declared_type(dtype, value):
     sample = SampleSpec(
         entity=EntitySpec(table="users"), entity_values={"value": Field(column="value")}
     )
-    built = InMemorySampleBuilder(schema, {"users": [{"id": 1, "value": value}]}).build(
+    built = RowSampleBuilder(schema, {"users": [{"id": 1, "value": value}]}).build(
         sample, [SampleRequest(sample_id="one", entity_id=1, as_of_time=0)]
     )[0]
     field = built.history.entity.values[0]
@@ -165,7 +165,7 @@ def test_event_calculations_resolve_named_prerequisites_and_use_anchor_time():
             )
         },
     )
-    built = InMemorySampleBuilder(
+    built = RowSampleBuilder(
         schema,
         {
             "users": [{"id": 1}],
@@ -365,7 +365,7 @@ def test_dated_occurrence_calculations_use_the_retained_occurrence():
             )
         },
     )
-    built = InMemorySampleBuilder(schema, {"users": [{"id": 1, "at": 10}]}).build(
+    built = RowSampleBuilder(schema, {"users": [{"id": 1, "at": 10}]}).build(
         sample, [SampleRequest(sample_id="one", entity_id=1, as_of_time=100)]
     )[0]
     occurrence = built.history.entity.dated_values[0]

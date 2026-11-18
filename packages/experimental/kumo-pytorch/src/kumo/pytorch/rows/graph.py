@@ -20,18 +20,20 @@ import torch
 
 from kumo.pytorch.contract.sample import GraphSample, NeighborhoodSpec
 from kumo.pytorch.contract.schema import DataSchema, table_clock
-from kumo.pytorch.data.records import timestamp_to_epoch
 from kumo.pytorch.engine import GraphRoot
+from kumo.pytorch.rows.clock import SECONDS, Clock
 
 
-class InMemoryGraphSampler:
+class RowGraphSampler:
     """Sample disjoint neighborhoods with simple indices and deterministic fanout."""
 
     def __init__(
         self,
         schema: DataSchema,
         tables: Mapping[str, Sequence[Mapping[str, Any]]],
+        clock: Clock = SECONDS,
     ):
+        self._clock = clock
         self._table_specs = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._tables = {
@@ -241,7 +243,7 @@ class InMemoryGraphSampler:
             candidates = [
                 candidate
                 for candidate in candidates
-                if timestamp_to_epoch(candidate[time_column]) <= root.cutoff
+                if self._clock.stored(candidate[time_column]) <= root.cutoff
             ]
         if traversal.strategy == "recent":
             if clock is None:
@@ -251,7 +253,7 @@ class InMemoryGraphSampler:
                 )
             candidates.sort(
                 key=lambda candidate: (
-                    timestamp_to_epoch(candidate[clock]),
+                    self._clock.stored(candidate[clock]),
                     self._sort_key(target_table, candidate),
                 ),
                 reverse=True,
