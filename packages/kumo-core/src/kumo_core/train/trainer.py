@@ -129,6 +129,20 @@ _MAX_EVAL_TOP_K = 20
 _DEFAULT_EVAL_TOP_K = 10
 _LOG_EVERY_N_STEPS = 50
 
+#: Values of the Engine-local ``matmul_precision`` option. ``None`` keeps the
+#: default ``'medium'``.
+MATMUL_PRECISIONS = ('highest', 'high', 'medium')
+
+
+def validate_matmul_precision(value: Any) -> str | None:
+    r"""Return ``value`` if it is ``None`` or one of :data:`MATMUL_PRECISIONS`;
+    raise ``ValueError`` otherwise."""
+    if value is not None and (not isinstance(value, str)
+                              or value not in MATMUL_PRECISIONS):
+        raise ValueError("matmul_precision must be None, 'highest', 'high' or "
+                         f"'medium', got {value!r}")
+    return value
+
 _TRAINER_COMPONENT_OWNERS: dict[str, type[Any]] = {
     'kumo_core.modeling.gnn.hetero.HeteroGNN':
     HeteroGNN,
@@ -427,6 +441,12 @@ class Trainer(PortableConfigMixin):
         raise_fake_trial_error_msg (str, optional): A fake error message to
             raise for test purpose.
         accelerator (str): Lightning accelerator selection. Defaults to auto.
+        matmul_precision (str, optional): The float32 matmul precision that
+            every Lightning trainer of this instance sets with
+            ``torch.set_float32_matmul_precision``: ``'highest'``,
+            ``'high'`` or ``'medium'``. :obj:`None` keeps the default
+            ``'medium'``. It is not saved in the trainer config.
+            (default: :obj:`None`)
         enable_compile (bool, optional): If set, the model and head are
             compiled using torch.compile. (default: :obj:`False`)
         **kwargs (optional): Additional arguments of
@@ -500,11 +520,13 @@ class Trainer(PortableConfigMixin):
         diskgraph_runtime: DiskgraphTrainingRuntime | None = None,
         embedding_models: EmbeddingModelStore | None = None,
         accelerator: str = 'auto',
+        matmul_precision: str | None = None,
         **kwargs,
     ) -> None:
         for name in ('feature_store', 'graph_store'):
             if name in kwargs:
                 raise TypeError(f"{name} is managed internally by the trainer")
+        self.matmul_precision = validate_matmul_precision(matmul_precision)
         self._embedding_models = embedding_models
 
         # Filter useless PyTorch Lightning warning for `log_every_n_steps`
@@ -1192,8 +1214,11 @@ class Trainer(PortableConfigMixin):
         pipeline."""
 
         # Enable Tensor Core optimization for compatible GPUs (A10, A100, etc.)
+        # unless the caller chose a precision; instances built without
+        # ``__init__`` keep the default.
         if hasattr(torch, 'set_float32_matmul_precision'):
-            torch.set_float32_matmul_precision('medium')
+            torch.set_float32_matmul_precision(
+                getattr(self, 'matmul_precision', None) or 'medium')
 
         # Handle callbacks ####################################################
 

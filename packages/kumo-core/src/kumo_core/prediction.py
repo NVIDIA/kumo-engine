@@ -548,6 +548,7 @@ class _PredictionWorkerConfig(NamedTuple):
     numerical_sensitivity: bool = True
     walk_attribution: dict | None = None
     local_sensitivity_on_unsupported: str = "raise"
+    matmul_precision: str | None = None
 
 
 def _score_prediction_shard(
@@ -581,6 +582,8 @@ def _score_prediction_shard(
         load_options['devices'] = [device]
     if config.binary_threshold is not None:
         load_options['binary_threshold'] = config.binary_threshold
+    if config.matmul_precision is not None:
+        load_options['matmul_precision'] = config.matmul_precision
     trainer = DiskgraphNestedTrainer.load(
         task,
         config.model_dir,
@@ -717,6 +720,7 @@ def score_prediction(
     numerical_sensitivity: bool = True,
     walk_attribution: dict | None = None,
     local_sensitivity_on_unsupported: str = "raise",
+    matmul_precision: str | None = None,
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
@@ -724,10 +728,14 @@ def score_prediction(
     manifest references; selection publishes after every scorer succeeds.
     ``encoders`` are the model's, if the caller already loaded them; only an
     in-process scorer reuses them. With ``count_edges``, scores are counted
-    into ``COUNTS_FILE``.
+    into ``COUNTS_FILE``. ``matmul_precision`` is the float32 matmul precision
+    of every scorer's Lightning trainer; ``None`` keeps the default
+    ``'medium'``.
     """
     from .prediction_options import validate_prediction_workers
+    from .train.trainer import validate_matmul_precision
     validate_prediction_workers(num_workers)
+    validate_matmul_precision(matmul_precision)
     if batch_size is not None and (type(batch_size) is not int or batch_size < 1):
         raise ValueError('batch_size must be a positive integer')
     if local_sensitivity_dir is not None and batch_size not in (None, 1):
@@ -806,6 +814,7 @@ def score_prediction(
         numerical_sensitivity=numerical_sensitivity,
         walk_attribution=walk_attribution,
         local_sensitivity_on_unsupported=local_sensitivity_on_unsupported,
+        matmul_precision=matmul_precision,
     )
     if worker_count == 1:
         references = [

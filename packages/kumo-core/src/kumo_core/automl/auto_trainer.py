@@ -50,7 +50,12 @@ from kumo_core.modeling.retrieval.mips import require_faiss
 from kumo_core.resolved_task import ResolvedNumericalTask, ResolvedTaskGraph
 from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
 from kumo_core.train.shallow_rhs_link_gnn_module import MAX_RHS_SAMPLE_SIZE
-from kumo_core.train.trainer import Trainer, load_encoders, save_encoders
+from kumo_core.train.trainer import (
+    Trainer,
+    load_encoders,
+    save_encoders,
+    validate_matmul_precision,
+)
 from kumo_core.training.config import LinkPredModuleKwargs, LinkPredModuleType
 from kumo_core.types import TaskType
 from kumoapi.model_plan import (
@@ -254,6 +259,9 @@ class AutoTrainer:
             builds the default biased modules, or inherits the actual flags of
             the ``checkpoint_path`` warm start; an explicit option that
             differs from a warm start raises ``ValueError``.
+        matmul_precision: The float32 matmul precision passed to every trial
+            and best-trial :class:`Trainer`; ``None`` keeps the default
+            ``'medium'``.
     """
     def __init__(
         self,
@@ -267,6 +275,7 @@ class AutoTrainer:
         home_dir: str | None = None,
         checkpoint_encoder_dir: str | None = None,
         bias_options: Any = None,
+        matmul_precision: str | None = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -286,6 +295,7 @@ class AutoTrainer:
         self.max_tries = max_tries
         self.min_retry_batch_size = min_retry_batch_size
         self.bias_options = self._resolve_bias_options(bias_options)
+        self.matmul_precision = validate_matmul_precision(matmul_precision)
         # Resolve the process-global home dir once at the boundary, then
         # thread the concrete value through the instance. Production callers
         # pass an explicit ``home_dir``; direct test constructions fall back
@@ -738,6 +748,8 @@ class AutoTrainer:
 
         extra_trainer_kwargs: dict[str, Any] = {
             'random_state_seed': self.random_state_seed,
+            # Stubbed instances (tests that bypass `__init__`) keep the default.
+            'matmul_precision': getattr(self, 'matmul_precision', None),
         }
         assert self.diskgraph_task_dataset_bundle_dir is not None, (
             "TT-NG requires a diskgraph task-dataset bundle")
@@ -1242,6 +1254,7 @@ class AutoTrainer:
             diskgraph_task_dataset_bundle_dir=(
                 self.diskgraph_task_dataset_bundle_dir),
             random_state_seed=random_state_seed,
+            matmul_precision=getattr(self, 'matmul_precision', None),
         )
         if should_init:
             trainer.init()

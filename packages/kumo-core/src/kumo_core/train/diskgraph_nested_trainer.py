@@ -1472,7 +1472,7 @@ class DiskgraphNestedTrainer(Trainer):
                 progress_log_id=progress_log_id, partition_id=partition_id,
                 total_partitions=total_partitions,
                 output_partition_ids=output_partition_ids, top_k=top_k,
-                task_manifest=task_manifest)
+                task_manifest=task_manifest, batch_size=batch_size)
             if artifact_stats_collector is not None:
                 link_prediction_kwargs["artifact_stats_collector"] = (
                     artifact_stats_collector)
@@ -1844,6 +1844,7 @@ class DiskgraphNestedTrainer(Trainer):
         | None = None,
         task_manifest: DiskgraphTaskManifest | None = None,
         prediction_counts: Counts | None = None,
+        batch_size: int | None = None,
     ) -> Any:
         """TT-NG batch prediction for link prediction (all 4 model families).
 
@@ -1854,6 +1855,10 @@ class DiskgraphNestedTrainer(Trainer):
         when predictions are requested. With ``return_embeddings`` also emits
         the ``create_lp_embedding_output`` table (LHS per anchor + the filtered
         RHS catalog for two-tower/shallow-RHS).
+
+        ``batch_size``, as in the node path, sets the evaluation loader batch
+        size (anchors per ``predict_step``) for this call and restores it
+        afterwards; ``None`` keeps the loader's batch size.
         """
         import math
 
@@ -1876,6 +1881,9 @@ class DiskgraphNestedTrainer(Trainer):
         if not emit_embeddings and not emit_predictions:
             raise ValueError(
                 'Batch prediction must request predictions or embeddings.')
+        if batch_size is not None and (type(batch_size) is not int
+                                       or batch_size < 1):
+            raise ValueError('batch_size must be a positive integer')
 
         self._prediction_mode = True
         self.init(task_manifest=task_manifest)
@@ -1904,6 +1912,14 @@ class DiskgraphNestedTrainer(Trainer):
             if num_rhs:
                 pred_top_k = min(int(pred_top_k), num_rhs)
             self.pl_model.pred_top_k = int(pred_top_k)
+
+        # As in the node path, ``batch_size`` applies to this call only.
+        eval_loader_kwargs: dict[str, Any] = {}
+        original_batch_size = None
+        if batch_size is not None:
+            eval_loader_kwargs = self.datamodule.eval_loader_kwargs
+            original_batch_size = eval_loader_kwargs['batch_size']
+            eval_loader_kwargs['batch_size'] = batch_size
 
         # kumo-pred reads a PredictionProgress file after predict.
         _cbs = []
@@ -2209,6 +2225,8 @@ class DiskgraphNestedTrainer(Trainer):
                     'Failed to close prediction DataLoader after error')
             raise
         finally:
+            if batch_size is not None:
+                eval_loader_kwargs['batch_size'] = original_batch_size
             if emit_embeddings:
                 if had_flag:
                     self.pl_model._kumo_return_predict_embeddings = old_flag

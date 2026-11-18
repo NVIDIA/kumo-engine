@@ -498,6 +498,8 @@ class RunScoring(Record):
     num_classes_to_return: Optional[int]
     count_source: str
     num_workers: Optional[int]
+    # Present only when the caller chose a float32 matmul precision.
+    matmul_precision: Optional[str] = omit_none()
 
 
 @dataclass(frozen=True, kw_only=True)

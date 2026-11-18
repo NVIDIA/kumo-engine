@@ -139,11 +139,16 @@ class CallableTrainingOptions:
     target_edges: tuple[float, ...] = ()
     # ``None`` keeps the defaults, or inherits a warm start's actual flags.
     bias_options: BiasOptions | None = None
+    # Float32 matmul precision of every Lightning trainer the run builds;
+    # ``None`` keeps the default ``'medium'``.
+    matmul_precision: str | None = None
 
     def __post_init__(self) -> None:
         if (self.bias_options is not None
                 and not isinstance(self.bias_options, BiasOptions)):
             raise TypeError("bias_options must be BiasOptions or None")
+        from kumo_core.train.trainer import validate_matmul_precision
+        validate_matmul_precision(self.matmul_precision)
 
 
 def _no_op() -> None:
@@ -366,6 +371,7 @@ def _create_auto_trainer(
         diskgraph_task_dataset_bundle_dir=(
             training_input.task_dataset_bundle_dir),
         bias_options=options.bias_options,
+        matmul_precision=options.matmul_precision,
     )
 
 

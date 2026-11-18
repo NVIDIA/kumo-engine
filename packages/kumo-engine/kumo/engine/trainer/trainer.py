@@ -270,8 +270,9 @@ class TrainingResult:
             warnings.warn(
                 f"Could not record the parent model in _provenance.json: "
                 f"{error}", UserWarning, stacklevel=2)
-        result = Trainer._load_bundle(bundle_dir,
-                                      self._trainer._embedding_models).result
+        result = Trainer._load_bundle(
+            bundle_dir, self._trainer._embedding_models,
+            matmul_precision=self._trainer._matmul_precision).result
         assert result is not None
         return result
 
@@ -290,9 +291,10 @@ class TrainingResult:
                                'use Trainer.load on its bundle_dir.')
         current = trainer._training_result
         if current is None or current.bundle_dir != self.bundle_dir:
-            trainer = Trainer._load_bundle(self.bundle_dir,
-                                           trainer._embedding_models,
-                                           accelerator=trainer._accelerator)
+            trainer = Trainer._load_bundle(
+                self.bundle_dir, trainer._embedding_models,
+                accelerator=trainer._accelerator,
+                matmul_precision=trainer._matmul_precision)
             self._trainer = trainer
         return trainer
 
@@ -1101,6 +1103,18 @@ def _ingest_tt_id(run_id: str) -> str:
     return f'tt-{run_id}'
 
 
+#: ``torch.set_float32_matmul_precision`` values of ``matmul_precision``.
+_MatmulPrecision = Literal['highest', 'high', 'medium']
+
+
+def _check_matmul_precision(value: Any) -> None:
+    """Raise ``ValueError`` unless ``value`` is ``None``, ``'highest'``,
+    ``'high'`` or ``'medium'``."""
+    if value is not None:
+        from kumo_core.train.trainer import validate_matmul_precision
+        validate_matmul_precision(value)
+
+
 class Trainer:
     r"""Trains and runs a GNN model in-process.
 
@@ -1137,6 +1151,17 @@ class Trainer:
             its rows in a different order on each call, which changes the
             model even with a run name. Prediction run ids stay random, and
             bundles do not record the name.
+        matmul_precision: the float32 matrix-multiplication precision that
+            fit and predict set with ``torch.set_float32_matmul_precision``
+            whenever they build a Lightning trainer: ``'highest'``,
+            ``'high'`` or ``'medium'``. ``None`` keeps Engine's default
+            ``'medium'``, which lets backends compute float32 matmuls at
+            reduced internal precision (for example bfloat16 on CPUs with
+            AMX, TF32 on recent GPUs). As with the default, the setting stays
+            in effect for the process afterwards. A chosen value is recorded
+            in the fitted bundle's ``training-spec.json`` and in prediction
+            manifests; a loaded trainer uses only the value passed to
+            :meth:`load` or :meth:`load_from_connector`.
     """
     def __init__(
         self,
@@ -1146,10 +1171,13 @@ class Trainer:
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
         bias_options: Optional[Any] = None,
         run_name: Optional[str] = None,
+        matmul_precision: Optional[Literal['highest', 'high',
+                                           'medium']] = None,
     ):
         if accelerator not in ('cpu', 'gpu', 'mps', 'auto'):
             raise ValueError(
                 "accelerator must be one of 'cpu', 'gpu', 'mps', or 'auto'")
+        _check_matmul_precision(matmul_precision)
         if bias_options is not None:
             from kumo_core.training.orchestration import BiasOptions
             if not isinstance(bias_options, BiasOptions):
@@ -1162,6 +1190,7 @@ class Trainer:
                     'run_name must match [a-z0-9][a-z0-9-]{0,47} (lowercase '
                     f'letters, digits and dashes), got {run_name!r}')
         self._bias_options = bias_options
+        self._matmul_precision: Optional[_MatmulPrecision] = matmul_precision
         self._accelerator = accelerator
         self._model_plan = model_plan
         self._embedding_models = (embedding_models if embedding_models
@@ -1194,6 +1223,12 @@ class Trainer:
         trained modules' configs remain the record of what a bundle holds.
         """
         return self._bias_options
+
+    @property
+    def matmul_precision(self) -> Optional[str]:
+        """The requested float32 matmul precision, or ``None`` for Engine's
+        default ``'medium'``. A loaded trainer never adopts the bundle's."""
+        return self._matmul_precision
 
     @property
     def run_name(self) -> Optional[str]:
@@ -1537,7 +1572,8 @@ class Trainer:
                 accelerator=self._accelerator, instrumentation=events),
             options=CallableTrainingOptions(
                 binary_classification_threshold=threshold,
-                target_edges=edges, bias_options=self._bias_options),
+                target_edges=edges, bias_options=self._bias_options,
+                matmul_precision=self._matmul_precision),
         )
         explanation_root = explanation_trial(
             result.best_trainer.original_log_dir,
@@ -1618,6 +1654,7 @@ class Trainer:
             bias_options=(None if effective_bias is None
                           or effective_bias.is_default else
                           effective_bias.to_dict()),
+            matmul_precision=self._matmul_precision,
         )
         if scoring_defaults is not None:
             write_scoring_defaults(training_result.bundle_dir,
@@ -1973,6 +2010,9 @@ class Trainer:
                 'batch_size': batch_size
             } if batch_size is not None else {}),
             **({
+                'matmul_precision': self._matmul_precision
+            } if self._matmul_precision is not None else {}),
+            **({
                 'local_sensitivity_dir':
                 str(run_dir / 'xai' / 'local'),
                 'numerical_sensitivity':
@@ -2051,6 +2091,7 @@ class Trainer:
                 count_source=_option_source(arguments[1], requested_classes,
                                             num_classes_to_return, 'query'),
                 num_workers=num_workers,
+                matmul_precision=self._matmul_precision,
             ), started_at=started_at.isoformat(timespec='seconds'))
         tracking = _run_manifest.finish(result, manifest, output_config,
                                         settings, training_result, snapshot)
@@ -2117,6 +2158,8 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
+        matmul_precision: Optional[Literal['highest', 'high',
+                                           'medium']] = None,
     ) -> Self:
         r"""Restore a trainer from an existing local model bundle.
 
@@ -2124,9 +2167,14 @@ class Trainer:
         with, registered in ``embedding_models`` under any name or installed.
         ``accelerator`` selects the device for this instance, defaulting to
         ``auto`` independently of the device used to train the model.
+        ``matmul_precision`` is this instance's float32 matmul precision (see
+        :class:`Trainer`); the precision a bundle was trained under is
+        provenance and is not adopted.
         """
+        _check_matmul_precision(matmul_precision)
         return cls._load_bundle(Path(bundle_path), embedding_models,
-                                accelerator=accelerator)
+                                accelerator=accelerator,
+                                matmul_precision=matmul_precision)
 
     @classmethod
     def load_from_connector(
@@ -2137,6 +2185,8 @@ class Trainer:
         location: Optional[ModelRegistryLocation] = None,
         embedding_models: Optional[EmbeddingModelStore] = None,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
+        matmul_precision: Optional[Literal['highest', 'high',
+                                           'medium']] = None,
     ) -> Self:
         r"""Fetch a trusted publication, then restore its training state.
 
@@ -2149,11 +2199,14 @@ class Trainer:
         Hashes detect corruption, not publisher authentication. Load only models
         from trusted publishers; checkpoint deserialization happens at predict.
         ``accelerator`` selects the device for this instance (default: ``auto``).
+        ``matmul_precision`` is this instance's float32 matmul precision, as
+        for :meth:`load`.
         A `kumo.MLOps` ``model_registry`` reads ``path`` under its artifact
         root (``models/<id>``) and ``location`` in its tracker's registry.
         """
         from kumo.engine._mlops import MLOps, on_root
 
+        _check_matmul_precision(matmul_precision)
         if isinstance(model_registry, MLOps) and location is not None:
             tracker = as_tracking(model_registry.tracking)
             load = None if tracker is None else tracker.load_model
@@ -2162,8 +2215,10 @@ class Trainer:
                     'Loading a registered model from a kumo.MLOps takes '
                     'location= and its tracking=MlflowTracking(...) or '
                     'SnowflakeTracking(connector, ...).')
-            return load(location, embedding_models=embedding_models,
-                        accelerator=accelerator)
+            loaded = load(location, embedding_models=embedding_models,
+                          accelerator=accelerator)
+            loaded._matmul_precision = matmul_precision
+            return loaded
         if path is not None:
             model_registry, path = on_root(model_registry, path)
         address = ModelOutputConfig(model_registry, path=path,
@@ -2186,7 +2241,8 @@ class Trainer:
                     f'pass a {reader}(...) with an identity that reads it '
                     f'as Trainer.load_from_connector(model_registry, ...)')):
             trainer = cls._load_bundle(bundle_dir, embedding_models,
-                                       accelerator=accelerator)
+                                       accelerator=accelerator,
+                                       matmul_precision=matmul_precision)
         warn_if_other_bundle(published.metadata, trainer)
         if location is not None:
             trainer._from_registry(published, alias)
@@ -2207,6 +2263,8 @@ class Trainer:
         embedding_models: Optional[EmbeddingModelStore] = None,
         *,
         accelerator: Literal['cpu', 'gpu', 'mps', 'auto'] = 'auto',
+        matmul_precision: Optional[Literal['highest', 'high',
+                                           'medium']] = None,
     ) -> Self:
         bundle_dir = bundle_dir.resolve()
         paths, bundle_id = read_bundle_artifact_paths(bundle_dir)
@@ -2227,8 +2285,10 @@ class Trainer:
             raise ValueError(
                 f'{bundle_dir}: training-spec.json records bias options '
                 f'{recorded} but model/config.json has {actual.to_dict()}.')
+        # The recorded training precision is provenance, never adopted.
         trainer = cls(plan, embedding_models, accelerator=accelerator,
-                      bias_options=bias_options)
+                      bias_options=bias_options,
+                      matmul_precision=matmul_precision)
         trainer._snapshot_id = spec.snapshot_id
         trainer._graph_config = spec.graph_config
         trainer._timestamp_precision = spec.timestamp_precision

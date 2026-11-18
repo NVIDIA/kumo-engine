@@ -48,6 +48,9 @@ class TrainingSpec:
     # Engine-local bias switches (`BiasOptions.to_dict()`), present only when
     # they differ from the defaults, so default bundles keep their bytes.
     bias_options: Optional[Dict[str, bool]] = None
+    # The float32 matmul precision the fit ran under, present only when the
+    # caller chose one (provenance; a loaded trainer never adopts it).
+    matmul_precision: Optional[str] = None
 
 
 def write_training_spec(
@@ -60,6 +63,7 @@ def write_training_spec(
     graph_config: Optional[Dict[str, Any]] = None,
     timestamp_precision: str = 'seconds',
     bias_options: Optional[Dict[str, bool]] = None,
+    matmul_precision: Optional[str] = None,
 ) -> None:
     r"""Write an integrity-covered training spec into a completed bundle."""
     from kumo_core.artifacts import add_bundle_file
@@ -74,10 +78,12 @@ def write_training_spec(
         graph_config=graph_config,
         timestamp_precision=timestamp_precision,
         bias_options=bias_options,
+        matmul_precision=matmul_precision,
     )
     data = asdict(spec)
-    if data['bias_options'] is None:
-        del data['bias_options']
+    for optional in ('bias_options', 'matmul_precision'):
+        if data[optional] is None:
+            del data[optional]
     spec_path = bundle_dir / SPEC_FILE
     atomic_write_bytes(
         spec_path,
@@ -117,6 +123,7 @@ def read_training_spec(bundle_dir: Path) -> TrainingSpec:
         graph_config=data.get('graph_config'),
         timestamp_precision=data.get('timestamp_precision', 'seconds'),
         bias_options=data.get('bias_options'),
+        matmul_precision=data.get('matmul_precision'),
     )
 
 
