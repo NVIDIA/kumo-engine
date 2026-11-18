@@ -18,8 +18,15 @@ def normalize_work_dir(
     work = None if work_dir is None else Path(work_dir).resolve()
     if not external_only and (work is None or work == base):
         return None
-    if work is None or work.is_relative_to(base):
+    if work is None:
         raise ValueError("work_dir must be outside the base index")
+    # Validate every writable root before creating any of them, including symlinks.
+    for destination in (work, work / "tasks", work / "train_tables", work / "cache"):
+        resolved = destination.resolve()
+        if resolved.is_relative_to(base) or base.is_relative_to(resolved):
+            raise ValueError(
+                "work_dir and its writable roots must be outside and disjoint from the base index"
+            )
     return work
 
 
@@ -30,6 +37,8 @@ class ColumnCache:
         self.index = Path(index)
         self.root = self.index if root is None else Path(root)
         self.external = self.root.resolve() != self.index.resolve()
+        if not self.external:
+            self.root = self.index
 
     @classmethod
     def for_work_dir(cls, index: str | Path, work_dir: Path | None, identity: str):

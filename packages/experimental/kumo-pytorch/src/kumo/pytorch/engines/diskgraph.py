@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import inspect
 import json
 import os
 import time
@@ -271,7 +272,7 @@ class DiskGraphEngine:
         Read schema/relations from existing metadata. Older indexes without the
         resolved native config are refused. Native edge tables and non-scalar
         stored columns are not supported. Bare indexes without producer identity
-        are hashed once; engine provenance and PyTorch manifests avoid that scan.
+        are hashed in full on each open; engine provenance and PyTorch manifests avoid that scan.
         ``work_dir`` holds task extensions and derived caches outside the base.
         """
         work_dir = normalize_work_dir(index, work_dir, external_only=True)
@@ -482,6 +483,19 @@ class DiskGraphEngine:
         *,
         column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
+        if self.work_dir is not None:
+            import diskgraph
+
+            try:
+                inspect.signature(diskgraph.cutoff_col_stats).bind(
+                    str(self.index), "{}", output_dir=str(self.work_dir)
+                )
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    "External work_dir requires a DiskGraph build with "
+                    "cutoff_col_stats(output_dir=...) support; rebuild/install DiskGraph "
+                    "from the matching kumo-engine revision"
+                ) from error
         if self._binding is not None:
             if dataset is not None:
                 raise ValueError("an existing-index engine does not accept Dataset")
