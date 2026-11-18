@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from kumo.pytorch._storage import ColumnCache
 from kumo.pytorch.contract.batch import (
     Composite,
     EntitySource,
@@ -254,9 +255,7 @@ def read_token_lengths(
 
     if entry["file"] is None:
         return entry["constant"], None
-    path = Path(index, "col_stats", entry["file"])
-    if not path.is_file() and cache_root is not None:
-        path = Path(cache_root, "col_stats", entry["file"])
+    path = ColumnCache(index, cache_root).resolve(entry["file"])
     if not path.stat().st_size:
         return entry["constant"], np.frombuffer(b"", dtype="<u2")
     return entry["constant"], np.memmap(path, dtype="<u2", mode="r")
@@ -291,23 +290,19 @@ def read_column_stats(
 
     import diskgraph
 
-    base = Path(index, "col_stats", _cutoff_dir(ticks, unit))
-    external = cache_root is not None and Path(cache_root).resolve() != Path(index).resolve()
-    destination = Path(cache_root) if external else Path(index)
+    cache = ColumnCache(index, cache_root)
+    cutoff = _cutoff_dir(ticks, unit)
     # Isolate request sets; immutable base statistics need not be recomputed.
     recipe = hashlib.sha256(json.dumps(sorted(set(requests))).encode()).hexdigest()[:16]
-    relative = _cutoff_dir(ticks, unit) + (f"/{recipe}" if external else "")
-    directory = destination / "col_stats" / relative
-    paths = {
-        table: directory / f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests
-    }
+    relative = cutoff + (f"/{recipe}" if cache.external else "")
+    paths = {table: f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests}
 
     files = set()
 
     def read() -> dict:
         found = {}
-        for table, path in paths.items():
-            for candidate in (base / path.name, path):
+        for table, name in paths.items():
+            for candidate in cache.candidates(f"{relative}/{name}", base_name=f"{cutoff}/{name}"):
                 if candidate.is_file():
                     files.add(candidate)
                     data = json.loads(candidate.read_text())[table]
@@ -324,7 +319,7 @@ def read_column_stats(
     if missing:
         request = stats_request(missing, [ticks], unit)
         request["dirs"] = [relative]
-        options = {"output_dir": str(destination)} if external else {}
+        options = {"output_dir": str(cache.root)} if cache.external else {}
         diskgraph.cutoff_col_stats(
             str(index), json.dumps(request), num_threads=num_threads, **options
         )
@@ -332,10 +327,7 @@ def read_column_stats(
     return ColumnStats(
         {item: found[item[0]][item[1]] for item in requests},
         {"value": ticks, "unit": unit},
-        tuple(
-            str(path if external else path.relative_to(Path(index) / "col_stats"))
-            for path in sorted(files)
-        ),
+        tuple(cache.reference(path) for path in sorted(files)),
     )
 
 
