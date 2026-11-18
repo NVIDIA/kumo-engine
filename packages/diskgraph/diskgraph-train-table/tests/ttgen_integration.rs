@@ -10705,15 +10705,26 @@ fn integ_parallel_history_preserves_ragged_batches() {
                     let cutoffs = (0..size).map(|i| if empty || i < 8 { 0 } else { 5000 })
                         .collect::<Vec<_>>();
                     let expected = prepared.execute(&reader, &roots, &cutoffs, &pools[0]).unwrap();
+                    let context = format!("limit={limit:?} size={size} repeated={repeated} empty={empty}");
+                    for sequence in &expected.sequences {
+                        for i in 0..size {
+                            let rows = if empty || i < 8 { 0 } else if repeated { 4 } else { [4, 2, 1, 3, 0][i % 5] };
+                            let rows = limit.map_or(rows, |maximum| rows.min(maximum));
+                            assert_eq!(sequence.offsets[i + 1] - sequence.offsets[i], rows, "{context} anchor={i}");
+                        }
+                        if !empty && size > 8 {
+                            assert!(!sequence.node_ids.is_empty(), "{context}");
+                        }
+                    }
                     for pool in &pools[1..] {
                         let actual = prepared.execute(&reader, &roots, &cutoffs, pool).unwrap();
-                        assert_eq!(actual.sequences.len(), expected.sequences.len());
+                        assert_eq!(actual.sequences.len(), expected.sequences.len(), "{context}");
                         for (actual, expected) in actual.sequences.iter().zip(&expected.sequences) {
-                            assert_eq!(actual.name, expected.name);
-                            assert_eq!(actual.offsets, expected.offsets);
-                            assert_eq!(actual.node_ids, expected.node_ids);
-                            assert_eq!(actual.timestamps, expected.timestamps);
-                            assert_eq!(actual.batch, expected.batch);
+                            assert_eq!(actual.name, expected.name, "{context}");
+                            assert_eq!(actual.offsets, expected.offsets, "{context}");
+                            assert_eq!(actual.node_ids, expected.node_ids, "{context}");
+                            assert_eq!(actual.timestamps, expected.timestamps, "{context}");
+                            assert_eq!(actual.batch, expected.batch, "{context}");
                         }
                     }
                 }
