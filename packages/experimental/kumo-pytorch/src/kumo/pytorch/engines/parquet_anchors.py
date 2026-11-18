@@ -173,7 +173,6 @@ class ParquetAnchors(PositionalAnchors):
 
     def latest_time(self, selection: SplitSelection = ALL_ANCHORS) -> Any:
         """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
-        import pyarrow as pa
         import pyarrow.compute as pc
 
         rows = self._rows(selection)
@@ -183,7 +182,7 @@ class ParquetAnchors(PositionalAnchors):
             return 0
         times = self._columns[self._table.as_of_time]
         if not isinstance(selection, AllAnchors):
-            times = times.take(pa.array(rows, type=pa.int64()))
+            times = times.take(rows)
         return pc.max(times).as_py()
 
     def _value(self, name: str, row: int) -> Any:

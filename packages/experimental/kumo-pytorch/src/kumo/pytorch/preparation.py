@@ -425,7 +425,7 @@ class Plan:
         *,
         exclude=(),
         chosen=None,
-        anchors: AnchorTask | None = None,
+        anchors: AnchorTask,
     ) -> tuple[dict[str, FittedEncoder], dict[str, Any]]:
         column_stats = getattr(source, "column_stats", None)
         column_text = getattr(source, "column_text", None)

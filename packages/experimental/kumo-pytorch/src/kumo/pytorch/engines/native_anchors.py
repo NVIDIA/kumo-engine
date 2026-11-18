@@ -264,7 +264,7 @@ class NativeAnchors:
 
     def latest_time(self, selection: Any = ALL_ANCHORS) -> Any:
         """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
-        stages = [stage for stage in self._selection(selection) if stage["count"]]
+        stages = self._selection(selection)
         if not stages:
             raise ValueError("no anchors selected")
         if self._table.as_of_time is None:
@@ -272,11 +272,10 @@ class NativeAnchors:
         pa, dtype = self._pa, self._types[self._table.as_of_time]
         # Files may use equivalent timezone aliases. Normalize to the decoding
         # dtype before combining their maxima, just as `_requests` does.
-        maxima = pa.concat_arrays(
-            [pa.repeat(value, 1).cast(dtype) for stage in stages for value in stage["latest"]]
+        maxima = pa.array(
+            [value.cast(dtype) for stage in stages for value in stage["latest"]], type=dtype
         )
-        # Convert like `_requests` so the value and its type match the requests'.
-        return _arrow_values(pa.repeat(self._pc.max(maxima), 1))[0]
+        return _arrow_scalar_value(self._pc.max(maxima))
 
     def _iter(
         self,
