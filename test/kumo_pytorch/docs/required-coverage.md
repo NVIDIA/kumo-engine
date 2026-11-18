@@ -112,24 +112,23 @@ also remains. These are local fixture findings, not full AML/GPU CI results.
 
 ## GitHub merge enforcement
 
-PR #353 now owns `kumo-pytorch-gate`; it no longer depends on outdated PR #284.
-The gate runs on every PR. Relevant changes (including `test/kumo_pytorch/**`,
-the shared AML workflow, package/native sources and environment configuration)
-require the package checks, DiskGraph checks, standalone CPU AML inventory and
-suite tooling. A single candidate DiskGraph wheel feeds all three test workflows.
-Unrelated PRs pass through explicit changed-file detection; an API error runs
-checks rather than assuming the PR is unrelated. Required failures, cancellations,
-unexpected skips and failed detection cannot produce a passing gate.
+PR #353 owns `kumo-pytorch-gate` in the **PyTorch — Full Suite** workflow.
+Direct PR, main, scheduled and manual executions use the same complete plan,
+including real-data training, full populations and GPU benchmarks. Existing
+package/example/H&M workflows are reusable workers, not independent triggers.
+A single candidate DiskGraph wheel feeds all native checks. Unrelated PRs pass
+through explicit changed-file detection; API errors run the suite instead of
+assuming an exemption. Missing jobs, failures, cancellations and unexpected
+skips fail the gate.
 
-The existing package and DiskGraph workflows become reusable and retain their
-push-to-main and manual triggers. Their PR execution is owned by the gate.
-The nightly PR trigger remains. Its AML job calls the same reusable workflow
-as the gate, retaining `--required-coverage=cpu`, Polars and report artifacts.
-No new InMemory tests or package behavior changes are introduced.
+The RTX runner's documented refusal of direct `pull_request` jobs remains an
+open infrastructure issue. The user requested keeping direct PR events while
+resolving runner access separately. GPU jobs remain required. No runner/IAM
+configuration or branch protection is changed by the suite reorganization.
 
-GitHub activation is **pending**, not deferred by preference. The current
-account has maintain access but no admin access. Main's current active ruleset
-requires `kumo-core-gpu-ci`, not the new PyTorch gate. After the gate is merged
+Required-check activation and post-merge schedule verification remain deferred.
+The last permissions audit found maintain access without admin access and a
+main ruleset requiring `kumo-core-gpu-ci`, not the new PyTorch gate. After the gate is merged
 and has reported on both a relevant and an unrelated PR, an administrator can
 create the main-only rule in [merge-gate-ruleset.json](merge-gate-ruleset.json):
 

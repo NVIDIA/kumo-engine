@@ -17,7 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github/workflows"
-GATE = (WORKFLOWS / "kumo-pytorch-gate.yml").read_text()
+GATE = (WORKFLOWS / "kumo-pytorch-t2b.yml").read_text()
 
 
 def shell_steps():
@@ -30,49 +30,39 @@ def shell_steps():
     ]
 
 
-@pytest.mark.parametrize("job", ["WHEEL", "CPU", "DISKGRAPH", "AML", "TOOLING"])
-@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", ""])
-def test_affected_gate_rejects_every_unsuccessful_dependency(job, result):
-    env = {
-        f"{name}_RESULT": "success"
-        for name in ("CHANGES", "WHEEL", "CPU", "DISKGRAPH", "AML", "TOOLING")
-    }
-    env.update(AFFECTED="true", **{f"{job}_RESULT": result})
-    assert (
-        subprocess.run(
-            ["bash", "-c", shell_steps()[-1]],
-            env={**os.environ, **env},
-            capture_output=True,
-            check=False,
-        ).returncode
-        == 1
-    )
+@pytest.mark.parametrize("job", sorted(automation.SUITE_JOBS))
+@pytest.mark.parametrize("outcome", ["failure", "cancelled", "skipped", ""])
+def test_affected_gate_rejects_every_unsuccessful_dependency(job, outcome):
+    jobs = results()
+    jobs[job]["result"] = outcome
+    assert evidence(jobs)["status"] == "failed"
 
 
 @pytest.mark.parametrize(
     "affected,changes,expected",
     [
-        ("true", "success", 0),
-        ("false", "success", 0),
-        ("false", "failure", 1),
-        ("", "success", 1),
+        ("true", "success", "passed"),
+        ("false", "success", "passed"),
+        ("false", "failure", "failed"),
+        ("", "success", "failed"),
     ],
 )
 def test_gate_requires_valid_detection_or_all_checks(affected, changes, expected):
-    env = {
-        f"{name}_RESULT": "success" if affected == "true" else "skipped"
-        for name in ("WHEEL", "CPU", "DISKGRAPH", "AML", "TOOLING")
-    }
-    env.update(AFFECTED=affected, CHANGES_RESULT=changes)
-    assert (
-        subprocess.run(
-            ["bash", "-c", shell_steps()[-1]],
-            env={**os.environ, **env},
-            capture_output=True,
-            check=False,
-        ).returncode
-        == expected
+    jobs = results()
+    if affected != "true":
+        for row in jobs.values():
+            row["result"] = "skipped"
+    jobs["changes"]["result"] = changes
+    result = automation.nightly_status(
+        jobs,
+        run_id=42,
+        attempt=1,
+        sha="abc",
+        event="pull_request",
+        ref="refs/pull/353/merge",
+        affected=affected,
     )
+    assert result["status"] == expected
 
 
 @pytest.mark.parametrize(
@@ -116,7 +106,7 @@ def test_changed_file_detection_uses_the_workflow(path, expected, tmp_path):
 
 
 def results():
-    return {name: {"result": "success"} for name in automation.NIGHTLY_JOBS}
+    return {name: {"result": "success"} for name in automation.SUITE_JOBS}
 
 
 def evidence(jobs=None, **kwargs):
@@ -151,21 +141,21 @@ def scheduled():
 def test_nightly_never_hides_missing_or_unsuccessful_jobs(fault):
     jobs = results()
     if fault == "missing":
-        jobs.pop("benchmark-gpu")
+        jobs.pop("gpu-checks")
     elif fault == "extra":
         jobs["unregistered"] = {"result": "success"}
     else:
-        jobs["benchmark-gpu"]["result"] = fault
+        jobs["gpu-checks"]["result"] = fault
     assert evidence(jobs)["status"] == "failed"
 
 
 def test_nightly_status_lists_every_workflow_job_and_dependency():
     text = (WORKFLOWS / "kumo-pytorch-t2b.yml").read_text().split("\njobs:\n", 1)[1]
     jobs = set(re.findall(r"^  ([\w-]+):$", text, re.MULTILINE))
-    assert jobs - {"nightly-result"} == automation.NIGHTLY_JOBS
-    final = text.split("  nightly-result:\n", 1)[1]
+    assert jobs - {"gate"} == automation.SUITE_JOBS
+    final = text.split("  gate:\n", 1)[1]
     needs = re.search(r"    needs: \[(.*)\]", final)[1].split(", ")
-    assert set(needs) == automation.NIGHTLY_JOBS
+    assert set(needs) == automation.SUITE_JOBS
     assert "always()" in final and "toJSON(needs)" in final
     assert (
         "--required-coverage=cpu"
@@ -193,13 +183,13 @@ def test_schedule_proof_rejects_manual_runs_and_stale_evidence(field, value):
 def test_schedule_trigger_is_distinct_from_test_success():
     assert automation.verify_schedule(scheduled(), evidence())["tests"] == "passed"
     jobs = results()
-    jobs["aml-model-checks"]["result"] = "failure"
+    jobs["fixtures"]["result"] = "failure"
     proof = automation.verify_schedule(
         {**scheduled(), "conclusion": "failure"}, evidence(jobs)
     )
     assert proof["scheduled_trigger"] == "verified" and proof["tests"] == "failed"
     assert proof["required_jobs_executed"]
-    jobs["benchmark-gpu"]["result"] = "skipped"
+    jobs["gpu-checks"]["result"] = "skipped"
     proof = automation.verify_schedule(
         {**scheduled(), "conclusion": "failure"}, evidence(jobs)
     )

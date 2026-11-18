@@ -4,35 +4,17 @@
 
 name: PyTorch — Package Tests
 
-# kumo-pytorch's CPU checks: DiskGraph golden cases, the test suite, style
-# and the package build. DiskGraph is built from this commit.
-# Pull requests run these checks through kumo-pytorch-gate.
+# Called by the full suite; conformance and lifecycle have separate owners.
 on:  # yamllint disable-line rule:truthy
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-      - 'pyproject.toml'
-      - 'uv.lock'
   workflow_call:
     inputs:
       prebuilt-diskgraph-wheel:
         description: The caller uploaded this run's diskgraph-wheel artifact.
         type: boolean
         default: false
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: kumo-pytorch-tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   diskgraph-wheel:
@@ -57,13 +39,13 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: DiskGraph conformance
-        run: python -m conformance --engine diskgraph
       - name: Test suite
-        run: python -m pytest -q --ignore=tests/conformance
+        run: python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py
       - name: Style
+        if: ${{ !cancelled() }}
         run: |
           uvx ruff@0.17.3 check .
           uvx ruff@0.17.3 format --check .
       - name: Package build
+        if: ${{ !cancelled() }}
         run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .

@@ -307,9 +307,7 @@ def test_li_policy_grants_only_additional_pinned_objects():
 
 def test_jobs_cover_all_bindings_and_retain_reports():
     workflow = (ROOT.parents[1] / ".github/workflows/kumo-pytorch-t2b.yml").read_text()
-    job = workflow.split("  dataset-campaigns:\n", 1)[1].split("  aml-lifecycle:\n", 1)[
-        0
-    ]
+    job = (ROOT.parents[1] / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     planned = (
         binding_results.campaign_matrix("training")["include"]
         + binding_results.campaign_matrix("population")["include"]
@@ -319,12 +317,14 @@ def test_jobs_cover_all_bindings_and_retain_reports():
     assert len(planned) == 26
     assert len({(r["binding"], r["mode"]) for r in planned}) == 26
     assert {r["dataset"] for r in planned} == {"hi-small", "li-medium"}
-    assert "matrix: ${{ fromJSON(needs.plan.outputs.dataset_campaigns) }}" in job
-    assert "fail-fast: false" in job
+    for group in ("correctness", "training", "lifecycle", "population"):
+        assert f"matrix: ${{{{ fromJSON(needs.plan.outputs.{group}) }}}}" in workflow
+    assert "fail-fast: false" in workflow
     assert '--dataset "$DATASET"' in job and "--anchors-per-split" not in job
     assert "python -m test.kumo_pytorch.nightly run" in job
     assert (
-        "torch-extra: cpu" in job and "diskgraph-wheel-artifact: diskgraph-wheel" in job
+        "torch-extra: cpu" in job
+        and "diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}" in job
     )
     assert "report.json" in job and "loss-curve.csv" in job
     assert "pattern: kumo-pytorch-dataset-*" in workflow

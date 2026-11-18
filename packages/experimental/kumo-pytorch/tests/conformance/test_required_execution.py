@@ -16,6 +16,7 @@ from conformance.cases import ENGINES, REPOSITORY
 from conformance.expectations import load_expectations
 from conformance.properties import obligation_id, obligations
 from conformance.registry import REPLAYED
+from conformance.sharding import owner
 from tests.conformance.conftest import (
     PINNED_BATCH_BOUNDARIES,
     PINNED_DTYPES,
@@ -217,6 +218,42 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario, native_
         command.extend(["-k", "does_not_exist"])
     result = run_pytest(command, tmp_path)
     assert result.returncode == (0 if scenario == "pass" else 1), result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("fault", (None, "missing", "skip", "xfail"))
+def test_shards_require_their_assigned_checks(tmp_path, fault):
+    test_complete_run_requires_actual_case_execution(tmp_path, "pass", False)
+    name = PINNED_FIELD_SEMANTICS[0]
+    nodeid = f"tests/conformance/test_field_semantics.py::{name}[diskgraph]"
+    path = tmp_path / "tests/conformance/test_field_semantics.py"
+    if fault == "missing":
+        path.write_text(path.read_text().replace(f"def {name}(", "def test_removed_check("))
+    elif fault:
+        path.write_text(
+            path.read_text().replace(
+                f"def {name}(engine_name):\n    pass",
+                f"def {name}(engine_name):\n    pytest.{fault}('required check')",
+            )
+        )
+    for shard in range(3):
+        result = run_pytest(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/conformance",
+                "--conformance-engine=diskgraph",
+                "--conformance-complete",
+                "--conformance-shards=3",
+                f"--conformance-shard={shard}",
+            ],
+            tmp_path,
+        )
+        expected = int(fault is not None and owner(nodeid, 3) == shard)
+        assert result.returncode == expected, result.stdout + result.stderr
+        if expected:
+            assert nodeid in result.stdout
 
 
 @pytest.mark.parametrize(

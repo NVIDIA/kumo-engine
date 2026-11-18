@@ -171,6 +171,47 @@ def test_li_runner_native_delivery_and_training(tmp_path, monkeypatch, ref, mode
     else:
         assert "repeats" not in report
     assert json.loads((output / "report.json").read_text()) == report
+    assert {
+        "ingestion",
+        "materialization",
+        "population.setup",
+        "population.next",
+        "population.verify",
+    } <= report["stage_timings"].keys()
+    assert all(
+        row["seconds"] >= 0 and row["failures"] == 0
+        for row in report["stage_timings"].values()
+    )
+    if ref == "L02" and mode == "full":
+        # Exercise the real CLI -> catalog preparation wrapper as well as
+        # run_case; the fixture inventory replaces only the remote file pins.
+        monkeypatch.setattr(
+            "test.kumo_pytorch.data.verify_dataset", lambda *args: files
+        )
+        cli_output = tmp_path / "cli-output"
+        assert (
+            main(
+                [
+                    "--binding",
+                    ref,
+                    "--mode",
+                    mode,
+                    "--data-dir",
+                    str(root),
+                    "--output",
+                    str(cli_output),
+                ]
+            )
+            == 0
+        )
+        cli_report = json.loads((cli_output / "report.json").read_text())
+        assert cli_report["full_population_verified"]
+        assert {
+            "source.verify",
+            "source.read",
+            "source.convert",
+            "anchors.prepare",
+        } <= cli_report["stage_timings"].keys()
 
 
 def test_full_binding_cannot_claim_bounded_projection(tmp_path):

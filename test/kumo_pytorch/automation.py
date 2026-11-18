@@ -2,44 +2,61 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Record complete nightly job outcomes and verify a later scheduled run."""
+"""Record full-suite job outcomes for every trigger."""
 
 import argparse
 import json
 import os
 from pathlib import Path
 
-NIGHTLY_JOBS = frozenset(
+SUITE_JOBS = frozenset(
     {
-        "dataset-tooling",
-        "diskgraph-wheel",
-        "benchmark-memory",
-        "aml-fitting-memory",
-        "benchmark-gpu",
-        "benchmark-aml",
-        "dataset-campaigns",
-        "aml-lifecycle",
-        "aml-summary",
-        "package-regressions",
+        "changes",
         "plan",
-        "run",
-        "aml-model-checks",
-        "checks",
+        "diskgraph-wheel",
+        "tooling",
+        "package",
+        "examples",
+        "fixtures",
         "conformance",
+        "host-metrics",
+        "gpu-checks",
+        "correctness",
+        "training",
+        "lifecycle",
+        "lifecycle-hi-small",
+        "lifecycle-hm",
+        "population",
+        "fitting-memory",
+        "benchmarks",
+        "binding-results",
     }
 )
 
 
-def nightly_status(results, *, run_id, attempt, sha, event, ref):
-    missing = sorted(NIGHTLY_JOBS - results.keys())
-    unexpected = sorted(results.keys() - NIGHTLY_JOBS)
+def nightly_status(results, *, run_id, attempt, sha, event, ref, affected="true"):
+    missing = sorted(SUITE_JOBS - results.keys())
+    unexpected = sorted(results.keys() - SUITE_JOBS)
+    unrelated = (
+        event == "pull_request"
+        and affected == "false"
+        and results.get("changes", {}).get("result") == "success"
+    )
     unsuccessful = {
         name: row.get("result")
         for name, row in results.items()
-        if row.get("result") != "success"
+        if row.get("result")
+        != ("skipped" if unrelated and name != "changes" else "success")
     }
     return {
-        "status": "failed" if missing or unexpected or unsuccessful else "passed",
+        "status": "failed"
+        if missing
+        or unexpected
+        or unsuccessful
+        or affected not in {"true", "false"}
+        or (affected == "false" and not unrelated)
+        else "passed",
+        "affected": affected,
         "run_id": str(run_id),
         "run_attempt": int(attempt),
         "head_sha": sha,
@@ -109,13 +126,26 @@ def main(argv=None):
             sha=os.environ["GITHUB_SHA"],
             event=os.environ["GITHUB_EVENT_NAME"],
             ref=os.environ["GITHUB_REF"],
+            affected=os.environ.get("AFFECTED", "true"),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
         if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
             with open(summary, "a") as stream:
-                stream.write(f"## Complete nightly result: {result['status']}\n\n")
-                stream.write("```json\n" + json.dumps(result, indent=2) + "\n```\n")
+                stream.write(f"## Full suite: {result['status']}\n\n")
+                if result["affected"] == "false":
+                    stream.write(
+                        "No changed file affects this suite; coverage was not executed.\n\n"
+                    )
+                stream.write("| Group | Result |\n| --- | --- |\n")
+                stream.writelines(
+                    f"| {name} | {row.get('result', 'missing')} |\n"
+                    for name, row in sorted(result["jobs"].items())
+                )
+                if result["missing"] or result["unexpected"]:
+                    stream.write(
+                        f"\nMissing: {result['missing']}; unexpected: {result['unexpected']}\n"
+                    )
         return int(result["status"] != "passed")
     result = verify_schedule(
         json.loads(args.run.read_text()), json.loads(args.evidence.read_text())

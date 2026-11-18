@@ -781,6 +781,7 @@
   ],
   "datasets": {
     "aml-data/hi-small": {
+      "display_name": "AML HI Small",
       "inventory": "hi-small",
       "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
       "identity_path": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet",
@@ -835,6 +836,7 @@
       "anchor_manifest_format": "arena"
     },
     "aml-data/li-medium": {
+      "display_name": "AML LI Medium",
       "inventory": "li-medium",
       "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
       "identity_path": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet",

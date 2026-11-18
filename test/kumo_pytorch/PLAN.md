@@ -1506,3 +1506,28 @@ Fresh-context adversarial review converged after three rounds: family/alternate-
 join capacity bounds, graph degrees and task/model compatibility were corrected;
 no blocking findings remain. Dataset shard artifacts have a separate prefix from
 the combined report, avoiding self-inclusion when summary jobs are rerun.
+
+## Full-suite organization follow-up
+
+PR and nightly now select one full execution plan. The maintained layout and
+new-binding procedure are in [the suite README](README.md#organization-and-adding-bindings).
+The implementation preserves the catalog campaign inventory and existing H&M,
+package, fixture, notebook and installed-wheel checks; conformance is partitioned
+across three workers without changing its default local execution.
+
+Stage diagnostics precede resource tuning. No population, fitting repetition,
+training update count or benchmark condition was reduced. Direct PR GPU runner
+access, required-check activation and post-merge schedule verification remain
+open separately. Full real-data/GPU validation and measured end-to-end speed
+remain pending for this refactor.
+
+Local refactor validation: 336 tooling checks, 88 existing conformance harness
+checks and four new shard failure-injection checks passed. The focused native
+binding/population run passed 64 checks and retained one LI Combined lifecycle
+failure. The unchanged commit reproduces the same `TaskBatches.load_state_dict`
+error (`this state was saved for a different task`); it remains a package issue.
+Actionlint (with the existing RTX label), YAML, shell syntax, Python lint/format
+and changed-document link checks passed. Independent review confirmed the
+original 976 conformance checks have no omissions or duplicate shard ownership;
+new shard-guard regressions are additional checks. Live full-suite acceptance
+and end-to-end runtime improvements require CI evidence on the published revision.

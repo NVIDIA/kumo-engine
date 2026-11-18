@@ -6,11 +6,13 @@
 
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 
 from .bindings import (
     binding_for,
+    binding_label,
     contract_for,
     dataset_definition,
     load_bindings,
@@ -62,6 +64,7 @@ def matrix(*, campaign=None):
             {
                 "case": s["case_name"],
                 "dataset": dataset_definition(binding_for(s, f))["inventory"],
+                "label": binding_label(binding_for(s, f)),
             }
             for s, f in selected_cases(campaign=campaign)
         ]
@@ -101,12 +104,43 @@ def campaign_matrix(campaign):
                 "binding": b["ref"],
                 "mode": mode,
                 "dataset": dataset_definition(b)["inventory"],
+                "label": binding_label(b),
                 **b["execution"],
             }
             for b in selected_bindings()
             for mode in modes
             if mode in b["campaigns"]
         ]
+    }
+
+
+def execution_plan(seed_start=0):
+    """The same catalog selection for PR, scheduled and manual executions."""
+    if seed_start < 0:
+        raise ValueError("Conformance seed start must be nonnegative")
+    population = campaign_matrix("population")["include"]
+    return {
+        "conformance": {
+            "include": [
+                {"shard": shard, "shards": 3, "seed_start": seed_start, "seeds": 12}
+                for shard in range(3)
+            ]
+        },
+        "correctness": {
+            "include": [r for r in population if r["mode"] == "smoke"]
+            + campaign_matrix("histories")["include"]
+        },
+        "training": campaign_matrix("training"),
+        "lifecycle": campaign_matrix("lifecycle"),
+        "population": {"include": [r for r in population if r["mode"] == "full"]},
+        "benchmarks": benchmark_matrix(),
+        "fitting": {
+            "include": [
+                {**row, "repeat": repeat}
+                for row in matrix(campaign="fitting")["include"]
+                for repeat in range(3)
+            ]
+        },
     }
 
 
@@ -363,7 +397,13 @@ def summarize(directory, revision):
         for kind in kinds:
             base = directory / kind / case
             path = base / ("results.json" if kind in MODES else "report.json")
-            row = {"case": case, "kind": kind, "status": "missing"}
+            row = {
+                "case": case,
+                "ref": binding["ref"],
+                "category": "benchmark",
+                "kind": kind,
+                "status": "missing",
+            }
             try:
                 result = json.loads(path.read_text())
                 row["status"] = result["status"]
@@ -388,7 +428,14 @@ def summarize(directory, revision):
                 row.update(status="failed", error=str(error))
             rows.append(row)
     for entry in summarize_bindings(directory, revision)["cases"]:
-        rows.append({**entry, "case": entry["ref"], "kind": entry["mode"]})
+        rows.append(
+            {
+                **entry,
+                "case": entry["ref"],
+                "kind": entry["mode"],
+                "category": "binding",
+            }
+        )
     status = (
         "passed"
         if all(r["status"] in {"passed", "complete"} for r in rows)
@@ -397,11 +444,55 @@ def summarize(directory, revision):
     result = {"status": status, "shards": rows}
     (directory / "report.json").write_text(json.dumps(result, indent=2) + "\n")
     lines = [
-        "# PyTorch nightly campaigns",
+        "# PyTorch binding results",
         "",
         f"Status: **{status}**",
         "",
-        "| Case | Experiment | Status | Report |",
+        "| Dataset / Binding | Correctness | Training | Lifecycle | Population | Benchmarks |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    groups = {
+        "Correctness": ("smoke", "histories"),
+        "Training": ("training",),
+        "Lifecycle": ("lifecycle",),
+        "Population": ("full",),
+        "Benchmarks": (*MODES, "fitting"),
+    }
+    # Model-training benchmarks and acceptance both use "training" in reports.
+    for binding in selected_bindings():
+        cells = []
+        for group, kinds in groups.items():
+            selected = [
+                r
+                for r in rows
+                if r["ref"] == binding["ref"]
+                and r["kind"] in kinds
+                and (
+                    r["category"] == "benchmark"
+                    if group == "Benchmarks"
+                    else r["category"] == "binding"
+                )
+            ]
+            if not selected:
+                cells.append(
+                    "Legacy campaign"
+                    if group == "Lifecycle"
+                    and "legacy-lifecycle" in binding["campaigns"]
+                    else "Not enabled"
+                )
+                continue
+            cells.append(
+                "<br>".join(
+                    f"[{r['kind']}: {r.get('outcome') if r.get('outcome') == 'refused' else r['status']}]({r['report']})"
+                    if "report" in r
+                    else f"{r['kind']}: {r['status']}"
+                    for r in selected
+                )
+            )
+        lines.append(f"| {binding_label(binding)} | " + " | ".join(cells) + " |")
+    lines += [
+        "",
+        "| Binding | Experiment | Status | Report |",
         "| --- | --- | --- | --- |",
     ]
     for row in rows:
@@ -409,7 +500,7 @@ def summarize(directory, revision):
         label = row["status"] + (
             " (refused)" if row.get("outcome") == "refused" else ""
         )
-        lines.append(f"| {row['case']} | {row['kind']} | {label} | {link} |")
+        lines.append(f"| {row['ref']} | {row['kind']} | {label} | {link} |")
     lines += ["", *timing_summary(timing_cases, directory)]
     (directory / "report.md").write_text("\n".join(lines) + "\n")
     return result
@@ -432,21 +523,24 @@ def execute(
     anchors,
     threads,
 ):
-    from .population import check_population
+    from .population import check_population, write_report
+    from .stage_timing import StageTiming
     from .training_acceptance import train_task
 
+    timing = StageTiming(report, lambda: write_report(directory, report))
     features = None
     requirements = binding.get("feature_checks", {})
     if mode in requirements.get("modes", ()):
         from .bindings import resolve
 
-        features = resolve(requirements["factory"])(
-            binding,
-            projection,
-            report["mapping"],
-            task.fitted_state.to_dict(),
-            mode=mode,
-        )
+        with timing.span("features.prepare", checkpoint=True):
+            features = resolve(requirements["factory"])(
+                binding,
+                projection,
+                report["mapping"],
+                task.fitted_state.to_dict(),
+                mode=mode,
+            )
         report["feature_coverage"] = features.coverage
         report["feature_assertions"] = features.evidence
     check_population(
@@ -462,47 +556,50 @@ def execute(
     )
     report["full_population_verified"] = mode == "full"
     if mode == "training":
-        train_task(
-            task,
-            binding,
-            projection,
-            population,
-            directory,
-            report,
-            capacity=capacity,
-            batch_size=batch_size,
-            seed=seed,
-            features=features,
-        )
+        with timing.span("training", checkpoint=True):
+            train_task(
+                task,
+                binding,
+                projection,
+                population,
+                directory,
+                report,
+                capacity=capacity,
+                batch_size=batch_size,
+                seed=seed,
+                features=features,
+            )
     if mode == "lifecycle":
         from .lifecycle import run_binding as lifecycle
 
-        report["lifecycle"] = lifecycle(
-            plan,
-            task,
-            dataset,
-            anchors,
-            binding,
-            directory,
-            capacity=capacity,
-            batch_size=batch_size,
-            threads=threads,
-            seed=seed,
-        )
+        with timing.span("lifecycle", checkpoint=True):
+            report["lifecycle"] = lifecycle(
+                plan,
+                task,
+                dataset,
+                anchors,
+                binding,
+                directory,
+                capacity=capacity,
+                batch_size=batch_size,
+                threads=threads,
+                seed=seed,
+            )
         assert report["lifecycle"]["status"] == "passed", (
             "Lifecycle checks failed; see individual results"
         )
     if mode == "histories":
         from .bindings import resolve
 
-        report["histories"] = resolve(binding["history_checks"]["factory"])(
-            dataset,
-            binding,
-            projection,
-            report["mapping"],
-            directory / "histories",
-            threads=threads,
-        )
+        with timing.span("histories", checkpoint=True):
+            report["histories"] = resolve(binding["history_checks"]["factory"])(
+                dataset,
+                binding,
+                projection,
+                report["mapping"],
+                directory / "histories",
+                threads=threads,
+            )
         assert report["histories"]["status"] == "passed", (
             "Source history probes failed; see individual results"
         )
@@ -529,6 +626,7 @@ def run_case(
     from .data import schema_for
     from .population import write_report
     from .refusals import case_failure, executing_case
+    from .stage_timing import StageTiming
 
     report = {
         **(report or {}),
@@ -544,6 +642,7 @@ def run_case(
         "mapping": mapping,
     }
     write_report(directory, report)
+    timing = StageTiming(report, lambda: write_report(directory, report))
     try:
         if mode not in {"training", "smoke", "full", "lifecycle", "histories"}:
             raise ValueError(f"Unknown binding execution mode: {mode}")
@@ -556,18 +655,20 @@ def run_case(
         )
         (directory / "contract.json").write_text(contract.to_json())
         report["stage"] = "prepare"
-        plan = r.prepare(
-            contract,
-            dataset,
-            r.DiskGraphEngine(index=directory / "index", num_threads=threads),
-        )
+        with timing.span("ingestion", checkpoint=True):
+            plan = r.prepare(
+                contract,
+                dataset,
+                r.DiskGraphEngine(index=directory / "index", num_threads=threads),
+            )
         with plan, executing_case():
             report["stage"] = "materialize"
-            task = plan.materialize(
-                anchors,
-                fit_split="train",
-                encoder_cutoff=population["encoder_cutoff_seconds"],
-            )
+            with timing.span("materialization", checkpoint=True):
+                task = plan.materialize(
+                    anchors,
+                    fit_split="train",
+                    encoder_cutoff=population["encoder_cutoff_seconds"],
+                )
             report["stage"] = "execute"
             execute(
                 task,
@@ -586,7 +687,7 @@ def run_case(
                 threads=threads,
             )
         report.update(status="passed", stage="complete")
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - persist execution failures in the case report
         report.update(case_failure(error, allow_refusal=report["stage"] == "prepare"))
     write_report(directory, report)
     return report
@@ -602,6 +703,7 @@ def run_binding(args):
     from .data import verify_dataset
     from .population import write_report
     from .refusals import case_failure
+    from .stage_timing import StageTiming
 
     binding = load_bindings()[args.binding]
     args.output.mkdir(parents=True, exist_ok=False)
@@ -615,6 +717,9 @@ def run_binding(args):
         "selector": binding["selector"],
         "full_population_verified": False,
     }
+    timing = StageTiming(
+        report, lambda: write_report(args.output, report), checkpoint=True
+    )
     try:
         torch.set_num_threads(args.threads)
         report["revision"] = subprocess.check_output(
@@ -627,7 +732,8 @@ def run_binding(args):
             p: importlib.metadata.version(p) for p in ("torch", "pyarrow", "diskgraph")
         }
         write_report(args.output, report)
-        files = verify_dataset(args.data_dir, binding)
+        with timing.span("source.verify", checkpoint=True):
+            files = verify_dataset(args.data_dir, binding)
         report["inputs"] = list(files.values())
         report["stage"] = "prepare_sources"
         write_report(args.output, report)
@@ -639,6 +745,7 @@ def run_binding(args):
             limit=None
             if args.mode == "full"
             else args.anchors_per_split or (32 if args.mode == "training" else 4),
+            recorder=timing,
         )
         report["mapping"] = mapping
         report["history_capacity"] = capacity
@@ -658,7 +765,7 @@ def run_binding(args):
                 report=report,
             )
         )
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - input/preparation failures must retain evidence
         report.update(case_failure(error, allow_refusal=False))
     report["seconds"] = time.perf_counter() - started
     write_report(args.output, report)
@@ -710,6 +817,19 @@ def run_binding(args):
             ]
     if report.get("error"):
         lines += ["", "```text", report["error"], "```"]
+    lines += [
+        "",
+        "| Stage | Seconds | Calls | Failed calls |",
+        "| --- | --- | --- | --- |",
+    ]
+    for name, row in report.get("stage_timings", {}).items():
+        lines.append(
+            f"| {name} | {row['seconds']:.3f} | {row['calls']} | {row['failures']} |"
+        )
+    lines += [
+        "",
+        "Stage spans do not overlap. Campaign total also includes uninstrumented setup and report writing.",
+    ]
     (args.output / "report.md").write_text("\n".join(lines) + "\n")
     print(f"{report['status']}: {args.output / 'report.md'}")
     return int(report["status"] != "passed")
@@ -718,6 +838,9 @@ def run_binding(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser("plan")
+    plan.add_argument("--output", type=Path, required=True)
+    plan.add_argument("--seed-start", type=int)
     matrix_parser = commands.add_parser("matrix")
     matrix_parser.add_argument(
         "--campaign",
@@ -745,6 +868,22 @@ def main(argv=None):
     report.add_argument("--directory", type=Path, required=True)
     report.add_argument("--revision", required=True)
     args = parser.parse_args(argv)
+    if args.command == "plan":
+        import time
+
+        selected = execution_plan(
+            args.seed_start
+            if args.seed_start is not None
+            else int(time.time()) // 86400 * 12
+        )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(selected, indent=2) + "\n")
+        if output := os.environ.get("GITHUB_OUTPUT"):
+            with open(output, "a") as stream:
+                stream.writelines(
+                    f"{group}={json.dumps(rows)}\n" for group, rows in selected.items()
+                )
+        return 0
     if args.command == "run":
         binding = load_bindings().get(args.binding)
         if binding is None or args.mode not in binding["campaigns"]:

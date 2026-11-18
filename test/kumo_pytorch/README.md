@@ -1,4 +1,4 @@
-# PyTorch nightly suite
+# PyTorch full testing suite
 
 Standalone repository tests for `kumo.pytorch`, outside its installed package.
 Current implementation: AML acquisition, verified source/anchor preparation,
@@ -20,11 +20,20 @@ adds required filter/cutoff checks and a bounded real-AML run. Under the
 declared refusal before execution passes as `refused`. Accepted capabilities
 must still produce the expected answers; execution errors remain failures.
 
-The existing nightly workflow runs the package's regression tests in place,
-alongside its conformance and retail lifecycle jobs and these AML additions.
-Generic package behavior stays in the existing tests; this directory owns AML
+**PyTorch — Full Suite** uses one execution plan for direct PR events, main
+pushes, scheduled runs and manual runs. The final `kumo-pytorch-gate` accounts
+for every required group. Package, example and H&M workflows are reusable workers;
+they no longer launch overlapping runs independently. Unrelated PRs retain an
+explicit changed-file exemption; relevant PRs run the full suite.
+
+Direct PR access to the RTX runner remains an **open infrastructure prerequisite**.
+The documented runner currently rejects `pull_request` jobs. The user chose to
+keep that trigger and resolve access separately. GPU checks stay required; a
+blocked, skipped or unavailable job cannot produce a passing full gate. No
+runner permissions, IAM policies or required-check settings changed here.
+
+Generic package behavior stays in its existing tests; this directory owns
 source, anchor, task and model integration plus the general benchmark runner.
-Linux memory/cache and GPU collector validations have dedicated nightly jobs.
 Timing/profiling campaigns now run only for LI Medium / Combined. HI Small's
 five workload combinations retain their fitting-memory, correctness, training,
 population and lifecycle checks; their model profiling, index-reuse timing and
@@ -65,6 +74,58 @@ actual duration remains subject to CI validation and runner availability.
 Development is consolidated in [PR #353](https://github.com/NVIDIA/kumo-engine/pull/353),
 including the lifecycle import guards, fresh-process special-ID cases and fitting
 chunk-boundary cases from #361/#362/#363. See the [current requirements status](PLAN.md#12-requirements-status-after-testing-pr-consolidation).
+
+## Organization and adding bindings
+
+| Group | Owner | Unit of execution |
+| --- | --- | --- |
+| Setup | `nightly plan`, shared DiskGraph wheel action | One plan and candidate wheel |
+| Shared checks | Existing package, conformance, example and fixture tests | One owner per check; three conformance shards |
+| Correctness | `nightly run`, source feature/history checks | Binding and declared smoke/history campaign |
+| Training | Shared training acceptance runner | Binding, retaining both 100-update repetitions |
+| Lifecycle | Shared binding runner; retained HI Small/H&M scenarios | Binding or existing H&M scale and seed |
+| Population | Native AnchorTable population runner | Complete binding population |
+| Benchmarks | Existing benchmark and fitting-memory runners | Binding, experiment and repetition |
+| Results | `nightly summary`, `automation record` | Binding overview and complete job gate |
+
+The [binding catalog](workloads/bindings.json) owns dataset definitions, anchor
+and input profiles, task targets, models and enabled campaigns. Dataset display
+names live with those definitions. Add one binding and its independently
+calculated feature assertions, then explicitly enable its campaigns. Reuse
+existing preparation, projection, model heads and execution functions; add a
+specialized component only for a new capability. A new binding normally needs
+no workflow or separate dataset runner.
+
+The planner partitions the existing 26 binding campaigns into correctness (7),
+training (9), lifecycle (1) and full population (9). HI Small's original
+lifecycle/history scenarios and H&M Small/Medium remain separately owned. It
+also retains 15 HI Small fitting repetitions and four L01 benchmark campaigns.
+The same resolved seed range feeds all conformance shards. Every test has one
+owner; a seed's properties stay together, and each worker retains its required
+coverage guard. The default unsharded local conformance command is unchanged.
+
+```sh
+python -m test.kumo_pytorch.nightly plan --seed-start 240 --output /tmp/suite-plan.json
+```
+
+`kumo-pytorch-campaign-results/report.md` groups results by dataset and binding,
+then links individual experiments. Refused capabilities remain distinguished
+from executed passes. Disabled campaigns are labelled **Not enabled**; missing
+required evidence fails. The final gate publishes all required job outcomes.
+
+Correctness reports now record explicit source verification/read/conversion,
+anchor projection, ingestion, materialization, population setup/planning,
+batch retrieval and assertion times. Training/lifecycle/history stages retain
+separate elapsed times. Spans do not overlap; campaign wall time also includes
+uninstrumented work. First-batch latency is a subset of retrieval time and is
+not additive. Interrupted long stages retain `active_timing_stage`. These are
+diagnostics, separate from the detailed benchmark metric contract.
+
+Thread counts, batch sizes, populations, repetitions and cold/fresh-fitting
+conditions are unchanged. Speed improvements here remove duplicate execution
+and partition conformance. Resource tuning and compatible prepared-data reuse
+require measurements from the new stage reports; a 20-minute total is not yet
+established.
 
 ## Data
 

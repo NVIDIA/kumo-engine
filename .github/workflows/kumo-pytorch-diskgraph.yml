@@ -2,71 +2,24 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: PyTorch — DiskGraph Tests
+name: PyTorch — Examples and Installation
 
-# DiskGraph golden cases, package checks with no test skipped for a missing
-# import, and every example notebook from a fresh kernel,
-# on DiskGraph built from this commit's packages/diskgraph. A third job builds
-# the package and runs the README quick start and the notebooks from its wheel,
-# installed with DiskGraph's into a fresh environment. Runs on DiskGraph changes
-# too: the package builds against the workspace DiskGraph.
-# Pull requests run these checks through kumo-pytorch-gate.
 on:  # yamllint disable-line rule:truthy
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-diskgraph.yml'
-      - 'pyproject.toml'
-      - 'uv.lock'
   workflow_call:
     inputs:
       prebuilt-diskgraph-wheel:
         description: The caller uploaded this run's diskgraph-wheel artifact.
         type: boolean
         default: false
-  workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: kumo-pytorch-diskgraph-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   diskgraph-wheel:
     name: Setup / DiskGraph Build
     if: ${{ !inputs.prebuilt-diskgraph-wheel }}
     uses: ./.github/workflows/_diskgraph-wheel.yml
-
-  diskgraph:
-    name: Correctness / DiskGraph
-    needs: diskgraph-wheel
-    if: ${{ !cancelled() && (needs.diskgraph-wheel.result == 'success' || (inputs.prebuilt-diskgraph-wheel && needs.diskgraph-wheel.result == 'skipped')) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-        working-directory: packages/experimental/kumo-pytorch
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-      - name: DiskGraph conformance
-        run: python -m conformance --engine diskgraph
-      - name: Every test, failing any that skips for a missing dependency
-        run: |
-          python -c 'import diskgraph, pyarrow; print(diskgraph.__file__)'
-          python -m pytest -q --require-imports --ignore=tests/conformance
 
   notebooks:
     name: Examples / Notebooks

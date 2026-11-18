@@ -9,6 +9,7 @@ import hashlib
 import importlib.metadata
 import json
 import subprocess
+import time
 import traceback
 from collections import Counter
 from itertools import islice
@@ -40,6 +41,7 @@ from .population_anchors import (
     projected_rows,
 )
 from .run_aml import positive
+from .stage_timing import StageTiming
 from .targets import verify_stored_batch, verify_target_fitting
 
 PDF_CASES = {
@@ -216,17 +218,19 @@ def check_population(
     assert isinstance(task._anchors, NativeAnchors), (
         "Population requires native AnchorTable iteration"
     )
-    frozen = task.fitted_state.fingerprint
-    state = task.fitted_state.to_dict()
-    report["fitted_state_sha256"] = frozen
-    task.to_artifact().save(directory / "fitted")
-    assert {s: task.count(s) for s in SPLITS} == population["counts"], (
-        "Native population counts differ"
-    )
-    if binding["targets"]:
-        verify_target_fitting(
-            task_definition(binding), projected_rows(projection, "train"), state
+    timing = StageTiming(report, lambda: write_report(directory, report))
+    with timing.span("population.setup", checkpoint=True):
+        frozen = task.fitted_state.fingerprint
+        state = task.fitted_state.to_dict()
+        report["fitted_state_sha256"] = frozen
+        task.to_artifact().save(directory / "fitted")
+        assert {s: task.count(s) for s in SPLITS} == population["counts"], (
+            "Native population counts differ"
         )
+        if binding["targets"]:
+            verify_target_fitting(
+                task_definition(binding), projected_rows(projection, "train"), state
+            )
     names = tuple(binding["targets"]) or (task_definition(binding)["kind"],)
     splits = report["splits"] = {}
     for split in SPLITS:
@@ -241,24 +245,41 @@ def check_population(
         result = splits[split]
         result["status"] = "running"
         expected, digest = projected_rows(projection, split), hashlib.sha256()
-        for batch in task.batches(
-            split=split,
-            epoch=0,
-            seed=seed,
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False,
-            output_format="model",
-        ):
-            if features is not None:
-                features(batch, phase="population")
-            eligible = verify_batch_for(binding, batch, expected, state)
-            for sample in batch.metadata["sample_ids"]:
-                add_identity(digest, sample)
-            for name, count in eligible.items():
-                result["eligible_targets"][name] += count
-            result["delivered"] += len(batch.metadata["sample_ids"])
-            result["batches"] += 1
+        with timing.span("population.plan", checkpoint=True):
+            batches = iter(
+                task.batches(
+                    split=split,
+                    epoch=0,
+                    seed=seed,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    drop_last=False,
+                    output_format="model",
+                )
+            )
+        first = True
+        while True:
+            # Planning can run inside the first next(); retain that latency
+            # separately as a subset of population.next, not an additive stage.
+            with timing.span("population.next", checkpoint=first):
+                try:
+                    started = time.perf_counter()
+                    batch = next(batches)
+                except StopIteration:
+                    break
+                if first:
+                    result["first_batch_seconds"] = time.perf_counter() - started
+                    first = False
+            with timing.span("population.verify"):
+                if features is not None:
+                    features(batch, phase="population")
+                eligible = verify_batch_for(binding, batch, expected, state)
+                for sample in batch.metadata["sample_ids"]:
+                    add_identity(digest, sample)
+                for name, count in eligible.items():
+                    result["eligible_targets"][name] += count
+                result["delivered"] += len(batch.metadata["sample_ids"])
+                result["batches"] += 1
             if result["batches"] % 100 == 0:
                 write_report(directory, report)
         missing = next(expected, None)

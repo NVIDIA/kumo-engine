@@ -293,7 +293,7 @@ python -m test.kumo_pytorch.benchmarking.validate_memory \
   --cgroup /path/to/dedicated-cgroup --output memory-validation.json
 ```
 
-This passed in an isolated Linux 7.0.14 container. The nightly's `benchmark-memory`
+This passed in an isolated Linux 7.0.14 container. The full suite's `host-metrics`
 job provisions a dedicated private container cgroup and validates stage peaks
 and warm/cold/warm file residency. Only that temporary container has mount
 capability; it has no network or Docker socket. Unsupported kernel peak reset
@@ -370,11 +370,13 @@ Reports retain every sample, failures, interval and coverage gaps. These samples
 are not a utilization time integral. `--gpu-interval` defaults to one second.
 The NVML Python binding is a test-runner dependency, not a package dependency.
 
-The nightly workflow's `benchmark-gpu` job uses the documented engine
+The full suite's `gpu-checks` job uses the documented engine
 [RTX PRO 6000 group](../../../docs/development/engine-pr-ci.md) and locked
-`cu130` environment. It runs on schedules and manually selected internal branches; NVIDIA runners
-do not admit `pull_request` jobs. The existing CPU PR trigger remains. No local
-device, hostname or UUID is configured as a prerequisite. Runtime hardware
+`cu130` environment. PR, scheduled and manual plans now require the same GPU
+coverage. Direct PR admission remains an open infrastructure prerequisite:
+the documented NVIDIA runner rejects `pull_request` jobs. The user chose to
+resolve access separately; these jobs are never skipped as a passing fallback.
+No local device, hostname or UUID is configured as a prerequisite. Runtime hardware
 records describe the machine that actually ran the benchmark.
 
 The job runs `python -m test.kumo_pytorch.benchmarking.validate_gpu --output DIR`
@@ -425,8 +427,7 @@ The Actions summary links to the artifact workflow: download
 `kumo-pytorch-aml-benchmarks`, open the root `report.md`, then follow case
 and worker reports. Artifacts contain JSON/JSONL, Markdown and logs, excluding
 source/index payloads and persisted fitting artifacts. No result is uploaded to
-S3. The CPU PR trigger remains active; real-data CUDA jobs require a schedule
-or manual dispatch. A candidate workflow must be published to an internal branch
+S3. PR and nightly select the same CUDA jobs; direct PR runner admission is still unresolved. A candidate workflow must be published to an internal branch
 before GitHub can execute it. The [collective CI review](../PLAN.md#collective-ci-review)
 records actual execution, expected decimal failures and remaining measurements.
 
@@ -556,8 +557,8 @@ without introducing a growth threshold.
 
 ## Parallel nightly execution
 
-The nightly workflow derives dataset selection and campaign matrices from
-`workloads/bindings.json`:
+The full suite derives the same PR/nightly selection from
+`workloads/bindings.json`; see the [organization](../README.md#organization-and-adding-bindings):
 
 | Experiment | Independent jobs | Work retained within each job |
 | --- | ---: | --- |

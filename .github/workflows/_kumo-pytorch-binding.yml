@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch — Binding Checks
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      binding:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: true
+      dataset:
+        type: string
+        required: true
+      batch_size:
+        type: number
+        required: true
+      threads:
+        type: number
+        required: true
+      diskgraph-wheel-artifact:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  binding:
+    name: Execute binding
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    env:
+      BINDING: ${{ inputs.binding }}
+      CAMPAIGN: ${{ inputs.mode }}
+      DATASET: ${{ inputs.dataset }}
+      BATCH_SIZE: ${{ inputs.batch_size }}
+      THREADS: ${{ inputs.threads }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
+          torch-extra: cpu
+      - name: Read private dataset inputs with the Engine test role
+        id: aml-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify pinned sources and anchors
+        id: aml-data
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
+        run: |
+          python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
+            --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
+      - name: Check the selected binding
+        run: |
+          python -m test.kumo_pytorch.nightly run --binding "$BINDING" --mode "$CAMPAIGN" \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --output "$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING" \
+            --batch-size "$BATCH_SIZE" --threads "$THREADS"
+      - name: Show binding results
+        if: ${{ always() }}
+        run: |
+          report="$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING/report.md"
+          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-dataset-${{ inputs.mode }}-${{ inputs.binding }}
+          path: |
+            ${{ runner.temp }}/pytorch-campaigns/**/report.json
+            ${{ runner.temp }}/pytorch-campaigns/**/report.md
+            ${{ runner.temp }}/pytorch-campaigns/**/contract.json
+            ${{ runner.temp }}/pytorch-campaigns/**/loss-curve.csv
+            ${{ runner.temp }}/pytorch-campaigns/**/*.log
+            ${{ runner.temp }}/pytorch-campaigns/**/result.json
+            ${{ runner.temp }}/pytorch-campaigns/**/restore-fingerprints.json
+            ${{ runner.temp }}/pytorch-campaigns/**/model.pt
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-acquisition-${{ inputs.mode }}-${{ inputs.binding }}
+          path: ${{ runner.temp }}/aml-acquisition.json
+          retention-days: 14

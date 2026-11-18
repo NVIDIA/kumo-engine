@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: PyTorch — AML Checks
+name: PyTorch — Dataset & Model Checks
 
 on:  # yamllint disable-line rule:truthy
   workflow_call:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   checks:
-    name: Correctness / AML
+    name: Correctness / Shared Dataset & Model Checks
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -33,13 +33,13 @@ jobs:
           diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
       - name: Install test-only Polars for required CPU coverage
         run: uv pip install polars==2.1.0
-      - name: Check AML model consumers on tiny Kumo batches
+      - name: Check shared dataset/model consumers on tiny Kumo batches
         working-directory: .
         run: |
           python -m pytest -c test/kumo_pytorch/pytest.ini \
             --confcutdir=test/kumo_pytorch --basetemp="$RUNNER_TEMP/aml-checks" \
             test/kumo_pytorch/model_checks --required-coverage=cpu -q --junitxml="$RUNNER_TEMP/aml-checks.xml"
-      - name: Retain controlled AML learning reports
+      - name: Retain controlled fixture learning reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:

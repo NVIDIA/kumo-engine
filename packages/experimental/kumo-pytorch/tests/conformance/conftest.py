@@ -134,6 +134,8 @@ def add_conformance_options(parser):
             action="store_true",
             help="require DiskGraph behavior only; forbid InMemory execution",
         )
+        parser.addoption("--conformance-shards", type=int, default=1)
+        parser.addoption("--conformance-shard", type=int, default=0)
         parser.addoption("--conformance-complete", action="store_true", help="require every case")
         parser.addoption(
             "--conformance-seeds",
@@ -151,6 +153,9 @@ def add_conformance_options(parser):
 
 
 def pytest_configure(config):
+    count, index = config.getoption("--conformance-shards"), config.getoption("--conformance-shard")
+    if count < 1 or not 0 <= index < count:
+        raise pytest.UsageError("Expected 0 <= conformance shard < shards and shards > 0")
     if (
         config.getoption("--conformance-no-in-memory")
         and config.getoption("--conformance-engine") != "diskgraph"
@@ -195,7 +200,16 @@ def pytest_collection_modifyitems(config, items):
         item
         for item in items
         if all(marker.args[0] in engines for marker in item.iter_markers("engine"))
+        and in_shard(config, item.nodeid)
     ]
+
+
+def in_shard(config, nodeid):
+    from conformance.sharding import owner
+
+    return owner(nodeid, config.getoption("--conformance-shards")) == config.getoption(
+        "--conformance-shard"
+    )
 
 
 def pytest_sessionstart(session):
@@ -247,7 +261,7 @@ def pytest_sessionstart(session):
         for family in PINNED_ENCODERS
         for dtype in PINNED_DTYPES
     }
-    if native_only:
+    if "diskgraph" in engines:
         session.config.stash[REQUIRED] |= {
             f"tests/conformance/test_field_semantics.py::{name}[diskgraph]"
             for name in PINNED_FIELD_SEMANTICS
@@ -260,6 +274,10 @@ def pytest_sessionstart(session):
         if engine == "diskgraph"
         for test, variants in PINNED_BATCH_BOUNDARIES.items()
         for variant in variants
+    }
+
+    session.config.stash[REQUIRED] = {
+        nodeid for nodeid in session.config.stash[REQUIRED] if in_shard(session.config, nodeid)
     }
 
 

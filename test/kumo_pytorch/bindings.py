@@ -104,6 +104,18 @@ def dataset_definition(binding):
     return deepcopy(catalog["datasets"][binding["selector"]["dataset_id"]])
 
 
+def binding_label(binding):
+    definition = dataset_definition(binding)
+    dataset = definition.get("display_name", binding["selector"]["dataset_id"])
+    model = {
+        "combined": "Combined",
+        "graphsage": "GraphSAGE",
+        "nuformer": "nuFormer",
+        "pragma": "PRAGMA",
+    }.get(binding["representation"], binding["representation"])
+    return f"{dataset} / {binding['ref']} {model}"
+
+
 def task_definition(value):
     if isinstance(value, dict) and "kind" in value:
         return deepcopy(value)
@@ -127,11 +139,11 @@ def resolve(path):
     return getattr(importlib.import_module(module), name)
 
 
-def prepare_binding(data_dir, directory, binding, files, *, limit):
+def prepare_binding(data_dir, directory, binding, files, *, limit, recorder=None):
     """Source-family conversion returns common inputs for every campaign."""
     from .data import prepare_binding as prepare
 
-    return prepare(data_dir, directory, binding, files, limit=limit)
+    return prepare(data_dir, directory, binding, files, limit=limit, recorder=recorder)
 
 
 def contract_for(schema, binding, *, max_events):
