@@ -16,7 +16,7 @@ import torch
 import kumo.pytorch.api as r
 
 from .anchor_tables import load_probe_anchors, write_probe_anchors
-from .lifecycle import forbid_fitting, input_digest
+from .lifecycle import finite_outputs, forbid_fitting, input_digest
 from .models import build_model
 from .training_lifecycle import training_requests
 
@@ -27,7 +27,7 @@ def training_update(model, optimizer, batch):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     result = model.training_step(batch)
-    assert torch.isfinite(result.loss) and torch.isfinite(result.logits).all()
+    assert torch.isfinite(result.loss) and finite_outputs(result.logits)
     if result.weight:
         result.loss.backward()
         gradients = [p.grad for p in model.parameters() if p.grad is not None]
@@ -199,9 +199,10 @@ def check_resume(lifecycle_directory, requests, *, checkpoint_after=1):
     )
     directory = lifecycle_directory.parent / "mid-epoch-resume"
     directory.mkdir(exist_ok=False)
-    config["training_anchor_table"] = write_probe_anchors(
-        requests, directory / "anchors.parquet"
-    ).to_dict()
+    config["training_anchor_table"] = (
+        config.get("source_anchor_table")
+        or write_probe_anchors(requests, directory / "anchors.parquet").to_dict()
+    )
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     continuation(directory, restore=False)
     with (directory / "child.log").open("w") as log:

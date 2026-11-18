@@ -40,12 +40,7 @@
         "training",
         "smoke",
         "full",
-        "lifecycle",
-        "benchmark-training",
-        "index",
-        "timing-diskgraph",
-        "timing-polars",
-        "timing-gpu",
+        "legacy-lifecycle",
         "fitting"
       ],
       "inputs": "account-transactions",
@@ -88,12 +83,7 @@
         "training",
         "smoke",
         "full",
-        "lifecycle",
-        "benchmark-training",
-        "index",
-        "timing-diskgraph",
-        "timing-polars",
-        "timing-gpu",
+        "legacy-lifecycle",
         "fitting"
       ],
       "inputs": "account-transactions",
@@ -124,12 +114,7 @@
         "training",
         "smoke",
         "full",
-        "lifecycle",
-        "benchmark-training",
-        "index",
-        "timing-diskgraph",
-        "timing-polars",
-        "timing-gpu",
+        "legacy-lifecycle",
         "fitting"
       ],
       "inputs": "account-transactions",
@@ -160,12 +145,7 @@
         "training",
         "smoke",
         "full",
-        "lifecycle",
-        "benchmark-training",
-        "index",
-        "timing-diskgraph",
-        "timing-polars",
-        "timing-gpu",
+        "legacy-lifecycle",
         "fitting"
       ],
       "inputs": "account-transactions",
@@ -209,12 +189,7 @@
         "training",
         "smoke",
         "full",
-        "lifecycle",
-        "benchmark-training",
-        "index",
-        "timing-diskgraph",
-        "timing-polars",
-        "timing-gpu",
+        "legacy-lifecycle",
         "fitting"
       ],
       "inputs": "account-transactions",
@@ -269,7 +244,14 @@
       "campaigns": [
         "training",
         "smoke",
-        "full"
+        "full",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "lifecycle",
+        "histories",
+        "sweeps",
+        "length-planning"
       ],
       "inputs": "account-transactions",
       "task": "next-outgoing-amount-currency",
@@ -298,7 +280,91 @@
         ],
         "source_targets": {
           "smoke": "test.kumo_pytorch.targets:verify_next_outgoing"
+        },
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original account identity, prediction/execution clocks and allowed input branches",
+            "reference": "original account mapping and anchors"
+          },
+          "graph_membership": {
+            "features": [
+              "F02",
+              "F04"
+            ],
+            "description": "Full historical transaction membership, sender/receiver edges, counterparties and sample ownership",
+            "reference": "raw transactions before each prediction time"
+          },
+          "graph_values": {
+            "features": [
+              "F04",
+              "F08",
+              "F11"
+            ],
+            "description": "Root/endpoint membership, graph values, validity, dtypes and shapes",
+            "reference": "raw transactions and independently applied saved encoders"
+          },
+          "history_membership": {
+            "features": [
+              "F02",
+              "F03",
+              "F10",
+              "F11"
+            ],
+            "description": "Complete event groups, separators, valid prefixes and source-row alignment",
+            "reference": "raw account transactions before each prediction time"
+          },
+          "history_values": {
+            "features": [
+              "F03",
+              "F07",
+              "F08",
+              "F10",
+              "F11"
+            ],
+            "description": "Whole encoded records, direction, age, UTC calendar values and chronological groups allowing tied permutations",
+            "reference": "raw transactions and independently applied saved encoders"
+          },
+          "aggregate_counts": {
+            "features": [
+              "F05"
+            ],
+            "description": "All twelve touching/sender/receiver counts and training-only normalization",
+            "reference": "raw transactions in full/24h/7d/30d windows"
+          },
+          "aggregate_layout": {
+            "features": [
+              "F05",
+              "F11"
+            ],
+            "description": "Aggregate float32 values, boolean validity and one scalar per anchor",
+            "reference": "declared aggregate tensor contract"
+          },
+          "stored_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Independent target masks/values, exact float32 projection and training-only vocabulary",
+            "reference": "original anchor rows and projected labels"
+          },
+          "forecast_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Amount and currency from the same earliest outgoing transaction in [T,T+24h)",
+            "reference": "raw transactions with source-row tie resolution",
+            "modes": [
+              "smoke"
+            ]
+          }
         }
+      },
+      "case": "li-medium-combined",
+      "history_checks": {
+        "factory": "test.kumo_pytorch.history_checks:run_binding"
       }
     },
     {

@@ -503,6 +503,7 @@ def prepare_binding(
     mapping = {
         **mapping,
         "table_paths": {n: str(source.path) for n, source in dataset.tables.items()},
+        "anchor_source": {**files[anchor_path], "path": str(data_dir / anchor_path)},
     }
     with recorder.span("source.read") if recorder else nullcontext():
         bounds = {}

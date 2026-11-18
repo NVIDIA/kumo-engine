@@ -87,10 +87,26 @@ class Wrong(DiskGraphEngine):
         build, graph, sampling_plan = source.build, source.sample_graph_batch, source._sampling_plan
 
         def shifted(spec, requests):
+            from datetime import datetime, timedelta
+
             if self.defect == "delta_in_seconds":
                 spec = _in_seconds(spec)
             shift = {"future_visible": 10**6, "off_by_one": 1}.get(self.defect, 0)
-            return build(spec, [replace(r, as_of_time=r.as_of_time + shift) for r in requests])
+            return build(
+                spec,
+                [
+                    replace(
+                        r,
+                        as_of_time=r.as_of_time
+                        + (
+                            timedelta(seconds=shift)
+                            if isinstance(r.as_of_time, datetime)
+                            else shift
+                        ),
+                    )
+                    for r in requests
+                ],
+            )
 
         def altered_plan(neighborhood):
             layers = list(neighborhood.layers)
@@ -300,25 +316,108 @@ WRONG_ENGINES = {
         "future_visible",
         "after the cutoff",
     ),
-    "sequence_permutation": ({}, "diskgraph", "first_order_dropped", "row and request order"),
+    "sequence_permutation": (
+        {},
+        "diskgraph",
+        "first_order_dropped",
+        "original|row and request order",
+    ),
 }
 
 
-@pytest.mark.parametrize("defect", ["order", "selection", "sample", "input"])
-def test_sequence_failure_reports_distinguish_order_from_selection(defect):
-    from conformance.sequence_cases import _same_sequences
+def _tied_sequence_fixture():
+    from conformance.sequence_cases import sequence_contract
+    from kumo.pytorch.api import SampleRequest
 
-    first = (10, "clicks", (("id", True, 1),))
-    second = (10, "orders", (("id", True, 2),))
-    expected = {"a": {"history": (first, second)}}
-    actual, message = {
-        "order": ({"a": {"history": (second, first)}}, "event ordering"),
-        "selection": ({"a": {"history": (first, first)}}, "event selection/values"),
-        "sample": ({}, "missing or unexpected sample"),
-        "input": ({"a": {}}, "missing sample/input"),
-    }[defect]
-    with pytest.raises(PropertyFailure, match=message):
-        _same_sequences(expected, actual, "fixture answers")
+    template = sequence_batch(0, "diskgraph", "sequence_expected")[0]
+    dims = {
+        **template.dimensions,
+        "contract.event_order": "ascending",
+        "contract.event_limit": "limited",
+        "contract.event_max": "limited",
+        "contract.event_keep": "first",
+        "contract.event_delta_unit": "seconds",
+    }
+    case = replace(
+        template,
+        contract=sequence_contract(dims),
+        requests=(SampleRequest("a", 1, 9),),
+        tables={
+            "users": [{"user_id": 1}],
+            "orders": [
+                {"order_id": i, "user_id": 1, "amount": float(i), "at": t}
+                for i, t in ((1, 7), (2, 8), (3, 8), (4, 8), (5, 10))
+            ],
+            "clicks": [{"click_id": 10, "user_id": 1, "amount": 10.0, "at": 8}],
+        },
+    )
+
+    def event(time, source, identity):
+        return (
+            time,
+            source,
+            (("amount", True, float(identity)), ("delta", True, 9 - time), ("id", True, identity)),
+        )
+
+    answer = {
+        "a": {
+            "merged": (event(7, "orders", 1), event(8, "orders", 2), event(8, "clicks", 10)),
+            "pushed": (event(7, "recent", 1), event(8, "recent", 2)),
+        }
+    }
+    return case, answer, event
+
+
+def test_sequences_accept_tied_permutations_and_boundary_alternatives():
+    from conformance.sequence_cases import assert_sequence_answers
+
+    case, answer, event = _tied_sequence_fixture()
+    assert_sequence_answers(case, answer, "base")
+    answer["a"]["merged"] = (event(7, "orders", 1), event(8, "clicks", 10), event(8, "orders", 4))
+    answer["a"]["pushed"] = (event(7, "recent", 1), event(8, "recent", 3))
+    assert_sequence_answers(case, answer, "allowed alternatives")
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "order",
+        "selection",
+        "sample",
+        "input",
+        "future",
+        "values",
+        "multiplicity",
+        "component-limit",
+        "length",
+    ],
+)
+def test_sequence_oracle_rejects_semantic_errors(defect):
+    from conformance.sequence_cases import assert_sequence_answers
+
+    case, answer, event = _tied_sequence_fixture()
+    merged = answer["a"]["merged"]
+    if defect == "sample":
+        answer = {}
+    elif defect == "input":
+        answer["a"].pop("pushed")
+    elif defect == "order":
+        answer["a"]["merged"] = tuple(reversed(merged))
+    elif defect == "selection":
+        answer["a"]["merged"] = (merged[0], event(8, "orders", 99), merged[2])
+    elif defect == "future":
+        answer["a"]["merged"] = (*merged[:2], event(10, "orders", 5))
+    elif defect == "values":
+        fields = (("amount", True, 999.0), *merged[1][2][1:])
+        answer["a"]["merged"] = (merged[0], (8, "orders", fields), merged[2])
+    elif defect == "multiplicity":
+        answer["a"]["merged"] = (merged[0], merged[1], merged[1])
+    elif defect == "component-limit":
+        answer["a"]["merged"] = (merged[0], merged[1], event(8, "orders", 3))
+    else:
+        answer["a"]["merged"] = merged[:2]
+    with pytest.raises(PropertyFailure):
+        assert_sequence_answers(case, answer, defect)
 
 
 def test_sequence_failure_reports_both_output_formats(monkeypatch):
@@ -338,7 +437,7 @@ MORE_DEFECTS = (
     ("graph_expected", "older_on_ties", "recent kept other than the most recent|layer-by-layer"),
     ("graph_point_in_time", "late_after_shops", "after the cutoff"),
     ("sequence_point_in_time", "delta_in_seconds", "wrong time deltas"),
-    ("sequence_permutation", "unstable_rows", "a second run changed sequences"),
+    ("sequence_permutation", "unstable_rows", "original|a second preparation"),
 )
 
 

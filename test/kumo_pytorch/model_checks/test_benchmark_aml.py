@@ -274,10 +274,9 @@ def test_training_counts_and_saved_state_reuse(source, workload, family):
         assert evidence["complete"] and evidence["typed_calls"] == 1
         [iterator] = evidence["iterators"]
         assert iterator["complete"] and iterator["batches"] == 1
-        graph = family in {"graphsage", "combined"}
         assert iterator["merged_history_batches"] == int(family != "graphsage")
-        assert iterator["length_planning"] == (not graph)
-        if not graph:
+        assert iterator["length_planning"] == (family not in {"graphsage", "combined"})
+        if family not in {"graphsage", "combined"}:
             assert iterator["lengths_computed"] == int(epoch == 0)
             assert iterator["length_cache_hits"] == int(epoch > 0)
             assert iterator["length_cache_reused"] == (epoch > 0)
@@ -332,11 +331,18 @@ def test_training_counts_and_saved_state_reuse(source, workload, family):
     assert inputs["history_capacity"] == 1
 
 
-def test_build_once_and_two_reopens_measure_all_stages(source):
+@pytest.mark.parametrize("ref", ["E01", "L01"])
+def test_build_once_and_two_reopens_measure_all_stages(source, monkeypatch, ref):
+    if ref == "L01":
+        from .test_run_binding import canonical_inputs
+
+        location = source / "li"
+        location.mkdir()
+        source, files = canonical_inputs(location)
+        monkeypatch.setattr(data, "verify_dataset", lambda directory, binding: files)
     config = {
         "data_dir": str(source),
-        "family": "graphsage",
-        "workload": "account-involvement-next24h",
+        "binding": ref,
         "anchors_per_split": 1,
         "batch_size": 1,
         "threads": 1,
@@ -363,3 +369,64 @@ def test_build_once_and_two_reopens_measure_all_stages(source):
             )
     with pytest.raises(ValueError, match="Build requires"):
         factory(dict(config, index_action="build"), source / "bad-build")
+
+
+@pytest.mark.parametrize("training", [False, True])
+def test_li_combined_native_benchmark_and_reuse(tmp_path, monkeypatch, training):
+    from .test_run_binding import canonical_inputs
+
+    source, files = canonical_inputs(tmp_path)
+    monkeypatch.setattr(data, "verify_dataset", lambda directory, binding: files)
+    config = {
+        "data_dir": str(source),
+        "binding": "L01",
+        "anchors_per_split": 3,
+        "batch_size": 2,
+        "threads": 1,
+        "training": training,
+        "save_fitted_state": str(tmp_path / "state"),
+    }
+    fresh = run(factory, config, tmp_path / "fresh", repetitions=1, epochs=2)
+    assert fresh["execution_status"] == "completed", fresh["errors"]
+    for epoch, evidence in enumerate(fresh["native_iterations"]):
+        assert evidence["complete"]
+        [iterator] = evidence["iterators"]
+        assert iterator["history"] and not iterator["length_planning"]
+        assert iterator["anchors"] == 3 and iterator["batches"] == 2
+    config.pop("save_fitted_state")
+    config["load_fitted_state"] = str(tmp_path / "state")
+    reused = run(factory, config, tmp_path / "reused", repetitions=1, epochs=2)
+    assert reused["execution_status"] == "completed", reused["errors"]
+    assert compare_states(fresh, reused)["status"] == "measured"
+
+
+def test_li_combined_native_length_planning_and_second_epoch_cache(
+    tmp_path, monkeypatch
+):
+    from .test_run_binding import canonical_inputs
+
+    source, files = canonical_inputs(tmp_path)
+    monkeypatch.setattr(data, "verify_dataset", lambda directory, binding: files)
+    result = run(
+        factory,
+        {
+            "data_dir": str(source),
+            "binding": "L01",
+            "anchors_per_split": 3,
+            "batch_size": 2,
+            "threads": 1,
+            "training": False,
+            "length_planning": True,
+        },
+        tmp_path / "lengths",
+        repetitions=1,
+        epochs=2,
+    )
+    assert result["execution_status"] == "completed", result["errors"]
+    for epoch, evidence in enumerate(result["native_iterations"]):
+        assert evidence["complete"] and evidence["typed_calls"]
+        [iterator] = evidence["iterators"]
+        assert iterator["history"] and iterator["length_planning"]
+        assert iterator["lengths_computed"] == (0 if epoch else 3)
+        assert iterator["length_cache_hits"] == (3 if epoch else 0)
+        assert iterator["length_cache_reused"] == bool(epoch)

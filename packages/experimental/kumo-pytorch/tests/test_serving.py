@@ -26,6 +26,7 @@ from kumo.pytorch import api
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec
 from tests import lifecycle_app
 from tests.native_fixtures import prepare_rows
+from tests.serving_assertions import assert_serving_batches
 from tests.serving_fetch import fetch
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _temporal_contract
 from tests.test_inference_lifecycle import _dataset, assert_same_batches
@@ -206,8 +207,12 @@ def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     server = api.ServingAssembler(artifact)
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
+        assert_serving_batches(
+            server.assemble(rows, [request], seed=SEED),
+            [expected[request.sample_id]],
+            artifact,
+            tables,
+            [request],
         )
 
 

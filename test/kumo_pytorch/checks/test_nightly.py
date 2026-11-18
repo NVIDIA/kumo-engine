@@ -43,20 +43,16 @@ def fitting_reports(root, case):
 
 def reports(root):
     binding_reports(root)
-    for row in nightly.matrix()["include"]:
-        case = row["case"]
-        selection, family = nightly.selected_cases(case)[0]
-        fitting_reports(root, case)
-        for mode in nightly.MODES:
-            base = root / mode / case
-            write(
-                base / "results.json",
-                {
-                    "status": "complete",
-                    "cases": [{"name": case, "status": "complete"}],
-                },
-            )
-            write(base / case / "results.json", {"status": "complete", "runs": []})
+    for row in nightly.matrix(campaign="fitting")["include"]:
+        fitting_reports(root, row["case"])
+    for row in nightly.benchmark_matrix()["include"]:
+        case, mode = row["case"], row["mode"]
+        base = root / mode / case
+        write(
+            base / "results.json",
+            {"status": "complete", "cases": [{"name": case, "status": "complete"}]},
+        )
+        write(base / case / "results.json", {"status": "complete", "runs": []})
 
 
 def test_plan_has_every_binding_and_no_native_import_requirement():
@@ -73,8 +69,9 @@ def test_plan_has_every_binding_and_no_native_import_requirement():
         "account-involvement-next24h-nuformer",
         "masked-value-pretrain-pragma",
         "next-token-pretrain-nuformer",
+        "li-medium-combined",
     }
-    assert len(names) == 5
+    assert len(names) == 6
     with pytest.raises(ValueError, match="Unknown nightly case"):
         nightly.selected_cases("not-a-binding")
 
@@ -84,6 +81,13 @@ def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
     template = json.loads((nightly.ROOT / "workloads/aml-benchmark.json").read_text())
     for row in nightly.matrix()["include"]:
         case = row["case"]
+        enabled = {
+            (r["case"], r["mode"]) for r in nightly.benchmark_matrix()["include"]
+        }
+        if (case, mode) not in enabled:
+            with pytest.raises(ValueError, match="does not enable"):
+                nightly.benchmark_config(case, mode, tmp_path)
+            continue
         config = nightly.benchmark_config(case, mode, tmp_path)
         assert len(config) == 1 and config[0]["name"] == case
         selected = config[0]["config"]
@@ -93,6 +97,8 @@ def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
             assert selected["backend"] == mode.removeprefix("timing-")
             assert selected["training"] is False
             assert selected["cache_mode"] == "uncontrolled"
+        elif mode == "length-planning":
+            assert selected["length_planning"] is True and selected["training"] is False
         else:
             assert selected["training"] is True
             assert selected["cache_mode"] == "cold-warm"
@@ -101,7 +107,7 @@ def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
 def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
     reports(tmp_path)
     result = nightly.summarize(tmp_path, "fixture-revision")
-    assert result["status"] == "passed" and len(result["shards"]) == 54
+    assert result["status"] == "passed" and len(result["shards"]) == 35
     case = nightly.matrix()["include"][0]["case"]
     combined = json.loads((tmp_path / "fitting" / case / "report.json").read_text())
     assert len(combined["cases"][0]["runs"]) == 6
@@ -185,11 +191,12 @@ def test_summary_retains_refusals_without_claiming_population(tmp_path, fault, e
 def test_summary_rejects_lost_or_substituted_shards(tmp_path, fault):
     reports(tmp_path)
     case = nightly.matrix()["include"][0]["case"]
+    benchmark = nightly.benchmark_matrix()["include"][0]["case"]
     if fault == "missing-benchmark":
-        (tmp_path / "training" / case / "results.json").unlink()
+        (tmp_path / "training" / benchmark / "results.json").unlink()
     elif fault == "wrong-binding":
         write(
-            tmp_path / "training" / case / "results.json",
+            tmp_path / "training" / benchmark / "results.json",
             {
                 "status": "complete",
                 "cases": [{"name": "another-case"}],
@@ -215,4 +222,86 @@ def test_summary_rejects_lost_or_substituted_shards(tmp_path, fault):
             write(path, report)
     result = nightly.summarize(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["shards"]) == 54  # Failure never suppresses other reports.
+    assert len(result["shards"]) == 35  # Failure never suppresses other reports.
+
+
+def test_li_campaign_scope_does_not_enable_reference_backends_or_fitting():
+    assert {
+        row["mode"]
+        for row in nightly.benchmark_matrix()["include"]
+        if row["case"] == "li-medium-combined"
+    } == {"training", "index", "timing-diskgraph", "length-planning"}
+    assert "li-medium-combined" not in {
+        row["case"] for row in nightly.matrix(campaign="fitting")["include"]
+    }
+    assert len(nightly.benchmark_matrix()["include"]) == 4
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "training",
+        "index",
+        "timing-diskgraph",
+        "length-planning",
+        "lifecycle",
+        "histories",
+    ],
+)
+def test_summary_requires_each_new_campaign(tmp_path, kind):
+    reports(tmp_path)
+    case = (
+        "li-medium-combined"
+        if kind in {"training", "index", "timing-diskgraph", "length-planning"}
+        else "L01"
+    )
+    name = "results.json" if case == "li-medium-combined" else "report.json"
+    (tmp_path / kind / case / name).unlink()
+    result = nightly.summarize(tmp_path, "fixture-revision")
+    assert result["status"] == "failed"
+    assert [
+        (row["case"], row["kind"])
+        for row in result["shards"]
+        if row["status"] == "failed"
+    ] == [(case, kind)]
+
+
+def test_loader_only_binding_does_not_require_model_training(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from test.kumo_pytorch import bindings
+
+    catalog = deepcopy(bindings._catalog())
+    selected = next(b for b in catalog["bindings"] if b["ref"] == "L01")
+    selected["campaigns"].remove("benchmark-training")
+    monkeypatch.setattr(bindings, "_catalog", lambda: catalog)
+    assert {
+        r["mode"]
+        for r in nightly.benchmark_matrix()["include"]
+        if r["case"] == "li-medium-combined"
+    } == {"index", "timing-diskgraph", "length-planning"}
+    assert (
+        nightly.benchmark_config("li-medium-combined", "timing-diskgraph", tmp_path)[0][
+            "config"
+        ]["training"]
+        is False
+    )
+    reports(tmp_path)
+    assert nightly.summarize(tmp_path, "fixture-revision")["status"] == "passed"
+    (tmp_path / "timing-diskgraph/li-medium-combined/results.json").unlink()
+    assert nightly.summarize(tmp_path, "fixture-revision")["status"] == "failed"
+
+
+def test_fitting_only_binding_still_requires_its_repetitions(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from test.kumo_pytorch import bindings
+
+    catalog = deepcopy(bindings._catalog())
+    next(b for b in catalog["bindings"] if b["ref"] == "L01")["campaigns"] = ["fitting"]
+    monkeypatch.setattr(bindings, "_catalog", lambda: catalog)
+    assert all(
+        r["case"] != "li-medium-combined" for r in nightly.benchmark_matrix()["include"]
+    )
+    reports(tmp_path)
+    assert nightly.summarize(tmp_path, "fixture-revision")["status"] == "passed"
+    (tmp_path / "fitting/li-medium-combined/repeat-2/report.json").unlink()
+    assert nightly.summarize(tmp_path, "fixture-revision")["status"] == "failed"

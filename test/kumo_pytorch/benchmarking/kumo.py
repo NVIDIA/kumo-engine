@@ -351,6 +351,7 @@ def factory(config, workdir):
         "save_fitted_state",
         "cache_mode",
         "backend",
+        "length_planning",
     }
     if set(config) - allowed:
         raise ValueError(f"Unknown benchmark options: {sorted(set(config) - allowed)}")
@@ -379,6 +380,8 @@ def factory(config, workdir):
     for key in ("anchors_per_split", "batch_size", "threads"):
         if type(config[key]) is not int or config[key] < 1:
             raise ValueError(f"{key} must be a positive integer")
+    if type(config.get("length_planning", False)) is not bool:
+        raise ValueError("length_planning must be boolean")
     device = config.get("device", "cpu")
     cache_mode = config.get("cache_mode", "uncontrolled")
     if cache_mode not in {"uncontrolled", "cold-warm"}:
@@ -603,7 +606,7 @@ def factory(config, workdir):
         contract = contract_for(
             schema_for(dataset, binding), binding, max_events=capacity
         )
-        if not graph:
+        if not graph or config.get("length_planning", False):
             contract = replace(
                 contract,
                 batch=replace(

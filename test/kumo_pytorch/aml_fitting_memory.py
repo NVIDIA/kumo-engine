@@ -168,7 +168,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.repeat is not None and not 0 <= args.repeat < args.repetitions:
         parser.error("--repeat must be within --repetitions")
-    cases = selected_cases(args.case)
+    cases = selected_cases(args.case, campaign="fitting")
     args.output.mkdir(parents=True, exist_ok=False)
     report = {
         "status": "running",

@@ -70,6 +70,13 @@ def input_digest(value):
     return digest.hexdigest()
 
 
+def finite_outputs(value):
+    """Support tensor outputs and named multi-target heads without dropping either."""
+    if isinstance(value, dict):
+        return bool(value) and all(finite_outputs(v) for v in value.values())
+    return bool(torch.isfinite(value).all())
+
+
 def snapshot(task, model, requests, *, batch_size, seed):
     model.eval()
     results = []
@@ -98,7 +105,7 @@ def snapshot(task, model, requests, *, batch_size, seed):
                 if model.family == "nuformer":
                     model.backbone.validate_kumo_batch(batch, target_name=None)
                 predictions = {"logits": model(batch)}
-            assert all(torch.isfinite(value).all() for value in predictions.values())
+            assert finite_outputs(predictions)
             metadata = {
                 key: batch.metadata[key]
                 for key in (
@@ -224,6 +231,7 @@ def check_lifecycle(
     seed,
     max_seq_len,
     dim=16,
+    training_anchors=None,
 ):
     """Save the trained state, establish inference output, then check a new process."""
     directory = Path(directory).resolve()
@@ -262,6 +270,8 @@ def check_lifecycle(
             for row in requests
         ],
     }
+    if training_anchors is not None:
+        config["source_anchor_table"] = training_anchors.to_dict()
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     with (
         forbid_fitting(),
@@ -289,6 +299,104 @@ def check_lifecycle(
         )
     assert task.fitted_state.fingerprint == fingerprint
     return json.loads((directory / "result.json").read_text())
+
+
+def run_binding(
+    plan,
+    task,
+    dataset,
+    anchors,
+    binding,
+    directory,
+    *,
+    capacity,
+    batch_size,
+    threads,
+    seed,
+):
+    """Use the shared persistence checks on a catalog-selected native task."""
+    from .bindings import selection, sequence_capacity
+    from .checkpoint_resume import check_resume, training_update
+    from .population_anchors import projected_rows
+    from .training_lifecycle import check_training
+
+    selected = selection(binding)
+    family = binding["representation"]
+    rows = {
+        split: list(projected_rows(anchors.source.path, split))
+        for split in ("train", "valid", "test")
+    }
+    # These bounded records are independent identity references, never batch inputs.
+    expected = {
+        split: tuple(
+            r.SampleRequest(
+                row["sample_id"],
+                row["entity_id"],
+                row["as_of_time"],
+                split=split,
+                metadata={key: row[key] for key in anchors.metadata},
+            )
+            for row in records
+        )
+        for split, records in rows.items()
+    }
+    model = build_model(
+        task,
+        selected,
+        family,
+        max_seq_len=sequence_capacity(binding, capacity),
+        seed=seed,
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
+    batch = next(
+        iter(
+            task.batches(
+                split="train", batch_size=batch_size, output_format="model", seed=seed
+            )
+        )
+    )
+    trained = training_update(model, optimizer, batch)
+    assert trained["target_weight"] > 0
+    results = {}
+    # Keep independent failures visible rather than losing finetune/resume evidence.
+    from .refusals import case_failure
+
+    lifecycle = directory / "lifecycle"
+    try:
+        results["inference"] = check_lifecycle(
+            plan,
+            task,
+            model,
+            dataset,
+            expected["valid"] + expected["test"],
+            selected,
+            family,
+            directory=lifecycle,
+            index=directory / "index",
+            batch_size=batch_size,
+            threads=threads,
+            seed=seed,
+            max_seq_len=sequence_capacity(binding, capacity),
+            training_anchors=anchors,
+        )
+    except Exception as error:
+        results["inference"] = case_failure(error, allow_refusal=False)
+    if not (lifecycle / "config.json").exists():
+        raise RuntimeError("Lifecycle could not persist its task configuration")
+    for name, check in (
+        ("finetuning", check_training),
+        ("mid_epoch_resume", check_resume),
+    ):
+        try:
+            results[name] = check(lifecycle, expected["train"])
+        except Exception as error:
+            results[name] = case_failure(error, allow_refusal=False)
+    return {
+        "status": "passed"
+        if all(v["status"] == "passed" for v in results.values())
+        else "failed",
+        "checks": results,
+    }
 
 
 if __name__ == "__main__":

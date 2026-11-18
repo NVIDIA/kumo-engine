@@ -385,9 +385,25 @@ those dimensions.
 | `graph_edge_uniqueness` | no edge repeats within a sample |
 | `graph_determinism` | sampling one prepared index twice more gives the same graphs in the same order; separate builds are rule 2, checked by `graph_tie_invariance` |
 | `graph_tie_invariance` | row order, file splits and another `num_shards` don't change the graphs |
-| `sequence_expected` | both native output formats match independent fixture selection, ordering and truncation |
-| `sequence_point_in_time` | no event after its cutoff; each `EventTimeDelta` is the cutoff minus the event time, in its unit; future rows change nothing |
-| `sequence_permutation` | a second run, and row and request order, give the same sequences |
+| `sequence_expected` | both native output formats satisfy source membership, values, multiplicity, chronology and both component/merged limits; equal-time permutations and eligible boundary alternatives are allowed |
+| `sequence_point_in_time` | no event after its cutoff; each `EventTimeDelta` is the cutoff minus the event time, in its unit; original and future-augmented sources satisfy the same selection rules |
+| `sequence_permutation` | each independent preparation satisfies those source rules after row/request permutation; tied selections may differ |
+
+Sequences are materialized from Parquet AnchorTables and read through native
+batching. The decoder also checks field dtypes, padded layout and validity.
+The serving drift suite reuses this source oracle for generated sequences;
+it never uses another engine's output as the expected answer.
+
+Serving graph comparisons match declared node identities and remap edge indices.
+Each graph independently checks source features at the encoder's output dtype,
+relation orientation, cutoff, recency and a complete layer-by-layer selection.
+Revisited relations require a valid combination of selections explaining exactly
+the emitted nodes and edges. Equal-time fanout alternatives are permitted, while
+missing/extra nodes, edges and values fail. Tied choices are searched lazily, with
+required-edge pruning; the checker never accepts an unchecked graph to save time.
+Only declared float64 aggregate means and moments use the existing
+`MOMENT_TOLERANCE` (1e-12 absolute and relative). Counts, masks, IDs and structure
+remain exact. Generated aggregate results are also checked against raw source rows.
 
 [G-GRAPH-001](spec/guarantees/G-GRAPH-001/guarantee.md) states the graph rules.
 A layer-by-layer expansion is rebuilt from the engine's own output, so it holds

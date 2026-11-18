@@ -10,7 +10,7 @@ training benchmarks. Published full-history workload declarations stay intact.
 
 from dataclasses import replace
 from datetime import timedelta
-from test.kumo_pytorch.contracts import build_contract, window
+from test.kumo_pytorch.contracts import window
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.masked_values import original_tokens
 from test.kumo_pytorch.masked_values import verify_targets as verify_masked
@@ -29,10 +29,13 @@ from .fixtures import (
     AMLFixture,
     build_fixture,
     probe_anchor_table,
+    sweep_cases,
+    sweep_contract,
+    sweep_native,
+    sweep_requests,
+    verify_sweep_targets,
 )
-from .test_aml import CASES
 
-CASES = [(selection, family) for selection, family in CASES if family != "graphsage"]
 PROFILES = (
     "full",
     "count_limit",
@@ -40,6 +43,9 @@ PROFILES = (
     "two_tables",
     "two_tables_window_limit",
 )
+
+CASES = [(s, f) for s, f in sweep_cases() if f != "graphsage"]
+
 T = int(CUTOFF.timestamp())
 
 
@@ -212,9 +218,9 @@ def selected_reference(source, profile):
         if profile in ("time_window", "two_tables_window_limit"):
             rows = [row for row in rows if T - length // 2 <= row["time"] < T]
         if profile == "count_limit":
-            rows = rows[-(length - 3):]
+            rows = rows[slice(-(length - 3), None)]
         elif profile == "two_tables_window_limit":
-            rows = rows[-(length // 4):]
+            rows = rows[slice(-(length // 4), None)]
         selected.extend(rows)
     return {"events": selected}
 
@@ -231,7 +237,7 @@ def selected_reference(source, profile):
 def test_history_sizes_and_selection(source, selection, family, profile):
     fixture, length = source["fixture"], source["length"]
     graph = family == "combined"
-    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
+    native = sweep_native(selection, family)
     requests = tuple(
         replace(
             row,
@@ -241,7 +247,8 @@ def test_history_sizes_and_selection(source, selection, family, profile):
         )
         for row in fixture.training
     )
-    base = build_contract(fixture.schema, family, native=native, max_events=length)
+    requests = sweep_requests(requests, selection, family)
+    base = sweep_contract(fixture.schema, selection, family, max_events=length)
     contract = history_variant(base, profile, length, graph)
     assert contract.sample.neighborhoods == base.sample.neighborhoods
     assert contract.sample.entity_values == base.sample.entity_values
@@ -344,7 +351,6 @@ def test_history_sizes_and_selection(source, selection, family, profile):
                         == tokens
                     )
                     assert not stream["value_ids"][owner][~stream["valid"][owner]].any()
-                assert batch.targets["label"]["valid"].all()
-                assert batch.targets["label"]["values"].flatten().tolist() == [1.0, 0.0]
+                verify_sweep_targets(batch, requests, selection, family, state)
                 model.backbone.validate_kumo_batch(batch)
             assert task.fitted_state.fingerprint == fingerprint

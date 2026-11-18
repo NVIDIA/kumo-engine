@@ -10,7 +10,6 @@ five AML consumers and independently verify delivery and source/task alignment.
 
 from collections import Counter
 from dataclasses import replace
-from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.masked_values import original_tokens
 from test.kumo_pytorch.masked_values import verify_targets as verify_masked
@@ -25,8 +24,18 @@ import torch
 
 import kumo.pytorch.api as r
 
-from .fixtures import CUTOFF, VALUE_FIELDS, build_fixture
-from .test_aml import CASES
+from .fixtures import (
+    CUTOFF,
+    VALUE_FIELDS,
+    build_fixture,
+    sweep_cases,
+    sweep_contract,
+    sweep_native,
+    sweep_requests,
+    verify_sweep_targets,
+)
+
+CASES = sweep_cases()
 
 T = int(CUTOFF.timestamp())
 PROFILES = [(size, None, False) for size in (32, 128, 512)] + [
@@ -92,7 +101,7 @@ def test_aml_sample_limits_and_token_budgets(
 ):
     fixture, dataset, index, reference = source
     graph = family in {"graphsage", "combined"}
-    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
+    native = sweep_native(selection, family)
     # Unique sample IDs over repeated roots test ownership independently of IDs.
     # Two complete sample-limited batches plus a five-sample final tail.
     count = 2 * size + 5
@@ -116,7 +125,22 @@ def test_aml_sample_limits_and_token_budgets(
         )
         for row in rows
     }
-    labels = {row["sample_id"]: row["label"] for row in rows}
+    expected_requests = sweep_requests(
+        tuple(
+            r.SampleRequest(
+                row["sample_id"],
+                row["entity_id"],
+                row["cutoff"],
+                targets=(r.TargetValue("label", row["label"]),),
+                split=row["split"],
+            )
+            for row in rows
+        ),
+        selection,
+        family,
+    )
+    for row, request in zip(rows, expected_requests, strict=True):
+        row.update({t.name: t.value for t in request.targets})
     expected_ids = [row["sample_id"] for row in rows if row["split"] == "test"]
     training = [anchors["train-0"], anchors["train-1"]]
     identities = {str(i): i for i in range(1, 5)}
@@ -127,7 +151,7 @@ def test_aml_sample_limits_and_token_budgets(
         sid: 6 * n if family == "pragma" else 11 * n - 1 for sid, n in counts.items()
     }
     budget = None if capacity is None else capacity * max(lengths.values())
-    contract = build_contract(fixture.schema, family, native=native, max_events=11)
+    contract = sweep_contract(fixture.schema, selection, family, max_events=11)
     contract = replace(
         contract,
         batch=replace(
@@ -148,7 +172,7 @@ def test_aml_sample_limits_and_token_budgets(
         "cutoff",
         sample_id="sample_id",
         split="split",
-        targets={} if native else {"label": "label"},
+        targets={t.name: t.name for t in expected_requests[0].targets},
         metadata=("prediction_time_ns",) if graph else (),
     )
 
@@ -201,11 +225,9 @@ def test_aml_sample_limits_and_token_budgets(
                     verify_inputs(
                         batch, family, anchors, reference, identities, training
                     )
-                    assert set(batch.targets) == {"label"}
-                    assert batch.targets["label"]["valid"].all()
-                    assert batch.targets["label"]["values"].flatten().tolist() == [
-                        labels[sid] for sid in ids
-                    ]
+                    verify_sweep_targets(
+                        batch, expected_requests, selection, family, state
+                    )
                     if family != "graphsage":
                         stream = batch.inputs["history"]
                         for owner, sid in enumerate(ids):

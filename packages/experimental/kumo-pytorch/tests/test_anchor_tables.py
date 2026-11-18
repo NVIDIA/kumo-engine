@@ -236,28 +236,36 @@ class TestMaterialize:
             with pytest.raises(ValueError, match="requests carry their own"):
                 task.batches(_requests_for("train"), split="train", batch_size=4)
 
-    def test_table_and_requests_yield_the_same_samples(self) -> None:
+    def test_native_table_batches_match_original_anchor_rows(self) -> None:
+        from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+        expected = {
+            row["sid"]: next(user["score"] for user in USERS if user["user_id"] == row["user_id"])
+            for row in ANCHORS
+            if row["split"] == "train"
+        }
         with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
-            from_table = {
-                sample_id: score
-                for batch in task.batches(split="train", batch_size=3, shuffle=True, seed=5)
-                for sample_id, score in zip(
-                    batch.metadata["sample_ids"],
-                    batch.inputs["entity"]["score"]["values"].tolist(),
-                    strict=True,
-                )
-            }
-            from_requests = {
-                sample_id: score
-                for batch in task.batches(_requests_for("train"), batch_size=3)
-                for sample_id, score in zip(
-                    batch.metadata["sample_ids"],
-                    batch.inputs["entity"]["score"]["values"].tolist(),
-                    strict=True,
-                )
-            }
-        assert from_table == from_requests
+            assert isinstance(task._anchors, NativeAnchors)
+            for epoch in (0, 1):
+                delivered = [
+                    (sample_id, score)
+                    for batch in task.batches(
+                        split="train",
+                        epoch=epoch,
+                        batch_size=3,
+                        shuffle=True,
+                        seed=5,
+                        output_format="model",
+                    )
+                    for sample_id, score in zip(
+                        batch.metadata["sample_ids"],
+                        batch.inputs["entity"]["score"]["values"].tolist(),
+                        strict=True,
+                    )
+                ]
+                assert len(delivered) == len(expected)
+                assert dict(delivered) == expected
 
 
 class TestFittedStateReuse:

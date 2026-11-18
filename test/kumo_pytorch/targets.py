@@ -13,6 +13,77 @@ from collections import Counter
 from copy import deepcopy
 from decimal import Decimal
 from math import isfinite
+from struct import pack, unpack
+
+from .diagnostics import mismatch
+
+
+def source_target_rows(binding, path, projected):
+    """Read only selected source anchor row groups, retaining exact target values."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    from .bindings import profile
+
+    anchor = profile(binding, "anchor")
+    rules = target_rules(binding)
+    columns = {
+        "sample_id": anchor["sample_id"],
+        "registered_entity_id": anchor["entity_id"],
+        "prediction_time_ns": anchor["time"],
+        "split": anchor["split"],
+        **{name: rule["column"] for name, rule in rules.items()},
+    }
+    wanted = {row["anchor_row_position"] for row in projected}
+    source, offset, result = pq.ParquetFile(path), 0, {}
+    for group in range(source.num_row_groups):
+        end = offset + source.metadata.row_group(group).num_rows
+        positions = sorted(position for position in wanted if offset <= position < end)
+        if positions:
+            table = source.read_row_group(group, columns=list(columns.values()))
+            table = table.take([position - offset for position in positions])
+            clock = columns["prediction_time_ns"]
+            table = table.set_column(
+                table.schema.get_field_index(clock),
+                clock,
+                pc.cast(pc.cast(table[clock], pa.timestamp("ns")), pa.int64()),
+            )
+            for position, row in zip(positions, table.to_pylist(), strict=True):
+                result[position] = {
+                    **{name: row[column] for name, column in columns.items()},
+                    "anchor_row_position": position,
+                }
+        offset = end
+        if len(result) == len(wanted):
+            break
+    assert set(result) == wanted, "Selected anchor positions are absent from source"
+    return result
+
+
+def verify_target_projection(binding, projected, original):
+    """Verify source identity and the declared float32 transport independently."""
+    for name in ("sample_id", "registered_entity_id", "prediction_time_ns", "split"):
+        assert projected[name] == original[name], mismatch(
+            [projected[name]], [original[name]], [projected], name
+        )
+    for name, rule in target_rules(binding).items():
+        value = original[name]
+        expected = (
+            value
+            if value is None or rule["kind"] == "category"
+            else unpack("f", pack("f", float(value)))[0]
+        )
+        assert projected[name] == expected, (
+            f"Source target {name} projection changed; original={value!r}; "
+            + mismatch(
+                [projected[name]],
+                [expected],
+                [projected],
+                name,
+                precision="exact category" if rule["kind"] == "category" else "float32",
+            )
+        )
 
 
 def verify_next_outgoing(rows, reference):
@@ -35,7 +106,14 @@ def verify_next_outgoing(rows, reference):
             values.get("payment_currency"),
         )
         assert (row["amount"], row["currency"]) == expected, (
-            f"{row['sample_id']}: forecast targets differ from the earliest outgoing transfer"
+            f"{row['sample_id']}: forecast targets differ from the earliest outgoing transfer; "
+            + mismatch(
+                [(row["amount"], row["currency"])],
+                [expected],
+                [row],
+                "forecast targets",
+                precision="original Decimal and category before float32 conversion",
+            )
         )
 
 
@@ -121,12 +199,24 @@ def verify_stored_batch(workload, batch, rows, state):
         assert values.shape == valid.shape == (len(rows),)
         assert valid.dtype == torch.bool
         raw = [row[name] for row in rows]
-        assert valid.tolist() == [v is not None for v in raw]
+        assert valid.tolist() == [v is not None for v in raw], mismatch(
+            valid.tolist(),
+            [v is not None for v in raw],
+            rows,
+            f"{name}.valid",
+            precision="exact bool",
+        )
         if rule["kind"] == "category":
             entries = dict(fitted_target_encoder(state, name)["entries"])
             expected = [0 if v is None else entries.get(v, 1) for v in raw]
             assert values.dtype == torch.int64
-            assert values.tolist() == expected
+            assert values.tolist() == expected, mismatch(
+                values.tolist(),
+                expected,
+                rows,
+                name,
+                precision="exact int64 category IDs",
+            )
         else:
             assert values.dtype == torch.float32
             expected = torch.tensor(
@@ -134,7 +224,29 @@ def verify_stored_batch(workload, batch, rows, state):
                 dtype=values.dtype,
                 device=values.device,
             )
-            torch.testing.assert_close(values[valid], expected[valid], rtol=0, atol=0)
+            torch.testing.assert_close(
+                values[valid],
+                expected[valid],
+                rtol=0,
+                atol=0,
+                msg=mismatch(
+                    [
+                        v if eligible else None
+                        for v, eligible in zip(
+                            values.tolist(), valid.tolist(), strict=True
+                        )
+                    ],
+                    [
+                        v if eligible else None
+                        for v, eligible in zip(
+                            expected.tolist(), valid.tolist(), strict=True
+                        )
+                    ],
+                    rows,
+                    name,
+                    precision="float32 (rtol=0, atol=0)",
+                ),
+            )
         counts[name] = int((valid & ~batch.metadata["is_padding"]).sum())
     return counts
 

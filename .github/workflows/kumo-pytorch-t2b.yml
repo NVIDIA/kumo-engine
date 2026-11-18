@@ -127,7 +127,7 @@ jobs:
 
   aml-fitting-memory:
     name: >-
-      Memory / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / Repeat ${{ fromJSON('[1,2,3]')[matrix.repeat] }}
+      Memory / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer","li-medium-combined":"LI Medium / Combined"}')[matrix.case] || matrix.case }} / Repeat ${{ fromJSON('[1,2,3]')[matrix.repeat] }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
@@ -294,7 +294,7 @@ jobs:
 
   benchmark-aml:
     name: >-
-      Benchmark / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / ${{ fromJSON('{"training":"Training","index":"Index Reuse","timing-diskgraph":"DiskGraph","timing-polars":"Polars","timing-gpu":"GPU Reference"}')[matrix.mode] || matrix.mode }}
+      Benchmark / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer","li-medium-combined":"LI Medium / Combined"}')[matrix.case] || matrix.case }} / ${{ fromJSON('{"training":"Training","index":"Index Reuse","timing-diskgraph":"DiskGraph","timing-polars":"Polars","timing-gpu":"GPU Reference","length-planning":"Native Planning and Cache"}')[matrix.mode] || matrix.mode }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     # Each measurement has its own runner; do not contend for one GPU.
@@ -480,6 +480,9 @@ jobs:
             ${{ runner.temp }}/pytorch-campaigns/**/report.md
             ${{ runner.temp }}/pytorch-campaigns/**/contract.json
             ${{ runner.temp }}/pytorch-campaigns/**/loss-curve.csv
+            ${{ runner.temp }}/pytorch-campaigns/**/*.log
+            ${{ runner.temp }}/pytorch-campaigns/**/result.json
+            ${{ runner.temp }}/pytorch-campaigns/**/restore-fingerprints.json
             ${{ runner.temp }}/pytorch-campaigns/**/model.pt
           if-no-files-found: error
           retention-days: 14
@@ -667,12 +670,12 @@ jobs:
         run: |
           python3 - <<'PYCODE'
           import json, os
-          from test.kumo_pytorch.nightly import matrix, campaign_matrix
-          selected = matrix()
+          from test.kumo_pytorch.nightly import matrix, benchmark_matrix, campaign_matrix
+          selected = matrix(campaign="fitting")
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('benchmark_cases=' + json.dumps({'include': [{**row, 'mode': mode} for row in selected['include'] for mode in ('training', 'index', 'timing-diskgraph', 'timing-polars', 'timing-gpu')]}) + '\n')
+              output.write('benchmark_cases=' + json.dumps(benchmark_matrix()) + '\n')
               output.write('fitting_cases=' + json.dumps({'include': [{**row, 'repeat': repeat} for row in selected['include'] for repeat in range(3)]}) + '\n')
-              output.write('dataset_campaigns=' + json.dumps({'include': campaign_matrix('training')['include'] + campaign_matrix('population')['include']}) + '\n')
+              output.write('dataset_campaigns=' + json.dumps({'include': campaign_matrix('training')['include'] + campaign_matrix('population')['include'] + campaign_matrix('lifecycle')['include'] + campaign_matrix('histories')['include']}) + '\n')
           PYCODE
 
   run:

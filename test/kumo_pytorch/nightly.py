@@ -20,13 +20,27 @@ from .bindings import (
 )
 
 ROOT = Path(__file__).resolve().parent
-MODES = ("training", "index", "timing-diskgraph", "timing-polars", "timing-gpu")
+MODES = (
+    "training",
+    "index",
+    "timing-diskgraph",
+    "timing-polars",
+    "timing-gpu",
+    "length-planning",
+)
 
 
-def selected_cases(case=None):
+def selected_cases(case=None, *, campaign=None):
     cases = [
         (selection(binding), binding["representation"])
-        for binding in selected_bindings(campaign="benchmark-training")
+        for binding in selected_bindings(campaign=campaign)
+        if campaign is not None
+        or "fitting" in binding["campaigns"]
+        or any(
+            ("benchmark-training" if mode == "training" else mode)
+            in binding["campaigns"]
+            for mode in MODES
+        )
     ]
     names = [s["case_name"] for s, _ in cases]
     if (
@@ -42,14 +56,26 @@ def selected_cases(case=None):
     return [cases[names.index(case)]]
 
 
-def matrix():
+def matrix(*, campaign=None):
     return {
         "include": [
             {
                 "case": s["case_name"],
                 "dataset": dataset_definition(binding_for(s, f))["inventory"],
             }
-            for s, f in selected_cases()
+            for s, f in selected_cases(campaign=campaign)
+        ]
+    }
+
+
+def benchmark_matrix():
+    return {
+        "include": [
+            {**entry, "mode": mode}
+            for entry in matrix()["include"]
+            for mode in MODES
+            if ("benchmark-training" if mode == "training" else mode)
+            in binding_for(*selected_cases(entry["case"])[0])["campaigns"]
         ]
     }
 
@@ -59,12 +85,14 @@ def campaign_matrix(campaign):
         "training": ("training",),
         "population": ("smoke", "full"),
         "lifecycle": ("lifecycle",),
+        "histories": ("histories",),
         "benchmark": (
             "benchmark-training",
             "index",
             "timing-diskgraph",
             "timing-polars",
             "timing-gpu",
+            "length-planning",
         ),
     }[campaign]
     return {
@@ -86,6 +114,11 @@ def benchmark_config(case, mode, data_dir):
     if mode not in MODES:
         raise ValueError(f"Unknown benchmark mode: {mode}")
     selection, family = selected_cases(case)[0]
+    binding = binding_for(selection, family)
+    if ("benchmark-training" if mode == "training" else mode) not in binding[
+        "campaigns"
+    ]:
+        raise ValueError(f"Binding {binding['ref']} does not enable {mode}")
     config = json.loads((ROOT / "workloads/aml-benchmark.json").read_text())
     config.update(
         data_dir=str(data_dir),
@@ -101,6 +134,13 @@ def benchmark_config(case, mode, data_dir):
             training=False,
             cache_mode="uncontrolled",
             device="cuda:0" if backend == "gpu" else "cpu",
+        )
+    if mode == "length-planning":
+        config.update(
+            length_planning=True,
+            training=False,
+            device="cpu",
+            cache_mode="uncontrolled",
         )
     return [
         {
@@ -197,6 +237,9 @@ def validate_binding_report(report, binding, mode, revision):
     assert report["full_population_verified"] == (mode == "full")
     requirements = binding.get("feature_checks", {})
     if mode in requirements.get("modes", ()):
+        from .feature_checks import validate_evidence
+
+        validate_evidence(report, requirements, mode)
         coverage = report["feature_coverage"]
         assert set(coverage) == set(requirements["features"]), (
             "Missing feature coverage"
@@ -232,6 +275,40 @@ def validate_binding_report(report, binding, mode, revision):
                     == report["splits"][split]["eligible_targets"][name]
                 )
                 assert math.isfinite(output["mean_loss"])
+    if mode == "lifecycle":
+        checks = report["lifecycle"]["checks"]
+        assert report["lifecycle"]["status"] == "passed"
+        assert set(checks) == {"inference", "finetuning", "mid_epoch_resume"}
+        assert all(row["status"] == "passed" for row in checks.values())
+        assert (
+            checks["inference"]["no_refitting"]
+            and checks["inference"]["targets_absent"]
+        )
+        assert checks["finetuning"]["input_refitting"] is False
+        assert checks["finetuning"]["resume"]["status"] == "passed"
+        assert checks["mid_epoch_resume"]["remaining"]
+        for check in checks.values():
+            assert check["pid"] != check["parent_pid"]
+    if mode == "histories":
+        checks = report["histories"]
+        assert checks["status"] == "passed"
+        assert [row["name"] for row in checks["cases"]] == [
+            "windows",
+            "filters-and-windows",
+        ]
+        for row in checks["cases"]:
+            assert row["status"] == "passed"
+            if row.get("outcome") == "refused":
+                assert row["stage"] == "prepare"
+                record_child_refusal(row["refusal"])
+                continue
+            assert row["samples"] > 0
+            assert set(row["events_by_input"]) == {
+                f"{keep}_{order}"
+                for keep in ("all", "first", "last")
+                for order in ("ascending", "descending")
+            }
+            assert row["events_by_input"]["all_ascending"] > 0
     return "executed"
 
 
@@ -241,7 +318,9 @@ def summarize_bindings(directory, revision):
     for binding in selected_bindings():
         ref = binding["ref"]
         for mode in (
-            m for m in ("training", "smoke", "full") if m in binding["campaigns"]
+            m
+            for m in ("training", "smoke", "full", "lifecycle", "histories")
+            if m in binding["campaigns"]
         ):
             path = directory / mode / ref / "report.json"
             row = {"ref": ref, "mode": mode, "report": str(path.relative_to(directory))}
@@ -274,8 +353,14 @@ def summarize(directory, revision):
     rows, timing_cases = [], []
     for entry in matrix()["include"]:
         case = entry["case"]
-        combine_fitting(directory / "fitting" / case, case)
-        for kind in (*MODES, "fitting"):
+        binding = binding_for(*selected_cases(case)[0])
+        kinds = [
+            row["mode"] for row in benchmark_matrix()["include"] if row["case"] == case
+        ]
+        if "fitting" in binding["campaigns"]:
+            combine_fitting(directory / "fitting" / case, case)
+            kinds.append("fitting")
+        for kind in kinds:
             base = directory / kind / case
             path = base / ("results.json" if kind in MODES else "report.json")
             row = {"case": case, "kind": kind, "status": "missing"}
@@ -342,6 +427,10 @@ def execute(
     capacity,
     batch_size,
     seed,
+    plan,
+    dataset,
+    anchors,
+    threads,
 ):
     from .population import check_population
     from .training_acceptance import train_task
@@ -358,10 +447,8 @@ def execute(
             task.fitted_state.to_dict(),
             mode=mode,
         )
-        report["feature_coverage"] = {
-            name: dict.fromkeys(population["counts"], 0)
-            for name in requirements["features"]
-        }
+        report["feature_coverage"] = features.coverage
+        report["feature_assertions"] = features.evidence
     check_population(
         task,
         binding,
@@ -386,6 +473,38 @@ def execute(
             batch_size=batch_size,
             seed=seed,
             features=features,
+        )
+    if mode == "lifecycle":
+        from .lifecycle import run_binding as lifecycle
+
+        report["lifecycle"] = lifecycle(
+            plan,
+            task,
+            dataset,
+            anchors,
+            binding,
+            directory,
+            capacity=capacity,
+            batch_size=batch_size,
+            threads=threads,
+            seed=seed,
+        )
+        assert report["lifecycle"]["status"] == "passed", (
+            "Lifecycle checks failed; see individual results"
+        )
+    if mode == "histories":
+        from .bindings import resolve
+
+        report["histories"] = resolve(binding["history_checks"]["factory"])(
+            dataset,
+            binding,
+            projection,
+            report["mapping"],
+            directory / "histories",
+            threads=threads,
+        )
+        assert report["histories"]["status"] == "passed", (
+            "Source history probes failed; see individual results"
         )
     return report
 
@@ -426,7 +545,7 @@ def run_case(
     }
     write_report(directory, report)
     try:
-        if mode not in {"training", "smoke", "full"}:
+        if mode not in {"training", "smoke", "full", "lifecycle", "histories"}:
             raise ValueError(f"Unknown binding execution mode: {mode}")
         if mode == "full" and population["mode"] != "full":
             raise ValueError("Bounded anchors cannot qualify full-population delivery")
@@ -461,6 +580,10 @@ def run_case(
                 capacity=capacity,
                 batch_size=batch_size,
                 seed=seed,
+                plan=plan,
+                dataset=dataset,
+                anchors=anchors,
+                threads=threads,
             )
         report.update(status="passed", stage="complete")
     except Exception as error:
@@ -515,7 +638,7 @@ def run_binding(args):
             files,
             limit=None
             if args.mode == "full"
-            else args.anchors_per_split or (4 if args.mode == "smoke" else 32),
+            else args.anchors_per_split or (32 if args.mode == "training" else 4),
         )
         report["mapping"] = mapping
         report["history_capacity"] = capacity
@@ -563,6 +686,28 @@ def run_binding(args):
             f"| {name} | {counts} |"
             for name, counts in report["feature_coverage"].items()
         )
+    if report.get("feature_assertions"):
+        lines += [
+            "",
+            "| Assertion | Features | Status | Checked anchors by phase/split |",
+            "| --- | --- | --- | --- |",
+        ]
+        for name, row in report["feature_assertions"].items():
+            lines.append(
+                f"| {name} | {', '.join(row['features'])} | {row['status']} | {row['checked_anchors']} |"
+            )
+            if row.get("error"):
+                lines += ["", f"{name}: {row['error']}"]
+    for kind in ("lifecycle", "histories"):
+        if kind in report:
+            lines += [
+                "",
+                f"### {kind.title()}",
+                "",
+                "```json",
+                json.dumps(report[kind], indent=2),
+                "```",
+            ]
     if report.get("error"):
         lines += ["", "```text", report["error"], "```"]
     (args.output / "report.md").write_text("\n".join(lines) + "\n")
@@ -575,11 +720,16 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     matrix_parser = commands.add_parser("matrix")
     matrix_parser.add_argument(
-        "--campaign", choices=("training", "population", "lifecycle", "benchmark")
+        "--campaign",
+        choices=("training", "population", "lifecycle", "histories", "benchmark"),
     )
     run = commands.add_parser("run")
     run.add_argument("--binding", required=True)
-    run.add_argument("--mode", choices=("training", "smoke", "full"), required=True)
+    run.add_argument(
+        "--mode",
+        choices=("training", "smoke", "full", "lifecycle", "histories"),
+        required=True,
+    )
     run.add_argument("--data-dir", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--anchors-per-split", type=int)

@@ -65,8 +65,9 @@ from kumo.pytorch.api import (  # noqa: E402
 from tests.e2e import runs as runs_module  # noqa: E402
 from tests.e2e.runs import FLOWS  # noqa: E402
 from tests.e2e.tiers import TIERS, Tier  # noqa: E402
+from tests.graph_semantics import SourceRows
 from tests.native_fixtures import prepare_rows
-from tests.test_inference_lifecycle import assert_same_batches  # noqa: E402
+from tests.serving_assertions import assert_serving_batches
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 # Where only the order of a float32 sum changes (one request per reference batch against
@@ -236,16 +237,23 @@ def test_serving_equals_reference_batch_inference(
     hm: HMDataset,
     reference: dict[str, dict[int, Batch]],
 ) -> None:
-    """Each request, served from the rows the flow looks up by following rows_spec,
-    gives exactly the reference batch-inference batch (``reference``)."""
+    """Serving satisfies the same source semantics, including eligible graph ties."""
 
     store = CustomerRows.open(hm.root)
-    server = ServingAssembler(Artifact.load(runs[flow][0].work / "artifact"))
+    artifact = Artifact.load(runs[flow][0].work / "artifact")
+    server = ServingAssembler(artifact)
+    source = SourceRows(server.contract.schema, store.tables)
     requests = serving_requests(hm.root, store, count=16)
     assert sorted(reference[flow]) == sorted(int(r.sample_id) for r in requests)
     for request in requests:
         served = server.assemble(store.lookup(server.rows_spec, request), [request], seed=0)
-        assert_same_batches(served, [reference[flow][int(request.sample_id)]])
+        assert_serving_batches(
+            served,
+            [reference[flow][int(request.sample_id)]],
+            artifact,
+            source,
+            [request],
+        )
 
 
 def test_diskgraph_batch_inference_equals_the_reference(

@@ -74,8 +74,8 @@ def encoded_value(state, field, value):
     return dict(state["spaces"]["history"]["members"][binding])[local]
 
 
-def verify_combined_values(batch, anchors, reference, state, identities):
-    """Source values and chronological event groups; equal-time order may vary."""
+def verify_history_values(batch, anchors, reference, state):
+    """Reconstruct complete chronological event records; ties may permute."""
     import torch
 
     from .involvement import history
@@ -136,10 +136,26 @@ def verify_combined_values(batch, anchors, reference, state, identities):
         assert not stream["position_ids"][i][valid].any(), (
             "Scalar piece positions differ"
         )
+
+
+def verify_aggregate_layout(batch):
+    import torch
+
+    size = len(batch.metadata["sample_ids"])
     for field in batch.inputs["aggregates"].values():
         assert field["values"].dtype == torch.float32
         assert field["valid"].dtype == torch.bool
         assert field["values"].shape == field["valid"].shape == (size,)
+
+
+def verify_graph_values(batch, anchors, reference, state, identities):
+    import torch
+
+    from .involvement import history
+
+    size = len(batch.metadata["sample_ids"])
+    rows = [anchors[sample] for sample in batch.metadata["sample_ids"]]
+    histories = [history(row, reference) for row in rows]
     for node in batch.inputs["graph"]["nodes"].values():
         assert node["ids"].dtype == node["batch"].dtype == torch.int64
         assert node["ids"].shape == node["batch"].shape and node["ids"].ndim == 1
@@ -199,3 +215,10 @@ def verify_combined_values(batch, anchors, reference, state, identities):
                 assert encoded["values"][i].item() == expected, (
                     "Graph categorical/raw encoding differs from source"
                 )
+
+
+def verify_combined_values(batch, anchors, reference, state, identities):
+    """Compatibility entry point for all existing combined value assertions."""
+    verify_history_values(batch, anchors, reference, state)
+    verify_aggregate_layout(batch)
+    verify_graph_values(batch, anchors, reference, state, identities)

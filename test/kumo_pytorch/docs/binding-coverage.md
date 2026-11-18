@@ -69,29 +69,43 @@ L01 uses shared `nightly run` campaigns for bounded correctness (`smoke`), train
 and full-population delivery. Correctness and training require these checks on
 every selected anchor in train, valid and test:
 
-| Features | Independent assertions |
-| --- | --- |
-| F01, F02, F04 | Original account identities, strict historical membership, sender/receiver edges, counterparties and graph clocks |
-| F03, F07, F10 | Chronological history groups, allowing either order within a timestamp; direction, age and UTC calendar values; complete encoded event values and separators |
-| F05 | All twelve historical counts, inclusive lower window bounds, self-transfers and training-only count normalization |
-| F08, F11 | Graph scalar encoding against saved state; tensor dtypes, aligned masks/shapes, valid token prefixes, source event indices and scalar piece positions |
-| F14 | Independent amount/currency validity, stored values, training-only target vocabulary and loss/evaluation denominators |
+| Named check in reports | Features | Independent expected answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original account identities, graph clocks and input allowlist |
+| `graph_membership` | F02, F04 | Raw historical transactions, sender/receiver edges, counterparties and sample ownership |
+| `graph_values` | F04, F08, F11 | Raw account/transaction rows encoded using saved state; scalar values, validity, types and shapes |
+| `history_membership` | F02, F03, F10, F11 | Complete historical event groups, separators, valid prefixes and source positions |
+| `history_values` | F03, F07, F08, F10, F11 | Whole encoded event records, direction, age and UTC calendar values; chronology with equal-time permutations allowed |
+| `aggregate_counts` | F05 | All twelve historical counts and train-only normalization, calculated from raw transactions |
+| `aggregate_layout` | F05, F11 | Declared scalar float32 values, boolean validity and shapes |
+| `stored_targets` | F14 | Original anchor labels, exact float32 projection, independent masks and training-only category vocabulary |
+| `forecast_targets` (smoke only) | F14 | Earliest outgoing raw transaction in the forecast window, including its exact decimal amount |
 
 The correctness campaign additionally checks both labels against the earliest
 outgoing source transaction in `[T,T+24h)`, breaking ties by physical source row.
-Both labels must come from that one transaction. Transport fixtures and training
+Both labels must come from that one transaction. Exact source decimals are checked
+before the separate float32 transport check. Transport fixtures and training
 also exercise independently missing targets; their supplied labels need not be
 generated from their tiny input histories. Input assertions run again on training
 probes, optimizer batches and checkpoint evaluation. Existing strict two-repeat,
-100-update acceptance remains required.
+100-update acceptance and independent loss/evaluation denominator checks remain
+required outside this feature table.
 
 The feature factory reuses the existing account/transaction source and token
 oracles. Dataset identity comes from the catalog. Other source formats can
 declare independent feature oracles through the same runner hook, without adding
 dataset runners or model wrappers. Full-population delivery retains streaming
 checks and does not claim this bounded source-feature comparison. JSON and
-Markdown reports include checked-anchor counts per feature and split; missing
-or partial feature evidence fails the summary.
+Markdown reports include each assertion's status and checked-anchor counts by
+split and phase (population, training/probes, evaluation). JSON also records its
+feature IDs, meaning and independent reference. Missing, failed or partial
+assertion evidence fails the summary, even if the broad feature counters pass.
+Every assertion runs on a batch before its collected failures are raised.
+
+These real-source probes cover this binding's full historical graph neighborhood;
+finite-fanout sampling variants remain covered by fixtures. Encoding checks apply
+saved state independently to raw values; they do not certify every input fitting
+algorithm. The bounded real-source checks supplement the existing fixture sweeps.
 
 The user confirmed on 2026-11-18 that equal-time history order may vary. The
 package's type/text primary-key comparison explains the initially observed order;
@@ -106,7 +120,7 @@ checks passed, including 26 L01 feature cases and its two-repeat, 100-update
 training check. All 432 required CPU cases collect exactly; five GPU-owned cases
 remain delegated. Formatting, import ordering, Flake8, repository documentation
 and license checks passed. Independent review found no remaining blockers in this
-increment. No real-data CI run, commit or push was performed for this increment.
+increment. These figures describe the preceding fixture increment, not real-data acceptance.
 
 ## Earlier expansion sequence
 
@@ -178,18 +192,23 @@ anchor's identity/order, clocks, target values and masks, with a partial report
 written every 100 batches. It is a delivery campaign, not full-dataset training.
 Full-population acceptance is recorded only after all three splits finish.
 
-One dataset-campaign matrix uses the candidate DiskGraph wheel for 24 jobs:
+One dataset-campaign matrix uses the candidate DiskGraph wheel for 26 jobs:
 HI Small's five bindings × training/smoke/full, and LI Medium's four bindings ×
-training/full, plus L01 bounded correctness. Each publishes JSON/Markdown reports;
-training adds loss curves and checkpoints. The summary requires all 24 reports and verifies
+training/full, plus L01 bounded correctness, lifecycle and source histories. Each publishes JSON/Markdown reports;
+training adds loss curves and checkpoints. The summary requires all 26 reports and verifies
 their revision, binding identity and completion.
 Declared early refusals are labelled separately from executed campaigns.
 
+HI Small's five bindings additionally retain fitting-memory checks (three
+repetitions each), but no longer enable model profiling, index-reuse timing or
+DiskGraph/Polars/GPU loader timings. L01 retains its four benchmark campaigns.
+The combined summary therefore requires 35 reports: 26 dataset campaigns,
+four L01 benchmarks and five combined HI Small fitting-memory reports.
+
 Local tiny-fixture validation does not establish real LI acceptance or runtime
 on its 52,332,325-row anchor population. CI-role access, full-source resource use and
-Linux execution still need CI validation. LI lifecycle/iterator restoration,
-length-cache experiments and timing adapters remain subsequent work; the new
-jobs do not claim them. Synthetic/MBD remain the following dataset increments.
+Linux execution still need CI validation. L01 now requires lifecycle/iterator restoration, history probes and DiskGraph
+profiling. Execution gaps remain failures, as described below. Synthetic/MBD remain the following dataset increments.
 
 ## Shared structure
 
@@ -224,6 +243,74 @@ without adding dataset-specific runner or profiler adapters.
 
 Existing focused HI fixtures and lifecycle/history CLIs retain their expected
 answers and domain scenarios. They are not templates to copy for another dataset.
-LI lifecycle and timing campaigns remain disabled until their assertions and
-runtime are validated. Synthetic/MBD entries remain explicitly pending; complex
+L01 enables the shared lifecycle helpers and benchmark adapter; other LI
+bindings retain their existing campaign scope. Synthetic/MBD entries remain explicitly pending; complex
 validity rules and contract variants still need implementation.
+
+
+## L01 campaign expansion
+
+Only AML LI Medium / Combined is expanded in this increment. Its catalog enables:
+
+- Detailed training profiling with stage timers, counters, memory and GPU metrics.
+- Index construction followed by two reopens, and fresh versus reused fitted state.
+- DiskGraph loader timing; no LI Polars or GPU reference comparison.
+- A separate native length-planning and second-epoch cache probe. The ordinary
+  combined benchmark preserves native graph/history iteration with fixed batches.
+- Fresh-process inference, frozen-input finetuning with the original amount/currency
+  task, optimizer continuation and exact mid-epoch iterator restoration.
+- Independent real-source multi-history windows, limits and filters. Equal-time
+  events may permute, including at a limit; membership, multiplicity and timestamp
+  ordering remain required. Declared preflight filter refusals are reported explicitly.
+- Existing fixture sweeps: 16/128/1024-event histories, caps/windows/merged tables,
+  uniform/skewed graph degrees and 2/32/128 fanouts, sample/token budgets, and
+  empty/mixed histories. Targets and head schemas remain those of L01.
+
+Every enabled campaign is required in the combined summary. HI's existing
+standalone lifecycle job is retained (`legacy-lifecycle` in the catalog); the
+new catalog runner reuses its persistence helpers. All additions are test-owned.
+
+Local probes expose two package gaps: combined mid-epoch reload changes the
+materialized task fingerprint, and length-based combined batching falls back
+from the native typed/history iterator. Both checks require successful execution
+and remain failures. The separate planning job prevents that gap from suppressing
+normal detailed profiling and index/state-reuse measurements. Real-data CPU/GPU
+validation remains a CI responsibility. Fitting scalability, other LI bindings,
+Synthetic and MBD are unchanged by this increment.
+
+
+Validation (2026-11-18, local compatible native extension): the 477-case CPU run
+produced 472 passes and five failures, all exercising the two package gaps above
+(three existing HI resume failures and two L01 checks). All 133 fixture sweeps
+passed. The final feature/graph/training rerun passes all 48 cases, including the
+new negative-edge-index regression and actual training-report evidence validation.
+All 275 harness checks pass. The inventory now collects exactly 478 CPU cases;
+five GPU cases remain delegated to CI. Independent review has no remaining
+findings. Live LI data/GPU execution awaits publication and a subsequent CI run.
+
+## Harness semantics and diagnostics
+
+The follow-up stays in test code and reuses shared assertions:
+
+| Area | Acceptance rule |
+| --- | --- |
+| LI numerical targets | Verify original Decimal labels against source transactions before conversion, then compare the projected values exactly at float32 precision. |
+| Floating aggregates | Only declared float64 means and moments allow the existing 1e-12 absolute/relative tolerance. Counts, masks and structure stay exact. |
+| Keyless ties | Check eligible values, membership and limits separately for each prepared dataset. |
+| Graph serving | Match source identities, remap edge indices, check features and require a complete legal layer-by-layer sampling witness, including tied fanout alternatives. Shared by generated graphs and H&M. |
+| Native anchors | The former explicit-request equivalence case now materializes a Parquet AnchorTable and verifies two native epochs against original source rows. |
+| Sequence ties | Independent source answers enforce chronology, cutoff, values, multiplicity and both component/merged limits. Equal-time permutations and eligible boundary alternatives may differ. |
+| Failure evidence | Report the first mismatched anchor/target, batch and source position, expected/actual values and comparison precision. |
+
+No package runtime behavior changes. The required dataset/model inventory now
+contains 482 CPU cases and five delegated GPU cases. Local validation covers
+59 target/precision/population cases (one accepted preflight refusal), 39 sequence
+obligations across 13 seeds, 60 semantic/fault-injection checks, and the complete
+128-case serving/anchor regression run (four accepted preflight refusals). The
+serving run completed in 41.49 seconds after moving the independent aggregate
+oracle outside the per-anchor loop. Declared refusals verify rejection, not
+execution of an unsupported capability. Documentation links, required-inventory
+collection, scoped lint/format checks and repository license checks also pass.
+The independent reviewer found no remaining issues; an exhaustive independent
+check agreed with the graph validator on 7,680 outcomes from 120 tiny cases.
+These results do not replace a real-data Linux/GPU nightly run.

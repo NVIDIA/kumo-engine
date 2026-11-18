@@ -28,10 +28,12 @@ from .aml_source import (
 )
 from .bindings import binding_for
 from .bindings import profile as binding_profile
+from .bindings import selected_bindings
+from .bindings import selection as binding_selection
 from .bindings import task_definition
 from .contracts import GRAPH_TIMESTAMP_FIELD, build_contract
 from .data import ROOT
-from .nightly import selected_cases
+from .diagnostics import mismatch
 from .population_anchors import (
     add_identity,
     project_population,
@@ -59,16 +61,28 @@ def check_delivery(batch, expected, *, graph_clocks=None):
     ids = list(batch.metadata["sample_ids"])
     rows = list(islice(expected, len(ids)))
     assert ids and ids == [row["sample_id"] for row in rows], (
-        "Missing, duplicate or reordered anchors"
+        "Missing, duplicate or reordered anchors; "
+        + mismatch(ids, [row["sample_id"] for row in rows], rows, "sample_id")
     )
     assert not batch.metadata["is_padding"].any(), "Unexpected sample padding"
     assert batch.metadata["entity_ids"].tolist() == [
         row["entity_id"] for row in rows
-    ], "Entity identities differ"
+    ], mismatch(
+        batch.metadata["entity_ids"].tolist(),
+        [row["entity_id"] for row in rows],
+        rows,
+        "entity_id",
+    )
     assert batch.metadata["as_of_time"].tolist() == [
         row["as_of_time"] for row in rows
-    ], "Execution cutoffs differ"
-    assert list(batch.metadata["request_metadata"]) == [
+    ], mismatch(
+        batch.metadata["as_of_time"].tolist(),
+        [row["as_of_time"] for row in rows],
+        rows,
+        "as_of_time",
+        precision="integer seconds",
+    )
+    expected_metadata = [
         {
             name: row[name]
             for name in (
@@ -79,7 +93,13 @@ def check_delivery(batch, expected, *, graph_clocks=None):
             )
         }
         for row in rows
-    ], "Original prediction clocks, identities, positions or splits differ"
+    ]
+    assert list(batch.metadata["request_metadata"]) == expected_metadata, mismatch(
+        list(batch.metadata["request_metadata"]),
+        expected_metadata,
+        rows,
+        "request_metadata",
+    )
 
     def finite(value):
         if isinstance(value, torch.Tensor) and value.is_floating_point():
@@ -115,13 +135,32 @@ def check_batch(batch, expected, *, native, family, state):
     assert target["valid"].dtype == torch.bool
     if not native:
         labels = [row["label"] for row in rows]
-        assert target["valid"].flatten().tolist() == [v is not None for v in labels]
+        assert target["valid"].flatten().tolist() == [v is not None for v in labels], (
+            mismatch(
+                target["valid"].flatten().tolist(),
+                [v is not None for v in labels],
+                rows,
+                "label.valid",
+                precision="exact bool",
+            )
+        )
         assert all(
             label is None or value == label
             for value, label in zip(
                 target["values"].flatten().tolist(), labels, strict=True
             )
-        ), "Stored labels differ"
+        ), "Stored labels differ; " + mismatch(
+            [
+                value if label is not None else None
+                for value, label in zip(
+                    target["values"].flatten().tolist(), labels, strict=True
+                )
+            ],
+            labels,
+            rows,
+            "label",
+            precision=str(target["values"].dtype),
+        )
     else:
         history = batch.inputs["history"]
         assert target["valid"].shape == history["valid"].shape
@@ -211,11 +250,9 @@ def check_population(
             drop_last=False,
             output_format="model",
         ):
-            eligible = verify_batch_for(binding, batch, expected, state)
             if features is not None:
-                features(batch)
-                for counts in report["feature_coverage"].values():
-                    counts[split] += len(batch.metadata["sample_ids"])
+                features(batch, phase="population")
+            eligible = verify_batch_for(binding, batch, expected, state)
             for sample in batch.metadata["sample_ids"]:
                 add_identity(digest, sample)
             for name, count in eligible.items():
@@ -224,7 +261,10 @@ def check_population(
             result["batches"] += 1
             if result["batches"] % 100 == 0:
                 write_report(directory, report)
-        assert next(expected, None) is None, "Iteration dropped anchors"
+        missing = next(expected, None)
+        assert missing is None, (
+            f"Iteration dropped anchors after split position {result['delivered']}: first expected={missing!r}, actual=<end of iteration>"
+        )
         assert result["delivered"] == result["expected"], "Incomplete split"
         result["ordered_sample_id_sha256"] = digest.hexdigest()
         assert digest.hexdigest() == population["ordered_sample_id_sha256"][split]
@@ -357,10 +397,20 @@ def main(argv=None):
     parser.add_argument("--batch-size", type=positive, default=4)
     parser.add_argument("--threads", type=positive, default=1)
     parser.add_argument(
-        "--case", help="Run one catalog binding; omitted runs all bindings"
+        "--case",
+        help="Run one HI-small binding; omitted runs all five HI-small bindings",
     )
     args = parser.parse_args(argv)
-    cases = selected_cases(args.case)
+    cases = [
+        (binding_selection(b), b["representation"])
+        for b in selected_bindings(dataset="aml-data/hi-small", campaign=args.mode)
+    ]
+    if args.case:
+        cases = [(s, f) for s, f in cases if s["case_name"] == args.case]
+        if not cases:
+            parser.error(
+                "Unknown HI-small population case; use nightly run for other bindings"
+            )
     if args.mode == "full" and args.smoke_anchors is not None:
         parser.error("--smoke-anchors cannot limit a full-population run")
     args.output.mkdir(parents=True, exist_ok=False)

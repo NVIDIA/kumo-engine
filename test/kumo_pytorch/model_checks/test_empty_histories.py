@@ -7,7 +7,6 @@
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import verify_batch, verify_inputs
 from test.kumo_pytorch.masked_values import original_tokens
 from test.kumo_pytorch.masked_values import verify_loss as masked_loss
@@ -21,8 +20,20 @@ import torch
 
 import kumo.pytorch.api as r
 
-from .fixtures import CUTOFF, VALUE_FIELDS, build_fixture, probe_anchor_table
-from .test_aml import CASES, assert_equal
+from .fixtures import (
+    CUTOFF,
+    VALUE_FIELDS,
+    build_fixture,
+    probe_anchor_table,
+    sweep_cases,
+    sweep_contract,
+    sweep_native,
+    sweep_requests,
+    verify_sweep_targets,
+)
+from .test_aml import assert_equal
+
+CASES = sweep_cases()
 
 T = int(CUTOFF.timestamp())
 
@@ -71,7 +82,7 @@ def source(request, tmp_path_factory):
 def test_empty_history_inputs_and_training(source, selection, family, mixed):
     fixture, dataset, engine, reference, backend = source
     graph = family in {"graphsage", "combined"}
-    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
+    native = sweep_native(selection, family)
     roots = (5, 1, 6) if mixed else (5, 6)
     requests = tuple(
         r.SampleRequest(
@@ -102,12 +113,13 @@ def test_empty_history_inputs_and_training(source, selection, family, mixed):
             for row in rows
         )
 
-    requests = execution(requests)
-    contract = build_contract(fixture.schema, family, native=native, max_events=11)
+    requests = sweep_requests(execution(requests), selection, family)
+    fit_requests = sweep_requests(execution(fixture.training), selection, family)
+    contract = sweep_contract(fixture.schema, selection, family, max_events=11)
     with r.prepare(contract, dataset, engine) as plan:
         with (
             plan.materialize(
-                probe_anchor_table(plan, execution(fixture.training)),
+                probe_anchor_table(plan, fit_requests),
                 fit_split="train",
                 encoder_cutoff=T - 1,
             ) as fitted,
@@ -152,13 +164,30 @@ def test_empty_history_inputs_and_training(source, selection, family, mixed):
             before = deepcopy(batch)
             model = build_model(task, selection, family, dim=8, seed=17)
             result = model.training_step(batch)
-            assert torch.isfinite(result.logits).all() and torch.isfinite(result.loss)
+            from test.kumo_pytorch.lifecycle import finite_outputs
+
+            assert finite_outputs(result.logits) and torch.isfinite(result.loss)
             if family == "pragma":
                 report = masked_loss(batch, result)
             elif native:
                 report = next_loss(batch, result)
             else:
-                report = verify_batch(batch, result, labels)
+                if isinstance(result.logits, dict):
+                    from test.kumo_pytorch.targets import verify_stored_loss
+
+                    counts = verify_sweep_targets(
+                        batch,
+                        requests,
+                        selection,
+                        family,
+                        state,
+                        fitting_requests=fit_requests,
+                    )
+                    verify_stored_loss(selection["binding"], batch, result)
+                    report = {"eligible": len(roots)}
+                    assert all(n == len(roots) for n in counts.values())
+                else:
+                    report = verify_batch(batch, result, labels)
                 assert report["eligible"] == len(roots), (
                     "Empty histories must retain their external labels"
                 )

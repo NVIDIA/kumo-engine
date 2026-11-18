@@ -200,3 +200,82 @@ def build_fixture() -> AMLFixture:
         request("fit-account-2", 2, CUTOFF, "train", 0.0),
     )
     return AMLFixture(tables, schema, training)
+
+
+def sweep_cases():
+    from test.kumo_pytorch.bindings import selected_bindings, selection
+
+    from .test_aml import CASES
+
+    return CASES + [
+        (selection(b), b["representation"])
+        for b in selected_bindings(campaign="sweeps")
+    ]
+
+
+def sweep_contract(schema, selected, family, *, max_events):
+    from test.kumo_pytorch.bindings import binding_for, contract_for
+
+    return contract_for(schema, binding_for(selected, family), max_events=max_events)
+
+
+def sweep_native(selected, family):
+    from test.kumo_pytorch.bindings import binding_for, task_definition
+
+    return task_definition(binding_for(selected, family))["kind"] != "stored"
+
+
+def sweep_requests(rows, selected, family):
+    """Hand-defined target values; each binding retains its actual task schema."""
+    from dataclasses import replace
+    from test.kumo_pytorch.bindings import binding_for
+    from test.kumo_pytorch.targets import target_rules
+
+    import kumo.pytorch.api as r
+
+    rules = target_rules(binding_for(selected, family))
+    return tuple(
+        replace(
+            row,
+            targets=tuple(
+                r.TargetValue(
+                    name,
+                    next(t.value for t in row.targets if t.name == "label")
+                    if rule["kind"] == "binary"
+                    else ("USD" if row.entity_id % 2 else "EUR")
+                    if rule["kind"] == "category"
+                    else row.entity_id * 2.5,
+                )
+                for name, rule in rules.items()
+            ),
+        )
+        for row in rows
+    )
+
+
+def verify_sweep_targets(
+    batch, requests, selected, family, state, *, fitting_requests=None
+):
+    from test.kumo_pytorch.bindings import binding_for
+    from test.kumo_pytorch.targets import (
+        verify_stored_batch,
+        verify_target_fitting,
+    )
+
+    fitting = requests if fitting_requests is None else fitting_requests
+    verify_target_fitting(
+        binding_for(selected, family),
+        (
+            {"split": row.split, **{t.name: t.value for t in row.targets}}
+            for row in fitting
+            if row.split == "train"
+        ),
+        state,
+    )
+    by_id = {row.sample_id: {t.name: t.value for t in row.targets} for row in requests}
+    return verify_stored_batch(
+        binding_for(selected, family),
+        batch,
+        [by_id[sid] for sid in batch.metadata["sample_ids"]],
+        state,
+    )

@@ -21,12 +21,14 @@ import pytest
 
 from conformance.assertions import bound_tables, case_settings
 from conformance.cases import discover_cases
+from conformance.expected import aggregate_answer
 from conformance.generate import PHYSICAL_TYPES, GeneratedCase, generate_batch
 from conformance.graph_cases import graph_batch
 from conformance.properties import SEEDS
 from conformance.registry import KNOWN_GAPS
 from conformance.sequence_cases import sequence_batch
 from kumo.pytorch import api
+from tests.serving_assertions import assert_serving_batches
 from tests.serving_fetch import Tables, fetch
 from tests.test_inference_lifecycle import assert_same_batches
 
@@ -120,8 +122,17 @@ def test_serving_what_the_spec_lists_equals_diskgraph_batch_inference(case_id: s
     case = CASES[case_id]
     artifact, expected = _run(case)
     server = api.ServingAssembler(artifact)
+    entity_answers = aggregate_answer(case.generated) if case.family == "tabular" else None
     for request in case.requests:
-        assert_same_batches([_served(server, case, request)], [expected[request.sample_id]])
+        assert_serving_batches(
+            [_served(server, case, request)],
+            [expected[request.sample_id]],
+            artifact,
+            case.tables,
+            [request],
+            entity_answers=entity_answers,
+            sequence_case=case.generated if case.family == "sequence" else None,
+        )
 
 
 def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:

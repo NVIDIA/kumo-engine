@@ -230,8 +230,19 @@ def combined_features(binding, projection, mapping, state, *, mode):
     execution nor targets; the shared runner verifies target values and losses.
     """
     from .bindings import dataset_definition, resolve
+    from .feature_checks import FeatureChecks
     from .population_anchors import projected_rows
-    from .reference_tokens import verify_combined_values
+    from .reference_tokens import (
+        verify_aggregate_layout,
+        verify_graph_values,
+        verify_history_values,
+    )
+    from .targets import (
+        source_target_rows,
+        verify_stored_batch,
+        verify_target_fitting,
+        verify_target_projection,
+    )
 
     assert binding["representation"] == "combined"
     projected = [
@@ -268,15 +279,53 @@ def combined_features(binding, projection, mapping, state, *, mode):
         name: i for i, name in enumerate(sorted(names, key=lambda s: s.encode("utf-8")))
     }
     training = [row for row in rows if row["split"] == "train"]
+    projected_by_id = {row["sample_id"]: row for row in projected}
+    originals = source_target_rows(binding, mapping["anchor_source"]["path"], projected)
+
+    def selected_rows(batch):
+        return [projected_by_id[sample] for sample in batch.metadata["sample_ids"]]
+
+    def input_check(name):
+        return lambda batch: verify_inputs(
+            batch, "combined", anchors, reference, identities, training, checks=(name,)
+        )
+
+    def targets(batch):
+        for row in selected_rows(batch):
+            verify_target_projection(
+                binding, row, originals[row["anchor_row_position"]]
+            )
+        verify_target_fitting(
+            binding, (row for row in projected if row["split"] == "train"), state
+        )
+        verify_stored_batch(binding, batch, selected_rows(batch), state)
+
+    checks = {
+        "identity_cutoff": input_check("identity"),
+        "graph_membership": input_check("graph"),
+        "graph_values": lambda batch: verify_graph_values(
+            batch, anchors, reference, state, identities
+        ),
+        "history_membership": input_check("history"),
+        "history_values": lambda batch: verify_history_values(
+            batch, anchors, reference, state
+        ),
+        "aggregate_counts": input_check("aggregates"),
+        "aggregate_layout": verify_aggregate_layout,
+        "stored_targets": targets,
+    }
     source_targets = binding["feature_checks"].get("source_targets", {}).get(mode)
     if source_targets:
-        resolve(source_targets)(projected, reference)
-
-    def check(batch):
-        verify_inputs(batch, "combined", anchors, reference, identities, training)
-        verify_combined_values(batch, anchors, reference, state, identities)
-
-    return check
+        checks["forecast_targets"] = lambda batch: resolve(source_targets)(
+            [originals[row["anchor_row_position"]] for row in selected_rows(batch)],
+            reference,
+        )
+    return FeatureChecks(
+        binding["feature_checks"],
+        mode,
+        checks,
+        {row["sample_id"]: row["split"] for row in projected},
+    )
 
 
 def verify_inputs(
@@ -289,6 +338,7 @@ def verify_inputs(
     *,
     history_reference=None,
     graph_reference=None,
+    checks=("identity", "graph", "history", "aggregates"),
 ):
     """Check graph membership/edges, full flat history and all twelve counts.
 
@@ -303,24 +353,27 @@ def verify_inputs(
         raise AssertionError("Source input comparison requires an unpadded batch")
     rows = [anchors[sid] for sid in batch.metadata["sample_ids"]]
     graph = family in {"graphsage", "combined"}
-    expected_keys = (
-        {"graph"}
-        if family == "graphsage"
-        else {"history"}
-        if family == "nuformer"
-        else {"graph", "history", "aggregates"}
-    )
-    if set(batch.inputs) != expected_keys:
-        raise AssertionError("Unexpected input branch or target leakage")
-    clocks = [row["as_of_time"] // 10**9 - int(graph) for row in rows]
-    if batch.metadata["as_of_time"].tolist() != clocks:
-        raise AssertionError("Execution cutoff differs from original anchor")
-    if list(batch.metadata["entity_ids"]) != [
-        identities[row["entity_id"]] for row in rows
-    ]:
-        raise AssertionError("Root identity/order differs from original anchor")
+    if "identity" in checks:
+        expected_keys = (
+            {"graph"}
+            if family == "graphsage"
+            else {"history"}
+            if family == "nuformer"
+            else {"graph", "history", "aggregates"}
+        )
+        if set(batch.inputs) != expected_keys:
+            raise AssertionError("Unexpected input branch or target leakage")
+        clocks = [row["as_of_time"] // 10**9 - int(graph) for row in rows]
+        if batch.metadata["as_of_time"].tolist() != clocks:
+            raise AssertionError("Execution cutoff differs from original anchor")
+        if list(batch.metadata["entity_ids"]) != [
+            identities[row["entity_id"]] for row in rows
+        ]:
+            raise AssertionError("Root identity/order differs from original anchor")
     histories = [history(row, reference) for row in rows]
-    if graph:
+    if graph and "graph" in checks:
+        import torch
+
         graph_histories = (
             histories
             if graph_reference is None
@@ -369,6 +422,20 @@ def verify_inputs(
                 or edge["destination_type"] != "transactions"
             ):
                 raise AssertionError("Unexpected graph edge direction")
+            indices = edge["index"]
+            assert (
+                indices.dtype == torch.int64
+                and indices.ndim == 2
+                and indices.shape[0] == 2
+            ), "Graph edge indices must be an int64 matrix with two rows"
+            assert (indices >= 0).all(), "Graph edge indices must be nonnegative"
+            assert (indices[0] < len(nodes["accounts"]["ids"])).all(), (
+                "Graph source edge index exceeds node table"
+            )
+            assert (
+                indices[1]
+                < (len(transactions["ids"]) if transactions is not None else 0)
+            ).all(), "Graph destination edge index exceeds node table"
             for account_index, event_index in edge["index"].T.tolist():
                 owner = int(nodes["accounts"]["batch"][account_index])
                 if owner != int(transactions["batch"][event_index]):
@@ -383,7 +450,7 @@ def verify_inputs(
                 ] += 1
         if actual_edges != expected_edges:
             raise AssertionError("Graph relationships differ from source endpoints")
-    if family != "graphsage":
+    if family != "graphsage" and "history" in checks:
         stream = batch.inputs["history"]
         sequence_histories = (
             histories
@@ -414,7 +481,7 @@ def verify_inputs(
                 != expected
             ):
                 raise AssertionError("Token event grouping/order differs")
-    if family == "combined":
+    if family == "combined" and "aggregates" in checks:
         fitted = [relationship_counts(row, reference) for row in training_rows]
         actual = batch.inputs["aggregates"]
         if set(actual) != set(fitted[0]):

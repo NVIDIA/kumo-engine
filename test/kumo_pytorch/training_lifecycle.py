@@ -27,7 +27,7 @@ def involvement_model(task, config, pretrained_weights=None):
     model = build_model(task, config["selection"], config["family"], **config["model"])
     if pretrained_weights is not None:
         model.load_state_dict(pretrained_weights, strict=True)
-    if model.kind != "binary":
+    if not config.get("source_anchor_table") and model.kind != "binary":
         # Keep the learned backbone; only the downstream head starts fresh.
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(config["seed"])
@@ -50,7 +50,8 @@ def update(task, model, optimizer, requests, config, *, epoch):
         )
     )
     inputs = input_digest(batch.inputs)
-    assert set(batch.targets) == {"label"}, "Finetuning kept a pretraining target"
+    if not config.get("source_anchor_table"):
+        assert set(batch.targets) == {"label"}, "Finetuning kept a pretraining target"
     if model.family == "pragma":
         assert not (batch.inputs["history"]["value_ids"] == 2).any(), (
             "Finetuning kept input masking"
@@ -60,9 +61,29 @@ def update(task, model, optimizer, requests, config, *, epoch):
     optimizer.zero_grad(set_to_none=True)
     result = model.training_step(batch)
     assert result.weight > 0 and torch.isfinite(result.loss)
-    verify_batch(
-        batch, result, {row.sample_id: row.targets[0].value for row in requests}
-    )
+    if config.get("source_anchor_table"):
+        from .bindings import binding_for
+        from .population_anchors import projected_rows
+        from .targets import verify_stored_batch, verify_stored_loss
+
+        binding = binding_for(config["selection"], config["family"])
+        records = {
+            row["sample_id"]: row
+            for row in projected_rows(
+                config["source_anchor_table"]["source"]["path"], "train"
+            )
+        }
+        verify_stored_batch(
+            binding,
+            batch,
+            [records[sid] for sid in batch.metadata["sample_ids"]],
+            task.fitted_state.to_dict(),
+        )
+        verify_stored_loss(binding, batch, result)
+    else:
+        verify_batch(
+            batch, result, {row.sample_id: row.targets[0].value for row in requests}
+        )
     result.loss.backward()
     gradients = [p.grad for p in model.parameters() if p.grad is not None]
     assert gradients and all(torch.isfinite(g).all() for g in gradients)
@@ -176,9 +197,10 @@ def check_training(lifecycle_directory, requests):
     config["lifecycle_directory"] = str(lifecycle_directory)
     directory = lifecycle_directory.parent / "finetuning"
     directory.mkdir(exist_ok=False)
-    config["training_anchor_table"] = write_probe_anchors(
-        requests, directory / "anchors.parquet"
-    ).to_dict()
+    config["training_anchor_table"] = (
+        config.get("source_anchor_table")
+        or write_probe_anchors(requests, directory / "anchors.parquet").to_dict()
+    )
     (directory / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     command = [
         sys.executable,
@@ -226,14 +248,18 @@ def finetune(directory):
     artifact = r.Artifact.load(lifecycle_directory / "artifact")
     assert artifact.fitted_state.fingerprint == config["fitted_state_sha256"]
     original = artifact.contract
-    contract = replace(
-        original,
-        sample=replace(
-            original.sample, targets={"label": r.ExternalTarget(r.DType("float32"))}
-        ),
-        batch=replace(
-            original.batch, targets={"label": r.LabelTarget("label", r.Raw())}
-        ),
+    contract = (
+        original
+        if config.get("source_anchor_table")
+        else replace(
+            original,
+            sample=replace(
+                original.sample, targets={"label": r.ExternalTarget(r.DType("float32"))}
+            ),
+            batch=replace(
+                original.batch, targets={"label": r.LabelTarget("label", r.Raw())}
+            ),
+        )
     )
     assert contract.input_fingerprint == original.input_fingerprint
     dataset = r.Dataset(
@@ -263,6 +289,18 @@ def finetune(directory):
             assert (
                 task.fitted_state.fit["inputs"] == artifact.fitted_state.fit["inputs"]
             )
+            if config.get("source_anchor_table"):
+                from .bindings import binding_for
+                from .population_anchors import projected_rows
+                from .targets import verify_target_fitting
+
+                verify_target_fitting(
+                    binding_for(config["selection"], config["family"]),
+                    projected_rows(
+                        config["source_anchor_table"]["source"]["path"], "train"
+                    ),
+                    task.fitted_state.to_dict(),
+                )
             weights = r.load_weights(
                 lifecycle_directory / "weights.pt", artifact.fitted_state
             )
@@ -316,14 +354,17 @@ def finetune(directory):
         )
     result = {
         "status": "passed",
-        "task": "account-involvement-next24h",
+        "task": config["selection"]["selector"]["workload_id"]
+        if config.get("source_anchor_table")
+        else "account-involvement-next24h",
         "pid": os.getpid(),
         "parent_pid": config["finetune_parent_pid"],
         "input_state_content_sha256": input_state,
         "split": "forecast_split/train",
         "input_state_sha256": frozen,
         "input_refitting": False,
-        "head_replaced": config["selection"]["selector"]["workload_id"]
+        "head_replaced": not config.get("source_anchor_table")
+        and config["selection"]["selector"]["workload_id"]
         != "account-involvement-next24h",
         "first_update": first,
         "resume": json.loads((directory / "result.json").read_text()),

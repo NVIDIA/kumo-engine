@@ -25,12 +25,12 @@ alongside its conformance and retail lifecycle jobs and these AML additions.
 Generic package behavior stays in the existing tests; this directory owns AML
 source, anchor, task and model integration plus the general benchmark runner.
 Linux memory/cache and GPU collector validations have dedicated nightly jobs.
-The workflow also configures all five bounded AML CUDA benchmark campaigns on
-Engine's existing GPU runner, with per-worker cgroups and fresh/reused fitting.
-CI verified bucket access and executed all five campaigns. Earlier runs exposed
-the decimal defect; upstream fix #348 is now integrated. Sequence campaigns
-passed measurement coverage with longer GPU windows and explicitly labelled
-sampled host peaks. Complete post-fix acceptance remains to be reviewed.
+Timing/profiling campaigns now run only for LI Medium / Combined. HI Small's
+five workload combinations retain their fitting-memory, correctness, training,
+population and lifecycle checks; their model profiling, index-reuse timing and
+DiskGraph/Polars/GPU loader-timing campaigns are disabled. Earlier HI Small
+campaigns verified bucket access and exposed the decimal defect; upstream fix
+#348 is now integrated. Historical results do not establish current acceptance.
 See the [historical benchmark validation](PLAN.md#gpu-and-sampled-memory-validation),
 [collective CI review](PLAN.md#collective-ci-review) and
 [benchmark execution and reports](docs/benchmarking.md#suite-execution-and-acceptance).
@@ -194,7 +194,22 @@ python -m test.kumo_pytorch.nightly run --binding L01 --mode full \
 Training runs two deterministic 100-update CPU repetitions on 32 anchors per
 split. L01 smoke checks four anchors per split against the source feature/target
 oracles. Full mode checks every forecast-split anchor and rejects limits.
+L01's reports identify graph, history, aggregate and target assertions separately,
+with checked-anchor counts by split and execution phase. Expected answers come
+from original source rows and declared semantics; missing evidence fails summary
+validation. See the [feature-to-check map](docs/binding-coverage.md#current-increment-l01-only)
+for scope and references.
 The `kumo-pytorch-campaign-results` artifact and combined job summary show all
-24 training/population outcomes; per-job artifacts retain partial results on failure.
+26 correctness/training/lifecycle/history outcomes plus nine benchmark/fitting reports;
+per-job artifacts retain partial results and child logs on failure.
 See [binding coverage](docs/binding-coverage.md) for heads, loss definitions and
-remaining lifecycle/timing work.
+enabled L01 campaigns and remaining package gaps.
+
+
+L01 additionally runs `--mode lifecycle` and `--mode histories` on four anchors
+per split. The benchmark matrix enables detailed training, index build/two reopens,
+DiskGraph-only loader timing, and a separate native length-planning/cache probe.
+Polars/GPU reference timing and 25k/400k fitting remain disabled for L01.
+The same history, graph, batching and empty-history fixture sweeps now exercise
+L01's amount/currency task. Required failures remain visible; enabling a campaign
+does not establish that the package supports every case.

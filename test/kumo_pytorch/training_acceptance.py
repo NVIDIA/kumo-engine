@@ -123,6 +123,7 @@ def train_repetition(
     report = {
         "status": "running",
         "completed_updates": 0,
+        "observed_train_anchors": 0,
         "curve": [],
         "parameters": {},
         "zero_target_batches": [],
@@ -157,13 +158,13 @@ def train_repetition(
             state = task.fitted_state.to_dict() if expected_rows is not None else None
 
             def verify_source(batch):
+                if features is not None:
+                    features(batch, phase="training")
                 if expected_rows is not None:
                     rows = [
                         stored_rows[sample] for sample in batch.metadata["sample_ids"]
                     ]
                     verify_batch_for(binding, batch, iter(rows), state)
-                if features is not None:
-                    features(batch)
 
             model = build_model(
                 task,
@@ -198,6 +199,9 @@ def train_repetition(
                     shuffle=False,
                     drop_last=False,
                 ):
+                    report["observed_train_anchors"] += len(
+                        candidate.metadata["sample_ids"]
+                    )
                     verify_source(candidate)
                     baseline = measured_loss(
                         model, candidate, objective, labels, audit=True
@@ -223,6 +227,9 @@ def train_repetition(
                     shuffle=True,
                     drop_last=False,
                 ):
+                    report["observed_train_anchors"] += len(
+                        batch.metadata["sample_ids"]
+                    )
                     verify_source(batch)
                     seen.extend(batch.metadata["sample_ids"])
                     model.train()
@@ -287,6 +294,7 @@ def train_repetition(
                 epoch += 1
             model.eval()
             with torch.no_grad():
+                report["observed_train_anchors"] += len(probe.metadata["sample_ids"])
                 verify_source(probe)
                 final = measured_loss(model, probe, objective, labels, audit=True)
                 report["final_loss"] = final.loss.item()
@@ -437,9 +445,9 @@ def train_task(
                 from itertools import islice
 
                 reference = list(islice(expected, len(batch.metadata["sample_ids"])))
-                eligible = verify_batch_for(binding, batch, iter(reference), state)
                 if features is not None:
-                    features(batch)
+                    features(batch, phase="evaluation")
+                eligible = verify_batch_for(binding, batch, iter(reference), state)
                 labels = {
                     row["sample_id"]: row["label"]
                     for row in reference

@@ -53,7 +53,7 @@ def prepare_features(root):
         (-60, 1, 2, "12.1234567890", "USD"),
         (-60, 4, 3, "3", "USD"),
         (0, 3, 1, "80", "USD"),
-        (0, 1, 2, "60", "JPY"),
+        (0, 1, 2, "60.1234567890", "JPY"),
         (0, 1, 3, "70", "EUR"),
         (60, 1, 1, "100", "USD"),
         (DAY, 1, 2, "900", "JPY"),
@@ -86,7 +86,7 @@ def prepare_features(root):
             "as_of_time": stamp,
             "graph_as_of_time": stamp - 10**9,
             "forecast_split": split,
-            "next_amount": Decimal("60")
+            "next_amount": Decimal("60.1234567890")
             if i == 1
             else Decimal("80")
             if i == 3
@@ -161,6 +161,8 @@ def case(prepared):
 
 
 def test_l01_required_correctness_records_every_feature_and_split(prepared):
+    from test.kumo_pytorch.feature_checks import validate_evidence
+
     binding, output, (dataset, anchors, population, mapping, capacity) = prepared
     assert tuple(binding["feature_checks"]["features"]) == FEATURES
     report = run_case(
@@ -175,10 +177,18 @@ def test_l01_required_correctness_records_every_feature_and_split(prepared):
         batch_size=2,
     )
     assert report["status"] == "passed", report.get("traceback", report)
+    validate_evidence(report, binding["feature_checks"], "smoke")
     assert report["feature_coverage"] == {
         f: dict.fromkeys(("train", "valid", "test"), 4) for f in FEATURES
     }
     assert not report["full_population_verified"]
+    assertions = report["feature_assertions"]
+    assert set(assertions) == set(binding["feature_checks"]["assertions"])
+    for row in assertions.values():
+        assert row["status"] == "passed"
+        assert row["checked_anchors"]["population"] == dict.fromkeys(
+            ("train", "valid", "test"), 4
+        )
 
 
 @pytest.mark.parametrize("reverse", (False, True))
@@ -212,6 +222,7 @@ def test_l01_future_only_values_cannot_enter_input_fitting(case):
         "identity",
         "graph-member",
         "edge",
+        "negative-edge",
         "count",
         "derived-token",
         "event-order",
@@ -233,7 +244,15 @@ def test_l01_future_only_values_cannot_enter_input_fitting(case):
     ),
 )
 def test_l01_feature_oracles_detect_corrupted_native_output(case, fault):
-    binding, original, state, check, rows = case
+    binding, original, state, shared_check, rows = case
+    from test.kumo_pytorch.feature_checks import FeatureChecks
+
+    check = FeatureChecks(
+        binding["feature_checks"],
+        "smoke",
+        shared_check.checks,
+        shared_check.sample_splits,
+    )
     check(original)
     verify_batch_for(binding, original, iter(rows), state)
     batch = deepcopy(original)
@@ -245,6 +264,11 @@ def test_l01_feature_oracles_detect_corrupted_native_output(case, fault):
         nodes["ids"][0] = 999
     elif fault == "edge":
         batch.inputs["graph"]["edges"]["sender"]["index"][0, 0] = 999
+    elif fault == "negative-edge":
+        graph = batch.inputs["graph"]
+        for edge in graph["edges"].values():
+            edge["index"][0] -= len(graph["nodes"]["accounts"]["ids"])
+            edge["index"][1] -= len(graph["nodes"]["transactions"]["ids"])
     elif fault == "count":
         batch.inputs["aggregates"]["24h_total_touching_count"]["values"][0] += 1
     elif fault == "derived-token":
@@ -292,9 +316,88 @@ def test_l01_feature_oracles_detect_corrupted_native_output(case, fault):
         batch.inputs["currency"] = batch.targets["currency"]
     else:
         batch.targets[fault]["values"][0] += 1
-    with pytest.raises((AssertionError, IndexError)):
-        verify_batch_for(binding, batch, iter(rows), state)
+    with pytest.raises(AssertionError, match="Feature assertions failed"):
         check(batch)
+    assert any(row["status"] == "failed" for row in check.evidence.values())
+    # One bad input cannot suppress independently useful checks.
+    assert check.evidence["forecast_targets"]["status"] == "passed"
+    primary = {
+        "edge": "graph_membership",
+        "negative-edge": "graph_membership",
+        "count": "aggregate_counts",
+        "derived-token": "history_values",
+        "graph-number": "graph_values",
+        "aggregate-dtype": "aggregate_layout",
+        "amount": "stored_targets",
+        "currency": "stored_targets",
+        "target-leak": "identity_cutoff",
+    }.get(fault)
+    if primary:
+        assert check.evidence[primary]["status"] == "failed"
+
+
+def test_l01_raw_forecast_oracle_preserves_decimal_precision(prepared, case, tmp_path):
+    from test.kumo_pytorch.targets import (
+        source_target_rows,
+        verify_target_projection,
+    )
+
+    binding, output, (_, _, _, mapping, _) = prepared
+    _, batch, state, _, projected = case
+    originals = source_target_rows(binding, mapping["anchor_source"]["path"], projected)
+    row = projected[0]
+    original = originals[row["anchor_row_position"]]
+    assert original["amount"] == Decimal("60.1234567890")
+    assert row["amount"] != original["amount"]
+    verify_target_projection(binding, row, original)
+    # A raw-label change smaller than float32 precision must still fail the
+    # source forecast oracle, even though its projected model label is unchanged.
+    table = pq.read_table(mapping["anchor_source"]["path"])
+    records = table.to_pylist()
+    records[0]["next_amount"] += Decimal("0.0000000001")
+    path = tmp_path / "changed-anchors.parquet"
+    pq.write_table(pa.Table.from_pylist(records, schema=table.schema), path)
+    mapping = {**mapping, "anchor_source": {"path": str(path)}}
+    check = combined_features(
+        binding, output / "anchors.parquet", mapping, state, mode="smoke"
+    )
+    with pytest.raises(AssertionError, match="forecast_targets"):
+        check(batch)
+    assert check.evidence["stored_targets"]["status"] == "passed"
+    assert check.evidence["forecast_targets"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("field", ("sample_id", "amount", "currency", "valid"))
+def test_first_mismatch_diagnostics_preserve_strict_acceptance(case, field):
+    binding, original, state, _, rows = case
+    batch = deepcopy(original)
+    if field == "sample_id":
+        ids = list(batch.metadata["sample_ids"])
+        ids[0], ids[2] = ids[2], ids[0]
+        batch.metadata["sample_ids"] = tuple(ids)
+        position, precision = 0, "exact"
+    else:
+        position = 2
+        if field == "valid":
+            batch.targets["amount"]["valid"][position] = False
+            precision = "exact bool"
+        elif field == "amount":
+            values = batch.targets[field]["values"]
+            values[position] = torch.nextafter(
+                values[position], torch.tensor(float("inf"))
+            )
+            precision = "float32 (rtol=0, atol=0)"
+        else:
+            batch.targets[field]["values"][position] += 1
+            precision = "exact int64 category IDs"
+    with pytest.raises(AssertionError) as failure:
+        verify_batch_for(binding, batch, iter(rows), state)
+    message = str(failure.value)
+    assert f"batch position {position}" in message
+    assert f"source anchor position {rows[position]['anchor_row_position']}" in message
+    assert f"sample_id={rows[position]['sample_id']!r}" in message
+    assert "expected=" in message and "actual=" in message
+    assert f"precision={precision}" in message
 
 
 def test_next_outgoing_source_oracle_window_ties_and_independent_nulls():
@@ -338,3 +441,41 @@ def test_next_outgoing_source_oracle_window_ties_and_independent_nulls():
             ],
             {"events": [event(0, 100, "root", amount, currency)]},
         )
+
+
+def test_sweep_target_oracle_rejects_matching_wrong_category_ids(case):
+    from test.kumo_pytorch.bindings import selection
+    from test.kumo_pytorch.targets import verify_stored_batch
+
+    from .fixtures import verify_sweep_targets
+
+    binding, original, fitted, _, rows = case
+    state, batch = deepcopy(fitted), deepcopy(original)
+    encoder = fitted_target_encoder(state, "currency")
+    entries = list(encoder["entries"])
+    assert len(entries) == 2
+    encoder["entries"] = [
+        [entries[0][0], entries[1][1]],
+        [entries[1][0], entries[0][1]],
+    ]
+    mapping = dict(encoder["entries"])
+    batch.targets["currency"]["values"] = torch.tensor(
+        [0 if row["currency"] is None else mapping[row["currency"]] for row in rows]
+    )
+    verify_stored_batch(
+        binding, batch, rows, state
+    )  # A self-consistent wrong vocabulary alone passes.
+    requests = tuple(
+        r.SampleRequest(
+            row["sample_id"],
+            row["entity_id"],
+            row["as_of_time"],
+            split="train",
+            targets=tuple(
+                r.TargetValue(name, row[name]) for name in binding["targets"]
+            ),
+        )
+        for row in rows
+    )
+    with pytest.raises(AssertionError):
+        verify_sweep_targets(batch, requests, selection(binding), "combined", state)

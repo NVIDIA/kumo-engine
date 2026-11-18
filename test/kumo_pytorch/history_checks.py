@@ -11,6 +11,7 @@ Declared preflight refusals pass separately from successful execution.
 import argparse
 import json
 import traceback
+from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from .involvement import source_reference
 from .run_aml import positive, prepare
 
 
-def history_contract(*, filtered):
+def history_contract(*, filtered, schema=None):
     events = {}
     for source, role in enumerate(("sender", "receiver")):
         filters = (
@@ -46,7 +47,7 @@ def history_contract(*, filtered):
         )
     fields = r.Fields(tuple(r.Encode(n, r.Raw()) for n in ("transaction", "source")))
     return r.DataLoaderSpec(
-        aml_data_schema(),
+        schema or aml_data_schema(),
         r.SampleSpec(r.EntitySpec("accounts"), events=events),
         r.BatchSpec(
             {
@@ -67,7 +68,7 @@ def history_contract(*, filtered):
     )
 
 
-def expected_history(anchor, events, *, filtered):
+def expected_history(anchor, events, *, filtered, timestamps=False):
     """Independent raw-source membership; no Kumo or source-mapper selection helpers."""
     cutoff = anchor["as_of_time"] // 10**9
     account = anchor["entity_id"]
@@ -85,11 +86,40 @@ def expected_history(anchor, events, *, filtered):
             and (not filtered or event["values"]["payment_format"] == "ACH")
         ):
             selected.append((event["time"], 1, event["id"]))
-    return [(source, identity) for _, source, identity in sorted(selected)]
+    return (
+        sorted(selected)
+        if timestamps
+        else [(source, identity) for _, source, identity in sorted(selected)]
+    )
+
+
+def verify_history_selection(actual, eligible, *, keep, order):
+    """Ties may permute or straddle a limit; earlier/later timestamps may not."""
+    expected = (
+        eligible
+        if keep == "all"
+        else (eligible[:3] if keep == "first" else eligible[-3:])
+    )
+    times = {(source, identity): stamp for stamp, source, identity in eligible}
+    available = Counter((source, identity) for _, source, identity in eligible)
+    assert not (Counter(actual) - available), "Unexpected or duplicate history event"
+    observed_times = [times[event] for event in actual]
+    required_times = sorted(
+        (stamp for stamp, _, _ in expected), reverse=order == "descending"
+    )
+    assert observed_times == required_times, "History selection/time ordering differs"
 
 
 def check_histories(
-    dataset, identities, groups, reference, *, directory, filtered, threads=1
+    dataset,
+    identities,
+    groups,
+    reference,
+    *,
+    directory,
+    filtered,
+    threads=1,
+    schema=None,
 ):
     directory.mkdir(parents=True, exist_ok=False)
     requests = {
@@ -109,15 +139,19 @@ def check_histories(
         directory / "anchors.parquet",
     )
     anchors = {row["sample_id"]: row for rows in groups.values() for row in rows}
-    contract = history_contract(filtered=filtered)
+    contract = history_contract(filtered=filtered, schema=schema)
     totals = dict.fromkeys(contract.batch.inputs, 0)
     samples = 0
+    from .refusals import executing_case
+
+    plan = r.prepare(
+        contract,
+        dataset,
+        r.DiskGraphEngine(index=directory / "index", num_threads=threads),
+    )
     with (
-        r.prepare(
-            contract,
-            dataset,
-            r.DiskGraphEngine(index=directory / "index", num_threads=threads),
-        ) as plan,
+        plan,
+        executing_case(),
         plan.materialize(
             table,
             fit_split="train",
@@ -133,18 +167,14 @@ def check_histories(
                 )
                 for i, sample_id in enumerate(sample_ids):
                     expected = expected_history(
-                        anchors[sample_id], reference["events"], filtered=filtered
+                        anchors[sample_id],
+                        reference["events"],
+                        filtered=filtered,
+                        timestamps=True,
                     )
                     for name, output in batch.inputs.items():
                         keep, order = name.split("_")
-                        chosen = (
-                            expected
-                            if keep == "all"
-                            else (expected[:3] if keep == "first" else expected[-3:])
-                        )
-                        if order == "descending":
-                            chosen = chosen[::-1]
-                        start, stop = output["offsets"][i: i + 2].tolist()
+                        start, stop = output["offsets"][slice(i, i + 2)].tolist()
                         actual = list(
                             zip(
                                 output["source"]["values"][start:stop].tolist(),
@@ -152,8 +182,8 @@ def check_histories(
                                 strict=True,
                             )
                         )
-                        assert actual == chosen, (
-                            f"{split}/{sample_id}/{name}: history differs"
+                        verify_history_selection(
+                            actual, expected, keep=keep, order=order
                         )
                         totals[name] += len(actual)
                     seen.append(sample_id)
@@ -163,6 +193,59 @@ def check_histories(
             )
     assert totals["all_ascending"] > 0, "Real-data probe emitted no events"
     return {"status": "passed", "samples": samples, "events_by_input": totals}
+
+
+def run_binding(dataset, binding, projection, mapping, directory, *, threads):
+    """Reuse source-history probes with a binding's projection and source mapping."""
+    from .data import schema_for
+    from .population_anchors import projected_rows
+    from .refusals import case_failure
+
+    groups = {
+        split: [
+            dict(
+                sample_id=row["sample_id"],
+                entity_id=row["registered_entity_id"],
+                as_of_time=row["prediction_time_ns"],
+            )
+            for row in projected_rows(projection, split)
+        ]
+        for split in ("train", "valid", "test")
+    }
+    from .aml_source import account_identity_map
+
+    identities = account_identity_map(Path(mapping["table_paths"]["accounts"]).parent)
+    reference = source_reference(
+        mapping["sources"]["transactions"]["path"],
+        [row["entity_id"] for rows in groups.values() for row in rows],
+        include_values=True,
+        variant=mapping["variant"],
+        include_labels=False,
+    )
+    cases = []
+    for filtered in (False, True):
+        name = "filters-and-windows" if filtered else "windows"
+        try:
+            # Each probe has its own preflight; execution errors remain failures.
+            result = check_histories(
+                dataset,
+                identities,
+                groups,
+                reference,
+                directory=directory / name,
+                filtered=filtered,
+                threads=threads,
+                schema=schema_for(dataset, binding),
+            )
+        except Exception as error:
+            result = case_failure(error)
+            if result.get("outcome") == "refused":
+                result["stage"] = "prepare"
+        cases.append({"name": name, **result})
+    return {
+        "status": "passed" if all(c["status"] == "passed" for c in cases) else "failed",
+        "cases": cases,
+    }
 
 
 def main(argv=None):

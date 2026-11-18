@@ -4,6 +4,7 @@
 
 """Full populations retain every anchor, including tails and invalid targets."""
 
+import json
 from dataclasses import replace
 from test.kumo_pytorch import population
 from test.kumo_pytorch.population_anchors import project_population
@@ -310,3 +311,23 @@ def test_full_population_rejects_a_dropped_tail(mapped, tmp_path, monkeypatch):
     assert result["splits"]["train"]["delivered"] == 2
     assert result["splits"]["train"]["status"] == "failed"
     assert result["splits"]["valid"]["status"] == "pending"
+
+
+@pytest.mark.parametrize("mode", ["smoke", "full"])
+def test_legacy_population_does_not_select_li_benchmarks(tmp_path, monkeypatch, mode):
+    def stop(_):
+        raise ValueError("fixture stops before source acquisition")
+
+    monkeypatch.setattr(population, "verify_inputs", stop)
+    output = tmp_path / "out"
+    assert (
+        population.main(
+            ["--mode", mode, "--data-dir", str(tmp_path), "--output", str(output)]
+        )
+        == 1
+    )
+    report = json.loads((output / "report.json").read_text())
+    assert len(report["cases"]) == 5
+    assert all(
+        row["selector"]["dataset_id"] == "aml-data/hi-small" for row in report["cases"]
+    )

@@ -83,7 +83,9 @@ anchor fingerprint is retained separately. Partial input-only reuse is labelled 
 
 [benchmarking/kumo.py](../benchmarking/kumo.py) resolves dataset, anchor, input
 and model declarations from the shared binding catalog. The enabled real-data
-benchmark campaigns currently cover HI Small's five combinations. It verifies
+benchmark campaigns currently cover LI Medium / Combined (L01). HI Small's
+timing/profiling campaigns are disabled; fitting-memory checks remain enabled.
+The adapter verifies
 the selected dataset inventory, selects physical anchor rows per split, preserves full selected-root
 histories and executes the complete selected train split. This is a bounded
 population, not a full-AML benchmark. Graph workloads retain v2 anchors and the
@@ -129,11 +131,11 @@ Missing evidence or worker failures cannot become a successful comparison.
 
 Campaign `report.md` links every worker report; `results.json` records comparison
 evidence. Incomplete benchmark coverage still exits 2; failed execution exits 1.
-The real-data adapter and campaigns have not run on full AML or the GPU runner.
-The nightly now configures all five AML CUDA campaigns in `benchmark-aml`,
-after the Linux and GPU collector checks. It downloads checksum-pinned sources
-and anchors using the existing Engine OIDC role. The CI role’s access and actual
-GPU campaign execution still require a run of this candidate workflow.
+The nightly configures L01's CUDA profiling, index reuse, DiskGraph loader timing
+and native length-planning campaigns in `benchmark-aml`, after the Linux and GPU
+collector checks. It downloads checksum-pinned sources and anchors using the
+existing Engine OIDC role. Real-data acceptance requires a run of the candidate
+workflow; fixture validation does not establish full-population acceptance.
 
 ## Running and viewing results
 
@@ -431,9 +433,9 @@ records actual execution, expected decimal failures and remaining measurements.
 ## Polars loader timing comparison
 
 The test-only [Polars engine](../reference_engine/README.md) uses the same Kumo
-contracts, prepared source tables and selected anchors as DiskGraph. The nightly
-adds CPU loader-only campaigns for each declared AML input family on both
-backends, independently of the existing CUDA model/training campaigns. Graph and
+contracts, prepared source tables and selected anchors as DiskGraph. These
+CPU loader-only comparisons remain available to explicit benchmark runs;
+HI Small's nightly timing campaigns are disabled, and L01 enables DiskGraph only. Graph and
 combined keep v2 anchors. Batch size, thread count and source/anchor selection are
 shared; sampled graphs and individual batches need not be identical. No numerical
 parity or model-quality assertion is made across engines.
@@ -487,10 +489,10 @@ there is no external Arena import or additional installed Kumo package.
 
 For the AML adapter select `backend: "gpu"`, `device: "cuda:0"`,
 `training: false` and `cache_mode: "uncontrolled"`, using the same sources,
-anchors, input contract, batch size and seed as the CPU controls. The nightly
-selects all five input configurations, so its combined loader report covers
-fifteen campaigns. Each has three independent fresh/reused-state pairs and two
-epochs. The test-only CUDA library pins live in
+anchors, input contract, batch size and seed as the CPU controls. The previous
+HI Small nightly compared all five input configurations across three backends;
+those timing campaigns are now disabled. The adapter and its fixture checks
+remain available. The test-only CUDA library pins live in
 [gpu-requirements.txt](../reference_engine/gpu-requirements.txt).
 
 GPU preparation replaces Kumo's `prepare(contract, dataset, engine)` call. The
@@ -559,12 +561,17 @@ The nightly workflow derives dataset selection and campaign matrices from
 
 | Experiment | Independent jobs | Work retained within each job |
 | --- | ---: | --- |
-| Full-profile CUDA training | 5 | Three fresh/reused fitting pairs, two epochs per worker, cold/warm caches |
-| Index lifecycle | 5 | One build followed by two reopens of the same index, two epochs per worker |
-| Loader timing comparisons | 15 | Five bindings across DiskGraph, Polars and GPU; three fresh/reused pairs, two epochs |
-| Fitting memory | 15 | Five bindings times three repetitions; both 25k/400k sizes use the same index within each repetition |
-| Population acceptance | 14 | HI Small: five smoke/full pairs; LI Medium: four full runs |
+| Full-profile CUDA training | 1 | L01: three fresh/reused fitting pairs, two epochs per worker, cold/warm caches |
+| Index lifecycle | 1 | L01: one build followed by two reopens of the same index, two epochs per worker |
+| Loader timing | 1 | L01 / DiskGraph: three fresh/reused pairs, two epochs |
+| Native length planning/cache | 1 | L01: native planning and second-epoch cache reuse |
+| Fitting memory | 15 | HI Small's five bindings times three repetitions; both 25k/400k sizes use the same index within each repetition |
+| Population acceptance | 15 | HI Small: five smoke/full pairs; LI Medium: four full runs and L01 smoke |
 | CPU training acceptance | 9 | Both datasets use the same 100-update runner and report schema |
+| LI lifecycle and histories | 2 | L01: fresh-process lifecycle and independent source-history checks |
+
+HI Small no longer runs model profiling, index-reuse timing or loader timings
+on any backend. Its other checks, including fitting memory, are unchanged.
 
 Measurements run sequentially within their experiment on a dedicated runner;
 parallel timing jobs do not share a GPU. All timing backends retain the same
@@ -577,7 +584,7 @@ Each shard uploads a uniquely named `kumo-pytorch-aml-parallel-*` artifact. The
 combined-report job downloads them, rejects missing or mismatched cases and
 repetitions, and retains one `kumo-pytorch-campaign-results` artifact. Its root
 `report.md` links every experiment, and `timings.json`/the timing tables combine
-all three loader backends. Payloads, indexes and fitted-state files are excluded.
+the enabled loader timing runs. Payloads, indexes and fitted-state files are excluded.
 Training/population shards use `kumo-pytorch-dataset-*` artifacts and join the
 same summary. Existing lifecycle/history scenarios retain separate artifacts.
 

@@ -145,6 +145,9 @@ def test_li_runner_native_delivery_and_training(tmp_path, monkeypatch, ref, mode
     )
     if mode == "training":
         if ref == "L01":
+            from test.kumo_pytorch.feature_checks import validate_evidence
+
+            validate_evidence(report, binding["feature_checks"], "training")
             assert report["feature_coverage"] == {
                 feature: dict.fromkeys(("train", "valid", "test"), 3)
                 for feature in binding["feature_checks"]["features"]
@@ -383,3 +386,85 @@ def test_large_valid_amount_preserves_training_progress(tmp_path):
         1e11 < repeat["final_loss"] < repeat["initial_loss"]
         for repeat in report["repeats"]
     )
+
+
+@pytest.mark.parametrize("mode", ["lifecycle", "histories"])
+def test_li_combined_lifecycle_and_source_histories(tmp_path, mode):
+    from .test_binding_features import prepare_features
+
+    binding, output, (dataset, anchors, population, mapping, capacity) = (
+        prepare_features(tmp_path)
+    )
+    report = run_case(
+        dataset,
+        anchors,
+        population,
+        binding,
+        output,
+        mode=mode,
+        capacity=capacity,
+        mapping=mapping,
+        batch_size=2,
+    )
+    assert report["status"] == "passed", json.dumps(report, indent=2)
+    if mode == "lifecycle":
+        assert set(report["lifecycle"]["checks"]) == {
+            "inference",
+            "finetuning",
+            "mid_epoch_resume",
+        }
+    else:
+        assert len(report["histories"]["cases"]) == 2
+        assert all(
+            c["samples"] == 12
+            for c in report["histories"]["cases"]
+            if c.get("outcome") != "refused"
+        )
+
+
+def test_finetuning_rechecks_training_target_vocabulary(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from test.kumo_pytorch import targets
+    from test.kumo_pytorch.training_lifecycle import finetune
+
+    from .test_binding_features import prepare_features
+
+    binding, output, (dataset, anchors, population, mapping, capacity) = (
+        prepare_features(tmp_path)
+    )
+    report = run_case(
+        dataset,
+        anchors,
+        population,
+        binding,
+        output,
+        mode="lifecycle",
+        capacity=capacity,
+        mapping=mapping,
+        batch_size=2,
+    )
+    # Mid-epoch acceptance is a separate required case; this check targets refitting.
+    assert report["lifecycle"]["checks"]["finetuning"]["status"] == "passed"
+    directory = output / "finetuning"
+    path = directory / "config.json"
+    config = json.loads(path.read_text())
+    config["finetune_parent_pid"] = -1
+    path.write_text(json.dumps(config))
+    original, called = targets.verify_target_fitting, []
+
+    def wrong_vocabulary(binding, rows, state):
+        state = deepcopy(state)
+        encoder = targets.fitted_target_encoder(state, "currency")
+        entries = list(encoder["entries"])
+        assert len(entries) == 2
+        encoder["entries"] = [
+            [entries[0][0], entries[1][1]],
+            [entries[1][0], entries[0][1]],
+        ]
+        called.append(True)
+        return original(binding, rows, state)
+
+    monkeypatch.setattr(targets, "verify_target_fitting", wrong_vocabulary)
+    with pytest.raises(AssertionError):
+        finetune(directory)
+    assert called

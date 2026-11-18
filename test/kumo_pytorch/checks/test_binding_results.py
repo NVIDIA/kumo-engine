@@ -23,9 +23,73 @@ def report(ref, mode):
     targets = binding["targets"] or {task_definition(binding)["kind"]: {}}
     return {
         **{k: binding[k] for k in ("ref", "binding_id", "selector")},
+        "feature_assertions": {
+            name: {
+                **declaration,
+                "status": "passed",
+                "checked_anchors": {
+                    "population": dict.fromkeys(("train", "valid", "test"), 3),
+                    "training": {
+                        "train": 600 if mode == "training" else 0,
+                        "valid": 0,
+                        "test": 0,
+                    },
+                    "evaluation": {
+                        "train": 0,
+                        "valid": 3 if mode == "training" else 0,
+                        "test": 3 if mode == "training" else 0,
+                    },
+                },
+            }
+            for name, declaration in binding.get("feature_checks", {})
+            .get("assertions", {})
+            .items()
+            if mode in declaration.get("modes", binding["feature_checks"]["modes"])
+        },
         "feature_coverage": {
             name: dict.fromkeys(("train", "valid", "test"), 3)
             for name in binding.get("feature_checks", {}).get("features", ())
+        },
+        "lifecycle": {
+            "status": "passed",
+            "checks": {
+                "inference": {
+                    "status": "passed",
+                    "no_refitting": True,
+                    "targets_absent": True,
+                    "pid": 2,
+                    "parent_pid": 1,
+                },
+                "finetuning": {
+                    "status": "passed",
+                    "input_refitting": False,
+                    "resume": {"status": "passed"},
+                    "pid": 2,
+                    "parent_pid": 1,
+                },
+                "mid_epoch_resume": {
+                    "status": "passed",
+                    "remaining": [{"sample_ids": ["tr-c"]}],
+                    "pid": 2,
+                    "parent_pid": 1,
+                },
+            },
+        },
+        "histories": {
+            "status": "passed",
+            "cases": [
+                {
+                    "name": name,
+                    "status": "passed",
+                    "samples": 9,
+                    "events_by_input": {
+                        f"{keep}_{order}": 9
+                        for keep in ("all", "first", "last")
+                        for order in ("ascending", "descending")
+                    },
+                }
+                for name in ("windows", "filters-and-windows")
+            ],
         },
         "family": binding["representation"],
         "revision": "fixture-revision",
@@ -50,6 +114,7 @@ def report(ref, mode):
             {
                 "status": "passed",
                 "completed_updates": 100,
+                "observed_train_anchors": 300,
                 "final_model_sha256": "model",
                 "checks": dict.fromkeys(
                     (
@@ -75,7 +140,9 @@ def reports(root):
     for binding in selected_bindings():
         ref = binding["ref"]
         for mode in (
-            m for m in ("full", "training", "smoke") if m in binding["campaigns"]
+            m
+            for m in ("full", "training", "smoke", "lifecycle", "histories")
+            if m in binding["campaigns"]
         ):
             path = root / mode / ref / "report.json"
             path.parent.mkdir(parents=True)
@@ -158,7 +225,7 @@ def test_li_summary_rejects_incomplete_or_wrong_evidence(tmp_path, fault):
         path.write_text(json.dumps(data))
     result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["cases"]) == 24
+    assert len(result["cases"]) == 26
     assert sum(row["status"] == "failed" for row in result["cases"]) == 1
 
 
@@ -216,7 +283,7 @@ def test_li_summary_cli_needs_no_installed_package_and_writes_failures(tmp_path)
         check=False,
     )
     assert result.returncode == 1, result.stderr
-    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 54
+    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 35
     assert (tmp_path / "report.md").is_file()
 
 
@@ -246,9 +313,11 @@ def test_jobs_cover_all_bindings_and_retain_reports():
     planned = (
         binding_results.campaign_matrix("training")["include"]
         + binding_results.campaign_matrix("population")["include"]
+        + binding_results.campaign_matrix("lifecycle")["include"]
+        + binding_results.campaign_matrix("histories")["include"]
     )
-    assert len(planned) == 24
-    assert len({(r["binding"], r["mode"]) for r in planned}) == 24
+    assert len(planned) == 26
+    assert len({(r["binding"], r["mode"]) for r in planned}) == 26
     assert {r["dataset"] for r in planned} == {"hi-small", "li-medium"}
     assert "matrix: ${{ fromJSON(needs.plan.outputs.dataset_campaigns) }}" in job
     assert "fail-fast: false" in job
@@ -282,3 +351,90 @@ def test_required_binding_features_cannot_disappear(tmp_path, fault):
     result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
     assert sum(row["status"] == "failed" for row in result["cases"]) == 1
+
+
+@pytest.mark.parametrize("mode", ("smoke", "training"))
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "absent",
+        "missing",
+        "failed",
+        "meaning",
+        "unchecked",
+        "phase",
+        "partial-training",
+    ),
+)
+def test_individual_feature_evidence_is_required(tmp_path, mode, fault):
+    reports(tmp_path)
+    path = tmp_path / mode / "L01/report.json"
+    data = json.loads(path.read_text())
+    assertions = data["feature_assertions"]
+    if fault == "absent":
+        data.pop("feature_assertions")
+    elif fault == "missing":
+        assertions.pop("graph_membership")
+    elif fault == "failed":
+        assertions["graph_membership"]["status"] = "failed"
+    elif fault == "meaning":
+        assertions["graph_membership"]["reference"] = "another engine"
+    elif fault == "unchecked":
+        assertions["aggregate_counts"]["checked_anchors"]["population"]["valid"] -= 1
+    elif fault == "phase":
+        assertions["history_values"]["checked_anchors"]["training"]["train"] = (
+            0 if mode == "training" else 1
+        )
+    else:
+        assertions["graph_values"]["checked_anchors"]["training"]["train"] = 599
+    path.write_text(json.dumps(data))
+    result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
+    assert result["status"] == "failed"
+    assert sum(row["status"] == "failed" for row in result["cases"]) == 1
+
+
+def test_declared_feature_assertions_require_handlers_and_feature_mapping():
+    from test.kumo_pytorch.feature_checks import (
+        FeatureChecks,
+        required_assertions,
+    )
+
+    requirements = load_bindings()["L01"]["feature_checks"]
+    declarations = required_assertions(requirements, "smoke")
+    checks = {name: lambda batch: None for name in declarations}
+    checks.pop("graph_membership")
+    with pytest.raises(AssertionError, match="Missing or unregistered"):
+        FeatureChecks(requirements, "smoke", checks, {})
+    requirements["features"].append("unmapped-feature")
+    with pytest.raises(AssertionError, match="Every required feature"):
+        required_assertions(requirements, "smoke")
+
+
+@pytest.mark.parametrize(
+    "mode,fault",
+    [
+        ("lifecycle", "missing-check"),
+        ("lifecycle", "refitting"),
+        ("lifecycle", "same-process"),
+        ("histories", "missing-probe"),
+        ("histories", "late-refusal"),
+    ],
+)
+def test_new_campaigns_require_actual_evidence(tmp_path, mode, fault):
+    reports(tmp_path)
+    path = tmp_path / mode / "L01/report.json"
+    data = json.loads(path.read_text())
+    if fault == "missing-check":
+        data[mode]["checks"].pop("mid_epoch_resume")
+    elif fault == "refitting":
+        data[mode]["checks"]["finetuning"]["input_refitting"] = True
+    elif fault == "same-process":
+        data[mode]["checks"]["inference"]["pid"] = 1
+    elif fault == "missing-probe":
+        data[mode]["cases"].pop()
+    else:
+        data[mode]["cases"][1].update(outcome="refused", stage="iteration", refusal={})
+    path.write_text(json.dumps(data))
+    result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
+    assert result["status"] == "failed"
+    assert sum(r["status"] == "failed" for r in result["cases"]) == 1

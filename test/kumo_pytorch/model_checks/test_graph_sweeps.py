@@ -6,7 +6,6 @@
 
 from dataclasses import replace
 from datetime import timedelta
-from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.reference_tokens import history_tokens
@@ -22,8 +21,13 @@ from .fixtures import (
     AMLFixture,
     build_fixture,
     probe_anchor_table,
+    sweep_cases,
+    sweep_contract,
+    sweep_requests,
+    verify_sweep_targets,
 )
-from .test_aml import CASES
+
+CASES = sweep_cases()
 
 T = int(CUTOFF.timestamp())
 GRAPH_CASES = [
@@ -125,7 +129,12 @@ def source(request, tmp_path_factory):
 
 @pytest.mark.parametrize("fanout", (2, 32, 128))
 @pytest.mark.parametrize(
-    "selection,family", GRAPH_CASES, ids=[family for _, family in GRAPH_CASES]
+    "selection,family",
+    GRAPH_CASES,
+    ids=[
+        s["case_name"] if "sweeps" in s["binding"]["campaigns"] else f
+        for s, f in GRAPH_CASES
+    ],
 )
 def test_aml_graph_degree_and_fanout(source, selection, family, fanout):
     fixture, dataset, index, reference, degrees = source
@@ -143,7 +152,8 @@ def test_aml_graph_degree_and_fanout(source, selection, family, fanout):
         )
         for row in fixture.training
     )
-    base = build_contract(fixture.schema, family, max_events=max(degrees))
+    requests = sweep_requests(requests, selection, family)
+    base = sweep_contract(fixture.schema, selection, family, max_events=max(degrees))
     neighborhood = base.sample.neighborhoods["history_graph"]
     contract = replace(
         base,
@@ -208,8 +218,7 @@ def test_aml_graph_degree_and_fanout(source, selection, family, fanout):
             list(anchors.values()),
             graph_reference=expected_graph,
         )
-        assert batch.targets["label"]["valid"].all()
-        assert batch.targets["label"]["values"].flatten().tolist() == [1.0, 0.0]
+        verify_sweep_targets(batch, requests, selection, family, state)
         if len(selected) < sum(degrees):
             # A full-history expectation must reject this intentionally
             # sampled graph; sequence/count expectations still remain full.
