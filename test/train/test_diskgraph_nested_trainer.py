@@ -1768,18 +1768,39 @@ def test_rhs_primary_key_index_map_rejects_scale_equivalent_decimals() -> None:
         _rhs_primary_key_index_map(catalog, np.asarray([0, 1]), 2)
 
 
-def test_rhs_canonical_node_ids_discards_primary_key_values(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    def _batches(*_args: Any, **_kwargs: Any) -> Any:
-        yield np.asarray([0, 2], dtype=np.uint64), np.asarray(['a', 'b'])
-        yield np.asarray([4], dtype=np.uint64), np.asarray(['c'])
+def test_rhs_canonical_node_ids_match_the_primary_key_catalog(
+        tmp_path) -> None:
+    import diskgraph
+    import pyarrow as pa
+    import pyarrow.parquet as pq
 
-    monkeypatch.setattr(dg_nested_mod, 'iter_primary_key_batches', _batches)
+    path = str(tmp_path / 'items.parquet')
+    pq.write_table(pa.table({'ID': ['a', 'b', 'a', 'c', 'b', 'd']}), path)
+    diskgraph.ingest(config_json=json.dumps({
+        'dataset_name': 'items',
+        'num_shards': 2,
+        'tables': [{
+            'name': 'items',
+            'primary_key': 'ID',
+            'columns': [{
+                'name': 'ID',
+                'ingested_dtype': 'string'
+            }],
+            'source': {
+                'type': 'parquet',
+                'paths': [path]
+            },
+            'fkeys': [],
+        }],
+    }), output_dir=str(tmp_path / 'index'), col_stats=True)
+    index_path = str(tmp_path / 'index')
 
-    node_ids = _rhs_canonical_node_ids('/index', 'items', 5, batch_size=2)
+    node_ids = _rhs_canonical_node_ids(index_path, 'items', 6)
 
     assert node_ids.dtype == np.int64
-    assert node_ids.tolist() == [0, 2, 4]
+    assert len(node_ids) == 4
+    assert node_ids.tolist() == _rhs_primary_key_catalog(
+        index_path, 'items', 6)[0].tolist()
 
 
 @pytest.mark.parametrize(
