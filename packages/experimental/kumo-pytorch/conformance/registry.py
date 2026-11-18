@@ -524,7 +524,7 @@ KNOWN_GAPS += (
         "3 shards and 4 threads differs across fresh builds of the same data, while sampling "
         "one built index repeats (G-GRAPH-001 rule 2); graph_inference_exact leaves tied "
         "samples out where builds aren't deterministic (G-INFERENCE-001 boundaries)",
-        "conformance/known_gaps/repro-7657161068432210.json",
+        "conformance/known_gaps/repro-7b174d231411d046.json",
         "num_shards=3 changed graphs",
     ),
 )
