@@ -93,6 +93,12 @@ def ensure_diskgraph_index(
     if not dataset_name:
         raise ValueError("dataset_name must be non-empty")
 
+    for name, source in dataset.tables.items():
+        if isinstance(source, Parquet) and source.columns:
+            raise DISKGRAPH_UNSUPPORTED["DG-COLUMN-RENAME"].error(
+                "DiskGraph materialization requires matching physical column names; "
+                f"table {name!r} declares {dict(source.columns)!r}"
+            )
     output = Path(destination).resolve()
     if output.exists():
         artifact = _DiskGraphIndex.open(output)
@@ -104,8 +110,10 @@ def ensure_diskgraph_index(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     diskgraph = _import_diskgraph()
-    source_snapshot = _dataset_payload(dataset, source_versions)
     physical_snapshot = _dataset_payload(dataset)
+    source_snapshot = (
+        physical_snapshot if source_versions is None else _dataset_payload(dataset, source_versions)
+    )
     config, relation_mapping, source_types = _compile_diskgraph_config(
         schema,
         dataset,
