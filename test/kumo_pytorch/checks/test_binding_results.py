@@ -225,7 +225,7 @@ def test_li_summary_rejects_incomplete_or_wrong_evidence(tmp_path, fault):
         path.write_text(json.dumps(data))
     result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["cases"]) == 38
+    assert len(result["cases"]) == 42
     assert sum(row["status"] == "failed" for row in result["cases"]) == 1
 
 
@@ -283,7 +283,7 @@ def test_li_summary_cli_needs_no_installed_package_and_writes_failures(tmp_path)
         check=False,
     )
     assert result.returncode == 1, result.stderr
-    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 47
+    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 51
     assert (tmp_path / "report.md").is_file()
 
 
@@ -314,14 +314,15 @@ def test_jobs_cover_all_bindings_and_retain_reports():
         + binding_results.campaign_matrix("lifecycle")["include"]
         + binding_results.campaign_matrix("histories")["include"]
     )
-    assert len(planned) == 38
-    assert len({(r["binding"], r["mode"]) for r in planned}) == 38
+    assert len(planned) == 42
+    assert len({(r["binding"], r["mode"]) for r in planned}) == 42
     assert {r["dataset"] for r in planned} == {
         "hi-small",
         "li-medium",
         "synthetic-medium-customers",
         "synthetic-medium-accounts",
         "synthetic-medium-ltv",
+        "mbd-transaction-forecast",
     }
     for group in ("correctness", "training", "lifecycle", "population"):
         assert f"matrix: ${{{{ fromJSON(needs.plan.outputs.{group}) }}}}" in workflow

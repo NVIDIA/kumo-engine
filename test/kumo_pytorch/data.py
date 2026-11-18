@@ -384,7 +384,12 @@ def verify_dataset(data_dir, binding):
 def schema_for(dataset, binding):
     import pyarrow.parquet as pq
 
-    from kumo.pytorch.api import DataSchema, RelationSpec, TableSpec
+    from kumo.pytorch.api import (
+        NON_TEMPORAL,
+        DataSchema,
+        RelationSpec,
+        TableSpec,
+    )
 
     from .bindings import dataset_definition
     from .contracts import schema_columns
@@ -396,7 +401,7 @@ def schema_for(dataset, binding):
                 name,
                 entry["key"],
                 schema_columns(pq.read_schema(source.path)),
-                time_column=entry.get("time"),
+                time_column=entry.get("time", NON_TEMPORAL),
             )
             for name, source in dataset.tables.items()
             for entry in (definition["tables"][name],)
@@ -408,13 +413,17 @@ def schema_for(dataset, binding):
 def identity_map(data_dir, definition, files):
     import pyarrow.parquet as pq
 
-    identity_path = definition["identity_path"]
-    verify_file(safe_path(data_dir, identity_path), files[identity_path])
-    names = (
-        pq.read_table(data_dir / identity_path, columns=[definition["identity_column"]])
+    paths = definition.get("identity_paths") or [definition["identity_path"]]
+    for path in paths:
+        verify_file(safe_path(data_dir, path), files[path])
+    names = [
+        value
+        for path in paths
+        for value in pq.ParquetFile(data_dir / path)
+        .read(columns=[definition["identity_column"]])
         .column(0)
         .to_pylist()
-    )
+    ]
     if definition.get("identity_encoding") == "canonical_integer":
         if any(type(name) is not int or not 0 <= name < 2**63 for name in names):
             raise ValueError("Canonical identities require nonnegative int64 values")
@@ -426,7 +435,8 @@ def identity_map(data_dir, definition, files):
     if definition.get("identity_id_column"):
         ids = (
             pq.read_table(
-                data_dir / identity_path, columns=[definition["identity_id_column"]]
+                [data_dir / path for path in paths],
+                columns=[definition["identity_id_column"]],
             )
             .column(0)
             .to_pylist()

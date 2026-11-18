@@ -141,12 +141,34 @@ def target_rules(workload):
     return deepcopy(task["targets"])
 
 
+def generated_checks(workload):
+    from .bindings import task_definition
+
+    checks = task_definition(workload).get("generated_checks", {})
+    rules = target_rules(workload)
+    if set(checks) & set(rules) or any(
+        rule["stored"] not in rules
+        or rules[rule["stored"]]["kind"] != "count"
+        or type(rule["window_seconds"]) is not int
+        or rule["window_seconds"] <= 0
+        for rule in checks.values()
+    ):
+        raise ValueError(
+            "Generated count checks require separate names and a stored count target"
+        )
+    return checks
+
+
 def target_value(value, rule):
     """Validate source meaning before the documented float32 projection."""
     if value is None:
+        if rule["kind"] == "count":
+            raise ValueError(f"{rule['column']} requires a nonnegative integer count")
         return None
     kind = rule["kind"]
     column = rule["column"]
+    if kind == "count" and (type(value) is not int or value < 0):
+        raise ValueError(f"{column} must be a nonnegative integer count")
     if kind == "category":
         if not isinstance(value, str):
             raise ValueError(f"{column} must be a string or null")
@@ -167,7 +189,7 @@ def target_value(value, rule):
         raise ValueError(f"{column} must be binary or null")
     if kind == "delay_seconds" and value < 0:
         raise ValueError(f"{column} must be nonnegative seconds")
-    return value
+    return float(value) if kind == "count" else value
 
 
 def fitted_target_encoder(state, name):
@@ -189,7 +211,12 @@ def verify_target_fitting(workload, rows, state):
         for name, values in categories.items():
             if row[name] is not None:
                 values[row[name]] += 1
-    assert count > 0 and set(state["targets"]) == set(rules)
+    assert count > 0 and set(state["targets"]) == set(rules) | set(
+        generated_checks(workload)
+    )
+    for name in generated_checks(workload):
+        encoder = fitted_target_encoder(state, name)
+        assert encoder["kind"] == "raw" and encoder["dtype"]["name"] == "int64"
     for name, rule in rules.items():
         encoder = fitted_target_encoder(state, name)
         if rule["kind"] == "category":
@@ -210,7 +237,21 @@ def verify_stored_batch(workload, batch, rows, state):
     import torch
 
     rules = target_rules(workload)
-    assert set(batch.targets) == set(rules)
+    assert set(batch.targets) == set(rules) | set(generated_checks(workload))
+    for name, check in generated_checks(workload).items():
+        target = batch.targets[name]
+        assert target["values"].dtype == torch.int64
+        assert target["valid"].dtype == torch.bool
+        assert target["values"].shape == target["valid"].shape == (len(rows),)
+        assert target["valid"].all()
+        expected = [row["original_" + check["stored"]] for row in rows]
+        assert target["values"].tolist() == expected, mismatch(
+            target["values"].tolist(),
+            expected,
+            rows,
+            name,
+            precision="exact int64 count",
+        )
     counts = {}
     for name, rule in rules.items():
         target = batch.targets[name]

@@ -77,6 +77,11 @@ def project_population(
                 (name, pa.string() if rule["kind"] == "category" else pa.float32())
                 for name, rule in rules.items()
             ),
+            *(
+                ("original_" + name, pa.int64())
+                for name, rule in rules.items()
+                if rule["kind"] == "count"
+            ),
             ("prediction_time_ns", pa.int64()),
             ("registered_entity_id", pa.string()),
             ("anchor_row_position", pa.int64()),
@@ -141,6 +146,11 @@ def project_population(
                         **{
                             name: target_value(row[rule["column"]], rule)
                             for name, rule in rules.items()
+                        },
+                        **{
+                            "original_" + name: row[rule["column"]]
+                            for name, rule in rules.items()
+                            if rule["kind"] == "count"
                         },
                         "prediction_time_ns": stamp,
                         "registered_entity_id": str(entity),
@@ -242,6 +252,7 @@ def project_binding(path, destination, identities, binding, **options):
     types = {
         "BOOLEAN": pa.bool_(),
         "INTEGER": pa.int32(),
+        "BIGINT": pa.int64(),
         "DECIMAL(38,10)": pa.decimal128(38, 10),
         "DOUBLE": pa.float64(),
         "VARCHAR": pa.string(),

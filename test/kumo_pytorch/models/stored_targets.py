@@ -45,10 +45,11 @@ class StoredTargetModel(nn.Module):
     This avoids squaring large raw amounts/delays. No target scaling is fitted.
     """
 
-    def __init__(self, backbone, family, rules, widths, dim):
+    def __init__(self, backbone, family, rules, widths, dim, *, check_targets=()):
         super().__init__()
         self.backbone, self.family = backbone, family
         self.rules, self.widths = rules, widths
+        self.check_targets = set(check_targets)
         self.head = (
             nn.Linear(dim, sum(widths.values()))
             if family in {"pragma", "nuformer"}
@@ -96,7 +97,7 @@ class StoredTargetModel(nn.Module):
         padding = batch.metadata["is_padding"]
         if padding.shape != (size,) or padding.dtype != torch.bool:
             raise ValueError("Expected one boolean padding flag per anchor")
-        if set(batch.targets) != set(self.rules):
+        if set(batch.targets) != set(self.rules) | self.check_targets:
             raise ValueError("Stored targets differ from the model's outputs")
         loss = sum(value.sum() * 0 for value in logits.values())
         weights, sums = {}, {}

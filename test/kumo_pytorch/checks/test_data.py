@@ -52,6 +52,7 @@ def test_manifest_has_exact_starter_inputs():
         "synthetic-medium-customers",
         "synthetic-medium-accounts",
         "synthetic-medium-ltv",
+        "mbd-transaction-forecast",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -439,3 +440,49 @@ def test_synthetic_customer_inventory_excludes_truth_and_unused_sources():
         == "kumo-binding-41605c06ba4a8facd8e18ee7034b4509a5098b3eb42a905069e707f78ca3566e"
     )
     assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
+
+
+def test_count_forecast_inventory_and_grant_cover_only_selected_modalities():
+    import fnmatch
+    from test.kumo_pytorch.bindings import (
+        dataset_definition,
+        load_bindings,
+        task_definition,
+    )
+
+    catalog = load_bindings()
+    binding = catalog["M04"]
+    assert len([ref for ref in catalog if ref.startswith("M04")]) == 1
+    assert not catalog["M03"]["campaigns"]
+    assert binding["base_binding_id"].endswith("fa6e68e")
+    assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
+    assert set(task_definition(binding)["generated_checks"]) == {"generated_count"}
+    definition = dataset_definition(binding)
+    entry = data.load_manifest()["datasets"][definition["inventory"]]
+    keys = {item["key"] for item in entry["files"]}
+    assert len(keys) == 1008 and entry["source_bytes"] == 6037620860
+    assert all(
+        "/fold=-1/" not in key and "/geo/" not in key and "/dialog/" not in key
+        for key in keys
+    )
+    assert len(definition["identity_paths"]) == 5
+    grant = json.loads((SUITE / "datasets/ci-mbd-read-policy.json").read_text())[
+        "Statement"
+    ]
+    assert len(grant) == 1 and grant[0]["Action"] == "s3:GetObject"
+    resources = grant[0]["Resource"]
+    assert len(resources) == 13
+    assert all(
+        any(
+            fnmatch.fnmatchcase("arn:aws:s3:::kumo-engine-arena/" + key, pattern)
+            for pattern in resources
+        )
+        for key in keys
+    )
+    assert all(
+        any(
+            fnmatch.fnmatchcase("arn:aws:s3:::kumo-engine-arena/" + key, pattern)
+            for key in keys
+        )
+        for pattern in resources
+    )

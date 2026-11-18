@@ -278,5 +278,12 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
                     )
                 )
         if stored:
-            return StoredTargetModel(backbone, family, rules, widths, dim)
+            return StoredTargetModel(
+                backbone,
+                family,
+                rules,
+                widths,
+                dim,
+                check_targets=task_spec.get("generated_checks", ()),
+            )
         return TaskModel(backbone, family, "binary" if scalar_binary else kind, dim)

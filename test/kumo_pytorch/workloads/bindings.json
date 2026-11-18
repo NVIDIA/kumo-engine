@@ -15,6 +15,15 @@
         "kumo_specs/synthetic_contracts.py": "97d7ee026bfa8f95897b73f297799067e5516059283f46a2e60245dfc62572c7",
         "datasets/pragma-synthetic-data/medium/reference/accepted-20261019/manifest.json": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34"
       }
+    },
+    "mbd": {
+      "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+      "upstream_revision": "7c1642ca66eb460b0a2097e63afbed2eece739fa",
+      "files": {
+        "kumo_specs/mbd_source.py": "02cb033c2a689380cee3a9a7ed4ce2f4b2bc25484fad779550f64957db5b1303",
+        "kumo_specs/mbd_contracts.py": "e5a701285c2a14c764af9713a64c77e1bb27f622fdce039240c3536b281c19c2",
+        "datasets/mbd/extraction.json": "db51ea0bf5bcae9252b87b684720dd7d74520acc34a4f042788abae1e0eb4bb5"
+      }
     }
   },
   "bindings": [
@@ -979,7 +988,7 @@
     },
     {
       "ref": "M04",
-      "binding_id": "kumo-binding-352a09604a3988b3d2e83e525858db1fe8b5418c92001439c2d93abe2fa6e68e",
+      "binding_id": "suite:M04:generated-count-v1",
       "selector": {
         "anchor_version": "v2",
         "dataset_id": "mbd",
@@ -1004,8 +1013,71 @@
           }
         }
       },
-      "campaigns": [],
-      "pending": "Dataset sources, contracts and execution are not yet ported."
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "base_binding_id": "kumo-binding-352a09604a3988b3d2e83e525858db1fe8b5418c92001439c2d93abe2fa6e68e",
+      "inputs": "client-transaction-graph",
+      "anchors": "monthly-forecast-graph",
+      "task": "future-trx-count",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 128
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.forecast_features:count_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F04",
+          "F08",
+          "F14",
+          "F15"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original client membership, split, prediction clock and strict historical cutoff.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "graph_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F04",
+              "F08"
+            ],
+            "description": "Original event identities, features, complete historical membership and connectivity independent of tensor order.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "stored_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Original BIGINT count and float32 training projection match the independently counted future window.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "generated_targets": {
+            "features": [
+              "F15"
+            ],
+            "description": "Native generated count equals original events in [T,T+30 days), including covered empty windows.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          }
+        }
+      }
     }
   ],
   "datasets": {
@@ -1367,6 +1439,89 @@
           "inventory": "synthetic-medium-ltv"
         }
       }
+    },
+    "mbd": {
+      "display_name": "MBD",
+      "inventory": "mbd-transaction-forecast",
+      "prepare": "test.kumo_pytorch.partitioned_sources:prepare_sources",
+      "identity_paths": [
+        "datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=1/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=2/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet"
+      ],
+      "identity_column": "client_id",
+      "anchor_path": "anchors/mbd/v1/{population}/{version}/anchors.parquet",
+      "anchor_manifest_format": "arena",
+      "source_options": {
+        "partition": "fold",
+        "splits": {
+          "0": "train",
+          "1": "train",
+          "2": "train",
+          "3": "valid",
+          "4": "test"
+        },
+        "root": {
+          "table": "clients",
+          "key": "client_id"
+        },
+        "tables": {
+          "clients": {
+            "paths": [
+              "datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=1/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=2/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet"
+            ]
+          },
+          "transactions": {
+            "prefix": "datasets/mbd/v1/detail/trx/"
+          }
+        },
+        "events": {
+          "transactions": {
+            "root": "client_id",
+            "time": "event_time",
+            "numerical": [
+              "amount"
+            ],
+            "categorical": [
+              "currency",
+              "event_type",
+              "event_subtype",
+              "src_type11",
+              "src_type12",
+              "dst_type11",
+              "dst_type12",
+              "src_type21",
+              "src_type22",
+              "src_type31",
+              "src_type32"
+            ]
+          }
+        }
+      },
+      "tables": {
+        "roots": {
+          "key": "root_id"
+        },
+        "transactions": {
+          "key": "event_id",
+          "time": "event_time"
+        }
+      },
+      "relations": [
+        [
+          "client_transactions",
+          "roots",
+          "root_id",
+          "transactions",
+          "root_id"
+        ]
+      ]
     }
   },
   "semantics": {
@@ -1879,6 +2034,27 @@
             "column": "gross_profit",
             "value": 0.0
           }
+        }
+      }
+    },
+    "future-trx-count": {
+      "kind": "stored",
+      "targets": {
+        "count": {
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "kind": "count"
+        }
+      },
+      "generated_checks": {
+        "generated_count": {
+          "stored": "count",
+          "path": [
+            "client_transactions"
+          ],
+          "family": "transactions",
+          "clock": "event_time",
+          "window_seconds": 2592000
         }
       }
     }
@@ -3188,6 +3364,110 @@
           "dtype": "float64"
         }
       }
+    },
+    "client-transaction-graph": {
+      "variant": "trx",
+      "root_table": "roots",
+      "root_type": "client",
+      "families": [
+        [
+          "transactions",
+          [
+            "client_transactions"
+          ],
+          "event_time",
+          [
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "currency",
+              "currency",
+              "categorical"
+            ],
+            [
+              "event_type",
+              "event_type",
+              "categorical"
+            ],
+            [
+              "event_subtype",
+              "event_subtype",
+              "categorical"
+            ],
+            [
+              "src_type11",
+              "src_type11",
+              "categorical"
+            ],
+            [
+              "src_type12",
+              "src_type12",
+              "categorical"
+            ],
+            [
+              "dst_type11",
+              "dst_type11",
+              "categorical"
+            ],
+            [
+              "dst_type12",
+              "dst_type12",
+              "categorical"
+            ],
+            [
+              "src_type21",
+              "src_type21",
+              "categorical"
+            ],
+            [
+              "src_type22",
+              "src_type22",
+              "categorical"
+            ],
+            [
+              "src_type31",
+              "src_type31",
+              "categorical"
+            ],
+            [
+              "src_type32",
+              "src_type32",
+              "categorical"
+            ]
+          ]
+        ]
+      ],
+      "graph": {
+        "nodes": {
+          "transactions": {
+            "numerical": [
+              "amount"
+            ],
+            "categorical": [
+              "currency",
+              "event_type",
+              "event_subtype",
+              "src_type11",
+              "src_type12",
+              "dst_type11",
+              "dst_type12",
+              "src_type21",
+              "src_type22",
+              "src_type31",
+              "src_type32"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          }
+        },
+        "relations": {
+          "client_transactions": "transactions"
+        },
+        "reverse_hop": false
+      }
     }
   },
   "anchor_profiles": {
@@ -3241,6 +3521,16 @@
       "execution_time": "graph_as_of_time",
       "execution_offset_seconds": -1,
       "root_time_offset_seconds": 2419200
+    },
+    "monthly-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "version": "v2"
     }
   }
 }

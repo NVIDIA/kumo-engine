@@ -1,7 +1,7 @@
 # PyTorch full testing suite
 
 Standalone repository tests for `kumo.pytorch`, outside its installed package.
-Current bindings cover AML HI Small, AML LI Medium and Synthetic Medium S01/S02/S04
+Current bindings cover AML HI Small, AML LI Medium, Synthetic Medium S01/S02/S04 and MBD M04
 through shared acquisition, verified source/anchor preparation,
 [model consumers](models/README.md), task checks, training and lifecycle runners.
 Fixture validation and real-data acceptance are tracked separately in the
@@ -51,7 +51,8 @@ owners and records selective boundary-test ports without an Arena dependency.
 The [binding expansion plan](docs/binding-coverage.md) tracks the approved LI
 Medium, Synthetic Medium and MBD additions. S02 adds customer-history next-token
 checks; S01 adds account-history masked reconstruction with BPE; S04 adds Combined
-LTV prediction with graph, history and grouped aggregates. All use original
+LTV prediction with graph, history and grouped aggregates. M04 adds graph-based
+transaction-count prediction with an independently checked generated count. All use original
 source rows for feature assertions. Their campaigns use the existing RTX runner
 with CPU training and a recorded storage preflight; full real-data acceptance
 is pending. The remaining selected bindings are added one at a time.
@@ -101,8 +102,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 38 binding campaigns into correctness (10),
-training (12), lifecycle (4) and full population (12). HI Small's original
+The planner partitions the 42 binding campaigns into correctness (11),
+training (13), lifecycle (5) and full population (13). HI Small's original
 lifecycle/history scenarios and H&M Small/Medium remain separately owned. It
 also retains 15 HI Small fitting repetitions and four L01 benchmark campaigns.
 The same resolved seed range feeds all conformance shards. Every test has one

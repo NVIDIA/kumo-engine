@@ -443,11 +443,26 @@ def binding_contract(schema, binding, *, max_events):
     )
     if native:
         return contract
+    from .targets import generated_checks
+
+    checks = generated_checks(binding)
+    generated = {
+        name: r.Aggregate(
+            r.Rows(
+                tuple(rule["path"]),
+                r.TimeWindow(rule["clock"], 0, rule["window_seconds"]),
+            ),
+            "count",
+            dtype=r.DType("int64"),
+        )
+        for name, rule in checks.items()
+    }
     return replace(
         contract,
         sample=replace(
             contract.sample,
-            targets={
+            targets=generated
+            | {
                 name: r.ExternalTarget(
                     r.DType("string" if rule["kind"] == "category" else "float32")
                 )
@@ -456,7 +471,8 @@ def binding_contract(schema, binding, *, max_events):
         ),
         batch=replace(
             contract.batch,
-            targets={
+            targets={name: r.LabelTarget(name, r.Raw()) for name in generated}
+            | {
                 name: r.LabelTarget(
                     name, r.Vocabulary() if rule["kind"] == "category" else r.Raw()
                 )

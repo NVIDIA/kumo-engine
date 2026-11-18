@@ -1,6 +1,6 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 591 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 621 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
@@ -30,6 +30,10 @@ S04 adds 38 required fixture cases for its four campaigns, source-derived graph,
 history, aggregate and threshold-label checks, corruption detection and window
 boundaries. One unrelated multi-table graph training case verifies reuse of the
 same model/runner. Its checkpoint-resume failure remains a required failure.
+
+M04 adds 30 required graph/count forecast cases covering original-row windows,
+identities, integer precision, graph semantics, corruption and all four campaigns.
+Its existing package checkpoint-resume failure remains a required failure.
 
 ## Capability refusals
 

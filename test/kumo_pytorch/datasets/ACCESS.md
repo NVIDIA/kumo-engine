@@ -49,3 +49,14 @@ pins and needs no bucket listing or writes. S04 adds only the LTV anchor Parquet
 and manifest to the existing access; that two-object addition was applied and
 verified by rereading the bucket policy. Effective CI-role downloads remain a
 run-time check.
+
+## MBD transaction access
+
+With user authorization on 2026-11-18,
+[ci-mbd-read-policy.json](ci-mbd-read-policy.json) was applied for the same Engine
+test role. It permits GetObject for five exact client-membership objects, five
+transaction partition prefixes (folds 0–4), and three exact manifest/anchor
+objects. No listing or writes are granted. The downloader verifies 1,008 pinned
+objects; fold -1 and other modalities are excluded. The policy was reread and
+the approved addition matched; all six existing statements were preserved.
+Effective CI-role downloads remain to be verified by the M04 run.

@@ -12,7 +12,7 @@ Its Engine audit revision `9432cddf` is historical provenance; execution must
 test the PR's actual revision. [bindings.json](../workloads/bindings.json) pins
 the 16 PDF bindings plus E05, the existing supervised HI Small nuFormer case.
 It retains selectors, representations, split columns, target meanings and source
-catalog hashes. E05 and extended contracts such as S01/S04 have suite identities, not new Arena
+catalog hashes. E05 and extended contracts such as S01/S04/M04 have suite identities, not new Arena
 registrations. Extended contracts retain their original `base_binding_id` as
 provenance. Registration is not execution coverage.
 
@@ -39,7 +39,7 @@ independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or
 | M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
 | M02 | MBD / transaction-forecast | next-transaction-amount-currency | PRAGMA | Port mixed targets and independent validity |
 | M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Port event type/subtype targets including auxiliary target checks |
-| M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Port stored count including generated-count comparison |
+| M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Stored and generated count checks in four shared campaigns; real-data CI pending |
 
 ## Feature additions within each selected binding
 
@@ -495,3 +495,71 @@ All 347 harness checks pass, and all 591 required CPU cases collect exactly
 pass. Two independent review rounds leave no remaining findings after adding
 dtype-corruption regressions and native mode-tie coverage. These are local
 fixture results, not real-data CI acceptance.
+
+
+## M04 / MBD / GraphSAGE
+
+One binding, `suite:M04:generated-count-v1`, extends the registered `trx`
+GraphSAGE forecast (base ID ending `fa6e68e`). Training still predicts the stored
+`future_count` using the existing numerical head and Smooth L1 loss in original
+count units. A separate `generated_count` target asks Kumo to count transactions
+in the same 30-day future window. It is checked but never included in the loss
+or exposed as a model input. No new model wrapper or workflow is added.
+
+Original monthly prediction time is T; graph execution is E=T-1s. Transaction
+clocks retain original nanoseconds for source assertions and floor to seconds
+for native execution. Since prediction/window boundaries are whole seconds,
+native `(E,E+30 days]` is equivalent to original `[T,T+30 days)`. Historical
+inputs remain strictly before T. Duplicate transactions count separately. A
+covered empty future window has a valid count of zero; coverage means the
+recorded global span covers the window, not proof that collection has no gaps.
+
+| Required assertion | Features | Independent answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original client membership and fold split, prediction and execution clocks |
+| `graph_values` | F01, F02, F04, F08 | Original transaction IDs, complete eligible neighborhood, features, masks and connectivity independent of tensor order |
+| `stored_targets` | F14 | Exact original integer count equals original future rows; separate float32 transport check |
+| `generated_targets` | F15 | Native int64 count and validity equal an independent count of original nanosecond events |
+
+The shared converter for partitioned string-root events uses the original five
+client-membership files and 1,000 transaction files from folds 0–4. It excludes
+fold -1 and unrelated modalities. Client IDs are UTF-8-sorted ranks; event IDs
+are stable file/physical-row offsets independent of bounded/full selection.
+This intentionally avoids Arena's global chronological renumbering, which is
+not needed for the complete graph neighborhood. Identities are internal; no
+exact Arena task fingerprint or tensor-order parity is claimed. Numeric category
+codes become canonical strings; nonfinite values become missing. Fold, balance
+flags and labels are not graph features. Root tables are explicitly non-temporal.
+
+`partitioned_sources.py` handles this source format; `forecast_features.py`
+independently reads original rows and checks graph/count forecasts through the
+existing feature hook. Native AnchorTable projection, model, campaign, lifecycle
+and reporting components are reused. The original integer count is retained
+alongside float32 training transport, so large counts are not compared after
+rounding. Full-population delivery also checks generated versus exact stored
+counts; the more expensive original-row feature oracle remains bounded to the
+correctness/training campaigns, as for other bindings.
+
+The 1,008 pinned objects total 7,028,272,242 bytes: 6,037,620,860 source bytes,
+plus the extraction manifest, v2 anchor manifest and 980,925,125-byte anchor
+payload. Sources contain one million clients and 385,304,108 transactions;
+anchors contain 11 million examples. The approved GetObject grant covers five
+exact membership keys, five transaction partition prefixes, and three exact
+manifest/anchor keys, with no listing or writes. It was applied and reread.
+The shared RTX worker uses CPU training and an approved 128 GiB free-space
+preflight. Actual index growth and full real-data runtime remain unmeasured.
+
+Local native fixtures pass correctness, complete delivery and both 100-update
+training repetitions. Reload/inference and fresh-process finetuning pass;
+mid-epoch resume exposes the existing package task-identity error (`this state
+was saved for a different task`). That required lifecycle test remains failing.
+Real-data CI acceptance is pending. M03 remains inactive for the next increment.
+
+Validation: `model_checks/test_count_forecast.py` has 29 passes and the one
+required lifecycle failure above. All 348 harness checks pass. Regression checks
+across existing bindings have 118 passes and only the previously recorded S04
+and L01 lifecycle failures. All 621 required CPU cases collect; five GPU cases
+remain delegated. Independent review verified all 1,005 source pins against the
+original extraction inventory and found no remaining issues after adding clock
+corruption and empty-selected-history regressions. No package runtime files
+changed in this increment.
