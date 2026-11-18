@@ -45,8 +45,7 @@ async function handleKernelDialogs(page, frame, mark) {
 
 async function showFileBrowser(frame) {
   if (!await frame.locator('.jp-FileBrowser').isVisible()) {
-    await frame.getByRole('menuitem', { name: /^View$/ }).click();
-    await frame.getByRole('menuitem', { name: /^File Browser(?:\s|$)/ }).click();
+    await frame.getByRole('tab', { name: /^File Browser(?:\s|$)/ }).click();
   }
   await frame.locator('.jp-FileBrowser').waitFor({ state: 'visible' });
 }
