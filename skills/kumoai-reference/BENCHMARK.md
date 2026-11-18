@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 93.6% — baseline ran, but no comparable score was available; uplift unavailable | 89.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 80.0% → 100.0% (+20.0 points) | 90.0% → 90.0% (±0.0 points) |
-| Correctness | 68.0% → 100.0% (+32.0 points) | 92.0% → 100.0% (+8.0 points) |
-| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 44.9% → 84.0% (+39.1 points) | 77.8% → 80.4% (+2.6 points) |
-| Efficiency | 83.8% — baseline ran, but no comparable score was available; uplift unavailable | 84.9% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 93.2% — baseline ran, but no comparable score was available; uplift unavailable | 87.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 90.0% → 80.0% (-10.0 points) |
+| Correctness | 68.0% → 100.0% (+32.0 points) | 84.0% → 96.0% (+12.0 points) |
+| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 88.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 50.5% → 78.0% (+27.5 points) | 58.0% → 84.7% (+26.7 points) |
+| Efficiency | 89.3% — baseline ran, but no comparable score was available; uplift unavailable | 85.4% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 97.2% → 81.5% (-15.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 94.3% → 87.8% (-6.5 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 77.6% → 87.0% (+9.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 77.4% → 87.0% (+9.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,19 +80,19 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 1,477,453 | 598,733 | +878,720 | +146.76% | skill 5/5; base 5/5 |
-| claude-code | kref-01 | 121,691 | 35,737 | +85,954 | +240.52% | skill 1/1; base 1/1 |
-| claude-code | kref-02 | 445,404 | 148,446 | +296,958 | +200.04% | skill 1/1; base 1/1 |
-| claude-code | kref-03 | 134,125 | 108,917 | +25,208 | +23.14% | skill 1/1; base 1/1 |
-| claude-code | kref-04 | 250,746 | 38,242 | +212,504 | +555.68% | skill 1/1; base 1/1 |
-| claude-code | kref-05 | 525,487 | 267,391 | +258,096 | +96.52% | skill 1/1; base 1/1 |
-| codex | All cases | 751,517 | 759,151 | -7,634 | -1.01% | skill 5/5; base 5/5 |
-| codex | kref-01 | 65,056 | 54,410 | +10,646 | +19.57% | skill 1/1; base 1/1 |
-| codex | kref-02 | 183,823 | 190,612 | -6,789 | -3.56% | skill 1/1; base 1/1 |
-| codex | kref-03 | 121,056 | 90,774 | +30,282 | +33.36% | skill 1/1; base 1/1 |
-| codex | kref-04 | 142,837 | 47,313 | +95,524 | +201.90% | skill 1/1; base 1/1 |
-| codex | kref-05 | 238,745 | 376,042 | -137,297 | -36.51% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 2,228,970 | 1,357,884 | +871,086 | +64.15% | skill 10/10; base 10/10 |
+| claude-code | All cases | 1,351,652 | 1,272,515 | +79,137 | +6.22% | skill 5/5; base 5/5 |
+| claude-code | kref-01 | 121,660 | 35,613 | +86,047 | +241.62% | skill 1/1; base 1/1 |
+| claude-code | kref-02 | 523,009 | 148,685 | +374,324 | +251.76% | skill 1/1; base 1/1 |
+| claude-code | kref-03 | 233,277 | 306,293 | -73,016 | -23.84% | skill 1/1; base 1/1 |
+| claude-code | kref-04 | 325,840 | 109,513 | +216,327 | +197.54% | skill 1/1; base 1/1 |
+| claude-code | kref-05 | 147,866 | 672,411 | -524,545 | -78.01% | skill 1/1; base 1/1 |
+| codex | All cases | 825,268 | 673,781 | +151,487 | +22.48% | skill 5/5; base 5/5 |
+| codex | kref-01 | 69,115 | 28,809 | +40,306 | +139.91% | skill 1/1; base 1/1 |
+| codex | kref-02 | 280,824 | 252,624 | +28,200 | +11.16% | skill 1/1; base 1/1 |
+| codex | kref-03 | 120,693 | 91,963 | +28,730 | +31.24% | skill 1/1; base 1/1 |
+| codex | kref-04 | 137,479 | 47,353 | +90,126 | +190.33% | skill 1/1; base 1/1 |
+| codex | kref-05 | 217,157 | 253,032 | -35,875 | -14.18% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 2,176,920 | 1,946,296 | +230,624 | +11.85% | skill 10/10; base 10/10 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 

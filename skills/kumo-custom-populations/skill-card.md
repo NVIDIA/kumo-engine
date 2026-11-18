@@ -76,10 +76,10 @@ Recommended for publication based on the completed evaluation evidence in this r
 |---|---:|---:|
 | Overall | 95.1% — baseline ran, but no comparable score was available; uplift unavailable | 90.2% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 52.0% → 100.0% (+48.0 points) | 68.0% → 96.0% (+28.0 points) |
+| Correctness | 48.0% → 100.0% (+52.0 points) | 64.0% → 92.0% (+28.0 points) |
 | Discoverability | 97.5% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 44.0% → 80.0% (+36.0 points) | 42.0% → 64.0% (+22.0 points) |
-| Efficiency | 98.1% — baseline ran, but no comparable score was available; uplift unavailable | 96.1% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 48.0% → 84.0% (+36.0 points) | 44.0% → 68.0% (+24.0 points) |
+| Efficiency | 94.0% — baseline ran, but no comparable score was available; uplift unavailable | 96.1% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -87,7 +87,7 @@ Example: `47.0% → 92.0% (+45.0 points)` means the skill-assisted run scored 92
 
 A partial dimension was calculated from only the available configured signals; review the detailed report before relying on it.
 
-### Comparison details
+#### Comparison details
 
 Shared-source comparisons use the same signals and weights on both conditions. They do not replace the full dimension scores above or change the publication verdict.
 
@@ -96,7 +96,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
 | claude-code | Efficiency | Token-only comparison | 98.0% → 96.2% (-1.8 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 89.0% → 92.2% (+3.2 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 89.4% → 92.1% (+2.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ### Tier Status
 

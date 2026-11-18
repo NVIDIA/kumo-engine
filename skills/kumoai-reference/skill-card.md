@@ -25,12 +25,12 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/graph_construction.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/graph_construction.md) <br>
-- [references/pql_writing.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/pql_writing.md) <br>
-- [references/kumo_finetuning_sdk.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/kumo_finetuning_sdk.md) <br>
-- [references/task_journeys.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/task_journeys.md) <br>
-- [references/outputs.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/outputs.md) <br>
-- [references/troubleshooting_signals.md](https://github.com/NVIDIA/kumo-engine/blob/main/skills/kumoai-reference/references/troubleshooting_signals.md) <br>
+- [references/graph_construction.md](references/graph_construction.md) <br>
+- [references/pql_writing.md](references/pql_writing.md) <br>
+- [references/kumo_finetuning_sdk.md](references/kumo_finetuning_sdk.md) <br>
+- [references/task_journeys.md](references/task_journeys.md) <br>
+- [references/outputs.md](references/outputs.md) <br>
+- [references/troubleshooting_signals.md](references/troubleshooting_signals.md) <br>
 - [NVIDIA/kumo-engine#134 (graph visualization)](https://github.com/NVIDIA/kumo-engine/pull/134) <br>
 - [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
@@ -80,12 +80,12 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 93.6% — baseline ran, but no comparable score was available; uplift unavailable | 89.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 80.0% → 100.0% (+20.0 points) | 90.0% → 90.0% (±0.0 points) |
-| Correctness | 68.0% → 100.0% (+32.0 points) | 92.0% → 100.0% (+8.0 points) |
-| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 44.9% → 84.0% (+39.1 points) | 77.8% → 80.4% (+2.6 points) |
-| Efficiency | 83.8% — baseline ran, but no comparable score was available; uplift unavailable | 84.9% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 93.2% — baseline ran, but no comparable score was available; uplift unavailable | 87.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 90.0% → 80.0% (-10.0 points) |
+| Correctness | 68.0% → 100.0% (+32.0 points) | 84.0% → 96.0% (+12.0 points) |
+| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 88.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 50.5% → 78.0% (+27.5 points) | 58.0% → 84.7% (+26.7 points) |
+| Efficiency | 89.3% — baseline ran, but no comparable score was available; uplift unavailable | 85.4% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -100,9 +100,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 97.2% → 81.5% (-15.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 94.3% → 87.8% (-6.5 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 77.6% → 87.0% (+9.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 77.4% → 87.0% (+9.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ### Tier Status
 
@@ -113,7 +113,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Tier 3 | Live agent evaluation | **PASS** | 2 agent(s); 5 task(s) |
 
 ## Skill Version(s): <br>
-0.1.0 (source: pyproject.toml; git SHA 7cbda7af, committed 2026-11-18) <br>
+0.1.0 (source: pyproject.toml; git SHA 8aaa6cb3, committed 2026-11-18) <br>
 
 ## Ethical Considerations: <br>
 NVIDIA believes Trustworthy AI is a shared responsibility and we have established policies and practices to enable development for a wide array of AI applications. When downloaded or used in accordance with our terms of service, developers should work with their internal team to ensure this skill meets requirements for the relevant industry and use case and addresses unforeseen product misuse. <br>

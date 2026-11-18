@@ -41,7 +41,7 @@ Mitigation: Review and scan skill before deployment. <br>
 **Output Type(s):** [Analysis, Code, Files] <br>
 **Output Format:** [Markdown replies (graph and task proposals, ask-backs) and one generated Jupyter notebook or Python script using the kumo.engine API] <br>
 **Output Parameters:** [1D] <br>
-**Other Properties Related to Output:** [Generates code only until the user confirms the graph and task; runs the artifact only on explicit request] <br>
+**Other Properties Related to Output:** [Generates code only after the user confirms the graph and task; runs the artifact only on explicit request] <br>
 
 ## Evaluation Agents Used: <br>
 - Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`) <br>
@@ -76,23 +76,29 @@ Underlying evaluation signals used in this run: <br>
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 98.7% — baseline ran, but no comparable score was available; uplift unavailable | 91.7% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 100.0% → 100.0% (±0.0 points) | 87.5% → 100.0% (+12.5 points) |
-| Correctness | 52.5% → 100.0% (+47.5 points) | 47.5% → 92.5% (+45.0 points) |
-| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 91.4% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 42.6% → 100.0% (+57.4 points) | 38.8% → 80.4% (+41.6 points) |
-| Efficiency | 93.4% — baseline ran, but no comparable score was available; uplift unavailable | 94.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 98.4% — baseline ran, but no comparable score was available; uplift unavailable | 95.5% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
+| Correctness | 57.5% → 100.0% (+42.5 points) | 50.0% → 97.5% (+47.5 points) |
+| Discoverability | 99.3% — baseline ran, but no comparable score was available; uplift unavailable | 92.9% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 41.4% → 97.9% (+56.5 points) | 36.2% → 93.8% (+57.6 points) |
+| Efficiency | 94.5% — baseline ran, but no comparable score was available; uplift unavailable | 93.4% — baseline ran, but no comparable score was available; uplift unavailable |
 
-Baseline is the same task attempted without the target skill. Scores are rounded to one decimal; uplift is derived from the displayed scores and shown in percentage points. A partial dimension was calculated from only the available configured signals.
+**How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
+
+Example: `47.0% → 92.0% (+45.0 points)` means the skill-assisted run scored 92.0%, 45.0 percentage points above its 47.0% no-skill baseline.
+
+A partial dimension was calculated from only the available configured signals; review the detailed report before relying on it.
 
 #### Comparison details
+
+Shared-source comparisons use the same signals and weights on both conditions. They do not replace the full dimension scores above or change the publication verdict.
 
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 97.0% → 92.4% (-4.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 97.0% → 92.6% (-4.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 83.2% → 90.3% (+7.1 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 80.4% → 90.3% (+9.9 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ### Tier Status
 
@@ -107,7 +113,7 @@ Baseline is the same task attempted without the target skill. Scores are rounded
 **Publication Recommendation:** Recommended for publication based on the completed evaluation evidence in this report.
 
 ## Skill Version(s): <br>
-0.1.0 (source: pyproject.toml); skill build marker 2026-11-17-5026ce47-dirty (source: SKILL.md); git 7cbda7af (committed 2026-11-18) <br>
+0.1.0 (source: pyproject.toml); skill build marker 2026-11-18-83ce9a89 (source: SKILL.md); git 8aaa6cb3 (committed 2026-11-18) <br>
 
 ## Ethical Considerations: <br>
 NVIDIA believes Trustworthy AI is a shared responsibility and we have established policies and practices to enable development for a wide array of AI applications. When downloaded or used in accordance with our terms of service, developers should work with their internal team to ensure this skill meets requirements for the relevant industry and use case and addresses unforeseen product misuse. <br>
