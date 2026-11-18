@@ -9,7 +9,7 @@ Run correctness first, then warmups and interleaved measured draws:
 
 ```bash
 python make_fixture.py /tmp/fm-case
-python runner.py --bundle /tmp/fm-case/supported \
+python runner.py --bundle /tmp/fm-case/bundle \
   --workload /tmp/fm-case/workload.json --index /tmp/fm-case/index \
   --draws 5 --output /tmp/fm-report.json
 ```

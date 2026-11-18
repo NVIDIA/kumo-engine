@@ -15,9 +15,10 @@ def main() -> None:
         raise SystemExit("usage: python make_fixture.py /path/to/new/case")
     root = Path(sys.argv[1]).resolve()
     root.mkdir(parents=True, exist_ok=False)
-    bundle, workload = fixture(root)
+    _, workload = fixture(root)
+    (root / "supported").rename(root / "bundle")
     (root / "workload.json").write_text(json.dumps(workload, indent=2) + "\n")
-    print(f"bundle: {bundle.root}")
+    print(f"bundle: {root / 'bundle'}")
     print(f"workload: {root / 'workload.json'}")
 
 
