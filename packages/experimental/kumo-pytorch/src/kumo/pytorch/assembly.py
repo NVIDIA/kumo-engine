@@ -41,7 +41,6 @@ from kumo.pytorch.contract.batch import (
     LabelTarget,
     MaskedValuesTarget,
     MatchingGroupTarget,
-    NeighborhoodSource,
     Nested,
     NextTokenTarget,
     OccurrencesOf,
@@ -2634,13 +2633,12 @@ def fit_plan(
         raise ValueError("at least one fitting request is required")
     if input_state is not None and target_encoders is None:
         _check_reused_target_spaces(spec, input_state)
+    # Graph fields are fitted separately by fit_graph_fields; they do not need
+    # per-anchor records for the other inputs or targets in a mixed contract.
     model = (
         callable(getattr(source, "build_model", None))
         and not sample.dated_entity_values
-        and all(
-            not isinstance(value.source, (CandidateSource, NeighborhoodSource))
-            for value in spec.inputs.values()
-        )
+        and all(not isinstance(value.source, CandidateSource) for value in spec.inputs.values())
     )
 
     def values_for(sample_spec):
