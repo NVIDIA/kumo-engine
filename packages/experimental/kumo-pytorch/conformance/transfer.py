@@ -78,7 +78,7 @@ def main(directory: Path) -> None:
     engine = DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
     with prepare(contract, dataset, engine) as plan:
         task = plan.materialize(requests[:FRESH_FIT])
-        output = batches_json(task.batches(requests, **TRANSFER_ARGUMENTS))
+        output = batches_json(task.request_batches(requests, **TRANSFER_ARGUMENTS))
     (directory / "batches.json").write_text(json.dumps(output, sort_keys=True))
 
 

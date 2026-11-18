@@ -106,7 +106,7 @@ def _blueprint() -> api.IdSpace:
 def _batch(contract: api.DataLoaderSpec, fitted: api.FittedState | None = None) -> api.Batch:
     with api.prepare(contract, _dataset(ROWS), api.InMemoryEngine()) as plan:
         with plan.materialize(_requests(), fitted=fitted) as task:
-            return next(task.batches(batch_size=3))
+            return next(task.request_batches(_requests(), batch_size=3))
 
 
 def _state_space(contract: api.DataLoaderSpec, name: str = "tokens") -> Mapping[str, object]:
@@ -201,7 +201,7 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     with api.prepare(contract, _dataset(ROWS), api.InMemoryEngine()) as plan:
         with plan.materialize(_requests()) as task:
             task.to_artifact().save(tmp_path)
-            trained = next(task.batches(batch_size=3))
+            trained = next(task.request_batches(_requests(), batch_size=3))
     artifact = api.Artifact.load(tmp_path)
     assert artifact.contract.batch.id_spaces["tokens"].special_ids == BLUEPRINT
     assert artifact.fitted_state.to_dict()["spaces"]["tokens"]["roles"] == BLUEPRINT
@@ -209,7 +209,7 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     unseen = [{"id": 1, "country": "FR"}, {"id": 2, "country": "US"}, {"id": 3, "country": None}]
     with api.prepare(artifact.contract, _dataset(unseen), api.InMemoryEngine()) as plan:
         with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
-            batch = next(task.batches(batch_size=3))
+            batch = next(task.request_batches(_requests(), batch_size=3))
     emitted = batch.inputs["emitted"]["value_ids"]
     assert emitted[0].tolist() == [BLUEPRINT["unknown"]]
     assert emitted[2].tolist() == [BLUEPRINT["missing"]]

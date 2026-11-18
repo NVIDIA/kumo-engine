@@ -610,11 +610,13 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
                 contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
             ) as plan:
                 task = plan.materialize(requests, fit_split="train")
-                expected = next(iter(task.batches(requests, batch_size=2)))
+                expected = next(iter(task.request_batches(requests, batch_size=2)))
                 plan._source._adapt_temporal_result = lambda *_: pytest.fail(
                     "flat model execution must not construct inspectable events"
                 )
-                actual = next(iter(task.batches(requests, batch_size=2, output_format="model")))
+                actual = next(
+                    iter(task.request_batches(requests, batch_size=2, output_format="model"))
+                )
                 assert_tree_equal(expected.inputs, actual.inputs)
                 assert_tree_equal(expected.targets, actual.targets)
                 assert_tree_equal(expected.metadata, actual.metadata)
@@ -645,7 +647,7 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
                     bound, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
                 ) as restored:
                     restored_task = restored.materialize(requests, fit_split="train")
-                    batches = list(restored_task.batches(requests, output_format="model"))
+                    batches = list(restored_task.request_batches(requests, output_format="model"))
                     assert sum(len(batch.metadata["sample_ids"]) for batch in batches) == 2
 
 
@@ -810,7 +812,7 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     ) as plan:
         model_batch = next(
             iter(
-                plan.materialize(requests, fit_split="train").batches(
+                plan.materialize(requests, fit_split="train").request_batches(
                     requests, output_format="model", seed=7
                 )
             )
@@ -825,14 +827,14 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     with api.prepare(contract, parquet, engine) as plan:
         task = plan.materialize((request,))
         for output_format in ("inspectable", "model"):
-            batch = next(iter(task.batches((request,), output_format=output_format)))
+            batch = next(iter(task.request_batches((request,), output_format=output_format)))
             assert batch.inputs["graph"]["nodes"]["users"]["ids"].tolist() == [2]
             for cutoff in (signup - timedelta(seconds=1), signup):
                 unavailable = api.SampleRequest(
                     "before-signup", 2, cutoff, targets=requests[0].targets
                 )
                 with pytest.raises(ValueError, match="entity did not exist before"):
-                    next(iter(task.batches((unavailable,), output_format=output_format)))
+                    next(iter(task.request_batches((unavailable,), output_format=output_format)))
 
 
 def test_diskgraph_check_refuses_unsupported_work_before_ingestion(tmp_path: Path) -> None:
@@ -996,7 +998,7 @@ def test_diskgraph_refuses_future_intermediate_edge_that_leaks_old_rows(tmp_path
     )
     request = api.SampleRequest("account-1", 1, cutoff, split="train")
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
-        batch = next(plan.materialize((request,), fit_split="train").batches())
+        batch = next(plan.materialize((request,), fit_split="train").request_batches((request,)))
     assert batch.inputs["account"]["spend"]["values"].tolist() == [500.0]
     issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
     assert any("intermediate" in issue.message for issue in issues)
@@ -1100,7 +1102,7 @@ def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_
         api.prepare(contract, dataset, api.DiskGraphEngine(index=index, ingest="never"))
     with pytest.warns(UserWarning, match="dropped source rows"):
         with api.prepare(contract, dataset, engine) as plan:
-            graph = next(plan.materialize((request,)).batches((request,))).inputs["graph"]
+            graph = next(plan.materialize((request,)).request_batches((request,))).inputs["graph"]
     assert graph["nodes"]["events"]["ids"].tolist() == [10]
     config = json.loads((index / "diskgraph_config.json").read_text())
     event_table = next(table for table in config["tables"] if table["name"] == "events")
@@ -1286,13 +1288,13 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
     ) as plan:
         task = plan.materialize(requests, fit_split="train")
         inspectable_batch = next(
-            iter(task.batches(requests, batch_size=2, output_format="inspectable", seed=7))
+            iter(task.request_batches(requests, batch_size=2, output_format="inspectable", seed=7))
         )
         plan._source._adapt_temporal_result = lambda *_args: pytest.fail(
             "model output entered the inspectable Event/FieldValue adapter"
         )
         model_batch = next(
-            iter(task.batches(requests, batch_size=2, output_format="model", seed=7))
+            iter(task.request_batches(requests, batch_size=2, output_format="model", seed=7))
         )
         assert_equal(model_batch.inputs, inspectable_batch.inputs)
         assert_equal(model_batch.targets, inspectable_batch.targets)
@@ -1347,12 +1349,14 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
         diskgraph_task = diskgraph_plan.materialize(requests, fit_split="train")
         assert diskgraph_task.fitted_state == reference_task.fitted_state
         assert diskgraph_plan._source.last_temporal_profile["output_format"] == "model"
-        expected = list(reference_task.batches(requests, seed=17, epoch=3))
-        inspectable = list(diskgraph_task.batches(requests, seed=17, epoch=3))
+        expected = list(reference_task.request_batches(requests, seed=17, epoch=3))
+        inspectable = list(diskgraph_task.request_batches(requests, seed=17, epoch=3))
         diskgraph_plan._source._adapt_temporal_result = lambda *_args: pytest.fail(
             "model output entered the inspectable Event/FieldValue adapter"
         )
-        model = list(diskgraph_task.batches(requests, seed=17, epoch=3, output_format="model"))
+        model = list(
+            diskgraph_task.request_batches(requests, seed=17, epoch=3, output_format="model")
+        )
         length_profile = diskgraph_plan._source.last_length_profile
         assert length_profile["native_stats"]["frames_counted"] == 1
         assert length_profile["native_stats"]["rowpack_timestamps"] == 0
@@ -1388,7 +1392,7 @@ def test_diskgraph_model_uses_shared_anchor_shuffle(tmp_path: Path) -> None:
         for output_format in ("inspectable", "model"):
             actual_ids = tuple(
                 sample_id
-                for batch in task.batches(
+                for batch in task.request_batches(
                     requests, output_format=output_format, seed=0, epoch=2, shuffle=True
                 )
                 for sample_id in batch.metadata["sample_ids"]
@@ -1482,7 +1486,7 @@ def test_diskgraph_reads_parquet_anchor_tables_with_external_labels(tmp_path: Pa
         for output_format in ("inspectable", "model"):
             got = list(from_table.batches(split="train", output_format=output_format))
             want = list(
-                from_requests.batches(
+                from_requests.request_batches(
                     [r for r in requests if r.split == "train"], output_format=output_format
                 )
             )

@@ -258,8 +258,9 @@ Plan.materialize(
 
 Bind anchors, fit what is still unfitted, and return the task.
 
-`anchors` is an `AnchorTable` when the anchors exist as data, or
-`SampleRequest` values built in code.
+Bind an `AnchorTable` to iterate its rows with `Task.batches`.
+A sequence of `SampleRequest` values can supply fitting examples.
+To batch Python requests, pass them explicitly to `Task.request_batches`.
 
 `fit_split` says which anchors fitting may read, and is never implied
 when the anchors carry splits — so held-out or unassigned anchors cannot
@@ -377,7 +378,6 @@ Anchors in `split`: a name, a set of names, or every anchor when omitted.
 
 ```python
 Task.batches(
-    requests: Sequence[SampleRequest] | None = None,
     *,
     split: str | Collection[str | None] | AllAnchors | None = None,
     batch_size: int | None = None,
@@ -393,14 +393,14 @@ Task.batches(
 ) -> TaskBatches
 ```
 
-Emit batches over this task's anchors, or over requests built in code.
+Emit batches over this task's materialized `AnchorTable`.
 
-Without `requests`, iterates the materialized anchors of `split` — a
-name, a set of names (`None` selects anchors with no split), or every
-anchor when omitted — reading them a chunk at a time
-so memory follows batch size rather than anchor count. With
-`requests`, serves exactly those — the path a request handler or a
-preview has — through the same fitted state.
+`split` is a name, a set of names (`None` in the set selects anchors
+with no split), or every anchor when omitted. Rows are read in chunks.
+For production loading and benchmarks, use DiskGraph with a Parquet
+`AnchorTable` and `output_format="model"` to select native model iteration
+for eligible contracts. Use `Task.request_batches` for Python requests,
+including requests originally supplied for fitting.
 
 Every rank gets the same number of anchors: a short rank is topped up by
 repeating one of its own anchors, and `Batch.metadata["is_padding"]`
@@ -424,6 +424,35 @@ and resume retain their normal semantics. By default, selected edge pairs
 may repeat across native chunks. `deduplicate_edges=True` is available
 only for columnar output: it allocates edge arrays to retain the first
 occurrence of each pair per relation, preserving example isolation.
+
+#### `Task.request_batches`
+
+```python
+Task.request_batches(
+    requests: Sequence[SampleRequest],
+    *,
+    batch_size: int | None = None,
+    epoch: int = 0,
+    seed: int = 0,
+    shuffle: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    drop_last: bool | None = None,
+    output_format: Literal['inspectable', 'model'] = 'inspectable',
+) -> TaskBatches
+```
+
+Batch explicitly supplied Python requests using this task's fitted state.
+
+Use this for debugging, tests, or small sets of requests supplied at
+runtime. Requests must be supplied on every call, including when they
+were used for fitting. Filter the sequence yourself to select a split.
+This path bypasses native AnchorTable iteration. For population loading
+and benchmarks, materialize a Parquet `AnchorTable` with DiskGraph and
+use `Task.batches` with `output_format="model"`.
+
+Without shuffling or length bucketing, requests are visited in the order
+supplied (within each rank), subject to padding and `drop_last`.
 
 #### `Task.preview`
 

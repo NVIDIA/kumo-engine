@@ -84,10 +84,9 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
         engine=api.DiskGraphEngine(index=tmp_path / "first"),
     ) as plan:
         saved = plan.contract.to_json()
-        with plan.materialize(
-            anchors=(api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
-        ) as task:
-            assert next(task.batches(batch_size=1)).inputs["values"]["value"][
+        requests = (api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
+        with plan.materialize(requests) as task:
+            assert next(task.request_batches(requests, batch_size=1)).inputs["values"]["value"][
                 "values"
             ].tolist() == [1.5]
     pq.write_table(pa.table({"id": [1], "value": [2]}), path)
@@ -233,7 +232,7 @@ def test_inferred_calculations_have_the_same_saved_contract_and_output(case_id, 
     ):
         assert plan.contract == explicit
         with plan.materialize(anchors=case.requests) as task:
-            next(task.batches(batch_size=len(case.requests)))
+            next(task.request_batches(case.requests, batch_size=len(case.requests)))
 
 
 def test_fixed_result_operations_and_grouped_reductions_infer_without_values():
@@ -392,8 +391,8 @@ def test_numeric_promotion_and_overflow_match_in_both_output_forms(
     ):
         formats = ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
         for output_format in formats:
-            output = next(task.batches(batch_size=1, output_format=output_format)).inputs["values"][
-                "result"
-            ]
+            output = next(
+                task.request_batches(case.requests, batch_size=1, output_format=output_format)
+            ).inputs["values"]["result"]
             assert output["values"].tolist() == [expected]
             assert output["valid"].tolist() == [True]

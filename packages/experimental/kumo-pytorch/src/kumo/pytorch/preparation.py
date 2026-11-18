@@ -188,8 +188,9 @@ class Plan:
     ) -> Task:
         """Bind anchors, fit what is still unfitted, and return the task.
 
-        ``anchors`` is an `AnchorTable` when the anchors exist as data, or
-        `SampleRequest` values built in code.
+        Bind an `AnchorTable` to iterate its rows with `Task.batches`.
+        A sequence of `SampleRequest` values can supply fitting examples.
+        To batch Python requests, pass them explicitly to `Task.request_batches`.
 
         ``fit_split`` says which anchors fitting may read, and is never implied
         when the anchors carry splits — so held-out or unassigned anchors cannot

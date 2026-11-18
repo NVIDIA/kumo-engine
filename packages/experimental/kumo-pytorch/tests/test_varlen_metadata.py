@@ -46,7 +46,7 @@ def test_in_memory_two_level_packing_carries_cu_seqlens() -> None:
     dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
     with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
         task = plan.materialize(_requests(), fit_split="train")
-        _check(next(iter(task.batches(_requests(), batch_size=2))).inputs["history"])
+        _check(next(iter(task.request_batches(_requests(), batch_size=2))).inputs["history"])
 
 
 def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
@@ -55,7 +55,7 @@ def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with api.prepare(_two_level_contract(), parquet, engine) as plan:
         task = plan.materialize(_requests(), fit_split="train")
-        batch = next(iter(task.batches(_requests(), batch_size=2, output_format="model")))
+        batch = next(iter(task.request_batches(_requests(), batch_size=2, output_format="model")))
         _check(batch.inputs["history"])
 
 
@@ -74,7 +74,9 @@ def test_varlen_attention_consumes_the_metadata_directly() -> None:
     dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
     with api.prepare(_two_level_contract(), dataset, api.InMemoryEngine()) as plan:
         task = plan.materialize(_requests(), fit_split="train")
-        history = next(iter(task.batches(_requests(), batch_size=2))).to("cuda").inputs["history"]
+        history = (
+            next(iter(task.request_batches(_requests(), batch_size=2))).to("cuda").inputs["history"]
+        )
     tokens = history["key_ids"].numel()
     q = torch.randn(tokens, 2, 64, device="cuda", dtype=torch.bfloat16)
     cu, longest = history["field_cu_seqlens"], history["field_max_seqlen"]

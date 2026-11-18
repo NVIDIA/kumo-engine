@@ -116,10 +116,9 @@ def test_timestamp_physical_metadata_and_resolved_seconds_are_both_recorded(tmp_
     contract = _contract(DType(name="timestamp", unit="s", timezone="UTC"))
     dataset = Dataset(tables={"rows": Parquet(path=str(source))})
     with prepare(contract=contract, dataset=dataset, engine=DiskGraphEngine(index=index)) as plan:
-        task = plan.materialize(
-            anchors=(SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
-        )
-        batch = next(task.batches(batch_size=1))
+        requests = (SampleRequest(sample_id="one", entity_id=1, as_of_time=0),)
+        task = plan.materialize(requests)
+        batch = next(task.request_batches(requests, batch_size=1))
         assert batch.inputs["values"]["value"]["values"].to_pylist() == [
             dt.datetime(1970, 1, 1, tzinfo=dt.UTC),
         ]
@@ -191,7 +190,9 @@ def _batch_values(plan):
         SampleRequest(sample_id=str(row["id"]), entity_id=row["id"], as_of_time=0)
         for row in _WIDE_ROWS
     )
-    batch = next(plan.materialize(anchors=requests).batches(batch_size=len(requests)))
+    batch = next(
+        plan.materialize(anchors=requests).request_batches(requests, batch_size=len(requests))
+    )
     return {
         name: {
             field: {key: value.tolist() for key, value in buffers.items()}

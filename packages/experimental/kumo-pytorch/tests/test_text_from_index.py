@@ -336,7 +336,7 @@ def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkey
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
             emitted = [
                 batch.inputs["transactions"]["field_offsets"].diff().tolist()
-                for batch in task.batches(_requests())
+                for batch in task.request_batches(_requests())
             ]
     assert read_token_lengths(tmp_path / "index", entry) == (2, None)
     assert {count for counts in emitted for count in counts} == {2}

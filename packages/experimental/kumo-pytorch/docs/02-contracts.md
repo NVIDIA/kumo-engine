@@ -197,7 +197,7 @@ with (
     api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
-    result = next(task.batches(requests=requests))
+    result = next(task.request_batches(requests))
 
 user = result.inputs["user"]
 history = result.inputs["history"]
@@ -290,7 +290,7 @@ with (
     api.prepare(contract=graph_contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
-    graph = next(task.batches(requests=requests)).inputs["graph"]
+    graph = next(task.request_batches(requests)).inputs["graph"]
 
 print("node types:", tuple(sorted(graph["nodes"])))
 print("item ids:", graph["nodes"]["items"]["ids"].tolist())
@@ -384,7 +384,7 @@ with (
     ) as plan,
     plan.materialize(anchors=(candidate_request,)) as task,
 ):
-    ranked = next(task.batches())
+    ranked = next(task.request_batches((candidate_request,)))
 
 print("prior_buyers:", ranked.inputs["candidates"]["prior_buyers"]["values"].tolist())
 print("bought:", ranked.targets["bought"]["values"].tolist())

@@ -406,7 +406,7 @@ def test_built_graph_contract_runs():
     contract = build.contract(schema=SCHEMA, sample=SAMPLE, batch=BATCH)
     requests = (SampleRequest(sample_id="u1", entity_id=1, as_of_time=30),)
     with Plans(contract.schema, tables).prepare(contract, requests) as task:
-        batch = next(task.batches(requests, batch_size=1, seed=17))
+        batch = next(task.request_batches(requests, batch_size=1, seed=17))
         assert batch.inputs["graph"]["nodes"]["users"]["features"]["country"][
             "values"
         ].tolist() == [2]

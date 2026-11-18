@@ -59,7 +59,7 @@ def _batch_inference(
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
             return {
                 batch.metadata["sample_ids"][0]: batch
-                for batch in task.batches(batch_size=1, seed=SEED)
+                for batch in task.request_batches(requests, batch_size=1, seed=SEED)
             }
 
 
@@ -483,11 +483,11 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
 
     torch.manual_seed(0)
     with api.prepare(example.contract(), dataset, engine) as plan:
-        anchors = example.anchors(example.TRAIN_AT, split="train")
-        with plan.materialize(anchors, fit_split="train") as task:
+        training = example.anchors(example.TRAIN_AT, split="train")
+        with plan.materialize(training, fit_split="train") as task:
             model = example.ActivityModel(task.output_schema)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
-            for batch in task.batches(split="train", output_format="model"):
+            for batch in task.request_batches(training, output_format="model"):
                 labels = (batch.targets["active"]["values"] > 0).float()
                 loss = torch.nn.functional.binary_cross_entropy_with_logits(model(batch), labels)
                 optimizer.zero_grad()
@@ -504,7 +504,9 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
     with api.prepare(artifact.contract, dataset, engine) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
             model_format = {
-                request.sample_id: next(iter(task.batches([request], output_format="model")))
+                request.sample_id: next(
+                    iter(task.request_batches([request], output_format="model"))
+                )
                 for request in requests
             }
     for request in requests:

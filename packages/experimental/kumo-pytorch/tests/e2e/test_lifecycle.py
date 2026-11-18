@@ -537,7 +537,7 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
         with plan.materialize(
             [tied_requests[sample_id]], fitted=artifact.fitted_state, inference=True
         ) as task:
-            (batch,) = list(task.batches(output_format="model"))
+            (batch,) = list(task.request_batches([tied_requests[sample_id]], output_format="model"))
     purchases = [
         set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (in_memory, batch)
     ]
@@ -559,7 +559,7 @@ def test_a_history_batch_without_any_event_assembles(
     engine = DiskGraphEngine(index=root / "empty-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize([request], fitted=artifact.fitted_state, inference=True) as task:
-            (scored,) = list(task.batches(output_format="model"))
+            (scored,) = list(task.request_batches([request], output_format="model"))
     for batch in (served, scored):
         assert batch.inputs["history"]["value_ids"].shape[0] == 0
         assert not batch.inputs["history"]["sequence"]["valid"].any()
@@ -570,7 +570,7 @@ def _reference_batches(
 ) -> dict[int, Batch]:
     with prepare(artifact.contract, rows, InMemoryEngine()) as plan:
         with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-            batches = task.batches(batch_size=1, seed=0)
+            batches = task.request_batches(requests, batch_size=1, seed=0)
             return {int(batch.metadata["sample_ids"][0]): batch for batch in batches}
 
 

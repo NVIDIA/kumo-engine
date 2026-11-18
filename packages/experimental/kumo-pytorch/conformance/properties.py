@@ -857,7 +857,9 @@ def batch_answer(
         _require(not issues, f"{engine_name} refused a generated contract: {issues}")
         with prepare(contract, dataset, engine) as plan:
             task = plan.materialize(requests)
-            batches = task.batches(requests, batch_size=BATCH_ROWS, output_format=output_format)
+            batches = task.request_batches(
+                requests, batch_size=BATCH_ROWS, output_format=output_format
+            )
             rows = decode_batches(batches)
     result = dict(rows)
     _require(len(result) == len(rows), "a sample was delivered twice")
@@ -955,7 +957,7 @@ def packing(case: GeneratedCase, engine: str, position: int) -> None:
                 task = plan.materialize(case.requests)
                 for output_format in formats:
                     label = f"{layout}/{output_format}"
-                    batches = list(task.batches(case.requests, output_format=output_format))
+                    batches = list(task.request_batches(case.requests, output_format=output_format))
                     for batch in batches:
                         cost, size = batch_cost(batch, HISTORY), len(batch.metadata["sample_ids"])
                         _require(cost <= budget, f"{label}: a batch takes {cost} > {budget} tokens")
@@ -1293,7 +1295,9 @@ def contract_transfer(case: GeneratedCase, engine: str, position: int) -> None:
                 folder = Path(directory) / label
                 folder.mkdir()
                 (folder / "contract.json").write_text(task.bound_contract().to_json())
-                expected[label] = batches_json(task.batches(case.requests, **TRANSFER_ARGUMENTS))
+                expected[label] = batches_json(
+                    task.request_batches(case.requests, **TRANSFER_ARGUMENTS)
+                )
             inputs = json.dumps({"tables": paths, "requests": requests})
             (folder / "inputs.json").write_text(inputs)
         folders = [Path(directory) / label for label in contracts]

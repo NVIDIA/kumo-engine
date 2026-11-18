@@ -199,7 +199,9 @@ def assert_answer(case: GoldenCase, engine_name: str) -> None:
             with plan.materialize(case.requests) as task:
                 result = preview(task, case.requests).to_dict()
                 if case.batch is not None:
-                    batches = list(task.batches(case.requests, batch_size=len(case.requests)))
+                    batches = list(
+                        task.request_batches(case.requests, batch_size=len(case.requests))
+                    )
                     assert len(batches) == 1, f"{case.id}: expected exactly one batch"
                     batch = batches[0]
                     assert_projection(
@@ -350,7 +352,7 @@ def assert_execution_error(
             with plan.materialize(case.requests) as task:
                 expect(
                     lambda: list(
-                        task.batches(
+                        task.request_batches(
                             case.requests,
                             batch_size=len(case.requests),
                             output_format=output_format,

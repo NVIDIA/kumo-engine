@@ -747,7 +747,8 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
             }
         ),
     )
-    anchors = [api.SampleRequest("one", 1, 2)]
+    requests = [api.SampleRequest("one", 1, 2)]
+    anchors = requests
     if native_anchors:
         path = tmp_path / "anchors.parquet"
         pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
@@ -758,7 +759,12 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
         api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
     ) as plan:
         with plan.materialize(anchors) as task:
-            batch = next(iter(task.batches(batch_size=1, output_format="model", shuffle=False)))
+            batches = (
+                task.batches(batch_size=1, output_format="model")
+                if native_anchors
+                else task.request_batches(requests, batch_size=1, output_format="model")
+            )
+            batch = next(batches)
             nodes = batch.inputs["graph"]["nodes"]["events"]
             assert dict(
                 zip(

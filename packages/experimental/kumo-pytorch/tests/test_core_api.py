@@ -377,7 +377,7 @@ def test_structured_future_target_uses_declared_field_encodings() -> None:
     contract = DataLoaderSpec(schema=_schema(), sample=_sample_spec(), batch=_batch_spec())
     requests = (SampleRequest("sample", 1, 100, split="train"),)
     plan = _Plans(_schema(), _tables()).prepare(contract, requests)
-    batch = next(plan.batches(requests))
+    batch = next(plan.request_batches(requests))
     assert batch.targets["next_transaction"]["amount"]["values"].tolist() == [4.0]
     assert batch.targets["next_transaction"]["channel"]["values"].tolist() == [2]
     assert batch.metadata["splits"] == ("train",)
@@ -429,7 +429,7 @@ def test_current_event_is_explicit_and_can_also_appear_in_history() -> None:
     assert any(event.timestamp == 100 for event in built.history.events)
     assert built.current_events["transaction"][0].timestamp == 100
     plan = _Plans(_schema(), tables).prepare(contract, [request])
-    batch = next(plan.batches([request]))
+    batch = next(plan.request_batches([request]))
     assert batch.inputs["current_transaction"]["amount"]["values"].tolist() == [[7.0]]
     assert batch.targets["channel"]["channel"]["values"].tolist() == [[2]]
 
@@ -710,8 +710,8 @@ def test_supplied_field_encoder_state_reproduces_local_and_final_ids():
         DataLoaderSpec(schema=_schema(), sample=_sample_spec(), batch=batch), [request]
     )
     supplied = engine.prepare(fitted.bound_contract(), [request])
-    before = next(fitted.batches([request], seed=7)).inputs["events"]
-    after = next(supplied.batches([request], seed=7)).inputs["events"]
+    before = next(fitted.request_batches([request], seed=7)).inputs["events"]
+    after = next(supplied.request_batches([request], seed=7)).inputs["events"]
     assert after["field_ids"].equal(before["field_ids"])
     assert after["value_ids"].equal(before["value_ids"])
     assert supplied.encoders["categories"].entries == fitted.encoders["categories"].entries
@@ -736,7 +736,9 @@ def test_supplied_normalization_state_is_used_without_refitting() -> None:
     )
     contract = DataLoaderSpec(_schema(), _sample_spec(), batch)
     request = SampleRequest("sample", 1, 100)
-    encoded = next(_Plans(_schema(), _tables()).prepare(contract, [request]).batches([request]))
+    encoded = next(
+        _Plans(_schema(), _tables()).prepare(contract, [request]).request_batches([request])
+    )
     assert encoded.inputs["entity"]["transaction_count"]["values"].tolist() == [-3.5]
 
 

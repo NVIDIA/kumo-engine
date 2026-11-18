@@ -49,7 +49,7 @@ def test_calendar_timing_outputs_have_only_explicit_values(engine_name):
         prepare(case.contract, dataset, engine) as plan,
         plan.materialize(case.requests) as task,
     ):
-        batch = next(task.batches(case.requests, batch_size=3))
+        batch = next(task.request_batches(case.requests, batch_size=3))
         forbidden = {"timestamps", "elapsed_seconds", "auxiliary", "hour", "weekday", "day", "age"}
         assert not forbidden & set(batch.inputs["history"])
         assert not forbidden & set(batch.inputs["history"]["sequence"])
@@ -112,7 +112,7 @@ def test_complete_reuse_never_fits_or_grows(engine_name):
         ),
         plan.materialize(case.requests, fitted=saved) as task,
     ):
-        batch = next(task.batches(case.requests, batch_size=3))
+        batch = next(task.request_batches(case.requests, batch_size=3))
         assert task.fitted_state.to_dict() == before
         assert saved.to_dict() == before
         assert_projection(
@@ -190,7 +190,7 @@ def test_exposure_warning_names_overlap_and_masks_only_named_input(engine_name):
                 plan.materialize(case.requests) as task,
             ):
                 with warnings.catch_warnings(record=True) as during_batches:
-                    batch = next(task.batches(case.requests, batch_size=2))
+                    batch = next(task.request_batches(case.requests, batch_size=2))
                 assert not during_batches
                 assert_projection(
                     batch.inputs["entity"]["value_ids"],

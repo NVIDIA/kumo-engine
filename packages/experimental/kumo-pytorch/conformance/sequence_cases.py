@@ -259,7 +259,7 @@ def collect_sequences(
     """Each sample's delivered events; ``clocks`` dates a row by its table and ID."""
 
     result: SequenceAnswer = {}
-    for batch in task.batches(requests, batch_size=8, output_format=output):
+    for batch in task.request_batches(requests, batch_size=8, output_format=output):
         for position, sample_id in enumerate(batch.metadata["sample_ids"]):
             require(str(sample_id) not in result, f"{output}: duplicate sample {sample_id}")
             result[str(sample_id)] = {

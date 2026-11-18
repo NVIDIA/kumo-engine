@@ -325,7 +325,7 @@ def graph_answer(
 
 def collect_graphs(task: Task, requests: Sequence[SampleRequest]) -> GraphAnswer:
     result: GraphAnswer = {}
-    for batch in task.batches(requests):
+    for batch in task.request_batches(requests):
         graph = batch.inputs[NEIGHBORHOOD]
         sample_ids = [str(sample_id) for sample_id in batch.metadata["sample_ids"]]
         require(not any(batch.metadata["is_padding"].tolist()), "padding in a request batch")

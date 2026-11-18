@@ -103,7 +103,11 @@ def test_primary_key_answers_metadata_and_artifact_contract(engine_name, tmp_pat
                 )
                 for output_format in formats:
                     batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
+                        iter(
+                            task.request_batches(
+                                case.requests, batch_size=2, output_format=output_format
+                            )
+                        )
                     )
                     assert batch.inputs["values"]["external"]["values"].tolist() == [2, 1]
                     assert list(batch.metadata["entity_ids"]) == [1, 2]
@@ -231,7 +235,11 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
                 )
                 for output_format in formats:
                     batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
+                        iter(
+                            task.request_batches(
+                                case.requests, batch_size=2, output_format=output_format
+                            )
+                        )
                     )
                     nodes = batch.inputs["graph"]["nodes"]["users"]
                     edges = batch.inputs["graph"]["edges"]["peer"]["index"]

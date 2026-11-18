@@ -73,7 +73,8 @@ def test_self_relation_orientation(engine_name, pk_left, direction, connected):
         plan.materialize(requests) as task,
     ):
         batches = list(
-            task.batches(
+            task.request_batches(
+                requests,
                 batch_size=1,
                 output_format="model" if engine_name == "diskgraph" else "inspectable",
             )

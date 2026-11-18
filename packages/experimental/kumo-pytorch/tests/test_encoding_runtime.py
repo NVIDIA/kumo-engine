@@ -90,12 +90,16 @@ def test_diskgraph_rebuilds_runtime_lookups_from_portable_fitted_state(monkeypat
     ):
         with plan.materialize(requests) as task:
             written = task.fitted_state.to_dict()
-            expected = list(task.batches(batch_size=2, output_format="model"))
-            assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
+            expected = list(task.request_batches(requests, batch_size=2, output_format="model"))
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, output_format="model")), expected
+            )
             assert task.fitted_state.to_dict() == written
             fitted = pickle.loads(pickle.dumps(task.fitted_state))
         assert len(builds) == 1
         with plan.materialize(requests, fitted=fitted) as task:
-            assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
+            assert_same_batches(
+                list(task.request_batches(requests, batch_size=2, output_format="model")), expected
+            )
             assert task.fitted_state.to_dict() == written
         assert len(builds) == 2

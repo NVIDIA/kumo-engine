@@ -152,7 +152,7 @@ def test_field_order_precedes_truncation(binding, monkeypatch, scope, packed, fi
                 if fitted_fingerprint is not None:
                     assert bound.fingerprint == fitted_fingerprint
                 fitted_fingerprint = bound.fingerprint
-                batch = next(task.batches(REQUESTS, batch_size=1))
+                batch = next(task.request_batches(REQUESTS, batch_size=1))
                 tokens = batch.inputs["tokens"]
                 expected_rows = [{"z_first": "US", "a_second": "GB"}]
                 if scope == "event":
@@ -176,7 +176,9 @@ def test_field_order_precedes_truncation(binding, monkeypatch, scope, packed, fi
                             "_adapt_temporal_result",
                             lambda *_: pytest.fail("model output constructed readable records"),
                         )
-                        model = next(task.batches(REQUESTS, batch_size=1, output_format="model"))
+                        model = next(
+                            task.request_batches(REQUESTS, batch_size=1, output_format="model")
+                        )
                     torch.testing.assert_close(model.inputs, batch.inputs)
 
 
@@ -308,7 +310,7 @@ def test_text_pieces_keep_positions_within_field_order(binding, scope):
                 ("inspectable", "model") if engine.name == "diskgraph" else ("inspectable",)
             ):
                 tokens = next(
-                    task.batches(REQUESTS, batch_size=1, output_format=output_format)
+                    task.request_batches(REQUESTS, batch_size=1, output_format=output_format)
                 ).inputs["tokens"]
                 names = ("z_first", "z_first", "a_second") + (
                     ("z_first", "z_first") if scope == "event" else ()

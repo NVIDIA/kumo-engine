@@ -198,7 +198,6 @@ class Task:
 
     def batches(
         self,
-        requests: Sequence[SampleRequest] | None = None,
         *,
         split: str | Collection[str | None] | AllAnchors | None = None,
         batch_size: int | None = None,
@@ -212,14 +211,14 @@ class Task:
         output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
         deduplicate_edges: bool = False,
     ) -> TaskBatches:
-        """Emit batches over this task's anchors, or over requests built in code.
+        """Emit batches over this task's materialized `AnchorTable`.
 
-        Without ``requests``, iterates the materialized anchors of ``split`` — a
-        name, a set of names (``None`` selects anchors with no split), or every
-        anchor when omitted — reading them a chunk at a time
-        so memory follows batch size rather than anchor count. With
-        ``requests``, serves exactly those — the path a request handler or a
-        preview has — through the same fitted state.
+        ``split`` is a name, a set of names (``None`` in the set selects anchors
+        with no split), or every anchor when omitted. Rows are read in chunks.
+        For production loading and benchmarks, use DiskGraph with a Parquet
+        `AnchorTable` and ``output_format="model"`` to select native model iteration
+        for eligible contracts. Use `Task.request_batches` for Python requests,
+        including requests originally supplied for fitting.
 
         Every rank gets the same number of anchors: a short rank is topped up by
         repeating one of its own anchors, and ``Batch.metadata["is_padding"]``
@@ -245,27 +244,20 @@ class Task:
         occurrence of each pair per relation, preserving example isolation.
         """
 
-        if requests is not None and split is not None:
-            raise ValueError("split selects materialized anchors; requests carry their own")
-        if world_size <= 0 or not 0 <= rank < world_size:
-            raise ValueError("rank must identify one member of a positive world size")
-        if world_size > 1 and self.contract.batch.batching.max_tokens is not None:
+        if isinstance(self._anchors, RequestAnchors):
             raise ValueError(
-                "Batching.max_tokens with world_size > 1 is not supported yet: padding "
-                "equalizes anchors per rank, but a token budget makes the number of "
-                "batches depend on lengths, so ranks can take different numbers of steps "
-                "and hang synchronous data-parallel training. Use max_samples only for "
-                "distributed runs until batches are planned globally and assigned whole "
-                "to ranks."
+                "batches() requires a materialized AnchorTable; "
+                "pass Python requests to request_batches(requests)"
             )
+        self._validate_batch_rank(rank, world_size)
         selection = _selection(split)
         if drop_last is None and self.inference:
             drop_last = False  # inference scores every anchor, whatever the training policy
         if chunk_batches <= 0:
             raise ValueError("chunk_batches must be positive")
         config = {
-            "split": describe_selection(selection) if requests is None else None,
-            "requests": None if requests is None else _fingerprint(tuple(requests)),
+            "split": describe_selection(selection),
+            "requests": None,
             "batch_size": batch_size,
             "epoch": epoch,
             "seed": seed,
@@ -285,53 +277,110 @@ class Task:
         if output_format == "columnar":
             config["deduplicate_edges"] = deduplicate_edges
             validate = getattr(self._anchors, "validate_columnar", None)
-            if requests is not None or not callable(validate):
+            if not callable(validate):
                 raise ValueError("columnar output requires materialized DiskGraph anchors")
             validate(self._assembler, selection)
-        if requests is None:
-            self._anchors.count(selection)  # an unknown split is refused now, not mid-iteration
-            max_samples = (
-                batch_size if batch_size is not None else self.contract.batch.batching.max_samples
+        self._anchors.count(selection)  # an unknown split is refused now, not mid-iteration
+        max_samples = (
+            batch_size if batch_size is not None else self.contract.batch.batching.max_samples
+        )
+        if max_samples is None:
+            raise ValueError(
+                "reading materialized anchors requires a batch size: pass batch_size "
+                "or set Batching.max_samples"
             )
-            if max_samples is None:
-                raise ValueError(
-                    "reading materialized anchors requires a batch size: pass batch_size "
-                    "or set Batching.max_samples"
-                )
 
-            def produce() -> Iterator[Batch]:
-                return self._anchor_batches(
-                    selection,
-                    chunk=max_samples * chunk_batches,
-                    batch_size=batch_size,
-                    epoch=epoch,
-                    seed=seed,
-                    shuffle=shuffle,
-                    rank=rank,
-                    world_size=world_size,
-                    drop_last=drop_last,
-                    output_format=output_format,
-                    deduplicate_edges=deduplicate_edges,
-                )
-
-        else:
-            request_list = tuple(requests)
-
-            def produce() -> Iterator[Batch]:
-                return request_batches(
-                    self._assembler,
-                    request_list,
-                    batch_size=batch_size,
-                    epoch=epoch,
-                    seed=seed,
-                    shuffle=shuffle,
-                    rank=rank,
-                    world_size=world_size,
-                    drop_last=drop_last,
-                    output_format=output_format,
-                )
+        def produce() -> Iterator[Batch]:
+            return self._anchor_batches(
+                selection,
+                chunk=max_samples * chunk_batches,
+                batch_size=batch_size,
+                epoch=epoch,
+                seed=seed,
+                shuffle=shuffle,
+                rank=rank,
+                world_size=world_size,
+                drop_last=drop_last,
+                output_format=output_format,
+                deduplicate_edges=deduplicate_edges,
+            )
 
         return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
+
+    def request_batches(
+        self,
+        requests: Sequence[SampleRequest],
+        *,
+        batch_size: int | None = None,
+        epoch: int = 0,
+        seed: int = 0,
+        shuffle: bool = False,
+        rank: int = 0,
+        world_size: int = 1,
+        drop_last: bool | None = None,
+        output_format: Literal["inspectable", "model"] = "inspectable",
+    ) -> TaskBatches:
+        """Batch explicitly supplied Python requests using this task's fitted state.
+
+        Use this for debugging, tests, or small sets of requests supplied at
+        runtime. Requests must be supplied on every call, including when they
+        were used for fitting. Filter the sequence yourself to select a split.
+        This path bypasses native AnchorTable iteration. For population loading
+        and benchmarks, materialize a Parquet `AnchorTable` with DiskGraph and
+        use `Task.batches` with ``output_format="model"``.
+
+        Without shuffling or length bucketing, requests are visited in the order
+        supplied (within each rank), subject to padding and ``drop_last``.
+        """
+
+        self._validate_batch_rank(rank, world_size)
+        if output_format not in {"inspectable", "model"}:
+            raise ValueError("output_format must be 'inspectable' or 'model' for request batches")
+        if drop_last is None and self.inference:
+            drop_last = False
+        request_list = tuple(requests)
+        config = {
+            "split": None,
+            "requests": _fingerprint(request_list),
+            "batch_size": batch_size,
+            "epoch": epoch,
+            "seed": seed,
+            "shuffle": shuffle,
+            "rank": rank,
+            "world_size": world_size,
+            "drop_last": drop_last,
+            "chunk_batches": 8,  # Preserve the saved configuration for explicit-request callers.
+            "output_format": output_format,
+        }
+
+        def produce() -> Iterator[Batch]:
+            return request_batches(
+                self._assembler,
+                request_list,
+                batch_size=batch_size,
+                epoch=epoch,
+                seed=seed,
+                shuffle=shuffle,
+                rank=rank,
+                world_size=world_size,
+                drop_last=drop_last,
+                output_format=output_format,
+            )
+
+        return TaskBatches(produce, task_fingerprint=self.fingerprints["task"], config=config)
+
+    def _validate_batch_rank(self, rank: int, world_size: int) -> None:
+        if world_size <= 0 or not 0 <= rank < world_size:
+            raise ValueError("rank must identify one member of a positive world size")
+        if world_size > 1 and self.contract.batch.batching.max_tokens is not None:
+            raise ValueError(
+                "Batching.max_tokens with world_size > 1 is not supported yet: padding "
+                "equalizes anchors per rank, but a token budget makes the number of "
+                "batches depend on lengths, so ranks can take different numbers of steps "
+                "and hang synchronous data-parallel training. Use max_samples only for "
+                "distributed runs until batches are planned globally and assigned whole "
+                "to ranks."
+            )
 
     def _anchor_batches(
         self,
@@ -464,6 +513,8 @@ def request_batches(
 ) -> Iterator[Batch]:
     """Batches over requests built in code, through ``assembler``'s fitted state."""
 
+    if not requests:
+        return
     anchors = RequestAnchors(requests)
     chosen = list(
         padded_positions(

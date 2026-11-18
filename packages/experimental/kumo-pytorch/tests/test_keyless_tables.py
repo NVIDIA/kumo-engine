@@ -130,7 +130,11 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
         with r.prepare(case.contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
                 batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
+                    iter(
+                        task.request_batches(
+                            case.requests, batch_size=3, output_format=output_format
+                        )
+                    )
                 )
                 assert batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
                 assert batch.inputs["history"]["amount"]["values"].tolist() == [2, 2, 2, 2, 3]
@@ -241,7 +245,11 @@ def test_keyless_constant_only_events(engine_name, output_format):
         with r.prepare(contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
                 batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
+                    iter(
+                        task.request_batches(
+                            case.requests, batch_size=3, output_format=output_format
+                        )
+                    )
                 )
                 assert batch.inputs["history"]["marker"]["values"].tolist() == [1] * 5
 
@@ -302,7 +310,7 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
     dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
     with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+            offline = next(iter(task.request_batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
     served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
     assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
@@ -324,7 +332,9 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     with bound_case(case, engine_name) as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
-                offline = next(iter(task.batches(case.requests, batch_size=1))).inputs["graph"]
+                offline = next(iter(task.request_batches(case.requests, batch_size=1))).inputs[
+                    "graph"
+                ]
                 server = r.ServingAssembler(task.to_artifact())
     rows = fetch(server.rows_spec, server.contract.schema, case.tables, case.requests[0])
     served = server.assemble(rows, case.requests)[0].inputs["graph"]
@@ -371,7 +381,7 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
     with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+            offline = next(iter(task.request_batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
     served = server.assemble({**rows, "events": rows["events"][::-1]}, requests)[0]
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.

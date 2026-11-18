@@ -182,7 +182,9 @@ def test_gnn_handoff_reuses_sampling_and_projected_features(native_task, monkeyp
     plan, task, table = native_task
     source = task._assembler._source
     expected = list(
-        task.batches(task._anchors.fetch(frozenset({"train"}), range(4)), output_format="model")
+        task.request_batches(
+            task._anchors.fetch(frozenset({"train"}), range(4)), output_format="model"
+        )
     )
 
     def unexpected(*args, **kwargs):
@@ -263,7 +265,9 @@ def test_native_single_split_padding_keeps_columnar_batch_path(
     task = plan.materialize(replace(table, split=None), fitted=original.fitted_state)
     requests = task._anchors.fetch(api.ALL_ANCHORS, range(7))
     expected = [
-        list(task.batches(requests, rank=rank, world_size=world_size, output_format="model"))
+        list(
+            task.request_batches(requests, rank=rank, world_size=world_size, output_format="model")
+        )
         for rank in range(world_size)
     ]
 
@@ -421,7 +425,7 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
         with plan.materialize(table, fit_split="train") as task:
             assert isinstance(task._anchors, NativeAnchors)
             requests = task._anchors.fetch(frozenset({"train"}), range(4))
-            expected = list(task.batches(requests, output_format="model"))
+            expected = list(task.request_batches(requests, output_format="model"))
             source = task._assembler._source
             sampler = source._sampler
 
@@ -479,7 +483,9 @@ def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
         with plan.materialize(table, fit_split="train") as task:
             requests = task._anchors.fetch(frozenset({"train"}), range(4))
             expected = list(
-                task.batches(requests, rank=rank, world_size=world_size, output_format="model")
+                task.request_batches(
+                    requests, rank=rank, world_size=world_size, output_format="model"
+                )
             )
             source = task._assembler._source
 
