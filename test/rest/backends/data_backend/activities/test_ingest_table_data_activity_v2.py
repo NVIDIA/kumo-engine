@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
 import sys
 import traceback
 import uuid
@@ -45,6 +46,7 @@ from statedb.config.common import ConnectorID
 from statedb.utils.errors import (
     IdentityResolutionUnavailableError,
     TableIngestionError,
+    TableIngestionFileDescriptorLimitError,
     TableIngestionOutOfMemoryError,
 )
 
@@ -360,6 +362,85 @@ def test_oom_export_failure_preserves_specific_nonretryable_error():
     assert caught.value.non_retryable is True
     assert caught.value.message == oom_message
     assert caught.value.__cause__ is None
+
+
+def test_descriptor_exhaustion_raises_retryable_error_with_limit(caplog):
+    """kumo#395: an EMFILE buried in the connector failure's cause chain is
+    translated to a retryable, descriptor-specific error that names the soft
+    open-file limit, instead of flattening to the generic ingestion error that
+    points the user at their data."""
+    provider_secret = 'descriptor-provider-token-must-never-escape'
+    os_error = OSError(errno.EMFILE, 'Too many open files')
+    try:
+        raise RuntimeError(provider_secret) from os_error
+    except RuntimeError as wrapped:
+        connector_failure = wrapped
+
+    with _activity_patches() as patches:
+        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
+            = ValidationResponse()
+        patches['activity'].info.return_value.workflow_id = 'test_wf_id'
+        patches['get_connector_from_spec'].side_effect = connector_failure
+        table, connector_spec = _table_and_connector_spec()
+
+        with mock.patch.object(activity_module.resource, 'getrlimit',
+                               return_value=(1024, 4096)):
+            with pytest.raises(
+                    TableIngestionFileDescriptorLimitError) as caught:
+                ingest_table_data_activity_v2(connector_spec, table, 'v1',
+                                              'job_id',
+                                              mock.Mock(spec=DeployEnvConfig))
+
+    assert caught.value.http_code == 503
+    assert caught.value.non_retryable is False
+    assert str(errno.EMFILE) in caught.value.message
+    assert '1024' in caught.value.message
+    assert caught.value.__cause__ is None
+    # The sanitized log line carries the errno but never the provider text.
+    assert f'errno={errno.EMFILE}' in caplog.text
+    assert provider_secret not in caplog.text
+    assert provider_secret not in caught.value.message
+
+
+def test_enfile_in_cause_chain_is_also_translated():
+    """ENFILE (system-wide descriptor limit) is treated the same as EMFILE."""
+    connector_failure = RuntimeError('wrapped export failure')
+    connector_failure.__cause__ = OSError(errno.ENFILE, 'file table overflow')
+
+    with _activity_patches() as patches:
+        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
+            = ValidationResponse()
+        patches['activity'].info.return_value.workflow_id = 'test_wf_id'
+        patches['get_connector_from_spec'].side_effect = connector_failure
+        table, connector_spec = _table_and_connector_spec()
+
+        with pytest.raises(TableIngestionFileDescriptorLimitError) as caught:
+            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
+                                          mock.Mock(spec=DeployEnvConfig))
+
+    assert str(errno.ENFILE) in caught.value.message
+    assert caught.value.non_retryable is False
+
+
+def test_unrelated_oserror_is_not_treated_as_descriptor_exhaustion():
+    """An OSError with a non-descriptor errno stays a generic, retried
+    ingestion failure -- the descriptor path must not capture every OSError."""
+    connector_failure = OSError(errno.ENOENT, 'No such file or directory')
+
+    with _activity_patches() as patches:
+        patches['IngestionValidator'].return_value.pre_ingestion.return_value \
+            = ValidationResponse()
+        patches['activity'].info.return_value.workflow_id = 'test_wf_id'
+        patches['get_connector_from_spec'].side_effect = connector_failure
+        table, connector_spec = _table_and_connector_spec()
+
+        with pytest.raises(TableIngestionError) as caught:
+            ingest_table_data_activity_v2(connector_spec, table, 'v1', 'job_id',
+                                          mock.Mock(spec=DeployEnvConfig))
+
+    assert caught.value.message == (
+        activity_module.SAFE_TABLE_INGESTION_ERROR_MESSAGE)
+    assert not isinstance(caught.value, TableIngestionFileDescriptorLimitError)
 
 
 def test_timestamp_inference_provider_failure_is_sanitized(caplog):

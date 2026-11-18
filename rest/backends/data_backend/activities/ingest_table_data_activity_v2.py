@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
+import resource
 from datetime import datetime, timezone
 from typing import NoReturn, Tuple
 
@@ -54,6 +56,7 @@ from statedb.utils.errors import (
     IdentityResolutionUnavailableError,
     IdentityValidationError,
     TableIngestionError,
+    TableIngestionFileDescriptorLimitError,
     TableIngestionOutOfMemoryError,
 )
 from temporalio_commons.error_utils import (
@@ -77,8 +80,15 @@ _SAFE_INGESTION_PUBLIC_ERRORS = (
     ConnectorValidationError,
     IdentityResolutionUnavailableError,
     IdentityValidationError,
+    TableIngestionFileDescriptorLimitError,
     TableIngestionOutOfMemoryError,
 )
+
+# File-descriptor exhaustion errnos: EMFILE is the per-process open-file limit,
+# ENFILE the system-wide one. Either names a transient resource limit rather
+# than a data or schema problem, so it is translated to a retryable public
+# error that reports the errno and the current RLIMIT_NOFILE soft limit.
+_DESCRIPTOR_LIMIT_ERRNOS = frozenset((errno.EMFILE, errno.ENFILE))
 
 # Composed from the error's TYPE and its own numeric fields, never from its
 # text: these types are also reached by translating a vendor exception, whose
@@ -135,6 +145,43 @@ def _safe_source_error_message(
     return template.format(**{**vars(error), 'table': name})
 
 
+def _descriptor_limit_errno(error: BaseException) -> int | None:
+    """Return the EMFILE/ENFILE errno if descriptor exhaustion caused ``error``.
+
+    Connectors surface an out-of-descriptors failure as an ``OSError`` buried in
+    the cause chain under a connector-specific wrapper, so walk ``__cause__``
+    and ``__context__`` (bounded, loop-guarded) looking for one.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    depth = 0
+    while current is not None and depth < 20 and id(current) not in seen:
+        seen.add(id(current))
+        if (isinstance(current, OSError)
+                and current.errno in _DESCRIPTOR_LIMIT_ERRNOS):
+            return current.errno
+        current = current.__cause__ or current.__context__
+        depth += 1
+    return None
+
+
+def _file_descriptor_limit_error(
+    errno_value: int, ) -> TableIngestionFileDescriptorLimitError:
+    """Build the retryable descriptor-exhaustion error from numeric fields only.
+
+    The message names the errno and the current ``RLIMIT_NOFILE`` soft limit --
+    neither is sensitive -- and never the provider exception text, keeping the
+    error safe to propagate through the ingestion sanitizer verbatim.
+    """
+    soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    return TableIngestionFileDescriptorLimitError(message=(
+        'Kumo ran out of open file descriptors while staging a source '
+        f'table (errno {errno_value} {errno.errorcode[errno_value]}; '
+        f'open-file soft limit {soft_limit}). This is a transient '
+        'resource limit, not a problem with your data. Re-run the ingest; '
+        'if it persists, contact Kumo support.'))
+
+
 def _is_non_retryable(error: Exception) -> bool:
     """``is_error_non_retryable`` sees a plain ``Exception`` and calls every
     one of them retryable, so a missing grant would be retried until the
@@ -150,9 +197,16 @@ def _raise_sanitized_table_ingestion_error(
     table: TableDefinition | None = None,
 ) -> NoReturn:
     public_error = extract_public_exception(error)
-    log.error('Table ingestion failed (error_type=%s)', type(error).__name__)
+    errno_value = _descriptor_limit_errno(error)
+    log.error(
+        'Table ingestion failed (error_type=%s%s)',
+        type(error).__name__,
+        f' errno={errno_value}' if errno_value is not None else '',
+    )
     if isinstance(public_error, _SAFE_INGESTION_PUBLIC_ERRORS):
         raise public_error from None
+    if errno_value is not None:
+        raise _file_descriptor_limit_error(errno_value) from None
     message = None
     if isinstance(error, SourceError):
         message = _safe_source_error_message(error, table)
