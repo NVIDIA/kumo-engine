@@ -118,9 +118,10 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     or an absolute external extension path for a read-only base index. External
     paths require finalized index metadata; the native reader validates it.
     """
-    abs_parent = os.path.abspath(parent_root.rstrip("/"))
-    abs_stage = os.path.abspath(stage_index_path.rstrip("/"))
-    parent, stage = Path(abs_parent).resolve(), Path(abs_stage).resolve()
+    # Resolve symlinks before collapsing '..', so validation and native opening
+    # both select the directory identified by the original filesystem path.
+    parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
+    abs_parent, abs_stage = str(parent), str(stage)
     if stage == parent:
         raise DiskgraphConfigError("stage index_path must identify an extension, not the base")
     for extension_dir in ("train_tables", "pred_tables"):
