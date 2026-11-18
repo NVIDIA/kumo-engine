@@ -6,6 +6,7 @@ use crate::consts::*;
 use crate::mapping::{KeyType, PkPtrHashOutput};
 use gxhash::GxHasher;
 use memmap2::Mmap;
+use ptr_hash::PtrHashScratch;
 use std::fs;
 use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
@@ -19,8 +20,103 @@ pub struct EdgeMapScratch {
 pub type PkMapHasher = BuildHasherDefault<GxHasher>;
 pub type PkMapHashMap<K, V> = std::collections::HashMap<K, V, PkMapHasher>;
 
-pub fn new_pk_map<K, V>(capacity: usize) -> PkMapHashMap<K, V> {
-    std::collections::HashMap::with_capacity_and_hasher(capacity, Default::default())
+pub fn new_pk_map<K, V>() -> PkMapHashMap<K, V> {
+    std::collections::HashMap::with_hasher(Default::default())
+}
+
+pub struct PkMapScratch {
+    pub seen_u64: PkMapHashMap<u64, u32>,
+    pub seen_uuid: PkMapHashMap<[u8; 16], u32>,
+    pub seen_uuid256: PkMapHashMap<[u8; 32], u32>,
+    pub seen_ip: PkMapHashMap<[u8; 16], u32>,
+    pub seen_bytes: PkMapHashMap<Vec<u8>, u32>,
+    pub entries: Vec<(u64, u32)>,
+    pub ptrhash: PtrHashScratch<PkPtrHashOutput>,
+}
+
+impl PkMapScratch {
+    pub fn new() -> Self {
+        Self {
+            seen_u64: new_pk_map(),
+            seen_uuid: new_pk_map(),
+            seen_uuid256: new_pk_map(),
+            seen_ip: new_pk_map(),
+            seen_bytes: new_pk_map(),
+            entries: Vec::new(),
+            ptrhash: PtrHashScratch::new(),
+        }
+    }
+
+    pub fn clear_others_for(&mut self, key_type: KeyType) {
+        match key_type {
+            KeyType::Int64 => {
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::VarBytes => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Uuid256 => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_ip.clear();
+                self.seen_ip.shrink_to_fit();
+            }
+            KeyType::Ip => {
+                self.seen_u64.clear();
+                self.seen_u64.shrink_to_fit();
+                self.seen_bytes.clear();
+                self.seen_bytes.shrink_to_fit();
+                self.seen_uuid.clear();
+                self.seen_uuid.shrink_to_fit();
+                self.seen_uuid256.clear();
+                self.seen_uuid256.shrink_to_fit();
+            }
+        }
+    }
+}
+
+impl Default for PkMapScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V, S: std::hash::BuildHasher>(
+    map: &mut std::collections::HashMap<K, V, S>,
+    target: usize,
+) {
+    let cap = map.capacity();
+    if cap < target {
+        map.reserve(target - cap);
+    }
 }
 
 fn pk_map_entry_size(key_type: KeyType) -> u64 {
