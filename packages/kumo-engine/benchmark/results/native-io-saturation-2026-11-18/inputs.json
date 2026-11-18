@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "status": "DRAFT_ACTUAL_INPUTS_QUALIFIED_FORMAL_RESULTS_PENDING",
+  "scope": "New host/data epoch input qualification only. Pilot timing values are excluded; no old/new pooling or performance claims.",
+  "boot_id": "93728ba8-74c0-44d4-9547-f844fe95b0a7",
+  "source": {
+    "candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+    "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+    "native_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+    "ingest_sha256": "074c95e4702d0df4c6bc53d26786e55e3bc6735ff20bbdf2242ca8e4d9d13fb7"
+  },
+  "input_proofs": {
+    "runtime/runtime-qualification.json": "8c5b1d21903be92a95dadb65b40b8a2b8db7942001f74ce5826d0dfaa6d0e553",
+    "data/data-qualification.json": "c5a85739cd4b6643d8fae548b6ae97bbdc0f4e620dd5eba64a6ed1fd5d70018a",
+    "templates/template-oracles.json": "b98a886cbb3544c7d60ba776bbd63f12c1303675bcbb584672ac537619095b78",
+    "templates/pilots-qualification.json": "f4c1a028580e01561f228d53684f6f20d55c230858375d34e3ff4a08f8514617",
+    "templates/pilots-terminal.json": "db326661a03af97a76d882d1f0f272882928fbc3ca53593ebf67becbc2dce9f1",
+    "fixture/qualification-live-v2/proof.json": "c1054f0861ed80bc3e65c22bf741fa0da92462f79ba045be18795a18ff1e8544",
+    "fixture/qualification-live-v2/retained-manifest.json": "09ed3f8adbeef337d56168dbe1c5dcf4c344bb0618a2164b4ae959d64568f1e7",
+    "fixture/fixture-qualification.json": "465a5bc4f0a0ed0e5a46d2b11564660d942d44017da7e616e6c8c2b22804e486",
+    "fixture/independent-inputs-review.json": "f968a08cb99539b685ef96c506e6d473f984653c6ab71b88230b7e50a5c67ff2"
+  },
+  "templates": [
+    {
+      "path": "templates/binary-constrained-full-pilot-v1/binary-constrained-0-buffered.json",
+      "sha256": "6bd1e1d3b8d0f680d7e248d2cc15b4f359a33a0bf33fefd706906b4471a29fee"
+    },
+    {
+      "path": "templates/binary-constrained-full-pilot-v1/binary-constrained-0-direct.json",
+      "sha256": "042badc4b84aa00b032ef9e16163af7ca2bc90a37b52c37afdc2f5d776cd49ed"
+    },
+    {
+      "path": "templates/binary-constrained-full-pilot-v1/binary-constrained-0-mmap.json",
+      "sha256": "85c6f7a005d96bcfe718c6918963d8e81bc06aa40afc2d3d89fc9db4630bcb67"
+    },
+    {
+      "path": "templates/binary-resident-full-pilot-v1/binary-resident-0-buffered.json",
+      "sha256": "a38ace00a3ad4456e410bb6b2cf70777c472d19ca6e03a6dbc95072c32ad8cbf"
+    },
+    {
+      "path": "templates/binary-resident-full-pilot-v1/binary-resident-0-direct.json",
+      "sha256": "b7fea228b3d0b7d4eb715763ca9ffd198b1f8b13686c60ca1313903d910697c5"
+    },
+    {
+      "path": "templates/binary-resident-full-pilot-v1/binary-resident-0-mmap.json",
+      "sha256": "06ae58f2512a9d1819aa2a56980f4c01a90666290f498743993b98b6dcd7b061"
+    },
+    {
+      "path": "templates/temporal_link-constrained-full-pilot-v1/temporal_link-constrained-0-buffered.json",
+      "sha256": "129ce6e26cfd416f1fb96bcfcbdc8cab04603217bdcd0f7f42383fa7eab4a9a4"
+    },
+    {
+      "path": "templates/temporal_link-constrained-full-pilot-v1/temporal_link-constrained-0-direct.json",
+      "sha256": "03818af81dd5ecd08922fb77df4983e41e4503b183209c7e92a201fe6ca4cbb1"
+    },
+    {
+      "path": "templates/temporal_link-constrained-full-pilot-v1/temporal_link-constrained-0-mmap.json",
+      "sha256": "98d4194473153cfb2ccce145f6d194bdcb3b3710d5d260c654c54d35176bae3f"
+    }
+  ],
+  "within_epoch_parity": {
+    "status": "PASS: unchanged validate_work/validate_predictions, prediction tolerance1e-6; binary also compared across cold/resident",
+    "binary_logical_seed": "098b907acfdec6bdfff0e06e93676da48cb8b9fe6e36a481c5c749477ab9a28f",
+    "temporal_link_logical_seed": "aace8b830cbce6f73b81a47f5cb441ee68fcb3bf76e81b4e32dff4f5670afbc3",
+    "old_oracles_reused": false,
+    "prepared_namespaces": "New epoch; original source4716Parquet hashes exact, physical shard layouts restored5/5/6; original committed metadata and this epoch’s initial28-shard diagnostics retained; lost volatile evidence remains unavailable."
+  },
+  "full_work_resources": {
+    "scalar_batches_and_updates": 1280,
+    "temporal_link_batches": 256,
+    "temporal_link_updates": 512,
+    "prediction_rows": 2048,
+    "batch_size": 256,
+    "model_seed": 0,
+    "order_seed": 20261109,
+    "workers": 0,
+    "rayon_threads": 4,
+    "torch_threads": 1,
+    "cpus": "5-9,15-19",
+    "memory_gib": {
+      "constrained": 4,
+      "resident": 64
+    },
+    "swap_bytes": 0,
+    "direct_cache_gib": {
+      "binary_cold": 2,
+      "binary_resident": 16,
+      "temporal_link_cold": 1
+    },
+    "io_rings": 8,
+    "io_qd": 256,
+    "io_batch_mult": 1,
+    "observed_training_floor_seconds": 30,
+    "constrained_pressure_required": true,
+    "actual_limits_validated": true
+  },
+  "known_read_v2": {
+    "status": "PASS_KNOWN_READ_AND_EMPTY_FLUSH",
+    "contract_version": 2,
+    "known_reads": 256,
+    "known_bytes": 1048576,
+    "pure_target_write_pairs": 32,
+    "pid_bound_empty_fsync_entries": 32,
+    "device_wide_data_chains": 99,
+    "data_chain_cgroup_counts": {
+      "1": 99
+    },
+    "data_scope": "Device-wide DATA chains only; no target-owned or journal causal attribution",
+    "strict_raw_replay": "PASS;12markers,13zero diagnostics, exact lifecycle identities and fully drained maps",
+    "v1_lineage": "V1 remains FAIL_NOT_ACCEPTED and immutable: parent-dirtied buffered file had different BIO ownership; v2 separates controlled target writes from device-wide DATA path"
+  },
+  "fixture": {
+    "status": "PASS_OWNED_FIXTURE_CRC_SHA",
+    "path": "fixture/fio-owned-8g-crc32c.bin",
+    "sha256": "6a0645c6e5430a7d719e5f2a08371d17bfe7a7c739e7dc23f32101240e1e9084",
+    "bytes": 8589934592,
+    "crc": "PASS; singlejob,error0,read.io_bytes8589934592",
+    "before_after_sha_equal": true,
+    "current_inode_identity_checked": true,
+    "independent_review_rehashed_8gib": false
+  },
+  "thermal": {
+    "source": "tools/native_io_ceiling.py",
+    "sha256": "85a744af38ed259e1aac9ed12210b4796c9062bf9a85242295f225a2f3c1d660",
+    "retention": "Full SMART JSON before/after every trial, initial hostSMART",
+    "final_analysis": "Inspect health and transition count/time/duration deltas, including ungated fields. Between-snapshot peak temperatures remain unobserved.",
+    "current_throttle_absence_claim": false
+  },
+  "archive_plan": {
+    "path": "public-inputs/raw-replay-archive-plan.json",
+    "sha256": "57b414ebc3a5718dadcb3dd699df2ba84f5cb48f9d129fc7b8faa85c99319e0a"
+  },
+  "pending": [
+    "Final core native validation and signed input checkpoint",
+    "Fresh host/source/runtime/data/fixture identity snapshot immediately before capture",
+    "Root-reviewed inert principal sealing and explicit single-owner measurement GO",
+    "Repeated fio hardware curve, CPU/offCPU profiles and principal70 physical/application IOPS results",
+    "Full raw replay/archive sealing after finite measurements; no performance conclusion yet"
+  ]
+}

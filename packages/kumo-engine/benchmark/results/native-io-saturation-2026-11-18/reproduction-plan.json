@@ -39,12 +39,12 @@
     },
     "feature_width": 256,
     "generator_repository_path": "packages/kumo-engine/benchmark/native_io_tasks.py",
-    "old_vs_new_source_hashes": "Compare each generated source Parquet against historical relative-path SHA oracles. Record all 1572 comparisons per task and preserve every difference; do not silently claim byte equality.",
+    "old_vs_new_source_hashes": "All 4716 source Parquet files (1572 per task) matched historical relative-path SHA oracles exactly. Prepared snapshot namespaces are new; 5/5/6 physical shard layouts were restored using supported CPU-affinity controls.",
     "prediction_entities": 2048,
-    "prepared_oracle": "Generate new complete pristine owned-file manifests, source/config hashes and snapshot identifiers. Retain old prepared oracles as historical information, not acceptance authority for new data.",
+    "prepared_oracle": "New complete pristine manifests/layouts and actual within-epoch full-work references qualified. Original committed metadata and the initial 28-shard regeneration diagnostics remain; lost volatile evidence remains unavailable.",
     "scale": 768,
     "seed": 0,
-    "status": "QUALIFIED_SOURCE_BYTES_AND_SELECTED_LAYOUT_NEW_ORACLES_PENDING",
+    "status": "QUALIFIED_SOURCE_BYTES_SELECTED_LAYOUT_AND_NEW_FULL_WORK_ORACLES",
     "tasks": [
       "binary",
       "regression",
@@ -127,7 +127,15 @@
     "order": "Source-defined rotated/reversed order.",
     "ramp_seconds": 10,
     "repetitions_per_configuration": 5,
-    "status": "PENDING"
+    "status": "PENDING",
+    "fixture_qualification": {
+      "status": "PASS_OWNED_FIXTURE_CRC_SHA",
+      "sha256": "6a0645c6e5430a7d719e5f2a08371d17bfe7a7c739e7dc23f32101240e1e9084",
+      "bytes": 8589934592,
+      "crc": "PASS; single job, error 0, read.io_bytes 8589934592; complete SHA before/after validation and current identity match",
+      "proof": "inputs.json:input_proofs.fixture/fixture-qualification.json"
+    },
+    "thermal_analysis": "Use retained full before/after pertrial SMART; inspect all available health and transition count/time/duration deltas, including fields outside existing thermal gates. Between-snapshot peak temperatures remain unobserved."
   },
   "epoch": "2026-11-18-post-reboot",
   "launch_and_retention_gates": [
@@ -160,7 +168,7 @@
     {
       "deliverable": "Regenerated source/prepared data, fio fixture, new full-work template oracles and collector smoke qualification",
       "phase": 2,
-      "state": "DATA_QUALIFIED_OTHER_INPUTS_PENDING"
+      "state": "INPUTS_QUALIFIED_PENDING_SIGNED_CHECKPOINT"
     },
     {
       "deliverable": "Fresh drive curve, two full actual profiles, principal70 matrix, independent raw replay, report/CSV/plots and action plan",
@@ -245,11 +253,12 @@
   "runtime_summary": "rebuild.json",
   "schema_version": 1,
   "source_pins": {
-    "ceiling_checkout": "3259b1ad409dba05af0c0cc7566d4740d1e9b623",
+    "ceiling_checkout": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
     "measurement_tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
     "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
     "native_source_tree": "48609409d3b847005d2069e263c42e18491f0f42",
-    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a"
+    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+    "historical_ceiling_recipe": "3259b1ad409dba05af0c0cc7566d4740d1e9b623"
   },
   "source_plan": {
     "artifact_root_variable": "ARTIFACT_ROOT",
@@ -257,8 +266,8 @@
     "relative_path": "recovery/durable-plan.json",
     "sha256": "6548db42d959793b969df54ca11d210934bb1233f447b9b2250793cd5e39dd75"
   },
-  "source_plan_qualification": "The retained local plan predates runtime qualification. This public plan resolves runtime status and explicitly includes the nine new full-work pilot template cells; later execution plans must record all actual paths and qualified hashes.",
-  "status": "INERT_DATA_QUALIFIED_PENDING_TEMPLATE_FIXTURE_AND_COLLECTOR_QUALIFICATION",
+  "source_plan_qualification": "The retained local source plan predates runtime/input qualification. inputs.json pins the qualified runtime, data, nine full-work oracles, v2 smoke and fixture. Execution awaits the signed checkpoint, fresh preflight and root GO. The actual dcef ceiling driver matches the historical 3259 recipe byte for byte and must report dcef provenance.",
+  "status": "INERT_INPUTS_QUALIFIED_PENDING_SIGNED_CHECKPOINT_FRESH_PREFLIGHT_AND_ROOT_GO",
   "template_qualification": {
     "acceptance": "Unchanged validator must establish native/config identity, equal logical seeded work/layout/model/predictions within each relevant new group and across compatible regimes. No shortened workload, old golden substitution, or source-level acceptance relaxation.",
     "backends": [
@@ -294,6 +303,36 @@
     "pilot_cells": 9,
     "pilot_claim": "Reference/oracle qualification only; n=1 pilots are not the five-pair performance result.",
     "repetitions": 1,
-    "status": "PENDING"
+    "status": "PASS_NINE_FULL_WORK_TEMPLATE_ORACLES",
+    "qualified_reference": "inputs.json:templates and within_epoch_parity; all nine actual new-epoch row hashes, work/prediction parity and effective limits qualified without old golden substitution."
+  },
+  "collector_smoke_qualification": {
+    "status": "PASS_KNOWN_READ_AND_EMPTY_FLUSH",
+    "contract_version": 2,
+    "target_reads": 256,
+    "target_read_bytes": 1048576,
+    "controlled_pure_target_write_pairs": 32,
+    "pid_bound_empty_fsync_entries": 32,
+    "device_wide_data_chains": 99,
+    "scope": "Device-wide DATA chains only; no target-owned flush-DATA or journal causal attribution",
+    "raw_validation": "Unchanged strict replay: twelve markers, thirteen zero diagnostics, exact identities and fully drained maps",
+    "v1_lineage": "Original v1 remains failed and immutable; buffered write BIO ownership differed from caller identity. V2 first dirties its controlled write file in the payload and independently qualifies global DATA lifecycle.",
+    "proof": "inputs.json:input_proofs.fixture/qualification-live-v2/proof.json"
+  },
+  "qualified_inputs": {
+    "summary": "inputs.json",
+    "sha256": "378cf87688e1acb8073e1864e94f947137e55e8b6078bf83ea38140b2cd27ca4",
+    "template_oracles_sha256": "b98a886cbb3544c7d60ba776bbd63f12c1303675bcbb584672ac537619095b78",
+    "pilot_qualification_sha256": "f4c1a028580e01561f228d53684f6f20d55c230858375d34e3ff4a08f8514617",
+    "collector_v2_sha256": "c1054f0861ed80bc3e65c22bf741fa0da92462f79ba045be18795a18ff1e8544",
+    "fixture_qualification_sha256": "465a5bc4f0a0ed0e5a46d2b11564660d942d44017da7e616e6c8c2b22804e486",
+    "timing_scope": "Nine n=1 pilots qualify correctness oracles; repeated formal metrics remain pending. The copied input draft predates final core validation; this reproduction plan records current phase status."
+  },
+  "core_followup_validation": {
+    "source_commit": "a45b767535a99792826c2612a07b3d7841d4e589",
+    "native_python_checks": "60 passed; actual loaded native/source equivalence qualified",
+    "external_serial_smoke": "8 passed; serial scope only",
+    "external_parallel_probe": "PENDING observational investigation; not an input qualification blocker",
+    "profiled_candidate": "Published candidate 0fe02c1 remains pinned; followup validation does not change the measured application revision."
   }
 }
