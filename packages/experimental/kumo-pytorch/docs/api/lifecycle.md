@@ -144,8 +144,8 @@ A readable multi-line summary of the contract.
 ```python
 def check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -169,14 +169,18 @@ The whole contract must still be well formed.
 ```python
 def prepare(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     inference: bool = False,
 ) -> Plan
 ```
 
-Validate, then bind the dataset through the engine.
+Validate, then bind sources or an existing index through the engine.
+
+Omit `dataset` only for a DiskGraphEngine created with `from_index` or
+`from_snapshot`. Its stored schema supplies omitted types; it never reads
+the original sources or rebuilds the base. `engine` is always required.
 
 Every check that does not need data happens first, so an unexecutable
 combination is refused before a row is read. Anchors, and everything fitted
@@ -221,7 +225,7 @@ Called as `preview(task, requests)` or
 ```python
 class Plan(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
     source: SampleSource,
     *,
