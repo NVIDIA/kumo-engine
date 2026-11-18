@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import sys
 import warnings
 from dataclasses import field
 from enum import Enum
@@ -248,6 +249,8 @@ _SHM_BYTES_PER_WORKER = 256 * 1024**2
 
 
 def _dev_shm_bytes() -> int | None:
+    if sys.platform != 'linux':
+        return None
     try:
         stat = os.statvfs('/dev/shm')
     except OSError:

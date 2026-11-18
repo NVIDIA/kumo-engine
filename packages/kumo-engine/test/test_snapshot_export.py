@@ -10,6 +10,7 @@ import shutil
 import threading
 import warnings
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
@@ -90,11 +91,16 @@ def _load(exports, location, **kwargs):
     return GraphSnapshot.load_from_connector(exports, path=location, **kwargs)
 
 
-@pytest.mark.parametrize('fallocate', [True, False])
+@pytest.mark.parametrize('portable', [False, True])
 def test_export_load_round_trip_relocates_and_is_reused(
-        tmp_path, scratch, graph, exports, monkeypatch, fallocate):
-    if not fallocate:  # As on macOS, which has no posix_fallocate.
-        monkeypatch.delattr(os, 'posix_fallocate', raising=False)
+        tmp_path, scratch, graph, exports, monkeypatch, portable):
+    if portable:
+        # Linux's disk_usage uses statvfs internally; Windows uses its native
+        # disk-space API. Keep that stdlib boundary available in this simulation.
+        disk = shutil.disk_usage(tmp_path)
+        monkeypatch.setattr(snapshot_io.shutil, 'disk_usage', lambda path: disk)
+        for name in ('statvfs', 'pwrite', 'posix_fallocate'):
+            monkeypatch.delattr(os, name, raising=False)
     monkeypatch.setattr(snapshot_io, '_CHUNK', 1024)
     monkeypatch.setattr(snapshot_io, '_RANGE_BYTES', 4096)
     snapshot = graph.snapshot()
@@ -438,12 +444,55 @@ def test_load_refuses_before_downloading_when_disk_is_too_small(
         tmp_path, scratch, graph, exports, monkeypatch):
     location, _ = _export(graph.snapshot(), exports, tmp_path)
     scratch('gpu')
-    monkeypatch.setattr(snapshot_io.os, 'statvfs',
-                        lambda path: SimpleNamespace(f_frsize=1, f_bavail=0))
+    monkeypatch.setattr(snapshot_io.shutil, 'disk_usage',
+                        lambda path: SimpleNamespace(free=0))
     monkeypatch.setattr(snapshot_io, '_download',
                         Mock(side_effect=AssertionError('downloaded')))
     with pytest.raises(OSError, match='free bytes'):
         _load(exports, location)
+
+
+def test_parallel_ranges_preserve_binary_bytes(tmp_path, monkeypatch):
+    source = tmp_path / 'source/index'
+    source.mkdir(parents=True)
+    payload = bytes(range(256)) * 97 + b'\r\n\x1a\n'
+    (source / 'data').write_bytes(payload)
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    (staging / 'data').write_bytes(b'\x00' * len(payload))
+    monkeypatch.delattr(os, 'pwrite', raising=False)
+    monkeypatch.setattr(snapshot_io, '_CHUNK', 257)
+    stop = threading.Event()
+    ranges = [('data', offset, min(1021, len(payload) - offset))
+              for offset in range(0, len(payload), 1021)]
+
+    def download(item):
+        snapshot_io._download(str(source.parent), staging, LocalFileSystem(),
+                              item, stop)
+
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        list(workers.map(download, reversed(ranges)))
+
+    assert (staging / 'data').read_bytes() == payload
+
+
+@pytest.mark.parametrize('free', [0, 1024])
+def test_portable_allocation_checks_free_space(tmp_path, monkeypatch, free):
+    for name in ('statvfs', 'posix_fallocate'):
+        monkeypatch.delattr(os, name, raising=False)
+    monkeypatch.setattr(snapshot_io.shutil, 'disk_usage',
+                        lambda path: SimpleNamespace(free=free))
+    staging = tmp_path / 'staging'
+    files = [('nested/data', 1024), ('empty', 0)]
+
+    if free < 1024:
+        with pytest.raises(OSError, match='1024 free bytes'):
+            snapshot_io._allocate(staging, files)
+        assert list(staging.iterdir()) == []
+    else:
+        snapshot_io._allocate(staging, files)
+        assert (staging / 'nested/data').stat().st_size == 1024
+        assert (staging / 'empty').stat().st_size == 0
 
 
 @pytest.mark.parametrize('index, edit', [
