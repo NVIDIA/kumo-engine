@@ -91,8 +91,8 @@ async function sidebar(frame, side, visible) {
   if (await area.isVisible() === visible) return;
   await frame.getByRole('menuitem', { name: /^View$/ }).click();
   await frame.locator('.lm-Menu:visible').getByText('Appearance', { exact: true }).hover();
-  await frame.getByRole('menuitemcheckbox', {
-    name: new RegExp(`^Show ${side} Sidebar(?:\\s|$)`),
+  await frame.locator('.lm-Menu:visible').getByText(`Show ${side} Sidebar`, {
+    exact: true,
   }).click();
   await area.waitFor({ state: visible ? 'visible' : 'hidden' });
 }
