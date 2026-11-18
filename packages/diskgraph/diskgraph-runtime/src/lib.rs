@@ -1257,7 +1257,8 @@ pub struct RuntimeIndex {
 }
 impl RuntimeIndex {
     /// Open the graph and a seed extension, by legacy reference or absolute path.
-    /// Absolute paths allow task storage outside a read-only graph index.
+    /// Absolute paths are passed to the index reader without placement checks;
+    /// callers validate their location, including any read-only base policy.
     pub fn new(
         parent_root: String,
         tt_id: String,
