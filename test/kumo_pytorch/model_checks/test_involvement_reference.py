@@ -1,19 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Hand-computed witnesses for the independent task reference itself."""
 
+import math
 from copy import deepcopy
 from datetime import datetime, timezone
-import math
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
-
 from test.kumo_pytorch.involvement import (
     binary_evaluation,
     expected_anchor,
     source_reference,
     verify_anchors,
 )
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
 
 T = int(datetime(2024, 3, 1, tzinfo=timezone.utc).timestamp())
 DAY = 86400

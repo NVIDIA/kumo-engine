@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Real Kumo-emitted tiny batches; no AWS, Arena imports or full AML run."""
 
 import json
@@ -5,13 +9,13 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from test.kumo_pytorch.contracts import build_contract
+from test.kumo_pytorch.models.aml import build_model
 
-import kumo.pytorch.api as r
 import pytest
 import torch
 
-from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.models.aml import build_model
+import kumo.pytorch.api as r
 
 from .fixtures import build_fixture, probe_anchor_table
 
@@ -131,7 +135,9 @@ def test_model_construction_is_deterministic_and_does_not_reset_caller_rng(fitte
 def check_graph_v2_clock_and_tensor_adapter_parity(fitted):
     task, batch, selection, family = fitted
     model = build_model(task, selection, family, dim=8).eval()
-    from test.kumo_pytorch.models.graph_sequence_aggregates import KumoFusionAdapter
+    from test.kumo_pytorch.models.graph_sequence_aggregates import (
+        KumoFusionAdapter,
+    )
     from test.kumo_pytorch.models.graphsage import KumoGraphAdapter
 
     adapter = (

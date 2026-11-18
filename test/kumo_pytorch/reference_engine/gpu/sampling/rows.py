@@ -1,10 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The rows a sample reads, and a call's shape, as the sampler holds them."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
@@ -39,6 +44,7 @@ class _Column:
                        None if self.words is None else self.words[order],
                        None if self.numbers is None else self.numbers[order])
 
+
 class _TableRows:
     """Rows of one loaded table selected for anchors: (anchor, row) pairs, grouped by anchor."""
 
@@ -53,7 +59,9 @@ class _TableRows:
         valid = cupy.ones(self.rows.size, dtype=bool) if present is None else present[self.rows]
         keys = (lambda: [self.column(self.key, keyed=False)]) if keyed else None
         if dtype.name.startswith("decimal"):  # its words and numbers, at these rows only
-            from test.kumo_pytorch.reference_engine.gpu.data.decimals import gathered_words
+            from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+                gathered_words,
+            )
 
             return _Column(dtype, None, valid, None, (table.name, name), keys,
                            gathered_words(table.columns[name], self.rows), table.numbers(name)[self.rows])
@@ -62,6 +70,7 @@ class _TableRows:
 
     def take(self, order: Any) -> _TableRows:
         return _TableRows(self.table, self.key, self.owner[order], self.rows[order])
+
 
 class _GroupRows:
     """One row per group of a `GroupBy`, grouped by anchor: its keys and reduced values."""
@@ -74,6 +83,7 @@ class _GroupRows:
 
     def take(self, order: Any) -> _GroupRows:
         return _GroupRows(self.owner[order], {name: column.take(order) for name, column in self.columns.items()})
+
 
 @dataclass
 class _Call:

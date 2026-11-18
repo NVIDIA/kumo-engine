@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """What test.kumo_pytorch.reference_engine.gpu does not build yet, declared in one list, as upstream Kumo PyTorch declares its DiskGraph engine's.
 
 Every entry is refused with its code and next step by upstream's `check` and by `test.kumo_pytorch.reference_engine.gpu.prepare`, before any

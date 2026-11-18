@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tiny synthetic AML capability probes, never substitutes for accepted data.
 
 The touch view preserves one row per (account, physical transaction). Count
@@ -15,7 +19,6 @@ def probe_anchor_table(plan, expected):
     """Persist this fixture's expected records beside its native index."""
     import hashlib
     import json
-
     from test.kumo_pytorch.anchor_tables import write_probe_anchors
 
     expected = tuple(expected)
@@ -58,6 +61,7 @@ class AMLFixture:
     def parquet_dataset(self, destination: Path):
         import pyarrow as pa
         import pyarrow.parquet as pq
+
         from kumo.pytorch.api import Dataset, Parquet
 
         destination.mkdir(parents=True, exist_ok=False)
@@ -149,9 +153,9 @@ def build_fixture() -> AMLFixture:
         "transactions": transactions,
         "account_events": touches,
     }
-    import pyarrow as pa
-
     from test.kumo_pytorch.contracts import schema_columns
+
+    import pyarrow as pa
 
     schema = DataSchema(
         tables=tuple(

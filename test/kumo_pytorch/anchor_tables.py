@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Persist bounded correctness-probe anchors; DG owns their loading and ordering.
 
 Population benchmarks use population_anchors.project_population directly. These
@@ -6,9 +10,10 @@ small probes retain independent expected records for target/delivery assertions.
 
 from pathlib import Path
 
-import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+import kumo.pytorch.api as r
 
 
 def write_probe_anchors(expected, path):

@@ -1,15 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Aggregates over related rows: counts, sums, distinct counts, modes and groupings."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
 
 
 _U32 = (1 << 32) - 1
+
 
 def _column_values(table: GpuTable, column: str, rows: Any, *, missing: bool = False) -> Values:
     """Column `column` of `table` at `rows`, as sampled values (decimals gathered to the host).
@@ -30,14 +36,17 @@ def _column_values(table: GpuTable, column: str, rows: Any, *, missing: bool = F
     else:
         present = None if present is None else present[rows]
     if dtype.name.startswith("decimal"):  # on the GPU: the values (an Arrow copy made when asked) and numbers
-        import pylibcudf as plc
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
+        import pylibcudf as plc
 
         picked = plc.copying.gather(plc.Table([table.columns[column]]), _column(rows.astype("int32")),
                                     plc.copying.OutOfBoundsPolicy.DONT_CHECK).columns()[0]
         return Values(dtype, None, present, numbers=table.numbers(column)[rows], column=picked)
     return Values(dtype, table.values(column)[rows], present, table.dictionaries.get(column))
+
 
 def _nulls(dtype: Any, count: int, texts: Any) -> Values:
     import cupy
@@ -49,6 +58,7 @@ def _nulls(dtype: Any, count: int, texts: Any) -> Values:
         return Values(dtype, None, absent, host=pa.nulls(count, dtype.to_arrow()),
                       numbers=cupy.zeros(count, dtype=cupy.float64), words=cupy.zeros((count, 4), dtype=cupy.int64))
     return Values(dtype, cupy.zeros(count, dtype=_device_type(dtype)), absent, texts)
+
 
 def _device_type(dtype: Any) -> Any:
     """The CuPy type a value of `dtype` is held in (timestamps: seconds; dates: days; texts: codes)."""
@@ -63,12 +73,14 @@ def _device_type(dtype: Any) -> Any:
         return cupy.bool_
     return cupy.dtype(dtype.name)
 
+
 def _counts(owner: Any, count: int) -> Any:
     import cupy
 
     counts = cupy.zeros(count, dtype=cupy.int64)
     cupy.add.at(counts, owner, 1)
     return counts
+
 
 def _bits(values: Any) -> Any:
     """Values as integers that are equal exactly when the stored values are (floats by their bits)."""
@@ -81,6 +93,7 @@ def _bits(values: Any) -> Any:
         return values.view(cupy.int32).astype(cupy.int64)
     return values.astype(cupy.int64)
 
+
 def _count_distinct(owner: Any, keys: Any, count: int) -> Any:
     import cupy
 
@@ -90,6 +103,7 @@ def _count_distinct(owner: Any, keys: Any, count: int) -> Any:
     owner, keys = owner[order], keys[order]
     first = cupy.concatenate([cupy.ones(1, dtype=bool), (owner[1:] != owner[:-1]) | (keys[1:] != keys[:-1])])
     return _counts(owner[first], count)
+
 
 def _exact_sum(where: str, owner: Any, values: Any, rows_per: Any, dtype: Any, flags: list) -> Values:
     """Exact integer sums per segment, in two 32-bit halves: int64 for signed values, uint64 for unsigned."""
@@ -115,13 +129,17 @@ def _exact_sum(where: str, owner: Any, values: Any, rows_per: Any, dtype: Any, f
     valid_rows = _counts(owner, count)
     return Values(dtype, total.astype(kind), (rows_per == 0) | (valid_rows > 0))
 
+
 def _grouped(owner: Any, values: Any, operation: str, count: int, *, ddof: int = 0) -> tuple[Any, Any]:
     """A reduction of `values` per segment (libcudf's sort-based groupby): (result, whether any value)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     result = cupy.zeros(count, dtype=cupy.float64 if operation in ("mean", "variance", "std") else values.dtype)
     has = cupy.zeros(count, dtype=bool)
@@ -147,6 +165,7 @@ def _grouped(owner: Any, values: Any, operation: str, count: int, *, ddof: int =
     has[found] = valid
     return result, has
 
+
 def _most_frequent(owner: Any, keys: Any, count: int) -> tuple[Any, Any]:
     """Per segment, the most frequent of `keys` (CuPy int64), ties to the smallest; and whether it has any."""
 
@@ -169,13 +188,14 @@ def _most_frequent(owner: Any, keys: Any, count: int) -> tuple[Any, Any]:
     has = most > 0
     return cupy.where(has, best, 0), has
 
+
 def _printed_ranks(distinct: Any, dtype: Any) -> Any:
     """Each distinct decimal's place in upstream's tie order, its ``repr`` (CuPy int64): worked out on the host,
     for these values only."""
 
-    import cupy
-
     from test.kumo_pytorch.reference_engine.gpu.data.decimals import _arrow
+
+    import cupy
 
     python = _arrow(distinct, dtype).to_pylist()
     order = sorted(range(len(python)), key=lambda i: repr(python[i]))
@@ -183,13 +203,14 @@ def _printed_ranks(distinct: Any, dtype: Any) -> Any:
     ranks[cupy.asarray(order, dtype=cupy.int64)] = cupy.arange(len(python), dtype=cupy.int64)
     return ranks
 
+
 def _sum_refusal(where: str, dtype: Any, limbs: Any, bad: Any) -> str:
     """Upstream's own message for the first refused decimal sum: its type's check of the exact sum."""
 
-    import cupy
     from decimal import Context, Decimal
-
     from test.kumo_pytorch.reference_engine.gpu.data.decimals import limbs_int
+
+    import cupy
 
     row = int(cupy.flatnonzero(bad)[0])
     value = Decimal(limbs_int(limbs[row].get().tolist())).scaleb(-dtype.scale, context=Context(prec=400))
@@ -198,6 +219,7 @@ def _sum_refusal(where: str, dtype: Any, limbs: Any, bad: Any) -> str:
     except ValueError as error:
         return str(error)
     return f"{where}: test.kumo_pytorch.reference_engine.gpu refused the sum {value!r}, which upstream Kumo PyTorch accepts (a bug in test.kumo_pytorch.reference_engine.gpu)"
+
 
 def _floats(operand: Values) -> Values:
     """A decimal operand as its float64 numbers, as upstream takes ``float(value)``."""

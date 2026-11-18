@@ -1,8 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Key indexes: a table's rows by key, sorted once on the GPU."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
@@ -19,9 +24,9 @@ class KeyIndex:
     nothing), sorted once."""
 
     def __init__(self, table: GpuTable, column: str) -> None:
-        import cupy
-
         from test.kumo_pytorch.reference_engine.gpu.data.keys import identities
+
+        import cupy
 
         values, matchable = identities(table, column)
         rows = cupy.arange(table.num_rows, dtype=cupy.int64)
@@ -47,6 +52,7 @@ class KeyIndex:
         within = slot - (ends[pair] - (stop[pair] - start[pair]))
         return owner[pair], self.rows[start[pair] + within]
 
+
 class EntityIndex:
     """The entity table's rows by primary key identity (`test.kumo_pytorch.reference_engine.gpu.data.keys`: equal exactly when upstream's Python
     values are), sorted once, looked up by binary search.
@@ -58,10 +64,9 @@ class EntityIndex:
 
     def __init__(self, table: GpuTable, key: str) -> None:
         import weakref
+        from test.kumo_pytorch.reference_engine.gpu.data.keys import key_space
 
         import cupy
-
-        from test.kumo_pytorch.reference_engine.gpu.data.keys import key_space
 
         if table.present(key) is not None:
             raise ValueError(f"{table.name}.{key} is the primary key but holds NULLs")
@@ -73,8 +78,12 @@ class EntityIndex:
         self.order, self.keys = rows[order], values[order]
         repeated = cupy.flatnonzero(self.keys[1:] == self.keys[:-1])
         if repeated.size:
-            from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
-            from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import _python_at
+            from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import (
+                _python_at,
+            )
+            from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+                _column_values,
+            )
 
             row = self.order[int(repeated[0]):int(repeated[0]) + 1]
             value = _python_at(_column_values(table, key, row), 0)

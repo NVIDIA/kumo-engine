@@ -1,11 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML PRAGMA reference checks, independent of masking and model loss helpers.
 
 Use source rows and the saved fitted vocabulary, not a second masked batch, to
 recover original IDs. Generic encoder fitting and random draws have package tests.
 """
 
-from datetime import datetime, timezone
 import math
+from datetime import datetime, timezone
 
 from .involvement import history
 from .reference_tokens import FIELDS, encoded_value

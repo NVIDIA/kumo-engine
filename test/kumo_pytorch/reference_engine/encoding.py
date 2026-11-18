@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Arena-owned columnar acceleration hooks for Kumo's fitted encoders.
 
 Fitting and token grammar interpretation stay in Kumo. These hooks only look up

@@ -1,14 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """How decimal columns are stored on the GPU (256-bit ones as bytes) and turned into numbers."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
 
 
 #: Bytes a wide decimal (a ``decimal256`` over precision 38) is held in, a value (`_wide_decimal`).
 WIDE_DECIMAL_BYTES = 32
+
 
 def _stored(column: Any, dtype: DType, where: str) -> Any:
     """A column as read, in its stored form: timestamps as whole UTC seconds, rounded up; wide decimals as 32
@@ -21,6 +27,7 @@ def _stored(column: Any, dtype: DType, where: str) -> Any:
         column = plc.unary.cast(column, plc.DataType(plc.TypeId.TIMESTAMP_SECONDS))
     return decimal_stored(column, dtype, where)
 
+
 def decimal_stored(column: Any, dtype: DType, where: str) -> Any:
     """A ``decimal256`` column libcudf read as strings (precision over 38) as a wide decimal (`_wide_decimal`);
     any other column as it is."""
@@ -30,6 +37,7 @@ def decimal_stored(column: Any, dtype: DType, where: str) -> Any:
     if dtype.name == "decimal256" and column.type().id() == plc.TypeId.STRING:
         return _wide_decimal(column, where)
     return column
+
 
 def _decimal_numbers(column: Any, present: Any, dtype: Any = None) -> Any:
     """A decimal column's values as correctly rounded float64 (`GpuTable.numbers`): a libcudf decimal column,
@@ -60,13 +68,16 @@ def _decimal_numbers(column: Any, present: Any, dtype: Any = None) -> Any:
             fits = cupy.ones(size, dtype=bool)
 
     def host(rows: Any) -> Any:
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+        )
 
         picked = plc.copying.gather(plc.Table([column]), _column(rows.astype(cupy.int32)),
                                     plc.copying.OutOfBoundsPolicy.DONT_CHECK).columns()[0]
         return decimal_arrow(picked, dtype) if kind == plc.TypeId.STRING else picked.to_arrow()
 
     return rounded_numbers(unscaled, fits, scale, present, host)
+
 
 def rounded_numbers(unscaled: Any, fits: Any, scale: int, present: Any, host: Any) -> Any:
     """Decimals as correctly rounded float64 (`GpuTable.numbers`), from each value's low 64 bits `unscaled`
@@ -102,10 +113,12 @@ def rounded_numbers(unscaled: Any, fits: Any, scale: int, present: Any, host: An
 def _wide_decimal(column: Any, where: str) -> Any:
     """A decimal column libcudf read as strings, as 32 bytes a value (big-endian, the sign extended)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     size = column.size()
     if size == 0:
@@ -122,17 +135,19 @@ def _wide_decimal(column: Any, where: str) -> Any:
     return plc.Column(plc.DataType(plc.TypeId.STRING), size, plc.gpumemoryview(held.reshape(-1)), mask,
                       column.null_count(), 0, [_column(offsets)])
 
+
 def _wide_bounds(column: Any) -> tuple[Any, Any]:
     """Where each row's bytes start in a strings column's characters, and how many there are (CuPy int64)."""
 
-    import cupy
-
     from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
+
+    import cupy
 
     if column.size() == 0:  # no rows: libcudf may give such a column no offsets at all (a gather of none)
         return cupy.zeros(0, dtype=cupy.int64), cupy.zeros(0, dtype=cupy.int64)
     bounds = _view(column.children()[0]).astype(cupy.int64)[column.offset():column.offset() + column.size() + 1]
     return bounds[:-1], bounds[1:] - bounds[:-1]
+
 
 def _characters(column: Any) -> Any:
     """A strings column's characters (CuPy uint8, no copy); one zero byte when it has none."""
@@ -147,6 +162,7 @@ def _characters(column: Any) -> Any:
     memory = cupy.cuda.UnownedMemory(interface["data"][0], size, column)
     return cupy.ndarray((size,), cupy.uint8, cupy.cuda.MemoryPointer(memory, 0))
 
+
 def _wide_bytes(column: Any) -> Any:
     """Each row's value of a decimal strings column as 32 big-endian bytes, the sign extended (CuPy uint8
     (rows, 32)); a row of no bytes is 0."""
@@ -159,6 +175,7 @@ def _wide_bytes(column: Any) -> Any:
         _wide_kernels()[0](starts, lengths, _characters(column), held)
     return held
 
+
 def _wide_low_words(column: Any) -> tuple[Any, Any]:
     """Each row's value of a decimal strings column as its low 64 bits (CuPy int64), and whether the value
     fits in them (CuPy bool): its other 24 bytes and the low word's top bit all its sign."""
@@ -170,6 +187,7 @@ def _wide_low_words(column: Any) -> tuple[Any, Any]:
     if column.size():
         _wide_kernels()[1](starts, lengths, _characters(column), low, fits)
     return low, fits
+
 
 def _wide_kernels() -> tuple[Any, Any]:
     """The kernels reading a decimal's big-endian bytes (`_wide_bytes`, `_wide_low_words`), compiled once."""
@@ -206,7 +224,9 @@ def _wide_kernels() -> tuple[Any, Any]:
         _WIDE_KERNELS = (widen, low)
     return _WIDE_KERNELS
 
+
 _WIDE_KERNELS: tuple[Any, Any] | None = None
+
 
 def decimal_arrow(column: Any, dtype: Any) -> Any:
     """A decimal column as held (a libcudf decimal, or a wide decimal's bytes) as an Arrow array of `dtype`,

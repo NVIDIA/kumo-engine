@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Real-AML, 100-update CPU training acceptance for all five model/task bindings."""
 
 import argparse
@@ -10,8 +14,9 @@ import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
-import kumo.pytorch.api as r
 import torch
+
+import kumo.pytorch.api as r
 
 from .aml_inputs import load_selections, requests_for, verify_inputs
 from .aml_source import aml_data_schema

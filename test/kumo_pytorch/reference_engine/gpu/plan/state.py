@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """A task's fitted state in upstream Kumo PyTorch's own form: what `test.kumo_pytorch.reference_engine.gpu` fitted, written as upstream writes it.
 
 `written_state` spells this backend's fitted encoders, ID spaces, Composite
@@ -30,13 +34,19 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        CompositeVocabulary,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        TargetState,
+    )
+
     from kumo.pytorch.artifact import FitRecord, FittedState
     from kumo.pytorch.encoding import FittedSpace
     from kumo.pytorch.spec import DataLoaderSpec
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import TargetState
 
 __all__ = ["Fitted", "as_upstream", "fingerprint", "manifest", "reused", "written_state"]
 
@@ -65,7 +75,15 @@ def written_state(contract: DataLoaderSpec, encoders: Mapping[str, GpuEncoder],
     inference task's from an input-only state). `field_names`: each field-name dictionary's identities and
     IDs (`test.kumo_pytorch.reference_engine.gpu.encoding.field_names`), by identity."""
 
-    from kumo.pytorch.assembly import _encoder_identity, _identity, fitted_target_names
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        graph_identity,
+    )
+
+    from kumo.pytorch.assembly import (
+        _encoder_identity,
+        _identity,
+        fitted_target_names,
+    )
     from kumo.pytorch.contract.batch import (
         AlignedEventTarget,
         Encode,
@@ -75,8 +93,6 @@ def written_state(contract: DataLoaderSpec, encoders: Mapping[str, GpuEncoder],
     )
     from kumo.pytorch.contract.batch.encodings import UseEncoding
     from kumo.pytorch.encoding import FittedEncoder, json_value
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import graph_identity
 
     spec = contract.batch
     inputs: dict[str, Any] = {}
@@ -222,12 +238,19 @@ def reused(contract: DataLoaderSpec, input_state: Any, target_states: Mapping[st
     ``fit_plan``'s: every declared space, numbered as the state numbers it."""
 
     from dataclasses import replace
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        CompositeVocabulary,
+        component_specs,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        reused_encoder,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        TargetState,
+        _group_specs,
+    )
 
     from kumo.pytorch.assembly import _allocate_spaces
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary, component_specs
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import reused_encoder
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import TargetState, _group_specs
 
     encoders = {identity: reused_encoder(encoder) for identity, encoder in input_state.encoders.items()}
     composites = {name: CompositeVocabulary.from_supplied(

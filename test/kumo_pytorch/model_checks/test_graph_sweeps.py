@@ -1,16 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML graph fan-outs with even-degree and hot-account source fixtures."""
 
 from dataclasses import replace
 from datetime import timedelta
-
-import kumo.pytorch.api as r
-import pytest
-import torch
-
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import history, verify_inputs
 from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.reference_tokens import history_tokens
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
 
 from .fixtures import (
     CUTOFF,

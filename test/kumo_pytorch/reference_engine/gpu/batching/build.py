@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Building a task's batches on the GPU: inputs, graphs, masked tokens and answers.
 
 Fitting a task's inputs and building its batches on the GPU.
@@ -27,10 +31,17 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-from test.kumo_pytorch.reference_engine.gpu.data.anchors import batch_entity_ids
-from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, encoder_identity, graph_identity
+from test.kumo_pytorch.reference_engine.gpu.data.anchors import (
+    batch_entity_ids,
+)
+from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+    GpuEncoder,
+    encoder_identity,
+    graph_identity,
+)
 from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.encoding import FittedSpace
     from kumo.pytorch.spec import DataLoaderSpec
@@ -39,10 +50,32 @@ if TYPE_CHECKING:
     from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary
     from test.kumo_pytorch.reference_engine.gpu.split.parts import SampledPart
     from test.kumo_pytorch.reference_engine.gpu.encoding.targets import TargetState
-from test.kumo_pytorch.reference_engine.gpu.batching.compose import BatchPlan, _lengths
-from test.kumo_pytorch.reference_engine.gpu.batching import inputs as call_inputs
-from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _config, _inputs
-from test.kumo_pytorch.reference_engine.gpu.batching.layout import _Lists, _Nested, _Pieces, _flat_batch, _kernel, _laid_out, _named, _offsets, _projected, _raw, _sample_ids, _sequence, _slice
+
+from test.kumo_pytorch.reference_engine.gpu.batching import \
+    inputs as call_inputs
+from test.kumo_pytorch.reference_engine.gpu.batching.compose import (
+    BatchPlan,
+    _lengths,
+)
+from test.kumo_pytorch.reference_engine.gpu.batching.inputs import (
+    _config,
+    _inputs,
+)
+from test.kumo_pytorch.reference_engine.gpu.batching.layout import (
+    _flat_batch,
+    _kernel,
+    _laid_out,
+    _Lists,
+    _named,
+    _Nested,
+    _offsets,
+    _Pieces,
+    _projected,
+    _raw,
+    _sample_ids,
+    _sequence,
+    _slice,
+)
 from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
 
 __all__ = ['build_batches']
@@ -69,8 +102,36 @@ def build_batches(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex
     anchor in a call built a group at a time (`test.kumo_pytorch.reference_engine.gpu.plan.groups._in_groups`), so that a padding row's sample ID is
     the one the whole call would give it."""
 
+    from dataclasses import replace
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        Component,
+        component,
+        component_specs,
+        composite_identity,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _raise_flags,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import (
+        field_lookup,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        encode_targets,
+        next_tokens,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import (
+        Flat,
+        TokenField,
+        TokenRows,
+        flatten,
+        per_sample,
+        token_rows,
+        translated,
+    )
+
     import cupy
     import torch
+
     from kumo.pytorch.contract.batch import (
         AlignedEventTarget,
         Composite,
@@ -85,14 +146,6 @@ def build_batches(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex
     )
     from kumo.pytorch.contract.batch.encodings import Raw, Text
     from kumo.pytorch.contract.batch.spec import Batch
-
-    from dataclasses import replace
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import Component, component, component_specs, composite_identity
-    from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import field_lookup
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _raise_flags
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import encode_targets, next_tokens
-    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import Flat, TokenField, TokenRows, flatten, per_sample, token_rows, translated
 
     specs = contract.batch.inputs
     structured = {name for name, target in contract.batch.targets.items() if isinstance(target, StructuredTarget)}
@@ -110,7 +163,9 @@ def build_batches(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex
         if parts is None:
             sampled, labels = call_inputs._sampled(contract, sampler, index, anchors, rows, labels=measure is None)
         else:
-            from test.kumo_pytorch.reference_engine.gpu.split.parts import join_parts
+            from test.kumo_pytorch.reference_engine.gpu.split.parts import (
+                join_parts,
+            )
 
             if measure is not None or sum(part.size for part in parts) != int(rows.size):
                 raise ValueError("sampled parts serve a whole batch call, as many anchors as its rows")
@@ -306,7 +361,9 @@ def build_batches(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex
                                                 specs[contract.batch.targets[name].input].layout)
         for name, output in encoded_targets.items():
             if name in aligned:  # laid out as its input is, without the input's own validity
-                from test.kumo_pytorch.reference_engine.gpu.encoding.targets import target_uses
+                from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+                    target_uses,
+                )
                 pads = {use.field: spaces[use.id_space].roles.get("pad", 0)
                         for target_name, _, use in target_uses(contract) if target_name == name and use.id_space}
                 laid = _laid_out(output, bounds[aligned[name]][start:stop + 1], specs[aligned[name]].layout, pads=pads)
@@ -328,6 +385,7 @@ def build_batches(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex
             "is_padding": is_padding[part],
         })
 
+
 @dataclass
 class _GraphInput:
     """One graph input's sampled neighborhoods and its encoded node fields, for consecutive samples: per table,
@@ -345,6 +403,7 @@ class _GraphInput:
                 {key: _slice(value, nodes) for key, value in encoded.items()} for field, encoded in fields.items()}
         return result
 
+
 def _neighborhoods(contract: DataLoaderSpec, sampler: Sampler, names: list[str], roots: Any, cutoffs: Any,
                    encoders: Mapping[str, GpuEncoder], spaces: Mapping[str, FittedSpace], model: bool, seed: int,
                    epoch: int) -> dict[str, _GraphInput]:
@@ -352,13 +411,22 @@ def _neighborhoods(contract: DataLoaderSpec, sampler: Sampler, names: list[str],
     with their cutoffs (uniform draws seeded by `seed` and `epoch`), and its node fields encoded (as a column
     input's fields are); inputs reading one neighborhood with the same node tables share its sampling."""
 
-    import torch
-    from kumo.pytorch.contract.batch.encodings import Raw, Text
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _raise_flags,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import (
+        translated,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import (
+        sample_neighborhoods,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _raise_flags
-    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import sample_neighborhoods
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
-    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import translated
+    import torch
+
+    from kumo.pytorch.contract.batch.encodings import Raw, Text
 
     flags: list[tuple[Any, Any]] = []
     built: dict[tuple[str, tuple[str, ...]], Any] = {}
@@ -392,19 +460,23 @@ def _neighborhoods(contract: DataLoaderSpec, sampler: Sampler, names: list[str],
     _raise_flags(flags)
     return result
 
+
 def _masked(target: Any, values: Any, slots: Any, rows: Any, place: Any, owner: Any, row_bounds: Any, entities: Any,
             representation: Any, space: Any, seed: int, epoch: int) -> tuple[Any, dict[str, tuple[Any, Any]]]:
     """`test.kumo_pytorch.reference_engine.gpu.encoding.targets.mask_tokens` for tokens of event (or entity) `rows`, each event's sample and place in
     it found from `owner` and `row_bounds`."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        mask_tokens,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import mask_tokens
+    import cupy
 
     sample = owner[rows]
     history = rows - cupy.asarray(row_bounds)[sample]
     return mask_tokens(target, values, slots, sample, history, place, entities,
                        [use.field for use in representation.fields], space, seed=seed, epoch=epoch)
+
 
 @dataclass
 class _Answers:
@@ -420,6 +492,7 @@ class _Answers:
     def batch(self, row_bounds: Any, start: int, stop: int, layout: Any) -> dict[str, Any]:
         import cupy
         import numpy as np
+
         from kumo.pytorch.contract.batch.layouts import Packed
 
         if self.nested is not None:  # tokens per event of the batch, as `_Nested.batch` lays them out

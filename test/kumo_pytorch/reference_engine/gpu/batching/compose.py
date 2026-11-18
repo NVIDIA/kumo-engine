@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Composing batches: their sizes under token budgets and length buckets, and the length summary."""
 
 from __future__ import annotations
@@ -5,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     pass
@@ -42,6 +47,7 @@ class BatchPlan:
         short = bool(bounds) and bounds[-1][1] - bounds[-1][0] < maximum
         return cls(bounds, len(bounds) - int(drop_last and short))
 
+
 def _lengths(name: str, sequences: Mapping[str, Any], bounds: Mapping[str, Any], count: int) -> dict[str, Any]:
     """Each sample's length in input `name`, as upstream measures it for batching (``_measure_values``, before
     any target changes the input): its tokens (a token input, flattened or grouped), else its rows (events; 1 for
@@ -65,6 +71,7 @@ def _lengths(name: str, sequences: Mapping[str, Any], bounds: Mapping[str, Any],
     if name in bounds:
         return {"total": np.diff(bounds[name])}
     return {"total": np.ones(count, dtype=np.int64)}
+
 
 def plan_batches(lengths: dict[str, Any], layout: Any, groups: list[tuple[int, int]], maximum: int | None,
                  max_tokens: int | None, bucket: bool, drop_last: bool) -> tuple[Any, BatchPlan]:
@@ -115,11 +122,13 @@ def plan_batches(lengths: dict[str, Any], layout: Any, groups: list[tuple[int, i
     return (np.concatenate(order) if order else np.zeros(0, dtype=np.int64)), BatchPlan(bounds, emit, failure,
                                                                                         failure_at)
 
+
 def _pricer(lengths: dict[str, Any], layout: Any) -> Any:
     """What a batch of samples costs under the length input's `layout` (upstream's ``_batch_cost``): for
     samples ``chosen``, the cost of a batch of ``chosen[:k + 1]``, for each k."""
 
     import numpy as np
+
     from kumo.pytorch.contract.batch.layouts import Nested, Packed
 
     total = np.asarray(lengths["total"], dtype=np.int64)
@@ -129,6 +138,7 @@ def _pricer(lengths: dict[str, Any], layout: Any) -> Any:
     if isinstance(layout, (Packed, Nested)):  # its tokens
         return lambda chosen: np.cumsum(total[chosen])
     return lambda chosen: np.arange(1, chosen.size + 1) * np.maximum.accumulate(total[chosen])  # samples x longest
+
 
 def length_summary(lengths: dict[str, Any], layout: Any, policy: Any) -> dict[str, Any] | None:
     """Upstream's summary of the fitted samples' lengths in ``Batching.length_input`` (``_length_summary``,
@@ -154,6 +164,7 @@ def length_summary(lengths: dict[str, Any], layout: Any, policy: Any) -> dict[st
            for percentile in (0, 25, 50, 75, 90, 95, 100)},
         "expected_padded_fraction": float(capacity - actual) / capacity if capacity else 0.0,
     }
+
 
 def _group_start(groups: list[tuple[int, int]], position: int, order: list[Any]) -> int:
     """Where (in the new order) the group holding new position `position` starts."""

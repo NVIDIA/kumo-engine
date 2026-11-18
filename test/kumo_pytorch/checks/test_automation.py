@@ -11,10 +11,9 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from test.kumo_pytorch import automation
 
 import pytest
-
-from test.kumo_pytorch import automation
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github/workflows"

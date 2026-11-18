@@ -21,6 +21,15 @@ suggestions. Generic exceptions, invalid contracts, crashes, chained failures,
 wrong results, silent fallback and errors after execution starts still fail.
 Tests retain their independent expected answers for accepted capabilities.
 
+The user also explicitly accepts DiskGraph's intentional rejection of zero-row
+base tables. The harness recognizes only its exact native `DiskgraphSystemError`
+from base-index ingestion through `prepare()` and `DiskGraphEngine.open()`,
+with the rejected table present in the dataset/schema and its bound Parquet
+metadata independently confirming zero source rows. Reports label this
+`stage=ingestion`, `execution=stopped_before_materialization` and the test-owned
+code `DG-EMPTY-BASE-TABLE`; it is not presented as a public preflight check.
+Fabricated messages, other ingestion errors and later iteration errors fail.
+
 Pytest reports accepted refusals in the terminal summary and the
 `capability_refusals` JUnit property. The AML, history, training and population
 CLI reports label them `status=passed, outcome=refused` and retain the evidence.
@@ -29,6 +38,13 @@ without claiming full delivery; incomplete execution still fails.
 A fixture's verified refusal can satisfy a case without calling its dependent
 body; teardown errors still fail. Required inventory and skip enforcement remain
 active, and generated/corpus loops continue checking subsequent cases.
+
+Documentation subprocesses and notebook kernels classify refusals before their
+exceptions lose the original traceback. Parent reports retain that evidence;
+matching error text alone never qualifies. A refused notebook does not claim
+generated-file reproduction, and regeneration commands still fail on refusals.
+Earlier assertion/output failures remain failures. Negative-input tests check
+native contract support before asserting a more specific rejection message.
 
 A refusal pass proves rejection, not execution. It does not claim training
 updates, completed populations or benchmark measurements. The benchmark metric
@@ -168,8 +184,12 @@ selection use fixture-derived expectations, with no reference engine. The flag
 excludes harness self-tests only; package/DiskGraph CI runs those on native
 execution too. Required coverage still fails on missing, skipped or xfailed cases.
 
-Package fixtures and examples use Parquet/DiskGraph. Runtime guards also catch
-indirect legacy calls, including the current ServingAssembler implementation.
+Package fixtures and examples use Parquet/DiskGraph. Runtime guards reject
+InMemory as a test backend or reference oracle. Per the user's 2026-11-17 scope
+decision, calls inside the package's existing `ServingAssembler` are allowed;
+changing that implementation is outside this testing PR. Serving still executes
+its assertions, and dependency errors remain failures. The exception ends when
+the serving call returns or raises and also applies in doc/notebook subprocesses.
 The migration is implemented, with independent expected answers and no new
 skip/xfail/native-gap exemptions. Package acceptance is still failing on native
 support and correctness gaps. See the [validation record](../PLAN.md#native-correctness-migration)

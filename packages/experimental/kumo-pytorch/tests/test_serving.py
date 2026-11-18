@@ -340,6 +340,53 @@ def _request(user_id: int = 4) -> api.SampleRequest:
     return api.SampleRequest(f"user-{user_id}", user_id, example.SCORE_AT)
 
 
+@pytest.mark.parametrize(
+    "operation", ["construct", "open", "anchors", "source", "graph", "samples"]
+)
+def test_serving_dependency_exception_does_not_allow_test_backends(example_server, operation):
+    from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
+    from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    (batch,) = example_server.assemble(_user_rows(4), [_request()])
+    assert batch.metadata["sample_ids"] == ("user-4",)
+    with pytest.raises(ValueError, match="at least one request"):
+        example_server.assemble({}, [])
+    calls = {
+        "construct": lambda: api.InMemoryEngine(),
+        "open": lambda: api.InMemoryEngine.open(object(), None, None),
+        "anchors": lambda: api.InMemoryEngine.materialize_anchors(object(), None),
+        "source": lambda: InMemorySource(None, {}),
+        "graph": lambda: InMemoryGraphSampler(None, {}),
+        "samples": lambda: InMemorySampleBuilder(None, {}),
+    }
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        calls[operation]()
+
+
+def test_serving_dependency_errors_still_fail(example_server, monkeypatch):
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("serving dependency crashed")
+
+    monkeypatch.setattr(InMemorySource, "build", broken)
+    with pytest.raises(RuntimeError, match="serving dependency crashed"):
+        example_server.assemble(_user_rows(4), [_request()])
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        api.InMemoryEngine()
+
+
+def test_serving_exception_never_allows_opening_a_test_backend(example_server, monkeypatch):
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    monkeypatch.setattr(
+        InMemorySource, "build", lambda *args: api.InMemoryEngine.open(object(), None, None)
+    )
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        example_server.assemble(_user_rows(4), [_request()])
+
+
 def _refused(server: api.ServingAssembler, rows: Mapping[str, object], pattern: str) -> None:
     with pytest.raises(ValueError, match=pattern) as error:
         server.assemble(rows, [_request()])  # type: ignore[arg-type]

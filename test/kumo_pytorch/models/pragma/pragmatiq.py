@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The pragmatiq model: profile / event / history encoders.
 
 Plain PyTorch reference implementation. Input encoding and dataset loading
@@ -34,6 +38,7 @@ from .batch import PackedBatch
 from .constants import EVT, USR
 from .embeddings import CalendarEmbedding, TokenEmbedding
 from .layers import Encoder, _segment_boundaries
+
 
 @dataclass
 class ModelConfig:

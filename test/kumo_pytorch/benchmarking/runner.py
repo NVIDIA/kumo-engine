@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generic complete-epoch loop; no dataset/model-specific imports or inspection."""
 
 import hashlib
@@ -355,7 +359,11 @@ def run(
     write_json(output / "config.json", frozen)
     identities, errors = {}, []
     with (output / "observations.jsonl").open("x") as stream:
-        from .memory import CgroupMemory, SampledAnonymousMemory, SampledCgroupMemory
+        from .memory import (
+            CgroupMemory,
+            SampledAnonymousMemory,
+            SampledCgroupMemory,
+        )
 
         memory = (
             (

@@ -175,14 +175,13 @@ def pytest_ignore_collect(collection_path, config):
 
 
 @pytest.fixture(autouse=True)
-def _forbid_in_memory(request, monkeypatch):
-    from kumo.pytorch.api import InMemoryEngine
+def _forbid_in_memory():
+    from tests.native_fixtures import forbid_deprecated_engine
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("InMemoryEngine is forbidden in DiskGraph-only conformance")
-
-    for method in ("__init__", "open", "materialize_anchors"):
-        monkeypatch.setattr(InMemoryEngine, method, forbidden)
+    with forbid_deprecated_engine(
+        message="InMemoryEngine is forbidden in DiskGraph-only conformance"
+    ):
+        yield
 
 
 def pytest_collection_modifyitems(config, items):

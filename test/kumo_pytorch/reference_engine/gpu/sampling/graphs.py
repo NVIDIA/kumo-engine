@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Graph neighborhoods (``NeighborhoodSpec``), sampled on the GPU for many samples at once.
 
 The rules follow Kumo PyTorch's G-GRAPH-001 contract. Each sample's graph grows layer by layer from
@@ -50,8 +54,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
+    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
 
 __all__ = ["NeighborIndex", "Neighborhoods", "sample_neighborhoods"]
 
@@ -67,13 +71,20 @@ class NeighborIndex:
     is kept."""
 
     def __init__(self, table: GpuTable, key: str, clock: str | None, primary_key: str) -> None:
+        from test.kumo_pytorch.reference_engine.gpu.data.keys import key_space
+        from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+            key_columns,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+            _view,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import (
+            _seconds,
+        )
+
         import cupy
         import pylibcudf as plc
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-        from test.kumo_pytorch.reference_engine.gpu.data.keys import key_space
-        from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns
-        from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import _seconds
 
         space = key_space(table, key)
         rows = cupy.arange(table.num_rows, dtype=cupy.int64)
@@ -103,10 +114,13 @@ class NeighborIndex:
         """Each key's candidates as a range of the index: those at or before its cutoff (every one if
         `cutoffs` is None)."""
 
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+            _view,
+        )
+
         import cupy
         import pylibcudf as plc
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
         start = cupy.searchsorted(self.keys, keys, side="left")
         if cutoffs is None:
@@ -132,11 +146,16 @@ class NeighborIndex:
         uniformly without replacement, seeded by each key's salt; listed by printed primary key, as (needle,
         rank, row) triples grouped by needle."""
 
+        from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+            key_columns,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+            _view,
+        )
+
         import cupy
         import pylibcudf as plc
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-        from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns
 
         start, stop = self.ranges(keys, cutoffs)
         needle, position = _draw(stop - start, fanout, salts)
@@ -263,7 +282,7 @@ def _draw(counts: Any, fanout: int, salts: Any) -> tuple[Any, Any]:
         order = cupy.lexsort(cupy.stack([drawn_attempt, drawn_needle]))
         drawn_needle, drawn_position, drawn_attempt = drawn_needle[order], drawn_position[order], drawn_attempt[order]
         rank = cupy.arange(drawn_needle.size, dtype=cupy.int64) - cupy.searchsorted(drawn_needle, drawn_needle,
-                                                                                      side="left")
+                                                                                    side="left")
         enough = cupy.zeros(counts.size, dtype=bool)
         enough[drawn_needle[rank == fanout - 1]] = True
         done = enough[drawn_needle]
@@ -335,6 +354,7 @@ def sample_neighborhoods(sampler: Sampler, spec: Any, node_tables: Any, entity_r
     import hashlib
 
     import cupy
+
     from kumo.pytorch.contract.schema import table_clock
 
     schema, tables, specs = sampler.contract.schema, sampler.tables, sampler.specs
@@ -494,14 +514,19 @@ def _salt_keys(table: GpuTable, column: str, rows: Any) -> Any:
     by its bits (-0.0 as 0.0), a decimal by its words mixed, a text or bytes by the xxHash64 of its bytes, each
     distinct one hashed once."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-
     dtype = table.dtypes[column]
     if dtype.name.startswith("decimal"):
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import gathered_words
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            gathered_words,
+        )
 
         held = gathered_words(table.columns[column], rows).view(cupy.uint64)
         mixed = held[:, 0].copy()
@@ -529,15 +554,21 @@ class TypedIds:
         self.dtype, self.values = dtype, values
 
     def python(self, low: int, high: int) -> list[Any]:
-        import pylibcudf as plc
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            Values,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import (
+            _values_python,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-        from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import _values_python
+        import pylibcudf as plc
 
         if isinstance(self.values, plc.Column):
             picked = plc.copying.slice(self.values, [low, high])[0]
             if self.dtype.name == "bytes":
-                from test.kumo_pytorch.reference_engine.gpu.data.text import python_texts
+                from test.kumo_pytorch.reference_engine.gpu.data.text import (
+                    python_texts,
+                )
 
                 return python_texts(picked, self.dtype)
             return _values_python(Values(self.dtype, None, column=picked))
@@ -558,10 +589,12 @@ def _node_ids(table: GpuTable, key: str, rows: Any) -> Any:
     end to end): CuPy int64 for integers and booleans (upstream's tensor: a bool is an int); a libcudf strings
     column of the texts for text; else `TypedIds`."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     dtype = table.dtypes[key]
     if dtype.integer or dtype.name == "bool":

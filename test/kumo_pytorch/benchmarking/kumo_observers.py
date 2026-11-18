@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Scoped Kumo observations, following Arena's operation ownership rules.
 
 Only the creating thread is observed; global wrappers are restored on exit.

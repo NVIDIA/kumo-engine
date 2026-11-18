@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Validate real Linux stage peaks, including transient child allocations.
 
 Run only inside an already provisioned dedicated writable cgroup. This command

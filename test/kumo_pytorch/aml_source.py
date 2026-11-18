@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Create-only AML schema/type mappings from exact accepted source files.
 
 The mapping preserves source identities, signed decimal values, nulls and UTC
@@ -351,6 +355,7 @@ def prepare_aml_sources(
 def aml_data_schema():
     """The mapped table schema accepted by the shared AML contract builders."""
     from kumo.pytorch.api import DataSchema, RelationSpec, TableSpec
+
     from .contracts import schema_columns
     keys = {"accounts": "account_id", "transactions": "transaction_id", "account_events": "event_id"}
     return DataSchema(

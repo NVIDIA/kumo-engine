@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Anchors on the GPU: which (entity, prediction time) pairs a task serves, and in what order.
 
 An anchor table is read once onto the GPU, in Kumo PyTorch's canonical order (files, then
@@ -119,19 +123,28 @@ class GpuAnchors:
     def from_table(cls, table: AnchorTable) -> GpuAnchors:
         """Read a Parquet anchor table onto the GPU, in Kumo PyTorch's canonical order."""
 
-        from kumo.pytorch.dataset import _local_parquet_files
-        from kumo.pytorch.engines.parquet_anchors import _physical, check_parquet_anchors
+        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+            decimal_stored,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.data.sources import _reader
+        from test.kumo_pytorch.reference_engine.gpu.data.tables import (
+            GpuTable,
+            _with_codes,
+        )
 
         import pylibcudf as plc
 
-        from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable, _with_codes
-        from test.kumo_pytorch.reference_engine.gpu.data.sources import _reader
-        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import decimal_stored
+        from kumo.pytorch.dataset import _local_parquet_files
+        from kumo.pytorch.engines.parquet_anchors import (
+            _physical,
+            check_parquet_anchors,
+        )
 
         issues = check_parquet_anchors(table)
         if issues:
             raise ValueError(issues[0].describe())
         import pyarrow.parquet as pq
+
         from kumo.pytorch.contract.dtypes import DType
         from kumo.pytorch.dataset import Parquet
 
@@ -165,6 +178,7 @@ class GpuAnchors:
         """Anchors supplied in code, in the order given."""
 
         import cupy
+
         from kumo.pytorch.anchors import PADDING_KEY
 
         requests = tuple(requests)
@@ -238,10 +252,13 @@ class GpuAnchors:
                                               value if -(2**63) <= value < 2**63 else 0 for value in ids],
                                              dtype=cupy.int64), None)
             elif all(isinstance(value, str) for value in ids):
+                from test.kumo_pytorch.reference_engine.gpu.data.tables import (
+                    GpuTable,
+                    _with_codes,
+                )
+
                 import pyarrow as pa
                 import pylibcudf as plc
-
-                from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable, _with_codes
 
                 coded = _with_codes(GpuTable("anchors", len(ids), {"id": plc.Column.from_arrow(pa.array(ids, pa.string()))},
                                              {"id": None}))
@@ -268,10 +285,17 @@ class GpuAnchors:
         float), then compared by value. Returns CuPy int64 identities and which IDs can name an entity (CuPy
         bool; None for all): an ID upstream's normalization refuses, or NaN, names none."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.data.keys import (
+            Translation,
+            dictionary_identities,
+            key_space,
+            python_identity,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import (
+            _BOUNDS,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.keys import Translation, dictionary_identities, key_space, python_identity
-        from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import _BOUNDS
+        import cupy
 
         dtype = space.dtype
         if self._requests is None:
@@ -286,8 +310,12 @@ class GpuAnchors:
             if own_dtype == dtype or (own_dtype.integer and dtype.integer):
                 ids = self._columns
                 if own_dtype.name == "timestamp":  # read as stored: whole seconds, rounded up, as upstream normalizes
-                    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
-                    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import _stored
+                    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+                        _stored,
+                    )
+                    from test.kumo_pytorch.reference_engine.gpu.data.tables import (
+                        GpuTable,
+                    )
 
                     ids = GpuTable("anchors", ids.num_rows, {column: _stored(ids.columns[column], own_dtype,
                                                                              f"anchors.{column}")},
@@ -361,9 +389,11 @@ class GpuAnchors:
         ID itself, a text ID the first 4 bytes of its UTF-8 SHA-256, big-endian (upstream's `assembly`), each
         distinct text hashed once."""
 
-        import pylibcudf as plc
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _view,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
+        import pylibcudf as plc
 
         if self._id_kind() == "other":  # upstream's rule, ID by ID: an integer or boolean itself, else its str's hash
             import cupy
@@ -387,9 +417,9 @@ class GpuAnchors:
         """``metadata["entity_ids"]`` of the anchors at table `rows`, as upstream gives it: a tensor on the GPU for
         integer IDs, a tuple of Python strings for text IDs."""
 
-        import torch
-
         from test.kumo_pytorch.reference_engine.gpu.data.text import texts_at
+
+        import torch
 
         if self._id_kind() == "other":  # a tuple of the Python IDs; each batch's decided by `batch_entity_ids`
             ids = self._python_ids()
@@ -411,6 +441,7 @@ class GpuAnchors:
         """The selection's rows in canonical order, as a CuPy int64 array."""
 
         import cupy
+
         from kumo.pytorch.anchors import AllAnchors
 
         if isinstance(selection, AllAnchors):
@@ -534,11 +565,15 @@ def _picked(loaded: Any, rows: Any, types: dict[str, Any], host: dict[str, Any],
     upstream's Parquet reader gives them, and the rows as a list; `host` holds the metadata columns read on the
     host. The rows are picked on the GPU, so only theirs are copied to the host."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+        decimal_arrow,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
-    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import decimal_arrow
 
     names = list(loaded.columns) + list(host) if names is None else list(names)
     if not rows.size:

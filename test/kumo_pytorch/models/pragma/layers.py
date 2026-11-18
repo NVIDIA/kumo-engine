@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Plain PyTorch transformer blocks for packed PRAGMA inputs.
 
 Each event, profile, or history is an independent, bidirectional attention

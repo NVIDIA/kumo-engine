@@ -59,4 +59,3 @@ jobs:
             ${{ runner.temp }}/aml-checks/**/coverage.json
             ${{ runner.temp }}/aml-checks/**/report.md
           retention-days: 14
-

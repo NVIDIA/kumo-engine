@@ -1,39 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The halo walk: which rows each partition's samples reach, within a GPU memory budget."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.sampling.paths import Hop
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.dataset import Parquet
 
-from test.kumo_pytorch.reference_engine.gpu.split.owners import _Formed, _Owners, _formed, _gather, _joinable, _union
-from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import PartitionPlan, _downward
-
+from test.kumo_pytorch.reference_engine.gpu.split.owners import (
+    _Formed,
+    _formed,
+    _gather,
+    _joinable,
+    _Owners,
+    _union,
+)
+from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+    PartitionPlan,
+    _downward,
+)
 
 #: The share of the GPU's free memory, when a split starts, that walking a sample's
 #: routes may hold at once. Past it, the copies are worked out for groups of
 #: partitions, one group at a time.
 WALK_FRACTION = 0.25
 
+
 class _WalkTooBig(Exception):
     """Walking the routes for a group of partitions would hold more GPU memory than its budget."""
+
 
 def _walk_budget() -> int:
     """`WALK_FRACTION` of the GPU's free memory now, an RMM pool's memory included."""
 
-    from test.kumo_pytorch.reference_engine.gpu.data.memory import ensure_pool, free_bytes
+    from test.kumo_pytorch.reference_engine.gpu.data.memory import (
+        ensure_pool,
+        free_bytes,
+    )
 
     ensure_pool()
     return int(free_bytes() * WALK_FRACTION)
+
 
 def _copies(plan: PartitionPlan, prefix: tuple[Hop, ...]) -> bool:
     """Whether the rows `prefix` reaches may belong to another partition: a split table, not down a chain."""
 
     return prefix[-1].table in plan.owned and not _downward(plan.owned, prefix)
+
 
 def _needed(plan: PartitionPlan, routes: tuple[tuple[Hop, ...], ...]) -> set[tuple[Hop, ...]]:
     """Every beginning of a route that must be walked: up to its last hop whose rows may be copied."""
@@ -43,6 +64,7 @@ def _needed(plan: PartitionPlan, routes: tuple[tuple[Hop, ...], ...]) -> set[tup
         last = max((i for i in range(len(route)) if _copies(plan, route[:i + 1])), default=-1)
         needed.update(route[:n] for n in range(1, last + 2))
     return needed
+
 
 def _reach(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]], owners: _Owners,
            routes: tuple[tuple[Hop, ...], ...], chunk_bytes: int, *, partitions: Sequence[int] | None = None,
@@ -113,6 +135,7 @@ def _reach(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str
             raise _WalkTooBig(f"{_human(held)} held by the rows the routes reach")
     return reached
 
+
 def _only(keys: Any, parts: Any, partitions: Sequence[int]) -> tuple[Any, Any]:
     """The (key, partition) pairs whose partition is one of `partitions`."""
 
@@ -123,10 +146,12 @@ def _only(keys: Any, parts: Any, partitions: Sequence[int]) -> tuple[Any, Any]:
     kept = plc.stream_compaction.apply_retention_mask(plc.Table([keys, parts]), plc.search.contains(wanted, parts))
     return kept.columns()[0], kept.columns()[1]
 
+
 def _bytes(*columns: Any) -> int:
     """GPU bytes held by `columns`, each counted once."""
 
     return sum(column.device_buffer_size() for column in {id(column): column for column in columns}.values())
+
 
 def _project(table: str, column: str, pairs: tuple[Any, Any, DType], wanted: set[str],
              sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]], chunk_bytes: int, held: int = 0,

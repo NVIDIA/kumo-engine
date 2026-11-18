@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Task checks across three models and both engines, using source-level goldens."""
 
 import json
@@ -5,15 +9,19 @@ import math
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from test.kumo_pytorch.contracts import build_contract
+from test.kumo_pytorch.involvement import (
+    expected_anchor,
+    verify_batch,
+    verify_inputs,
+)
+from test.kumo_pytorch.models.aml import StepResult, build_model
 from types import SimpleNamespace
 
-import kumo.pytorch.api as r
 import pytest
 import torch
 
-from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.involvement import expected_anchor, verify_batch, verify_inputs
-from test.kumo_pytorch.models.aml import StepResult, build_model
+import kumo.pytorch.api as r
 
 from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 

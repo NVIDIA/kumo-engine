@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Dated entity values (``DatedEntityValue``), sampled on the GPU for all of a call's anchors at once.
 
 The rules follow Kumo PyTorch's G-FIELDS-001 contract. For each anchor, a dated value selects rows as
@@ -22,9 +26,8 @@ Values of integers, text, floats and booleans are built.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-
 from test.kumo_pytorch.reference_engine.gpu.data.text import python_texts
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
@@ -61,11 +64,14 @@ def dated_values(sampler: Sampler, names: list[str], entity_rows: Any, cutoffs: 
 
 def _dated(sampler: Sampler, name: str, spec: Any, entity_rows: Any, cutoffs: Any,
            flags: list[tuple[Any, Any]]) -> Occurrences:
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
+
     import cupy
+
     from kumo.pytorch.contract.sample import Constant
     from kumo.pytorch.contract.schema import table_clock
-
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
 
     count = int(entity_rows.size)
     selected = sampler.select_rows(spec.rows, entity_rows, cutoffs, flags)
@@ -109,18 +115,21 @@ def _printed_ranks(table: Any, key: str, rows: Any) -> Any:
     """Each row's place in the order of its printed primary key (upstream reads a relation's rows so):
     `test.kumo_pytorch.reference_engine.gpu.data.printed.key_columns`, an integer's digits or a text's ``repr``."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-    from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns
 
     if rows.size == 0:
         return cupy.zeros(0, dtype=cupy.int64)
     columns = key_columns(table, key, rows)
     order = _view(plc.sorting.stable_sorted_order(plc.Table([_column(column) for column in columns]),
-                                                   [plc.types.Order.ASCENDING] * len(columns),
-                                                   [plc.types.NullOrder.AFTER] * len(columns))).astype(cupy.int64)
+                                                  [plc.types.Order.ASCENDING] * len(columns),
+                                                  [plc.types.NullOrder.AFTER] * len(columns))).astype(cupy.int64)
     rank = cupy.empty(rows.size, dtype=cupy.int64)
     rank[order] = cupy.arange(rows.size, dtype=cupy.int64)
     return rank

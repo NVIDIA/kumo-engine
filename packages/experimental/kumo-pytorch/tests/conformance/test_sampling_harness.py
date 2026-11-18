@@ -302,6 +302,36 @@ WRONG_ENGINES = {
     ),
     "sequence_permutation": ({}, "diskgraph", "first_order_dropped", "row and request order"),
 }
+
+
+@pytest.mark.parametrize("defect", ["order", "selection", "sample", "input"])
+def test_sequence_failure_reports_distinguish_order_from_selection(defect):
+    from conformance.sequence_cases import _same_sequences
+
+    first = (10, "clicks", (("id", True, 1),))
+    second = (10, "orders", (("id", True, 2),))
+    expected = {"a": {"history": (first, second)}}
+    actual, message = {
+        "order": ({"a": {"history": (second, first)}}, "event ordering"),
+        "selection": ({"a": {"history": (first, first)}}, "event selection/values"),
+        "sample": ({}, "missing or unexpected sample"),
+        "input": ({"a": {}}, "missing sample/input"),
+    }[defect]
+    with pytest.raises(PropertyFailure, match=message):
+        _same_sequences(expected, actual, "fixture answers")
+
+
+def test_sequence_failure_reports_both_output_formats(monkeypatch):
+    from conformance import sequence_cases
+
+    case = sequence_batch(0, "diskgraph", "sequence_expected")[0]
+    monkeypatch.setattr(sequence_cases, "_base", lambda *_: {"inspectable": {}, "model": {}})
+    with pytest.raises(PropertyFailure) as failure:
+        sequence_cases.sequence_expected(case, "diskgraph", 0)
+    assert "diskgraph inspectable fixture answers" in str(failure.value)
+    assert "diskgraph model fixture answers" in str(failure.value)
+
+
 MORE_DEFECTS = (
     ("graph_structure", "reversed_edges", "break orientation"),
     ("graph_structure", "older_on_ties", "recent kept other than the most recent"),

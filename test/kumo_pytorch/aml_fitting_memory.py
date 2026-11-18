@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Nightly 25k/400k fitting-memory campaigns for the five AML input contracts."""
 
 import argparse
@@ -22,7 +26,11 @@ from .benchmarking.fitting_memory import campaign, digest, save
 from .contracts import build_contract
 from .data import ROOT
 from .nightly import selected_cases
-from .population_anchors import add_identity, project_population, projected_rows
+from .population_anchors import (
+    add_identity,
+    project_population,
+    projected_rows,
+)
 
 COUNTS = (25000, 400000)
 

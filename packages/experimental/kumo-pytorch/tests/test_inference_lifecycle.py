@@ -45,12 +45,18 @@ from tests.reference_models.fixtures import SAMPLES, requests_for
 from tests.reference_models.fixtures import _tables as _recipe_tables
 from tests.test_diskgraph_backend import (
     _fixture_rows,
-    _pragma_contract,
     _requests,
     _schema,
     _temporal_contract,
 )
+from tests.test_diskgraph_backend import _pragma_contract as _pragma_with_length_planning
 from tests.test_docs_code import _blocks
+
+
+def _pragma_contract(schema: api.DataSchema) -> api.DataLoaderSpec:
+    """Lifecycle checks use fixed batches; EventsOf planning has its own native test."""
+    contract = _pragma_with_length_planning(schema)
+    return replace(contract, batch=replace(contract.batch, batching=api.Batching(max_samples=2)))
 
 
 def _explicit_id_contract(schema: api.DataSchema) -> api.DataLoaderSpec:
@@ -513,8 +519,7 @@ def test_serving_equals_batch_inference(tmp_path: Path, contract_name: str) -> N
         ) as task:
             expected = list(task.batches(batch_size=1, seed=SEED, output_format="model"))
 
-    # one request per call, each with only its own user's rows; batches compare by sample ID
-    # because length bucketing orders the batch path
+    # One request per call, with only its user's rows; compare by sample ID.
     server = api.ServingAssembler(artifact)
     served = {
         request.sample_id: server.assemble(_rows_for({request.entity_id}), [request], seed=SEED)

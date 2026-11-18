@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Event sequences, computed on the GPU for all of a call's anchors at once.
 
 Kumo PyTorch's G-HISTORY-001 rules:
@@ -31,14 +35,17 @@ in printed-key order on the host.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+    Values,
+    recoded,
+    shared_texts,
+)
 from typing import TYPE_CHECKING, Any
 
-from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values, recoded, shared_texts
-
 if TYPE_CHECKING:
-    from kumo.pytorch.spec import DataLoaderSpec
-
     from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+
+    from kumo.pytorch.spec import DataLoaderSpec
 
 __all__ = ["EventRows", "event_inputs"]
 
@@ -66,9 +73,11 @@ class EventRows:
     def select(self, keep: Any) -> EventRows:
         """Only the events where `keep` (a CuPy bool array) holds, in the same order."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+            _counts,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _counts
+        import cupy
 
         owner = cupy.searchsorted(cupy.cumsum(self.lengths), cupy.arange(keep.size, dtype=cupy.int64), side="right")
         values = {name: Values(value.dtype, value.values[keep], value.valid()[keep], value.texts)
@@ -94,16 +103,19 @@ def event_inputs(contract: DataLoaderSpec, sampler: Sampler, entity_rows: Any, c
                  flags: list[tuple[Any, Any]]) -> dict[str, EventRows]:
     """Every event input's events and read fields, for the anchors whose entity rows and cutoffs are given."""
 
-    import cupy
-    from kumo.pytorch.contract.batch import Composite, EventSource, EventsOf
-    from kumo.pytorch.contract.batch.validation import resolved_fields
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        aligned_reads,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import aligned_reads
+    import cupy
+
+    from kumo.pytorch.contract.batch import Composite, EventsOf, EventSource
+    from kumo.pytorch.contract.batch.validation import resolved_fields
 
     inputs = contract.batch.inputs
     withheld = aligned_reads(contract)
     reads = {name: tuple(dict.fromkeys((*(use.field for use in getattr(value.representation, "fields", ())),
-                                         *withheld.get(name, ())))) for name, value in inputs.items()}
+                                        *withheld.get(name, ())))) for name, value in inputs.items()}
     readers: dict[str, dict[str, Any]] = {}  # parent EventSource input -> selector -> upstream's resolution
     for name, value in inputs.items():
         parent = value.source.input if isinstance(value.source, EventsOf) else name
@@ -129,7 +141,7 @@ def event_inputs(contract: DataLoaderSpec, sampler: Sampler, entity_rows: Any, c
         component = _component(sampler, spec, entity_rows, cutoffs, count, flags)
         components[(collection, name)] = component
         fields[(collection, name)] = sampler.scope_values(sorted(names), spec.fields, component.table, component.rows,
-                                                         cutoffs[component.owner], component.times, flags)
+                                                          cutoffs[component.owner], component.times, flags)
     result = {}
     for parent, selected in readers.items():
         source = inputs[parent].source
@@ -186,9 +198,11 @@ def _complete(rows: EventRows, fields: list[str]) -> Any:
 def _component(sampler: Sampler, spec: Any, entity_rows: Any, cutoffs: Any, count: int, flags: list) -> _Component:
     """One component's events for each anchor: selected, ordered oldest first, `limit` kept."""
 
-    from kumo.pytorch.contract.schema import table_clock
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _counts,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _counts
+    from kumo.pytorch.contract.schema import table_clock
 
     selected = sampler.select_rows(spec.rows, entity_rows, cutoffs, flags)
     table = selected.table.name
@@ -210,12 +224,18 @@ def _component(sampler: Sampler, spec: Any, entity_rows: Any, cutoffs: Any, coun
 def _chronological(sampler: Sampler, table_name: str, owner: Any, rows: Any, times: Any) -> Any:
     """The order of (anchor, time, printed primary key): upstream's event order within an anchor."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.keys import identities
+    from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+        key_columns,
+        on_gpu,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-    from test.kumo_pytorch.reference_engine.gpu.data.keys import identities
-    from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns, on_gpu
 
     table = sampler.tables[table_name]
     key = sampler.specs[table_name].primary_key
@@ -239,11 +259,15 @@ def _settle_ties(sampler: Sampler, table_name: str, key: str, rows: Any, order: 
     """Runs of one anchor's events at the same second, put in printed-key order on the host (floats, decimals,
     bytes: `test.kumo_pytorch.reference_engine.gpu.data.printed.on_gpu`)."""
 
-    import cupy
     from test.kumo_pytorch.reference_engine.gpu.data.printed import sort_key
+    from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import (
+        _values_python,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import _values_python
+    import cupy
 
     table = sampler.tables[table_name]
     member = cupy.zeros(order.size, dtype=bool)
@@ -279,9 +303,11 @@ def _ranks(owner: Any) -> Any:
 def _merge(parts: list[_Component], source: Any, count: int) -> tuple[Any, Any, Any]:
     """An `EventSource`'s events per anchor: (events per anchor, component of each, its index there)."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _counts,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _counts
+    import cupy
 
     owner = cupy.concatenate([part.owner for part in parts])
     times = cupy.concatenate([part.times for part in parts]).astype(cupy.int64)
@@ -336,9 +362,11 @@ def _gathered(selector: str, variants: Any, components: tuple[str, ...], fields:
     """One read field over an input's events: each event's value from its own component (NULL where the
     component does not declare the field), text codes put into one dictionary."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _device_type,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _device_type
+    import cupy
 
     dtypes = {dtype for _, dtype, _ in variants}
     if len(dtypes) != 1:

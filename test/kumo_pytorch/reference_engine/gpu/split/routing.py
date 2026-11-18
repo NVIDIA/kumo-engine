@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """What a dataset takes on the GPU, and whether it is loaded whole or split: `choose_route`.
 
 The data is counted as the GPU holds it, per table and per row, from the Parquet
@@ -15,9 +19,8 @@ import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-
 from test.kumo_pytorch.reference_engine.gpu.sampling.paths import sample_routes
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
@@ -154,8 +157,12 @@ def choose_route(schema: DataSchema, dataset: Dataset, root: str, *, sample: Sam
         shared tables that leave no room are refused.
     """
 
-    from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import plan_partitions
-    from test.kumo_pytorch.reference_engine.gpu.data.sources import resolve_sources
+    from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+        resolve_sources,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+        plan_partitions,
+    )
 
     if model_bytes is not None and (type(model_bytes) is not int or model_bytes < 0):
         raise ValueError(f"model_bytes must be a non-negative number of bytes, not {model_bytes!r}")
@@ -339,7 +346,10 @@ def _index_rows(schema: DataSchema, sample: SampleSpec | None,
     for table, _ in decimals:
         kept[table] += DECIMAL_KEY_BYTES
         build[table] = max(build[table], DECIMAL_KEY_BUILD_BYTES)
-    from test.kumo_pytorch.reference_engine.gpu.data.keys import comparable, never_equal
+    from test.kumo_pytorch.reference_engine.gpu.data.keys import (
+        comparable,
+        never_equal,
+    )
 
     searched = set()  # keys of different number types meeting (`test.kumo_pytorch.reference_engine.gpu.data.keys.Translation`)
     for start, column, table, key in pairs:
@@ -387,6 +397,7 @@ def _column_rows(tables: list[str], sources: Mapping[str, tuple[Parquet, Mapping
     are put there, by (table, column)."""
 
     import pyarrow.parquet as pq
+
     from kumo.pytorch.dataset import _local_parquet_files
 
     found = {}
@@ -463,7 +474,9 @@ def _gpu_width(arrow_type: Any) -> int | None:
     if kind.is_date32(arrow_type) or kind.is_time32(arrow_type):
         return 4
     if kind.is_decimal(arrow_type):
-        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import WIDE_DECIMAL_BYTES
+        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+            WIDE_DECIMAL_BYTES,
+        )
 
         if arrow_type.precision > 38:
             return WIDE_DECIMAL_BYTES + 8 + 8

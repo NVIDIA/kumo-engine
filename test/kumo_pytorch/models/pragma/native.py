@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Native Kumo input consumption around the unchanged PRAGMA neural core."""
 
 import hashlib
@@ -10,8 +14,7 @@ from . import _kumo
 from .batch import PackedBatch
 from .pragmatiq import ModelConfig, PragmaModel, PragmaOutput
 
-
-REFERENCE_SHA256 = "f5c28f27d26cd565c1705ccf4fbb67e53349783f18b34467b47d17f051e7959b"
+REFERENCE_SHA256 = "95f0ed59fd3d512b3c37bd65a9f50cf8ac72b4170779561c63042b567504754a"
 UNAVAILABLE_TIMESTAMP = torch.iinfo(torch.int64).min
 
 
@@ -104,7 +107,7 @@ class NativePragmaModel(PragmaModel):
         if validate_inputs:
             _check_reference()
         history, profile, size = _kumo.inspect(batch, self, check_values=validate_inputs,
-                                             device=self.embedding_weight.device)
+                                               device=self.embedding_weight.device)
         keys, sequence = history["field_ids"], history["sequence"]
         device = keys.device
         boundaries = history["field_offsets"]

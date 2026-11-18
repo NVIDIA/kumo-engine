@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML model construction and objectives, adapted from Arena's model_execution.
 
 Kumo owns fitting, sampling, corruption and next-token alignment. These consumers
@@ -217,7 +221,11 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
             if family == "nuformer":
                 backbone = NuFormerModel(sequence)
         if family in {"graphsage", "combined"}:
-            from .graphsage import GraphSAGEConfig, GraphSAGEModel, NodeFeatureSpec
+            from .graphsage import (
+                GraphSAGEConfig,
+                GraphSAGEModel,
+                NodeFeatureSpec,
+            )
 
             fields = task.output_schema["inputs"]["graph"]["transactions"]
             graph = GraphSAGEConfig(
@@ -242,7 +250,10 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
             if family == "graphsage":
                 backbone = GraphSAGEModel(graph)
             else:
-                from .graph_sequence_aggregates import FusionConfig, FusionModel
+                from .graph_sequence_aggregates import (
+                    FusionConfig,
+                    FusionModel,
+                )
 
                 backbone = FusionModel(
                     FusionConfig(

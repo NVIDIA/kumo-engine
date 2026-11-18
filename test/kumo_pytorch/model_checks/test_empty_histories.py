@@ -1,31 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Real empty/mixed AML histories through input checks, forward and backward."""
 
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from test.kumo_pytorch.contracts import build_contract
+from test.kumo_pytorch.involvement import verify_batch, verify_inputs
+from test.kumo_pytorch.masked_values import original_tokens
+from test.kumo_pytorch.masked_values import verify_loss as masked_loss
+from test.kumo_pytorch.masked_values import verify_targets as verify_masked
+from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.next_token import verify_loss as next_loss
+from test.kumo_pytorch.next_token import verify_targets as verify_next
 
-import kumo.pytorch.api as r
 import pytest
 import torch
 
-from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.involvement import verify_batch, verify_inputs
-from test.kumo_pytorch.masked_values import (
-    original_tokens,
-)
-from test.kumo_pytorch.masked_values import (
-    verify_loss as masked_loss,
-)
-from test.kumo_pytorch.masked_values import (
-    verify_targets as verify_masked,
-)
-from test.kumo_pytorch.models.aml import build_model
-from test.kumo_pytorch.next_token import (
-    verify_loss as next_loss,
-)
-from test.kumo_pytorch.next_token import (
-    verify_targets as verify_next,
-)
+import kumo.pytorch.api as r
 
 from .fixtures import CUTOFF, VALUE_FIELDS, build_fixture, probe_anchor_table
 from .test_aml import CASES, assert_equal

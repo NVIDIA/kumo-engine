@@ -1,9 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Text columns: held as codes into sorted dictionaries, and turned back into Python or Arrow texts."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     pass
 
@@ -12,10 +17,12 @@ if TYPE_CHECKING:
 #: strings, byte for byte, and sorts them as Python sorts ``str`` and ``bytes`` alike: by their bytes).
 TEXT_TYPES = frozenset({"string", "bytes"})
 
+
 def is_text(dtype: Any) -> bool:
     """Whether values of `dtype` are held as text is: `TEXT_TYPES`."""
 
     return dtype is not None and dtype.name in TEXT_TYPES
+
 
 def arrow_texts(column: Any, dtype: Any = None) -> Any:
     """A libcudf strings column as an Arrow array: strings, or binary for `bytes` (its bytes as they are)."""
@@ -25,10 +32,12 @@ def arrow_texts(column: Any, dtype: Any = None) -> Any:
     array = column.to_arrow()
     return array.cast(pa.binary()) if dtype is not None and dtype.name == "bytes" else array
 
+
 def python_texts(column: Any, dtype: Any = None) -> list[Any]:
     """A libcudf strings column's values as Python ``str``, or ``bytes`` for `bytes`."""
 
     return arrow_texts(column, dtype).to_pylist()
+
 
 def text_column(values: Sequence[Any]) -> Any:
     """Python ``str`` or ``bytes`` values (None for NULL) as a libcudf strings column, byte for byte."""
@@ -37,6 +46,7 @@ def text_column(values: Sequence[Any]) -> Any:
 
     binary = any(isinstance(value, bytes) for value in values)
     return arrow_column(pa.array(values, pa.binary() if binary else pa.string()))
+
 
 def arrow_column(array: Any) -> Any:
     """An Arrow string or binary array as a libcudf strings column, byte for byte (libcudf takes no binary
@@ -50,10 +60,12 @@ def arrow_column(array: Any) -> Any:
                                       offset=array.offset)
     return plc.Column.from_arrow(array)
 
+
 def byte_order(value: Any) -> bytes:
     """The bytes a text (``str``, as UTF-8) or ``bytes`` value sorts by, as `_with_codes` sorts a column."""
 
     return value if isinstance(value, bytes) else value.encode()
+
 
 def text_codes(texts: Any, dictionary: Any) -> Any:
     """The code of each text of `texts` (a libcudf strings column without NULLs) in `dictionary` (sorted distinct
@@ -62,10 +74,10 @@ def text_codes(texts: Any, dictionary: Any) -> Any:
     Texts are equal when their bytes are, as Python compares the strings upstream reads.
     """
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
 
     size = texts.size()
     if size == 0 or dictionary.size() == 0:
@@ -74,14 +86,17 @@ def text_codes(texts: Any, dictionary: Any) -> Any:
     first, last = _view(plc.search.lower_bound(*bounds)), _view(plc.search.upper_bound(*bounds))
     return cupy.where(last > first, first, -1).astype(cupy.int32)  # held: its one place, between its bounds
 
+
 def texts_at(dictionary: Any, codes: Any, dtype: Any = None) -> list[Any]:
     """The texts of `dictionary` at `codes` (CuPy), as Python strings (``bytes`` for `bytes`): a host copy of
     those texts only."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     if codes.size == 0:
         return []

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Arena-owned Parquet anchor access using Kumo's public positional order."""
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ from collections.abc import Iterator, Sequence
 import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as pads
+
 from kumo.pytorch.anchors import (
     ALL_ANCHORS,
     AllAnchors,

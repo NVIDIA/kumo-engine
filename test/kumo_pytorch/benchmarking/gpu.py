@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """CUDA window peaks, deferred transfer events and UUID-matched NVML samples.
 
 Measurements follow Arena's boundary rules without an Arena dependency. No

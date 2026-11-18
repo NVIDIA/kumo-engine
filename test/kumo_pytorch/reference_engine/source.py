@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Native relational queries handed to Kumo as records or typed columnar batches."""
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from typing import Any, Protocol
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+
 from kumo.pytorch.contract.batch import EntitySource as EntityInputSource
 from kumo.pytorch.contract.batch import EventSource, Input
 from kumo.pytorch.contract.dtypes import DType
@@ -30,7 +35,11 @@ from kumo.pytorch.contract.sample import (
     value_dtype,
 )
 from kumo.pytorch.contract.schema import DataSchema
-from kumo.pytorch.data.model import ModelRowTarget, ModelSequence, ModelSourceBatch
+from kumo.pytorch.data.model import (
+    ModelRowTarget,
+    ModelSequence,
+    ModelSourceBatch,
+)
 from kumo.pytorch.data.records import (
     EntityHistory,
     EntityState,

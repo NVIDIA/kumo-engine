@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run one benchmark worker in its own Linux memory cgroup.
 
 The CI supervisor needs root only to provision/migrate the worker. The command

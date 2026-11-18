@@ -1,18 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Controlled CPU overfitting checks; not full-data learning or throughput tests."""
 
-from collections import Counter
-from copy import deepcopy
 import hashlib
-from importlib.metadata import version
 import json
 import math
-from pathlib import Path
 import platform
-
-import pytest
-import torch
-import kumo.pytorch.api as r
-
+from collections import Counter
+from copy import deepcopy
+from importlib.metadata import version
+from pathlib import Path
 from test.kumo_pytorch.involvement import verify_batch
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.masked_values import (
@@ -23,6 +22,12 @@ from test.kumo_pytorch.masked_values import (
     verify_targets,
 )
 from test.kumo_pytorch.models.aml import build_model
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
+
 from .fixtures import build_fixture
 from .test_aml import CASES, fit_case
 

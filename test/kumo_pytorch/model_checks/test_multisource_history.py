@@ -1,9 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the real-data history checker on a hand-auditable raw AML fixture."""
 
 from datetime import UTC, datetime
-
-import pytest
-
 from test.kumo_pytorch.aml_source import (
     account_identity_map,
     prepare_aml_sources,
@@ -11,6 +12,8 @@ from test.kumo_pytorch.aml_source import (
 )
 from test.kumo_pytorch.history_checks import check_histories, expected_history
 from test.kumo_pytorch.involvement import source_reference
+
+import pytest
 
 from .test_aml_source import account, source_files, transaction
 

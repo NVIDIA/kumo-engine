@@ -1,19 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Independent fixtures for the canonical source boundary, not dataset acceptance."""
 
 import hashlib
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
+from test.kumo_pytorch.aml_source import (
+    account_identity_map,
+    load_account_id_map,
+    prepare_aml_sources,
+)
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
-from test.kumo_pytorch.aml_source import (
-    prepare_aml_sources,
-    load_account_id_map,
-    account_identity_map,
-)
 
 
 def account(bank, number, variant="hi-small"):

@@ -1,11 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Which tables follow the root entity, along which chains, and which routes a split serves."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from test.kumo_pytorch.reference_engine.gpu.sampling.paths import (
+    Hop,
+    candidate_routes,
+    sample_routes,
+)
 from typing import TYPE_CHECKING
-from test.kumo_pytorch.reference_engine.gpu.sampling.paths import Hop, candidate_routes, sample_routes
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.contract.sample import SampleSpec
@@ -25,6 +34,7 @@ class Step:
     parent: str
     parent_key: str
 
+
 @dataclass(frozen=True)
 class PartitionPlan:
     """Which tables follow the root entity, by which chains, and which are shared.
@@ -40,6 +50,7 @@ class PartitionPlan:
     owned: Mapping[str, tuple[tuple[Step, ...], ...]]
     shared: tuple[str, ...]
     primary_keys: Mapping[str, str]
+
 
 def plan_partitions(schema: DataSchema, root: str) -> PartitionPlan:
     """Each table's chains of relations up to `root`, or "shared" where there is none.
@@ -96,6 +107,7 @@ def plan_partitions(schema: DataSchema, root: str) -> PartitionPlan:
             shared.append(name)
     return PartitionPlan(root, owned, tuple(shared), {name: spec.primary_key for name, spec in tables.items()})
 
+
 def _check_keys(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]]) -> None:
     for table, chains in plan.owned.items():
         for chain in chains:
@@ -103,6 +115,7 @@ def _check_keys(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mappin
                 for name, key in ((step.child, step.key), (step.parent, step.parent_key)):
                     if key not in sources[name][1]:
                         raise ValueError(f"{name}.{key} links {table} to the root but is not a loaded column")
+
 
 def _downward(owned: Mapping[str, tuple[tuple[Step, ...], ...]], prefix: tuple[Hop, ...]) -> bool:
     """Whether `prefix` walks from the root down one of its last table's chains, reaching only a partition's own rows.
@@ -114,6 +127,7 @@ def _downward(owned: Mapping[str, tuple[tuple[Step, ...], ...]], prefix: tuple[H
 
     chain = tuple(Step(hop.table, hop.column, hop.from_table, hop.from_column) for hop in reversed(prefix))
     return chain in owned.get(prefix[-1].table, ())
+
 
 def _sample_routes(schema: DataSchema, plan: PartitionPlan,
                    sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]],
@@ -132,6 +146,7 @@ def _sample_routes(schema: DataSchema, plan: PartitionPlan,
                 if column not in sources[table][1]:
                     raise ValueError(f"{table}.{column} joins relation {hop.relation!r} but is not a loaded column")
     return routes
+
 
 def _refuse_split_candidates(schema: DataSchema, sample: SampleSpec, split: set[str], root: str) -> None:
     """A candidate is any row of its table: a candidate set that reads split tables cannot be served by partitions."""

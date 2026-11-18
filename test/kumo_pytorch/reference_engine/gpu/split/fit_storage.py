@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exact host fitting storage used by budgeted split materialization.
 
 RAM is used until an explicit retained-entry budget is reached, then a private
@@ -210,7 +214,7 @@ class FitBudget:
             if incoming.spilled:
                 return
         self.peak_retained_bytes = max(self.peak_retained_bytes,
-                                      sum(s.retained_bytes for s in self.stores) + charge)
+                                       sum(s.retained_bytes for s in self.stores) + charge)
 
     def __enter__(self):
         return self
@@ -256,6 +260,7 @@ class ValueCounts:
 
     def append(self, pair):
         import pickle
+
         import numpy as np
         values, counts = pair
         arrow = not isinstance(values, np.ndarray)
@@ -268,6 +273,7 @@ class ValueCounts:
 
     def arrays(self):
         import pickle
+
         import numpy as np
         if self.arrow:
             import pyarrow as pa
@@ -290,12 +296,14 @@ class TupleParts:
 
     def append(self, part):
         import pickle
+
         import numpy as np
         missing, identities, counts = part
         types = [(False, a.dtype) if isinstance(a, np.ndarray) else (True, a.type) for a in identities]
         if self.types is not None and self.types != types:
             raise ValueError('fitting tuple type changed between chunks')
         self.types = types
+
         def records():
             for row, count in enumerate(counts):
                 values = tuple((bool(m[row]), a[row].as_py() if arrow else a[row].item())
@@ -312,6 +320,7 @@ class TupleParts:
 
     def materialized(self):
         import pickle
+
         import numpy as np
         if self.types is None:
             return []

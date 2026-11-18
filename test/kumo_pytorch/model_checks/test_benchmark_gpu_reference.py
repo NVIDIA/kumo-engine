@@ -1,17 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """CUDA reference loader validation; no model training or engine-parity oracle."""
 
 import json
 import os
 from collections.abc import Mapping
-
-import pytest
-import torch
-
 from test.kumo_pytorch.aml_benchmark import counts, factory
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
 
-from .test_benchmark_aml import CASES, source  # noqa: F401 -- shared local source fixture
+import pytest
+import torch
+
+from .test_benchmark_aml import (  # noqa: F401 -- shared local source fixture
+    CASES,
+    source,
+)
 
 
 @pytest.mark.parametrize("workload,family", CASES)

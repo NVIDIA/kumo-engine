@@ -945,6 +945,63 @@ def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     return native_anchor_table(api.Parquet(str(path)), "entity", "at")
 
 
+@pytest.mark.parametrize("length_input", ["history", "history_timing"])
+def test_native_length_planning_for_event_source_and_events_of(
+    history_data, tmp_path, length_input
+):
+    """Both length sources must plan correct native batches or refuse before execution."""
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    schema, dataset, _, _, _ = history_data
+    fields = api.Fields((api.Encode("amount", api.Raw()),))
+    contract = api.DataLoaderSpec(
+        schema,
+        api.SampleSpec(
+            api.EntitySpec("users"),
+            events={
+                "history": api.EventSpec(
+                    api.Rows(("orders",), api.TimeWindow("at", stop=0)),
+                    {"amount": api.Field("amount")},
+                )
+            },
+        ),
+        api.BatchSpec(
+            inputs={
+                "history": api.Input(
+                    api.EventSource(("history",), max_events=3), fields, api.Padded()
+                ),
+                "history_timing": api.Input(api.EventsOf("history"), fields, api.Padded()),
+            },
+            batching=api.Batching(
+                max_samples=2, max_tokens=4, length_input=length_input, bucket_by_length=True
+            ),
+        ),
+    )
+    owners = (3, 1, 2, 1)
+    anchors = _review_anchors(tmp_path, owners)
+    expected = {1: [40.0, 50.0, 60.0], 2: [], 3: [80.0]}
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+            assert isinstance(task._anchors, NativeAnchors)
+            for epoch in (0, 1):
+                seen = []
+                for batch in task.batches(shuffle=False, epoch=epoch, output_format="model"):
+                    ids = batch.metadata["sample_ids"]
+                    assert 0 < len(ids) <= 2
+                    _equal(batch.inputs["history"], batch.inputs["history_timing"])
+                    values = batch.inputs[length_input]
+                    assert values["valid"].numel() <= 4, "Padded batch exceeded its length budget"
+                    for row, sample_id in enumerate(ids):
+                        actual = values["amount"]["values"][row][values["valid"][row]].tolist()
+                        assert actual == expected[owners[sample_id]]
+                    seen.extend(ids)
+                assert sorted(seen) == list(range(len(owners)))
+                assert task._anchors._last_length_planning_stats == (
+                    (len(owners), 0) if epoch == 0 else (0, len(owners))
+                )
+
+
 def _reference_batches(task):
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 

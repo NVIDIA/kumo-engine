@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exact stored-column category counts on the GPU, over original table rows.
 
 Resident tables are reused. Other tables are read in bounded chunks from their
@@ -7,7 +11,6 @@ limit. Vocabulary finalization copies distinct keys to the host, using the
 existing canonical float ordering and fitted-state format.
 """
 from __future__ import annotations
-
 
 CHUNK_BYTES = 64 * 1024 * 1024
 
@@ -33,10 +36,17 @@ class CategoryCounts:
         self.keys, self.counts = grouped.columns()[0], results[0].columns()[0]
 
     def encoder(self, identity, config, dtype):
+        from test.kumo_pytorch.reference_engine.gpu.data.text import (
+            is_text,
+            text_column,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _view,
+            counted_vocabulary,
+        )
+
         import cupy
         import pylibcudf as plc
-        from test.kumo_pytorch.reference_engine.gpu.data.text import is_text, text_column
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view, counted_vocabulary
 
         if self.keys is None:
             keys, counts = cupy.empty(0, dtype=cupy.int64), cupy.empty(0, dtype=cupy.int64)
@@ -68,9 +78,13 @@ def _clock_mask(table, clock, cutoff):
 
 
 def _column_counts(table, name, keep):
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     valid = table.present(name)
     selected = valid if keep is None else keep if valid is None else keep & valid
@@ -95,8 +109,9 @@ def _column_counts(table, name, keep):
 
 
 def count_columns(table, source, names, cutoff, *, loaded=None):
-    from kumo.pytorch.contract.schema import table_clock
     from test.kumo_pytorch.reference_engine.gpu.data.tables import read_chunks
+
+    from kumo.pytorch.contract.schema import table_clock
 
     clock = table_clock(table)
     columns = {name: table.columns[name] for name in dict.fromkeys([*names, *([clock] if clock else [])])}

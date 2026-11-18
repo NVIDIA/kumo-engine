@@ -39,7 +39,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 from kumo.pytorch.contract.sample import GraphLayer, GraphSample, NeighborhoodSpec
-from tests.native_fixtures import check_rows, native_engine, parquet_dataset
+from tests.native_fixtures import check_rows, check_rows_or_refuse, native_engine, parquet_dataset
 
 SCHEMA = DataSchema(
     (
@@ -171,7 +171,10 @@ def test_a_value_column_is_refused_as_a_time(shape: str, column: str) -> None:
 @pytest.mark.parametrize("column", ["occurred_at", "booked_on"])
 def test_timestamp_and_date32_columns_are_times(shape: str, column: str) -> None:
     build, path = SHAPES[shape]
-    assert _time_issues(_contract(build(column)), path) == []
+    contract = _contract(build(column))
+    contract.validate()
+    check_rows_or_refuse(contract, {"users": [], "events": []})
+    assert _time_issues(contract, path) == []
 
 
 def test_diskgraph_refuses_a_window_on_a_value_column_before_reading_data(tmp_path) -> None:

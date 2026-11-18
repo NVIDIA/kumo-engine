@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exact decimal values and arithmetic on the GPU.
 
 Decimal calculations use 160 digits of precision and then check the
@@ -67,10 +71,12 @@ def column_words(column: Any) -> Any:
     """A libcudf decimal column's values (32, 64 or 128 bits), or a wide decimal's (`test.kumo_pytorch.reference_engine.gpu.data.decimal_storage._wide_decimal`),
     as words."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+        _wide_bytes,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import _wide_bytes
 
     size = column.size()
     kind = column.type().id()
@@ -94,10 +100,12 @@ def column_words(column: Any) -> Any:
 def gathered_words(column: Any, rows: Any) -> Any:
     """A stored decimal column's words at `rows` (CuPy), only those rows read."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     picked = plc.copying.gather(plc.Table([column]), _column(cupy.ascontiguousarray(rows.astype(cupy.int32))),
                                 plc.copying.OutOfBoundsPolicy.DONT_CHECK).columns()[0]
@@ -207,8 +215,10 @@ def decimal_values(dtype: Any, held: Any, present: Any) -> Values:
     """Calculated decimals of `dtype` (words `held`) as sampled values: their words, float64 numbers, and Arrow
     values made when asked."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+        rounded_numbers,
+    )
     from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import rounded_numbers
 
     low = held[:, 0].copy()
     fits = (held[:, 1:] == (low >> 63)[:, None]).all(axis=1)
@@ -299,10 +309,10 @@ def float_words(values: Any, scale: int) -> tuple[Any, Any]:
     when it is a decimal of that scale (``Decimal(value)`` has at most `scale` places; 0.5 at scale 1, never 0.1,
     whose float is 0.1000000000000000055...), and none for NaN or infinity. -0.0 is 0."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.keys import widened
+
     import cupy
     import numpy as np
-
-    from test.kumo_pytorch.reference_engine.gpu.data.keys import widened
 
     bits = cupy.ascontiguousarray(widened(values)).view(cupy.int64)
     held = cupy.empty((bits.size, WORDS), dtype=cupy.int64)

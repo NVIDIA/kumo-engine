@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Adapters supply work and semantic counts; the runner never inspects payloads."""
 
 from collections.abc import Callable, Iterable, Mapping

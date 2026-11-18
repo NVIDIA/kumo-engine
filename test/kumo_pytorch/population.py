@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Full-population AML loader acceptance, independent of training and timing runs."""
 
 import argparse
@@ -10,9 +14,10 @@ from collections import Counter
 from itertools import islice
 from pathlib import Path
 
-import kumo.pytorch.api as r
 import pyarrow.parquet as pq
 import torch
+
+import kumo.pytorch.api as r
 
 from .aml_inputs import SPLITS, verify_inputs
 from .aml_source import (
@@ -24,7 +29,11 @@ from .aml_source import (
 from .contracts import GRAPH_TIMESTAMP_FIELD, build_contract
 from .data import ROOT
 from .nightly import selected_cases
-from .population_anchors import add_identity, project_population, projected_rows
+from .population_anchors import (
+    add_identity,
+    project_population,
+    projected_rows,
+)
 from .run_aml import positive
 
 PDF_CASES = {

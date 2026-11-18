@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """PRAGMA AML task integration; generic masking mechanics stay in package tests."""
 
 import json
@@ -6,11 +10,6 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
-
-import kumo.pytorch.api as r
-import pytest
-import torch
-
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.masked_values import (
     FIELDS,
@@ -20,6 +19,11 @@ from test.kumo_pytorch.masked_values import (
     verify_targets,
 )
 from test.kumo_pytorch.models.aml import StepResult, build_model
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
 
 from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 from .test_aml import assert_equal

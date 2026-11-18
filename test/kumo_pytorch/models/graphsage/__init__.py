@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """RelBench GraphSAGE with an Kumo graph-batch adapter."""
 
 from .adapter import GraphBatch, KumoGraphAdapter

@@ -9,14 +9,24 @@ from dataclasses import replace
 import pytest
 import torch
 
-from kumo.pytorch.api import AlignedEventTarget, Encode, Field, Fields, SampleRequest, Vocabulary
+from kumo.pytorch.api import (
+    AlignedEventTarget,
+    DataLoaderSpec,
+    Encode,
+    Field,
+    Fields,
+    SampleRequest,
+    Vocabulary,
+)
 from kumo.pytorch.data.typed_vectors import AttributeSchema, TypedVectorBatch
 from kumo.pytorch.models.causal import CausalEncoderConfig
 from kumo.pytorch.models.model import MultiObjectiveModel
 from kumo.pytorch.models.typed import TypedVectorEncoder
 from kumo.pytorch.objectives import TypedAttributeObjective
 from tests.helpers import written_state
+from tests.native_fixtures import check_rows_or_refuse
 from tests.reference_models.batch_definitions import TREASURE_BATCH
+from tests.reference_models.data_schema import SYNTHETIC_SCHEMA
 from tests.reference_models.fixtures import (
     SAMPLES,
     _tables,
@@ -193,6 +203,9 @@ def test_treasure_missing_next_field_contributes_no_target_loss():
 
 
 def test_treasure_requires_entities_from_its_declared_account_table():
+    check_rows_or_refuse(
+        DataLoaderSpec(SYNTHETIC_SCHEMA, SAMPLES["treasure"], TREASURE_BATCH), _tables()
+    )
     requests = tuple(
         SampleRequest(sample_id=f"wrong-{index}", entity_id=index, as_of_time=100)
         for index in (1, 2)

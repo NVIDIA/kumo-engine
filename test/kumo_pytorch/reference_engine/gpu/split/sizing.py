@@ -1,26 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """How many partitions a split needs: counting each partition's rows until the largest fits."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
 import test.kumo_pytorch.reference_engine.gpu.split.routing as footprint
+from collections.abc import Mapping, Sequence
 from test.kumo_pytorch.reference_engine.gpu.sampling.paths import Hop
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.dataset import Parquet
 
 from test.kumo_pytorch.reference_engine.gpu.split import owners as owner_maps
-from test.kumo_pytorch.reference_engine.gpu.split.owners import _Owners
-from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import PartitionPlan
 from test.kumo_pytorch.reference_engine.gpu.split import walk
-from test.kumo_pytorch.reference_engine.gpu.split.walk import WALK_FRACTION, _WalkTooBig, _human, _needed
-
+from test.kumo_pytorch.reference_engine.gpu.split.owners import _Owners
+from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+    PartitionPlan,
+)
+from test.kumo_pytorch.reference_engine.gpu.split.walk import (
+    WALK_FRACTION,
+    _human,
+    _needed,
+    _WalkTooBig,
+)
 
 #: How many partition counts a split chosen by `choose_route` tries, when the rows a
 #: sample's routes copy in make a partition too big, before it refuses.
 SIZING_TRIES = 4
+
 
 def _fit(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]],
          routes: tuple[tuple[Hop, ...], ...], loads: Mapping[str, footprint._Load], num_partitions: int, room: int | None,
@@ -76,6 +88,7 @@ def _fit(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str, 
             )
         num_partitions = grown
 
+
 def _count(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]], owners: _Owners,
            reached: Mapping[str, Sequence[tuple[str, Any, Any, DType]]], chunk_bytes: int,
            copied: list[dict[str, int]], own: list[dict[str, int]] | None = None) -> None:
@@ -102,14 +115,17 @@ def _count(plan: PartitionPlan, sources: Mapping[str, tuple[Parquet, Mapping[str
                     for k, rows in enumerate(_per_partition(found, owners.k)):
                         counts[k][name] += rows
 
+
 def _per_partition(parts: Any, num_partitions: int) -> list[int]:
     import pylibcudf as plc
 
     _, offsets = plc.partitioning.partition(plc.Table([parts]), parts, num_partitions)
     return [offsets[k + 1] - offsets[k] for k in range(num_partitions)]
 
+
 def _footer_rows(table: str, sources: Mapping[str, tuple[Parquet, Mapping[str, DType]]]) -> int:
     import pyarrow.parquet as pq
+
     from kumo.pytorch.dataset import _local_parquet_files
 
     return sum(pq.ParquetFile(path).metadata.num_rows for path in _local_parquet_files(sources[table][0].path))

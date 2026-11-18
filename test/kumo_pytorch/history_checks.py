@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Required multi-component histories on verified AML sources and anchors.
 
 These are additional correctness probes, not new model workload definitions.
@@ -140,7 +144,7 @@ def check_histories(
                         )
                         if order == "descending":
                             chosen = chosen[::-1]
-                        start, stop = output["offsets"][i : i + 2].tolist()
+                        start, stop = output["offsets"][i: i + 2].tolist()
                         actual = list(
                             zip(
                                 output["source"]["values"][start:stop].tolist(),

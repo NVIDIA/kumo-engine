@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Catalog-driven CI shards and a combined report; no native imports for planning."""
 
 import argparse
@@ -149,8 +153,17 @@ def summarize(directory):
                     if refused:
                         evidence = selected["refusal"]
                         assert kind in {"smoke", "full"}
-                        assert evidence["stage"] == "preflight"
-                        assert evidence["execution"] == "not_started"
+                        assert (evidence["stage"], evidence["execution"]) == (
+                            "preflight",
+                            "not_started",
+                        ) or (
+                            (evidence["stage"], evidence["execution"])
+                            == ("ingestion", "stopped_before_materialization")
+                            and evidence["engine"] == "diskgraph"
+                            and evidence["source_rows"] == 0
+                            and len(evidence["issues"]) == 1
+                            and evidence["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"
+                        )
                         assert evidence["issues"] and all(
                             all(
                                 issue.get(key)

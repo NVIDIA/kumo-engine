@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Native projected Polars tables for the arena engine's root-row foundation."""
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+
 from kumo.pytorch.contract.dtypes import DType
 
 from ..parquet import local_parquet_files

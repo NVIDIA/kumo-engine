@@ -1,10 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Fitting a task's input encoders on the GPU from its fit split's anchors."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, Values, concatenated, encoder_identity, fit_encoder, graph_identity
+from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+    GpuEncoder,
+    Values,
+    concatenated,
+    encoder_identity,
+    fit_encoder,
+    graph_identity,
+)
 from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.encoding import FittedSpace
     from kumo.pytorch.spec import DataLoaderSpec
@@ -12,8 +24,13 @@ if TYPE_CHECKING:
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
     from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary
     from test.kumo_pytorch.reference_engine.gpu.encoding.targets import TargetState
-from test.kumo_pytorch.reference_engine.gpu.batching import inputs as call_inputs
-from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _config, _inputs
+
+from test.kumo_pytorch.reference_engine.gpu.batching import \
+    inputs as call_inputs
+from test.kumo_pytorch.reference_engine.gpu.batching.inputs import (
+    _config,
+    _inputs,
+)
 from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
 
 __all__ = ['fit_inputs']
@@ -21,6 +38,7 @@ __all__ = ['fit_inputs']
 
 #: Anchors whose neighborhoods are sampled at once when fitting node fields (memory grows with the fanouts).
 GRAPH_FIT_ANCHORS = 1 << 15
+
 
 def fit_inputs(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, anchors: GpuAnchors, rows: Any,
                reused: tuple[dict[str, GpuEncoder], dict[str, CompositeVocabulary], dict[str, FittedSpace]] | None = None,
@@ -42,13 +60,23 @@ def fit_inputs(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, a
     ``_fit_targets``). `field_maps` (`test.kumo_pytorch.reference_engine.gpu.encoding.field_names`) join their field spaces.
     """
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        component,
+        component_specs,
+        fit_composite,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _raise_flags,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        fit_targets,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import (
+        allocate_spaces,
+    )
+
     from kumo.pytorch.contract.batch import Composite
     from kumo.pytorch.contract.batch.encodings import Buckets, Raw, ZScore
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import component, component_specs, fit_composite
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _raise_flags
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import fit_targets
-    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import allocate_spaces
 
     sampled, labels = call_inputs._sampled(contract, sampler, index, anchors, rows)
     if reused is not None:
@@ -104,18 +132,26 @@ def fit_inputs(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, a
     state = fit_targets(contract, labels, sampled, encoders)
     return encoders, composites, allocate_spaces(contract, encoders, composites, field_maps), state
 
+
 def _node_values(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, anchors: GpuAnchors,
                  rows: Any) -> list[tuple[str, str, Any, Values]]:
     """Every graph input's node-field values over the neighborhoods of the anchors at `rows`: (input, table,
     field use, values of every node of every sample), the neighborhoods sampled `GRAPH_FIT_ANCHORS` anchors at a
     time, uniform draws with seed 0 and epoch 0 (as upstream fits)."""
 
-    import cupy
-    from kumo.pytorch.contract.batch import Graph
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _raise_flags,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import (
+        sample_neighborhoods,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _raise_flags
-    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import sample_neighborhoods
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
+    import cupy
+
+    from kumo.pytorch.contract.batch import Graph
 
     graphs = [(name, value) for name, value in contract.batch.inputs.items()
               if isinstance(value.representation, Graph) and value.representation.node_fields]

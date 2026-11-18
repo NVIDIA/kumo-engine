@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exercise the real-data runner on a tiny raw AML-format Parquet fixture."""
 
 import json
@@ -7,11 +11,6 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-
-import kumo.pytorch.api as r
-import pytest
-import torch
-
 from test.kumo_pytorch import run_aml
 from test.kumo_pytorch.aml_source import (
     account_identity_map,
@@ -20,6 +19,11 @@ from test.kumo_pytorch.aml_source import (
 )
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.run_aml import run_case
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
 
 from .test_aml_source import account, source_files, transaction
 

@@ -1,17 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Verify measured boundaries, native ownership and scoped restoration."""
 
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor
-
-import pytest
-from kumo.pytorch import api as r
-from kumo.pytorch import assembly
-
 from test.kumo_pytorch.benchmarking.kumo_observers import KumoObservers
 from test.kumo_pytorch.benchmarking.recording import Recorder
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
+
+import pytest
+
+from kumo.pytorch import api as r
+from kumo.pytorch import assembly
 
 from .fixtures import build_fixture, probe_anchor_table
 

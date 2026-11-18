@@ -1,12 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Stream original AML anchors into native execution tables without sampling full runs."""
 
 import hashlib
 import json
 
-import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+
+import kumo.pytorch.api as r
 
 from .aml_inputs import SECOND, SPLITS
 

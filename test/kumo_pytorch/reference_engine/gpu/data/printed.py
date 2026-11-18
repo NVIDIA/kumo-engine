@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Stable printed-key ordering for rows with equal times or values.
 
 Upstream sorts rows that tie (on time, on a value) by their primary key's
@@ -113,11 +117,14 @@ def text_reprs(texts: Any) -> Any:
     the host, and only those texts.
     """
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pyarrow as pa
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     def strings(values: list[str]) -> Any:
         return plc.Column.from_arrow(pa.array(values, pa.string()))
@@ -157,10 +164,13 @@ def text_ranks(dictionary: Any, codes: Any) -> Any:
     upstream's order. Only those texts are printed: found by marking them when `codes` are as many as the
     texts (an index over a whole table: every text, printed without a copy), else by sorting `codes`."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     size = dictionary.size()
     if codes.size == 0:
@@ -225,7 +235,9 @@ def key_columns(table: GpuTable, key: str, rows: Any) -> list[Any]:
     if dtype.name == "bool":
         return [values.astype("int64")]
     from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import _calendar
+    from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import (
+        _calendar,
+    )
 
     parts = ("year", "month", "day") if dtype.name == "date32" else ("year", "month", "day", "hour", "minute")
     columns = []
@@ -242,16 +254,22 @@ def _host_ranks(table: GpuTable, key: str, rows: Any) -> list[Any]:
     the host: one column. A decimal is gathered alone (not its float64 numbers, which `GpuTable.numbers` would
     work out for the whole column and keep)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
+    from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import (
+        _values_python,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
+
     import cupy
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import _values_python
-
     if table.dtypes[key].name.startswith("decimal"):
-        import pylibcudf as plc
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
+        import pylibcudf as plc
 
         picked = plc.copying.gather(plc.Table([table.columns[key]]), _column(cupy.ascontiguousarray(rows.astype("int32"))),
                                     plc.copying.OutOfBoundsPolicy.DONT_CHECK).columns()[0]

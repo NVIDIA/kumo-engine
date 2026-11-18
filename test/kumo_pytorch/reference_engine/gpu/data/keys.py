@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Keys of every type as int64 identities: equal exactly when upstream's Python values are.
 
 A relation and an anchor lookup use Python value equality: two keys
@@ -82,7 +86,10 @@ class KeySpace:
         if self.dtype.name in ("string", "bytes"):
             self.dictionary = table.dictionaries[column]
         elif self.dtype.name.startswith("decimal"):
-            from test.kumo_pytorch.reference_engine.gpu.data.decimals import column_words, distinct_index
+            from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+                column_words,
+                distinct_index,
+            )
 
             self._places, self.dictionary = distinct_index(column_words(table.columns[column]))
 
@@ -243,9 +250,14 @@ def exact_form(values: Any, dtype: Any, target: Any) -> tuple[Any, Any]:
     target the float64 bits (-0.0 as 0.0; NaN has none), of a decimal target the words at its scale ((n, 4)).
     `target` may be `dtype` itself: the column's own form."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+        float_words,
+        integer_words,
+        rescaled,
+        words_float,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.data.decimals import float_words, integer_words, rescaled, words_float
+    import cupy
 
     decimal, floating = dtype.name.startswith("decimal"), dtype.name.startswith("float")
     if target.name.startswith("decimal"):
@@ -346,10 +358,12 @@ def _search_table(held: Any) -> Any:
     """Decimals (words) as a libcudf table that sorts and searches in value order: the high word, then the low
     ones with their top bit flipped (they compare unsigned; flipped, as signed)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     flip = cupy.int64(-(2**63))
     columns = [held[:, 3], held[:, 2] ^ flip, held[:, 1] ^ flip, held[:, 0] ^ flip]
@@ -359,9 +373,9 @@ def _search_table(held: Any) -> Any:
 def _word_bound(dictionary: Any, words: Any, side: str, searched: Any = None) -> Any:
     """`searchsorted` over decimals in value order: the place of each of `words` in sorted `dictionary`."""
 
-    import pylibcudf as plc
-
     from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
+
+    import pylibcudf as plc
 
     order, nulls = [plc.types.Order.ASCENDING] * 4, [plc.types.NullOrder.AFTER] * 4
     search = plc.search.lower_bound if side == "left" else plc.search.upper_bound
@@ -402,10 +416,15 @@ def dictionary_identities(values: list[Any], space: KeySpace) -> Any:
     if not values:
         return cupy.zeros(0, dtype=cupy.int64)
     if space.dtype.name in ("string", "bytes"):
-        from test.kumo_pytorch.reference_engine.gpu.data.text import text_codes, text_column
+        from test.kumo_pytorch.reference_engine.gpu.data.text import (
+            text_codes,
+            text_column,
+        )
 
         return text_codes(text_column(values), space.dictionary).astype(cupy.int64)
-    from test.kumo_pytorch.reference_engine.gpu.data.decimals import constant_words
+    from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+        constant_words,
+    )
 
     held = cupy.concatenate([constant_words(value, space.dtype.scale) for value in values])
     return _word_places(held, space.dictionary)

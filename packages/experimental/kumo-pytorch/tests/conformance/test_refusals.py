@@ -65,6 +65,133 @@ def test_declared_preflight_refusal_has_evidence():
     assert evidence["issues"][0]["path"] == "sample.entity.filters"
 
 
+def actual_empty_refusal(directory, rows=()):
+    import diskgraph
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    directory.mkdir(parents=True, exist_ok=True)
+    source = directory / "items.parquet"
+    pq.write_table(pa.table({"id": pa.array(rows, type=pa.int64())}), source)
+    contract = refused_contract()
+    contract = replace(contract, sample=replace(contract.sample, entity=api.EntitySpec("items")))
+    try:
+        with api.prepare(
+            contract,
+            api.Dataset({"items": api.Parquet(str(source))}),
+            api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1),
+        ):
+            pass
+    except diskgraph.DiskgraphSystemError as error:
+        return error
+    raise AssertionError("expected native empty-table rejection")
+
+
+def test_native_empty_base_table_is_an_ingestion_refusal(tmp_path):
+    from conformance.refusals import record_child_refusal
+
+    evidence = clean_refusal(actual_empty_refusal(tmp_path))
+    assert evidence["outcome"] == "refused"
+    assert evidence["stage"] == "ingestion"
+    assert evidence["execution"] == "stopped_before_materialization"
+    assert evidence["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"
+    assert evidence["issues"][0]["path"] == "dataset.tables.items"
+    record_child_refusal(evidence)
+    with pytest.raises(AssertionError):
+        record_child_refusal({**evidence, "source_rows": 1})
+
+
+def test_empty_native_read_of_nonempty_source_is_not_a_refusal(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch import materialization
+
+    empty = tmp_path / "wrong-source.parquet"
+    pq.write_table(pa.table({"id": pa.array([], type=pa.int64())}), empty)
+    original = materialization._compile_diskgraph_config
+
+    def wrong_source(*args, **kwargs):
+        config, relations, source_types = original(*args, **kwargs)
+        config["tables"][0]["source"]["paths"] = [str(empty)]
+        return config, relations, source_types
+
+    monkeypatch.setattr(materialization, "_compile_diskgraph_config", wrong_source)
+    error = actual_empty_refusal(tmp_path, rows=[1])
+    assert "zero rows for table items" in str(error)
+    assert clean_refusal(error) is None
+
+
+@pytest.mark.parametrize(
+    "defect", ["message", "unknown-table", "context", "cause", "late", "missing-source"]
+)
+def test_empty_table_exception_does_not_accept_other_failures(tmp_path, defect):
+    error = actual_empty_refusal(tmp_path)
+    if defect == "message":
+        error.args = ("Ingest failed: corrupt input",)
+    elif defect == "unknown-table":
+        error.args = ("Ingest failed: graph source returned zero rows for table unknown",)
+    elif defect == "context":
+        error.__context__ = AssertionError("earlier wrong answer")
+    elif defect == "cause":
+        error.__cause__ = RuntimeError("earlier crash")
+    elif defect == "missing-source":
+        (tmp_path / "items.parquet").unlink()
+    else:
+        try:
+            raise type(error)(str(error))
+        except type(error) as late:
+            error = late
+    assert clean_refusal(error) is None
+
+
+REFUSE = "from tests.conformance.test_refusals import actual_refusal; raise actual_refusal()"
+EMPTY_REFUSE = (
+    "from pathlib import Path; "
+    "from tests.conformance.test_refusals import actual_empty_refusal; "
+    "raise actual_empty_refusal(Path('empty-source'))"
+)
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "assert False, 'wrong answer'", "raise ValueError('crash')"]
+)
+@pytest.mark.parametrize("empty", [False, True])
+def test_docs_classify_in_child_and_preserve_earlier_errors(tmp_path, failure, empty):
+    from tests.test_docs_code import ROOT, Block, _run
+
+    segment = [
+        Block("python", failure or "print('before refusal')", 1),
+        Block("python", EMPTY_REFUSE if empty else REFUSE, 5),
+    ]
+    if failure:
+        with pytest.raises(AssertionError, match="wrong answer|crash"):
+            _run(ROOT / "README.md", segment, tmp_path)
+    else:
+        result = _run(ROOT / "README.md", segment, tmp_path)
+        assert result["outputs"] == ["before refusal\n"]
+        assert result["refusal"]["issues"][0]["code"] == (
+            "DG-EMPTY-BASE-TABLE" if empty else "DG-ROW-FILTER"
+        )
+        assert result["refusal"]["line"] == 5
+
+
+def test_docs_refusal_does_not_hide_wrong_prior_output(tmp_path, monkeypatch):
+    from tests import test_docs_code as docs
+
+    monkeypatch.setattr(
+        docs,
+        "_blocks",
+        lambda path: [
+            docs.Block("python", "print('wrong')", 1),
+            docs.Block("text", "expected", 3, {"output": ""}),
+            docs.Block("python", REFUSE, 5),
+        ],
+    )
+    with pytest.raises(AssertionError, match="printed output differs"):
+        docs.test_page_code_runs_in_order(docs.ROOT / "README.md", tmp_path)
+
+
 @pytest.mark.parametrize(
     "defect",
     [
@@ -186,13 +313,18 @@ def test_pytest_reports_refusals_separately_and_preserves_failures(tmp_path):
     )
     (tmp_path / "test_policy.py").write_text(
         "import pytest\n"
-        "from tests.conformance.test_refusals import actual_refusal\n"
+        "from tests.conformance.test_refusals import actual_refusal, actual_empty_refusal\n"
         "@pytest.fixture\ndef rejected():\n    raise actual_refusal()\n"
         "def test_setup_refused(rejected):\n    raise AssertionError('body must not execute')\n"
         "def test_refused():\n    raise actual_refusal()\n"
         "def test_wrong_answer():\n    assert 1 == 2\n"
         "def test_unexpected_error():\n    raise ValueError('unsupported maybe')\n"
         "def test_success():\n    assert 1 == 1\n"
+        "def test_empty_refused(tmp_path):\n    raise actual_empty_refusal(tmp_path)\n"
+        "def test_fake_empty_refusal():\n"
+        "    import diskgraph\n"
+        "    raise diskgraph.DiskgraphSystemError(\n"
+        "        'Ingest failed: graph source returned zero rows for table items')\n"
     )
     result = subprocess.run(
         [
@@ -213,8 +345,8 @@ def test_pytest_reports_refusals_separately_and_preserves_failures(tmp_path):
         timeout=30,
     )
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "2 failed, 3 passed" in result.stdout, result.stdout + result.stderr
-    assert "Accepted preflight capability refusals" in result.stdout
+    assert "3 failed, 4 passed" in result.stdout, result.stdout + result.stderr
+    assert "Accepted capability refusals" in result.stdout
     from xml.etree import ElementTree
 
     cases = {
@@ -224,3 +356,8 @@ def test_pytest_reports_refusals_separately_and_preserves_failures(tmp_path):
     assert refused.find("failure") is None and refused.find("skipped") is None
     evidence = json.loads(refused.find("properties/property").get("value"))
     assert evidence[0]["issues"][0]["code"] == "DG-ROW-FILTER"
+    empty = cases["test_empty_refused"]
+    assert empty.find("failure") is None and empty.find("skipped") is None
+    evidence = json.loads(empty.find("properties/property").get("value"))
+    assert evidence[0]["stage"] == "ingestion"
+    assert evidence[0]["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"

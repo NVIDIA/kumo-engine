@@ -1,12 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Parallel execution must retain every binding, experiment and repetition."""
 
 import json
 import subprocess
 import sys
+from test.kumo_pytorch import nightly
 
 import pytest
-
-from test.kumo_pytorch import nightly
 
 from .test_fitting_memory import runs
 
@@ -121,7 +124,8 @@ def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
 
 
 @pytest.mark.parametrize("fault", [None, "missing-reason", "late", "delivered"])
-def test_summary_retains_refusals_without_claiming_population(tmp_path, fault):
+@pytest.mark.parametrize("empty", [False, True])
+def test_summary_retains_refusals_without_claiming_population(tmp_path, fault, empty):
     reports(tmp_path)
     case = nightly.matrix()["include"][0]["case"]
     path = tmp_path / "full" / case / "report.json"
@@ -145,6 +149,19 @@ def test_summary_retains_refusals_without_claiming_population(tmp_path, fault):
             ],
         },
     )
+    if empty:
+        selected["refusal"].update(
+            stage="ingestion",
+            execution="stopped_before_materialization",
+            engine="diskgraph",
+            source_rows=0,
+        )
+        selected["refusal"]["issues"][0].update(
+            code="DG-EMPTY-BASE-TABLE",
+            path="dataset.tables.items",
+            reason="Ingest failed: graph source returned zero rows for table items",
+            suggestion="Use nonempty base tables",
+        )
     if fault == "missing-reason":
         del selected["refusal"]["issues"][0]["reason"]
     elif fault == "late":

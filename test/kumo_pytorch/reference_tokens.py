@@ -1,12 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Source-to-token oracle shared by AML task checks, without engine encoders.
 
 Fitting and ID-space allocation are covered by package tests. Given their saved
 state, independently apply the prototype's vocabulary and numeric-bin rules.
 """
 
+import json
 from bisect import bisect_right
 from datetime import datetime, timezone
-import json
 
 FIELDS = (
     "direction",

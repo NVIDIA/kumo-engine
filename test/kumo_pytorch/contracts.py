@@ -1,16 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML prototype input declarations adapted from Arena typed_contracts.
 
 Shared by real-data runs and tiny model checks. Full-history capacities must
 come from the prepared source, not arbitrary truncation limits.
 """
 
-import kumo.pytorch.api as r
 from dataclasses import replace
+from test.kumo_pytorch.models.aml import AMOUNTS as GRAPH_AMOUNT_FIELDS
+from test.kumo_pytorch.models.aml import CATEGORIES as GRAPH_CATEGORY_FIELDS
 
-from test.kumo_pytorch.models.aml import (
-    AMOUNTS as GRAPH_AMOUNT_FIELDS,
-    CATEGORIES as GRAPH_CATEGORY_FIELDS,
-)
+import kumo.pytorch.api as r
 
 GRAPH_TIMESTAMP_FIELD = "event_time_seconds"
 

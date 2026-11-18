@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Repeat any benchmark adapter in fresh interpreters and compare fitted state.
 
 Adapters opting into state comparison consume load_fitted_state/save_fitted_state

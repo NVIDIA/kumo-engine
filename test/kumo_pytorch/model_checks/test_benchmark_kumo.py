@@ -1,15 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the generic adapter on non-AML Kumo data and an unrelated linear model."""
 
 import json
+from test.kumo_pytorch.benchmarking import BatchCounts, run
+from test.kumo_pytorch.benchmarking.kumo import KumoInputs, kumo_workload
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
-from kumo.pytorch import api as r
 
-from test.kumo_pytorch.benchmarking import BatchCounts, run
-from test.kumo_pytorch.benchmarking.kumo import KumoInputs, kumo_workload
+from kumo.pytorch import api as r
 
 
 def product_anchors(directory, prefix, count):
@@ -144,7 +148,9 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
             dataset = r.Dataset({"products": r.Parquet(str(path))})
             if backend == "polars":
                 pytest.importorskip("polars")
-                from test.kumo_pytorch.reference_engine.polars import PolarsEngine
+                from test.kumo_pytorch.reference_engine.polars import (
+                    PolarsEngine,
+                )
 
                 engine = PolarsEngine()
             else:

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Labels: sample targets computed or supplied for each anchor, encoded beside the inputs, on the GPU.
 
 Kumo PyTorch's G-TARGET-001 rules:
@@ -39,17 +43,20 @@ import dataclasses
 import json
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
 from typing import TYPE_CHECKING, Any
 
-from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-
 if TYPE_CHECKING:
-    from kumo.pytorch.spec import DataLoaderSpec
-
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        CompositeVocabulary,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+    )
     from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+
+    from kumo.pytorch.spec import DataLoaderSpec
 
 __all__ = ["TargetState", "aligned_reads", "encode_targets", "fit_targets", "sample_targets", "target_identity",
            "target_uses"]
@@ -69,7 +76,12 @@ def target_uses(contract: DataLoaderSpec) -> list[tuple[str, Any, Any]]:
     ``LabelTarget`` is one field named ``"value"``; an ``AlignedEventTarget`` its fields, then its derived labels
     by name."""
 
-    from kumo.pytorch.contract.batch import AlignedEventTarget, Encode, LabelTarget, StructuredTarget
+    from kumo.pytorch.contract.batch import (
+        AlignedEventTarget,
+        Encode,
+        LabelTarget,
+        StructuredTarget,
+    )
 
     uses = []
     for name in sorted(contract.batch.targets):
@@ -120,7 +132,12 @@ def sample_targets(contract: DataLoaderSpec, sampler: Sampler, anchors: GpuAncho
     """Each sample target the batch targets read, for the anchors at `rows` (their entity rows and cutoffs
     given): `Values` per anchor, or for a ``RowTarget`` a field-to-`Values` mapping."""
 
-    from kumo.pytorch.contract.sample import Aggregate, Compare, ExternalTarget, RowTarget
+    from kumo.pytorch.contract.sample import (
+        Aggregate,
+        Compare,
+        ExternalTarget,
+        RowTarget,
+    )
 
     targets = contract.sample.targets
     reads = _reads(contract)
@@ -143,11 +160,12 @@ def _row_target(sampler: Sampler, spec: Any, fields: tuple[str, ...], entity: An
                 flags: list[tuple[Any, Any]]) -> dict[str, Values]:
     """A ``RowTarget``'s fields for each anchor: its first (or last) row, as an event; missing without one."""
 
+    from test.kumo_pytorch.reference_engine.gpu.sampling.events import (
+        _component,
+    )
     from types import SimpleNamespace
 
     import cupy
-
-    from test.kumo_pytorch.reference_engine.gpu.sampling.events import _component
 
     count = entity.size
     order = "ascending" if spec.selection == "first" else "descending"  # one row kept from that end
@@ -162,9 +180,11 @@ def _row_target(sampler: Sampler, spec: Any, fields: tuple[str, ...], entity: An
 def _gathered(values: Values, at: Any) -> Values:
     """`values` at positions `at` (CuPy int64), NULL where `at` is -1."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _nulls,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _nulls
+    import cupy
 
     size = values.size
     if size == 0:
@@ -217,9 +237,12 @@ def _supplied(anchors: GpuAnchors, rows: Any, name: str, dtype: Any, supplied: d
     """Supplied label `name` of the anchors at `rows`, of type `dtype`; missing where none is supplied
     (`supplied`: the labels requests built in code give; None for an anchor table)."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+        _nulls,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values, _nulls
+    import cupy
 
     if supplied is not None:
         return _host_values(dtype, supplied.get(name, [None] * int(rows.size)))
@@ -269,8 +292,10 @@ def _whole_seconds(anchors: GpuAnchors, column: str) -> Any:
     """The anchor table with timestamp label `column` in whole seconds, rounded up (as upstream normalizes a
     supplied time); cached."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+        _stored,
+    )
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
-    from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import _stored
 
     cache = anchors.__dict__.setdefault("_label_seconds", {})
     if column not in cache:
@@ -283,13 +308,17 @@ def _whole_seconds(anchors: GpuAnchors, column: str) -> Any:
 def _host_values(dtype: Any, labels: list[Any]) -> Values:
     """Normalized Python labels as `Values` of `dtype` (text as codes into sorted texts)."""
 
-    import pyarrow as pa
-    import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _column_values
-    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable, _with_codes
+    from test.kumo_pytorch.reference_engine.gpu.data.tables import (
+        GpuTable,
+        _with_codes,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _column_values,
+    )
 
     import cupy
+    import pyarrow as pa
+    import pylibcudf as plc
 
     if dtype.name == "timestamp":
         arrow = pa.array([None if value is None else int(value.timestamp()) for value in labels], pa.int64())
@@ -321,11 +350,22 @@ def fit_targets(contract: DataLoaderSpec, labels: dict[str, Any], sampled: dict[
     (NULLs excluded) into `encoders`. An encoder an input already fitted is kept, and refused if the target
     declares it differently. `sampled`: the inputs' values (`test.kumo_pytorch.reference_engine.gpu.batching.inputs._sampled`)."""
 
-    from kumo.pytorch.contract.batch import AlignedEventTarget, MatchingGroupTarget
-    from kumo.pytorch.contract.batch.encodings import Raw, UseEncoding
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        component,
+        fit_groups,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+        _raise_flags,
+        concatenated,
+        fit_encoder,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import component, fit_groups
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, _raise_flags, concatenated, fit_encoder
+    from kumo.pytorch.contract.batch import (
+        AlignedEventTarget,
+        MatchingGroupTarget,
+    )
+    from kumo.pytorch.contract.batch.encodings import Raw, UseEncoding
 
     state = TargetState()
     flags: list[tuple[Any, Any]] = []
@@ -373,8 +413,12 @@ def _group_specs(contract: DataLoaderSpec, target: Any, encoders: dict[str, GpuE
     """A matching group target's components: the typed values of its fields, a NULL spelled
     ``("null", "")``."""
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import ComponentSpec
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import encoder_identity
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        ComponentSpec,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        encoder_identity,
+    )
 
     uses = {use.field: use for use in contract.batch.inputs[target.input].representation.fields}
     specs = []
@@ -459,7 +503,10 @@ def _target_values(labels: dict[str, Any], sampled: dict[str, Any], state: Targe
                    use: Any) -> Values:
     """What a target field encodes, for a call's anchors (per anchor) or rows (an aligned target, per row)."""
 
-    from kumo.pytorch.contract.batch import AlignedEventTarget, StructuredTarget
+    from kumo.pytorch.contract.batch import (
+        AlignedEventTarget,
+        StructuredTarget,
+    )
 
     if isinstance(target, AlignedEventTarget):
         derived = {label.name: label for label in target.derived}
@@ -478,14 +525,23 @@ def encode_targets(contract: DataLoaderSpec, labels: dict[str, Any], sampled: di
     structured or aligned target: per field it names; an aligned target's flat over its input's rows, to be
     laid out per batch), as upstream encodes them."""
 
+    from test.kumo_pytorch.reference_engine.gpu.batching.layout import _raw
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        component,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import (
+        translated,
+    )
+
     import cupy
     import torch
-    from kumo.pytorch.contract.batch import AlignedEventTarget, MatchingGroupTarget, StructuredTarget
-    from kumo.pytorch.contract.batch.encodings import Raw
 
-    from test.kumo_pytorch.reference_engine.gpu.batching.layout import _raw
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import component
-    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import translated
+    from kumo.pytorch.contract.batch import (
+        AlignedEventTarget,
+        MatchingGroupTarget,
+        StructuredTarget,
+    )
+    from kumo.pytorch.contract.batch.encodings import Raw
 
     result: dict[str, Any] = {}
     for name in sorted(contract.batch.targets):
@@ -528,6 +584,7 @@ def mask_tokens(target: Any, values: Any, slots: Any, owner: Any, history: Any, 
 
     import cupy
     import torch
+
     from kumo.pytorch.data.masking import _below, _uniform
 
     ids = torch.from_dlpack(cupy.ascontiguousarray(values))

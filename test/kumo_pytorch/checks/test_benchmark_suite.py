@@ -1,8 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import json
+from test.kumo_pytorch.benchmarking.suite import run_suite
 
 import pytest
-
-from test.kumo_pytorch.benchmarking.suite import run_suite
 
 
 def test_suite_retains_each_case_and_does_not_pass_partial_evidence(tmp_path):

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exercise real CUDA collectors on the engine CI runner; missing hardware fails.
 
 This is collector acceptance, not full dataset benchmark acceptance. Device

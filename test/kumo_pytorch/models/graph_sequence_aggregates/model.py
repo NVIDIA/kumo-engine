@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Concatenate three request-aligned embeddings and predict the task target."""
 
 from dataclasses import dataclass
@@ -47,18 +51,18 @@ class FusionModel(nn.Module):
         self.head = nn.Linear(config.fusion_dim, config.out_channels)
 
     def validate_kumo_batch(self, batch, *, graph_input="graph", sequence_input="history",
-                           aggregate_input="aggregates") -> None:
+                            aggregate_input="aggregates") -> None:
         """Validate aligned CPU inputs without modifying or replacing the batch.
 
         Targets remain the task's responsibility. Fusion keeps the legacy
         consumer's identity and target rules independently of token pretraining.
         """
         _kumo.inspect(batch, self.config, graph_input, sequence_input, aggregate_input,
-                     check_values=True, cpu=True)
+                      check_values=True, cpu=True)
         self.graph_encoder.validate_kumo_batch(batch, input_name=graph_input)
 
     def forward_kumo(self, batch, *, graph_input="graph", sequence_input="history",
-                    aggregate_input="aggregates", validate_inputs=True) -> FusionOutput:
+                     aggregate_input="aggregates", validate_inputs=True) -> FusionOutput:
         """Consume native graph, history and aggregate fields from one Kumo batch.
 
         After CPU validation and batch transfer, validate_inputs=False avoids

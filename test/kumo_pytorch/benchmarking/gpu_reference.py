@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Timing hooks for the copied GPU preparation path; no model consumer."""
 
 import inspect
@@ -59,6 +63,7 @@ def bind(recorder, *, split_dir, device):
 
     def observe(observers):
         import diskgraph
+
         from kumo.pytorch import column_stats
 
         from ..reference_engine.gpu.batching import fit

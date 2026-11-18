@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Scalar encoders fitted and applied on the GPU: Raw, Vocabulary, ZScore and Buckets.
 
 The rules are upstream Kumo PyTorch's (``kumo.pytorch.encoding``, G-ENCODING-001):
@@ -31,9 +35,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from test.kumo_pytorch.reference_engine.gpu.data.text import (
+    is_text,
+    python_texts,
+    text_column,
+)
 from typing import TYPE_CHECKING, Any
-
-from test.kumo_pytorch.reference_engine.gpu.data.text import is_text, python_texts, text_column
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -92,10 +99,12 @@ class Values:
         """A decimal field's values as an Arrow array of its type (NULL where not present), made once."""
 
         if self.host is None:
+            from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+                decimal_arrow,
+            )
+
             import pyarrow as pa
             import pyarrow.compute as pc
-
-            from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import decimal_arrow
 
             host = self.build() if self.column is None else decimal_arrow(self.column, self.dtype)
             if self.present is not None:
@@ -123,7 +132,11 @@ class GpuEncoder:
     def roles(self) -> dict[str, int]:
         """Local IDs with a special meaning, as upstream's ``FittedEncoder.roles``."""
 
-        from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary
+        from kumo.pytorch.contract.batch.encodings import (
+            Buckets,
+            Text,
+            Vocabulary,
+        )
 
         if isinstance(self.config, (Vocabulary, Text)):
             return {"missing": self.config.missing_id, "unknown": self.config.unknown_id}
@@ -135,7 +148,11 @@ class GpuEncoder:
     def local_ids(self) -> tuple[int, ...]:
         """Every local ID this encoder can give, as upstream's ``FittedEncoder.local_ids``."""
 
-        from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary
+        from kumo.pytorch.contract.batch.encodings import (
+            Buckets,
+            Text,
+            Vocabulary,
+        )
 
         if isinstance(self.config, Vocabulary):
             return tuple(sorted((*self.roles.values(), *(index for _, index in self.entries))))
@@ -205,7 +222,12 @@ class GpuEncoder:
         """(encoded values, valid) as CuPy arrays; problems are appended to `flags` as (message, GPU bool)."""
 
         import cupy
-        from kumo.pytorch.contract.batch.encodings import Buckets, Vocabulary, ZScore
+
+        from kumo.pytorch.contract.batch.encodings import (
+            Buckets,
+            Vocabulary,
+            ZScore,
+        )
 
         valid = values.valid()
         config = self.config
@@ -356,7 +378,13 @@ def concatenated(parts: list[Values]) -> Values:
 def fit_encoder(identity: str, config: Any, dtype: DType, values: Values) -> GpuEncoder:
     """Fit once from the fitting anchors' values, NULLs excluded (upstream's ``fit_encoder``)."""
 
-    from kumo.pytorch.contract.batch.encodings import Buckets, Raw, Text, Vocabulary, ZScore
+    from kumo.pytorch.contract.batch.encodings import (
+        Buckets,
+        Raw,
+        Text,
+        Vocabulary,
+        ZScore,
+    )
 
     if isinstance(config, (ZScore, Buckets)) and not dtype.numeric:
         raise ValueError(f"encoder {identity}: {type(config).__name__} requires a numeric dtype")
@@ -417,6 +445,7 @@ def learned_tokenizer(config: Any, texts: Iterable[str]) -> Any:
 
 def _fit_vocabulary(identity: str, config: Any, dtype: DType, values: Values) -> GpuEncoder:
     import cupy
+
     from kumo.pytorch.encoding import typed_key
 
     if config.values is None:

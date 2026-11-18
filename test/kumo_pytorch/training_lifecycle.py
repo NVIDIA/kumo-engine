@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Fresh-process AML finetuning with frozen inputs, followed by optimizer resume."""
 
 import argparse
@@ -9,8 +13,9 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-import kumo.pytorch.api as r
 import torch
+
+import kumo.pytorch.api as r
 
 from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .involvement import verify_batch

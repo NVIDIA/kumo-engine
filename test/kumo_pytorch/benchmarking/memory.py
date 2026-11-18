@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exact or explicitly sampled stage peaks for a dedicated Linux cgroup v2.
 
 See https://docs.kernel.org/admin-guide/cgroup-v2.html (memory.peak).

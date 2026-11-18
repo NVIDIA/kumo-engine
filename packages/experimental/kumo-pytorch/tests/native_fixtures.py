@@ -80,6 +80,12 @@ def check_rows(contract, dataset, **kwargs):
     return api.check(contract, parquet_dataset(contract.schema, dataset), native_engine(), **kwargs)
 
 
+def check_rows_or_refuse(contract, dataset):
+    from conformance.refusals import check_or_refuse
+
+    check_or_refuse(contract, parquet_dataset(contract.schema, dataset), native_engine())
+
+
 class NativeSamples:
     """Raw native samples, validated with the same contract as public preparation."""
 
@@ -169,8 +175,11 @@ def native_anchor_table(*args, **kwargs):
 
 
 @contextmanager
-def forbid_deprecated_engine():
-    """Fail at the first deprecated execution call, also in example subprocesses."""
+def forbid_deprecated_engine(
+    *, message="InMemory execution is forbidden; assert DiskGraph against fixture answers"
+):
+    """Forbid test backends/oracles; allow ServingAssembler's package-owned dependency."""
+    import sys
     from functools import wraps
     from inspect import signature
     from unittest.mock import patch
@@ -180,12 +189,25 @@ def forbid_deprecated_engine():
     from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
     from kumo.pytorch.engines.in_memory.source import InMemorySource
 
-    def forbid(original):
+    serving_calls = {api.ServingAssembler.__init__.__code__, api.ServingAssembler.assemble.__code__}
+
+    def serving_is_executing():
+        frame = sys._getframe(1)
+        try:
+            while frame is not None:
+                if frame.f_code in serving_calls:
+                    return True
+                frame = frame.f_back
+            return False
+        finally:
+            del frame
+
+    def forbid(original, *, serving_dependency):
         @wraps(original)
         def forbidden(*args, **kwargs):
-            raise AssertionError(
-                "InMemory execution is forbidden; assert DiskGraph against fixture answers"
-            )
+            if serving_dependency and serving_is_executing():
+                return original(*args, **kwargs)
+            raise AssertionError(message)
 
         return forbidden
 
@@ -209,6 +231,14 @@ def forbid_deprecated_engine():
         ] + [(api.InMemoryEngine, method) for method in ("open", "materialize_anchors")]
         for implementation, name in methods:
             stack.enter_context(
-                patch.object(implementation, name, forbid(getattr(implementation, name)))
+                patch.object(
+                    implementation,
+                    name,
+                    forbid(
+                        getattr(implementation, name),
+                        serving_dependency=name == "__init__"
+                        and implementation is not InMemoryAnchors,
+                    ),
+                )
             )
         yield

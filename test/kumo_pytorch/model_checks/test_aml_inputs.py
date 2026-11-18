@@ -1,14 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from test.kumo_pytorch.aml_inputs import SECOND, requests_for, select_anchors
+from test.kumo_pytorch.contracts import build_contract, counts
 
-import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
 
-from test.kumo_pytorch.aml_inputs import SECOND, requests_for, select_anchors
-from test.kumo_pytorch.contracts import build_contract, counts
+import kumo.pytorch.api as r
 
 from .fixtures import build_fixture, probe_anchor_table
 

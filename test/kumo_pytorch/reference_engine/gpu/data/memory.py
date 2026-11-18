@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """GPU memory and device setup shared by everything in `test.kumo_pytorch.reference_engine.gpu`.
 
 `ensure_pool` makes libcudf's (and so pylibcudf's) and CuPy's allocations come

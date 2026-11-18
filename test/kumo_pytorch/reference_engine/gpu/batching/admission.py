@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Refusing a batch call whose widest padded batch cannot fit on the GPU, before batches are handed out.
 
 A padded layout lays each sample's events out as wide as the longest history in
@@ -25,9 +29,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from kumo.pytorch.spec import DataLoaderSpec
-
     from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+
+    from kumo.pytorch.spec import DataLoaderSpec
 
 __all__ = ["Admission", "BatchMemoryError", "admitted", "event_counts", "padded_event_inputs"]
 
@@ -46,7 +50,12 @@ def padded_event_inputs(contract: DataLoaderSpec) -> dict[str, str]:
     """The inputs laid out ``[samples, events]``, each mapped to the ``EventSource`` input whose events it lays
     out, when the row selection gives each sample's event count exactly (no field value drops events)."""
 
-    from kumo.pytorch.contract.batch import Composite, EventSource, EventsOf, Flatten
+    from kumo.pytorch.contract.batch import (
+        Composite,
+        EventsOf,
+        EventSource,
+        Flatten,
+    )
     from kumo.pytorch.contract.batch.layouts import Nested, Padded
 
     inputs = contract.batch.inputs
@@ -73,9 +82,11 @@ def event_counts(contract: DataLoaderSpec, sampler: Sampler, entity_rows: Any, c
     `test.kumo_pytorch.reference_engine.gpu.sampling.events.event_inputs` selects them: every component's selected rows, each
     component's ``limit`` kept, summed, then the input's ``max_events`` kept."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+        _counts,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _counts
+    import cupy
 
     count = int(entity_rows.size)
     selected: dict[tuple[str, str], Any] = {}
@@ -164,6 +175,7 @@ def measured_slots(batch: Any, contract: DataLoaderSpec, admission: Admission) -
     width]`` tensors (the ``sequence`` of a ``Nested`` layout) and those of the targets laid out beside it."""
 
     import torch
+
     from kumo.pytorch.contract.batch import AlignedEventTarget
     from kumo.pytorch.contract.batch.layouts import Nested
 
@@ -197,9 +209,9 @@ def admitted(contract: DataLoaderSpec, batches: Callable[[], Iterator[Any]],
     """`batches`' batches, refused before the first is handed out when `admission` (worked out first) says
     the widest cannot fit; an out-of-memory error while one is built becomes a `BatchMemoryError`."""
 
-    import torch
-
     from test.kumo_pytorch.reference_engine.gpu.data.memory import free_bytes
+
+    import torch
 
     checked = admission()
     if checked is not None:

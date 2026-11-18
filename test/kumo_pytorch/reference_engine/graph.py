@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Recent-neighbor graphs with unique edges and layerwise frontier expansion.
 
 Table selection runs natively. Python assembles selected topology and delegates
@@ -12,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import torch
+
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import Rows, SampleRequest
 from kumo.pytorch.contract.schema import table_clock
@@ -183,7 +188,7 @@ class GraphExecutor:
                         owner, _table, source_id = selected[selected_position]
                         source_index = positions[(owner, source_table, source_id)]
                         for identity in target_ids[
-                            offsets[request_position] : offsets[request_position + 1]
+                            offsets[request_position]: offsets[request_position + 1]
                         ]:
                             target_index, _fresh = add(owner, target_table, identity)
                             pair = (

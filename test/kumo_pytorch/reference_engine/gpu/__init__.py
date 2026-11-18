@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """GPU backend for Kumo PyTorch: GPU sampling, encoding and batch delivery for Kumo contracts.
 
 `prepare` takes the place of ``kumo.prepare(contract, dataset, engine)`` for a

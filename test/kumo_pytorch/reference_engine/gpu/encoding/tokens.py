@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Token inputs, final ID spaces and flattened histories, on the GPU.
 
 Upstream Kumo PyTorch's rules (``assembly.py`` ``_allocate_spaces``, ``_token_rows``,
@@ -35,16 +39,22 @@ row or per sample.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+    encoder_identity,
+    graph_identity,
+)
 from typing import TYPE_CHECKING, Any
 
-from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import encoder_identity, graph_identity
-
 if TYPE_CHECKING:
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        CompositeVocabulary,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+    )
+
     from kumo.pytorch.encoding import FittedSpace
     from kumo.pytorch.spec import DataLoaderSpec
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import CompositeVocabulary
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder
 
 __all__ = ["Flat", "TokenField", "TokenRows", "allocate_spaces", "flatten", "per_sample", "token_rows", "translated"]
 
@@ -56,13 +66,20 @@ def allocate_spaces(contract: DataLoaderSpec, encoders: dict[str, GpuEncoder],
     ``field_space`` holds its field-name dictionary (`field_maps`, `test.kumo_pytorch.reference_engine.gpu.encoding.field_names`) as one member, 0 its
     pad."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        composite_identity,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import (
+        fields_identity,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        target_identity,
+        target_uses,
+    )
+
     from kumo.pytorch.contract.batch import Composite
     from kumo.pytorch.contract.batch.tokens import ROLE_ORDER
     from kumo.pytorch.encoding import FittedSpace
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import composite_identity
-    from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import fields_identity
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import target_identity, target_uses
 
     batch = contract.batch
     members: dict[str, dict[str, tuple[tuple[int, ...], dict[str, int]]]] = {name: {} for name in batch.id_spaces}

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """A table's Parquet files: which they are, whether they agree, and how libcudf reads them."""
 
 from __future__ import annotations
@@ -6,6 +10,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.contract.schema import DataSchema
@@ -26,6 +31,7 @@ def split_form(dtype: DType) -> DType:
     if dtype.precision <= 38:
         return DType("decimal128", precision=dtype.precision, scale=dtype.scale)
     return DType("bytes")
+
 
 def resolve_sources(schema: DataSchema, dataset: Dataset, *,
                     only: Sequence[str] | None = None) -> dict[str, tuple[Parquet, dict[str, DType]]]:
@@ -54,6 +60,7 @@ def resolve_sources(schema: DataSchema, dataset: Dataset, *,
         sources[name] = (dataset.tables[name], columns)
     return sources
 
+
 def _only(schema: DataSchema, names: Sequence[str]) -> DataSchema:
     """`schema` with just the tables `names` and the relations among them."""
 
@@ -66,6 +73,7 @@ def _only(schema: DataSchema, names: Sequence[str]) -> DataSchema:
         relations=tuple(relation for relation in schema.relations
                         if relation.left_table in keep and relation.right_table in keep),
     )
+
 
 def _physical_names(table: str, source: Parquet, logical: Sequence[str]) -> dict[str, str]:
     """Logical column name to the physical name read, through the source's renames.
@@ -90,12 +98,14 @@ def _physical_names(table: str, source: Parquet, logical: Sequence[str]) -> dict
             names[name] = name
     return names
 
+
 def _check_files(table: str, files: Sequence[str], physical: Mapping[str, str],
                  columns: Mapping[str, DType], renames: Mapping[str, str], *, split: bool = False) -> None:
     """Each declared column, in every file, with its declared type (a split's own files: or the type a split
     stores it in, `split_form`). Metadata only."""
 
     import pyarrow.parquet as pq
+
     from kumo.pytorch.contract.dtypes import DType
 
     for path in files:
@@ -116,6 +126,7 @@ def _check_files(table: str, files: Sequence[str], physical: Mapping[str, str],
         except (ValueError, OSError) as error:
             raise ValueError(f"bind {table} in {path!r}: {error}") from error
 
+
 def _gds_present() -> bool:
     """Whether this machine can use GPUDirect Storage: its ``nvidia_fs`` kernel module is loaded.
 
@@ -124,6 +135,7 @@ def _gds_present() -> bool:
     """
 
     return Path("/sys/module/nvidia_fs").is_dir() or Path("/proc/driver/nvidia-fs").exists()
+
 
 def _compat_mode() -> None:
     """On a machine without GPUDirect Storage, read through the host from the start.
@@ -143,6 +155,7 @@ def _compat_mode() -> None:
     if not _gds_present():
         os.environ["KVIKIO_COMPAT_MODE"] = "ON"
 
+
 def _reader(table: str, source: Parquet, columns: Mapping[str, DType], *,
             split: bool = False) -> tuple[Any, dict[str, str]]:
     """libcudf's reader options for `columns` of `source`, after checking its files (`split`: a split's own).
@@ -150,10 +163,12 @@ def _reader(table: str, source: Parquet, columns: Mapping[str, DType], *,
     Returns the options and each logical column's physical name.
     """
 
-    import pylibcudf as plc
-    from kumo.pytorch.dataset import _local_parquet_files  # Kumo PyTorch's own file listing
-
     from test.kumo_pytorch.reference_engine.gpu.data.memory import ensure_pool
+
+    import pylibcudf as plc
+
+    from kumo.pytorch.dataset import \
+        _local_parquet_files  # Kumo PyTorch's own file listing
 
     ensure_pool()  # every table read starts here: GPU memory comes from one pool from now on
     files = _local_parquet_files(source.path)

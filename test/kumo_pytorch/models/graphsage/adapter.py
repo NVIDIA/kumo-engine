@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Convert Kumo's disjoint graph output to model tensors without resampling.
 
 This module deliberately does not import Kumo. It consumes the documented

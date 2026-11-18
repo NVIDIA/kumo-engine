@@ -1,11 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Fitting scalability reports must not turn partial measurements into acceptance."""
 
 import copy
 import json
+from test.kumo_pytorch.benchmarking import fitting_memory as fitting
 
 import pytest
-
-from test.kumo_pytorch.benchmarking import fitting_memory as fitting
 
 
 def runs(large=190):

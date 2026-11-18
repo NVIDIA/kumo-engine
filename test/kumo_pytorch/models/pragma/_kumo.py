@@ -1,9 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Private checks and tensor operations for PRAGMA's native Kumo interface."""
 
 from collections.abc import Mapping, Sequence
 
 import torch
-
 
 SPECIALS = ("[PAD]", "[UNK]", "[MASK]", "[USR]", "[EVT]")
 
@@ -101,8 +104,8 @@ def inspect(batch, model, *, check_values, cpu=False, device=None):
     history = history_fields(batch, model.history_input, check_values=check_values, cpu=cpu, device=device)
     profile = None if model.profile_input is None else mapping(inputs[model.profile_input], model.profile_input)
     keys, values, positions, valid = [tensor(history[key], "history." + key, dtype, cpu=cpu, device=device)
-        for key, dtype in (("field_ids", torch.long), ("value_ids", torch.long),
-                           ("position_ids", torch.long), ("valid", torch.bool))]
+                                      for key, dtype in (("field_ids", torch.long), ("value_ids", torch.long),
+                                                         ("position_ids", torch.long), ("valid", torch.bool))]
     if keys.ndim != 1 or any(value.shape != keys.shape for value in (values, positions, valid)):
         raise ValueError("history fields must be aligned packed arrays without padding")
     boundaries = tensor(history["field_offsets"], "history.field_offsets", cpu=cpu, device=device)
@@ -162,8 +165,8 @@ def inspect(batch, model, *, check_values, cpu=False, device=None):
 
 def inspect_profile(raw, size, vocabulary_size, *, check_values, cpu=False, device=None):
     keys, values, positions, valid, elapsed = [tensor(raw[key], "profile." + key, dtype, cpu=cpu, device=device)
-        for key, dtype in (("field_ids", torch.long), ("value_ids", torch.long),
-                           ("position_ids", torch.long), ("valid", torch.bool), ("elapsed_seconds", None))]
+                                               for key, dtype in (("field_ids", torch.long), ("value_ids", torch.long),
+                                                                  ("position_ids", torch.long), ("valid", torch.bool), ("elapsed_seconds", None))]
     if keys.ndim != 2 or keys.shape[0] != size or any(value.shape != keys.shape for value in (values, positions, valid, elapsed)):
         raise ValueError("profile fields must have aligned [B,P] shapes")
     if check_values:

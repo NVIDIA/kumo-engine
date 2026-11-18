@@ -29,8 +29,11 @@ from implementation gaps. This rule applies to every remaining criterion.
   update and loss-decrease checks. See [training acceptance](docs/training-acceptance.md).
 - Correctness tests, conformance and runnable examples are DiskGraph-only, per
   the user's expanded 2026-11-17 instruction. Migrate inherited package tests
-  and retain their independent expected answers. InMemory must never supply an
-  answer or execute indirectly. Polars/GPU timing references remain in scope.
+  and retain their independent expected answers. InMemory must never supply a
+  test reference answer or act as a test backend. The user's subsequent scope
+  correction allows its existing use inside `ServingAssembler`; this testing
+  PR does not replace that package implementation. Polars/GPU timing references
+  remain in scope.
   See the [golden audit](docs/arena-golden-audit.md).
 - Keep all new test models, workload definitions, fixtures, dataset records and
   tooling under `test/kumo_pytorch/`, outside the installed package.
@@ -1305,3 +1308,110 @@ was corrected and regression-tested; final verification found no remaining
 issues in the reviewed policy and runner changes. The subsequent nightly
 aggregation follow-up was locally tested and self-reviewed. These are
 test-policy changes only, not fixes for the native execution failures above.
+
+## Nightly harness failure follow-up (2026-11-17)
+
+The run at `0c6b3126` exposed harness failures alongside native failures. This
+follow-up makes conformance child imports independent of editable installs,
+keeps cold/warm file selection fixed before epoch zero, and records later-created
+length caches separately. Native first-epoch planning and later cache-hit
+requirements remain active. Changed or missing baseline files do not qualify.
+
+Documentation and notebook children now classify actual preflight exceptions
+before serialization. Earlier assertions, printed-output mismatches and already
+written artifact mismatches remain failures. Notebook error tags cannot allow
+execution to continue past a refusal, and regeneration still fails on refusal.
+Three negative/type checks exercise preflight outside downstream assertions.
+
+Repository-required license headers and formatting were applied within the
+suite, retaining upstream notices. The PRAGMA source pin changed only after
+verifying its AST was unchanged; 176 formatting-only files retain their
+non-import AST. No native implementation was modified.
+
+Validation: 217 suite checks, 103 package/harness checks, and 58 model/benchmark
+checks pass with the existing compatible local native extension. All 11 notebook
+regression/example checks pass, including real H&M with explicit refusal evidence.
+Documentation: 25 pass; the serving example still fails because the package
+invokes InMemory. Full-repository flake8, isort, license headers/metadata, YAML
+lint, scoped package Ruff and diff whitespace checks pass. Required AML
+collection remains 344 CPU cases plus five delegated CUDA cases.
+
+Independent review completed in two rounds. It found two notebook false-pass
+paths (earlier artifact drift and stale evidence after an allowed-error cell).
+Both were fixed with regression tests; final review found no blocking issues.
+
+Live Linux cache/GPU reruns and the known native serving, ingestion, batch
+planning/order, sequence and Fusion checkpoint failures remain outstanding.
+This follow-up does not establish full-nightly acceptance or merge readiness.
+
+## Serving dependency scope correction (2026-11-17)
+
+The user requested that this PR allow ServingAssembler's existing dependency
+instead of changing package code. The attempted runtime refactor was fully
+reverted: there are no local source changes under `src/kumo/pytorch`.
+The shared test guard permits only its four internal constructor dependencies
+while the actual ServingAssembler constructor or assembly method is executing.
+Engine opening and anchor materialization stay forbidden even in that scope.
+Direct engine/source/sampler use
+as a test backend or oracle remains forbidden, including after serving returns
+or raises. Serving assertions and exceptions still run normally. Documentation
+and notebook subprocesses use this same guard.
+
+Validation: 35 focused serving, golden, fresh-process lifecycle and documentation
+checks pass, as do all 53 conformance-enforcement checks. Eight focused boundary
+checks verify the permitted constructors, direct-use rejection after success or
+failure, propagated dependency errors, and rejection of engine opening even
+inside serving. Scoped Ruff and diff whitespace checks pass. A broader serving
+probe still fails five cases in native planning and output comparisons; those
+assertions are unchanged and remain outside this dependency exception.
+Independent review found no actionable issues; additional probes confirmed the
+guard remains active after failed construction and in unrelated threads.
+
+## Native refusal and suite diagnostics follow-up (2026-11-17)
+
+The user accepts DiskGraph's intentional zero-row base-table rejection. The
+suite now recognizes that exact native ingestion exception only through public
+preparation, with independent Parquet metadata proving the bound table is empty.
+It reports an ingestion refusal, not completed feature coverage. Other ingestion
+errors, nonempty sources accidentally read as empty, and iteration errors fail.
+Subprocess, notebook and nightly reports retain this distinction.
+
+Population ordering and Fusion checkpoint assertions are unchanged. EventsOf
+length planning remains open for discussion, without changing its contract.
+Sequence assertions retain their expected answers and now report ordering versus
+selection/value discrepancies for both output formats. Primary-key tie semantics
+remain an open contract question; component-order failures remain visible.
+The existing fixed-file cold/warm comparison and separate length-cache disclosure
+pass their focused checks; live Linux/GPU campaign validation remains outstanding.
+
+Validation with the existing compatible native extension: 111 refusal/sequence
+harness checks, all 45 previously failing empty-table cases (labelled refusals),
+30 cache/nightly checks and nine notebook-boundary checks pass. The seed-zero
+sequence obligation still fails on the known output discrepancies. Scoped Ruff,
+repository checks for the changed suite files and diff whitespace checks pass.
+Independent review completed in two rounds; its nonempty-source false-pass finding
+was fixed with a native mutation regression. No package runtime changes were made.
+
+## Separate lifecycle checks from length planning (2026-11-17)
+
+The user approved fixed-size batches for tests whose purpose is reload,
+inference, checkpointing or packed metadata. The lifecycle PRAGMA fixture and
+the packed-layout/CUDA fixture now use `Batching(max_samples=2)`. The original
+backend profiling fixture retains its token budget and EventsOf length input.
+Existing output, metadata, state and fingerprint assertions are unchanged.
+
+A dedicated native length-planning test covers direct EventSource and reused
+EventsOf inputs. It checks hand-calculated history values (including an empty
+history), sample completeness, padded budget and second-epoch length-cache reuse.
+It uses a Parquet AnchorTable and native iteration without explicit requests.
+The existing package-regression workflow discovers both cases automatically.
+The direct-source case passes; EventsOf still fails at iteration rather than
+receiving an accepted preflight refusal.
+
+Of the 20 cases previously blocked by length planning, 15 now pass. Five reach
+fingerprint or metadata assertions and still fail. The full affected CPU modules
+report 61 passes and seven fingerprint/metadata failures; the CUDA consumer was
+excluded locally and remains in the GPU workflow. Worker validation required
+local shared-memory access outside the sandbox. Validation used the existing
+compatible native extension; no Linux/GPU CI run was launched. Scoped Ruff and
+whitespace checks pass. Independent review found no actionable issues.

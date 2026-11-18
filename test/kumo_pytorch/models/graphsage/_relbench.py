@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Selected RelBench classes, copied without behavioral changes.
 
 Source: stanford-star/relbench, commit ecc9621f53d9b7edd33e0616e66fbaaae4dd99d2.
@@ -10,8 +14,14 @@ from typing import Dict, List, Optional
 
 import torch
 from torch import Tensor
-from torch_geometric.nn import HeteroConv, LayerNorm, PositionalEncoding, SAGEConv
+from torch_geometric.nn import (
+    HeteroConv,
+    LayerNorm,
+    PositionalEncoding,
+    SAGEConv,
+)
 from torch_geometric.typing import EdgeType, NodeType
+
 
 class HeteroTemporalEncoder(torch.nn.Module):
     def __init__(self, node_types: List[NodeType], channels: int):

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Training acceptance harness checks; fixture results are not real-AML acceptance."""
 
 import json
@@ -5,19 +9,19 @@ from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from test.kumo_pytorch import training_acceptance as acceptance
+from test.kumo_pytorch.models.aml import StepResult
 from types import SimpleNamespace
 
-import kumo.pytorch.api as r
 import pytest
 import torch
 from torch.nn import functional as F
 
-from test.kumo_pytorch import training_acceptance as acceptance
-from test.kumo_pytorch.models.aml import StepResult
+import kumo.pytorch.api as r
 
 from .fixtures import build_fixture
 from .test_aml import CASES, fit_case
-from .test_run_aml import mapped as mapped  # noqa: PLC0414 - reuse raw AML fixture
+from .test_run_aml import mapped  # noqa: F401 - pytest fixture
 
 CASE_IDS = [f"{s['selector']['workload_id']}-{f}" for s, f in CASES]
 

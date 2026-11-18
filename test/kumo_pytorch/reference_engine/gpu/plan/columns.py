@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Which tables and columns a contract reads, so that only those are loaded."""
 
 from __future__ import annotations
@@ -5,6 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from kumo.pytorch.spec import DataLoaderSpec
@@ -31,6 +36,7 @@ def needed_columns(contract: DataLoaderSpec) -> dict[str, set[str]]:
         for table, column in read.columns:
             needed[table].add(column)
     return dict(needed)
+
 
 def _narrowed(contract: DataLoaderSpec) -> Any:
     """The contract's schema with only the tables and columns it reads (each table's primary key and clock kept)."""

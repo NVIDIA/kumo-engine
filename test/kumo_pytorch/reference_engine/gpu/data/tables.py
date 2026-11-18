@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Load a dataset's tables onto the GPU: one typed GPU column per declared column (`GpuTable`).
 
 Load a dataset's tables onto the GPU: one typed GPU column per declared column.
@@ -49,13 +53,22 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     import pyarrow as pa
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.contract.schema import DataSchema
     from kumo.pytorch.dataset import Dataset, Parquet
-from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import _decimal_numbers, _stored, decimal_arrow
-from test.kumo_pytorch.reference_engine.gpu.data.sources import _reader, resolve_sources
+
+from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+    _decimal_numbers,
+    _stored,
+    decimal_arrow,
+)
+from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+    _reader,
+    resolve_sources,
+)
 
 __all__ = ['GpuTable', 'load_tables', 'read_chunks']
 
@@ -146,6 +159,7 @@ class GpuTable:
                                            {name: self.dtypes[name]}).values(name)
         return self._present[name]
 
+
 def _cupy_type(type_id: Any) -> str | None:
     """The CuPy type of a libcudf type's values, or None when it has none (text, decimals)."""
 
@@ -158,6 +172,7 @@ def _cupy_type(type_id: Any) -> str | None:
         kinds.FLOAT32: "float32", kinds.FLOAT64: "float64", kinds.BOOL8: "uint8",
         kinds.TIMESTAMP_SECONDS: "int64", kinds.TIMESTAMP_DAYS: "int32",
     }.get(type_id)
+
 
 def load_tables(schema: DataSchema, dataset: Dataset, *,
                 only: Sequence[str] | None = None, split: bool = False) -> dict[str, GpuTable]:
@@ -174,17 +189,20 @@ def load_tables(schema: DataSchema, dataset: Dataset, *,
         for name, (source, columns) in resolve_sources(schema, dataset, only=only).items()
     }
 
+
 def _typed(table: str, result: Any, physical: Mapping[str, str], columns: Mapping[str, DType]) -> GpuTable:
     by_physical = dict(zip(result.column_names(), result.tbl.columns(), strict=True))
     gpu_columns = {name: _stored(by_physical[physical[name]], dtype, f"{table}.{name}")
                    for name, dtype in columns.items()}
     return GpuTable(table, result.tbl.num_rows(), gpu_columns, dict(columns))
 
+
 def _load_parquet(table: str, source: Parquet, columns: Mapping[str, DType], *, split: bool = False) -> GpuTable:
     import pylibcudf as plc
 
     options, physical = _reader(table, source, columns, split=split)
     return _typed(table, plc.io.parquet.read_parquet(options), physical, columns)
+
 
 def read_chunks(table: str, source: Parquet, columns: Mapping[str, DType], *,
                 chunk_bytes: int) -> Iterator[GpuTable]:
@@ -204,6 +222,7 @@ def read_chunks(table: str, source: Parquet, columns: Mapping[str, DType], *,
         yield _typed(table, reader.read_chunk(), physical, columns)
         if not reader.has_next():
             return
+
 
 def _with_codes(table: GpuTable) -> GpuTable:
     """`table` with each text column held as int32 codes into its sorted distinct texts.

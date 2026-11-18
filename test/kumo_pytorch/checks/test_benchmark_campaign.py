@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Process isolation and failure propagation without Kumo/native dependencies."""
 
 import json
@@ -5,10 +9,9 @@ import os
 import pwd
 import subprocess
 import sys
+from test.kumo_pytorch.benchmarking.campaign import run_campaign
 
 import pytest
-
-from test.kumo_pytorch.benchmarking.campaign import run_campaign
 
 
 @pytest.mark.parametrize(
@@ -109,7 +112,6 @@ def test_isolated_worker_uses_target_identity_after_sudo(monkeypatch, tmp_path):
 
 def index_fixture(config, workdir):
     from pathlib import Path
-
     from test.kumo_pytorch.checks.test_benchmark import tabular
 
     workload = tabular(config, workdir)

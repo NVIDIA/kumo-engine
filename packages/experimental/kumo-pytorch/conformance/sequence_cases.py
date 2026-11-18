@@ -13,12 +13,13 @@ the inspectable one. Self-contained: no other model-path collector is shared.
 from __future__ import annotations
 
 import random
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Literal
 
 import torch
 
-from conformance.assertions import bound_tables, require
+from conformance.assertions import PropertyFailure, bound_tables, require
 from conformance.generate import (
     GeneratedCase,
     Row,
@@ -326,11 +327,26 @@ def _base(case: GeneratedCase, engine: str) -> dict[OutputFormat, SequenceAnswer
 
 
 def _same_sequences(before: SequenceAnswer, after: SequenceAnswer, label: str) -> None:
-    differences = [
-        f"{key}: {before.get(key)} != {after.get(key)}"
-        for key in sorted(before.keys() | after.keys())
-        if before.get(key) != after.get(key)
-    ]
+    differences = []
+    for sample in sorted(before.keys() | after.keys()):
+        if sample not in before or sample not in after:
+            differences.append(f"{sample}: missing or unexpected sample")
+            continue
+        expected, actual = before.get(sample, {}), after.get(sample, {})
+        for name in sorted(expected.keys() | actual.keys()):
+            left, right = expected.get(name), actual.get(name)
+            if left == right:
+                continue
+            reason = (
+                "missing sample/input"
+                if left is None or right is None
+                else (
+                    "event ordering"
+                    if Counter(left) == Counter(right)
+                    else "event selection/values"
+                )
+            )
+            differences.append(f"{sample}/{name}: {reason}; expected={left!r}; actual={right!r}")
     require(not differences, f"{label} changed sequences:\n  " + "\n  ".join(differences[:3]))
 
 
@@ -385,8 +401,13 @@ def sequence_expected(case: GeneratedCase, engine: str, position: int) -> None:
                 )
             inputs[name] = tuple(events)
         expected[str(request.sample_id)] = inputs
+    failures = []
     for output, answer in _base(case, engine).items():
-        _same_sequences(expected, answer, f"{engine} {output} fixture answers")
+        try:
+            _same_sequences(expected, answer, f"{engine} {output} fixture answers")
+        except PropertyFailure as error:
+            failures.append(str(error))
+    require(not failures, "\n".join(failures))
 
 
 def with_future_events(case: GeneratedCase, rng: random.Random) -> tuple[Tables, set[str]]:

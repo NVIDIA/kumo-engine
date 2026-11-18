@@ -1,21 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tiny native fitting checks; simulated collectors are not Linux memory evidence."""
 
 import json
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
-
 from test.kumo_pytorch.aml_fitting_memory import make_spec
 from test.kumo_pytorch.benchmarking import fitting_memory as fitting
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.population_anchors import project_population
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
 from .fixtures import CUTOFF, build_fixture
 from .test_aml import CASES
 from .test_aml_inputs import anchor_file
 from .test_population import source_anchors
-from .test_run_aml import mapped as mapped  # noqa: PLC0414 - shared raw-file fixture
+from .test_run_aml import mapped  # noqa: F401 - pytest fixture
 
 
 @pytest.mark.parametrize(

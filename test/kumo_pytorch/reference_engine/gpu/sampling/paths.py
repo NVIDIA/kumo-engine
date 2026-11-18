@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The relation routes a contract's sample reads rows along, from its entity's row.
 
 A route is a sequence of hops; each hop follows one relation from the rows the

@@ -1,14 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Timing adapter integration; no cross-engine batch-equality assertions."""
 
 import json
-
-import pytest
-
 from test.kumo_pytorch.aml_benchmark import factory
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
 
-from .test_benchmark_aml import CASES, source  # noqa: F401 -- shared local source fixture
+import pytest
+
+from .test_benchmark_aml import (  # noqa: F401 -- shared local source fixture
+    CASES,
+    source,
+)
 
 
 @pytest.mark.parametrize("workload,family", CASES)

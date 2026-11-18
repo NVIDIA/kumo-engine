@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Untrained nuFormer-style transaction decoder: causal self-attention, NoPE.
 
 This is an original reference implementation of the transaction backbone,
@@ -166,7 +170,7 @@ class NuFormerModel(nn.Module):
         return ids, valid, padding
 
     def validate_kumo_batch(self, batch, *, input_name="history", target_name=None,
-                           next_token_target_names=("next_token",), cpu=True) -> None:
+                            next_token_target_names=("next_token",), cpu=True) -> None:
         """Validate inputs and supervision; ``cpu=False`` accepts device-resident batches.
 
         ``target_name=None`` requires full-history inputs, without an Kumo

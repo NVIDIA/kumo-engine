@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """`write_partitions`: writing a dataset's split, its files and `layout.json`.
 
 Split a dataset by root entity, once, on the GPU, so that it can stream through GPUs.
@@ -54,11 +58,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import test.kumo_pytorch.reference_engine.gpu.split.routing as footprint
 from collections.abc import Mapping, Sequence
 from glob import has_magic
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-import test.kumo_pytorch.reference_engine.gpu.split.routing as footprint
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.contract.sample import SampleSpec
@@ -66,15 +71,19 @@ if TYPE_CHECKING:
     from kumo.pytorch.dataset import Dataset, Parquet
 
 from test.kumo_pytorch.reference_engine.gpu.split import owners as owner_maps
+from test.kumo_pytorch.reference_engine.gpu.split import sizing, walk
 from test.kumo_pytorch.reference_engine.gpu.split.owners import _Owners
-from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import _check_keys, _sample_routes, plan_partitions
-from test.kumo_pytorch.reference_engine.gpu.split import sizing
-from test.kumo_pytorch.reference_engine.gpu.split import walk
+from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+    _check_keys,
+    _sample_routes,
+    plan_partitions,
+)
 
 __all__ = ['LAYOUT', 'source_fingerprint', 'write_partitions']
 
 
 LAYOUT = "layout.json"
+
 
 def write_partitions(schema: DataSchema, dataset: Dataset, root: str, directory: str | Path, *,
                      sample: SampleSpec | None = None, num_partitions: int | None = None,
@@ -95,7 +104,9 @@ def write_partitions(schema: DataSchema, dataset: Dataset, root: str, directory:
         one sixteenth of the GPU's memory when omitted.
     """
 
-    from test.kumo_pytorch.reference_engine.gpu.data.sources import resolve_sources
+    from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+        resolve_sources,
+    )
 
     directory = Path(directory)
     if directory.exists() and any(directory.iterdir()):
@@ -125,7 +136,7 @@ def write_partitions(schema: DataSchema, dataset: Dataset, root: str, directory:
     chunk_bytes = chunk_bytes or total // 16
     budget = walk._walk_budget()
     num_partitions, owners, groups, first, tried = sizing._fit(plan, sources, routes, loads, num_partitions, room, pair,
-                                                        chunk_bytes, budget)
+                                                               chunk_bytes, budget)
     directory.mkdir(parents=True, exist_ok=True)
     tables: dict[str, Any] = {}
     per_partition: list[dict[str, int]] = [{} for _ in range(num_partitions)]
@@ -189,13 +200,14 @@ def write_partitions(schema: DataSchema, dataset: Dataset, root: str, directory:
         "partitions": [
             {"id": k, "rows": per_partition[k], "halo_rows": halo_per_partition[k],
              **footprint._partition_bytes(loads, {name: per_partition[k][name] + halo_per_partition[k][name]
-                                        for name in plan.owned}),
+                                                  for name in plan.owned}),
              "bytes": sum(path.stat().st_size for path in (directory / _part(k)).rglob("*.parquet"))}
             for k in range(num_partitions)
         ],
     }
     (directory / LAYOUT).write_text(json.dumps(layout, indent=2) + "\n")
     return layout
+
 
 def source_fingerprint(source: Parquet) -> str:
     """A table's Parquet source as upstream's DiskGraph engine identifies the files it indexed: their paths,
@@ -206,11 +218,14 @@ def source_fingerprint(source: Parquet) -> str:
 
     return _fingerprint(_dataset_payload(Dataset({"table": source})))
 
+
 def _part(k: int) -> str:
     return f"part-{k:05d}"
 
+
 def _columns_json(columns: Mapping[str, DType]) -> dict[str, dict[str, Any]]:
     return {name: dataclasses.asdict(dtype) for name, dtype in columns.items()}
+
 
 def _write_table(name: str, source: Parquet, columns: Mapping[str, DType], owners: _Owners,
                  selectors: Sequence[tuple[str, Any, Any, DType]], directory: Path, num_partitions: int,
@@ -222,9 +237,9 @@ def _write_table(name: str, source: Parquet, columns: Mapping[str, DType], owner
     own go to ``halo-<group>-*.parquet``. Without `home`, only the copies are written.
     """
 
-    import pylibcudf as plc
-
     from test.kumo_pytorch.reference_engine.gpu.data.tables import read_chunks
+
+    import pylibcudf as plc
 
     rows_per_partition = [0] * num_partitions
     halo_per_partition = [0] * num_partitions
@@ -267,6 +282,7 @@ def _write_table(name: str, source: Parquet, columns: Mapping[str, DType], owner
             "copied_rows": copies, "halo_rows": sum(halo_per_partition), "rows_per_partition": rows_per_partition,
             "halo_rows_per_partition": halo_per_partition}
 
+
 def _write(table: Any, columns: Mapping[str, DType], path: Path) -> None:
     """Write one piece of a partition, with ZSTD: every pass over the split reads these files again.
 
@@ -281,10 +297,10 @@ def _write(table: Any, columns: Mapping[str, DType], path: Path) -> None:
     (a max or a first value of -0.0) would be lost. Other columns keep the dictionary's smaller files.
     """
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
 
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = plc.io.types.TableInputMetadata(table)

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Static arena-engine scope checks, independent of DiskGraph's implementation.
 
 Kumo validates the contract language and calls these engine-specific checks.

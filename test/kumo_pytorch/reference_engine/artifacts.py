@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Atomic, versioned prepared-store reuse; anchor and fitted state stay separate."""
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pyarrow as pa
+
 from kumo.pytorch.contract.schema import table_clock
 
 from .parquet import local_parquet_files

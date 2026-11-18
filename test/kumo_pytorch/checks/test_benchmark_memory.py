@@ -1,13 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Control-flow tests for kernel peak collection; no Linux peak claims on macOS."""
 
 import io
 import json
 import threading
+from test.kumo_pytorch.benchmarking.memory import (
+    CgroupMemory,
+    SampledCgroupMemory,
+)
+from test.kumo_pytorch.benchmarking.recording import Recorder
 
 import pytest
-
-from test.kumo_pytorch.benchmarking.memory import CgroupMemory, SampledCgroupMemory
-from test.kumo_pytorch.benchmarking.recording import Recorder
 
 
 def fake_kernel(monkeypatch, *, read=b"8192\n", reset_error=None):

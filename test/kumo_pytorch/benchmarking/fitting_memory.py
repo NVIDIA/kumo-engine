@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Compare fresh fitting memory at two anchor counts using existing cgroup collectors.
 
 The JSON specification supplies a Kumo contract, Parquet sources, anchor column
@@ -35,8 +39,9 @@ def worker(spec_path, output, *, count=None, method="sampled", interval=0.05):
     """No count builds the index; counted workers must reopen it without ingestion."""
     import importlib.metadata
 
-    import kumo.pytorch.api as r
     import torch
+
+    import kumo.pytorch.api as r
 
     output.mkdir(parents=True, exist_ok=False)
     spec = json.loads(spec_path.read_text())

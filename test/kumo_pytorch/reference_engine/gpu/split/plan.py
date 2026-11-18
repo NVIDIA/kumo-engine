@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Prepare a contract on a split dataset: one too big for the GPU, split by its entity (`test.kumo_pytorch.reference_engine.gpu.split`)
 and streamed through the GPU a partition at a time (`test.kumo_pytorch.reference_engine.gpu.split.streaming`).
 
@@ -54,26 +58,29 @@ from __future__ import annotations
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-from test.kumo_pytorch.reference_engine.gpu.plan.gpu_plan import GpuPlan
 from test.kumo_pytorch.reference_engine.gpu.batching.admission import admitted
+from test.kumo_pytorch.reference_engine.gpu.plan.gpu_plan import GpuPlan
 from test.kumo_pytorch.reference_engine.gpu.plan.gpu_task import GpuTask
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+    from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
+    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
+    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import (
+        EntityIndex,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+    from test.kumo_pytorch.reference_engine.gpu.split.parts import SampledPart
+    from test.kumo_pytorch.reference_engine.gpu.split.streaming import (
+        Partition,
+        PartitionLayout,
+    )
 
     from kumo.pytorch.contract.sample import SampleSpec
     from kumo.pytorch.contract.schema import DataSchema
     from kumo.pytorch.dataset import Dataset
     from kumo.pytorch.spec import DataLoaderSpec
-
-    from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
-    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
-    from test.kumo_pytorch.reference_engine.gpu.split.parts import SampledPart
-    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
-    from test.kumo_pytorch.reference_engine.gpu.split.streaming import Partition, PartitionLayout
-    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
 
 __all__ = ["SPLIT_POLICIES", "SplitPlan", "SplitTask", "ensure_split", "prepare_split", "split_mismatches"]
 
@@ -116,8 +123,13 @@ def ensure_split(schema: DataSchema, dataset: Dataset, sample: SampleSpec, direc
         largest partition takes more does not match.
     """
 
-    from test.kumo_pytorch.reference_engine.gpu.split.writing import LAYOUT, write_partitions
-    from test.kumo_pytorch.reference_engine.gpu.split.streaming import PartitionLayout
+    from test.kumo_pytorch.reference_engine.gpu.split.streaming import (
+        PartitionLayout,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.split.writing import (
+        LAYOUT,
+        write_partitions,
+    )
 
     directory = Path(directory).expanduser().resolve()
     found = _existing(directory, schema, dataset, sample, num_partitions, room, peak_room)
@@ -148,8 +160,10 @@ def _existing(directory: Path, schema: DataSchema, dataset: Dataset, sample: Sam
     """The split in `directory` when it serves `sample` (`split_mismatches`); refused when it does not; None when
     there is none."""
 
+    from test.kumo_pytorch.reference_engine.gpu.split.streaming import (
+        PartitionLayout,
+    )
     from test.kumo_pytorch.reference_engine.gpu.split.writing import LAYOUT
-    from test.kumo_pytorch.reference_engine.gpu.split.streaming import PartitionLayout
 
     if not (directory / LAYOUT).is_file():
         return None
@@ -184,11 +198,19 @@ def split_mismatches(layout: PartitionLayout, schema: DataSchema, dataset: Datas
     with `num_partitions`, another partition count; with `room` and `peak_room` (`ensure_split`), a partition
     bigger than they allow, counted from its rows as `sample` reads them now (`test.kumo_pytorch.reference_engine.gpu.split.routing._partition_bytes`)."""
 
-    import pylibcudf as plc
+    from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+        resolve_sources,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.split.routing import (
+        _loads,
+        _partition_bytes,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.split.writing import (
+        _columns_json,
+        source_fingerprint,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.split.routing import _loads, _partition_bytes
-    from test.kumo_pytorch.reference_engine.gpu.split.writing import _columns_json, source_fingerprint
-    from test.kumo_pytorch.reference_engine.gpu.data.sources import resolve_sources
+    import pylibcudf as plc
 
     root = sample.entity.table
     if layout.root != root:
@@ -214,7 +236,7 @@ def split_mismatches(layout: PartitionLayout, schema: DataSchema, dataset: Datas
         problems.append("it was written by an earlier test.kumo_pytorch.reference_engine.gpu, whose files may hold 0.0 for a float column's -0.0")
     assignment = layout.record.get("assignment", {})
     if (assignment.get("hash"), assignment.get("seed")) != ("murmurhash3_x86_32",
-                                                             int(plc.hashing.LIBCUDF_DEFAULT_HASH_SEED)):
+                                                            int(plc.hashing.LIBCUDF_DEFAULT_HASH_SEED)):
         problems.append("its entities were assigned to partitions by another hash")
     written_tables = layout.record["tables"]
     for name, (source, columns) in resolve_sources(schema, dataset).items():
@@ -265,11 +287,18 @@ class SplitPlan(GpuPlan):
         (`hashed_keys`). An entity no partition holds still gets one, which lacks it; so does an ID of another
         type than the root's keys, which no partition holds."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+            _view,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+            _device_type,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.split.hashing import (
+            partition_of_keys,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-        from test.kumo_pytorch.reference_engine.gpu.split.hashing import partition_of_keys
-        from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _device_type
+        import cupy
 
         root = self.layout.root
         key = next(table.primary_key for table in self.schema.tables if table.name == root)
@@ -291,13 +320,21 @@ class SplitPlan(GpuPlan):
         ID upstream refuses goes to partition 0, which then refuses it; a NaN is hashed, and refused by the
         partition it lands in, which holds no key equal to it."""
 
+        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import (
+            decimal_stored,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.data.text import (
+            arrow_column,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _view,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.split.hashing import (
+            partition_of_keys,
+        )
+
         import cupy
         import pyarrow as pa
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
-        from test.kumo_pytorch.reference_engine.gpu.split.hashing import partition_of_keys
-        from test.kumo_pytorch.reference_engine.gpu.data.text import arrow_column
-        from test.kumo_pytorch.reference_engine.gpu.data.decimal_storage import decimal_stored
 
         ids = anchors._python_ids()
         picked = [ids[row] for row in (range(*rows.indices(len(ids))) if isinstance(rows, slice)
@@ -317,20 +354,25 @@ class SplitPlan(GpuPlan):
         valid = cupy.asarray(array.is_valid().to_numpy(zero_copy_only=False))
         return cupy.where(valid, parts, 0).astype(cupy.int32)
 
-
     def stream(self, order: Sequence[int]) -> Iterator[Partition]:
         """The partitions in `order`, each with the plan's shared tables (`test.kumo_pytorch.reference_engine.gpu.split.streaming.stream_partitions`:
         the next one read while one is in use)."""
 
-        from test.kumo_pytorch.reference_engine.gpu.split.streaming import stream_partitions
+        from test.kumo_pytorch.reference_engine.gpu.split.streaming import (
+            stream_partitions,
+        )
 
         return stream_partitions(self.schema, self.layout, order=order, shared=self.tables)
 
     def reader(self, partition: Partition) -> tuple[Sampler, EntityIndex]:
         """What reads `partition`'s tables: a sampler with unchanged anchor cutoffs and its entities' index."""
 
-        from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
-        from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+        from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import (
+            EntityIndex,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import (
+            Sampler,
+        )
 
         root = self.layout.root
         tables = dict(partition.tables)
@@ -340,7 +382,9 @@ class SplitPlan(GpuPlan):
     def _fit_inputs(self, bound: Any, rows: Any, reused: Any, names: dict[str, Any], *, budget: Any = None, pinned=None) -> tuple[Any, ...]:
         """Everything fitted partition by partition (`test.kumo_pytorch.reference_engine.gpu.split.fit`)."""
 
-        from test.kumo_pytorch.reference_engine.gpu.split.fit import fit_split_state
+        from test.kumo_pytorch.reference_engine.gpu.split.fit import (
+            fit_split_state,
+        )
 
         return fit_split_state(self, bound, rows, names, reused, budget=budget, pinned=pinned)
 
@@ -348,7 +392,9 @@ class SplitPlan(GpuPlan):
                      names: dict[str, Any]) -> dict[str, Any]:
         """Each fitted sample's length in ``Batching.length_input``, partition by partition, in `rows`' order."""
 
-        from test.kumo_pytorch.reference_engine.gpu.split.fit import measure_split_lengths
+        from test.kumo_pytorch.reference_engine.gpu.split.fit import (
+            measure_split_lengths,
+        )
 
         return measure_split_lengths(self, bound, rows, encoders, composites, spaces, targets, names)
 
@@ -369,6 +415,7 @@ class SplitTask(GpuTask):
         """How many anchors of `split` (all when omitted) each partition holds."""
 
         import cupy
+
         from kumo.pytorch.anchors import ALL_ANCHORS, split_selection
 
         selection = split_selection(split)
@@ -406,6 +453,7 @@ class SplitTask(GpuTask):
         `shard_positions`' order over them (shuffled by `seed` and `epoch`), each keeping its anchors' order."""
 
         import cupy
+
         from kumo.pytorch.anchors import shard_positions
 
         count, size = self.plan.num_partitions, int(where.size)
@@ -421,6 +469,7 @@ class SplitTask(GpuTask):
         its last anchor) in the last group."""
 
         import cupy
+
         from kumo.pytorch.anchors import shard_positions
 
         plan = self.plan
@@ -437,7 +486,9 @@ class SplitTask(GpuTask):
                 start += held[k]
         policy = contract.batch.batching
         if policy.max_tokens is None and not policy.bucket_by_length:
-            from test.kumo_pytorch.reference_engine.gpu.batching.compose import BatchPlan
+            from test.kumo_pytorch.reference_engine.gpu.batching.compose import (
+                BatchPlan,
+            )
 
             cut = BatchPlan.fixed(size, options["maximum"], drop_last)
             # requests are new anchors each call: counting them would read every partition again each call
@@ -454,11 +505,17 @@ class SplitTask(GpuTask):
         each was counted (RMM's count of what stays allocated: its tables and the indexes its sampling builds), kept
         for later calls."""
 
-        from test.kumo_pytorch.reference_engine.gpu.data.memory import release_unused
-        from test.kumo_pytorch.reference_engine.gpu.plan.gpu_task import _chunked_counts, _uncounted
-        from test.kumo_pytorch.reference_engine.gpu.split.streaming import stream_partitions
-
         import gc
+        from test.kumo_pytorch.reference_engine.gpu.data.memory import (
+            release_unused,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.plan.gpu_task import (
+            _chunked_counts,
+            _uncounted,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.split.streaming import (
+            stream_partitions,
+        )
 
         import cupy
 
@@ -501,10 +558,15 @@ class SplitTask(GpuTask):
         the GPU, one a boundary crosses built from its parts, each sampled while its partition was."""
 
         from functools import partial
-
-        from test.kumo_pytorch.reference_engine.gpu.batching.compose import BatchPlan
-        from test.kumo_pytorch.reference_engine.gpu.batching.build import build_batches
-        from test.kumo_pytorch.reference_engine.gpu.plan.groups import _in_groups
+        from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+            build_batches,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.batching.compose import (
+            BatchPlan,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.plan.groups import (
+            _in_groups,
+        )
 
         size, maximum = int(rows.size), options["maximum"]
         bounds = {k: (start, stop) for k, start, stop in segments}
@@ -541,8 +603,9 @@ class SplitTask(GpuTask):
         (`GpuTask._planned`); ``drop_last`` applies to the last partition's."""
 
         from functools import partial
-
-        from test.kumo_pytorch.reference_engine.gpu.batching.build import build_batches
+        from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+            build_batches,
+        )
         from test.kumo_pytorch.reference_engine.gpu.plan.groups import _groups
 
         size = int(rows.size)
@@ -559,7 +622,9 @@ class SplitTask(GpuTask):
 
     def _part(self, contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, rows: Any,
               options: dict[str, Any]) -> SampledPart:
-        from test.kumo_pytorch.reference_engine.gpu.split.parts import sample_part
+        from test.kumo_pytorch.reference_engine.gpu.split.parts import (
+            sample_part,
+        )
 
         return sample_part(contract, sampler, index, options["anchors"], rows, options["encoders"], options["spaces"],
                            model=options["model"], seed=options["seed"], epoch=options["epoch"])
@@ -574,9 +639,11 @@ def _arrow_key_column(array: Any, dtype: Any) -> Any:
     import pylibcudf as plc
 
     if dtype.name == "decimal256" and dtype.precision > 38:
-        import numpy as np
+        from test.kumo_pytorch.reference_engine.gpu.data.text import (
+            arrow_column,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.text import arrow_column
+        import numpy as np
 
         words = np.frombuffer(array.buffers()[1], dtype=np.uint8).reshape(len(array), 32)[:, ::-1]
         return arrow_column(pa.array([bytes(row) for row in words], pa.binary()))

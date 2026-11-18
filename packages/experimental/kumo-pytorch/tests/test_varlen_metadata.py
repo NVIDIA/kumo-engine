@@ -29,7 +29,10 @@ def _two_level_contract() -> api.DataLoaderSpec:
     history = base.batch.inputs["history"]
     layout = api.Nested(fields=api.Packed(), events=api.Packed())
     inputs = {**base.batch.inputs, "history": replace(history, layout=layout)}
-    return replace(base, batch=replace(base.batch, inputs=inputs))
+    # These checks exercise packed metadata and its CUDA consumer, not batch planning.
+    return replace(
+        base, batch=replace(base.batch, inputs=inputs, batching=api.Batching(max_samples=2))
+    )
 
 
 def _check(history: dict) -> None:

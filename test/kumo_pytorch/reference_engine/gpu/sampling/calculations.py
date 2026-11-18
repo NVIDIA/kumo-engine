@@ -1,9 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Calculations on entity values: arithmetic, `log1p`, absolute values, signs and calendars."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     pass
@@ -13,6 +18,7 @@ _BOUNDS = {f"{sign}int{width}": ((0, (1 << width) - 1) if sign else (-(1 << (wid
            for sign in ("", "u") for width in (8, 16, 32, 64)}
 
 _INT64_MIN, _INT64_MAX = _BOUNDS["int64"]
+
 
 def _arithmetic(operation: str, operands: list[Values], dtype: Any) -> tuple[Any, Any]:
     """add/subtract/multiply in the result type: (result, rows upstream refuses or None)."""
@@ -59,6 +65,7 @@ def _arithmetic(operation: str, operands: list[Values], dtype: Any) -> tuple[Any
     bad |= (result > high) if wide == cupy.uint64 else (result < low) | (result > high)
     return result.astype(cupy.dtype(dtype.name)), bad
 
+
 def _outside(operand: Values, low: int, high: int) -> Any:
     """Which integer operand values do not fit [low, high]."""
 
@@ -74,6 +81,7 @@ def _outside(operand: Values, low: int, high: int) -> Any:
     outside = wide < low
     return outside | (wide > high) if high <= _INT64_MAX else outside
 
+
 def _divide(operands: list[Values]) -> tuple[Any, Any]:
     """float64 division: (result, rows that are NULL: a zero divisor, -0.0 included)."""
 
@@ -83,6 +91,7 @@ def _divide(operands: list[Values]) -> tuple[Any, Any]:
     divisor = cupy.where(zero, 1.0, operands[1].values.astype(cupy.float64))
     return operands[0].values.astype(cupy.float64) / divisor, zero
 
+
 def _log1p(operand: Values) -> tuple[Any, Any]:
     """float64 log1p: (result, rows that are NULL: at or below -1; NaN stays NaN)."""
 
@@ -90,6 +99,7 @@ def _log1p(operand: Values) -> tuple[Any, Any]:
 
     outside = operand.values <= -1
     return cupy.log1p(cupy.where(outside, 0.0, operand.values.astype(cupy.float64))), outside
+
 
 def _absolute(operand: Values, dtype: Any) -> tuple[Any, Any]:
     import cupy
@@ -103,12 +113,14 @@ def _absolute(operand: Values, dtype: Any) -> tuple[Any, Any]:
     _, high = _BOUNDS[dtype.name]
     return result.astype(cupy.dtype(dtype.name)), (result < 0) | (result > high)
 
+
 def _sign(operand: Values) -> tuple[Any, Any]:
     import cupy
 
     values = operand.values
     result = (values > 0).astype(cupy.int64) - (values < 0).astype(cupy.int64)
     return result, (cupy.isnan(values) if values.dtype.kind == "f" else None)
+
 
 def _calendar(part: str, operand: Values) -> Any:
     """One UTC calendar part of timestamps (seconds) or dates (days), as int64 (Monday is weekday 0)."""
@@ -140,6 +152,7 @@ def _calendar(part: str, operand: Values) -> Any:
     if part == "month":
         return month
     return year_of_era + era * 400 + (month <= 2)
+
 
 def _seconds(dtype: Any, values: Any) -> Any:
     """Clock values as whole UTC seconds (a date's midnight)."""

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Explicit Linux file-page-cache experiments, without global cache eviction.
 
 Only caller-selected, owned regular files are affected. mincore snapshots must
@@ -134,19 +138,33 @@ def condition_files(paths, mode, *, release_mappings=False):
 
 
 class FilePageCache:
-    """before_epoch callback; alternate cold/warm on explicitly selected files."""
+    """Condition the same file selection across epochs; disclose later additions.
+
+    Snapshot paths before the first epoch, without precomputing native lengths.
+    Files created by iteration (including length caches) stay outside this
+    page-cache comparison. Their planning/reuse is measured by native profiling.
+    """
 
     def __init__(self, files, *, release_mappings=False):
         self.files = files
         self.release_mappings = release_mappings
+        self.selected = None
 
     def __call__(self, epoch, recorder):
         mode = "cold" if epoch % 2 == 0 else "warm"
         start = recorder.clock()
         try:
+            current = set(map(Path, self.files()))
+            if self.selected is None:
+                self.selected = current
             result = condition_files(
-                self.files(), mode, release_mappings=self.release_mappings
+                self.selected, mode, release_mappings=self.release_mappings
             )
+            result["selection_scope"] = "files present before the first epoch"
+            result["unconditioned_new_files"] = [
+                {"path": str(path), "size": path.stat().st_size}
+                for path in sorted(current - self.selected)
+            ]
         except Exception as error:
             recorder.write(
                 "cache_condition",

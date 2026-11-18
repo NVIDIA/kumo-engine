@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the five AML prototype cases against pinned, downloaded HI-small data."""
 
 import argparse
@@ -9,9 +13,10 @@ import traceback
 from collections import Counter
 from pathlib import Path
 
-import kumo.pytorch.api as r
 import pyarrow.parquet as pq
 import torch
+
+import kumo.pytorch.api as r
 
 from .aml_inputs import SPLITS, load_selections, requests_for, verify_inputs
 from .aml_source import (
@@ -24,31 +29,15 @@ from .anchor_tables import write_probe_anchors
 from .checkpoint_resume import check_resume
 from .contracts import build_contract
 from .data import ROOT
-from .involvement import (
-    source_reference,
-    verify_anchors,
-    verify_batch,
-)
-from .involvement import (
-    verify_inputs as verify_task_inputs,
-)
+from .involvement import source_reference, verify_anchors, verify_batch
+from .involvement import verify_inputs as verify_task_inputs
 from .lifecycle import check_lifecycle
-from .masked_values import (
-    original_tokens,
-)
-from .masked_values import (
-    verify_loss as verify_masked_loss,
-)
-from .masked_values import (
-    verify_targets as verify_masked_targets,
-)
+from .masked_values import original_tokens
+from .masked_values import verify_loss as verify_masked_loss
+from .masked_values import verify_targets as verify_masked_targets
 from .models.aml import build_model
-from .next_token import (
-    verify_loss as verify_next_loss,
-)
-from .next_token import (
-    verify_targets as verify_next_targets,
-)
+from .next_token import verify_loss as verify_next_loss
+from .next_token import verify_targets as verify_next_targets
 from .training_lifecycle import check_training
 
 

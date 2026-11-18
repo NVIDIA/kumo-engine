@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """`GpuPlan`: upstream Kumo PyTorch's `Plan` on the GPU, which materializes tasks."""
 
 from __future__ import annotations
@@ -5,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Collection, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -15,9 +20,13 @@ if TYPE_CHECKING:
 
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
+
 from test.kumo_pytorch.reference_engine.gpu.plan.check import NAME, _Engine
 from test.kumo_pytorch.reference_engine.gpu.plan.gpu_task import GpuTask
-from test.kumo_pytorch.reference_engine.gpu.plan.groups import _build_bytes, _measured
+from test.kumo_pytorch.reference_engine.gpu.plan.groups import (
+    _build_bytes,
+    _measured,
+)
 
 __all__ = ['GpuPlan']
 
@@ -67,7 +76,9 @@ class GpuPlan:
             if fit_spill_dir is not None:
                 raise ValueError("fit_spill_dir requires fit_memory_limit")
             return self._materialize(anchors, fit_split=fit_split, fitted=fitted, inference=inference, encoder_cutoff=encoder_cutoff)
-        from test.kumo_pytorch.reference_engine.gpu.split.fit_storage import FitBudget
+        from test.kumo_pytorch.reference_engine.gpu.split.fit_storage import (
+            FitBudget,
+        )
 
         with FitBudget(fit_memory_limit, fit_spill_dir) as budget:
             if not hasattr(self, "layout"):
@@ -87,18 +98,25 @@ class GpuPlan:
         another contract).
         """
 
-        from kumo.pytorch.anchors import AnchorTable, split_selection
-        from kumo.pytorch.assembly import _check_reused_target_spaces
-        from kumo.pytorch.preparation import Plan, check, reused_state
-        from kumo.pytorch.spec import ValidationError
+        from test.kumo_pytorch.reference_engine.gpu.data.anchors import (
+            GpuAnchors,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import (
+            field_maps,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.plan.state import (
+            manifest,
+            reused,
+            written_state,
+        )
 
         import cupy
 
-        from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
-        from test.kumo_pytorch.reference_engine.gpu.encoding.field_names import field_maps
-        from test.kumo_pytorch.reference_engine.gpu.plan.state import manifest, reused, written_state
-
+        from kumo.pytorch.anchors import AnchorTable, split_selection
+        from kumo.pytorch.assembly import _check_reused_target_spaces
         from kumo.pytorch.column_stats import LATEST_ANCHOR, cutoff_nanos
+        from kumo.pytorch.preparation import Plan, check, reused_state
+        from kumo.pytorch.spec import ValidationError
 
         # Validate explicit cutoffs even when all fitted state is reused.
         if encoder_cutoff is not ... and encoder_cutoff is not LATEST_ANCHOR:
@@ -147,7 +165,9 @@ class GpuPlan:
                 {name: dict(entries) for name, entries in input_state.field_names.items()}
             pinned, statistics = {}, None
             if input_state is None:
-                from test.kumo_pytorch.reference_engine.gpu.encoding.table_stats import pin_table_encoders
+                from test.kumo_pytorch.reference_engine.gpu.encoding.table_stats import (
+                    pin_table_encoders,
+                )
                 pinned, statistics = pin_table_encoders(self.contract, self.dataset, bound, bound.rows(chosen),
                                                         encoder_cutoff, loaded=self.tables)
                 encoders, composites, spaces, targets = self._fit_inputs(bound, bound.rows(chosen), None, names, pinned=pinned, **({"budget": fit_budget} if fit_budget is not None else {}))
@@ -178,7 +198,9 @@ class GpuPlan:
     def _fit_inputs(self, bound: GpuAnchors, rows: Any, reused: Any, names: dict[str, Any], *, pinned=None) -> tuple[Any, ...]:
         """Fit the inputs' encoders (unless `reused`) and the targets' state on the anchors at `rows`."""
 
-        from test.kumo_pytorch.reference_engine.gpu.batching.fit import fit_inputs
+        from test.kumo_pytorch.reference_engine.gpu.batching.fit import (
+            fit_inputs,
+        )
 
         return fit_inputs(self.contract, self.sampler, self.index, bound, rows, reused=reused, field_maps=names, pinned=pinned)
 
@@ -186,9 +208,11 @@ class GpuPlan:
                      names: dict[str, Any]) -> dict[str, Any]:
         """Each fitted sample's length in ``Batching.length_input`` (`_measured`)."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+            build_batches,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.batching.build import build_batches
+        import cupy
 
         build = partial(build_batches, sampler=self.sampler, index=self.index, encoders=encoders,
                         composites=composites, spaces=spaces, target_state=targets, anchors=bound,

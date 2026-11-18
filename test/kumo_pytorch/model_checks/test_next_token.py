@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML next-token task and copied nuFormer consumer integration."""
 
 import json
@@ -6,15 +10,19 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from test.kumo_pytorch.contracts import build_contract
+from test.kumo_pytorch.models.aml import StepResult, build_model
+from test.kumo_pytorch.next_token import (
+    selected_labels,
+    verify_loss,
+    verify_targets,
+)
+from test.kumo_pytorch.reference_tokens import FIELDS
 
-import kumo.pytorch.api as r
 import pytest
 import torch
 
-from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.models.aml import StepResult, build_model
-from test.kumo_pytorch.next_token import selected_labels, verify_loss, verify_targets
-from test.kumo_pytorch.reference_tokens import FIELDS
+import kumo.pytorch.api as r
 
 from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 from .test_aml import assert_equal

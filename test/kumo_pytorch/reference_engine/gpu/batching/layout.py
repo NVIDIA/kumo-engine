@@ -1,14 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Laying values out as tensors: padded, packed and nested sequences, named and sliced."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.spec import DataLoaderSpec
 
     from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import Flat, TokenRows
+
 from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _InputValues
 
 
@@ -16,6 +22,7 @@ def _offsets(lengths: Any) -> Any:
     import numpy as np
 
     return np.concatenate(([0], np.cumsum(lengths, dtype=np.int64)))
+
 
 def _sequence(arrays: dict[str, tuple[Any, Any]], offsets: Any, total: int, count: int, width: int, layout: Any,
               *, exists: bool = True) -> dict[str, Any]:
@@ -26,6 +33,7 @@ def _sequence(arrays: dict[str, tuple[Any, Any]], offsets: Any, total: int, coun
 
     import cupy
     import torch
+
     from kumo.pytorch.contract.batch.layouts import Packed
 
     device = torch.device("cuda", torch.cuda.current_device())
@@ -51,6 +59,7 @@ def _sequence(arrays: dict[str, tuple[Any, Any]], offsets: Any, total: int, coun
         result["valid"] = valid
     return result
 
+
 def _kernel(result: dict[str, Any], prefix: str, total: int, longest: int) -> None:
     """Upstream's ``kernel_metadata`` for packed `prefix` + ``offsets``: ``cu_seqlens`` (int32) and
     ``max_seqlen`` (`longest`, a host int), added last."""
@@ -63,6 +72,7 @@ def _kernel(result: dict[str, Any], prefix: str, total: int, longest: int) -> No
     result[f"{prefix}cu_seqlens"] = result[f"{prefix}offsets"].to(torch.int32)
     result[f"{prefix}max_seqlen"] = longest
 
+
 def _flat_batch(flat: Flat, row_bounds: Any, start: int, stop: int, layout: Any, pad: int,
                 fields: Any = None) -> dict[str, Any]:
     """One batch of a flattened or entity token input: one sequence per sample, as upstream's
@@ -72,6 +82,7 @@ def _flat_batch(flat: Flat, row_bounds: Any, start: int, stop: int, layout: Any,
 
     import cupy
     import numpy as np
+
     from kumo.pytorch.contract.batch.layouts import Packed
 
     begin, end = int(flat.bounds[start]), int(flat.bounds[stop])
@@ -93,6 +104,7 @@ def _flat_batch(flat: Flat, row_bounds: Any, start: int, stop: int, layout: Any,
         _kernel(result, "", end - begin, longest if stop > start else 0)
     return result
 
+
 def _named_sequence(ids: Any, owned: Any, offsets: Any, total: int, count: int, width: int,
                     layout: Any) -> dict[str, Any]:
     """Tokens' ``field_ids`` and ``field_valid``, laid out as their sequences are (padding 0 and False)."""
@@ -101,6 +113,7 @@ def _named_sequence(ids: Any, owned: Any, offsets: Any, total: int, count: int, 
                      exists=False)
     laid.pop("offsets", None)
     return laid
+
 
 @dataclass
 class _Nested:
@@ -134,6 +147,7 @@ class _Nested:
         import cupy
         import numpy as np
         import torch
+
         from kumo.pytorch.contract.batch.layouts import Packed
 
         number = int(np.searchsorted(self.cuts, start, side="left"))
@@ -165,6 +179,7 @@ class _Nested:
             _kernel(result, "field_", end - begin, widest if last > first else 0)
         return result
 
+
 def _laid_out(fields: dict[str, dict[str, Any]], bounds: Any, layout: Any, *, pads=None, field_pad=0) -> dict[str, Any]:
     """One batch's slice of an event input, stored as its layout says (upstream's ``layout_array`` and
     ``kernel_metadata``): packed, flat with ``offsets``, ``cu_seqlens`` and ``max_seqlen``; padded, as
@@ -173,6 +188,7 @@ def _laid_out(fields: dict[str, dict[str, Any]], bounds: Any, layout: Any, *, pa
     import cupy
     import numpy as np
     import torch
+
     from kumo.pytorch.contract.batch.layouts import Packed
 
     begin, end = int(bounds[0]), int(bounds[-1])
@@ -204,13 +220,14 @@ def _laid_out(fields: dict[str, dict[str, Any]], bounds: Any, layout: Any, *, pa
             result[field] = encoded.rows(begin, end, events)
             continue
         result[field] = {key: _padded(value, part, owner, position, lengths, local, count, width,
-                              False if key in {"valid", "field_valid"} else field_pad if key == "field_ids"
-                              else (pads or {}).get(field, 0) if key == "values" else 0)
+                                      False if key in {"valid", "field_valid"} else field_pad if key == "field_ids"
+                                      else (pads or {}).get(field, 0) if key == "values" else 0)
                          for key, value in encoded.items()}
     valid = torch.zeros((count, width), dtype=torch.bool, device=device)
     valid[owner, position] = True
     result["valid"] = valid
     return result
+
 
 def _padded(value: Any, part: slice, owner: Any, position: Any, lengths: Any, local: Any, count: int, width: int,
             fill: Any = 0) -> Any:
@@ -234,6 +251,7 @@ def _padded(value: Any, part: slice, owner: Any, position: Any, lengths: Any, lo
     indices[host_owner, np.arange(int(local[-1])) - np.repeat(local[:-1], lengths)] = np.arange(len(values))
     flat = values.take(pa.array(indices.reshape(-1), mask=indices.reshape(-1) < 0))
     return pa.FixedSizeListArray.from_arrays(flat, width)
+
 
 @dataclass
 class _Lists:
@@ -275,11 +293,13 @@ class _Lists:
             result[f"{prefix}max_seqlen"] = int(np.diff(host).max()) if host.size > 1 else 0
         return result
 
+
 def _projected(contract: DataLoaderSpec, name: str, selector: str, tokens: TokenRows, parent: _InputValues) -> Values:
     """An ``OccurrencesOf`` input's field over its parent's tokens (upstream's ``_occurrence_rows``): a dated
     field's token takes its occurrence's value of the field, any other token NULL."""
 
     import cupy
+
     from kumo.pytorch.contract.batch.validation import resolved_fields
 
     parent_name = contract.batch.inputs[name].source.input
@@ -309,6 +329,7 @@ def _projected(contract: DataLoaderSpec, name: str, selector: str, tokens: Token
     if values is None:
         values = cupy.zeros(size, dtype=cupy.int64)
     return Values(dtype, values, present, texts)
+
 
 @dataclass
 class _Pieces:
@@ -353,6 +374,7 @@ class _Pieces:
             result[f"{prefix}max_seqlen"] = int(np.diff(host).max()) if host.size > 1 else 0
         return result
 
+
 def _named(columns: dict[str, Any], field: str, lookup: Any, spec: Any, sampled: _InputValues) -> None:
     """A column field's field-name IDs (`test.kumo_pytorch.reference_engine.gpu.encoding.field_names`), beside its values as upstream gives them:
     ``field_ids``, each row's (an event's by its component), and ``field_valid``, whether the row's component
@@ -385,8 +407,10 @@ def _named(columns: dict[str, Any], field: str, lookup: Any, spec: Any, sampled:
     encoded["field_ids"] = torch.from_dlpack(cupy.ascontiguousarray(ids))
     encoded["field_valid"] = torch.from_dlpack(cupy.ascontiguousarray(owned))
 
+
 def _slice(value: Any, part: slice) -> Any:
     return value[part] if not hasattr(value, "slice") else value.slice(part.start, part.stop - part.start)
+
 
 def _raw(key: str, values: Values, model: bool) -> dict[str, Any]:
     """A Raw field: its own torch type with NULL filled (0 or False); other types as Arrow arrays."""
@@ -404,6 +428,7 @@ def _raw(key: str, values: Values, model: bool) -> dict[str, Any]:
         return {"values": values.arrow() if values.values is None else _arrow(values), "valid": torch.from_dlpack(valid)}
     filled = cupy.where(valid, values.values, values.values.dtype.type(0))
     return {"values": torch.from_dlpack(filled), "valid": torch.from_dlpack(valid)}
+
 
 def _arrow(values: Values) -> Any:
     """Raw values with no torch type, as an Arrow array of their declared type (a host copy)."""
@@ -423,6 +448,7 @@ def _arrow(values: Values) -> Any:
     if values.dtype.name == "date32":
         return stored.cast(pa.int32()).cast(pa.date32())
     return stored.cast(values.dtype.to_arrow())
+
 
 def _sample_ids(sample_ids: list[Any], splits: list[str | None], metadata: list[Any],
                 padding: list[bool], first: int = 0) -> tuple[list[Any], list[dict[str, Any]]]:

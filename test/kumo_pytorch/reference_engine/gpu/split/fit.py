@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Fit a contract on a split dataset (`test.kumo_pytorch.reference_engine.gpu.split.plan`), a partition at a time.
 
 The fit split's anchors are read partition by partition, a chunk at a time, as
@@ -30,18 +34,30 @@ anchors' order. Raw encoders, and those given their state, read nothing.
 
 from __future__ import annotations
 
+from test.kumo_pytorch.reference_engine.gpu.data.text import (
+    arrow_column,
+    is_text,
+)
+from test.kumo_pytorch.reference_engine.gpu.split.fit_storage import (
+    NumericRuns,
+    TupleParts,
+    ValueCounts,
+)
 from typing import TYPE_CHECKING, Any
 
-from test.kumo_pytorch.reference_engine.gpu.data.text import arrow_column, is_text
-from test.kumo_pytorch.reference_engine.gpu.split.fit_storage import NumericRuns, ValueCounts, TupleParts
-
 if TYPE_CHECKING:
-    from kumo.pytorch.contract.dtypes import DType
-
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import Component, ComponentSpec
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, Values
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        Component,
+        ComponentSpec,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+        Values,
+    )
     from test.kumo_pytorch.reference_engine.gpu.split.plan import SplitPlan
+
+    from kumo.pytorch.contract.dtypes import DType
 
 __all__ = ["SPLIT_FIT_ANCHORS", "EncoderFit", "TupleCounts", "fit_split_state", "measure_split_lengths"]
 
@@ -81,16 +97,48 @@ def fit_split_state(plan: SplitPlan, anchors: GpuAnchors, rows: Any,
     spaces, target state), fitted partition by partition. With `reused` (a prior task's input state), only the
     targets are fitted, and an ID space the inputs reuse cannot gain a target's member."""
 
-    import cupy
-    from kumo.pytorch.contract.batch import AlignedEventTarget, Composite, MatchingGroupTarget
-    from kumo.pytorch.contract.batch.encodings import Raw, UseEncoding
+    from test.kumo_pytorch.reference_engine.gpu.batching.fit import (
+        _node_values,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.batching.inputs import (
+        _config,
+        _inputs,
+        _sampled,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        ComponentSpec,
+        component,
+        component_specs,
+        fit_composite,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+        _raise_flags,
+        encoder_identity,
+        graph_identity,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        TargetState,
+        _group_specs,
+        _target_values,
+        _threshold_labels,
+        fitted_threshold,
+        target_identity,
+        target_uses,
+        threshold_numbers,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import (
+        allocate_spaces,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _config, _inputs, _sampled
-    from test.kumo_pytorch.reference_engine.gpu.batching.fit import _node_values
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import ComponentSpec, component, component_specs, fit_composite
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, _raise_flags, encoder_identity, graph_identity
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import TargetState, _group_specs, _target_values, _threshold_labels, fitted_threshold, target_identity, target_uses, threshold_numbers
-    from test.kumo_pytorch.reference_engine.gpu.encoding.tokens import allocate_spaces
+    import cupy
+
+    from kumo.pytorch.contract.batch import (
+        AlignedEventTarget,
+        Composite,
+        MatchingGroupTarget,
+    )
+    from kumo.pytorch.contract.batch.encodings import Raw, UseEncoding
 
     contract = plan.contract
     targets = contract.batch.targets
@@ -226,12 +274,13 @@ def measure_split_lengths(plan: SplitPlan, anchors: GpuAnchors, rows: Any, encod
     partition with the fitted state, back in `rows`' order (the length summary's ties keep it)."""
 
     from functools import partial
+    from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+        build_batches,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.plan.groups import _measured
 
     import cupy
     import numpy as np
-
-    from test.kumo_pytorch.reference_engine.gpu.batching.build import build_batches
-    from test.kumo_pytorch.reference_engine.gpu.plan.groups import _measured
 
     held = _held(plan, anchors, rows)
     measured: dict[str, Any] = {}
@@ -246,9 +295,11 @@ def measure_split_lengths(plan: SplitPlan, anchors: GpuAnchors, rows: Any, encod
 
 
 def _node_keys(contract: Any) -> set[str]:
-    from kumo.pytorch.contract.batch import Graph
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        graph_identity,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import graph_identity
+    from kumo.pytorch.contract.batch import Graph
 
     return {graph_identity(name, table, use) for name, value in contract.batch.inputs.items()
             if isinstance(value.representation, Graph)
@@ -260,9 +311,12 @@ def _weighted_known(specs: list[ComponentSpec], components: list[Component], cou
     """`test.kumo_pytorch.reference_engine.gpu.encoding.composite.fit_composite` (the ``top_k`` most frequent tuples from ID 2, ties in canonical typed
     order) or `fit_groups` (every tuple from 0, in that order) over distinct tuples each given `counts` times."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+        _distinct,
+        _known,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.composite import _distinct, _known
+    import cupy
 
     order, starts, _ = _distinct(components)
     if groups:
@@ -284,10 +338,14 @@ class TupleCounts:
         self.parts: Any = TupleParts(budget) if budget is not None else []  # per part: missing, identity or texts, counts
 
     def add(self, components: list[Component]) -> None:
-        import pyarrow as pa
+        from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+            _distinct,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _texts_at,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.composite import _distinct
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _texts_at
+        import pyarrow as pa
 
         order, starts, counts = _distinct(components)
         if not starts.size:
@@ -310,13 +368,17 @@ class TupleCounts:
         """The tuples of every part as components (texts coded into one sorted dictionary), and each one's count
         (CuPy); a tuple several parts gave appears once per part."""
 
+        from test.kumo_pytorch.reference_engine.gpu.encoding.composite import (
+            Component,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _view,
+        )
+
         import cupy
         import numpy as np
         import pyarrow as pa
         import pylibcudf as plc
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.composite import Component
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view
 
         parts = self.parts.materialized() if isinstance(self.parts, TupleParts) else self.parts
         result = []
@@ -349,7 +411,12 @@ class EncoderFit:
     them at once (NULLs excluded; a decimal's numbers for a numeric transform)."""
 
     def __init__(self, identity: str, config: Any, dtype: DType, *, numeric_decimals: bool = True, budget: Any = None) -> None:
-        from kumo.pytorch.contract.batch.encodings import Buckets, Text, Vocabulary, ZScore
+        from kumo.pytorch.contract.batch.encodings import (
+            Buckets,
+            Text,
+            Vocabulary,
+            ZScore,
+        )
 
         self.identity, self.config, self.dtype = identity, config, dtype
         self.numeric_decimals = numeric_decimals  # an input's decimals may take ZScore or Buckets; a target's only Raw
@@ -363,9 +430,15 @@ class EncoderFit:
         self.runs: Any = NumericRuns(budget) if budget is not None else []  # per part: sorted keys of its numbers (numpy uint64, `_keys`)
 
     def add(self, values: Values) -> None:
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _normalized,
+            _numbers,
+            _raise_flags,
+            _texts_at,
+            bucket_numbers,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _normalized, _numbers, _raise_flags, _texts_at, bucket_numbers
+        import cupy
 
         if values.values is None:
             self.decimal = True
@@ -401,10 +474,15 @@ class EncoderFit:
         """The fitted encoder, from every part given."""
 
         import math
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            GpuEncoder,
+            bucket_cuts,
+            fit_encoder,
+            learned_tokenizer,
+            zscore_encoder,
+        )
 
         from kumo.pytorch.contract.batch.encodings import Buckets, Raw, ZScore
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, bucket_cuts, fit_encoder, learned_tokenizer, zscore_encoder
 
         identity, config, dtype = self.identity, self.config, self.dtype
         if self.decimal:  # as `test.kumo_pytorch.reference_engine.gpu.batching.fit.fit_inputs` takes decimals
@@ -453,10 +531,13 @@ class EncoderFit:
         """The Vocabulary of every key given, from how often each occurs (texts: as codes into their sorted
         dictionary, as the whole dataset's fit has them)."""
 
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _view,
+            counted_vocabulary,
+        )
+
         import cupy
         import numpy as np
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _view, counted_vocabulary
 
         identity, config, dtype = self.identity, self.config, self.dtype
         is_text_counts = (self.counts.arrow if isinstance(self.counts, ValueCounts) else

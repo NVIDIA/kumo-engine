@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Private checks and identity operations for native GraphSAGE inputs.
 
 This reads Kumo's public batch fields without importing Kumo or producing an

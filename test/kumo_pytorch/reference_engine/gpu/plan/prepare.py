@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """`prepare`: the entry point, in place of upstream Kumo PyTorch's `prepare(contract, dataset, engine)`.
 
 `prepare`, `GpuPlan` and `GpuTask`: upstream Kumo PyTorch's preparation shape, on the GPU.
@@ -18,6 +22,7 @@ whose `batches` follow upstream's `Task.batches` (`test.kumo_pytorch.reference_e
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -62,13 +67,16 @@ def prepare(contract: DataLoaderSpec, dataset: Dataset, *, inference: bool = Fal
     `num_partitions`, only when its largest partition fits the room left now.
     """
 
+    from test.kumo_pytorch.reference_engine.gpu.data.tables import load_tables
+    from test.kumo_pytorch.reference_engine.gpu.split.plan import (
+        SPLIT_POLICIES,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.split.routing import (
+        choose_route,
+    )
+
     from kumo.pytorch.preparation import _check, _inference_view
     from kumo.pytorch.spec import ValidationError
-
-    from test.kumo_pytorch.reference_engine.gpu.split.routing import choose_route
-    from test.kumo_pytorch.reference_engine.gpu.data.tables import load_tables
-
-    from test.kumo_pytorch.reference_engine.gpu.split.plan import SPLIT_POLICIES
 
     if split not in SPLIT_POLICIES:
         raise ValueError(f"split must be one of {', '.join(map(repr, SPLIT_POLICIES))}, not {split!r}")
@@ -98,7 +106,9 @@ def prepare(contract: DataLoaderSpec, dataset: Dataset, *, inference: bool = Fal
                 f"{route.gpu_bytes / 1e9:.0f} GB GPU holds directly: pass split_dir, a folder for the dataset split "
                 "by entity (written once, reused while the files are unchanged)"
             )
-        from test.kumo_pytorch.reference_engine.gpu.split.plan import prepare_split
+        from test.kumo_pytorch.reference_engine.gpu.split.plan import (
+            prepare_split,
+        )
 
         plan = prepare_split(contract, dataset, engine, schema, viewed.sample, split_dir,
                              if_missing=split == "if_missing", inference=inference, num_partitions=num_partitions,
@@ -106,8 +116,13 @@ def prepare(contract: DataLoaderSpec, dataset: Dataset, *, inference: bool = Fal
                              peak_room=None if route is None else route.partition_peak_bytes)
         held = None
         if route is not None and model_bytes is not None:  # the shared tables and two partitions, at most
-            from test.kumo_pytorch.reference_engine.gpu.split.routing import _held, _loads
-            from test.kumo_pytorch.reference_engine.gpu.data.sources import resolve_sources
+            from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+                resolve_sources,
+            )
+            from test.kumo_pytorch.reference_engine.gpu.split.routing import (
+                _held,
+                _loads,
+            )
 
             shared = [table.name for table in schema.tables if plan.layout.kind(table.name) == "shared"]
             loads = _loads(schema, viewed.sample, resolve_sources(schema, dataset))
@@ -115,7 +130,9 @@ def prepare(contract: DataLoaderSpec, dataset: Dataset, *, inference: bool = Fal
         plan.build_bytes = _build_bytes(model_bytes, held)
         plan.model_bytes = model_bytes
         return plan
-    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
+    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import (
+        EntityIndex,
+    )
     from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
 
     tables = load_tables(schema, dataset, only=[table.name for table in schema.tables])

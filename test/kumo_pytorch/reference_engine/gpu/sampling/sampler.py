@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """`Sampler`: entity values computed on the GPU for all of a call's anchors at once.
 
 Sampled entity values, computed on the GPU for all of a call's anchors at once.
@@ -48,22 +52,61 @@ their last bits may differ from a row-by-row sum; ``log1p`` uses the GPU's own.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from test.kumo_pytorch.reference_engine.gpu.data.text import (
+    byte_order,
+    is_text,
+    text_column,
+)
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
-from test.kumo_pytorch.reference_engine.gpu.data.text import byte_order, is_text, text_column
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.spec import DataLoaderSpec
 
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
-from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import _absolute, _arithmetic, _calendar, _divide, _log1p, _seconds, _sign
-from test.kumo_pytorch.reference_engine.gpu.sampling.filters import _equals, _filter, _scalar, _text_codes
-from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import _column_python, _python, _python_at
+
+from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import (
+    _absolute,
+    _arithmetic,
+    _calendar,
+    _divide,
+    _log1p,
+    _seconds,
+    _sign,
+)
+from test.kumo_pytorch.reference_engine.gpu.sampling.filters import (
+    _equals,
+    _filter,
+    _scalar,
+    _text_codes,
+)
+from test.kumo_pytorch.reference_engine.gpu.sampling.host_values import (
+    _column_python,
+    _python,
+    _python_at,
+)
 from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import KeyIndex
-from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import _bits, _column_values, _count_distinct, _counts, _device_type, _exact_sum, _floats, _grouped, _most_frequent, _printed_ranks, _sum_refusal
-from test.kumo_pytorch.reference_engine.gpu.sampling.rows import _Call, _Column, _GroupRows, _TableRows
+from test.kumo_pytorch.reference_engine.gpu.sampling.reductions import (
+    _bits,
+    _column_values,
+    _count_distinct,
+    _counts,
+    _device_type,
+    _exact_sum,
+    _floats,
+    _grouped,
+    _most_frequent,
+    _printed_ranks,
+    _sum_refusal,
+)
+from test.kumo_pytorch.reference_engine.gpu.sampling.rows import (
+    _Call,
+    _Column,
+    _GroupRows,
+    _TableRows,
+)
 
 __all__ = ['Sampler']
-
 
 
 class Sampler:
@@ -104,7 +147,15 @@ class Sampler:
 
     def _value(self, name: str, spec: Any, call: _Call) -> Values:
         import cupy
-        from kumo.pytorch.contract.sample import Aggregate, Compare, Constant, Derived, EventTimeDelta, Field
+
+        from kumo.pytorch.contract.sample import (
+            Aggregate,
+            Compare,
+            Constant,
+            Derived,
+            EventTimeDelta,
+            Field,
+        )
 
         if isinstance(spec, Field):
             return self._field(name, spec, call)
@@ -122,6 +173,7 @@ class Sampler:
 
     def _field(self, name: str, spec: Any, call: _Call) -> Values:
         import cupy
+
         from kumo.pytorch.contract.schema import table_clock
 
         if not spec.path and spec.time_column is None:
@@ -140,7 +192,7 @@ class Sampler:
             found = _counts(owner, count)
             many = found > 1
             call.flags.append((lambda: f"field {name!r} expected at most one related row, found "
-                                       f"{int(found[cupy.flatnonzero(many)[0]])}", many.any()))
+                               f"{int(found[cupy.flatnonzero(many)[0]])}", many.any()))
             picked = cupy.full(count, -1, dtype=cupy.int64)
             picked[owner] = rows
         else:
@@ -150,11 +202,17 @@ class Sampler:
     def _latest(self, table: GpuTable, owner: Any, rows: Any, times: Any, count: int) -> Any:
         """Each anchor's newest row; ties to the largest primary key by printed value, as upstream sorts rows."""
 
+        from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+            key_columns,
+            on_gpu,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+            _column,
+            _view,
+        )
+
         import cupy
         import pylibcudf as plc
-
-        from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
-        from test.kumo_pytorch.reference_engine.gpu.data.printed import key_columns, on_gpu
 
         picked = cupy.full(count, -1, dtype=cupy.int64)
         if rows.size == 0:
@@ -190,9 +248,11 @@ class Sampler:
         dtype, value = spec.dtype, spec.value
         present = cupy.full(count, value is not None, dtype=bool)
         if dtype.name.startswith("decimal"):
-            import pyarrow as pa
+            from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+                constant_words,
+            )
 
-            from test.kumo_pytorch.reference_engine.gpu.data.decimals import constant_words
+            import pyarrow as pa
 
             number = 0.0 if value is None else float(value)  # float(Decimal): upstream's rounding
             return Values(dtype, None, present, host=pa.array([value] * count, dtype.to_arrow()),
@@ -211,6 +271,7 @@ class Sampler:
 
     def _compare(self, spec: Any, left: Values) -> Values:
         import cupy
+
         from kumo.pytorch.contract.dtypes import DType
 
         right = left.dtype.normalize(spec.right, path="compare.right")
@@ -218,7 +279,11 @@ class Sampler:
         if left.texts is not None:  # text codes: compare by code, against the code a text would take
             values, right_value = _text_codes(left.texts, values, right)
         elif left.dtype.name.startswith("decimal"):  # exactly: each value's order against the right one's
-            from test.kumo_pytorch.reference_engine.gpu.data.decimals import compare, constant_words, words
+            from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+                compare,
+                constant_words,
+                words,
+            )
 
             values, right_value = compare(words(left), constant_words(right, left.dtype.scale)), 0
         else:
@@ -232,9 +297,15 @@ class Sampler:
     # -- calculations ---------------------------------------------------------------------------
 
     def _derived(self, name: str, spec: Any, call: _Call) -> Values:
-        from kumo.pytorch.contract.sample import CalendarPart, MapValues
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            at_most,
+            calculate,
+            decimal_values,
+            is_decimal,
+            words,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import at_most, calculate, decimal_values, is_decimal, words
+        from kumo.pytorch.contract.sample import CalendarPart, MapValues
 
         where = f"derived.{name}"
         operation, dtype = spec.operation, spec.dtype
@@ -279,10 +350,15 @@ class Sampler:
     def _map(self, name: str, spec: Any, operand: Values, valid: Any, call: _Call) -> Values:
         """`MapValues`: each operand to its group's output; unknown values by the declared policy."""
 
-        import cupy
-        from kumo.pytorch.contract.sample import _typed_map_groups
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            constant_words,
+            decimal_values,
+            is_decimal,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import constant_words, decimal_values, is_decimal
+        import cupy
+
+        from kumo.pytorch.contract.sample import _typed_map_groups
 
         operation, dtype, where = spec.operation, spec.dtype, f"derived.{name}"
         groups = _typed_map_groups(operation, operand.dtype)
@@ -318,6 +394,7 @@ class Sampler:
         as declared, as upstream holds it)."""
 
         import cupy
+
         from kumo.pytorch.contract.sample import Constant, evaluate_derived
 
         row = int(cupy.flatnonzero(bad)[0])
@@ -353,9 +430,11 @@ class Sampler:
         Keys match as upstream's Python values compare (`test.kumo_pytorch.reference_engine.gpu.data.keys`, `hop_keys`).
         """
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.sampling.paths import (
+            _Routes,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.sampling.paths import _Routes
+        import cupy
 
         owner = cupy.arange(base_rows.size, dtype=cupy.int64)
         rows = base_rows.astype(cupy.int64)
@@ -387,7 +466,11 @@ class Sampler:
         value there (1.5 for an integer key) can match none. None when no key can match: keys of types Python
         never finds equal (an integer and a text, a date and a timestamp)."""
 
-        from test.kumo_pytorch.reference_engine.gpu.data.keys import Translation, key_space, never_equal
+        from test.kumo_pytorch.reference_engine.gpu.data.keys import (
+            Translation,
+            key_space,
+            never_equal,
+        )
 
         source, destination = key_space(self.tables[from_table], from_column), key_space(self.tables[table], column)
         if never_equal(source.dtype, destination.dtype):
@@ -410,6 +493,7 @@ class Sampler:
         """The rows `spec` selects for each anchor, grouped by anchor in anchor order."""
 
         import cupy
+
         from kumo.pytorch.contract.schema import table_clock
 
         owner, rows, table = self._follow(spec.path, call.table, call.rows)
@@ -512,7 +596,9 @@ class Sampler:
         import cupy
 
         if key.words is not None:
-            from test.kumo_pytorch.reference_engine.gpu.data.decimals import distinct_index
+            from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+                distinct_index,
+            )
 
             return distinct_index(key.words)[0]
         if key.values.dtype.kind != "f":
@@ -532,8 +618,11 @@ class Sampler:
         printed sort keys of the rows (a table's primary key, a grouping's keys), ties as given. Worked out on
         the host, for these rows only."""
 
+        from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+            sort_key,
+        )
+
         import cupy
-        from test.kumo_pytorch.reference_engine.gpu.data.printed import sort_key
 
         keys = [_column_python(key.take(rows)) for key in column.sort_keys()]
         owners = owner[rows].get().tolist()
@@ -620,9 +709,14 @@ class Sampler:
         upstream's message, past the result's precision); the extremes and distinct count of their values; the
         most frequent value, ties to the smallest printed value."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            calculate,
+            decimal_values,
+            distinct_index,
+            segment_sums,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import calculate, decimal_values, distinct_index, segment_sums
+        import cupy
 
         valid = column.valid
         owner, held = segment[valid], column.words[valid]
@@ -676,9 +770,11 @@ class Sampler:
         """Python's `min`/`max` over the given rows' values, per segment, in upstream's row order."""
 
         from collections import defaultdict
+        from test.kumo_pytorch.reference_engine.gpu.data.printed import (
+            sort_key,
+        )
 
         import cupy
-        from test.kumo_pytorch.reference_engine.gpu.data.printed import sort_key
 
         keys = [_column_python(key.take(rows)) for key in column.sort_keys()]
         by_segment = defaultdict(list)

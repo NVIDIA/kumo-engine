@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Field-name IDs (``FieldNames``): which declared field each value or token came from.
 
 The rules are upstream Kumo PyTorch's (G-IDSPACE-001; its ``_fit_inputs``, ``_field_ids``
@@ -57,6 +61,7 @@ def field_lookup(contract: DataLoaderSpec, input_name: str, maps: dict[str, dict
     input: one), 0 where the component does not declare the field, translated into its ``field_space``."""
 
     import cupy
+
     from kumo.pytorch.contract.batch import EventsOf
     from kumo.pytorch.contract.batch.validation import resolved_fields
 

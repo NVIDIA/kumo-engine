@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Frozen text-embedding encoders for the Nemotron variant (see the design notes + paper §Nemotron).
 
 Arena adaptation: resolve built-in encoders locally and raise ImportError for
@@ -28,7 +32,6 @@ from collections import OrderedDict
 from typing import Protocol, runtime_checkable
 
 import torch
-
 
 
 @runtime_checkable

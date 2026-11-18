@@ -1,7 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Inclusive root availability shared by history, graph and length execution."""
 
 import pyarrow as pa
 import pyarrow.compute as pc
+
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.data.records import timestamp_to_epoch
 

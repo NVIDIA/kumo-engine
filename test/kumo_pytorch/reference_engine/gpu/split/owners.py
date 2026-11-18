@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Which partitions own each row: joins along ownership chains, keys matched by value."""
 
 from __future__ import annotations
@@ -5,20 +9,27 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.contract.dtypes import DType
     from kumo.pytorch.dataset import Parquet
 
     from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
-from test.kumo_pytorch.reference_engine.gpu.split.hashing import partition_of_keys
-from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import PartitionPlan, Step
 
+from test.kumo_pytorch.reference_engine.gpu.split.hashing import (
+    partition_of_keys,
+)
+from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+    PartitionPlan,
+    Step,
+)
 
 #: Integer key types, which the split compares across widths after a lossless cast (other pairs of number types,
 #: by their exact forms: `_Owners._join`).
 _SIGNED = frozenset({"int8", "int16", "int32", "int64"})
 
 _UNSIGNED = frozenset({"uint8", "uint16", "uint32", "uint64"})
+
 
 def _joinable(left: DType, right: DType) -> bool:
     """Whether keys of these types are matched as libcudf reads them: one type, or integers one type holds both
@@ -28,6 +39,7 @@ def _joinable(left: DType, right: DType) -> bool:
         return True
     names = {left.name, right.name}
     return names <= _SIGNED | _UNSIGNED and not ("uint64" in names and names & _SIGNED)
+
 
 def _same_type(*columns: Any) -> list[Any]:
     """`columns` cast to one type that holds every value of each: int64 for integers, uint64 if all are unsigned.
@@ -51,6 +63,7 @@ def _same_type(*columns: Any) -> list[Any]:
     common = plc.DataType(TypeId.UINT64 if types <= unsigned else TypeId.INT64)
     return [column if column.type().id() == common.id() else plc.unary.cast(column, common) for column in columns]
 
+
 def _union(values: list[Any], parts: list[Any]) -> tuple[Any, Any]:
     """Distinct (value, partition) pairs of several pieces, without null values."""
 
@@ -59,6 +72,7 @@ def _union(values: list[Any], parts: list[Any]) -> tuple[Any, Any]:
     table = plc.Table([plc.concatenate.concatenate(_same_type(*values)), plc.concatenate.concatenate(parts)])
     table = plc.stream_compaction.drop_nulls(table, [0], 1)
     return _distinct_pairs(*table.columns())
+
 
 class _Owners:
     """Which partition(s) each row belongs to, by joins up its chains on the GPU.
@@ -85,7 +99,9 @@ class _Owners:
         cached = self._maps.get((table, chain))
         if cached is not None:
             return cached
-        from test.kumo_pytorch.reference_engine.gpu.data.tables import _load_parquet
+        from test.kumo_pytorch.reference_engine.gpu.data.tables import (
+            _load_parquet,
+        )
 
         source, columns = self.sources[table]
         key = self.plan.primary_keys[table]
@@ -126,7 +142,9 @@ class _Owners:
         """`chain`'s first parent's key map, as a child key of `child_type` meets it: as it is, or (another number
         type) in the child type's exact form, made once for every chunk of the child (`_Formed`, parts None)."""
 
-        from test.kumo_pytorch.reference_engine.gpu.data.keys import never_equal
+        from test.kumo_pytorch.reference_engine.gpu.data.keys import (
+            never_equal,
+        )
 
         keys, parts = self.key_map(chain[0].parent, chain[1:])
         parent_type = self._key_type(chain[0].parent)
@@ -157,21 +175,25 @@ class _Owners:
                                           plc.types.NullEquality.UNEQUAL)
         return left, _gather(parent_parts, right)
 
+
 def _exact_join(child_keys: Any, parent_keys: Any, parent_parts: Any, child_type: DType,
                 parent_type: DType) -> tuple[Any, Any]:
     """`_Owners._join` for keys libcudf does not compare as Python does: none for types never equal; numbers of
     different types each in the child's exact form (`test.kumo_pytorch.reference_engine.gpu.data.keys.exact_form`), keys with none (NaN, 1.5 against
     integers, 0.1 against decimals) left out."""
 
-    import cupy
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
     from test.kumo_pytorch.reference_engine.gpu.data.keys import never_equal
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
+    import cupy
 
     if never_equal(child_type, parent_type):
         empty = _column(cupy.zeros(0, dtype=cupy.int32))
         return empty, _gather(parent_parts, empty)
     return _formed_join(child_keys, child_type, _formed(parent_keys, parent_parts, parent_type, child_type))
+
 
 @dataclass(frozen=True)
 class _Formed:
@@ -185,24 +207,31 @@ class _Formed:
     def columns(self) -> list[Any]:
         return [*self.table.columns(), self.parts]
 
+
 def _formed(keys: Any, parts: Any, dtype: DType, target: DType) -> _Formed:
     """Keys of `dtype` with their partitions, in `target`'s exact form (`_Formed`)."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
+    import cupy
 
     form, rows = _form(keys, dtype, target)
     return _Formed(form, _gather(parts, _column(cupy.ascontiguousarray(rows.astype(cupy.int32)))), target)
+
 
 def _formed_join(child_keys: Any, child_type: DType, parent: _Formed) -> tuple[Any, Any]:
     """`_Owners._join` against keys already in the child's form: the child's keys in their own form (those with
     none, NaN, left out), joined on it."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     assert parent.target == child_type, (parent.target, child_type)
     child_form, child_rows = _form(child_keys, child_type, child_type)
@@ -210,20 +239,25 @@ def _formed_join(child_keys: Any, child_type: DType, parent: _Formed) -> tuple[A
     rows = _column(cupy.ascontiguousarray(child_rows[_view(left)].astype(cupy.int32)))
     return rows, _gather(parent.parts, right)
 
+
 def _form(keys: Any, dtype: DType, target: DType) -> tuple[Any, Any]:
     """Key column `keys` (of number type `dtype`) in `target`'s exact form (a libcudf table: one int64 column, or a
     decimal's four words), the rows with one only, and which rows those are (CuPy int64)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.data.keys import exact_form
+    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
-    from test.kumo_pytorch.reference_engine.gpu.data.keys import exact_form
-    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
-
     held = GpuTable("keys", keys.size(), {"k": keys}, {"k": dtype})
     if dtype.name.startswith("decimal"):
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import column_words
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            column_words,
+        )
 
         values = column_words(keys)
     else:
@@ -235,6 +269,7 @@ def _form(keys: Any, dtype: DType, target: DType) -> tuple[Any, Any]:
     columns = [form[:, k] for k in range(form.shape[1])] if form.ndim == 2 else [form]
     return plc.Table([_column(cupy.ascontiguousarray(column)) for column in columns]), rows
 
+
 def _nans_null(column: Any) -> Any:
     """A float column with its NaNs NULL (they match nothing); others as they are."""
 
@@ -245,10 +280,12 @@ def _nans_null(column: Any) -> Any:
     mask, count = plc.transform.nans_to_nulls(column)
     return column.with_mask(mask, count) if count else column
 
+
 def _gather(column: Any, rows: Any) -> Any:
     import pylibcudf as plc
 
     return plc.copying.gather(plc.Table([column]), rows, plc.copying.OutOfBoundsPolicy.DONT_CHECK).columns()[0]
+
 
 def _distinct_pairs(first: Any, second: Any) -> tuple[Any, Any]:
     import pylibcudf as plc
@@ -258,6 +295,7 @@ def _distinct_pairs(first: Any, second: Any) -> tuple[Any, Any]:
         plc.types.NullEquality.EQUAL, plc.types.NanEquality.ALL_EQUAL,
     )
     return pairs.columns()[0], pairs.columns()[1]
+
 
 def _places(name: str, chunk: GpuTable, owners: _Owners,
             selectors: Sequence[tuple[str, Any, Any, DType]]) -> tuple[Any, Any, Any, Any]:

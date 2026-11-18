@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML history sizes and explicit selection variants through DiskGraph.
 
 These are batch correctness/input compatibility checks, not long-sequence
@@ -6,22 +10,18 @@ training benchmarks. Published full-history workload declarations stay intact.
 
 from dataclasses import replace
 from datetime import timedelta
-
-import kumo.pytorch.api as r
-import pytest
-import torch
-
 from test.kumo_pytorch.contracts import build_contract, window
 from test.kumo_pytorch.involvement import history, verify_inputs
-from test.kumo_pytorch.masked_values import (
-    original_tokens,
-)
-from test.kumo_pytorch.masked_values import (
-    verify_targets as verify_masked,
-)
+from test.kumo_pytorch.masked_values import original_tokens
+from test.kumo_pytorch.masked_values import verify_targets as verify_masked
 from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.next_token import verify_targets as verify_next
 from test.kumo_pytorch.reference_tokens import history_tokens
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
 
 from .fixtures import (
     CUTOFF,
@@ -212,9 +212,9 @@ def selected_reference(source, profile):
         if profile in ("time_window", "two_tables_window_limit"):
             rows = [row for row in rows if T - length // 2 <= row["time"] < T]
         if profile == "count_limit":
-            rows = rows[-(length - 3) :]
+            rows = rows[-(length - 3):]
         elif profile == "two_tables_window_limit":
-            rows = rows[-(length // 4) :]
+            rows = rows[-(length // 4):]
         selected.extend(rows)
     return {"events": selected}
 

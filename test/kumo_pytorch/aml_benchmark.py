@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """AML binding for the general benchmark API; no Arena runtime dependency.
 
 One complete pass means the explicitly selected train anchors, not all AML
@@ -95,6 +99,7 @@ def consumer(selection, family, *, capacity, device, seed):
 def factory(config, workdir):
     import pyarrow.parquet as pq
     import torch
+
     from kumo.pytorch import api as r
 
     from .aml_inputs import load_selections, verify_inputs

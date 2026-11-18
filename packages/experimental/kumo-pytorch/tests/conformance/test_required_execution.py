@@ -27,16 +27,33 @@ from tests.conformance.conftest import (
 def run_pytest(command, directory):
     # A parent's debugging filter must not change the scenario being tested.
     env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
-    if env.get("PYTHONPATH"):
-        # The child changes directory. Keep testing this checkout's package,
-        # not a different editable install found after relative paths move.
-        env["PYTHONPATH"] = os.pathsep.join(
-            str((REPOSITORY / entry).resolve()) if not Path(entry).is_absolute() else entry
-            for entry in env["PYTHONPATH"].split(os.pathsep)
-        )
+    # The temporary child's conftest imports this checkout's conformance helpers
+    # even in CI, where the package is installed without an editable test path.
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPOSITORY)]
+        + [
+            str((REPOSITORY / entry).resolve())
+            for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+            if entry
+        ]
+    )
     return subprocess.run(
         command, cwd=directory, env=env, capture_output=True, text=True, timeout=30
     )
+
+
+@pytest.mark.parametrize("pythonpath", (None, "src"))
+def test_child_imports_checkout_without_editable_install(tmp_path, monkeypatch, pythonpath):
+    if pythonpath is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", pythonpath)
+    result = run_pytest(
+        [sys.executable, "-S", "-c", "import conformance; print(conformance.__file__)"],
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).resolve() == REPOSITORY / "conformance/__init__.py"
 
 
 @pytest.mark.parametrize("scenario", ("skip", "empty"))

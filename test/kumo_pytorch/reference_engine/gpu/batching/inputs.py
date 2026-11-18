@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """A call's input values: which inputs, their configuration, and their sampled values."""
 
 from __future__ import annotations
@@ -5,13 +9,15 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, Any
 from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values
 from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kumo.pytorch.spec import DataLoaderSpec
 
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
+
 from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
 
 
@@ -20,12 +26,14 @@ def _inputs(contract: DataLoaderSpec) -> Iterator[tuple[str, Any]]:
         for use in getattr(value.representation, "fields", ()):  # graph inputs: none yet
             yield name, use
 
+
 def _config(contract: DataLoaderSpec, use: Any) -> Any:
     """A field's encoding, a shared one (``UseEncoding``) looked up in ``batch.encodings``."""
 
     from kumo.pytorch.contract.batch.encodings import UseEncoding
 
     return contract.batch.encodings[use.encoding.name] if isinstance(use.encoding, UseEncoding) else use.encoding
+
 
 @dataclass
 class _InputValues:
@@ -44,6 +52,7 @@ class _InputValues:
     dated: dict[str, Any] = dataclass_field(default_factory=dict)  # a dated field's `test.kumo_pytorch.reference_engine.gpu.sampling.dated.Occurrences`
     components: Any = None
 
+
 def _sampled(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, anchors: GpuAnchors,
              rows: Any, labels: bool = True) -> tuple[dict[str, _InputValues], dict[str, Any]]:
     """Every value the inputs read, and (with `labels`) every sample target the batch targets read
@@ -51,13 +60,26 @@ def _sampled(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, anc
     anchor table supplies, checked as upstream checks them), for the anchors at `rows`; checks read back
     once. Without `labels` (measuring lengths), none."""
 
-    from kumo.pytorch.contract.batch import Composite, EntitySource, OccurrencesOf, Tokens
-    from kumo.pytorch.contract.batch.validation import resolved_fields
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _raise_flags,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import (
+        sample_targets,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.dated import (
+        dated_values,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.events import (
+        event_inputs,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.dated import dated_values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.events import event_inputs
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _raise_flags
-    from test.kumo_pytorch.reference_engine.gpu.encoding.targets import sample_targets
+    from kumo.pytorch.contract.batch import (
+        Composite,
+        EntitySource,
+        OccurrencesOf,
+        Tokens,
+    )
+    from kumo.pytorch.contract.batch.validation import resolved_fields
 
     entity, found = index.find(anchors, rows)
     cutoffs = anchors.cutoffs[rows]
@@ -94,15 +116,20 @@ def _sampled(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, anc
     _raise_flags(flags)
     return result, labels
 
+
 def _entity_rows(sampled: _InputValues, representation: Any, count: int) -> _InputValues:
     """An entity token or Composite input's rows: each anchor's entity row, dropped when a field it needs is
     NULL (upstream's ``_eligible``): under ``missing="skip_event"`` any field it encodes, for Composite its
     ``required_fields``. A Composite input's encoders are fitted on every row (`fitting`)."""
 
-    import cupy
-    from kumo.pytorch.contract.batch import Composite
+    from test.kumo_pytorch.reference_engine.gpu.sampling.dated import (
+        Occurrences,
+        _taken,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.sampling.dated import Occurrences, _taken
+    import cupy
+
+    from kumo.pytorch.contract.batch import Composite
 
     row = representation.row
     composite = isinstance(row, Composite)
@@ -127,6 +154,7 @@ def _entity_rows(sampled: _InputValues, representation: Any, count: int) -> _Inp
         values[name] = dated[name].values
     return _InputValues(keep.astype(cupy.int64), values, fitting=sampled.values if composite else None, dated=dated)
 
+
 def _require_entities(contract: DataLoaderSpec, sampler: Sampler, found: Any, entity: Any, cutoffs: Any,
                       anchors: GpuAnchors, rows: Any, index: EntityIndex) -> None:
     """Every anchor's entity as upstream's sample builder requires it: a row of the entity table, passing every
@@ -134,10 +162,12 @@ def _require_entities(contract: DataLoaderSpec, sampler: Sampler, found: Any, en
     (``available_from``: its time before the cutoff; a NULL time is refused). One rule code per anchor, read
     back once; the first failing anchor in order is refused, by its first failing rule."""
 
-    import cupy
-
+    from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import (
+        _seconds,
+    )
     from test.kumo_pytorch.reference_engine.gpu.sampling.filters import _filter
-    from test.kumo_pytorch.reference_engine.gpu.sampling.calculations import _seconds
+
+    import cupy
 
     spec = contract.sample.entity
     code = cupy.where(found, 0, 1).astype(cupy.int8)  # 1: no row

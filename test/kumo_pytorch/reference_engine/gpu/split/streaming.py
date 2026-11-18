@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Stream a split dataset (`test.kumo_pytorch.reference_engine.gpu.split`) through a GPU, one partition at a time.
 
     layout = PartitionLayout.open("/data/split")
@@ -36,11 +40,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
+
     from kumo.pytorch.contract.sample import SampleSpec
     from kumo.pytorch.contract.schema import DataSchema
     from kumo.pytorch.dataset import Dataset
-
-    from test.kumo_pytorch.reference_engine.gpu.data.tables import GpuTable
 
 __all__ = ["Partition", "PartitionLayout", "stream_partitions"]
 
@@ -110,6 +114,7 @@ class PartitionLayout:
         """Partition `k`'s own files for `tables` (its partitioned tables)."""
 
         from test.kumo_pytorch.reference_engine.gpu.split.writing import _part
+
         from kumo.pytorch.dataset import Dataset, Parquet
 
         self._check_partition(k)
@@ -159,8 +164,15 @@ class PartitionLayout:
         every sample it holds.
         """
 
-        from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import Step, _downward, _refuse_split_candidates
-        from test.kumo_pytorch.reference_engine.gpu.sampling.paths import Hop, sample_routes
+        from test.kumo_pytorch.reference_engine.gpu.sampling.paths import (
+            Hop,
+            sample_routes,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.split.partition_plan import (
+            Step,
+            _downward,
+            _refuse_split_candidates,
+        )
 
         if sample.entity.table != self.root:
             raise ValueError(f"the sample is about {sample.entity.table!r}, but the split at {self.directory} "
@@ -201,10 +213,13 @@ def stream_partitions(schema: DataSchema, layout: PartitionLayout, *, order: Seq
         their files when omitted.
     """
 
-    import cupy
-
-    from test.kumo_pytorch.reference_engine.gpu.data.memory import device, release_unused
+    from test.kumo_pytorch.reference_engine.gpu.data.memory import (
+        device,
+        release_unused,
+    )
     from test.kumo_pytorch.reference_engine.gpu.data.tables import load_tables
+
+    import cupy
 
     gpu = device()  # the read-ahead thread works on this GPU too, not on CUDA's default one
     typed = layout.typed_schema(schema)

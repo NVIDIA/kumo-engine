@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """`GpuTask`: upstream Kumo PyTorch's `Task` on the GPU: its fitted state and its batches."""
 
 from __future__ import annotations
@@ -6,6 +10,7 @@ import json
 from collections.abc import Collection, Iterator, Mapping, Sequence
 from functools import cached_property, partial
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from kumo.pytorch.anchors import SplitSelection
@@ -15,8 +20,14 @@ if TYPE_CHECKING:
     from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
     from test.kumo_pytorch.reference_engine.gpu.plan.gpu_plan import GpuPlan
     from test.kumo_pytorch.reference_engine.gpu.plan.state import Fitted
+
 from test.kumo_pytorch.reference_engine.gpu.batching.admission import admitted
-from test.kumo_pytorch.reference_engine.gpu.plan.groups import _Sizer, _groups, _in_groups, _measured
+from test.kumo_pytorch.reference_engine.gpu.plan.groups import (
+    _groups,
+    _in_groups,
+    _measured,
+    _Sizer,
+)
 
 __all__ = ['GpuTask']
 
@@ -35,9 +46,11 @@ def _chunked_counts(contract: DataLoaderSpec, sampler: Any, index: Any, anchors:
     time within `budget` bytes (`test.kumo_pytorch.reference_engine.gpu.plan.groups._Sizer`): a selection holds every event it counts.
     An anchor whose entity the table lacks counts none (building its batch refuses it)."""
 
-    import cupy
+    from test.kumo_pytorch.reference_engine.gpu.batching.admission import (
+        event_counts,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.batching.admission import event_counts
+    import cupy
 
     sizer, start = _Sizer(budget), 0
     while start < rows.size:
@@ -116,9 +129,11 @@ class GpuTask:
     def _upstream(self) -> Fitted:
         """The fitted state rebuilt by upstream from its written form (`test.kumo_pytorch.reference_engine.gpu.plan.state.as_upstream`)."""
 
-        from kumo.pytorch.anchors import describe_selection
+        from test.kumo_pytorch.reference_engine.gpu.plan.state import (
+            as_upstream,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.plan.state import as_upstream
+        from kumo.pytorch.anchors import describe_selection
 
         here = None if self.fit_selection is None else {
             "contract": self.contract.fingerprint, "dataset": self.fingerprints["dataset"],
@@ -134,7 +149,9 @@ class GpuTask:
         """Upstream's identity of this task (``Task.fingerprints``): its contract's, inputs', dataset's, anchors',
         fitted state's halves', output schema's, and of all of them."""
 
-        from test.kumo_pytorch.reference_engine.gpu.plan.state import fingerprint
+        from test.kumo_pytorch.reference_engine.gpu.plan.state import (
+            fingerprint,
+        )
 
         written = self._written
         result = {
@@ -190,9 +207,11 @@ class GpuTask:
         graph neighborhoods: they are sampled `chunk_batches` batches at a time.
         """
 
-        from kumo.pytorch.anchors import ALL_ANCHORS, split_selection
+        from test.kumo_pytorch.reference_engine.gpu.data.anchors import (
+            GpuAnchors,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
+        from kumo.pytorch.anchors import ALL_ANCHORS, split_selection
 
         contract = self.plan.contract
         policy = contract.batch.batching
@@ -283,9 +302,12 @@ class GpuTask:
         """The batches over the anchors at `rows`, in that order (`batches` chose them): `options` are
         `test.kumo_pytorch.reference_engine.gpu.batching.build.build_batches`'s for this call."""
 
-        from test.kumo_pytorch.reference_engine.gpu.batching.build import build_batches
-
-        from test.kumo_pytorch.reference_engine.gpu.batching.compose import BatchPlan
+        from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+            build_batches,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.batching.compose import (
+            BatchPlan,
+        )
 
         build = partial(build_batches, sampler=self.plan.sampler, index=self.plan.index, drop_last=drop_last,
                         **options)
@@ -304,8 +326,13 @@ class GpuTask:
         `rows`: each counted input's width per batch and the GPU memory free for a batch, beside the data (and
         the rest of the model's peak, given `prepare(model_bytes=)`). None when no input is counted."""
 
-        from test.kumo_pytorch.reference_engine.gpu.batching.admission import Admission, padded_event_inputs
-        from test.kumo_pytorch.reference_engine.gpu.data.memory import free_bytes
+        from test.kumo_pytorch.reference_engine.gpu.batching.admission import (
+            Admission,
+            padded_event_inputs,
+        )
+        from test.kumo_pytorch.reference_engine.gpu.data.memory import (
+            free_bytes,
+        )
 
         inputs = padded_event_inputs(contract)
         if not inputs or not bounds:
@@ -356,9 +383,11 @@ class GpuTask:
         alone (no target changes it), the batches composed (`test.kumo_pytorch.reference_engine.gpu.batching.compose.plan_batches`), then built in that
         order."""
 
-        import cupy
+        from test.kumo_pytorch.reference_engine.gpu.batching.compose import (
+            plan_batches,
+        )
 
-        from test.kumo_pytorch.reference_engine.gpu.batching.compose import plan_batches
+        import cupy
 
         policy = contract.batch.batching
         lengths = _measured(build, contract, rows, padding, self.plan.build_bytes)

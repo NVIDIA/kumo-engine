@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Report every requirement; do not turn partial observations into acceptance."""
 
 import json
@@ -194,6 +198,11 @@ def report(directory, config, identities, errors):
         conditions["cold_and_warm_caches"] = {
             "status": "measured",
             "reason": "Verified selected Linux file-page residency before separate epochs; application/device caches uncontrolled",
+        }
+    else:
+        conditions["cold_and_warm_caches"] = {
+            "status": "pending",
+            "reason": "Each repetition requires completed cold/warm epochs with verified residency and unchanged selected file identities, sizes and modification times; see cache_conditions",
         }
     if profile == "timing":
         conditions["cold_and_warm_caches"] = {

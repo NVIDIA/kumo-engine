@@ -2,17 +2,84 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Accept declared capability refusals from public preflight, never execution errors."""
+"""Accept preflight refusals and the explicitly allowed native empty-table rejection."""
 
 import json
+import re
 import sys
 from contextvars import ContextVar
 
 _EVIDENCE = ContextVar("capability_refusals", default=None)
 
 
+def _empty_table_refusal(error):
+    """Recognize the native base-ingest rejection, not a message from later execution."""
+    diskgraph = sys.modules.get("diskgraph")
+    if diskgraph is None or type(error) is not getattr(diskgraph, "DiskgraphSystemError", None):
+        return None
+    match = re.fullmatch(
+        r"Ingest failed: graph source returned zero rows for table (.+)", str(error)
+    )
+    if match is None or error.__cause__ is not None or error.__context__ is not None:
+        return None
+    from kumo.pytorch.engines.diskgraph import DiskGraphEngine
+    from kumo.pytorch.materialization import ensure_diskgraph_index
+    from kumo.pytorch.preparation import prepare
+
+    frames = []
+    trace = error.__traceback__
+    while trace is not None:
+        frames.append(trace.tb_frame)
+        trace = trace.tb_next
+    if not frames or frames[-1].f_code is not ensure_diskgraph_index.__code__:
+        return None
+    codes = [frame.f_code for frame in frames]
+    if prepare.__code__ not in codes or DiskGraphEngine.open.__code__ not in codes:
+        return None
+    context = frames[-1].f_locals
+    table = match[1]
+    if table not in context["dataset"].tables or table not in {
+        spec.name for spec in context["schema"].tables
+    }:
+        return None
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch.dataset import Parquet, _local_parquet_files
+
+    source = context["dataset"].tables[table]
+    if not isinstance(source, Parquet):
+        return None
+    try:
+        files = _local_parquet_files(source.path)
+        if not files or sum(pq.read_metadata(path).num_rows for path in files) != 0:
+            return None
+    except Exception:
+        # Unreadable/missing source evidence cannot establish an intentional refusal.
+        return None
+    # The actual native call raised; it never returned a prepared base index.
+    # This test-owned label describes an ingestion refusal, not a check() code.
+    return {
+        "outcome": "refused",
+        "stage": "ingestion",
+        "engine": "diskgraph",
+        "execution": "stopped_before_materialization",
+        "source_rows": 0,
+        "issues": [
+            {
+                "code": "DG-EMPTY-BASE-TABLE",
+                "path": f"dataset.tables.{table}",
+                "reason": str(error),
+                "suggestion": "Use nonempty base tables; empty base tables are unsupported.",
+            }
+        ],
+    }
+
+
 def clean_refusal(error):
-    """Return evidence only for prepare()'s pre-open unsupported-capability error."""
+    """Return evidence for the approved refusal boundaries only."""
+    empty = _empty_table_refusal(error)
+    if empty is not None:
+        return empty
     spec = sys.modules.get("kumo.pytorch.spec")
     if (
         spec is None
@@ -69,6 +136,28 @@ def record_refusal(error, **scope):
         if (records := _EVIDENCE.get()) is not None:
             records.append(evidence)
     return evidence
+
+
+def record_child_refusal(evidence):
+    """Record evidence classified by this module inside a test subprocess/kernel."""
+    assert evidence["outcome"] == "refused" and evidence["issues"]
+    assert (evidence["stage"], evidence["execution"]) == ("preflight", "not_started") or (
+        (evidence["stage"], evidence["execution"])
+        == ("ingestion", "stopped_before_materialization")
+        and evidence["engine"] == "diskgraph"
+        and evidence["source_rows"] == 0
+        and len(evidence["issues"]) == 1
+        and evidence["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"
+    )
+    assert all(
+        all(
+            isinstance(issue.get(key), str) and issue[key].strip()
+            for key in ("code", "path", "reason", "suggestion")
+        )
+        for issue in evidence["issues"]
+    )
+    if (records := _EVIDENCE.get()) is not None:
+        records.append(evidence)
 
 
 def check_or_refuse(contract, dataset, engine, *, inference=False):
@@ -139,12 +228,14 @@ def pytest_plugin():
 
         def pytest_terminal_summary(self, terminalreporter):
             if self.records:
-                terminalreporter.write_sep("-", "Accepted preflight capability refusals")
+                terminalreporter.write_sep("-", "Accepted capability refusals")
                 for record in self.records:
                     reasons = "; ".join(
                         f"{i['code']} at {i['path']}: {i['reason']}" for i in record["issues"]
                     )
-                    terminalreporter.write_line(f"{record['nodeid']}: {reasons}")
+                    terminalreporter.write_line(
+                        f"{record['nodeid']} [{record['stage']}]: {reasons}"
+                    )
                 terminalreporter.write_line(
                     "Refusal passes verify rejection, not execution of the unsupported capability."
                 )

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Independent account-involvement references; never supplied as model inputs.
 
 No imports from the source mapper, task builders, model loss or anchor generator.
@@ -5,10 +9,10 @@ The source reader retains only selected accounts' transactions, while split
 boundaries and observation coverage use every source transaction.
 """
 
-from collections import Counter
-from datetime import datetime, timezone
 import json
 import math
+from collections import Counter
+from datetime import datetime, timezone
 
 import pyarrow as pa
 import pyarrow.compute as pc

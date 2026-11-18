@@ -1,20 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Full populations retain every anchor, including tails and invalid targets."""
 
 from dataclasses import replace
+from test.kumo_pytorch import population
+from test.kumo_pytorch.population_anchors import project_population
 
-import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import torch
+
+import kumo.pytorch.api as r
 from kumo.pytorch.api import Batch
 
-from test.kumo_pytorch import population
-from test.kumo_pytorch.population_anchors import project_population
-
 from .test_aml_inputs import anchor_file
+from .test_run_aml import mapped  # noqa: F401 - pytest fixture
 from .test_run_aml import CASES
-from .test_run_aml import mapped as mapped  # noqa: PLC0414 - pytest fixture re-export
 
 
 @pytest.mark.parametrize(

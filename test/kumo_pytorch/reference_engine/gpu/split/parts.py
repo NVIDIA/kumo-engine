@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """A batch whose samples are read from different tables: sampled part by part, then joined.
 
 On a split dataset (`test.kumo_pytorch.reference_engine.gpu.split.plan`) a batch at a partition boundary holds
@@ -24,13 +28,17 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+        Values,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import (
+        EntityIndex,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
 
     from kumo.pytorch.spec import DataLoaderSpec
-
-    from test.kumo_pytorch.reference_engine.gpu.data.anchors import GpuAnchors
-    from test.kumo_pytorch.reference_engine.gpu.sampling.indexes import EntityIndex
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, Values
-    from test.kumo_pytorch.reference_engine.gpu.sampling.sampler import Sampler
 
 __all__ = ["SampledPart", "join_parts", "sample_part"]
 
@@ -53,12 +61,15 @@ def sample_part(contract: DataLoaderSpec, sampler: Sampler, index: EntityIndex, 
     """The anchors at `rows`, sampled against `sampler`'s tables as `test.kumo_pytorch.reference_engine.gpu.batching.build.build_batches` samples a
     call (its checks raised here), and detached from those tables."""
 
+    from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+        _neighborhoods,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _sampled
+
     import cupy
     import torch
-    from kumo.pytorch.contract.batch import Graph
 
-    from test.kumo_pytorch.reference_engine.gpu.batching.build import _neighborhoods
-    from test.kumo_pytorch.reference_engine.gpu.batching.inputs import _sampled
+    from kumo.pytorch.contract.batch import Graph
 
     graph_inputs = [name for name, value in contract.batch.inputs.items() if isinstance(value.representation, Graph)]
     with cupy.cuda.Stream.from_external(torch.cuda.current_stream()):  # the caller's stream
@@ -93,10 +104,14 @@ def _join_values(parts: Sequence[Values]) -> Values:
     """Several parts' values of one field, in order: texts in one dictionary, a decimal's numbers joined and
     its Arrow values made when asked."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        Values,
+        recoded,
+        shared_texts,
+    )
+
     import cupy
     import pyarrow as pa
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import Values, recoded, shared_texts
 
     if len(parts) == 1:
         return parts[0]
@@ -124,10 +139,12 @@ def _detached(values: Values | None) -> Values | None:
     """`values` holding no reference to its table: a text dictionary cut down to the texts it uses (code 0's
     among them, so every code stays in range); anything else is already its own."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     if values is None or values.texts is None or values.values is None or values.texts.size() == 0:
         return values
@@ -200,7 +217,7 @@ def _join_occurrences(parts: Sequence[Any], sizes: Sequence[int]) -> Any:
     offsets = [sum(sizes[:number]) for number in range(len(parts))]
     first = parts[0]
     return replace(first, owner=cupy.concatenate([part.owner + offset for part, offset in zip(parts, offsets,
-                                                                                               strict=True)]),
+                                                                                              strict=True)]),
                    values=_join_values([part.values for part in parts]),
                    times=cupy.concatenate([part.times for part in parts]),
                    fields={name: _join_values([part.fields[name] for part in parts]) for name in first.fields},
@@ -212,7 +229,9 @@ def _join_occurrences(parts: Sequence[Any], sizes: Sequence[int]) -> Any:
 def _join_graph_input(parts: Sequence[Any], sizes: Sequence[int]) -> Any:
     """A graph input's `_GraphInput` of consecutive parts: their neighborhoods, then each table's node fields."""
 
-    from test.kumo_pytorch.reference_engine.gpu.batching.build import _GraphInput
+    from test.kumo_pytorch.reference_engine.gpu.batching.build import (
+        _GraphInput,
+    )
 
     graph = _join_neighborhoods([part.graph for part in parts], sizes)
     features = {table: {field: _join_feature([part.features[table][field] for part in parts])
@@ -238,7 +257,7 @@ def _join_neighborhoods(parts: Sequence[Any], sizes: Sequence[int]) -> Any:
     return replace(
         first,
         owners={table: cupy.concatenate([part.owners[table] + offset for part, offset in zip(parts, samples,
-                                                                                               strict=True)])
+                                                                                             strict=True)])
                 for table in first.tables},
         ids={table: _join_ids([part.ids[table] for part in parts]) for table in first.tables},
         rows={table: cupy.concatenate([part.rows[table] for part in parts]) for table in first.tables},
@@ -253,10 +272,10 @@ def _join_ids(parts: Sequence[Any]) -> Any:
     text-keyed table's texts end to end, or keys of other types (`TypedIds`) so (a part with no node holds an
     empty integer array)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import TypedIds
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.sampling.graphs import TypedIds
 
     held = [part for part in parts if not isinstance(part, cupy.ndarray)]
     if not held:
@@ -272,10 +291,10 @@ def _join_feature(parts: Sequence[Any]) -> Any:
     """A node field's encoded values of consecutive parts: tensors (or Arrow arrays) end to end, or a Text
     field's pieces (`test.kumo_pytorch.reference_engine.gpu.batching.layout._Pieces`)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.batching.layout import _Pieces
+
     import pyarrow as pa
     import torch
-
-    from test.kumo_pytorch.reference_engine.gpu.batching.layout import _Pieces
 
     first = parts[0]
     if isinstance(first, _Pieces):

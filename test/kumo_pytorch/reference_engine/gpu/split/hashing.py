@@ -1,8 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The partition of each root key: a hash of its value alone."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     pass
@@ -24,20 +29,25 @@ def partition_of_keys(keys: Any, num_partitions: int, dtype: Any = None) -> Any:
     return plc.binaryop.binary_operation(hashed, modulus, plc.binaryop.BinaryOperator.PYMOD,
                                          plc.DataType(plc.TypeId.INT32))
 
+
 def hashed_keys(keys: Any, dtype: Any = None) -> Any:
     """What a split hashes of key column `keys` (a libcudf table): integers and text (and bytes) as read, which
     splits written before keep; booleans, dates and timestamps as int64; floats as float64 bits, -0.0 as 0.0 (they
     are equal; NaN equals nothing, any partition will do); decimals as their four 64-bit words."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     if dtype is None or dtype.integer or dtype.name in ("string", "bytes"):
         return plc.Table([keys])
     if dtype.name.startswith("decimal"):
-        from test.kumo_pytorch.reference_engine.gpu.data.decimals import column_words
+        from test.kumo_pytorch.reference_engine.gpu.data.decimals import (
+            column_words,
+        )
 
         held = column_words(keys)
         return plc.Table([_column(cupy.ascontiguousarray(held[:, k])) for k in range(held.shape[1])])

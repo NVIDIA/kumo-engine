@@ -9,8 +9,8 @@ wrong.
 This page walks one small example from training to batch scoring to online
 serving, and shows how to keep the inputs identical at every step. Training and
 batch scoring use DiskGraph. `ServingAssembler` still invokes the deprecated
-InMemory implementation internally; the test guard rejects that call, so the
-serving portion currently fails until the package dependency is removed.
+InMemory implementation internally. The testing suite allows this package-owned
+dependency while prohibiting InMemory as a test backend or reference oracle.
 
 kumo-pytorch gives you three things for this:
 

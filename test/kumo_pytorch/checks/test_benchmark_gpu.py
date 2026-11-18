@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Independent fake-device checks; these do not establish real CUDA execution."""
 
 import io
@@ -5,13 +9,12 @@ import json
 import sys
 import threading
 import time
-from types import SimpleNamespace
-
-import pytest
-
 from test.kumo_pytorch.benchmarking import BatchCounts, Workload, run
 from test.kumo_pytorch.benchmarking.gpu import GPUCollector, TorchCudaBackend
 from test.kumo_pytorch.benchmarking.recording import Recorder
+from types import SimpleNamespace
+
+import pytest
 
 
 class Backend:

@@ -1,20 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exercise the real AML benchmark binding using tiny local source files."""
 
 import hashlib
 import json
 from datetime import UTC, datetime
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
-import torch
-from kumo.pytorch.api import Batch
-
 from test.kumo_pytorch import aml_inputs
 from test.kumo_pytorch.aml_benchmark import counts, factory
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
 from test.kumo_pytorch.data import ROOT
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import torch
+
+from kumo.pytorch.api import Batch
 
 from .test_aml_source import account, source_files
 

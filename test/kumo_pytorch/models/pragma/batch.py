@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Packed tensor inputs for PRAGMA; construction and encoding belong to the caller.
 
 The packed input contract and tensor-transfer helpers are retained from the
@@ -102,4 +106,3 @@ class PackedBatch:
     def token_budget(self) -> int:
         """Total tokens (events + profile) — the dynamic-batch budget metric."""
         return self.n_tokens + int(self.prof_key_ids.numel())
-

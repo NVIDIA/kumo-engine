@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exact CPU training continuation across a fresh-process, mid-epoch checkpoint."""
 
 import argparse
@@ -7,8 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import kumo.pytorch.api as r
 import torch
+
+import kumo.pytorch.api as r
 
 from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .lifecycle import forbid_fitting, input_digest

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Cutoff-aware stored-column fitting using Kumo's shared statistics format.
 
 Kumo's learned stored-column encoders are fitted once per table row. Category
@@ -9,18 +13,22 @@ also retains its host path. Partition halos never multiply fitting observations.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from typing import Any
 
 
 def _batches(table, source, columns, cutoff):
+    from test.kumo_pytorch.reference_engine.gpu.data.sources import (
+        _physical_names,
+    )
+
     import pyarrow as pa
     import pyarrow.compute as pc
     import pyarrow.parquet as pq
+
     from kumo.pytorch.contract.schema import table_clock
     from kumo.pytorch.dataset import _local_parquet_files
-    from test.kumo_pytorch.reference_engine.gpu.data.sources import _physical_names
 
     clock = table_clock(table)
     names = list(dict.fromkeys([*columns, *([clock] if clock else [])]))
@@ -44,24 +52,35 @@ def _batches(table, source, columns, cutoff):
                     times = pc.cast(pc.ceil_temporal(arrays[clock], unit='second'),
                                     pa.timestamp('s', tz='UTC'), safe=False)
                     keep = pc.and_(keep, pc.less_equal(times, pa.scalar(cutoff // 10**9,
-                                                                       type=times.type)))
+                                                                        type=times.type)))
             selected = pa.RecordBatch.from_arrays([arrays[name] for name in columns], names=list(columns))
             yield selected if keep is None else selected.filter(keep)
 
 
 def pin_table_encoders(contract, dataset, anchors, rows, encoder_cutoff=..., *, loaded=None):
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        reused_encoder,
+    )
+    from test.kumo_pytorch.reference_engine.gpu.encoding.table_categories import (
+        pin_categories,
+    )
+
+    import diskgraph
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     from kumo.pytorch.column_stats import (
-        ColumnStats, EMPTY_STATS, LATEST_ANCHOR, QUANTILE_GRID,
-        cutoff_nanos, fit_from_stats, table_column_encoders,
+        EMPTY_STATS,
+        LATEST_ANCHOR,
+        QUANTILE_GRID,
+        ColumnStats,
+        cutoff_nanos,
+        fit_from_stats,
+        table_column_encoders,
     )
     from kumo.pytorch.contract.batch.encodings import Text, Vocabulary
     from kumo.pytorch.encoding import FittedEncoder, train_text
     from kumo.pytorch.materialization import _diskgraph_dtype
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import reused_encoder
-    from test.kumo_pytorch.reference_engine.gpu.encoding.table_categories import pin_categories
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    import diskgraph
 
     candidates = table_column_encoders(contract)
     cutoff = LATEST_ANCHOR if encoder_cutoff is ... else encoder_cutoff

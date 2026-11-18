@@ -237,7 +237,11 @@ produce unavailable measurements, never inferred Python or Rust durations.
 
 [FilePageCache](../benchmarking/file_cache.py) is a `before_epoch` callback for
 an explicit list of owned regular files. AML's `cache_mode: "cold-warm"` selects
-its index files and alternates conditions before complete epochs. It never
+its index files before the first epoch and alternates conditions on that fixed
+selection before complete epochs. New files created by iteration, including
+native length caches, appear as `unconditioned_new_files` in later snapshots;
+they are outside this file-page comparison. Length planning and second-epoch
+reuse still run and are checked by the native profiler. The callback never
 clears machine-wide caches. At the idle epoch boundary, cold preparation syncs
 the selected files, releases this worker's read-only file mappings with
 `MADV_DONTNEED`, and requests advisory eviction. Writable mappings are rejected;
@@ -249,7 +253,9 @@ advisory eviction alone is not proof of coldness. See the Linux contracts for
 [residency snapshots](https://man7.org/linux/man-pages/man2/mincore.2.html).
 
 Reports record file identities, total/resident pages, setup boundaries and
-completed epoch scopes. A cold/warm pair requires the same file identities.
+completed epoch scopes. A cold/warm pair requires unchanged file identities,
+sizes and modification times. Missing or changed selected files still fail
+conditioning or leave the comparison incomplete.
 This describes selected Linux file pages at the measurement boundary, not
 application buffers, metadata, device caches or an enduring residency guarantee.
 Epoch/model state can also change, so the pair does not isolate a causal cache

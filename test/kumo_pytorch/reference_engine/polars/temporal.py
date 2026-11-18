@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Batched relational selection and reductions executed by native Polars plans.
 
 Only request metadata and root positions cross into Python. Joins, time filtering,
@@ -12,7 +16,13 @@ from uuid import uuid4
 import numpy as np
 import polars as pl
 import pyarrow as pa
-from kumo.pytorch.contract.sample import Aggregate, GroupBy, Rows, SampleRequest
+
+from kumo.pytorch.contract.sample import (
+    Aggregate,
+    GroupBy,
+    Rows,
+    SampleRequest,
+)
 from kumo.pytorch.contract.schema import table_clock
 from kumo.pytorch.data.records import cutoff_to_epoch
 

@@ -1,17 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The contract checks `prepare` runs: upstream's, then a refusal for each part not built yet."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
 
     from kumo.pytorch.anchors import AnchorTable
     from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
 
 
-
 NAME = "cuda"
+
 
 class _Engine:
     """The face this backend shows upstream's validation, as upstream's engines do: its name, and the checks
@@ -24,7 +29,9 @@ class _Engine:
     def unsupported(self) -> Mapping[str, Any]:
         """What this backend refuses, by code (`test.kumo_pytorch.reference_engine.gpu.plan.unsupported`), as `DiskGraphEngine.unsupported`."""
 
-        from test.kumo_pytorch.reference_engine.gpu.plan.unsupported import declared
+        from test.kumo_pytorch.reference_engine.gpu.plan.unsupported import (
+            declared,
+        )
 
         return declared()
 
@@ -55,14 +62,18 @@ class _Engine:
             return ()  # check_sources refuses the source kind, by name
         return check_parquet_anchors(anchors)
 
+
 def _refusal(code: str, path: str, message: str) -> ValidationIssue:
     """A refusal of a declared entry (`test.kumo_pytorch.reference_engine.gpu.plan.unsupported`): its code, and its next step as the suggestion."""
 
+    from test.kumo_pytorch.reference_engine.gpu.plan.unsupported import (
+        declared,
+    )
+
     from kumo.pytorch.spec import ValidationIssue
 
-    from test.kumo_pytorch.reference_engine.gpu.plan.unsupported import declared
-
     return ValidationIssue(path, message, declared()[code].next_step, code)
+
 
 def _unbuilt(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
     """The parts of a contract this backend does not build yet, each refused with its code (`test.kumo_pytorch.reference_engine.gpu.plan.unsupported`)."""
@@ -74,8 +85,8 @@ def _unbuilt(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         Columns,
         Composite,
         EntitySource,
-        EventSource,
         EventsOf,
+        EventSource,
         Fields,
         Graph,
         LabelTarget,
@@ -88,7 +99,13 @@ def _unbuilt(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         Tokens,
         UseEncoding,
     )
-    from kumo.pytorch.contract.batch.encodings import Buckets, Raw, Text, Vocabulary, ZScore
+    from kumo.pytorch.contract.batch.encodings import (
+        Buckets,
+        Raw,
+        Text,
+        Vocabulary,
+        ZScore,
+    )
     from kumo.pytorch.contract.batch.validation import resolved_fields
     from kumo.pytorch.contract.sample import (
         Aggregate,
@@ -98,8 +115,8 @@ def _unbuilt(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
         EventTimeDelta,
         Field,
         RowTarget,
-        destination_table,
         dated_value_types,
+        destination_table,
     )
 
     def refused(code: str, path: str, what: str) -> ValidationIssue:
@@ -203,6 +220,7 @@ def _unbuilt(contract: DataLoaderSpec) -> tuple[ValidationIssue, ...]:
                     if dtype.name.startswith("decimal"):
                         issues.append(refused("GPU-DECIMAL-COMPOSITE", f"{where}.representation.fields[{index}]",
                                               "Composite components of decimal values"))
+
     def decimal(input_name: str, selector: str) -> bool:
         try:
             return resolved_fields(contract, input_name, selector)[0][1].name.startswith("decimal")

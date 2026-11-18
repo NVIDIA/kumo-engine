@@ -1,9 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Typed Arrow values and calculations shared by the arena query backends."""
 
 from __future__ import annotations
 
 import pyarrow as pa
 import pyarrow.compute as pc
+
 from kumo.pytorch.contract.dtypes import DType, arrow_float64
 from kumo.pytorch.contract.sample import (
     CalendarPart,

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Original AML objectives resume exactly, including targets and iterator position."""
 
 import json
@@ -5,11 +9,10 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from test.kumo_pytorch.checkpoint_resume import check_resume
 
 import pytest
 import torch
-
-from test.kumo_pytorch.checkpoint_resume import check_resume
 
 from .fixtures import CUTOFF, build_fixture
 from .test_aml import CASES

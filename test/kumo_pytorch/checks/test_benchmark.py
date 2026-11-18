@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Independent timing/count oracles and unrelated adapters for the generic API."""
 
 import io
@@ -5,12 +9,11 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
-
 from test.kumo_pytorch.benchmarking import BatchCounts, Workload, run
 from test.kumo_pytorch.benchmarking.metrics import METRICS
 from test.kumo_pytorch.benchmarking.recording import Recorder
+
+import pytest
 
 
 class Clock:

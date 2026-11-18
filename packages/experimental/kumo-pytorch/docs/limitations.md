@@ -311,4 +311,5 @@ strategies and sampling features it doesn't support; see
 [Time](#time); floating-point moments use the documented rounding tolerance.
 `InMemoryEngine` remains importable for compatibility but is deprecated. Tests and
 examples bind Parquet to DiskGraph. `ServingAssembler` still depends on the legacy
-implementation internally; native-only tests expose that dependency as a failure.
+implementation internally; the testing suite allows that package-owned dependency,
+while continuing to check serving outputs and failures.

@@ -1,12 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Timing scope and summaries must not silently certify the full metric suite."""
 
 import json
-
-import pytest
-
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.metrics import METRICS, TIMING_METRICS
 from test.kumo_pytorch.benchmarking.timing_report import timing_summary
+
+import pytest
 
 from .test_benchmark import graph, tabular
 

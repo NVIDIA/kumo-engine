@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Local Parquet discovery and anchor-binding validation for arena engines.
 
 Path discovery has no Kumo import side effects. Anchor validation imports the

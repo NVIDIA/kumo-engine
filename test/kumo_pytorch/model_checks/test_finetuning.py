@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Finetuning starts from persisted state in a fresh interpreter, without refitting."""
 
 import json
@@ -5,16 +9,16 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
-
-import kumo.pytorch.api as r
-import pytest
-import torch
-
 from test.kumo_pytorch.anchor_tables import write_probe_anchors
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.models.aml import build_model
 from test.kumo_pytorch.training_lifecycle import check_training
+
+import pytest
+import torch
+
+import kumo.pytorch.api as r
 
 from .fixtures import CUTOFF, build_fixture, probe_anchor_table
 from .test_aml import CASES

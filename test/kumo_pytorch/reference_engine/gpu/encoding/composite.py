@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Composite rows: one outer ID for each row's ordered tuple of component results, on the GPU.
 
 Upstream Kumo PyTorch's rules (``assembly.py`` ``_eligible``, ``_component_key``,
@@ -36,14 +40,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from test.kumo_pytorch.reference_engine.gpu.data.text import (
+    is_text,
+    python_texts,
+    text_column,
+)
 from typing import TYPE_CHECKING, Any
 
-from test.kumo_pytorch.reference_engine.gpu.data.text import is_text, python_texts, text_column
-
 if TYPE_CHECKING:
-    from kumo.pytorch.contract.dtypes import DType
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        GpuEncoder,
+        Values,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import GpuEncoder, Values
+    from kumo.pytorch.contract.dtypes import DType
 
 __all__ = ["Component", "CompositeVocabulary", "ComponentSpec", "component", "component_specs", "composite_identity",
            "fit_composite", "fit_groups", "hex_order"]
@@ -178,9 +188,11 @@ def _number(value: Any) -> bool:
 def component_specs(representation: Any, input_name: str, encoders: dict[str, GpuEncoder]) -> list[ComponentSpec]:
     """A Composite input's components, in declared order."""
 
-    from kumo.pytorch.contract.batch.encodings import Raw
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        encoder_identity,
+    )
 
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import encoder_identity
+    from kumo.pytorch.contract.batch.encodings import Raw
 
     specs = []
     for use in representation.fields:
@@ -415,10 +427,13 @@ class CompositeVocabulary:
 def _codes(words: Any, texts: Any) -> tuple[Any, Any]:
     """Each of `words` as a code of the sorted dictionary `texts`, and whether it is there (CuPy)."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+        _view,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column, _view
 
     size = words.size()
     if texts is None or texts.size() == 0 or size == 0:
@@ -461,10 +476,12 @@ def _known(specs: list[ComponentSpec], components: list[Component], chosen: Any,
            unknown: int) -> CompositeVocabulary:
     """The tuples of the rows at `chosen` (CuPy), with IDs from `first` in that order."""
 
+    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import (
+        _column,
+    )
+
     import cupy
     import pylibcudf as plc
-
-    from test.kumo_pytorch.reference_engine.gpu.encoding.encoders import _column
 
     known = int(chosen.size)
     texts = []
