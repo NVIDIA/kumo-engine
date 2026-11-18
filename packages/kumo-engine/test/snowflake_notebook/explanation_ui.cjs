@@ -66,10 +66,8 @@ async function checkPlots(page, receipt, output, label, allowed, scope) {
     "Explanation image did not decode");
     const geometry = await image.evaluate(node => {
       const box = node.getBoundingClientRect();
-      const style = getComputedStyle(node);
       return { width: box.width, height: box.height,
         naturalWidth: node.naturalWidth, naturalHeight: node.naturalHeight,
-        objectFit: style.objectFit, maxWidth: style.maxWidth,
         aspect: node.naturalWidth / node.naturalHeight };
     });
     requireThat(geometry.width > 100 && geometry.height > 100 &&

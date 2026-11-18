@@ -1430,6 +1430,39 @@ def test_browser_diagnostics_publish_checks_without_runtime_data(
     assert secret not in json.dumps(result)
 
 
+@pytest.mark.parametrize('mutation', [
+    None, 'secret', 'extra', 'nan', 'negative', 'infinite', 'boolean',
+    'unknown-plot',
+])
+def test_browser_diagnostics_allow_only_bounded_plot_dimensions(
+        modules, tmp_path, mutation):
+    studio = tmp_path / 'studio'
+    studio.mkdir()
+    geometry = dict(width=320.5, height=80, naturalWidth=2400,
+                    naturalHeight=600, aspect=4)
+    plot = 'cohort-layout'
+    if mutation == 'secret':
+        geometry['width'] = 'https://private.example/?token=secret'
+    elif mutation == 'extra':
+        geometry['url'] = 'https://private.example/?token=secret'
+    elif mutation == 'nan':
+        geometry['width'] = float('nan')
+    elif mutation == 'infinite':
+        geometry['width'] = float('inf')
+    elif mutation == 'negative':
+        geometry['width'] = -1
+    elif mutation == 'boolean':
+        geometry['width'] = True
+    elif mutation == 'unknown-plot':
+        plot = 'private-run-name'
+    message = ('Explanation image is distorted or too small: ' + plot +
+               ' ' + json.dumps(geometry))
+    (studio / 'result.json').write_text(json.dumps(dict(error=message)))
+    result = modules.run.browser_diagnostics(tmp_path)
+    assert result == dict(studio=(dict(explanation_geometry=dict(
+        plot=plot, **geometry)) if mutation is None else {}))
+
+
 def test_browser_diagnostics_preserve_progress_without_result(
         modules, tmp_path):
     studio = tmp_path / 'studio'

@@ -6,6 +6,7 @@ import argparse
 import ast
 import io
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -364,6 +365,28 @@ def browser_diagnostics(root):
                     continue
                 if value in literals and len(value) <= 180:
                     safe[key] = value
+                elif key == 'error' and value.startswith(
+                        'Explanation image is distorted or too small: '):
+                    detail = value.removeprefix(
+                        'Explanation image is distorted or too small: ')
+                    plot, _, encoded = detail.partition(' ')
+                    try:
+                        geometry = json.loads(encoded)
+                    except ValueError:
+                        continue
+                    if (re.fullmatch(
+                            r'gradient(?:-layout|-zero)?|cohort(?:-class-[01]|'
+                            r'-multilabel-[01]|-regression|-layout)?', plot)
+                            and isinstance(geometry, dict)
+                            and set(geometry) == {
+                                'width', 'height', 'naturalWidth',
+                                'naturalHeight', 'aspect'}
+                            and all(type(number) in (int, float)
+                                    and 0 <= number <= 10000000
+                                    and math.isfinite(number)
+                                    for number in geometry.values())):
+                        safe['explanation_geometry'] = dict(
+                            plot=plot, **geometry)
                 elif key == 'stage' and re.fullmatch(
                         r'mlflow-(?:fit|score(?:-drift-evaluate)?)-[0-5]|mlflow-version-[12]',
                         value):
