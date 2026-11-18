@@ -22,7 +22,6 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc, Condvar, Mutex,
 };
-use std::time::Duration;
 use thiserror::Error;
 
 const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
@@ -191,18 +190,6 @@ pub enum IndexBuildError {
     Aborted,
 }
 
-const GATE_POLL: Duration = Duration::from_millis(50);
-
-type GateFn = dyn Fn(u64, u64) -> bool + Send + Sync;
-
-pub struct MemoryGate(Box<GateFn>);
-
-impl std::fmt::Debug for MemoryGate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MemoryGate")
-    }
-}
-
 #[derive(Debug)]
 pub struct MemoryBudget {
     total: u64,
@@ -210,8 +197,6 @@ pub struct MemoryBudget {
     cvar: Condvar,
     in_use: AtomicU64,
     waiters: AtomicUsize,
-    gate: Option<MemoryGate>,
-    gate_waits: AtomicU64,
 }
 
 pub struct MemoryBudgetGuard {
@@ -224,7 +209,6 @@ pub struct MemoryBudgetSnapshot {
     pub in_use: u64,
     pub total: u64,
     pub waiters: usize,
-    pub gate_waits: u64,
 }
 
 impl MemoryBudget {
@@ -235,25 +219,7 @@ impl MemoryBudget {
             cvar: Condvar::new(),
             in_use: AtomicU64::new(0),
             waiters: AtomicUsize::new(0),
-            gate: None,
-            gate_waits: AtomicU64::new(0),
         }
-    }
-
-    pub fn with_gate(total: u64, gate: impl Fn(u64, u64) -> bool + Send + Sync + 'static) -> Self {
-        Self {
-            gate: Some(MemoryGate(Box::new(gate))),
-            ..Self::new(total)
-        }
-    }
-
-    fn gate_blocks(&self, bytes: u64) -> bool {
-        let reserved = self.in_use.load(Ordering::Relaxed);
-        reserved > 0
-            && self
-                .gate
-                .as_ref()
-                .is_some_and(|gate| !(gate.0)(reserved, bytes))
     }
 
     pub fn acquire(self: &Arc<Self>, bytes: u64) -> Result<MemoryBudgetGuard> {
@@ -277,29 +243,15 @@ impl MemoryBudget {
         }
         let mut available = self.available.lock().unwrap();
         let mut waited = false;
-        let mut gated = false;
-        loop {
-            let fits = *available >= bytes;
-            let blocked = fits && self.gate_blocks(bytes);
-            if fits && !blocked {
-                break;
-            }
+        while *available < bytes {
             if !waited {
                 self.waiters.fetch_add(1, Ordering::Relaxed);
                 waited = true;
             }
-            if blocked {
-                gated = true;
-                available = self.cvar.wait_timeout(available, GATE_POLL).unwrap().0;
-            } else {
-                available = self.cvar.wait(available).unwrap();
-            }
+            available = self.cvar.wait(available).unwrap();
         }
         if waited {
             self.waiters.fetch_sub(1, Ordering::Relaxed);
-        }
-        if gated {
-            self.gate_waits.fetch_add(1, Ordering::Relaxed);
         }
         *available = available.saturating_sub(bytes);
         self.in_use.fetch_add(bytes, Ordering::Relaxed);
@@ -323,7 +275,7 @@ impl MemoryBudget {
             return None;
         }
         let mut available = self.available.lock().unwrap();
-        if *available < bytes || self.gate_blocks(bytes) {
+        if *available < bytes {
             return None;
         }
         *available = available.saturating_sub(bytes);
@@ -362,7 +314,6 @@ impl MemoryBudget {
             in_use: self.in_use.load(Ordering::Relaxed),
             total: self.total,
             waiters: self.waiters.load(Ordering::Relaxed),
-            gate_waits: self.gate_waits.load(Ordering::Relaxed),
         }
     }
 

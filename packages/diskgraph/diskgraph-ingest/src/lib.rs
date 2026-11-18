@@ -63,7 +63,7 @@ pub use crate::progress::{
 };
 pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, pk_map_task_estimate,
-    reserve_map, EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
+    EdgeMapScratch, PkMapHashMap, PkMapHasher,
 };
 pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
@@ -95,7 +95,7 @@ use diskgraph_index::graph::{
     GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
 };
 pub use diskgraph_limits::effective_parallelism;
-use diskgraph_limits::{available_memory_bytes, total_memory_bytes};
+use diskgraph_limits::total_memory_bytes;
 use diskgraph_rowpack::{
     BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats,
     RowPackConfig, RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
@@ -1068,7 +1068,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             rss_peak_gb = observed_peak / 1_073_741_824,
             rss_after_bytes = rss_after_pk_map,
             actual_over_estimate_pct = ratio_pct,
-            gate_waits = ctx.pk_map_gate_waits,
             "pk_map stage complete"
         );
     } else {
@@ -1893,7 +1892,6 @@ mod tests_repopulate_helpers {
             index_threads: None,
             pk_map_estimate_sum: Arc::new(AtomicU64::new(0)),
             pk_map_peak_rss: Arc::new(AtomicU64::new(0)),
-            pk_map_gate_waits: 0,
             index_mem_budget: None,
             num_shards,
             table_rows: HashMap::new(),
@@ -2690,13 +2688,12 @@ struct IngestContext {
     pk_map_threads: Option<usize>,
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
-    /// Sum of per-shard `estimate_pk_map_bytes` requests across the pk_map
+    /// Sum of per-shard `pk_map_task_estimate` requests across the pk_map
     /// phase. Compared against observed peak RSS at end of the phase to
     /// validate that the budget estimate matches reality.
     pk_map_estimate_sum: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// High-water mark of RssAnon observed at task milestones during pk_map.
     pk_map_peak_rss: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    pk_map_gate_waits: u64,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
     table_rows: HashMap<String, u64>,
@@ -7301,7 +7298,6 @@ impl IngestContext {
             index_threads: options.index_threads,
             pk_map_estimate_sum: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pk_map_peak_rss: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pk_map_gate_waits: 0,
             index_mem_budget,
             num_shards,
             table_rows: HashMap::new(),
@@ -9275,7 +9271,7 @@ impl IngestContext {
         self.pk_null_timestamp_drops.clear();
         let pk_map_budget = total_memory_bytes().map(|total| {
             let budget = (total as f64 * PK_MAP_MEM_BUDGET_FRAC) as u64;
-            std::sync::Arc::new(free_memory_gated_budget(budget, total))
+            std::sync::Arc::new(MemoryBudget::new(budget))
         });
         let duplicate_counts = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
         let duplicate_samples = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -9340,7 +9336,7 @@ impl IngestContext {
                 let peak_rss = std::sync::Arc::clone(&self.pk_map_peak_rss);
                 tasks.push(WorkItem {
                     bucket: None,
-                    run: Box::new(move |scratch: &mut PkMapScratch| {
+                    run: Box::new(move |_scratch| {
                         let key_type = key_type_for_column(&pk_col)?;
                         let meta_path = root.join(temp_pkey_meta_path(&table_name, shard));
                         let meta = read_temp_meta(&meta_path)?;
@@ -9439,9 +9435,11 @@ impl IngestContext {
                                 // `panic!` (rc=134), which the runner would treat as
                                 // OOM-class and retry with halved threads to exhaustion.
                                 // With cgroup-aware shard sizing this should be rare.
-                                if estimate > budget_total {
+                                let row_estimate =
+                                    estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
+                                if row_estimate > budget_total {
                                     anyhow::bail!(
-                                        "single-shard PK-map estimate {estimate} B exceeds \
+                                        "single-shard PK-map estimate {row_estimate} B exceeds \
                                          memory budget {budget_total} B; increase num_shards \
                                          (re-run infer or raise num_shards) — halving threads \
                                          cannot reduce a single shard"
@@ -9449,7 +9447,7 @@ impl IngestContext {
                                 }
                                 // Normal case (fits): keep the existing per-shard acquire
                                 // semantics, which block until the budget frees up.
-                                Some(budget.acquire(estimate)?)
+                                Some(budget.acquire(estimate.min(budget_total))?)
                             }
                         } else {
                             None
@@ -9475,15 +9473,9 @@ impl IngestContext {
                             match key_type {
                             KeyType::Int64 => {
                                 {
-                                    let pkmap = &mut *scratch;
-                                    let mut ptrhash =
-                                        std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Int64);
-                                    pkmap.seen_u64.clear();
-                                    reserve_map(&mut pkmap.seen_u64, reserve_rows_usize);
+                                    let mut seen = new_pk_map(reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
-                                        let seen = &mut pkmap.seen_u64;
                                         read_temp_rows(&data_path, |row| {
                                             let timestamp_valid = if let Some(last) = row.last() {
                                                 *last != 0
@@ -9552,27 +9544,19 @@ impl IngestContext {
                                         }
                                     }
                                     let params = ptrhash_params;
-                                    let seen = std::mem::take(&mut pkmap.seen_u64);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
                                             &seen,
                                             params,
-                                            &mut ptrhash,
+                                            &mut PtrHashScratch::new(),
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                    let entries = {
-                                        let slots = mphf.max_index();
-                                        let mut entries = std::mem::take(&mut pkmap.entries);
-                                        entries.resize(slots, (0u64, 0u32));
-                                        for (key, value) in seen.iter() {
-                                            let idx = mphf.index_no_remap(key);
-                                            entries[idx] = (0, *value);
-                                        }
-                                        pkmap.entries = entries;
-                                        pkmap.seen_u64 = seen;
-                                        pkmap.entries.as_slice()
-                                    };
-                                    pkmap.ptrhash = ptrhash;
+                                    let mut entries = vec![(0u64, 0u32); mphf.max_index()];
+                                    for (key, value) in seen.iter() {
+                                        let idx = mphf.index_no_remap(key);
+                                        entries[idx] = (0, *value);
+                                    }
+                                    update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -9589,26 +9573,19 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         &mphf,
-                                        entries,
+                                        &entries,
                                     )?;
                                     Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 }
                             }
                             KeyType::VarBytes => {
                                 {
-                                    let pkmap = &mut *scratch;
-                                    let mut ptrhash =
-                                        std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::VarBytes);
-                                    let pre_clear_cap = pkmap.seen_bytes.capacity();
-                                    pkmap.seen_bytes.clear();
-                                    reserve_map(&mut pkmap.seen_bytes, reserve_rows_usize);
+                                    let mut seen = new_pk_map(reserve_rows_usize);
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
                                         table = %table_name, shard, phase = "task_start",
                                         seen_len = 0u64,
-                                        seen_cap = pkmap.seen_bytes.capacity() as u64,
-                                        prev_seen_cap = pre_clear_cap as u64,
+                                        seen_cap = seen.capacity() as u64,
                                         reserve_rows = reserve_rows_usize as u64,
                                         union_rows = union_rows,
                                         avg_var_bytes = avg_var_bytes,
@@ -9617,7 +9594,6 @@ impl IngestContext {
                                     );
                                     duplicate_samples_local.clear();
                                     {
-                                        let seen = &mut pkmap.seen_bytes;
                                         read_temp_rows(&data_path, |row| {
                                             let timestamp_valid = if let Some(last) = row.last() {
                                                 *last != 0
@@ -9712,7 +9688,6 @@ impl IngestContext {
                                         }
                                     }
                                     let params = ptrhash_params;
-                                    let seen = std::mem::take(&mut pkmap.seen_bytes);
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
                                         table = %table_name, shard, phase = "before_mphf",
@@ -9725,7 +9700,7 @@ impl IngestContext {
                                         DefaultPtrHash::<PkPtrHash, Vec<u8>>::try_new_from_source_with_scratch(
                                             &seen,
                                             params,
-                                            &mut ptrhash,
+                                            &mut PtrHashScratch::new(),
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
                                     tracing::info!(
@@ -9736,19 +9711,12 @@ impl IngestContext {
                                         rss_anon = rss_anon_diag_bytes(),
                                         "pk_map: MPHF built"
                                     );
-                                    let entries = {
-                                        let slots = mphf.max_index();
-                                        let mut entries = std::mem::take(&mut pkmap.entries);
-                                        entries.resize(slots, (0u64, 0u32));
-                                        for (key, value) in seen.iter() {
-                                            let idx = mphf.index_no_remap(key);
-                                            entries[idx] = (0, *value);
-                                        }
-                                        pkmap.entries = entries;
-                                        pkmap.seen_bytes = seen;
-                                        pkmap.entries.as_slice()
-                                    };
-                                    pkmap.ptrhash = ptrhash;
+                                    let mut entries = vec![(0u64, 0u32); mphf.max_index()];
+                                    for (key, value) in seen.iter() {
+                                        let idx = mphf.index_no_remap(key);
+                                        entries[idx] = (0, *value);
+                                    }
+                                    update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -9765,7 +9733,7 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         &mphf,
-                                        entries,
+                                        &entries,
                                     )?;
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
@@ -9778,15 +9746,9 @@ impl IngestContext {
                             }
                             KeyType::Uuid => {
                                 {
-                                    let pkmap = &mut *scratch;
-                                    let mut ptrhash =
-                                        std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid);
-                                    pkmap.seen_uuid.clear();
-                                    reserve_map(&mut pkmap.seen_uuid, reserve_rows_usize);
+                                    let mut seen = new_pk_map(reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
-                                        let seen = &mut pkmap.seen_uuid;
                                         read_temp_rows(&data_path, |row| {
                                             let timestamp_valid = if let Some(last) = row.last() {
                                                 *last != 0
@@ -9856,27 +9818,19 @@ impl IngestContext {
                                         }
                                     }
                                     let params = ptrhash_params;
-                                    let seen = std::mem::take(&mut pkmap.seen_uuid);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
                                             &seen,
                                             params,
-                                            &mut ptrhash,
+                                            &mut PtrHashScratch::new(),
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                    let entries = {
-                                        let slots = mphf.max_index();
-                                        let mut entries = std::mem::take(&mut pkmap.entries);
-                                        entries.resize(slots, (0u64, 0u32));
-                                        for (key, value) in seen.iter() {
-                                            let idx = mphf.index_no_remap(key);
-                                            entries[idx] = (0, *value);
-                                        }
-                                        pkmap.entries = entries;
-                                        pkmap.seen_uuid = seen;
-                                        pkmap.entries.as_slice()
-                                    };
-                                    pkmap.ptrhash = ptrhash;
+                                    let mut entries = vec![(0u64, 0u32); mphf.max_index()];
+                                    for (key, value) in seen.iter() {
+                                        let idx = mphf.index_no_remap(key);
+                                        entries[idx] = (0, *value);
+                                    }
+                                    update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -9893,22 +9847,16 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         &mphf,
-                                        entries,
+                                        &entries,
                                     )?;
                                     Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 }
                             }
                             KeyType::Uuid256 => {
                                 {
-                                    let pkmap = &mut *scratch;
-                                    let mut ptrhash =
-                                        std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid256);
-                                    pkmap.seen_uuid256.clear();
-                                    reserve_map(&mut pkmap.seen_uuid256, reserve_rows_usize);
+                                    let mut seen = new_pk_map(reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
-                                        let seen = &mut pkmap.seen_uuid256;
                                         read_temp_rows(&data_path, |row| {
                                             let timestamp_valid = if let Some(last) = row.last() {
                                                 *last != 0
@@ -9978,27 +9926,19 @@ impl IngestContext {
                                         }
                                     }
                                     let params = ptrhash_params;
-                                    let seen = std::mem::take(&mut pkmap.seen_uuid256);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 32]>::try_new_from_source_with_scratch(
                                             &seen,
                                             params,
-                                            &mut ptrhash,
+                                            &mut PtrHashScratch::new(),
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                    let entries = {
-                                        let slots = mphf.max_index();
-                                        let mut entries = std::mem::take(&mut pkmap.entries);
-                                        entries.resize(slots, (0u64, 0u32));
-                                        for (key, value) in seen.iter() {
-                                            let idx = mphf.index_no_remap(key);
-                                            entries[idx] = (0, *value);
-                                        }
-                                        pkmap.entries = entries;
-                                        pkmap.seen_uuid256 = seen;
-                                        pkmap.entries.as_slice()
-                                    };
-                                    pkmap.ptrhash = ptrhash;
+                                    let mut entries = vec![(0u64, 0u32); mphf.max_index()];
+                                    for (key, value) in seen.iter() {
+                                        let idx = mphf.index_no_remap(key);
+                                        entries[idx] = (0, *value);
+                                    }
+                                    update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -10015,22 +9955,16 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         &mphf,
-                                        entries,
+                                        &entries,
                                     )?;
                                     Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 }
                             }
                             KeyType::Ip => {
                                 {
-                                    let pkmap = &mut *scratch;
-                                    let mut ptrhash =
-                                        std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Ip);
-                                    pkmap.seen_ip.clear();
-                                    reserve_map(&mut pkmap.seen_ip, reserve_rows_usize);
+                                    let mut seen = new_pk_map(reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
-                                        let seen = &mut pkmap.seen_ip;
                                         read_temp_rows(&data_path, |row| {
                                             let timestamp_valid = if let Some(last) = row.last() {
                                                 *last != 0
@@ -10100,27 +10034,19 @@ impl IngestContext {
                                         }
                                     }
                                     let params = ptrhash_params;
-                                    let seen = std::mem::take(&mut pkmap.seen_ip);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
                                             &seen,
                                             params,
-                                            &mut ptrhash,
+                                            &mut PtrHashScratch::new(),
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
-                                    let entries = {
-                                        let slots = mphf.max_index();
-                                        let mut entries = std::mem::take(&mut pkmap.entries);
-                                        entries.resize(slots, (0u64, 0u32));
-                                        for (key, value) in seen.iter() {
-                                            let idx = mphf.index_no_remap(key);
-                                            entries[idx] = (0, *value);
-                                        }
-                                        pkmap.entries = entries;
-                                        pkmap.seen_ip = seen;
-                                        pkmap.entries.as_slice()
-                                    };
-                                    pkmap.ptrhash = ptrhash;
+                                    let mut entries = vec![(0u64, 0u32); mphf.max_index()];
+                                    for (key, value) in seen.iter() {
+                                        let idx = mphf.index_no_remap(key);
+                                        entries[idx] = (0, *value);
+                                    }
+                                    update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                                     let hash_rel = format!(
                                         "nodes/{}/pk_hash-{:05}.bin",
                                         table_name.to_lowercase(),
@@ -10137,13 +10063,12 @@ impl IngestContext {
                                         &data_rel,
                                         key_type,
                                         &mphf,
-                                        entries,
+                                        &entries,
                                     )?;
                                     Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 }
                             }
                         }?;
-                        *scratch = PkMapScratch::new();
                         if duplicate_count > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
                             duplicate_counts
@@ -10207,11 +10132,8 @@ impl IngestContext {
                 });
             }
         }
-        let pool = self.make_pool::<PkMapScratch>(self.pk_map_threads);
+        let pool = self.make_pool::<()>(self.pk_map_threads);
         let run_result = run_tasks(std::mem::take(&mut tasks), &pool);
-        self.pk_map_gate_waits = pk_map_budget
-            .as_ref()
-            .map_or(0, |budget| budget.snapshot().gate_waits);
         run_result?;
         for table in &self.source.tables {
             if table.edge_table.is_some() || table.primary_key.is_none() {
@@ -15840,57 +15762,6 @@ fn sum_published_dir_bytes(root: &Path) -> Result<u64> {
 fn default_index_mem_budget_bytes() -> Option<u64> {
     let total = total_memory_bytes()?;
     Some((total as f64 * DEFAULT_INDEX_MEM_BUDGET_FRAC) as u64)
-}
-
-fn free_memory_gated_budget(budget: u64, total: u64) -> MemoryBudget {
-    let reserve =
-        ((total as f64 * FREE_MEMORY_RESERVE_FRAC) as u64).max(FREE_MEMORY_RESERVE_MIN_BYTES);
-    let baseline = rss_anon_diag_bytes();
-    MemoryBudget::with_gate(budget, move |reserved, bytes| {
-        available_memory_bytes().is_none_or(|available| {
-            let allocated = rss_anon_diag_bytes().saturating_sub(baseline);
-            free_memory_allows(available, reserved, allocated, bytes, reserve)
-        })
-    })
-}
-
-fn free_memory_allows(
-    available: u64,
-    reserved: u64,
-    allocated: u64,
-    bytes: u64,
-    reserve: u64,
-) -> bool {
-    available.saturating_sub(reserved.saturating_sub(allocated)) >= bytes.saturating_add(reserve)
-}
-
-#[cfg(test)]
-mod free_memory_gate_tests {
-    use super::*;
-
-    const GIB: u64 = 1 << 30;
-
-    fn allows(available: u64, reserved: u64, allocated: u64, bytes: u64) -> bool {
-        free_memory_allows(
-            available * GIB,
-            reserved * GIB,
-            allocated * GIB,
-            bytes * GIB,
-            4 * GIB,
-        )
-    }
-
-    #[test]
-    fn reserved_memory_not_allocated_yet_counts_as_used() {
-        assert!(allows(30, 10, 10, 8));
-        assert!(!allows(30, 22, 2, 8));
-    }
-
-    #[test]
-    fn allocation_above_the_reservation_is_read_from_available_memory() {
-        assert!(!allows(10, 4, 12, 8));
-        assert!(allows(13, 4, 12, 8));
-    }
 }
 
 /// CAS-loop atomic max-update. Used by pk_map peak-RSS sampling.

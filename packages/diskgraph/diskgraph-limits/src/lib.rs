@@ -38,39 +38,6 @@ impl Limits {
             .min()
     }
 
-    pub fn available_memory(&self) -> Option<u64> {
-        let meminfo = self.read("proc/meminfo").unwrap_or_default();
-        let host = stat(&meminfo, "MemAvailable:").map(|kb| kb.saturating_mul(1024));
-        let mut free = vec![host];
-        for (v1, dir) in self.cgroup_levels("memory") {
-            let stats = fs::read_to_string(dir.join("memory.stat")).unwrap_or_default();
-            let (limits, usage, inactive) = if v1 {
-                (
-                    vec![read_num::<u64>(&dir.join("memory.limit_in_bytes"))],
-                    read_num::<u64>(&dir.join("memory.usage_in_bytes")),
-                    stat(&stats, "total_inactive_file"),
-                )
-            } else {
-                (
-                    vec![
-                        read_num::<u64>(&dir.join("memory.max")),
-                        read_num::<u64>(&dir.join("memory.high")),
-                    ],
-                    read_num::<u64>(&dir.join("memory.current")),
-                    stat(&stats, "inactive_file"),
-                )
-            };
-            let Some(usage) = usage else {
-                continue;
-            };
-            let working_set = usage.saturating_sub(inactive.unwrap_or(0));
-            for limit in limits.into_iter().flatten().filter(|&l| l < UNLIMITED) {
-                free.push(Some(limit.saturating_sub(working_set)));
-            }
-        }
-        free.into_iter().flatten().min()
-    }
-
     /// Whole cores, rounded up.
     pub fn cpu_quota(&self) -> Option<usize> {
         let mut cores: Option<usize> = None;
@@ -210,10 +177,6 @@ fn read_num<T: FromStr>(path: &Path) -> Option<T> {
 
 pub fn total_memory_bytes() -> Option<u64> {
     Limits::at("/").total_memory()
-}
-
-pub fn available_memory_bytes() -> Option<u64> {
-    Limits::at("/").available_memory()
 }
 
 /// Ignores the cpu.max quota.
@@ -411,69 +374,6 @@ mod tests {
             ("sys/fs/cgroup x/my job/memory.max", gib(2)),
         ]);
         assert_eq!(total, Some(2 * GIB));
-    }
-
-    fn available(files: &[(&str, String)]) -> Option<u64> {
-        let mut files = files.to_vec();
-        files.push((
-            "proc/meminfo",
-            format!(
-                "MemTotal: {} kB\nMemAvailable: {} kB\n",
-                256 * GIB / 1024,
-                100 * GIB / 1024
-            ),
-        ));
-        Limits::at(tree(&files).path()).available_memory()
-    }
-
-    #[test]
-    fn available_memory_reads_host_without_cgroup_limits() {
-        let free = available(&[
-            ("proc/self/cgroup", "0::/a\n".into()),
-            ("proc/self/mountinfo", format!("{V2_MOUNT}\n")),
-            ("sys/fs/cgroup/a/memory.max", "max\n".into()),
-            ("sys/fs/cgroup/a/memory.current", gib(30)),
-        ]);
-        assert_eq!(free, Some(100 * GIB));
-    }
-
-    #[test]
-    fn available_memory_subtracts_v2_working_set_from_the_tightest_limit() {
-        let free = available(&[
-            ("proc/self/cgroup", "0::/app.slice/job\n".into()),
-            ("proc/self/mountinfo", format!("{V2_MOUNT}\n")),
-            ("sys/fs/cgroup/app.slice/memory.max", gib(64)),
-            ("sys/fs/cgroup/app.slice/memory.current", gib(40)),
-            (
-                "sys/fs/cgroup/app.slice/memory.stat",
-                format!("anon 1\ninactive_file {}\n", 10 * GIB),
-            ),
-            ("sys/fs/cgroup/app.slice/job/memory.max", gib(48)),
-            ("sys/fs/cgroup/app.slice/job/memory.current", gib(30)),
-            (
-                "sys/fs/cgroup/app.slice/job/memory.stat",
-                format!("inactive_file {}\n", 6 * GIB),
-            ),
-        ]);
-        assert_eq!(free, Some(24 * GIB));
-    }
-
-    #[test]
-    fn available_memory_reads_v1_usage_and_inactive_file() {
-        let free = available(&[
-            ("proc/self/cgroup", "5:memory:/pod\n".into()),
-            (
-                "proc/self/mountinfo",
-                "30 25 0:27 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n".into(),
-            ),
-            ("sys/fs/cgroup/memory/pod/memory.limit_in_bytes", gib(16)),
-            ("sys/fs/cgroup/memory/pod/memory.usage_in_bytes", gib(12)),
-            (
-                "sys/fs/cgroup/memory/pod/memory.stat",
-                format!("total_inactive_file {}\n", 2 * GIB),
-            ),
-        ]);
-        assert_eq!(free, Some(6 * GIB));
     }
 
     #[test]
