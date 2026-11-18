@@ -260,7 +260,7 @@ def display_outputs(root, report, display):
     shell = get_ipython()
     assert shell is not None, 'Explanation UI checks require a real notebook kernel'
     shell.run_line_magic('matplotlib', 'inline')
-    with plt.style.context('default'):
+    with plt.style.context('default'), plt.rc_context({'pdf.fonttype': 42}):
         return _display_outputs(root, report, display)
 
 
@@ -364,8 +364,9 @@ def _display_outputs(root, report, display):
                 pages = PdfReader(file).pages
                 assert len(pages) == 1
                 content = ' '.join((pages[0].extract_text() or '').split())
-                assert all(' '.join(text.split()) in content
-                           for text in [label, *labels_to_check])
+                missing = [text for text in [label, *labels_to_check]
+                           if ' '.join(text.split()) not in content]
+                assert not missing, (kind, 'PDF labels missing from text', missing)
                 ratio = float(pages[0].mediabox.width /
                               pages[0].mediabox.height)
                 assert abs(ratio -

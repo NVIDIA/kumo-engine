@@ -305,3 +305,6 @@ Text bounds and overlapping labels remain strict checks.
 The notebook widens cohort Figures to at least 1.2 inches per cohort before
 export/display. Actual Databricks cohort labels overlapped at the default
 eight-inch width; default-size cohort layout is not qualified by this scenario.
+
+PDF exports use scoped TrueType font embedding to preserve Unicode class titles
+as searchable text instead of unextractable Type 3 glyph paths.
