@@ -28,7 +28,7 @@ from kumo_core.diskgraph.lightning_data import (
     suppress_lightning_leafspec_warning,
 )
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
-from kumo_core.diskgraph.stores import iter_primary_key_batches
+from kumo_core.diskgraph.stores import iter_primary_key_batches, rhs_catalog
 from kumo_core.io.csv import save_csv
 from kumo_core.io.filesystem import fsspec_mangle
 from kumo_core.score_counts import Counts
@@ -546,32 +546,11 @@ def _rhs_canonical_node_ids(
     index_path: str,
     rhs_node_type: str,
     expected_count: int,
-    batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Materialize canonical physical IDs without retaining raw PK values."""
-    node_ids = np.empty(expected_count, dtype=np.int64)
-    offset = 0
-    for raw_node_ids, raw_batch in iter_primary_key_batches(
-            index_path, rhs_node_type, stop=expected_count,
-            batch_size=batch_size):
-        batch_node_ids = np.asarray(raw_node_ids)
-        batch = np.asarray(raw_batch)
-        if (batch_node_ids.ndim != 1
-                or batch_node_ids.dtype.kind not in {'i', 'u'}):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned invalid IDs')
-        if batch.ndim != 1 or len(batch_node_ids) != len(batch):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned misaligned IDs')
-        if offset + len(batch_node_ids) > expected_count:
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned more canonical '
-                f'rows than the DiskGraph node count ({expected_count})')
-        node_ids[offset:offset + len(batch_node_ids)] = batch_node_ids
-        offset += len(batch_node_ids)
-
-    node_ids = node_ids[:offset]
-    _validate_rhs_node_ids(node_ids, expected_count)
+    """Canonical physical IDs, sorted and unique, read by DiskGraph."""
+    node_ids = rhs_catalog(index_path, rhs_node_type)
+    if len(node_ids) and node_ids[-1] >= expected_count:
+        raise RuntimeError('[TT-NG LP] RHS node-ID catalog is out of range')
     return node_ids
 
 

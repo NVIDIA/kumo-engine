@@ -19,6 +19,7 @@ from kumoapi.encoder import EncoderType
 from kumoapi.typing import ColStatType, Stype
 from pydantic import TypeAdapter
 
+PREDICT_CANDIDATE_FILTER = "predict_candidate_filter"
 _NODE_TASK_TYPES = frozenset({
     "binary_classification",
     "multiclass_classification",
@@ -212,6 +213,12 @@ class DiskgraphTaskManifest:
             if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
                 result[str(stage)] = (int(bounds[0]), int(bounds[1]))
         return result
+
+    @property
+    def predict_candidate_filter(self) -> str | None:
+        """Row filter (JSON) on the RHS table that a candidate must pass;
+        ``None`` admits all."""
+        return self.manifest.get(PREDICT_CANDIDATE_FILTER)
 
     def _split_info(self) -> Mapping[str, Any]:
         relative_path = self.manifest.get("split_info_path")
@@ -617,6 +624,7 @@ def write_thin_manifest(
     has_weight: bool,
     stage_seed_times: dict[str, tuple[int, int]] | None = None,
     column_stats: bool = True,
+    predict_candidate_filter: str | None = None,
 ) -> str:
     """Write the bundle sidecars. ``column_stats`` writes the per-column
     encoder statistics, which only encoder fitting reads, to their own
@@ -711,6 +719,8 @@ def write_thin_manifest(
         "side_artifacts": {},
         "runtime_capabilities": [],
     }
+    if predict_candidate_filter is not None:
+        manifest[PREDICT_CANDIDATE_FILTER] = predict_candidate_filter
 
     artifact_root = os.path.abspath(spec.artifact_root)
     os.makedirs(os.path.dirname(artifact_root), exist_ok=True)

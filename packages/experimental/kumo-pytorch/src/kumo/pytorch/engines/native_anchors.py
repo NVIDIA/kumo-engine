@@ -1135,6 +1135,12 @@ class NativeAnchors:
         if output_format == "columnar":
             self.validate_columnar(assembler, selection)
         source = self._source
+        materialized = getattr(getattr(source, "_materialized_values", None), "features", {})
+        entity_columns = [
+            value.column
+            for key, value in self._sample.entity_values.items()
+            if isinstance(value, Field) and not value.path and key not in materialized
+        ]
         policy = assembler.spec.batching
         fixed = policy.max_tokens is None and not policy.bucket_by_length
         maximum = batch_size if batch_size is not None else policy.max_samples
@@ -1158,9 +1164,7 @@ class NativeAnchors:
             for table, definition in source._tables.items():
                 if definition.primary_key is not None:
                     projections[table].insert(0, definition.primary_key)
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            projections[self._sample.entity.table].extend(entity_columns)
             projections = {
                 table: list(dict.fromkeys(fields)) for table, fields in projections.items()
             }
@@ -1217,9 +1221,7 @@ class NativeAnchors:
             and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            projections[self._sample.entity.table].extend(entity_columns)
             for stage in stages:
                 yield from self._typed_batches(
                     assembler,

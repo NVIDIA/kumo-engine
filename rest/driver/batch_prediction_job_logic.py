@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException
 from kumo_core.explain.schemas import EntityOutput, HistoricalItems
 from kumo_core.explain.schemas import Subgraph as OldSubgraph
+from kumo_core.link_candidates import PAIRWISE_CANDIDATES, candidate_query
 from kumo_core.model_plan import (
     TrainingTableGenerationPlan,
     inferred_or_missing_type_to_false,
@@ -37,6 +38,7 @@ from kumo_core.types.schema import FPID
 from kumoapi import jobs as jobs_api
 from kumoapi.data_source import ConnectorType
 from kumoapi.explain import ColumnAnalysisOutput, Subgraph
+from kumoapi.graph import GraphDefinition
 from kumoapi.pquery import QueryType
 from kumoapi.train import TrainingStage
 from kumoapi.typing import (
@@ -51,6 +53,7 @@ from io_utils import json, logging
 from io_utils.json import load_json_async, load_many_json
 from kumo.config.explain import StrategyMappings
 from kumo.config.graph import TableConfig
+from kumo.config.predictive_query import PredictiveQueryV2Config
 from kumo.data import get_active_cache
 from kumo.graph.table import Table
 from kumo.home import HomeDirManager
@@ -208,16 +211,22 @@ def _validate_trained_model_artifact_support(
     request: BatchPredictionRequest,
     task_type: TaskType,
     training_job_id: TrainingJobID,
+    query_config: PredictiveQueryV2Config,
+    graph: GraphDefinition,
 ) -> None:
-    """Reject outputs the completed model cannot produce.
+    """Reject outputs and candidate filters the completed model cannot apply.
 
-    ID-GNN link-prediction models have no embedding hook. Accepting an
-    EMBEDDINGS destination and silently omitting it later violates the output
-    contract, so validate the actual trained model before creating the job.
+    ID-GNN link-prediction models have no embedding hook and rank each row's
+    sampled items, not a candidate set. Accepting an EMBEDDINGS destination or
+    candidate-table conditions and dropping them later violates the request,
+    so validate the actual trained model before creating the job.
     """
-    if (not task_type.is_link_pred
-            or not any(output.artifact_type == PredictionArtifactType.EMBEDDINGS
-                       for output in request.outputs)):
+    if not task_type.is_link_pred:
+        return
+    embeddings = any(output.artifact_type == PredictionArtifactType.EMBEDDINGS
+                     for output in request.outputs)
+    if not embeddings and candidate_query(
+            query_config.validated_predictive_query, graph, task_type) is None:
         return
 
     from kumo_core.training.config import LinkPredModuleType, TrainerConfig
@@ -233,11 +242,14 @@ def _validate_trained_model_artifact_support(
     trainer_config = load_json(os.path.join(model_dir, 'config.json'),
                                TrainerConfig)
     module_kwargs = getattr(trainer_config, 'module_kwargs', None)
-    if getattr(module_kwargs, 'module', None) == LinkPredModuleType.ID:
+    if getattr(module_kwargs, 'module', None) != LinkPredModuleType.ID:
+        return
+    if embeddings:
         raise ValueError(
             'Embeddings are not available for ID-GNN link-prediction models. '
             'Request predictions instead, or train a two-tower, shallow-RHS, '
             'or hybrid link-prediction model.')
+    raise ValueError(PAIRWISE_CANDIDATES)
 
 
 @dataclass(frozen=True)
@@ -395,12 +407,6 @@ class BatchPredictionJobLogic:
             raise TrainingJobNotInProjectError(
                 f"Training job with id {training_job.id} must belong to "
                 "the same project as the initiated batch prediction job.")
-        await asyncio.to_thread(
-            _validate_trained_model_artifact_support,
-            request,
-            task_type,
-            training_job_id,
-        )
 
         # Compute the threshold without mutating the request. Multilabel
         # classification uses the same sigmoid-threshold output contract as
@@ -494,6 +500,14 @@ class BatchPredictionJobLogic:
             raise ValueError(
                 f"Invalid batch prediction job input due to {type(ex).__name__}: {ex}"
             ) from ex
+        await asyncio.to_thread(
+            _validate_trained_model_artifact_support,
+            request,
+            task_type,
+            training_job_id,
+            job_input.predictive_query,
+            pq_resource.graph,
+        )
         # Unpinned, the graph refresh builds in the model's clock.
         job_input.graph_data_compute_input.timestamp_precision = (
             trained_precision)
