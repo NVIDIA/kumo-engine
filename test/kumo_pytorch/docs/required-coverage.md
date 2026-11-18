@@ -1,6 +1,6 @@
 # Required AML coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 339 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 344 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
@@ -8,8 +8,32 @@ delegated to the dedicated GPU job, not accepted as skips on CPU.
 `--required-coverage=cpu` or `--required-coverage=gpu` requires the corresponding
 inventory. Missing/deleted cases, unexpected additions, collection-time skips,
 missing imports, deselection of required cases, runtime skips and xfails fail
-execution. Required test bodies must execute; setup failures remain failures.
-Ordinary test assertions are unchanged. Local focused runs may omit the option.
+execution. A required case must execute or verify a declared preflight refusal
+as described below. Other setup failures remain failures. Expected output
+assertions are unchanged. Local focused runs may omit the option.
+
+## Capability refusals
+
+Per the user's 2026-11-17 instruction, a clean unsupported-capability refusal
+before execution passes. It must come from public `prepare()` preflight and
+contain only engine-declared `check()` refusal codes, with paths, reasons and
+suggestions. Generic exceptions, invalid contracts, crashes, chained failures,
+wrong results, silent fallback and errors after execution starts still fail.
+Tests retain their independent expected answers for accepted capabilities.
+
+Pytest reports accepted refusals in the terminal summary and the
+`capability_refusals` JUnit property. The AML, history, training and population
+CLI reports label them `status=passed, outcome=refused` and retain the evidence.
+The combined nightly summary preserves that label for refused population shards
+without claiming full delivery; incomplete execution still fails.
+A fixture's verified refusal can satisfy a case without calling its dependent
+body; teardown errors still fail. Required inventory and skip enforcement remain
+active, and generated/corpus loops continue checking subsequent cases.
+
+A refusal pass proves rejection, not execution. It does not claim training
+updates, completed populations or benchmark measurements. The benchmark metric
+completeness requirements are unchanged. Late lifecycle refusals cannot turn an
+already executing AML workload into a pass.
 
 The expanded training-acceptance module contributes 22 required CPU cases:
 two fixture paths for all five combinations, plus harness and model-regression

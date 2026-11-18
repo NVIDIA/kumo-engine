@@ -1,7 +1,7 @@
 """Required multi-component histories on verified AML sources and anchors.
 
 These are additional correctness probes, not new model workload definitions.
-Unsupported required behavior is a failure, never an expected rejection.
+Declared preflight refusals pass separately from successful execution.
 """
 
 import argparse
@@ -201,12 +201,10 @@ def main(argv=None):
                     filtered=filtered,
                     threads=args.threads,
                 )
-            except Exception as error:  # noqa: BLE001 - retain the failure and continue other cases
-                result = {
-                    "status": "failed",
-                    "error": str(error),
-                    "traceback": traceback.format_exc(),
-                }
+            except Exception as error:  # noqa: BLE001 - retain every case outcome
+                from .refusals import case_failure
+
+                result = case_failure(error)
             report["cases"].append({"name": name, **result})
         report["status"] = (
             "passed"
@@ -226,7 +224,15 @@ def main(argv=None):
     ]
     for case in report["cases"]:
         lines.append(f"- {case['name']}: **{case['status']}**")
-        if "error" in case:
+        if case.get("outcome") == "refused":
+            lines.append(
+                "  Passed by explicit preflight refusal; capability was not executed."
+            )
+            lines.extend(
+                f"  {i['code']} at {i['path']}: {i['reason']}"
+                for i in case["refusal"]["issues"]
+            )
+        elif "error" in case:
             lines.extend(["", "```text", case["error"], "```", ""])
         else:
             lines.append(

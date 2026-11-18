@@ -1,5 +1,8 @@
 """Full populations retain every anchor, including tails and invalid targets."""
 
+from dataclasses import replace
+
+import kumo.pytorch.api as r
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -101,6 +104,38 @@ def source_anchors(selections, selection, tmp_path):
     return path
 
 
+def test_preflight_refusal_does_not_claim_population(mapped, tmp_path, monkeypatch):
+    original = population.build_contract
+
+    def filtered(*args, **kwargs):
+        contract = original(*args, **kwargs)
+        entity = replace(
+            contract.sample.entity,
+            filters=(r.RowFilter("account_id", "greater_than", 0),),
+        )
+        return replace(contract, sample=replace(contract.sample, entity=entity))
+
+    monkeypatch.setattr(population, "build_contract", filtered)
+    dataset, identities, selections = mapped
+    selection, family = CASES[0]
+    result = population.run_case(
+        dataset,
+        identities,
+        source_anchors(selections, selection, tmp_path),
+        selection,
+        family,
+        directory=tmp_path / "refused-population",
+        capacity=5,
+        mode="full",
+    )
+    assert result["status"] == "passed" and result["outcome"] == "refused"
+    assert result["full_population_verified"] is False
+    assert all(
+        s["delivered"] == 0 and s["status"] == "not_executed"
+        for s in result["splits"].values()
+    )
+
+
 @pytest.mark.parametrize(
     "selection,family",
     CASES,
@@ -123,6 +158,10 @@ def test_raw_aml_population_completion(mapped, selection, family, mode, tmp_path
         batch_size=2,
     )
     assert result["status"] == "passed", result.get("traceback", result)
+    if result.get("outcome") == "refused":
+        assert result["full_population_verified"] is False
+        assert all(s["status"] == "not_executed" for s in result["splits"].values())
+        return
     assert result["full_population_verified"] == (mode == "full")
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"
     groups = selections[selection["selector"]["anchor_version"]][

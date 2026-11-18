@@ -63,8 +63,11 @@ task; this is a reproducibility check, not a fresh-process lifecycle test.
   hashes. Two incomplete executions cannot establish reproducibility.
 - Inputs/targets and fitted state remain unchanged by training.
 
-Missing support, unused parameters, nonfinite values, insufficient loss decrease
-and nondeterminism are ordinary failures. A completed but failing first repeat
+An explicit declared preflight refusal passes under the
+[capability policy](required-coverage.md#capability-refusals), labelled `refused`
+with no training measurements. Once preparation succeeds, missing support,
+unused parameters, nonfinite values, insufficient loss decrease and
+nondeterminism are ordinary failures. A completed but failing first repeat
 does not suppress the second repeat or the other workloads. The runner rejects
 a missing, duplicated or substituted model/workload combination.
 

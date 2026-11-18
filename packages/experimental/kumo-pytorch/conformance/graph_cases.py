@@ -32,6 +32,7 @@ from conformance.generate import (
     covering_rows,
     permuted,
 )
+from conformance.refusals import check_or_refuse
 from conformance.registry import GRAPH_DIMENSIONS, DimensionValue
 from kumo.pytorch.api import (
     Batching,
@@ -318,8 +319,7 @@ def graph_answer(
     """Each sample's graph, from real batches through the public path."""
 
     with _bound(contract, tables, engine, parts=parts, shards=shards) as (dataset, bound):
-        issues = check(contract, dataset, bound)
-        require(not issues, f"{engine} refused a generated graph contract: {issues}")
+        check_or_refuse(contract, dataset, bound)
         with tempfile.TemporaryDirectory(prefix="graph-anchors-") as directory:
             table = write_anchor_table(requests, Path(directory) / "anchors.parquet")
             with prepare(contract, dataset, bound) as plan:

@@ -2,22 +2,25 @@
 
 import json
 import os
-from pathlib import Path
-from datetime import datetime, timezone
 import subprocess
 import sys
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 
+import kumo.pytorch.api as r
 import pytest
 import torch
-import kumo.pytorch.api as r
 
+from test.kumo_pytorch import run_aml
 from test.kumo_pytorch.aml_source import (
     account_identity_map,
     prepare_aml_sources,
     prepared_dataset,
 )
-from test.kumo_pytorch.run_aml import run_case
 from test.kumo_pytorch.lifecycle import input_digest
+from test.kumo_pytorch.run_aml import run_case
+
 from .test_aml_source import account, source_files, transaction
 
 
@@ -97,6 +100,68 @@ CASES = [
 ]
 
 
+@pytest.mark.parametrize("stage", ["preflight", "lifecycle"])
+def test_refusal_pass_requires_initial_preflight(mapped, tmp_path, monkeypatch, stage):
+    original = run_aml.build_contract
+
+    def filtered(*args, **kwargs):
+        contract = original(*args, **kwargs)
+        entity = replace(
+            contract.sample.entity,
+            filters=(r.RowFilter("account_id", "greater_than", 0),),
+        )
+        return replace(contract, sample=replace(contract.sample, entity=entity))
+
+    if stage == "preflight":
+        monkeypatch.setattr(run_aml, "build_contract", filtered)
+    else:
+
+        def refuse_reload(*args, **kwargs):
+            r.prepare(
+                filtered(
+                    run_aml.aml_data_schema(), "graphsage", native=False, max_events=5
+                ),
+                mapped[0],
+                r.DiskGraphEngine(index=tmp_path / "unused"),
+            )
+
+        monkeypatch.setattr(run_aml, "check_lifecycle", refuse_reload)
+    selection, family = next((s, f) for s, f in CASES if f == "graphsage")
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        if stage == "lifecycle":
+            with pytest.raises(AssertionError, match="after case execution began"):
+                run_case(
+                    *mapped,
+                    selection,
+                    family,
+                    directory=tmp_path,
+                    capacity=5,
+                    batch_size=1,
+                    steps=1,
+                    threads=1,
+                    seed=0,
+                )
+        else:
+            result = run_case(
+                *mapped,
+                selection,
+                family,
+                directory=tmp_path,
+                capacity=5,
+                batch_size=1,
+                steps=1,
+                threads=1,
+                seed=0,
+            )
+            assert result["status"] == "passed" and result["outcome"] == "refused"
+            assert result["optimizer_updates"] == 0 and not result["complete_epoch"]
+            assert result["splits"] == {} and "lifecycle" not in result
+    finally:
+        torch.set_num_threads(previous)
+
+
 @pytest.mark.parametrize(
     "selection,family",
     CASES,
@@ -119,7 +184,12 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
         )
     finally:
         torch.set_num_threads(previous)
-    assert result["status"] == "passed" and result["optimizer_updates"] == 1
+    assert result["status"] == "passed"
+    if result.get("outcome") == "refused":
+        assert result["optimizer_updates"] == 0 and not result["complete_epoch"]
+        assert result["splits"] == {}
+        return
+    assert result["optimizer_updates"] == 1
     assert result["complete_epoch"] is False
     assert result["fit_split"] == "train" and result["fit_requests"] == 2
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"

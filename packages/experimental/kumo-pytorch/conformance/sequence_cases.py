@@ -55,7 +55,6 @@ from kumo.pytorch.api import (
     TableSpec,
     Task,
     TimeWindow,
-    check,
     prepare,
 )
 
@@ -240,8 +239,9 @@ def sequence_answers(
         for row in tables[table]
     }
     with bound_tables(contract, tables, engine) as (dataset, bound):
-        issues = check(contract, dataset, bound)
-        require(not issues, f"{engine} refused a generated sequence contract: {issues}")
+        from conformance.refusals import check_or_refuse
+
+        check_or_refuse(contract, dataset, bound)
         formats: tuple[OutputFormat, ...] = (
             ("inspectable", "model") if isinstance(bound, DiskGraphEngine) else ("inspectable",)
         )

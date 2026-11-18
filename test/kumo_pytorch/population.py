@@ -239,12 +239,19 @@ def run_case(
             status="passed", stage="complete", full_population_verified=mode == "full"
         )
     except Exception as error:  # noqa: BLE001 - persist failed acceptance without hiding it
-        for split in report["splits"].values():
-            if split["status"] == "running":
-                split["status"] = "failed"
-        report.update(
-            status="failed", error=str(error), traceback=traceback.format_exc()
+        from .refusals import case_failure
+
+        outcome = case_failure(
+            error, allow_refusal=report["stage"] == "prepare_and_fit"
         )
+        for split in report["splits"].values():
+            if outcome.get("outcome") == "refused":
+                split["status"] = "not_executed"
+            elif split["status"] == "running":
+                split["status"] = "failed"
+        report.update(outcome)
+        if outcome.get("outcome") == "refused":
+            report["stage"] = "refused"
     write_report(directory, report)
     return report
 
@@ -343,7 +350,11 @@ def main(argv=None):
             else "failed"
         )
         report["full_population_verified"] = (
-            report["status"] == "passed" and args.mode == "full"
+            report["status"] == "passed"
+            and args.mode == "full"
+            and all(
+                case.get("full_population_verified", False) for case in report["cases"]
+            )
         )
         report["stage"] = "complete"
     except Exception as error:  # noqa: BLE001 - retain preparation failures as failures
@@ -366,7 +377,7 @@ def main(argv=None):
             sum(s["expected"] for s in splits),
         )
         lines.append(
-            f"| {case['selector']['workload_id']} / {case['family']} | {case['status']} | {case.get('stage', 'not started')} | {delivered} / {expected} |"
+            f"| {case['selector']['workload_id']} / {case['family']} | {case['status']} ({case.get('outcome', 'executed')}) | {case.get('stage', 'not started')} | {delivered} / {expected} |"
         )
     for case in report["cases"]:
         if "error" in case:

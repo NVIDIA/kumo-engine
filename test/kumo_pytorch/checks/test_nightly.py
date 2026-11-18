@@ -120,6 +120,50 @@ def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
     assert (tmp_path / "timings.json").exists()
 
 
+@pytest.mark.parametrize("fault", [None, "missing-reason", "late", "delivered"])
+def test_summary_retains_refusals_without_claiming_population(tmp_path, fault):
+    reports(tmp_path)
+    case = nightly.matrix()["include"][0]["case"]
+    path = tmp_path / "full" / case / "report.json"
+    report = json.loads(path.read_text())
+    report["full_population_verified"] = False
+    selected = report["cases"][0]
+    selected.update(
+        outcome="refused",
+        full_population_verified=False,
+        splits={"train": {"status": "not_executed", "delivered": 0}},
+        refusal={
+            "stage": "preflight",
+            "execution": "not_started",
+            "issues": [
+                {
+                    "code": "DG-ROW-FILTER",
+                    "path": "sample.entity.filters",
+                    "reason": "DiskGraph does not support entity row filters",
+                    "suggestion": "Remove the filter",
+                }
+            ],
+        },
+    )
+    if fault == "missing-reason":
+        del selected["refusal"]["issues"][0]["reason"]
+    elif fault == "late":
+        selected["refusal"]["execution"] = "started"
+    elif fault == "delivered":
+        selected["splits"]["train"]["delivered"] = 1
+    write(path, report)
+    result = nightly.summarize(tmp_path)
+    assert result["status"] == ("passed" if fault is None else "failed")
+    if fault is None:
+        row = next(
+            row
+            for row in result["shards"]
+            if row["case"] == case and row["kind"] == "full"
+        )
+        assert row["outcome"] == "refused" and row["refusal"] == selected["refusal"]
+        assert "passed (refused)" in (tmp_path / "report.md").read_text()
+
+
 @pytest.mark.parametrize(
     "fault",
     [

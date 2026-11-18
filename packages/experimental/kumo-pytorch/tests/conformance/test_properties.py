@@ -22,6 +22,7 @@ from conformance.properties import (
     replay,
     run_obligation,
 )
+from conformance.refusals import record_refusal
 from conformance.registry import REPLAYED
 from conformance.repro import load_corpus, load_repro
 
@@ -79,7 +80,9 @@ def test_corpus(corpus_engine, request):
             continue
         try:
             replay(entry, corpus_engine)
-        except AssertionError as error:
+        except Exception as error:
+            if record_refusal(error, corpus=entry_id) is not None:
+                continue
             failures.append(f"{entry_id} ({entry.issue}): {error}")
     assert not failures, "\n".join(failures)
 

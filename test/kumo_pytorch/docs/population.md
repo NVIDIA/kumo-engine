@@ -66,6 +66,9 @@ The nightly executes each binding and mode on a separate CPU runner using the
 same verified AML inputs. Full runs even if smoke fails; matrix jobs disable
 fail-fast so other cases still execute. Source/preparation failures, process
 termination and timeouts remain failed/incomplete execution, never acceptance.
+The only exception is a declared preflight capability refusal under the
+[capability policy](required-coverage.md#capability-refusals): it passes as
+`refused`, with no delivered samples and `full_population_verified=false`.
 
 The job summary includes the population table. Download
 `kumo-pytorch-aml-benchmarks` for aggregate and per-case reports and contracts

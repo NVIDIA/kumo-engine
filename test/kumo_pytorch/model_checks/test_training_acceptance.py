@@ -22,6 +22,27 @@ from .test_run_aml import mapped as mapped  # noqa: PLC0414 - reuse raw AML fixt
 CASE_IDS = [f"{s['selector']['workload_id']}-{f}" for s, f in CASES]
 
 
+def test_preflight_refusal_does_not_claim_training(mapped, tmp_path, monkeypatch):
+    original = acceptance.build_contract
+
+    def filtered(*args, **kwargs):
+        contract = original(*args, **kwargs)
+        entity = replace(
+            contract.sample.entity,
+            filters=(r.RowFilter("account_id", "greater_than", 0),),
+        )
+        return replace(contract, sample=replace(contract.sample, entity=entity))
+
+    monkeypatch.setattr(acceptance, "build_contract", filtered)
+    selection, family = CASES[0]
+    result = acceptance.run_case(
+        *mapped, selection, family, directory=tmp_path / "refused-training", capacity=5
+    )
+    assert result["status"] == "passed" and result["outcome"] == "refused"
+    assert result["refusal"]["issues"][0]["code"] == "DG-ROW-FILTER"
+    assert result["repetitions"] == [] and "reproducible" not in result
+
+
 @pytest.fixture(params=CASES, ids=CASE_IDS)
 def fitted(request, tmp_path_factory):
     yield from fit_case(*request.param, "diskgraph", tmp_path_factory)
@@ -85,6 +106,9 @@ def test_raw_aml_training_acceptance(mapped, selection, family, tmp_path):
     )
     assert {a["sample_id"] for a in result["training_anchors"]} == expected_ids
     assert result["status"] == "passed", result
+    if result.get("outcome") == "refused":
+        assert not result["repetitions"]
+        return
     assert result["reproducible"] and all(
         x["completed_updates"] == 100 for x in result["repetitions"]
     )

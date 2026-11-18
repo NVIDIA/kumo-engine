@@ -144,7 +144,33 @@ def summarize(directory):
                     ]
                     if identities != [case]:
                         raise ValueError("Shard reported a different case")
-                    if kind == "full" and not result["full_population_verified"]:
+                    selected = result["cases"][0]
+                    refused = selected.get("outcome") == "refused"
+                    if refused:
+                        evidence = selected["refusal"]
+                        assert kind in {"smoke", "full"}
+                        assert evidence["stage"] == "preflight"
+                        assert evidence["execution"] == "not_started"
+                        assert evidence["issues"] and all(
+                            all(
+                                issue.get(key)
+                                for key in ("code", "path", "reason", "suggestion")
+                            )
+                            for issue in evidence["issues"]
+                        )
+                        assert result["full_population_verified"] is False
+                        assert selected["full_population_verified"] is False
+                        assert selected["splits"] and all(
+                            split["status"] == "not_executed"
+                            and split["delivered"] == 0
+                            for split in selected["splits"].values()
+                        )
+                        row.update(outcome="refused", refusal=evidence)
+                    if (
+                        kind == "full"
+                        and not refused
+                        and not result["full_population_verified"]
+                    ):
                         raise ValueError("Full population was not verified")
                 row["report"] = str((base / "report.md").relative_to(directory))
                 if kind.startswith("timing-"):
@@ -169,7 +195,10 @@ def summarize(directory):
     ]
     for row in rows:
         link = f"[report]({row['report']})" if "report" in row else "Missing report"
-        lines.append(f"| {row['case']} | {row['kind']} | {row['status']} | {link} |")
+        label = row["status"] + (
+            " (refused)" if row.get("outcome") == "refused" else ""
+        )
+        lines.append(f"| {row['case']} | {row['kind']} | {label} | {link} |")
     lines += ["", *timing_summary(timing_cases, directory)]
     (directory / "report.md").write_text("\n".join(lines) + "\n")
     return result

@@ -1260,3 +1260,48 @@ Local validation (2026-11-17, existing compatible extension; CI rebuild pending)
 - Three independent review rounds identified mask and fault-injection issues;
   each was corrected and checked locally. No subsequent clean review or full
   nightly acceptance is claimed.
+
+## Explicit capability refusal policy
+
+The user changed the acceptance criterion on 2026-11-17: a declared
+unsupported-capability refusal before execution passes. This supersedes the
+earlier requirement that unsupported capabilities must fail. Historical results
+above retain the policy used when those runs occurred.
+
+The proposed suite now accepts only real public-preflight `ValidationError`s
+whose issues all identify engine-declared `check()` limitations, with paths,
+reasons and suggestions. Wrong answers, invalid inputs, generic or chained
+exceptions, crashes and failures after execution starts remain failures. The
+expected answers are unchanged. Generated and corpus checks continue after
+refusals and preserve prior failures; skips and missing required cases still
+fail enforcement.
+
+Terminal summaries, JUnit properties and CLI reports distinguish refused
+capabilities from successful execution. Refusals do not establish training,
+full-population completion or benchmark measurements. The AML runner permits a
+refusal only at initial preparation, never during later lifecycle work. No
+runtime package behavior or workflow scheduling is changed.
+
+Local validation uses the existing compatible native extension, not a new
+Linux/GPU build. Nineteen policy checks and eleven AML report/boundary and
+required-coverage checks pass, including real preflight refusals and a refusal
+after training that must fail. The earlier focused harness run passed 194
+checks. Collection matches 344 required CPU cases and five delegated GPU cases.
+Separate execution probes still expose native batch-planning, shard ordering
+and Fusion checkpoint-fingerprint failures. Full nightly acceptance remains
+unverified.
+
+The final DiskGraph conformance run (`python -m conformance --engine diskgraph
+--no-in-memory`) passed 186 cases and failed the existing `sequence_expected`
+property on history selection/tie ordering. It remains a wrong-answer failure.
+Nightly aggregation now retains refused population outcomes without claiming
+full delivery; all 18 summary checks pass, including malformed/late refusal
+evidence and contradictory delivery counts. Scoped lint/format, documentation
+links and `git diff --check` pass.
+
+Independent review of the refusal-policy change found reporting-order,
+exception-chain, corpus-continuation and late-lifecycle boundary issues. Each
+was corrected and regression-tested; final verification found no remaining
+issues in the reviewed policy and runner changes. The subsequent nightly
+aggregation follow-up was locally tested and self-reviewed. These are
+test-policy changes only, not fixes for the native execution failures above.

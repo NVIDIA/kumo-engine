@@ -49,6 +49,9 @@ E2E_TIERS = ("t2a", "t2b")
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from conformance.refusals import pytest_plugin
+
+    config.pluginmanager.register(pytest_plugin(), "capability-refusals")
     config.addinivalue_line("markers", "t2a: end-to-end lifecycle tier at S; runs only with --t2a")
     config.addinivalue_line("markers", "t2b: nightly end-to-end tier at M; runs only with --t2b")
 

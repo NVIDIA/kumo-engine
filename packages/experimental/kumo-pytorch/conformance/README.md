@@ -150,11 +150,23 @@ for `diskgraph`:
 }
 ```
 
-`"answer"` calls real `check()`, requires acceptance, executes
-`prepare()` → `materialize()` → `preview()`, and compares every named raw value
+`"answer"` calls real `check()` and either verifies a declared preflight refusal
+under the policy below or executes `prepare()` → `materialize()` → `preview()`
+and compares every named raw value
 by sample ID plus all selected batch/state projections. Batch assertions execute
 one batch containing the case's anchors in declared order. Missing/duplicate
 samples or wrong named values fail.
+
+The user-approved #353 policy permits an explicit unsupported-capability refusal
+as a pass. `refusals.py` requires a real `prepare()` preflight `ValidationError`,
+with every issue declared by the engine as refused at `check()`, identifying the
+path, reason and next step. `check()` and `prepare()` must agree; engine opening
+is trapped when checking rejected contracts. Malformed contracts, unexpected or
+chained exceptions, wrong outputs, silent fallback and execution failures do not
+qualify. Terminal summaries and JUnit properties retain the refusal evidence.
+Required coverage counts these as exercised refusal checks, never skips or
+proof that the unsupported behavior executed. Generated/corpus cases continue
+after each refusal, preserving any other failures and the expected answers.
 
 A refusal object calls real `check()`, requires exactly the specified path/reason
 and a useful suggestion, then requires real `prepare()` to raise the same
@@ -276,8 +288,9 @@ property checks it, and GAP-INDEX-LAYOUT-DG records it.
 Point-in-time invariance covers the destination table and a static
 intermediate table. No passing obligation checks a cutoff at a timed
 intermediate yet: DiskGraph refuses it at `check()`, which the refusal-timing
-property keeps checking. Migrated fixtures requiring timed intermediates remain
-ordinary failures until native support is implemented.
+property keeps checking. Migrated fixtures requiring timed intermediates may
+pass by verifying that declared preflight refusal; they do not establish native
+execution support. Once accepted, their fixture-derived answers must match.
 
 Functional areas widen the same cases:
 

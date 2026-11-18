@@ -19,6 +19,9 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    from test.kumo_pytorch.refusals import pytest_plugin
+
+    config.pluginmanager.register(pytest_plugin(), "capability-refusals")
     profile = config.getoption("--required-coverage")
     if profile:
         manifest = json.loads(

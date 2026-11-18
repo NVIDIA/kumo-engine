@@ -378,9 +378,11 @@ def run_case(
             and all(x["status"] == "passed" for x in report["repetitions"])
             else "failed"
         )
-    except Exception as error:  # noqa: BLE001 - preserve package failures as ordinary failures
+    except Exception as error:  # noqa: BLE001 - retain refused versus executed outcomes
+        from .refusals import case_failure
+
         report.update(
-            status="failed", error=str(error), traceback=traceback.format_exc()
+            case_failure(error, allow_refusal="fitted_state_sha256" not in report)
         )
     write_report(directory, report)
     return report
@@ -475,7 +477,7 @@ def main(argv=None):
     for case in report["cases"]:
         repeats = case["repetitions"]
         lines.append(
-            f"| {case['case_id']} | {case['status']} | {case.get('reproducible', 'not measured')} | {[x['completed_updates'] for x in repeats]} | {[(x.get('initial_loss'), x.get('final_loss')) for x in repeats]} |"
+            f"| {case['case_id']} | {case['status']} ({case.get('outcome', 'executed')}) | {case.get('reproducible', 'not measured')} | {[x['completed_updates'] for x in repeats]} | {[(x.get('initial_loss'), x.get('final_loss')) for x in repeats]} |"
         )
         for repeat, result in enumerate(repeats):
             failed = [

@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 from conformance.cases import GoldenCase
 from conformance.fixtures import values as fixture_values
+from conformance.refusals import check_or_refuse
 from conformance.registry import DimensionValue
 from kumo.pytorch.api import (
     NON_TEMPORAL,
@@ -250,8 +251,7 @@ def _same_value(actual: Any, expected: Any) -> bool:
 
 def assert_answer(case: GoldenCase, engine_name: str) -> None:
     with bound_case(case, engine_name) as (dataset, engine):
-        issues = check(case.contract, dataset, engine)
-        assert not issues, f"{case.id}/{engine_name}: expected support, got {issues}"
+        check_or_refuse(case.contract, dataset, engine)
         with prepare(case.contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
                 result = preview(task, case.requests).to_dict()

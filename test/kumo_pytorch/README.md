@@ -13,11 +13,12 @@ Full-population coverage remains pending; see [the plan](PLAN.md).
 The [population acceptance runner](docs/population.md) now provides smoke and
 full modes for all five AML combinations. Fixture validation does not establish
 full HI-small acceptance. The upstream decimal fix is integrated; remaining
-required row-filter and Fusion training failures are tracked in the plan.
+capability refusals and execution failures are tracked in the plan.
 The [multi-source history follow-up](PLAN.md#pr-353-follow-up-multi-source-histories)
-adds required filter/cutoff checks and a bounded real-AML run. Unsupported
-required behavior fails normally; current row-filter rejection is not a skip
-or expected success.
+adds required filter/cutoff checks and a bounded real-AML run. Under the
+[acceptance policy](docs/required-coverage.md#capability-refusals), an explicit
+declared refusal before execution passes as `refused`. Accepted capabilities
+must still produce the expected answers; execution errors remain failures.
 
 The existing nightly workflow runs the package's regression tests in place,
 alongside its conformance and retail lifecycle jobs and these AML additions.

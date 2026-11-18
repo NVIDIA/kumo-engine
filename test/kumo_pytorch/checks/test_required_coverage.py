@@ -60,7 +60,13 @@ def test_required_coverage(tmp_path, fault):
             *(["-k", "no_matching_test"] if fault == "deselect" else []),
         ],
         cwd=tmp_path,
-        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        env={
+            **os.environ,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTHONPATH": str(root.parents[1])
+            + os.pathsep
+            + os.environ.get("PYTHONPATH", ""),
+        },
         check=False,
         capture_output=True,
         text=True,

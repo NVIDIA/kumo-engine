@@ -69,6 +69,7 @@ from conformance.outputs import (
     split_anchor_rows,
     typed_fitting_contract,
 )
+from conformance.refusals import check_or_refuse, record_refusal
 from conformance.registry import ENGINE_REFUSALS, late_refusal
 from conformance.repro import Repro, write_repro
 from conformance.sequence_cases import _RUNS as sequence_runs
@@ -131,8 +132,7 @@ def answer(
 
     with bound_tables(contract, tables, engine_name, parts=parts, types=PHYSICAL_TYPES) as bound:
         dataset, engine = bound
-        issues = check(contract, dataset, engine)
-        _require(not issues, f"{engine_name} refused a generated contract: {issues}")
+        check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
             return _collect(plan.materialize(requests), requests)
 
@@ -866,8 +866,7 @@ def batch_answer(
 
     with bound_tables(contract, tables, engine_name, types=PHYSICAL_TYPES) as bound:
         dataset, engine = bound
-        issues = check(contract, dataset, engine)
-        _require(not issues, f"{engine_name} refused a generated contract: {issues}")
+        check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
             task = plan.materialize(requests)
             batches = task.batches(requests, batch_size=BATCH_ROWS, output_format=output_format)
@@ -1367,6 +1366,8 @@ def run_obligation(name: str, engine: str, seed: int, repro_dir: Path | None = N
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as error:  # noqa: BLE001 - every failure gets a repro
+            if record_refusal(error, property=name, case=case.id, seed=seed) is not None:
+                continue
             path = write_repro(name, engine, case, position, error, repro_dir)
             failures.append(f"{case.id}: {error}\n  repro: {path}")
     if failures:
