@@ -17,6 +17,8 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+from kumo.pytorch.preparation import LATEST_ANCHOR
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
@@ -132,10 +134,26 @@ def aggregate_dataset():
     )
 
 
-def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "cutoff,expected,warns",
+    [
+        (LATEST_ANCHOR, 110 * 10**9, False),
+        (90, 90 * 10**9, False),
+        (110, 110 * 10**9, False),
+        (120, 120 * 10**9, True),
+        (None, None, True),
+    ],
+)
+def test_selected_stats_reuse_shared_fitter_without_sample_collection(
+    tmp_path, monkeypatch, caplog, cutoff, expected, warns
+):
+    rows = [dict(row, at=100 + i) for i, row in enumerate(ANCHORS)]
     with api.prepare(aggregate_contract(), aggregate_dataset(), api.InMemoryEngine()) as plan:
         values = plan._materialize_values(
-            _table(), tmp_path / "values", batch_size=3, stats_split="train"
+            _table(source=api.InMemoryRows(rows)),
+            tmp_path / "values",
+            batch_size=3,
+            stats_split="train",
         )
         assert values.rows == len(ANCHORS)
         assert values.feature_stats["rows"] == 8
@@ -155,11 +173,19 @@ def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, 
 
         monkeypatch.setattr(plan._require_open(), "build", forbidden)
         monkeypatch.setattr(plan._require_open(), "build_model", forbidden, raising=False)
-        with plan.materialize(values.anchors, fit_split="train") as task:
+        monkeypatch.setattr(ParquetAnchors, "fetch", forbidden)
+        caplog.set_level("WARNING", logger="kumo.pytorch.preparation")
+        with plan.materialize(values.anchors, fit_split="train", encoder_cutoff=cutoff) as task:
+            assert isinstance(task._anchors, ParquetAnchors)
+            assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == expected
             encoder = task.output("entity").field(name="score").encoder
             assert encoder.mean == 6.0
             assert encoder.scale == pytest.approx(sqrt(92 / 8))
             assert len(task.output("tokens").field(name="score").encoder.entries) == 8
+        messages = [r.getMessage() for r in caplog.records if r.name == "kumo.pytorch.preparation"]
+        assert len(messages) == int(warns)
+        if warns:
+            assert "after the latest fitting anchor 1970-01-01T00:01:50+00:00" in messages[0]
         assert not list(tmp_path.glob(".materialize-*"))
 
 

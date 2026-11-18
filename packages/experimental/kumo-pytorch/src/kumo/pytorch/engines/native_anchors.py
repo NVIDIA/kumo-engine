@@ -270,6 +270,8 @@ class NativeAnchors:
         if self._table.as_of_time is None:
             return 0
         pa, dtype = self._pa, self._types[self._table.as_of_time]
+        # Files may use equivalent timezone aliases. Normalize to the decoding
+        # dtype before combining their maxima, just as `_requests` does.
         maxima = pa.concat_arrays(
             [pa.repeat(value, 1).cast(dtype) for stage in stages for value in stage["latest"]]
         )

@@ -2,8 +2,9 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The default encoder cutoff comes from native anchor columns, not per-anchor requests."""
+"""The default encoder cutoff comes from anchor columns, not per-anchor requests."""
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pyarrow as pa
@@ -13,6 +14,7 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import cutoff_nanos
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
 pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
 
@@ -44,7 +46,7 @@ def _latest(requests):
     return max((request.as_of_time for request in requests), key=cutoff_nanos)
 
 
-def _plan(tmp_path, times, *, batch_rows=None):
+def _plan(tmp_path, times, *, splits=SPLITS):
     schema = api.DataSchema(
         tables=(
             api.TableSpec("users", "id", {"id": api.DType("string")}, time_column=api.NON_TEMPORAL),
@@ -105,16 +107,15 @@ def _plan(tmp_path, times, *, batch_rows=None):
     )
     rows = pa.table(
         {
-            "sid": [f"s{i}" for i in range(len(SPLITS))],
-            "entity": ["u1", "u2"] * (len(SPLITS) // 2),
+            "sid": [f"s{i}" for i in range(len(splits))],
+            "entity": ["u1" if i % 2 == 0 else "u2" for i in range(len(splits))],
             "cutoff": times,
-            "label": [float(i) for i in range(len(SPLITS))],
-            "split": SPLITS,
+            "label": [float(i) for i in range(len(splits))],
+            "split": splits,
         }
     )
     anchors_path = tmp_path / "anchors.parquet"
-    # Small row groups put one split's anchors in several Parquet batches.
-    pq.write_table(rows, anchors_path, row_group_size=batch_rows or len(SPLITS))
+    pq.write_table(rows, anchors_path)
     table = api.AnchorTable(
         api.Parquet(str(anchors_path)),
         "entity",
@@ -149,13 +150,89 @@ def test_latest_time_matches_the_requests_fitting_reads(tmp_path, kind):
 
 
 def test_latest_time_spans_parquet_batches(tmp_path):
-    contract, dataset, engine, table = _plan(tmp_path, TIMES["timestamp-ns-offset"], batch_rows=3)
+    # NativeAnchors reads 32768 rows per batch, independently of row-group size.
+    # Keep every split's maximum in the first batch, followed by smaller times.
+    first = TIMES["timestamp-ns-offset"]
+    times = pa.concat_arrays([first, pa.repeat(pa.scalar(DAY * 10**9 + 123, first.type), 32768)])
+    contract, dataset, engine, table = _plan(tmp_path, times, splits=SPLITS * 4097)
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
             anchors = task._anchors
+            assert all(len(stage["latest"]) > 1 for stage in anchors._stages)
             for selection in SELECTIONS:
                 expected = _latest(anchors.fitting_requests(selection))
                 assert anchors.latest_time(selection) == expected
+
+
+@pytest.mark.parametrize("zones", [("UTC", "Etc/UTC"), ("Etc/UTC", "UTC")])
+def test_latest_time_normalizes_timezone_aliases_across_files(tmp_path, zones):
+    times = TIMES["timestamp-us-naive"].cast(pa.timestamp("us", tz=zones[0]))
+    contract, dataset, engine, table = _plan(tmp_path, times)
+    rows = pq.read_table(table.source.path)
+    parts = tmp_path / "anchor-parts"
+    parts.mkdir()
+    for i, zone in enumerate(zones):
+        part = rows.slice(i * 4, 4)
+        cutoff = part["cutoff"].cast(pa.timestamp("us", tz=zone))
+        part = part.set_column(part.schema.get_field_index("cutoff"), "cutoff", cutoff)
+        pq.write_table(part, parts / f"part-{i}.parquet")
+    table = replace(table, source=api.Parquet(str(parts)))
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(table, fit_split="train") as task:
+            assert {
+                value.type.tz for stage in task._anchors._stages for value in stage["latest"]
+            } == set(zones)
+            for anchors in (task._anchors, ParquetAnchors(table)):
+                for selection in SELECTIONS:
+                    fetched = anchors.fetch(selection, range(anchors.count(selection)))
+                    expected = max(r.as_of_time for r in fetched)
+                    actual = anchors.latest_time(selection)
+                    assert type(actual) is type(expected)
+                    assert actual == expected
+                    assert str(actual.tzinfo) == zones[0]
+            assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == (
+                (7 * DAY + 1) * 10**9 + 250_000
+            )
+
+
+@pytest.mark.parametrize("kind", sorted(TIMES))
+def test_parquet_latest_time_matches_fetch_without_building_requests(tmp_path, monkeypatch, kind):
+    _, _, _, table = _plan(tmp_path, TIMES[kind])
+    anchors = ParquetAnchors(table)
+    expected = {
+        selection: _latest(anchors.fetch(selection, range(anchors.count(selection))))
+        for selection in SELECTIONS
+    }
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("latest_time rebuilt per-anchor requests")
+
+    monkeypatch.setattr(anchors, "fetch", refuse)
+    monkeypatch.setattr(anchors, "_request", refuse)
+    for selection, value in expected.items():
+        actual = anchors.latest_time(selection)
+        assert type(actual) is type(value)
+        assert actual == value
+        assert cutoff_nanos(actual) == cutoff_nanos(value)
+    assert anchors.latest_time() == expected[api.ALL_ANCHORS]
+
+
+@pytest.mark.parametrize("temporal", [False, True])
+def test_parquet_latest_time_empty_and_unknown_selections(tmp_path, temporal):
+    _, _, _, table = _plan(tmp_path, TIMES["int64"])
+    if not temporal:
+        table = replace(table, as_of_time=None)
+        assert ParquetAnchors(table).latest_time() == 0
+    with pytest.raises(ValueError, match="no anchors in split"):
+        ParquetAnchors(table).latest_time(frozenset({"missing"}))
+    # No unsplit rows in a nonempty file is an empty selection too.
+    rows = pq.read_table(table.source.path).slice(0, 3)
+    pq.write_table(rows, table.source.path)
+    with pytest.raises(ValueError, match="no anchors selected"):
+        ParquetAnchors(table).latest_time(frozenset({None}))
+    pq.write_table(rows.slice(0, 0), table.source.path)
+    with pytest.raises(ValueError, match="no anchors selected"):
+        ParquetAnchors(table).latest_time()
 
 
 def test_the_default_cutoff_reads_no_anchor_requests(tmp_path, monkeypatch):
@@ -184,7 +261,7 @@ def test_sub_microsecond_anchor_times_fit_at_full_precision(tmp_path):
 @pytest.mark.parametrize("kind", ["int64", "timestamp-ns-offset"])
 @pytest.mark.parametrize("case", ["before", "equal", "after", "unbounded"])
 def test_explicit_cutoffs_preserve_fitting_and_warnings(tmp_path, monkeypatch, caplog, kind, case):
-    contract, dataset, engine, table = _plan(tmp_path, TIMES[kind], batch_rows=3)
+    contract, dataset, engine, table = _plan(tmp_path, TIMES[kind])
     # Include a row after the latest train anchor, but before the explicit later
     # cutoff and the latest validation anchor. Clamping or using all splits is wrong.
     path = tmp_path / "events.parquet"
