@@ -1,0 +1,237 @@
+{
+  "artifact_location": {
+    "requirement": "Caller-selected durable directory on the measured filesystem, outside temporary paths and shared-memory filesystems. References below are relative paths within that directory; the full local evidence is not embedded in these public summaries.",
+    "variable": "ARTIFACT_ROOT"
+  },
+  "binary_comparison": {
+    "extension": {
+      "artifact_relative_path": "runtime/native-overlay/diskgraph/_c.abi3.so",
+      "byte_identical": true,
+      "historical_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+      "rebuilt_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f"
+    },
+    "ingest": {
+      "artifact_relative_path": "runtime/native-overlay/diskgraph/bin/ingest",
+      "byte_identical": true,
+      "historical_sha256": "074c95e4702d0df4c6bc53d26786e55e3bc6735ff20bbdf2242ca8e4d9d13fb7",
+      "rebuilt_sha256": "074c95e4702d0df4c6bc53d26786e55e3bc6735ff20bbdf2242ca8e4d9d13fb7"
+    },
+    "wheel": {
+      "byte_identical": false,
+      "historical_sha256": "b85a88f9bf09ce88f166c882ea0e1c64e97b743e071e1d924e0552c709e8be0c",
+      "interpretation": "New wheel container; no unverified explanation for the container difference is asserted. Loaded extension and ingest bytes match the original recorded hashes.",
+      "rebuilt_sha256": "d333eca9e5c0eedab0db678ddc769b091c83c2811faaba92013a7f07a443afbe"
+    }
+  },
+  "build_settings": {
+    "cargo": "cargo 1.96.1 (356927216 2026-06-26)",
+    "compiler": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+    "maturin": {
+      "historical_version": "UNRECORDED",
+      "rebuilt_version": "1.14.1",
+      "source": "existing local cache"
+    },
+    "observed_argv_with_path_substitution": [
+      "${PYTHON}",
+      "-c",
+      "import diskgraph_build_backend as backend; print(backend.build_wheel('${ARTIFACT_ROOT}/runtime/wheels'))"
+    ],
+    "optimized_finishes_recorded": 2,
+    "portable_equivalent_argv": [
+      "${PYTHON}",
+      "-c",
+      "import sys; import diskgraph_build_backend as backend; print(backend.build_wheel(sys.argv[1]))",
+      "${ARTIFACT_ROOT}/runtime/wheels"
+    ],
+    "profile": "release",
+    "python": "3.14.7 (main, Aug 14 2026, 15:33:38) [Clang 22.1.3 ]",
+    "recipe_rule": "Materialize path variables explicitly; BUILD_ROOT is a clean checkout at native_build_source. The exact executed argv/environment and build log remain in the hashed durable build-plan and qualification records.",
+    "selected_environment": {
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_TARGET_DIR": "${ARTIFACT_ROOT}/runtime/target",
+      "DISKGRAPH_BUILD_COMMIT": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+      "PATH": "${MATURIN_CACHE}/maturin-1.14.1.data/scripts:${TOOLCHAIN_BIN}:${PYTHON_BIN}:/usr/bin:/bin",
+      "PYO3_PYTHON": "${PYTHON}",
+      "PYTHONPATH": "${BUILD_ROOT}/packages/diskgraph/diskgraph-pybind:${MATURIN_CACHE}",
+      "RUSTFLAGS": "-C target-feature=+aes,+neon",
+      "RUSTUP_TOOLCHAIN": "stable"
+    },
+    "working_directory": "${BUILD_ROOT}/packages/diskgraph"
+  },
+  "dependencies": {
+    "current_additional_recorded_versions": {
+      "pytorch-lightning": "2.6.5",
+      "setuptools": "81.0.0"
+    },
+    "current_distribution_entries": 263,
+    "current_normalized_package_names": 257,
+    "five_recorded_versions_match": true,
+    "historical_recorded_versions": {
+      "numpy": "2.3.3",
+      "pyarrow": "24.0.0",
+      "pydantic": "2.13.5",
+      "torch": "2.12.0+cpu",
+      "torch-geometric": "2.9.0"
+    },
+    "limitation": "The historical provenance recorded five package versions, not a complete dependency lock. A matching rebuilt native hash and those five versions do not prove historical equality of all 257 current package names.",
+    "manifest": {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 41121,
+      "relative_path": "runtime/shared-dependency-manifest.json",
+      "sha256": "5c6762d805e7823fcc54d3205d21a65b685f0caba9d9f3df80405d8b7dda8ba7"
+    }
+  },
+  "durable_artifacts": [
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 2109,
+      "relative_path": "runtime/build-plan.json",
+      "sha256": "d662d674715ba703050433775878aff835bc9e666a4c14126bef1566e79fd74f"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 1078,
+      "relative_path": "runtime/build-native.sh",
+      "sha256": "decdbe3d5b593b36fbaef7cba31ae850bebb9cce02348e4ca57a66bc586742a3"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 17204,
+      "relative_path": "runtime/build-native.log",
+      "sha256": "eb186e0bd5076e4e6b00bb034c1bfdc9c39e83bccb65fdd62637c9c6858648b5"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 41121,
+      "relative_path": "runtime/shared-dependency-manifest.json",
+      "sha256": "5c6762d805e7823fcc54d3205d21a65b685f0caba9d9f3df80405d8b7dda8ba7"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 1164,
+      "relative_path": "runtime/effective-build-environment.json",
+      "sha256": "50b204c1aa228828e6b6043b87bdc2bfad100a96324c25a4679f1a1107cd7f6b"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 2952,
+      "relative_path": "runtime/wheel-members.json",
+      "sha256": "a7003594acaa1630971e6b428c5d8e18e4b5d78769487199c0cc1127fe4a039e"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 2864,
+      "relative_path": "runtime/loaded-runtime-proof.json",
+      "sha256": "767af42a341e0f7384e2ca65f78a95449b04fba7b4ea3a2b5568172f075d4a96"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 2146,
+      "relative_path": "runtime/native-live-tests.log",
+      "sha256": "69c724027a37b45ae9ee28c941c9ac03303021b52dc7f35f087a2c2eb44e1974"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 841,
+      "relative_path": "runtime/run-python",
+      "sha256": "00f2d7e6a7dad4835bffc8e4d4bc3ea385a1011b81186394526d5a259724da78"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 41258916,
+      "relative_path": "runtime/wheels/diskgraph-0.1.0-cp311-abi3-linux_aarch64.whl",
+      "sha256": "d333eca9e5c0eedab0db678ddc769b091c83c2811faaba92013a7f07a443afbe"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 59542072,
+      "relative_path": "runtime/native-overlay/diskgraph/_c.abi3.so",
+      "sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 42773104,
+      "relative_path": "runtime/native-overlay/diskgraph/bin/ingest",
+      "sha256": "074c95e4702d0df4c6bc53d26786e55e3bc6735ff20bbdf2242ca8e4d9d13fb7"
+    }
+  ],
+  "epoch": "2026-11-18-post-reboot",
+  "independent_runtime_review": {
+    "artifact_root_variable": "ARTIFACT_ROOT",
+    "bytes": 5373,
+    "relative_path": "runtime/independent-qualification-review.json",
+    "sha256": "695acf45de42bf17cd66c8a15f6c69e25cacca07cc1697fa64fe5e0a776cae42"
+  },
+  "qualification_evidence": {
+    "artifact_root_variable": "ARTIFACT_ROOT",
+    "bytes": 11647,
+    "relative_path": "runtime/runtime-qualification.json",
+    "sha256": "8c5b1d21903be92a95dadb65b40b8a2b8db7942001f74ce5826d0dfaa6d0e553"
+  },
+  "recorded_utc": "2026-11-18T18:55:00.802875+00:00",
+  "root_acceptance": "ACCEPTED_RUNTIME_INPUT_ONLY",
+  "runner_build_provenance": {
+    "artifact_root_variable": "ARTIFACT_ROOT",
+    "bytes": 8649,
+    "relative_path": "runtime/build-provenance.json",
+    "sha256": "4729089a14eb6cea7400082e51cfb8e74a98a7d5e12b2387c2935be3903f8560"
+  },
+  "schema_version": 1,
+  "source_compatibility": {
+    "all_source_checkouts_clean": true,
+    "build_backend_sha256": "d4a205ca46a71557543be547cae056a928b6044c3c403bd40914b35436b04377",
+    "candidate_paths_identical_to_build": [
+      "packages/diskgraph",
+      "packages/kumo-core/src",
+      "packages/kumo-engine/kumo/engine",
+      "packages/kumo-engine/test/wheel_gpu_smoke.py"
+    ],
+    "cargo_lock_sha256": "174d1d400de4eb2cf336fdfd4eb60766d63aae1fa80f677e96e382cc26d83fb8",
+    "historical_source_file_hashes_verified": 23
+  },
+  "source_pins": {
+    "ceiling_checkout": "3259b1ad409dba05af0c0cc7566d4740d1e9b623",
+    "measurement_tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+    "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "native_source_tree": "48609409d3b847005d2069e263c42e18491f0f42",
+    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a"
+  },
+  "status": "RUNTIME_QUALIFIED_DATA_AND_MEASUREMENTS_PENDING",
+  "verification": {
+    "build_commit_identity": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "data_qualification": "PENDING",
+    "live_native_tests": {
+      "command": [
+        "env",
+        "DG_TEST_NATIVE_IO=1",
+        "${ARTIFACT_ROOT}/runtime/run-python",
+        "-m",
+        "pytest",
+        "-q",
+        "--confcutdir=packages/diskgraph/diskgraph-pybind/python/tests",
+        "--basetemp=${ARTIFACT_ROOT}/runtime/native-test-temp",
+        "packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py"
+      ],
+      "result": "5 passed, 0 skipped, 1 warning",
+      "test_file_sha256": "79d77b16681057a080afc7bca8df9e8a8aa49dc5857ee2fc9db77f78e4dae097",
+      "test_repository_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_page_io_stats.py",
+      "warning": "Python warns that fork in a multithreaded process can deadlock; the existing explicit fork-rejection test passed.",
+      "working_directory": "${CANDIDATE_ROOT}"
+    },
+    "loaded_module_identity": "PASS",
+    "measurement_tool_tests": {
+      "evidence": {
+        "artifact_root_variable": "ARTIFACT_ROOT",
+        "bytes": 372,
+        "relative_path": "recovery/root-tool-tests.json",
+        "sha256": "81abc9e0d532239f935f469cc8f9f459ad4ffc9174af954cd7bdc83a0092a4a4"
+      },
+      "log_sha256": "527b9f23aff3dbd3757fc16f880d5d840379dc81d85b77018afbd9a0b961ea5b",
+      "result": "200 passed",
+      "scope": "Five measurement-tool test modules; no application performance qualification.",
+      "source_commit": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2"
+    },
+    "model_work_and_prediction_qualification": "PENDING",
+    "performance_measurements": "NOT_STARTED"
+  }
+}

@@ -1,0 +1,299 @@
+{
+  "artifact_location": {
+    "requirement": "Caller-selected durable directory on the measured filesystem, outside temporary paths and shared-memory filesystems. References below are relative paths within that directory; the full local evidence is not embedded in these public summaries.",
+    "variable": "ARTIFACT_ROOT"
+  },
+  "common_controls": {
+    "collector_cpus": "0-4,10-14",
+    "constrained_memory_bytes": 4294967296,
+    "event_capacity_bytes": 4294967296,
+    "io_batch_multiplier": 1,
+    "io_rings": 8,
+    "loader_mode": "standalone",
+    "loader_workers": 0,
+    "model_seed": 0,
+    "order_seed": 20261109,
+    "payload_cpus": "5-9,15-19",
+    "queue_depth_per_ring": 256,
+    "quiet_seconds": 1,
+    "quiet_timeout_seconds": 30,
+    "rayon_threads": 4,
+    "resident_memory_bytes": 68719476736,
+    "swap_max_bytes": 0,
+    "torch_omp_mkl_openblas_threads": 1
+  },
+  "completion_deliverables": [
+    "Five-repeat application/physical IOPS and depth/latency comparisons with paired observer qualification",
+    "Drive scaling curves with fresh adaptive decisions and honest capability limits",
+    "Actual exclusive CPU-site evidence and main-thread blocking attribution",
+    "Ranked focused changes with evidence, expected mechanism, tradeoffs and five-pair validation criteria",
+    "Canonical repository report, derived CSV/static plots, durable raw manifest and replay commands"
+  ],
+  "data_preparation": {
+    "data_variant": "Regenerated post-reboot prepared data; new snapshot UUIDs are allowed and separately recorded.",
+    "expected_per_task": {
+      "events": 9437184,
+      "items": 196608,
+      "source_parquet_files": 1572,
+      "users": 98304
+    },
+    "feature_width": 256,
+    "generator_repository_path": "packages/kumo-engine/benchmark/native_io_tasks.py",
+    "old_vs_new_source_hashes": "Compare each generated source Parquet against historical relative-path SHA oracles. Record all 1572 comparisons per task and preserve every difference; do not silently claim byte equality.",
+    "prediction_entities": 2048,
+    "prepared_oracle": "Generate new complete pristine owned-file manifests, source/config hashes and snapshot identifiers. Retain old prepared oracles as historical information, not acceptance authority for new data.",
+    "scale": 768,
+    "seed": 0,
+    "status": "PENDING",
+    "tasks": [
+      "binary",
+      "regression",
+      "temporal_link"
+    ],
+    "uuid_seed_caveat": "Production snapshot/namespace identity can affect seeded training-table shuffle. The byte-identical native rebuild does not establish old/new seeded work or prediction equality on newly prepared UUIDs. Preserve production behavior and create new actual within-epoch reference rows."
+  },
+  "drive_curve": {
+    "access": "Read-only O_DIRECT io_uring uniform-random reads",
+    "adaptive_extensions": {
+      "further_probes": "Only after an explicit finite plan update based on fresh evidence.",
+      "historical_extension_outcome_reused": false,
+      "per_triggered_block_size": [
+        {
+          "complete_batch": 1,
+          "jobs": 8,
+          "queue_depth": 256,
+          "submit_batch": 1
+        },
+        {
+          "complete_batch": 32,
+          "jobs": 4,
+          "queue_depth": 256,
+          "submit_batch": 16
+        }
+      ],
+      "possible_total_trials": [
+        70,
+        80,
+        90
+      ],
+      "trials_per_triggered_block_size": 10,
+      "trigger": "Use unchanged extension_blocks() at pinned ceiling source after complete fresh base70. Per block size: high-depth median gain above 5% OR median maximum issuer CPU at least 90%. These are protocol triggers, not significance tests."
+    },
+    "base_geometries_jobs_queue_depth": [
+      [
+        1,
+        1
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        1,
+        16
+      ],
+      [
+        1,
+        64
+      ],
+      [
+        1,
+        256
+      ],
+      [
+        4,
+        64
+      ],
+      [
+        4,
+        256
+      ]
+    ],
+    "base_trials": 70,
+    "block_sizes_bytes": [
+      4096,
+      8192
+    ],
+    "fixture": "Owned non-sparse regular file with retained CRC verification and SHA; no raw-device writes.",
+    "fixture_bytes": 8589934592,
+    "hardware_ceiling_proven_default": false,
+    "limits": [
+      "A stable filesystem/device-path plateau does not isolate controller/media from kernel limits.",
+      "fio application outstanding is not measured physical queue occupancy.",
+      "Validate sysfs inflight behavior in this epoch before using it as occupancy evidence.",
+      "Uniform 4/8KiB random reads are not the full application locality/size mix or an SSD product rating."
+    ],
+    "measured_seconds": 30,
+    "order": "Source-defined rotated/reversed order.",
+    "ramp_seconds": 10,
+    "repetitions_per_configuration": 5,
+    "status": "PENDING"
+  },
+  "epoch": "2026-11-18-post-reboot",
+  "launch_and_retention_gates": [
+    "Root accepts each completed phase before next phase.",
+    "Fresh qualified runtime, data, fixture, templates, host/BTF/mount/health/resource snapshots and known-read collector smoke must exist before formal workload release.",
+    "Pin actual sources, loaded binaries, data identity, all effective controls and execution argv in every run.",
+    "No concurrent builds, fio, model profiles, ingest or heavy raw scans.",
+    "Fresh output roots; stop first error, preserve failed evidence, no automatic retry/resume or post-hoc pooling.",
+    "After payload completion and observer STOP/drain, persist raw events, records, service/collector/controller logs and hashes; fsync only owned files/directories outside timing before next payload.",
+    "Independent raw replay must verify lifecycle, counters, markers, identity, work/predictions and eligibility before accepting results."
+  ],
+  "new_epoch_completed_measurement_trials": 0,
+  "path_variables": {
+    "ARTIFACT_ROOT": "durable epoch artifact directory",
+    "BUILD_ROOT": "clean native_build_source checkout",
+    "CANDIDATE_ROOT": "clean published_candidate checkout",
+    "CEILING_ROOT": "clean ceiling_checkout",
+    "MATURIN_CACHE": "existing cached maturin 1.14.1 package",
+    "PYTHON": "existing qualified Python executable",
+    "PYTHON_BIN": "qualified Python executable directory",
+    "TOOLCHAIN_BIN": "installed stable 1.96.1 toolchain directory",
+    "TOOLS_ROOT": "clean measurement_tools checkout"
+  },
+  "phases": [
+    {
+      "deliverable": "Signed public recovery/rebuild provenance commit and root review",
+      "phase": 1,
+      "state": "READY_FOR_REVIEW"
+    },
+    {
+      "deliverable": "Regenerated source/prepared data, fio fixture, new full-work template oracles and collector smoke qualification",
+      "phase": 2,
+      "state": "PENDING"
+    },
+    {
+      "deliverable": "Fresh drive curve, two full actual profiles, principal70 matrix, independent raw replay, report/CSV/plots and action plan",
+      "phase": 3,
+      "state": "PENDING"
+    }
+  ],
+  "principal70": {
+    "groups_in_sequence": [
+      {
+        "backends": [
+          "mmap",
+          "buffered",
+          "direct"
+        ],
+        "group": "binary-constrained",
+        "trials": 30
+      },
+      {
+        "backends": [
+          "mmap",
+          "buffered",
+          "direct"
+        ],
+        "group": "binary-resident",
+        "trials": 30
+      },
+      {
+        "backends": [
+          "direct"
+        ],
+        "group": "temporal-link-constrained",
+        "trials": 10
+      }
+    ],
+    "metrics": [
+      "Physical completed storage reads/s and bytes over measured phase windows",
+      "Native completed read/readv SQEs/s where available",
+      "Time-weighted block-visible dispatched depth and zero-depth duration",
+      "Request latency/size distributions and target-attribution bounds",
+      "Background traffic, CPU/resources, health and paired controls"
+    ],
+    "observers": [
+      "none",
+      "queue"
+    ],
+    "order": "Source-defined observer_order with order seed 20261109 within sequential groups.",
+    "overhead": "Report all five paired training/E2E deltas per configuration and assess perturbation without a predeclared numeric cutoff or historical correction factor. Retain all observations and limitations.",
+    "paired_observer_controls": 35,
+    "queue_semantics": "Block-visible dispatched requests are not NVMe internal/NAND occupancy; distinguish whole-device traffic and target-attribution bounds.",
+    "rate_semantics": "Native read SQEs occur after native batching/coalescing and are not logical neighbor requests. mmap has no native SQE denominator; report its application rate as N/A.",
+    "repetitions_per_configuration": 5,
+    "status": "PENDING",
+    "trials": 70
+  },
+  "profiles": {
+    "acceptance": [
+      "Loaded binary/source identity and exact phase markers",
+      "No loss, overflow, unknown lifecycle or undrained state",
+      "Raw records and symbolization retained",
+      "CPU sample/accounted-CPU and unwind coverage reported",
+      "Main-thread waits separated from overlapping idle-worker thread seconds"
+    ],
+    "configurations": [
+      "binary-constrained-direct-cpu",
+      "binary-constrained-direct-offcpu"
+    ],
+    "cpu_sampling_hz_per_cpu": 99,
+    "full_work": "1280 batches/optimizer updates and full workflow correctness checks.",
+    "interpretation": "CPU and off-CPU are separate full runs; fractions are not exactly time-aligned or additive wall-clock shares. No unmeasured DRAM, controller or Python-operator bottleneck is asserted.",
+    "status": "PENDING"
+  },
+  "recorded_utc": "2026-11-18T18:55:00.802875+00:00",
+  "recovery_summary": "recovery.json",
+  "requirements": {
+    "five_repetitions_per_configuration": true,
+    "objective": "Measure application request rates, physical storage IOPS, sustained block-visible depth/latency, drive capability scaling, and CPU/critical-thread waits; produce an evidence-based gap-closing plan.",
+    "one_heavy_workload_owner": true,
+    "portable_index_checksums": "OUT_OF_SCOPE_BY_USER_INSTRUCTION",
+    "preserve_existing_seeded_neighbor_sampling": true
+  },
+  "runtime_summary": "rebuild.json",
+  "schema_version": 1,
+  "source_pins": {
+    "ceiling_checkout": "3259b1ad409dba05af0c0cc7566d4740d1e9b623",
+    "measurement_tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+    "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "native_source_tree": "48609409d3b847005d2069e263c42e18491f0f42",
+    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a"
+  },
+  "source_plan": {
+    "artifact_root_variable": "ARTIFACT_ROOT",
+    "bytes": 27289,
+    "relative_path": "recovery/durable-plan.json",
+    "sha256": "6548db42d959793b969df54ca11d210934bb1233f447b9b2250793cd5e39dd75"
+  },
+  "source_plan_qualification": "The retained local plan predates runtime qualification. This public plan resolves runtime status and explicitly includes the nine new full-work pilot template cells; later execution plans must record all actual paths and qualified hashes.",
+  "status": "INERT_PENDING_DATA_AND_INPUT_QUALIFICATION",
+  "template_qualification": {
+    "acceptance": "Unchanged validator must establish native/config identity, equal logical seeded work/layout/model/predictions within each relevant new group and across compatible regimes. No shortened workload, old golden substitution, or source-level acceptance relaxation.",
+    "backends": [
+      "mmap",
+      "buffered",
+      "direct"
+    ],
+    "execution": "Use unchanged native_io_matrix.py with --repetitions 1 --pilot and explicit full batch/update counts, controls, caches and memory budgets. Require complete fit, first/repeat/reload prediction checks.",
+    "groups": [
+      {
+        "batches": 1280,
+        "native_cache_gib": 2,
+        "optimizer_updates": 1280,
+        "regime": "constrained",
+        "task": "binary"
+      },
+      {
+        "batches": 1280,
+        "native_cache_gib": 16,
+        "optimizer_updates": 1280,
+        "regime": "resident",
+        "task": "binary"
+      },
+      {
+        "batches": 256,
+        "native_cache_gib": 1,
+        "optimizer_updates": 512,
+        "regime": "constrained",
+        "task": "temporal_link"
+      }
+    ],
+    "lineage": "Keep original archive inputs unchanged. Derived templates reference new prepared manifests and actual new result rows with recorded hashes and explicit path substitutions.",
+    "pilot_cells": 9,
+    "pilot_claim": "Reference/oracle qualification only; n=1 pilots are not the five-pair performance result.",
+    "repetitions": 1,
+    "status": "PENDING"
+  }
+}

@@ -1,0 +1,144 @@
+{
+  "artifact_location": {
+    "requirement": "Caller-selected durable directory on the measured filesystem, outside temporary paths and shared-memory filesystems. References below are relative paths within that directory; the full local evidence is not embedded in these public summaries.",
+    "variable": "ARTIFACT_ROOT"
+  },
+  "durable_recovery_evidence": [
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 9785,
+      "relative_path": "recovery/incident.json",
+      "sha256": "4713cb3fff8b5faf8237204166adaaccb740c109124da6604460c98f9be101e7"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 9791,
+      "relative_path": "recovery/journal-evidence.txt",
+      "sha256": "f4e4bcaf12e6eebe5bdf8db2a651f27796059c8d121696305db83fa18f52bfcf"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 1866,
+      "relative_path": "recovery/native-search.json",
+      "sha256": "b9956f2d7a197b7ad0f76fc97a85dac05b20b10632997ec976b62e51d81f3a85"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 10048,
+      "relative_path": "recovery/host-context.json",
+      "sha256": "e11b5480b452089143d16a0b82edeff5b458ca95b64a3bf243460cad877a3c5b"
+    },
+    {
+      "artifact_root_variable": "ARTIFACT_ROOT",
+      "bytes": 1300,
+      "relative_path": "recovery/manifest.json",
+      "sha256": "17be23e7d674fbf8cb7dd70e057a57fd19a2120bbe7e328f07c27c8dedc44954"
+    }
+  ],
+  "epoch": "2026-11-18-post-reboot",
+  "new_epoch": {
+    "completed_measurement_trials": 0,
+    "cpu_profile": "NOT_STARTED",
+    "data": "PENDING_REGENERATION_AND_QUALIFICATION",
+    "drive_sweep": "NOT_STARTED",
+    "offcpu_profile": "NOT_STARTED",
+    "principal70": "NOT_STARTED",
+    "runtime": "QUALIFIED_REBUILD_BYTE_IDENTICAL_NATIVE_AND_INGEST",
+    "templates": "PENDING_NEW_FULL_WORK_ORACLES"
+  },
+  "previous_epoch": {
+    "acceptance_rule": "Application service success does not establish observer validity, equal work, predictions, resource eligibility, or retained raw evidence. No missing pre-reboot results are pooled into this epoch.",
+    "application_units_started": 17,
+    "application_units_successfully_exited": 16,
+    "artifact_deletion_cause": "UNKNOWN",
+    "currently_revalidated_accepted_measurement_trials": 0,
+    "first_retained_new_boot_kernel_entry_utc": "2026-11-17T21:15:39+00:00",
+    "initial_native_recovery_search": {
+      "accessible_work_root_loose_libraries_hashed": 89,
+      "diskgraph_wheels_examined": 8,
+      "limitation": "Scoped accessible work-root search; traversal returned errors with suppressed stderr. This is not exhaustive proof of absence on the machine.",
+      "matching_original_native_hash_found": false
+    },
+    "last_retained_prior_boot_entry_utc": "2026-11-17T20:43:11+00:00",
+    "last_started_case": {
+      "backend": "mmap",
+      "observer": "none",
+      "regime": "constrained",
+      "repeat": 2,
+      "started_utc": "2026-11-17T20:39:08+00:00",
+      "task": "binary",
+      "terminal_service_entry_retained": false
+    },
+    "observed_missing": [
+      "principal70 raw events, results and validation records",
+      "CPU and off-CPU raw profiles and attribution proof",
+      "fio sweep raw results and independent audits",
+      "temporary Python/native runtime and prepared datasets"
+    ],
+    "principal_expected_trials": 70,
+    "reboot_cause": "UNKNOWN",
+    "resident_trials_started": 0,
+    "temporal_link_trials_started": 0
+  },
+  "recorded_utc": "2026-11-18T18:55:00.802875+00:00",
+  "retention_policy": "Persist raw events, records, logs, inputs, manifests and accepted-cell hashes on durable storage after STOP/drain. Fsync owned files/directories outside timing; retain failed evidence and never invoke global sync.",
+  "schema_version": 1,
+  "source_pins": {
+    "ceiling_checkout": "3259b1ad409dba05af0c0cc7566d4740d1e9b623",
+    "measurement_tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+    "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "native_source_tree": "48609409d3b847005d2069e263c42e18491f0f42",
+    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a"
+  },
+  "status": "RECOVERY_RECORDED_NEW_EPOCH_REQUIRED",
+  "surviving_repository_evidence": [
+    {
+      "bytes": 20695,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09.md",
+      "sha256": "41899cc390a4b04414ee6fffa8dd7630354750d50394afc59f5bd428dec5e81f"
+    },
+    {
+      "bytes": 18248,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-iops-2026-11-10.md",
+      "sha256": "85afb213bd1fe4fcf81e3fcba3953b5df4263558f8e12ba433f190c703235c80"
+    },
+    {
+      "bytes": 7002,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/evidence/dg424-benchmark-release-75ca0e2f-provenance.json",
+      "sha256": "c17db9f37c6a2ffd4d955d2bc57d898da63c7586856eae9ae0299391c2cd68cf"
+    },
+    {
+      "bytes": 551,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/evidence/dg424-benchmark-release-75ca0e2f-build-release.log.gz",
+      "sha256": "4a9891729950f5eb8d196dae9b043a4b8f62932e9d8013068e4942ea51eb5243"
+    },
+    {
+      "bytes": 383,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/reproduce/dg424-phase7-formal-selected.tsv",
+      "sha256": "82ac59b5fbd2a517405e0734baf1c93ec909125f2896c66128397fb8a2e4e3f3"
+    },
+    {
+      "bytes": 369,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/reproduce/dg424-phase7-formal-selected-75ca-v1-command.sh.gz",
+      "sha256": "6126fc228550d77ff10e4354416e34876ad88754e1c6289d6c77cc1a30f68c23"
+    },
+    {
+      "bytes": 236046,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-2026-11-09/formal/manifest.json",
+      "sha256": "bb1dce81bff5f66078aa49322e0a143516b95ce8898315d6a50eac0955f959e2"
+    },
+    {
+      "bytes": 208456,
+      "repository_commit": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "repository_relative_path": "packages/kumo-engine/benchmark/results/native-io-iops-2026-11-10/iops-manifest.json",
+      "sha256": "d22f6143bd712f06eeb30f4c3fa3f863083b0eba3172eee17c9e97ce210bc7cc"
+    }
+  ]
+}
