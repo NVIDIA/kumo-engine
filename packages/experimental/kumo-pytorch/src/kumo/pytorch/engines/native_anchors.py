@@ -776,6 +776,7 @@ class NativeAnchors:
         world_size,
         drop_last,
         output_format,
+        deduplicate_edges=False,
     ):
         """One native iterator call per batch; no request objects or re-batching."""
         from dataclasses import replace
@@ -901,6 +902,18 @@ class NativeAnchors:
                         for meta, flag in zip(anchors.request_metadata, flags, strict=True)
                     ),
                 )
+            if output_format == "columnar":
+                yield _surface_padding(
+                    assembler._collate(
+                        replace(anchors, runtime_batch=runtime),
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        columnar=True,
+                        deduplicate_edges=deduplicate_edges,
+                    )
+                )
+                continue
             with runtime_features(source, runtime):
                 values = source.build_model_batch(sample, runtime, anchors, compiled)
                 values = replace(
@@ -1043,6 +1056,27 @@ class NativeAnchors:
             self._event_costs = {}
             self._temporary.cleanup()
 
+    def validate_columnar(self, assembler, selection):
+        """Refuse unsupported contracts before constructing a native iterator."""
+        from kumo.pytorch.contract.batch import Raw
+
+        policy = assembler.spec.batching
+        if (
+            not self._can_batch_inspectable_graph(assembler)
+            or policy.max_tokens is not None
+            or policy.bucket_by_length
+            or len(self._selection(selection)) > 1
+            or assembler._source is not self._source
+        ):
+            raise ValueError(
+                "columnar output requires one graph-only input, fixed-size batching, "
+                "one selected split, and no targets, entity filters or availability"
+            )
+        for prepared in assembler._prepared_inputs.values():
+            for fields in prepared.spec.representation.node_fields.values():
+                if any(not isinstance(use.encoding, Raw) for use in fields.fields):
+                    raise ValueError("columnar graph fields require explicit Raw encodings")
+
     def _can_batch_inspectable_graph(self, assembler):
         """Use typed buffers only when no other inspectable contract is needed."""
         from kumo.pytorch.contract.batch import Graph
@@ -1084,6 +1118,7 @@ class NativeAnchors:
         world_size: int,
         drop_last: bool | None,
         output_format: str,
+        deduplicate_edges: bool = False,
     ):
         """Read native anchor batches and retain the existing fitted assembler.
 
@@ -1097,7 +1132,15 @@ class NativeAnchors:
         from kumo.pytorch.contract.sample import Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
+        if output_format == "columnar":
+            self.validate_columnar(assembler, selection)
         source = self._source
+        materialized = getattr(getattr(source, "_materialized_values", None), "features", {})
+        entity_columns = [
+            value.column
+            for key, value in self._sample.entity_values.items()
+            if isinstance(value, Field) and not value.path and key not in materialized
+        ]
         policy = assembler.spec.batching
         fixed = policy.max_tokens is None and not policy.bucket_by_length
         maximum = batch_size if batch_size is not None else policy.max_samples
@@ -1121,9 +1164,7 @@ class NativeAnchors:
             for table, definition in source._tables.items():
                 if definition.primary_key is not None:
                     projections[table].insert(0, definition.primary_key)
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            projections[self._sample.entity.table].extend(entity_columns)
             projections = {
                 table: list(dict.fromkeys(fields)) for table, fields in projections.items()
             }
@@ -1176,13 +1217,11 @@ class NativeAnchors:
             and self._can_batch_inspectable_graph(assembler)
         )
         if (
-            (output_format == "model" or inspectable_graph)
+            (output_format in {"model", "columnar"} or inspectable_graph)
             and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):
-            for value in self._sample.entity_values.values():
-                if isinstance(value, Field) and not value.path:
-                    projections[self._sample.entity.table].append(value.column)
+            projections[self._sample.entity.table].extend(entity_columns)
             for stage in stages:
                 yield from self._typed_batches(
                     assembler,
@@ -1199,6 +1238,7 @@ class NativeAnchors:
                     world_size=world_size,
                     drop_last=policy.drop_last if drop_last is None else drop_last,
                     output_format=output_format,
+                    deduplicate_edges=deduplicate_edges,
                 )
             return
 

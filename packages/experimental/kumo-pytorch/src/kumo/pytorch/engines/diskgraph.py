@@ -1287,6 +1287,92 @@ class DiskGraphSource:
         finally:
             self._runtime_batch = previous
 
+    def columnar_graph_batch(self, sample, spec, runtime, *, deduplicate_edges=False):
+        """Expose sampled Arrow buffers without per-node Python or tensor assembly."""
+        from kumo.pytorch.contract.batch import ColumnarEdges, ColumnarGraph, ColumnarNodes
+
+        pa = self._pa
+        graph = runtime["graphs"]["main"]
+        neighborhood = sample.neighborhoods[spec.source]
+        _, physical_relations = self._sampling_plan(neighborhood)
+        relations = {
+            traversal.relation for layer in neighborhood.layers for traversal in layer.samples
+        }
+        tables = {sample.entity.table, *spec.node_fields}
+        for name in relations:
+            relation = self._relations[name]
+            tables.update((relation.left_table, relation.right_table))
+        nodes = {}
+        for table in sorted(tables):
+            ids = graph["node_ids"].get(table, pa.array([], type=pa.uint64()))
+            owners = graph["batch_dict"].get(table, pa.array([], type=pa.uint64()))
+            fields = spec.node_fields.get(table)
+            names = () if fields is None else tuple(use.field for use in fields.fields)
+            definition = self._tables[table]
+            requested = tuple(
+                dict.fromkeys(
+                    (*(() if definition.primary_key is None else (definition.primary_key,)), *names)
+                )
+            )
+            raw = runtime["raw_features"].get(table)
+            if len(owners) != len(ids):
+                raise RuntimeError(f"native columnar node/owner alignment mismatch: {table}")
+            if len(ids) and requested:
+                if raw is None:
+                    raise RuntimeError(f"missing native columnar features for {table!r}")
+                data = pa.Table.from_batches(raw["record_batches"])
+                if len(data) != len(ids) or len(owners) != len(ids):
+                    raise RuntimeError(f"native columnar node/feature alignment mismatch: {table}")
+                columns = {
+                    name: self._typed_array(data[name], definition.columns[name])
+                    for name in requested
+                }
+            else:
+                columns = {
+                    name: pa.array([], type=definition.columns[name].to_arrow())
+                    for name in requested
+                }
+            nodes[table] = ColumnarNodes(
+                ids=columns[definition.primary_key] if definition.primary_key else ids,
+                owners=owners,
+                features=pa.table({name: columns[name] for name in names}),
+            )
+        parts = defaultdict(list)
+        for edge in graph["edge_index_dict"]:
+            physical = edge["edge_type"]["rel"]
+            if physical not in physical_relations:
+                continue
+            name = physical_relations[physical]
+            left, right = edge["src"], edge["dst"]
+            if physical != self._relation_mapping[name]["forward"]:
+                left, right = right, left
+            parts[name].append(pa.record_batch([left, right], names=["source", "destination"]))
+        empty = pa.schema([("source", pa.uint64()), ("destination", pa.uint64())])
+        edges = {}
+        for name in sorted(relations):
+            index = (
+                pa.Table.from_batches(parts[name])
+                if parts[name]
+                else pa.Table.from_batches([], schema=empty)
+            )
+            if deduplicate_edges and len(index) > 1:
+                # Opt-in materialization; the default retains native edge chunks.
+                pairs = _first_occurrences(
+                    np.stack([column.to_numpy() for column in index.columns])
+                )
+                index = pa.table(
+                    {
+                        field.name: pa.array(values, type=field.type)
+                        for field, values in zip(index.schema, pairs, strict=True)
+                    }
+                )
+            edges[name] = ColumnarEdges(
+                self._relations[name].left_table,
+                self._relations[name].right_table,
+                index,
+            )
+        return ColumnarGraph(sample.entity.table, nodes, edges)
+
     def build_model_batch(self, spec, runtime, anchors, compiled):
         """Adapt iterator buffers; history work has finished before Python resumes."""
         if self._sampler is None:
@@ -1685,11 +1771,7 @@ class DiskGraphSource:
         if isinstance(field, EventTimeDelta):
             boundaries = offsets.to_numpy(zero_copy_only=False)
             owners = self._pa.array(
-                [
-                    anchor
-                    for anchor in range(len(boundaries) - 1)
-                    for _ in range(int(boundaries[anchor + 1] - boundaries[anchor]))
-                ],
+                np.repeat(np.arange(len(boundaries) - 1), np.diff(boundaries).astype(np.int64)),
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)

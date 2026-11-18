@@ -115,6 +115,7 @@ def test_oversized_row_keeps_its_primary_key(tmp_path):
     assert engine.canonical_node_mask(
         "items", node_ids, batch.column("item_id")
     ) == [True, True]
+    assert engine.rhs_catalog("items").tolist() == node_ids
 
 
 def test_canonical_node_mask_uses_typed_primary_keys(orders_graph,
@@ -254,6 +255,33 @@ def test_canonical_node_mask_two_50k_typed_batches(typed_primary_key_graph):
             assert all(got == want for got, want in zip(actual, expected)), (
                 f"{node_type} batch {batch_index} returned an incorrect canonical mask"
             )
+
+
+def test_rhs_catalog_keeps_the_canonical_node_mask_rows(
+        typed_primary_key_graph):
+    engine = diskgraph_py.SamplerEngine(typed_primary_key_graph)
+    # Decimal keys come back as text, which the mask reads once cast back.
+    tables = {"signed_ids": (3, None), "unsigned_ids": (2, None),
+              "string_ids": (2, None), "bytes_ids": (2, None),
+              "uuid_ids": (2, None), "uuid256_ids": (2, None),
+              "ip_ids": (2, None),
+              "decimal128_ids": (3, pa.decimal128(38, 2)),
+              "decimal256_ids": (3, pa.decimal256(76, 2))}
+    for node_type, (num_nodes, key_type) in tables.items():
+        node_ids = list(range(num_nodes))
+        keys = pa.Table.from_batches([
+            event["batch"] for event in engine.fetch_features([{
+                "node_type": node_type, "node_ids": node_ids,
+                "feature_names": ["id"]}]) if event["type"] == "feature"
+        ]).column("id").combine_chunks()
+        if key_type is not None:
+            keys = keys.cast(key_type)
+        mask = engine.canonical_node_mask(node_type, node_ids, keys)
+
+        catalog = engine.rhs_catalog(node_type)
+
+        assert catalog.dtype == "int64" and catalog.flags.writeable
+        assert catalog.tolist() == [node for node in node_ids if mask[node]]
 
 
 def test_decimal256_pk_table_does_not_block_sampler_initialization(

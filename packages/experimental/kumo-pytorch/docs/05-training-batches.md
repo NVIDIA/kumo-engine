@@ -380,3 +380,92 @@ engine](04-engines-and-data.md#the-diskgraph-engine) for how the index is built
 and reused.
 
 Next: [inference and serving](06-inference-and-serving.md).
+
+## Arrow graphs for foundation-model payloads
+
+For consumers that build their own model representation, a materialized
+DiskGraph task can expose sampled graph columns without first encoding them
+into tensor/mask dictionaries:
+
+Reuse the schema, Parquet dataset and anchor table above with a graph-only
+contract. Select the training split because the anchor table contains both
+training and validation rows.
+
+<!-- test: diskgraph -->
+```python
+graph_contract = api.DataLoaderSpec(
+    schema=schema,
+    sample=api.SampleSpec(
+        entity=api.EntitySpec(table="users"),
+        neighborhoods={
+            "history": api.NeighborhoodSpec(
+                layers=(
+                    api.GraphLayer(
+                        samples=(api.GraphSample("user_purchases", 4, strategy="recent"),)
+                    ),
+                )
+            )
+        },
+    ),
+    batch=api.BatchSpec(
+        inputs={
+            "graph": api.Input(
+                source=api.NeighborhoodSource("history"),
+                representation=api.Graph(
+                    node_fields={
+                        "users": api.Fields((api.Encode("segment", api.Raw()),)),
+                        "purchases": api.Fields((api.Encode("amount", api.Raw()),)),
+                    }
+                ),
+                layout=None,
+            )
+        },
+        batching=api.Batching(max_samples=1024),
+    ),
+)
+with (
+    api.prepare(graph_contract, parquet, engine) as graph_plan,
+    graph_plan.materialize(anchors=anchor_table, fit_split="train") as graph_task,
+):
+    for batch in graph_task.batches(split="train", output_format="columnar"):
+        graph = batch.inputs["graph"]  # api.ColumnarGraph
+        roots = graph.nodes[graph.root_type]
+        root_ids = roots.ids.slice(0, batch.batch_size)
+        for table_name, nodes in graph.nodes.items():
+            features = nodes.features  # pyarrow.Table; NULLs stay in validity bitmaps
+            example_positions = nodes.owners  # indexes into batch.metadata["sample_ids"]
+        for relation_name, edges in graph.edges.items():
+            selected_pairs = edges.index  # Arrow columns: source, destination
+    print("training roots:", root_ids.to_pylist())
+```
+
+<!-- test: output -->
+```text
+training roots: [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+```
+
+Node rows are occurrences within an example: repeated anchors and different
+cutoffs do not share graph occurrences. The root table starts with one root
+per batch example, in batch order. Edge endpoints index the node tables in
+**declared left-to-right orientation**, including reverse traversal and
+self-relations. They contain only sampled links. The same selected pair can
+appear in multiple chunks. Consumers can normalize these pairs while building
+their payload, or pass `deduplicate_edges=True` to `batches` for unique pairs
+per relation in first-occurrence order. This opt-in step materializes edge
+arrays and adds deduplication work; the default `False` retains native chunks.
+Deduplication preserves separate examples, including repeated entity IDs.
+Chunks do not identify traversal direction or discovery radius.
+
+Feature columns contain exactly the requested Raw fields, in declaration order
+and declared types. Primary-key identity is available separately in `ids`.
+Native buffers are shared where compatible; restoring declared types may
+allocate. All buffers remain valid after iteration and task closure, and
+`Batch.to(...)` keeps them as CPU Arrow values.
+
+This format currently supports one graph-only input, explicit Raw encodings,
+fixed sample counts, and a selection contained in one split. It refuses
+request-backed tasks, non-DiskGraph engines, other sample values, targets,
+entity filters, and availability checks before iteration. Select a single
+split explicitly when anchors span several splits. Shuffle, rank sharding,
+padding, drop-last, and iterator resume retain their existing behavior.
+Existing sampling limits, including timeless destinations, still apply.

@@ -160,8 +160,12 @@ def test_negative_requires_real_permission_denial(case, name, monkeypatch):
     import sys
 
     denied = {
-        'snowflake': '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
-        'databricks': '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
+        'sagemaker':
+        's3://test-bucket/denied',
+        'snowflake':
+        '@KUMO_TEST_DB.YOUR_TEST_SCHEMA.DENIED_STAGE/mlops-validation',
+        'databricks':
+        '/Volumes/kumo_test_catalogue/kumo_test/test_denied/mlops-validation',
     }[name]
     instance = platform.Backend({
         **config(name), 'denied_artifact_root': denied
@@ -182,9 +186,14 @@ def test_negative_requires_real_permission_denial(case, name, monkeypatch):
             if name == 'snowflake':
                 error.__cause__ = ProviderDenied('Snowflake stage write denied')
             elif name == 'databricks':
+
                 class PermissionDenied(RuntimeError):
                     error_code = 'PERMISSION_DENIED'
+
                 error.__cause__ = PermissionDenied('Volume write denied')
+            elif name == 'sagemaker':
+                error.__cause__ = RuntimeError('S3 write denied')
+                error.__cause__.response = {'Error': {'Code': 'AccessDenied'}}
         elif case == 'missing':
             error.__cause__ = FileNotFoundError('stage missing')
         elif case == 'timeout':
@@ -223,10 +232,12 @@ def test_denied_databricks_root_can_use_an_isolated_catalog():
 ])
 def test_denied_databricks_root_rejects_unsafe_paths(denied):
     with pytest.raises(ValueError, match='Volume test-prefix'):
-        platform.validate({**config('databricks'), 'denied_artifact_root': denied})
+        platform.validate({
+            **config('databricks'), 'denied_artifact_root': denied
+        })
 
 
-@pytest.mark.parametrize('name', ['snowflake', 'databricks'])
+@pytest.mark.parametrize('name', ['snowflake', 'databricks', 'sagemaker'])
 def test_typed_databricks_denial_without_error_code_stays_provider_scoped(name):
     errors = pytest.importorskip('databricks.sdk.errors')
     denied = errors.PermissionDenied('provider denied')
@@ -235,3 +246,16 @@ def test_typed_databricks_denial_without_error_code_stays_provider_scoped(name):
     wrapped.__cause__ = denied
     assert platform.denied_access(wrapped, provider_only=True,
                                   provider=name) is (name == 'databricks')
+
+
+@pytest.mark.parametrize('name', ['snowflake', 'databricks', 'sagemaker'])
+def test_aws_denial_is_accepted_only_for_selected_aws_provider(name):
+    error = PermissionError('wrapped provider failure')
+    cause = RuntimeError('provider denied')
+    cause.response = {'Error': {'Code': 'AccessDenied'}}
+    error.__cause__ = cause
+    assert platform.denied_access(error, provider_only=True,
+                                  provider=name) is (name == 'sagemaker')
+    assert not platform.denied_access(
+        PermissionError(errno.EACCES, 'local spool'), provider_only=True,
+        provider=name)

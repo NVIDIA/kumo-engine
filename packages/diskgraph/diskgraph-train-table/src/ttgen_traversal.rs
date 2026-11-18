@@ -193,9 +193,18 @@ pub fn read_column_value(
     node_id: u64,
     col_idx: usize,
 ) -> Option<Value> {
-    let view = table.edges_for_node(node_id).ok()?;
+    row_column_value(table, node_row(table, node_id), col_idx)
+}
+
+/// A node's raw rowpack bytes, or `None` if it has none or cannot be read.
+pub fn node_row(table: &TableReader, node_id: u64) -> Option<&[u8]> {
+    table.edges_for_node(node_id).ok()?.node_data().ok()?
+}
+
+/// [`read_column_value`] on a row already fetched with [`node_row`].
+pub fn row_column_value(table: &TableReader, row: Option<&[u8]>, col_idx: usize) -> Option<Value> {
     let decoder = table.node_data_decoder()?;
-    let raw_data = decoder.row_or_null(view.node_data().ok()??);
+    let raw_data = decoder.row_or_null(row?);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -356,19 +365,36 @@ pub fn dispatch_multicat_source<F>(
     node_id: u64,
     col_idx: usize,
     is_multicat: bool,
+    observe: F,
+) -> MulticatDispatchOutcome
+where
+    F: FnMut(MulticatToken<'_>) -> bool,
+{
+    dispatch_multicat_row(
+        table,
+        node_row(table, node_id),
+        col_idx,
+        is_multicat,
+        observe,
+    )
+}
+
+/// [`dispatch_multicat_source`] on a row already fetched with [`node_row`].
+pub fn dispatch_multicat_row<F>(
+    table: &TableReader,
+    row: Option<&[u8]>,
+    col_idx: usize,
+    is_multicat: bool,
     mut observe: F,
 ) -> MulticatDispatchOutcome
 where
     F: FnMut(MulticatToken<'_>) -> bool,
 {
     use MulticatDispatchOutcome::*;
-    let Ok(view) = table.edges_for_node(node_id) else {
-        return SourceNull;
-    };
     let Some(decoder) = table.node_data_decoder() else {
         return SourceNull;
     };
-    let Ok(Some(raw)) = view.node_data() else {
+    let Some(raw) = row else {
         return SourceNull;
     };
     let raw = decoder.row_or_null(raw);
