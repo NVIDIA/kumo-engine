@@ -300,6 +300,8 @@ class DiskGraphEngine(
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
+    work_dir: str | Path | None = None,
+    source_versions: Mapping[str, Mapping[str, str]] | None = None,
 )
 ```
 
@@ -332,6 +334,54 @@ step, before any data is read.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
+- `work_dir`: external task/cache directory; required by existing-index factories. Source-ingestion callers may omit it to retain the original index-local behavior.
+- `source_versions`: optional table-to-identity mapping for source ingestion/reuse. Each entry has nonempty `source` (connector plus source identity) and `version` strings. These trusted connector versions replace file path/size/mtime identity; missing versions are never treated as equal. Omit for legacy file validation. The caller must change the version whenever source data changes: reuse does not compare Parquet contents, file sizes or mtimes in this opt-in mode.
+
+#### `DiskGraphEngine.from_index`
+
+*classmethod*
+
+```python
+DiskGraphEngine.from_index(
+    index: str | Path,
+    *,
+    work_dir: str | Path,
+    num_threads: int | None = None,
+) -> DiskGraphEngine
+```
+
+Open a complete native index without its original sources or any base writes.
+
+Read schema/relations from existing metadata. Older indexes without the
+resolved native config are refused. Native edge tables and non-scalar
+stored columns are not supported. Bare indexes without producer identity
+are hashed once; engine provenance and PyTorch manifests avoid that scan.
+`work_dir` holds task extensions and derived caches outside the base.
+
+#### `DiskGraphEngine.from_snapshot`
+
+*classmethod*
+
+```python
+DiskGraphEngine.from_snapshot(
+    snapshot: Any,
+    *,
+    work_dir: str | Path,
+    num_threads: int | None = None,
+) -> DiskGraphEngine
+```
+
+Bind a kumo.engine GraphSnapshot using its existing index and identity.
+
+Uses public `index_path` and `id` fields; importing kumo.engine is
+unnecessary. Load exported snapshots through the existing engine loader.
+No source export, base ingestion or additional metadata file is needed.
+
+#### `DiskGraphEngine.schema`
+
+*property*
+
+Resolved stored schema for a from_index/from_snapshot engine.
 
 #### `DiskGraphEngine.check_contract`
 

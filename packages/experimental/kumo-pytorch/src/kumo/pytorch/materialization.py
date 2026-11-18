@@ -56,9 +56,9 @@ class _DiskGraphIndex:
             raise ValueError(f"{root} is missing DiskGraph index_metadata.json")
         return cls(str(root), manifest)
 
-    def validate_binding(self, schema: DataSchema, dataset: Dataset) -> None:
+    def validate_binding(self, schema: DataSchema, dataset: Dataset, source_versions=None) -> None:
         expected_schema = _fingerprint(_schema_payload(schema))
-        expected_dataset = _fingerprint(_dataset_payload(dataset))
+        expected_dataset = _fingerprint(_dataset_payload(dataset, source_versions))
         if self.manifest.get("schema_fingerprint") != expected_schema:
             raise ValueError("DiskGraph index was materialized from a different schema")
         if self.manifest.get("dataset_fingerprint") != expected_dataset:
@@ -75,6 +75,7 @@ def ensure_diskgraph_index(
     dataset_name: str = "default",
     if_missing: bool = True,
     column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
+    source_versions: Mapping[str, Mapping[str, str]] | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -95,7 +96,7 @@ def ensure_diskgraph_index(
     output = Path(destination).resolve()
     if output.exists():
         artifact = _DiskGraphIndex.open(output)
-        artifact.validate_binding(schema, dataset)
+        artifact.validate_binding(schema, dataset, source_versions)
         _warn_dropped_rows(output)
         return artifact
     if not if_missing:
@@ -103,7 +104,8 @@ def ensure_diskgraph_index(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     diskgraph = _import_diskgraph()
-    source_snapshot = _dataset_payload(dataset)
+    source_snapshot = _dataset_payload(dataset, source_versions)
+    physical_snapshot = _dataset_payload(dataset)
     config, relation_mapping, source_types = _compile_diskgraph_config(
         schema,
         dataset,
@@ -148,7 +150,7 @@ def ensure_diskgraph_index(
             **thread_options,
         )
         elapsed = time.perf_counter() - started
-        if _dataset_payload(dataset) != source_snapshot:
+        if _dataset_payload(dataset) != physical_snapshot:
             raise ValueError("Parquet files changed while DiskGraph was ingesting them")
 
         manifest = {
@@ -442,7 +444,20 @@ def _schema_payload(schema: DataSchema) -> dict[str, Any]:
     }
 
 
-def _dataset_payload(dataset: Dataset) -> dict[str, Any]:
+def _dataset_payload(dataset: Dataset, source_versions=None) -> dict[str, Any]:
+    if source_versions is not None:
+        if set(source_versions) != set(dataset.tables):
+            raise ValueError("source_versions must identify every dataset table exactly once")
+        result = {}
+        for name, entry in source_versions.items():
+            if set(entry) != {"source", "version"} or any(
+                not isinstance(value, str) or not value for value in entry.values()
+            ):
+                raise ValueError(
+                    "source_versions entries require nonempty source and version strings"
+                )
+            result[name] = dict(entry)
+        return {"source_versions": result}
     payload = {}
     for name, source in sorted(dataset.tables.items()):
         if not isinstance(source, Parquet):

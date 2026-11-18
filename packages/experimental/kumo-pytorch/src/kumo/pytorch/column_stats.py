@@ -243,7 +243,7 @@ def token_lengths_file(
 
 
 def read_token_lengths(
-    index: str | Path, entry: Mapping[str, Any]
+    index: str | Path, entry: Mapping[str, Any], *, cache_root: str | Path | None = None
 ) -> tuple[int, np.ndarray | None]:
     """A table's per-event constant and its read-only per-node counts, indexed by node ID.
 
@@ -255,6 +255,8 @@ def read_token_lengths(
     if entry["file"] is None:
         return entry["constant"], None
     path = Path(index, "col_stats", entry["file"])
+    if not path.is_file() and cache_root is not None:
+        path = Path(cache_root, "col_stats", entry["file"])
     if not path.stat().st_size:
         return entry["constant"], np.frombuffer(b"", dtype="<u2")
     return entry["constant"], np.memmap(path, dtype="<u2", mode="r")
@@ -282,37 +284,58 @@ def read_column_stats(
     ticks: int | None,
     unit: str,
     num_threads: int | None = None,
+    *,
+    cache_root: str | Path | None = None,
 ) -> ColumnStats:
-    """The requested statistics at a cutoff, first computing into the index those it lacks."""
+    """Read stored statistics, computing missing values into the selected cache root."""
 
     import diskgraph
 
-    directory = Path(index, "col_stats", _cutoff_dir(ticks, unit))
+    base = Path(index, "col_stats", _cutoff_dir(ticks, unit))
+    external = cache_root is not None and Path(cache_root).resolve() != Path(index).resolve()
+    destination = Path(cache_root) if external else Path(index)
+    # Isolate request sets; immutable base statistics need not be recomputed.
+    recipe = hashlib.sha256(json.dumps(sorted(set(requests))).encode()).hexdigest()[:16]
+    relative = _cutoff_dir(ticks, unit) + (f"/{recipe}" if external else "")
+    directory = destination / "col_stats" / relative
     paths = {
         table: directory / f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests
     }
 
+    files = set()
+
     def read() -> dict:
-        return {
-            table: json.loads(path.read_text())[table]
-            for table, path in paths.items()
-            if path.is_file()
-        }
+        found = {}
+        for table, path in paths.items():
+            for candidate in (base / path.name, path):
+                if candidate.is_file():
+                    files.add(candidate)
+                    data = json.loads(candidate.read_text())[table]
+                    for column, values in data.items():
+                        found.setdefault(table, {}).setdefault(column, {}).update(values)
+        return found
 
     found = read()
     missing = [
-        (table, column, stype)
-        for table, column, stype in requests
-        if _STAT_KEYS[stype] not in found.get(table, {}).get(column, {})
+        item
+        for item in requests
+        if _STAT_KEYS[item[2]] not in found.get(item[0], {}).get(item[1], {})
     ]
     if missing:
         request = stats_request(missing, [ticks], unit)
-        diskgraph.cutoff_col_stats(str(index), json.dumps(request), num_threads=num_threads)
+        request["dirs"] = [relative]
+        options = {"output_dir": str(destination)} if external else {}
+        diskgraph.cutoff_col_stats(
+            str(index), json.dumps(request), num_threads=num_threads, **options
+        )
         found = read()
     return ColumnStats(
         {item: found[item[0]][item[1]] for item in requests},
         {"value": ticks, "unit": unit},
-        tuple(f"{directory.name}/{path.name}" for _, path in sorted(paths.items())),
+        tuple(
+            str(path if external else path.relative_to(Path(index) / "col_stats"))
+            for path in sorted(files)
+        ),
     )
 
 
