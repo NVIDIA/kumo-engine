@@ -155,8 +155,29 @@ def render(root):
     return report
 
 
+def text_outline(text, renderer):
+    """Return the rendered text rectangle at its actual rotation and alignment."""
+    from copy import copy
+
+    from matplotlib.path import Path as MplPath
+    from matplotlib.transforms import Affine2D
+
+    unrotated = copy(text)
+    unrotated.set_rotation(0)
+    box = unrotated.get_window_extent(renderer)
+    outline = MplPath([(0, 0), (box.width, 0),
+                       (box.width, box.height), (0, box.height), (0, 0)])
+    outline = outline.transformed(Affine2D().rotate_deg(text.get_rotation()))
+    bounds = outline.get_extents()
+    actual = text.get_window_extent(renderer)
+    return outline.transformed(Affine2D().translate(
+        actual.x0 - bounds.x0, actual.y0 - bounds.y0))
+
+
 def check_layout(figure):
     """Check every visible title/axis/tick label fits, including vector exports."""
+    from itertools import combinations
+
     figure.canvas.draw()
     renderer = figure.canvas.get_renderer()
     labels = []
@@ -188,9 +209,9 @@ def check_layout(figure):
             assert bounds.y1 <= figure.bbox.height + 1, text.get_text()
             labels.append(text.get_text())
         for tick_labels in ticks:
-            bounds = [text.get_window_extent(renderer) for text in tick_labels]
-            assert all(not left.overlaps(right)
-                       for left, right in zip(bounds, bounds[1:])), (
+            outlines = [text_outline(text, renderer) for text in tick_labels]
+            assert all(not left.intersects_path(right, filled=True)
+                       for left, right in combinations(outlines, 2)), (
                            axis.get_title(), [text.get_text() for text in tick_labels])
     return labels
 
@@ -236,8 +257,6 @@ def layout_examples(report):
         prediction_score=0., target_score=None, table_name=table, hop=1,
         col_name='long_categorical_feature_name')
     cohort_figure, (prediction, population) = plot_cohort(cohort)
-    cohort_figure.set_size_inches(24, 8)
-    cohort_figure.tight_layout()
     assert len(prediction.lines) == 1
     assert list(prediction.lines[0].get_ydata()) == cohort.predictions
     assert [bar.get_height()
@@ -338,11 +357,6 @@ def _display_outputs(root, report, display):
     figures.append(('cohort-regression', figure, 'Population share'))
     figures.extend(layout_examples(report))
     for kind, figure, label in figures:
-        if kind.startswith('cohort'):
-            count = len(figure.axes[-1].get_xticklabels())
-            figure.set_size_inches(max(figure.get_figwidth(), count * 1.2),
-                                   figure.get_figheight())
-            figure.tight_layout()
         labels_to_check = check_layout(figure)
         native, metadata = shell.display_formatter.format(figure)
         assert 'image/png' in native, 'Notebook must format the actual Matplotlib figure'

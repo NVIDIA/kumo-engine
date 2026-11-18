@@ -275,7 +275,6 @@ def run(source=None, output=None, execute=False, credential_file=None,
                 try:
                     receipt = json.loads(
                         (root / 'notebook-receipt.json').read_text())
-                    report['explanations'] = receipt.get('explanations', {})
                     report['exports'] = collect(receipt, expected,
                                                 root / 'exports', key_file)
                 except Exception as error:
@@ -359,6 +358,13 @@ def run(source=None, output=None, execute=False, credential_file=None,
             report.setdefault(
                 'reason',
                 'Attempt stage cleanup failed; inspect private evidence')
+    if (notebook and report['status'] == 'passed'
+            and report.get('exports', {}).get('status') == 'passed'):
+        checks = report.get('notebook_checks', {})
+        phases = ('saved',) if expected['action'] == 'verify' else ('live', 'saved')
+        if all(checks.get(phase, {}).get('explanations', {}).get('status')
+               == 'passed' for phase in phases):
+            report['explanations'] = dict(status='passed')
     (root / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
     print('UI result:', report['status'], 'Summary:', root / 'summary.json',
           flush=True)

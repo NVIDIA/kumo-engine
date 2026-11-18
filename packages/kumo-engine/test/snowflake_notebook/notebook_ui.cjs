@@ -588,8 +588,17 @@ async function verify(page, config, evidence, event, allowed) {
       config.output,
       allowed,
     );
-    saved.explanations = await checkExplanations(
-      page, receipt, config.output, "saved", allowed);
+    saved.graph_status = "passed";
+    const checks = { live: { status: "not_run" }, saved };
+    const persist = () => fs.writeFileSync(
+      path.join(config.output, "notebook-checks.json"),
+      JSON.stringify(checks, null, 2), { mode: 0o600 });
+    persist();
+    event("saved_graph_verified");
+    event("saved_explanations_started");
+    await require("./explanation_ui.cjs").record(saved, () => checkExplanations(
+      page, receipt, config.output, "saved", allowed), persist);
+    event("saved_explanations_verified");
     const connected =
       (
         await frame
@@ -637,14 +646,17 @@ async function verify(page, config, evidence, event, allowed) {
     true,
     allowed,
   );
-  const initial = { graphs, explanations: await checkExplanations(
-    page, receipt, config.output, "live", allowed) };
-  fs.writeFileSync(
+  const initial = { graphs, graph_status: "passed" };
+  const checks = { live: initial, saved: { status: "pending" } };
+  const persist = () => fs.writeFileSync(
     path.join(config.output, "notebook-checks.json"),
-    JSON.stringify({ live: initial, saved: { status: "pending" } }, null, 2),
-    { mode: 0o600 },
-  );
+    JSON.stringify(checks, null, 2), { mode: 0o600 });
+  persist();
   event("live_graph_verified");
+  event("live_explanations_started");
+  await require("./explanation_ui.cjs").record(initial, () => checkExplanations(
+    page, receipt, config.output, "live", allowed), persist);
+  event("live_explanations_verified");
   await evidence("notebook-live", frame);
 
   await shutdownKernel(frame, event, "after_graph");
@@ -674,13 +686,14 @@ async function verify(page, config, evidence, event, allowed) {
     config.output,
     allowed,
   );
-  saved.explanations = await checkExplanations(
-    page, receipt, config.output, "reopened", allowed);
-  fs.writeFileSync(
-    path.join(config.output, "notebook-checks.json"),
-    JSON.stringify({ live: initial, saved }, null, 2),
-    { mode: 0o600 },
-  );
+  saved.graph_status = "passed";
+  checks.saved = saved;
+  persist();
+  event("saved_graph_verified");
+  event("saved_explanations_started");
+  await require("./explanation_ui.cjs").record(saved, () => checkExplanations(
+    page, receipt, config.output, "reopened", allowed), persist);
+  event("saved_explanations_verified");
   await evidence("notebook-reopened", frame);
   event("saved_output_verified", { execution_submitted: false });
   return {

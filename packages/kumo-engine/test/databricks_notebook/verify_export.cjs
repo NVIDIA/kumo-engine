@@ -30,10 +30,13 @@ async function verify(root) {
         const checks = mode === 'interactive'
           ? await shared.check(page, receipt, root, 'export', true, true)
           : await shared.checkSaved(page, receipt, root);
-        const plots = await explanations.check(page, receipt, root, `databricks-${mode}`);
-        report[mode] = { status: 'passed', checks, explanations: plots };
+        report[mode] = { status: 'running', graph_status: 'passed', checks };
+        await explanations.record(report[mode],
+          () => explanations.check(page, receipt, root, `databricks-${mode}`),
+          () => fs.writeFileSync(path.join(root, 'ui-result.json'), JSON.stringify(report, null, 2)));
+        report[mode].status = 'passed';
       } catch (error) {
-        report[mode] = { status: 'failed', error: error.message };
+        report[mode] = { ...report[mode], status: 'failed', error: error.message };
         if (page) await page.screenshot({ path: path.join(root, mode + '-failure.png'), fullPage: true, timeout: 5000 }).catch(() => {});
       } finally {
         await context.close();

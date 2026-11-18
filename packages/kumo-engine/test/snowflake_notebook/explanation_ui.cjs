@@ -9,6 +9,20 @@ const PLOTS = ["gradient", "cohort", "cohort-class-0", "cohort-class-1",
   "cohort-multilabel-0", "cohort-multilabel-1", "cohort-regression",
   "gradient-layout", "gradient-zero", "cohort-layout"];
 
+async function record(checks, verify, persist, field = "explanations") {
+  checks[field] = { status: "running" };
+  persist();
+  try {
+    checks[field] = await verify();
+    return checks[field];
+  } catch (error) {
+    checks[field] = { status: "failed", error: "Explanation verification failed" };
+    throw error;
+  } finally {
+    persist();
+  }
+}
+
 async function checkPlots(page, receipt, output, label, allowed, scope) {
   const report = receipt.explanations;
   requireThat(
@@ -105,4 +119,4 @@ async function check(page, receipt, output, label, allowed = async () => true, s
   return { status: "passed", variants };
 }
 
-module.exports = { check, PLOTS };
+module.exports = { check, PLOTS, record };

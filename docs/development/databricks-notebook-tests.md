@@ -316,9 +316,9 @@ Explanation figures use a scoped Matplotlib `default` style so provider rcParams
 do not change the baseline; the original notebook style is restored afterward.
 Text bounds and overlapping labels remain strict checks.
 
-The notebook widens cohort Figures to at least 1.2 inches per cohort before
-export/display. Actual Databricks cohort labels overlapped at the default
-eight-inch width; default-size cohort layout is not qualified by this scenario.
+Cohort plots retain the plotting API's default figure size, including the
+long-label boundary example. Overlap checks compare rotated text outlines;
+upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.

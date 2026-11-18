@@ -15,9 +15,9 @@ candidate wheel.
 Supplementary deterministic plotting inputs exercise 24 long column labels,
 12 long cohort labels, tied and all-zero scores, and absent observed targets.
 They are marked `deterministic-plot-input` in the private receipt; they do not
-count as generated training artifacts. The two large figures are explicitly
-resized through Matplotlib's returned Figure API. Every figure checks text
-bounds and adjacent tick-label overlap before display/export; SVG/PDF must
+count as generated training artifacts. Only the long-column gradient figure
+is explicitly resized; cohort figures keep their default 8×6 size. Every figure
+checks text bounds and pairwise rotated-label overlap before display/export; SVG/PDF must
 retain titles/axis labels, and PDFs must preserve the figure aspect ratio.
 Browser checks require undistorted decoded images and restore the original
 viewport and color preference after each matrix. Browser color preferences do
@@ -315,9 +315,9 @@ Explanation figures use a scoped Matplotlib `default` style so provider rcParams
 do not change the baseline; the original notebook style is restored afterward.
 Text bounds and overlapping labels remain strict checks.
 
-The notebook widens cohort Figures to at least 1.2 inches per cohort before
-export/display. Actual Databricks cohort labels overlapped at the default
-eight-inch width; default-size cohort layout is not qualified by this scenario.
+Cohort plots retain the plotting API's default figure size, including the
+long-label boundary example. Overlap checks compare rotated text outlines;
+upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.

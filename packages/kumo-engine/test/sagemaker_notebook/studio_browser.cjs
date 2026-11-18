@@ -215,9 +215,15 @@ async function main(input) {
     report.initial_receipt = await verifyReceipt(panel, input.receipt);
     mark('native-graph-controls');
     if (input.graph) report.initial = await graph.check(page, input.graph, output, 'studio-initial', true, true, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
-    if (input.graph) report.initial_explanations = await checkExplanations(
-      page, frame, panel, input.graph, output, 'studio-initial',
-      async () => authenticated && safePage(page.url(), input.space_url));
+    if (input.graph) {
+      report.initial_graph = 'passed';
+      mark('native-explanation-controls');
+      report.initial_explanations = await explanations.record(report,
+        () => checkExplanations(page, frame, panel, input.graph, output, 'studio-initial',
+          async () => authenticated && safePage(page.url(), input.space_url)),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)),
+        'initial_explanations');
+    }
     const saveProbe = `KUMO_SAVE_PROBE=${input.receipt.attempt}-${input.invocation}`;
     requireThat(!content.toString().includes(saveProbe), 'Save probe already exists in the upload');
     await writeSaveProbe(page, frame, panel, saveProbe, mark);
@@ -242,9 +248,15 @@ async function main(input) {
     report.save_probe = 'passed';
     report.reopened_receipt = await verifyReceipt(panel, input.receipt);
     if (input.graph) report.reopened = await graph.checkSaved(page, input.graph, output, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
-    if (input.graph) report.reopened_explanations = await checkExplanations(
-      page, frame, panel, input.graph, output, 'studio-reopened',
-      async () => authenticated && safePage(page.url(), input.space_url));
+    if (input.graph) {
+      report.reopened_graph = 'passed';
+      mark('native-explanation-reopened');
+      report.reopened_explanations = await explanations.record(report,
+        () => checkExplanations(page, frame, panel, input.graph, output, 'studio-reopened',
+          async () => authenticated && safePage(page.url(), input.space_url)),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)),
+        'reopened_explanations');
+    }
     requireThat(errors.length === 0, 'Native Studio browser emitted an uncaught frontend error');
     report.uploaded_notebook = filename;
     report.uploaded_sha256 = input.notebook_sha256;
@@ -252,7 +264,7 @@ async function main(input) {
   } catch (error) {
     report.error = verificationMessage(error);
     if (authenticated && page && safePage(page.url(), input.space_url)) {
-      if (/^(native-(file|kernel|restored|notebook|dismiss|graph)|trust-)/.test(report.stage)) {
+      if (/^(native-(file|kernel|restored|notebook|dismiss|graph|explanation)|trust-)/.test(report.stage)) {
         report.diagnostic_detail = safeSnapshot(String(error.message), [input.url]).slice(0, 1500);
       }
       await graph.captureElement(page, output, 'failed',

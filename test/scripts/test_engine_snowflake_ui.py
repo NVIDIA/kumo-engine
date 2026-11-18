@@ -966,3 +966,83 @@ def test_failed_wheelhouse_extraction_never_publishes_partial_state(
     (destination / 'second.whl').write_bytes(b'broken')
     with pytest.raises(ValueError, match='Existing wheelhouse'):
         offline.unpack(payload, destination)
+
+
+@pytest.mark.parametrize('failure', [None, 'browser', 'collection', 'exit'])
+def test_explanation_summary_requires_browser_and_collection(
+        graph_bundle, monkeypatch, tmp_path, failure):
+    import graph_notebook
+    import resources
+
+    import ui
+
+    _, prepared, spec = graph_bundle
+    spec['action'] = 'verify'
+    configuration = prepared / 'notebook.json'
+    configuration.write_text(json.dumps(spec))
+    target = resources.require()
+    monkeypatch.setattr(ui, 'credentials', lambda path: dict(
+        account_url=target['account_url'], user=target['browser_user']))
+    monkeypatch.setattr(ui.shutil, 'which', lambda name: 'node')
+    monkeypatch.setenv('KUMO_PLAYWRIGHT_MODULE', '/unit-test/playwright')
+    monkeypatch.setattr(ui.subprocess, 'check_output', lambda *a, **k: 'a' * 40)
+
+    def browser(command, **kwargs):
+        output = Path(json.loads(kwargs['input'])['output'])
+        (output / 'notebook-receipt.json').write_text(json.dumps(
+            dict(explanations=dict(status='passed'))))
+        (output / 'notebook-checks.json').write_text(json.dumps(dict(
+            saved=dict(graph_status='passed', explanations=dict(
+                status='failed' if failure == 'browser' else 'passed')))))
+        (output / 'browser-result.json').write_text(json.dumps(dict(
+            status='failed' if failure == 'browser' else 'passed')))
+        return SimpleNamespace(returncode=1 if failure in {'browser', 'exit'} else 0)
+
+    def collect(*args):
+        if failure == 'collection':
+            raise ValueError('Explanation receipt differs from retained artifacts')
+        return dict(status='passed')
+
+    monkeypatch.setattr(ui.subprocess, 'run', browser)
+    monkeypatch.setattr(graph_notebook, 'collect', collect)
+    raw = tmp_path / 'raw'
+    report = ui.run(notebook=configuration, output=raw, execute=True)
+    module_spec = importlib.util.spec_from_file_location(
+        'explanation_summary', DIRECTORY.parent / 'platform_summary.py')
+    summary = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(summary)
+    public = summary.publish(raw, tmp_path / 'public', 'snowflake', 'graph')
+    result = public['results']['summary']
+    assert report['status'] == ('passed' if failure is None else 'failed')
+    if failure is None:
+        assert result['explanations']['status'] == 'passed'
+    else:
+        assert 'explanations' not in report and 'explanations' not in result
+
+
+def test_explanation_checkpoint_preserves_passed_graph_on_failure(tmp_path):
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node.js is required for notebook verifier tests')
+    program = r"""
+const assert = require('node:assert/strict');
+const {record} = require(process.argv[1]);
+(async () => {
+  for (const field of ['explanations', 'initial_explanations']) {
+    const result = {graph_status: 'passed', checks: [{status:'passed'}]};
+    const snapshots = [];
+    const failure = new Error('explanation assertion');
+    await assert.rejects(record(result, async () => { throw failure; },
+      () => snapshots.push(JSON.parse(JSON.stringify(result))), field), error => error === failure);
+    assert.equal(result.graph_status, 'passed');
+    assert.deepEqual(result.checks, [{status:'passed'}]);
+    assert.equal(result[field].status, 'failed');
+    assert.equal(snapshots[0][field].status, 'running');
+    assert.equal(snapshots[1][field].status, 'failed');
+    const proof = await record(result, async () => ({status:'passed'}), () => {}, field);
+    assert.equal(proof.status, 'passed');
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    subprocess.run([node, '-e', program, str(DIRECTORY / 'explanation_ui.cjs')],
+                   check=True)

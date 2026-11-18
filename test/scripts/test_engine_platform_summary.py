@@ -187,3 +187,25 @@ def test_incomplete_databricks_graph_receipt_cannot_publish_a_pass(
     result = summary.publish(raw, tmp_path / 'public', 'databricks', 'graph')
     assert result['results']['graph']['status'] != 'passed'
     assert 'PRIVATE' not in json.dumps(result)
+
+
+def test_failed_explanations_preserve_graph_checkpoints_without_data():
+    value = dict(status='failed', failure_step='saved_explanations_started',
+                 notebook_checks=dict(
+                     live=dict(graph_status='passed', explanations=dict(
+                         status='passed', private='PRIVATE')),
+                     saved=dict(graph_status='passed', explanations=dict(
+                         status='failed', error='PRIVATE'))))
+    result = summary.aggregate(value)
+    assert result['failure_step'] == 'saved_explanations_started'
+    assert result['notebook_checks'] == dict(
+        live=dict(graph='passed', explanations='passed'),
+        saved=dict(graph='passed', explanations='failed'))
+    assert 'PRIVATE' not in json.dumps(result)
+    exported = summary.aggregate(dict(
+        interactive=dict(status='failed', graph_status='passed',
+                         checks=['PRIVATE'], explanations=dict(status='failed', error='PRIVATE')),
+        saved_export=dict(status='pending'), browser_errors=[]), graph_export=True)
+    assert exported['interactive'] == dict(
+        status='failed', graph='passed', explanations='failed')
+    assert 'PRIVATE' not in json.dumps(exported)
