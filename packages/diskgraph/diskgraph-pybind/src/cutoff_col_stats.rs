@@ -43,7 +43,7 @@ const TOKENIZER_TRAINER: &str = "tokenizers 0.23.2 onig";
 type WordCounts = AHashMap<CompactString, u64>;
 
 /// Recomputes `request` from an index's stored rows.
-fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
+fn from_index(index_dir: &Path, output_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
     let config = read_persisted_config(index_dir)?;
     request.validate(&config.tables)?;
     let names: HashSet<String> = request.columns.keys().cloned().collect();
@@ -107,17 +107,19 @@ fn from_index(index_dir: &Path, request: &CutoffColStatsRequest) -> Result<()> {
         }
         tables.push(table);
     }
-    request.publish(index_dir, clock, tables)
+    request.publish(output_dir, clock, tables)
 }
 
-/// Recomputes column statistics at cutoffs from an index's stored rows, into `col_stats/<dir>/`.
+/// Recomputes statistics from stored rows into `output_dir/col_stats/<dir>/`.
+/// The output defaults to the index directory for existing callers.
 #[pyfunction]
-#[pyo3(signature = (index_dir, request_json, num_threads=None))]
+#[pyo3(signature = (index_dir, request_json, num_threads=None, *, output_dir=None))]
 pub fn cutoff_col_stats(
     py: Python<'_>,
     index_dir: &str,
     request_json: &str,
     num_threads: Option<usize>,
+    output_dir: Option<&str>,
 ) -> PyResult<()> {
     let request: CutoffColStatsRequest = serde_json::from_str(request_json)
         .map_err(|e| DiskgraphConfigError::new_err(format!("invalid request_json: {e}")))?;
@@ -125,7 +127,13 @@ pub fn cutoff_col_stats(
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads.unwrap_or(0))
             .build()?;
-        pool.install(|| from_index(Path::new(index_dir), &request))
+        pool.install(|| {
+            from_index(
+                Path::new(index_dir),
+                Path::new(output_dir.unwrap_or(index_dir)),
+                &request,
+            )
+        })
     })
     .map_err(map_anyhow_err)
 }

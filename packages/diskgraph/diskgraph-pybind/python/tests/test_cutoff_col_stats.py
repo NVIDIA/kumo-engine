@@ -143,6 +143,16 @@ def test_recompute_from_the_index_matches_ingest(data, ingested, tmp_path):
     assert _stats(str(index)) == _stats(ingested)
 
 
+def test_recompute_into_external_directory(data, ingested, tmp_path):
+    index = tmp_path / "index"
+    shutil.copytree(ingested, index, ignore=shutil.ignore_patterns("col_stats"))
+    output = tmp_path / "cache"
+    diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), output_dir=str(output),
+                               num_threads=2)
+    assert _stats(str(output)) == _stats(ingested)
+    assert not (index / "col_stats").exists()
+
+
 def test_rejects_unknown_columns_and_exclusive_options(data, ingested, tmp_path):
     with pytest.raises(Exception, match="has no column missing"):
         diskgraph.cutoff_col_stats(ingested, json.dumps(
