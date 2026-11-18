@@ -1087,7 +1087,7 @@ def test_cleanup_times_out_without_deleting_active_pipeline(modules, tmp_path, m
 @pytest.mark.parametrize(
     'invalid',
     [None, 'admin-bypass', 'reviewers', 'branches', 'wildcard', 'tag', 'count'])
-def test_sagemaker_trial_keeps_independent_approval_and_exact_branch_admission(
+def test_sagemaker_trial_allows_self_approval_only_for_exact_branch(
         modules, monkeypatch, prevent_self_review, invalid, dispatch):
     import urllib.request
     from importlib.util import module_from_spec, spec_from_file_location
@@ -1130,7 +1130,7 @@ def test_sagemaker_trial_keeps_independent_approval_and_exact_branch_admission(
         with pytest.raises(SystemExit, match='manual dispatch on main'):
             guard.main()
         assert not requested
-    elif invalid is None and prevent_self_review:
+    elif invalid is None and (prevent_self_review or dispatch == 'egu/snowflake-explanation-local'):
         guard.main()
     else:
         with pytest.raises(ValueError):

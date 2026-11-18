@@ -310,6 +310,7 @@ PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
 
 PR331 temporarily admits only `egu/snowflake-explanation-local` alongside `main`
-for its Actions test. Independent approval and disabled administrator bypass
-remain required. Remove the exact branch from workflow conditions, the guard
-and the protected environment before merge; inline TODOs track this reversal.
+for its Actions test. Maintainer self-approval is temporarily allowed for that
+exact trial; administrator bypass remains disabled. Before merge, remove the
+branch from workflow conditions, the guard and environment, and restore
+`prevent_self_review=true`. Inline TODOs track both reversals.
