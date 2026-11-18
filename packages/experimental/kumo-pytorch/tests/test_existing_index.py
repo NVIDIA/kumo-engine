@@ -571,3 +571,127 @@ def test_adopted_indexes_require_external_work_dir(indexed, tmp_path, monkeypatc
     if alias == "nested":
         with pytest.raises(ValueError, match="outside"):
             api.DiskGraphEngine(index=index, work_dir=work)
+
+
+@pytest.mark.parametrize("root", ["tasks", "train_tables", "cache"])
+@pytest.mark.parametrize("symlink", [False, True])
+def test_external_writable_roots_cannot_overlap_base(indexed, tmp_path, root, symlink):
+    index, _, _, _, _ = indexed
+    work = tmp_path / "work"
+    work.mkdir()
+    if symlink:
+        (work / root).symlink_to(index, target_is_directory=True)
+    else:
+        moved = work / root
+        shutil.move(index, moved)
+        index = moved
+    before = inventory(index)
+    with pytest.raises(ValueError, match="outside"):
+        api.DiskGraphEngine.from_index(index, work_dir=work)
+    assert inventory(index) == before
+    assert set(p.name for p in work.iterdir()) == {root}
+
+
+def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monkeypatch):
+    index, _, _, spec, _ = indexed
+    known = ("events", "value", "numerical")
+    missing = ("events", "value", "categorical")
+    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work", num_threads=1)
+    with api.prepare(contract=spec, engine=engine) as plan:
+        source = plan._source
+        initial = source.column_stats([known], 20 * 10**9)
+        original = diskgraph.cutoff_col_stats
+        calls = []
+
+        def compute(index_path, request_json, **options):
+            request = json.loads(request_json)
+            assert request["columns"] == {"events": {"value": ["categorical"]}}
+            calls.append(request)
+            return original(index_path, request_json, **options)
+
+        monkeypatch.setattr(diskgraph, "cutoff_col_stats", compute)
+        result = source.column_stats([known, missing], 20 * 10**9)
+        assert result.columns[known]["mean"] == initial.columns[known]["mean"]
+        assert result.files == initial.files
+        assert len(calls) == 1
+        assert source.column_stats([missing], 20 * 10**9).files == initial.files
+        assert len(calls) == 1
+
+
+def test_trusted_reuse_refuses_column_renames(indexed, tmp_path):
+    _, _, dataset, spec, _ = indexed
+    versions = {name: {"source": name, "version": "v1"} for name in dataset.tables}
+    index = tmp_path / "trusted"
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, source_versions=versions)):
+        pass
+    renamed = api.Dataset(
+        {
+            name: api.Parquet(source.path, columns={"value": "renamed"})
+            if name == "events"
+            else source
+            for name, source in dataset.tables.items()
+        }
+    )
+    with pytest.raises(ValueError, match="DG-COLUMN-RENAME"):
+        api.prepare(spec, renamed, api.DiskGraphEngine(index=index, source_versions=versions))
+
+
+def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_path, monkeypatch):
+    from kumo.pytorch import materialization
+
+    _, source, dataset, spec, _ = indexed
+    original = materialization._dataset_payload
+    calls = 0
+
+    def capture(*args, **kwargs):
+        nonlocal calls
+        payload = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            path = source / "events.parquet"
+            table = pq.read_table(path)
+            pq.write_table(table.slice(0, 2), path)
+        return payload
+
+    monkeypatch.setattr(materialization, "_dataset_payload", capture)
+    index = tmp_path / "new-index"
+    with pytest.raises(ValueError, match="changed while DiskGraph was ingesting"):
+        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=1))
+    assert not index.exists()
+
+
+def test_external_storage_refuses_old_native_api_before_task_writes(indexed, tmp_path, monkeypatch):
+    index, _, dataset, spec, _ = indexed
+
+    def old_cutoff_col_stats(index_dir, request_json, num_threads=None):
+        pytest.fail("compatibility check must not execute statistics")
+
+    monkeypatch.setattr(diskgraph, "cutoff_col_stats", old_cutoff_col_stats)
+    work = tmp_path / "work"
+    engine = api.DiskGraphEngine.from_index(index, work_dir=work)
+    with pytest.raises(RuntimeError, match="matching kumo-engine revision"):
+        api.prepare(contract=spec, engine=engine)
+    assert not work.exists()
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index)):
+        pass
+
+
+def test_index_local_statistics_read_each_file_once(indexed, tmp_path, monkeypatch):
+    from kumo.pytorch.column_stats import read_column_stats
+
+    index, _, _, _, _ = indexed
+    request = [("events", "value", "numerical")]
+    expected = read_column_stats(index, request, 20, "seconds")
+    alias = tmp_path / "alias"
+    alias.symlink_to(index, target_is_directory=True)
+    original = Path.read_text
+    reads = []
+
+    def read(path, *args, **kwargs):
+        if path.name.endswith(".col_stats.json"):
+            reads.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    assert read_column_stats(index, request, 20, "seconds", cache_root=alias) == expected
+    assert len(reads) == 1

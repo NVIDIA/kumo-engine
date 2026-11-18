@@ -292,9 +292,9 @@ def read_column_stats(
 
     cache = ColumnCache(index, cache_root)
     cutoff = _cutoff_dir(ticks, unit)
-    # Isolate request sets; immutable base statistics need not be recomputed.
-    recipe = hashlib.sha256(json.dumps(sorted(set(requests))).encode()).hexdigest()[:16]
-    relative = cutoff + (f"/{recipe}" if cache.external else "")
+    # Native publication locks, merges existing keys, and atomically replaces files.
+    # Sharing a cutoff directory lets overlapping requests reuse prior statistics.
+    relative = cutoff
     paths = {table: f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests}
 
     files = set()

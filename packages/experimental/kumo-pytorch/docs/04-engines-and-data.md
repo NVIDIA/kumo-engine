@@ -189,7 +189,8 @@ the index's `col_stats/`, so that directory must be writable. For the ordinary
 `DiskGraphEngine(index=...)` constructor, omitting `work_dir` or explicitly setting
 it to the index path uses this same layout and reuses the same caches. Paths that
 resolve to the index, including symlinks, are equivalent. Other paths inside the
-index are rejected. Supply an external
+index are rejected. External work directories and their writable roots must be
+disjoint from the base, including after resolving symlinks. Supply an external
 `work_dir` to put newly computed statistics and task state there instead. Each encoder
 cutoff has one directory there, with a `<table>.col_stats.json` file per table.
 A later fit at the same cutoff computes only the columns and statistics those
@@ -240,9 +241,17 @@ The base may be read-only. Task extensions, scalar-materialization scratch,
 new statistics, tokenizers and token-length caches go under the external work
 directory; existing immutable base caches can be read in place. Closing a task
 cleans up its temporary files. Derived caches remain for reuse. No new base
-metadata file is written. Existing snapshot identity or PyTorch producer
-fingerprints survive relocation. A bare completed native index without producer
-identity is hashed once at opening, which can be expensive for large artifacts.
+metadata file is written. Fitted-state statistics provenance records absolute paths
+in external mode (including reused base files); these are diagnostic references,
+not inputs used when restoring fitted encoders. They can refer to the old location
+after relocation. External statistics share one directory per artifact and cutoff;
+the native writer locks, merges existing keys, and atomically replaces each file.
+Concurrent requests may duplicate computation but do not discard published keys.
+External storage requires a DiskGraph build supporting `cutoff_col_stats(output_dir=...)`;
+preparation checks that capability because older and newer development builds can
+share version 0.2.0. Install DiskGraph from the matching repository revision.
+Existing snapshot identity or PyTorch producer fingerprints survive relocation. A bare completed native index without producer
+identity is hashed in full on each opening, which can be expensive for large artifacts.
 
 Opening requires the resolved `diskgraph_config.json` and the producer's
 completion metadata. Engine snapshots use the native inventory/integrity check;

@@ -119,6 +119,19 @@ def test_connector_snapshot_columnar_export_reload(tmp_path, monkeypatch):
                 assert set(events.ids.to_pylist()) == {1, 2, 4}
                 assert set(
                     events.features['value'].to_pylist()) == {2.0, 4.0, None}
+                assert relation.name in out.edges
+                edge = out.edges[relation.name]
+                pairs = {(out.nodes[edge.source_type].ids[left].as_py(),
+                          out.nodes[edge.destination_type].ids[right].as_py())
+                         for left, right in zip(
+                             edge.index['source'].to_pylist(),
+                             edge.index['destination'].to_pylist(), strict=True)
+                         }
+                expected_pairs = {(-2, 1), (-2, 2), (7, 4)}
+                if edge.source_type == 'events':
+                    expected_pairs = {(event, user)
+                                      for user, event in expected_pairs}
+                assert pairs == expected_pairs
                 for edge in out.edges.values():
                     for left, right in zip(
                             edge.index['source'].to_pylist(),

@@ -355,7 +355,7 @@ Open a complete native index without its original sources or any base writes.
 Read schema/relations from existing metadata. Older indexes without the
 resolved native config are refused. Native edge tables and non-scalar
 stored columns are not supported. Bare indexes without producer identity
-are hashed once; engine provenance and PyTorch manifests avoid that scan.
+are hashed in full on each open; engine provenance and PyTorch manifests avoid that scan.
 `work_dir` holds task extensions and derived caches outside the base.
 
 #### `DiskGraphEngine.from_snapshot`
