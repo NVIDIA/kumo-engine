@@ -4,6 +4,9 @@
 
 """The default encoder cutoff comes from anchor columns, not per-anchor requests."""
 
+import subprocess
+import sys
+import textwrap
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -163,6 +166,48 @@ def test_latest_time_spans_parquet_batches(tmp_path):
             for selection in SELECTIONS:
                 expected = _latest(anchors.fitting_requests(selection))
                 assert anchors.latest_time(selection) == expected
+
+
+@pytest.mark.parametrize("extra", [0, 123])
+def test_parquet_nanosecond_times_without_pandas(tmp_path, extra):
+    code = textwrap.dedent("""
+        import sys
+        class WithoutPandas:
+            def find_spec(self, name, path=None, target=None):
+                if name == "pandas" or name.startswith("pandas."):
+                    raise ModuleNotFoundError("pandas deliberately unavailable")
+        sys.meta_path.insert(0, WithoutPandas())
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from kumo.pytorch import api
+        from kumo.pytorch.column_stats import cutoff_nanos
+        from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
+
+        path, extra = sys.argv[1], int(sys.argv[2])
+        nanos = [2000 + extra, 9000 + extra, 1000 + extra]
+        pq.write_table(pa.table({
+            "entity": [1, 2, 3],
+            "at": pa.array(nanos, type=pa.timestamp("ns", tz="+05:00")),
+            "split": ["train", "valid", "train"],
+        }), path)
+        anchors = ParquetAnchors(api.AnchorTable(api.Parquet(path), "entity", "at", split="split"))
+        for selection, expected in ((api.ALL_ANCHORS, nanos), (frozenset({"train"}), nanos[::2])):
+            fetched = anchors.fetch(selection, range(anchors.count(selection)))
+            assert [cutoff_nanos(r.as_of_time) for r in fetched] == expected
+            latest = anchors.latest_time(selection)
+            assert cutoff_nanos(latest) == max(expected)
+            assert type(latest) is type(fetched[0].as_of_time)
+        assert [cutoff_nanos(anchors._request(row).as_of_time) for row in range(3)] == nanos
+        assert "pandas" not in sys.modules
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path / "anchors.parquet"), str(extra)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("zones", [("UTC", "Etc/UTC"), ("Etc/UTC", "UTC")])
