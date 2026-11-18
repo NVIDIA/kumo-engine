@@ -1227,8 +1227,9 @@ impl GraphIndexReader {
     }
 
     /// Generalization of [`open_with_tt`] to an extension at an arbitrary
-    /// relative `subdir` under the parent, or an absolute path outside it.
-    /// External paths allow consumers to keep a shared parent read-only. The
+    /// relative `subdir` under the parent, or an absolute path. This low-level
+    /// reader does not enforce path placement; callers validate it. External
+    /// extensions allow consumers to keep a shared parent read-only. The
     /// extension's tables are merged under the `<namespace>/<table_name>`
     /// keys and its cross-boundary edges are decoded against the parent's
     /// node types — the same recipe `open_with_tt` uses.
