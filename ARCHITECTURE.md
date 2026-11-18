@@ -12,6 +12,7 @@ This monorepo contains Kumo's graph machine-learning application, Python package
 | Service Python SDK | `packages/kumo-sdk/` | Python client for a configured Kumo service (`kumoai_studio`) |
 | Local Python SDK | `packages/kumo-engine/` | In-process SDK surface (`kumo.engine`) for local execution with local or remote data sources |
 | Shared runtime | `packages/kumo-core/` | Service-independent data processing, training, evaluation, and prediction used by the service and local SDK |
+| Experimental model data | `packages/experimental/kumo-pytorch/`, `packages/experimental/kumo-fm/` | Public columnar sampling and FM-specific Arrow payload assembly |
 | Connectors | `kumo/connector/` | Data-warehouse and file-source integrations |
 | Data pipeline | `kumo/data/` | Export, cache, and DiskGraph-backed table generation |
 | Query language | `packages/kumo-pql/`, `kumo/pquery/` | Parser and semantic validation package; service query and table-generation orchestration |
