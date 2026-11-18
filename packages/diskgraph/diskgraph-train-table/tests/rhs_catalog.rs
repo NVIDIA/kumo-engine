@@ -223,8 +223,23 @@ fn rhs_catalog_keeps_canonical_rows_passing_the_filter() {
         (Some(active()), vec![0, 4]),
         (Some(RowFilter::And(vec![active(), rated()])), vec![4]),
         (Some(RowFilter::Or(vec![active(), rated()])), vec![0, 1, 4]),
-        // A comparison with a null value fails, and NOT then passes it.
-        (Some(RowFilter::Not(Box::new(active()))), vec![1, 3, 5]),
+        // A comparison with a null value is unknown, so NOT fails it too.
+        (Some(RowFilter::Not(Box::new(active()))), vec![1, 5]),
+        (
+            Some(RowFilter::Not(Box::new(RowFilter::Or(vec![
+                active(),
+                rated(),
+            ])))),
+            vec![5],
+        ),
+        // An unknown operand of OR still passes when another is true.
+        (
+            Some(RowFilter::Or(vec![
+                active(),
+                compare("rating", CompareOp::IsNull, Value::Bool(true)),
+            ])),
+            vec![0, 3, 4],
+        ),
         (
             Some(compare("active", CompareOp::IsNull, Value::Bool(true))),
             vec![3],
@@ -232,6 +247,10 @@ fn rhs_catalog_keeps_canonical_rows_passing_the_filter() {
         (Some(tagged(CompareOp::Contains)), vec![0]),
         // NOT CONTAINS passes an empty list and fails a null one.
         (Some(tagged(CompareOp::NotContains)), vec![1, 4, 5]),
+        (
+            Some(RowFilter::Not(Box::new(tagged(CompareOp::Contains)))),
+            vec![1, 4, 5],
+        ),
     ];
     for (filter, expected) in cases {
         assert_eq!(

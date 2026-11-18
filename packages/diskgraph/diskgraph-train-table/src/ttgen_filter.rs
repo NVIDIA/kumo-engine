@@ -51,7 +51,19 @@ pub fn eval_row_filter_on_row(
     row: Option<&[u8]>,
     entity_cols: &[Option<Value>],
 ) -> bool {
-    let eval = |f| eval_row_filter_on_row(f, current_node, current_table, row, entity_cols);
+    eval_row_filter_sql(filter, current_node, current_table, row, entity_cols) == Some(true)
+}
+
+/// SQL three-valued logic: `None` is unknown, from a comparison with NULL.
+/// A row passes only when the filter is true, so `NOT` keeps unknown rows out.
+fn eval_row_filter_sql(
+    filter: &ResolvedRowFilter,
+    current_node: u64,
+    current_table: &TableReader,
+    row: Option<&[u8]>,
+    entity_cols: &[Option<Value>],
+) -> Option<bool> {
+    let eval = |f| eval_row_filter_sql(f, current_node, current_table, row, entity_cols);
     match filter {
         ResolvedRowFilter::Compare { lhs, op, rhs } => {
             // Membership (CONTAINS / NOT CONTAINS) is element-wise over a
@@ -59,35 +71,40 @@ pub fn eval_row_filter_on_row(
             // scalar LHS read (`value_ref_to_value` collapses arrays to Int(0))
             // nor scalar `compare_values`; route it to per-token decode.
             if matches!(op, CompareOp::Contains | CompareOp::NotContains) {
-                let r = match resolve_row_rhs(rhs, current_node, current_table, entity_cols) {
-                    Some(v) => v,
-                    None => return false,
-                };
+                let r = resolve_row_rhs(rhs, current_node, current_table, entity_cols)?;
                 return eval_row_membership(lhs, op, &r, current_node, current_table, row);
             }
 
             let l_opt = resolve_row_lhs(lhs, current_node, current_table, row);
 
             match op {
-                CompareOp::IsNull => return is_nullish_filter_value(&l_opt),
-                CompareOp::IsNotNull => return !is_nullish_filter_value(&l_opt),
+                CompareOp::IsNull => return Some(is_nullish_filter_value(&l_opt)),
+                CompareOp::IsNotNull => return Some(!is_nullish_filter_value(&l_opt)),
                 _ => {}
             }
 
-            let l = match l_opt {
-                Some(v) => v,
-                None => return false, // SQL tri-state: op with NULL evaluates to NULL (fails filter)
-            };
-            let r = match resolve_row_rhs(rhs, current_node, current_table, entity_cols) {
-                Some(v) => v,
-                None => return false,
-            };
-            compare_values(&l, op, &r)
+            let l = l_opt?;
+            let r = resolve_row_rhs(rhs, current_node, current_table, entity_cols)?;
+            Some(compare_values(&l, op, &r))
         }
-        ResolvedRowFilter::And(filters) => filters.iter().all(eval),
-        ResolvedRowFilter::Or(filters) => filters.iter().any(eval),
-        ResolvedRowFilter::Not(f) => !eval(f),
+        ResolvedRowFilter::And(filters) => sql_fold(filters.iter().map(eval), false),
+        ResolvedRowFilter::Or(filters) => sql_fold(filters.iter().map(eval), true),
+        ResolvedRowFilter::Not(f) => eval(f).map(|b| !b),
     }
+}
+
+/// SQL `AND` (`decisive` false) or `OR` (`decisive` true): `decisive` if any
+/// operand is, else unknown if any operand is unknown.
+fn sql_fold(operands: impl Iterator<Item = Option<bool>>, decisive: bool) -> Option<bool> {
+    let mut unknown = false;
+    for operand in operands {
+        match operand {
+            Some(b) if b == decisive => return Some(decisive),
+            None => unknown = true,
+            Some(_) => {}
+        }
+    }
+    (!unknown).then_some(!decisive)
 }
 
 fn resolve_row_lhs(
@@ -109,8 +126,8 @@ fn resolve_row_lhs(
 /// Evaluate `CONTAINS` / `NOT CONTAINS` on the current row's LHS column.
 ///
 /// `Contains`  → true iff the source column has a token equal to `rhs`.
-/// `NotContains` → true iff the source is non-null and has *no* matching token
-///                  (SQL tri-state: a NULL source yields NULL, i.e. fails).
+/// `NotContains` → true iff the source has *no* matching token.
+/// A NULL source is unknown for both.
 ///
 /// Only a multicategorical (native-list) LHS column reaches the per-token
 /// path. A scalar (non-multicat) LHS with a membership op degrades to a single
@@ -123,7 +140,7 @@ fn eval_row_membership(
     current_node: u64,
     current_table: &TableReader,
     row: Option<&[u8]>,
-) -> bool {
+) -> Option<bool> {
     let (col_idx, is_multicat) = match lhs {
         ResolvedRowFilterLhs::Column {
             col_idx,
@@ -137,13 +154,8 @@ fn eval_row_membership(
         // test, so route the whole-cell value through `compare_values` (which
         // does `a.contains(b)` for strings) rather than equality.
         ResolvedRowFilterLhs::Remote { path, col_idx } => {
-            let value = match resolve_remote_value(path, current_node, *col_idx) {
-                Some(v) => v,
-                // NULL source: SQL tri-state — both Contains and NotContains
-                // evaluate to NULL, i.e. fail the filter.
-                None => return false,
-            };
-            return compare_values(&value, op, rhs);
+            let value = resolve_remote_value(path, current_node, *col_idx)?;
+            return Some(compare_values(&value, op, rhs));
         }
     };
 
@@ -152,12 +164,8 @@ fn eval_row_membership(
     // whole cell and delegate to `compare_values` (`compare_str` does the
     // substring match), matching the behavior of every other scalar op.
     if !is_multicat {
-        let value = match row_column_value(current_table, row, col_idx) {
-            Some(v) => v,
-            // NULL source fails the filter (tri-state) for both ops.
-            None => return false,
-        };
-        return compare_values(&value, op, rhs);
+        let value = row_column_value(current_table, row, col_idx)?;
+        return Some(compare_values(&value, op, rhs));
     }
 
     let mut any_match = false;
@@ -170,13 +178,12 @@ fn eval_row_membership(
         }
     });
 
+    if outcome == MulticatDispatchOutcome::SourceNull {
+        return None;
+    }
     match op {
-        CompareOp::Contains => any_match,
-        // NOT CONTAINS: NULL source → filter fails (tri-state); present source
-        // with no matching token → passes.
-        CompareOp::NotContains => {
-            outcome != MulticatDispatchOutcome::SourceNull && !any_match
-        }
+        CompareOp::Contains => Some(any_match),
+        CompareOp::NotContains => Some(!any_match),
         _ => unreachable!("eval_row_membership only handles Contains/NotContains"),
     }
 }
