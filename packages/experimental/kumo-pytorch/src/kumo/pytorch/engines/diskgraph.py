@@ -1771,11 +1771,7 @@ class DiskGraphSource:
         if isinstance(field, EventTimeDelta):
             boundaries = offsets.to_numpy(zero_copy_only=False)
             owners = self._pa.array(
-                [
-                    anchor
-                    for anchor in range(len(boundaries) - 1)
-                    for _ in range(int(boundaries[anchor + 1] - boundaries[anchor]))
-                ],
+                np.repeat(np.arange(len(boundaries) - 1), np.diff(boundaries).astype(np.int64)),
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)
