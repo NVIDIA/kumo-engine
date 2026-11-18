@@ -24,12 +24,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # TODO(before merge): remove the PR331 branch exception here and in notebook.if.
   configuration:
     name: Check protected SageMaker environment
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main'
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/snowflake-explanation-local')
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -61,7 +62,7 @@ jobs:
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main'
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/snowflake-explanation-local')
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     environment: sagemaker-mlops-test
