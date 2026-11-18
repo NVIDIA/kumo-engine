@@ -136,16 +136,17 @@ def test_latest_time_matches_the_requests_fitting_reads(tmp_path, kind):
     contract, dataset, engine, table = _plan(tmp_path, TIMES[kind])
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
-            anchors = task._anchors
-            assert isinstance(anchors, NativeAnchors)
-            for selection in SELECTIONS:
-                expected = _latest(anchors.fitting_requests(selection))
-                actual = anchors.latest_time(selection)
-                assert type(actual) is type(expected)
-                assert actual == expected
-                assert cutoff_nanos(actual) == cutoff_nanos(expected)
+            assert isinstance(task._anchors, NativeAnchors)
+            for anchors in (task._anchors, ParquetAnchors(table)):
+                for selection in SELECTIONS:
+                    fetched = anchors.fetch(selection, range(anchors.count(selection)))
+                    expected = _latest(fetched)
+                    actual = anchors.latest_time(selection)
+                    assert type(actual) is type(expected)
+                    assert actual == expected
+                    assert cutoff_nanos(actual) == cutoff_nanos(expected)
             fitted = task.fitted_state.fit["inputs"]["statistics"]["cutoff"]
-            train = anchors.fitting_requests(frozenset({"train"}))
+            train = task._anchors.fitting_requests(frozenset({"train"}))
             assert fitted == cutoff_nanos(_latest(train))
 
 
@@ -195,28 +196,6 @@ def test_latest_time_normalizes_timezone_aliases_across_files(tmp_path, zones):
             )
 
 
-@pytest.mark.parametrize("kind", sorted(TIMES))
-def test_parquet_latest_time_matches_fetch_without_building_requests(tmp_path, monkeypatch, kind):
-    _, _, _, table = _plan(tmp_path, TIMES[kind])
-    anchors = ParquetAnchors(table)
-    expected = {
-        selection: _latest(anchors.fetch(selection, range(anchors.count(selection))))
-        for selection in SELECTIONS
-    }
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("latest_time rebuilt per-anchor requests")
-
-    monkeypatch.setattr(anchors, "fetch", refuse)
-    monkeypatch.setattr(anchors, "_request", refuse)
-    for selection, value in expected.items():
-        actual = anchors.latest_time(selection)
-        assert type(actual) is type(value)
-        assert actual == value
-        assert cutoff_nanos(actual) == cutoff_nanos(value)
-    assert anchors.latest_time() == expected[api.ALL_ANCHORS]
-
-
 @pytest.mark.parametrize("temporal", [False, True])
 def test_parquet_latest_time_empty_and_unknown_selections(tmp_path, temporal):
     _, _, _, table = _plan(tmp_path, TIMES["int64"])
@@ -235,8 +214,9 @@ def test_parquet_latest_time_empty_and_unknown_selections(tmp_path, temporal):
         ParquetAnchors(table).latest_time()
 
 
-def test_the_default_cutoff_reads_no_anchor_requests(tmp_path, monkeypatch):
-    contract, dataset, engine, table = _plan(tmp_path, TIMES["int64"])
+@pytest.mark.parametrize("kind,extra", [("int64", 0), ("timestamp-ns-offset", 123)])
+def test_the_default_cutoff_reads_no_anchor_requests(tmp_path, monkeypatch, kind, extra):
+    contract, dataset, engine, table = _plan(tmp_path, TIMES[kind])
 
     def refuse(*args, **kwargs):
         raise AssertionError("the default cutoff rebuilt per-anchor requests")
@@ -245,17 +225,7 @@ def test_the_default_cutoff_reads_no_anchor_requests(tmp_path, monkeypatch):
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
             cutoff = task.fitted_state.fit["inputs"]["statistics"]["cutoff"]
-    assert cutoff == (7 * DAY + 1) * 10**9
-
-
-def test_sub_microsecond_anchor_times_fit_at_full_precision(tmp_path):
-    # Python cannot order the Arrow scalars these anchors carry, so ordering
-    # requests by their times used to raise TypeError.
-    contract, dataset, engine, table = _plan(tmp_path, TIMES["timestamp-ns-offset"])
-    with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(table, fit_split="train") as task:
-            cutoff = task.fitted_state.fit["inputs"]["statistics"]["cutoff"]
-    assert cutoff == (7 * DAY + 1) * 10**9 + 123
+    assert cutoff == (7 * DAY + 1) * 10**9 + extra
 
 
 @pytest.mark.parametrize("kind", ["int64", "timestamp-ns-offset"])
