@@ -366,6 +366,34 @@ def test_extension_reference_preserves_legacy_layout(tmp_path, directory):
     ) == f"{directory}/task"
 
 
+@pytest.mark.parametrize("path_input", ["stage", "parent"])
+def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, path_input):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    runs = tmp_path / "runs"
+    (runs / "run-1").mkdir(parents=True)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    alias = consumer / "current"
+    alias.symlink_to(runs / "run-1", target_is_directory=True)
+    if path_input == "stage":
+        # Both locations pass the metadata-presence gate; lexical collapse
+        # would silently select consumer/task instead of runs/task.
+        for task in (runs / "task", consumer / "task"):
+            task.mkdir()
+            (task / "index_metadata.json").write_text("{}")
+        parent = tmp_path / "base"
+        stage = alias / ".." / "task"
+        expected = str((runs / "task").resolve())
+    else:
+        parent = alias / ".." / "base"
+        stage = runs / "base" / "train_tables" / "task"
+        stage.mkdir(parents=True)
+        (stage / "index_metadata.json").write_text("{}")
+        expected = "train_tables/task"
+    assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
+
+
 @pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local"])
 def test_extension_reference_refuses_non_extension_paths(tmp_path, kind):
     from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
