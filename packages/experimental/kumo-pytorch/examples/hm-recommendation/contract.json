@@ -358,6 +358,7 @@
             "samples": [
               {
                 "$type": "GraphSample",
+                "cutoff": "inclusive",
                 "direction": "forward",
                 "fanout": 16,
                 "relation": "customer_transactions",
@@ -372,6 +373,7 @@
             "samples": [
               {
                 "$type": "GraphSample",
+                "cutoff": "inclusive",
                 "direction": "reverse",
                 "fanout": 1,
                 "relation": "article_transactions",
