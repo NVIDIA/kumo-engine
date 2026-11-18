@@ -28,11 +28,11 @@ async function jupyter(page) {
   const deadline = Date.now() + 120000;
   do {
     for (const frame of page.frames()) {
-      if (await frame.locator('.jp-FileBrowser').isVisible().catch(() => false)) return frame;
+      if (await frame.locator('.jp-SideBar.jp-mod-left').isVisible().catch(() => false)) return frame;
     }
     await page.waitForTimeout(250);
   } while (Date.now() < deadline);
-  throw new VerificationError('The dedicated Studio JupyterLab file browser did not open');
+  throw new VerificationError('The dedicated Studio JupyterLab interface did not open');
 }
 
 async function handleKernelDialogs(page, frame, mark) {
@@ -43,7 +43,16 @@ async function handleKernelDialogs(page, frame, mark) {
   }, { times: 20, noWaitAfter: true });
 }
 
+async function showFileBrowser(frame) {
+  if (!await frame.locator('.jp-FileBrowser').isVisible()) {
+    await frame.getByRole('menuitem', { name: /^View$/ }).click();
+    await frame.getByRole('menuitem', { name: /^File Browser(?:\s|$)/ }).click();
+  }
+  await frame.locator('.jp-FileBrowser').waitFor({ state: 'visible' });
+}
+
 async function openNotebook(frame, filename, mark) {
+  await showFileBrowser(frame);
   mark('native-file-visible');
   const item = frame.locator('.jp-FileBrowser').getByText(filename, { exact: true });
   await item.waitFor({ state: 'visible' });
@@ -179,6 +188,7 @@ async function main(input) {
     requireThat(safePage(page.url(), input.space_url), 'Studio did not reach its clean authenticated test-domain URL');
     authenticated = true;
     await handleKernelDialogs(page, frame, mark);
+    await showFileBrowser(frame);
     mark('upload-retained-notebook');
     const content = fs.readFileSync(input.notebook);
     requireThat(createHash('sha256').update(content).digest('hex') === input.notebook_sha256,
