@@ -66,12 +66,15 @@ async function checkPlots(page, receipt, output, label, allowed, scope) {
     "Explanation image did not decode");
     const geometry = await image.evaluate(node => {
       const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
       return { width: box.width, height: box.height,
+        naturalWidth: node.naturalWidth, naturalHeight: node.naturalHeight,
+        objectFit: style.objectFit, maxWidth: style.maxWidth,
         aspect: node.naturalWidth / node.naturalHeight };
     });
     requireThat(geometry.width > 100 && geometry.height > 100 &&
       Math.abs(geometry.width / geometry.height / geometry.aspect - 1) < .02,
-    "Explanation image is distorted or too small");
+    `Explanation image is distorted or too small: ${kind} ${JSON.stringify(geometry)}`);
     await captureElement(image, output, `${label}-explanation-${kind}`, allowed, null);
     checks[kind] = { status: "passed", sha256: expected.sha256.png };
   }
