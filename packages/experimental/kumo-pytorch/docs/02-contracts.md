@@ -6,6 +6,10 @@ model receives). This page builds one contract over a small shop, then extends
 it with a graph neighborhood and caller-supplied candidates. Every block runs
 in order; paste them into one Python session.
 
+These snippets use Python requests to inspect a few examples. For training,
+evaluation, or benchmarking on DiskGraph, use the
+[Parquet AnchorTable recipe](05-training-batches.md#training-on-the-diskgraph-engine).
+
 ## The schema: types, keys and clocks
 
 Declare each stored column once with its raw scalar type, the relations between
