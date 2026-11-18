@@ -86,6 +86,7 @@ use diskgraph_core::metadata::{
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_core::time::{convert_floor, convert_trunc, Seconds, TimeUnit};
+use diskgraph_core::tt_builder::is_seed_task_column;
 use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{
     EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
@@ -1913,6 +1914,7 @@ mod tests_repopulate_helpers {
             edge_null_timestamp_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             dropped_rows_counts: HashMap::new(),
+            oversized_rows_counts: HashMap::new(),
             pk_sampled_max_key_len: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
@@ -2725,6 +2727,7 @@ struct IngestContext {
     edge_null_timestamp_drops: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     dropped_rows_counts: HashMap<String, u64>,
+    oversized_rows_counts: HashMap<String, u64>,
     pk_sampled_max_key_len: HashMap<String, usize>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
@@ -2792,6 +2795,8 @@ struct EncodeState {
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
     dropped_rows_counts: HashMap<String, u64>,
+    #[serde(default)]
+    oversized_rows_counts: HashMap<String, u64>,
     pk_sampled_max_key_len: HashMap<String, usize>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
@@ -3023,6 +3028,19 @@ struct TempRowWriter {
 struct TempNodeFileResult {
     total_rows: u64,
     node_data_dropped: u64,
+    oversized_rows: u64,
+    oversized_dropped: u64,
+}
+
+/// How a table stores rows over `MAX_NODE_DATA_LEN`, and how many it saw.
+struct OversizedRows {
+    /// The columns nulled to fit such a row; see `oversized_row_nulls`.
+    nulls: Vec<bool>,
+    /// A stage row still over the limit is dropped, since a seed needs its
+    /// time and target; any other is stored with no values.
+    stage: bool,
+    stored: u64,
+    dropped: u64,
 }
 
 /// Safe validation error whose outcome cannot change across worker retries.
@@ -7319,6 +7337,7 @@ impl IngestContext {
             edge_null_timestamp_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             dropped_rows_counts: HashMap::new(),
+            oversized_rows_counts: HashMap::new(),
             pk_sampled_max_key_len: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
@@ -7764,6 +7783,7 @@ impl IngestContext {
                         .cutoff_col_stats
                         .as_ref()
                         .and_then(|request| request.table(table));
+                    let stage_tables = self.parent_index_path.is_some();
                     let encode_table: &TableSpec = table;
                     let results = run_encode_batch_workers(
                         replay,
@@ -7791,6 +7811,7 @@ impl IngestContext {
                                         &resolve_columns,
                                         ref_resolver.as_deref(),
                                         &sidecars,
+                                        stage_tables,
                                         $observer,
                                         clock,
                                     )?
@@ -7820,6 +7841,8 @@ impl IngestContext {
                     )?;
                     let mut total_rows = 0u64;
                     let mut node_data_dropped = 0u64;
+                    let mut oversized_rows = 0u64;
+                    let mut oversized_dropped = 0u64;
                     let mut merged_stats: Option<crate::col_stats::FileColStats> = None;
                     for (node, key_failures, file_stats, sinks) in results {
                         if let (Some(table), Some(sinks)) = (&mut cutoff_table, sinks) {
@@ -7828,6 +7851,9 @@ impl IngestContext {
                         total_rows = total_rows.saturating_add(node.total_rows);
                         node_data_dropped =
                             node_data_dropped.saturating_add(node.node_data_dropped);
+                        oversized_rows = oversized_rows.saturating_add(node.oversized_rows);
+                        oversized_dropped =
+                            oversized_dropped.saturating_add(node.oversized_dropped);
                         self.merge_key_failures(key_failures);
                         if let Some(mut file_stats) = file_stats {
                             if let Some(stats) = &mut merged_stats {
@@ -7841,6 +7867,32 @@ impl IngestContext {
                     if node_data_dropped > 0 {
                         self.dropped_rows_counts
                             .insert(table.name.clone(), node_data_dropped);
+                    }
+                    let rows = |count: u64| if count == 1 { "row" } else { "rows" };
+                    if oversized_rows > 0 {
+                        let leftover = if self.parent_index_path.is_some() {
+                            ""
+                        } else {
+                            ", and any still over the limit are stored with no values"
+                        };
+                        tracing::warn!(
+                            "{oversized_rows} {} of table {} exceeded the {} MiB node-data \
+                             limit; their features are stored as null{leftover}",
+                            rows(oversized_rows),
+                            table.name,
+                            MAX_NODE_DATA_LEN >> 20
+                        );
+                        self.oversized_rows_counts
+                            .insert(table.name.clone(), oversized_rows);
+                    }
+                    if oversized_dropped > 0 {
+                        tracing::warn!(
+                            "dropped {oversized_dropped} {} of stage table {} still over the \
+                             {} MiB node-data limit without features",
+                            rows(oversized_dropped),
+                            table.name,
+                            MAX_NODE_DATA_LEN >> 20
+                        );
                     }
                     if let Some(stats) = merged_stats {
                         table_col_stats.insert(table.name.clone(), stats);
@@ -7983,6 +8035,7 @@ impl IngestContext {
                 })
                 .collect(),
             dropped_rows_counts: self.dropped_rows_counts.clone(),
+            oversized_rows_counts: self.oversized_rows_counts.clone(),
             key_parse_failures: self.key_parse_failures,
             key_lookup_failures: self.key_lookup_failures,
             key_membership_failures: self.key_membership_failures,
@@ -8032,6 +8085,7 @@ impl IngestContext {
             .map(|entry| ((entry.table, entry.shard), entry.counts))
             .collect();
         self.dropped_rows_counts = state.dropped_rows_counts;
+        self.oversized_rows_counts = state.oversized_rows_counts;
         self.pk_sampled_max_key_len = state.pk_sampled_max_key_len;
         self.key_parse_failures = state.key_parse_failures;
         self.key_lookup_failures = state.key_lookup_failures;
@@ -8447,6 +8501,7 @@ impl IngestContext {
         resolve_columns: &[crate::config::ResolveColumnSpec],
         ref_resolver: Option<&crate::mapping::RefResolver>,
         sidecars: &StageSidecarColumns,
+        stage: bool,
         observer: &mut O,
         clock: TimeUnit,
     ) -> Result<TempNodeFileResult>
@@ -8514,6 +8569,12 @@ impl IngestContext {
         let mut resolve_shard_buf: Vec<u8> = Vec::new();
         let num_columns = table.columns.len();
         let mut node_data_dropped = 0u64;
+        let mut oversized = OversizedRows {
+            nulls: oversized_row_nulls(table, &relations, &resolve_runtime, sidecars, stage),
+            stage,
+            stored: 0,
+            dropped: 0,
+        };
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
         let buffer_limit = edge_batch_buffer_limit(num_shards);
@@ -8629,6 +8690,7 @@ impl IngestContext {
                         &mut node_bools,
                         &mut node_data,
                         &mut node_data_dropped,
+                        &mut oversized,
                         num_shards,
                         key_failures,
                         &mut key_drops,
@@ -8672,6 +8734,8 @@ impl IngestContext {
         Ok(TempNodeFileResult {
             total_rows,
             node_data_dropped,
+            oversized_rows: oversized.stored,
+            oversized_dropped: oversized.dropped,
         })
     }
 
@@ -8848,6 +8912,7 @@ impl IngestContext {
         node_bools: &mut Vec<u8>,
         node_data: &mut Vec<u8>,
         node_data_dropped: &mut u64,
+        oversized: &mut OversizedRows,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
         key_drops: &mut NodeKeyDrops,
@@ -8946,14 +9011,17 @@ impl IngestContext {
             Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
             None => None,
         };
-        if observer.wants_create_time() {
+        let create_time = if observer.wants_create_time() {
             let time = create_time_col_idx.and_then(|idx| access.get_timestamp(idx).ok().flatten());
             observer.start_row(time);
-        }
+            time
+        } else {
+            None
+        };
         node_tags.clear();
         node_bools.clear();
         node_data.clear();
-        let lens = node_encoder.encode_row_observed(
+        let mut lens = node_encoder.encode_row_observed(
             access,
             node_tags,
             node_bools,
@@ -8961,6 +9029,7 @@ impl IngestContext {
             f16_buf,
             key_bufs,
             resolve_overrides,
+            None,
             observer,
         )?;
         {
@@ -8981,20 +9050,57 @@ impl IngestContext {
                     }
                 }
             }
-            let row_len = lens
-                .tag_bytes
-                .saturating_add(lens.bool_bytes)
-                .saturating_add(lens.data_bytes);
-            observer.finish_row(row_len <= MAX_NODE_DATA_LEN);
-            if row_len > MAX_NODE_DATA_LEN {
-                *node_data_dropped = node_data_dropped.saturating_add(1);
+            let row_len = |lens: diskgraph_rowpack::RowPackRowLens| {
+                lens.tag_bytes
+                    .saturating_add(lens.bool_bytes)
+                    .saturating_add(lens.data_bytes)
+            };
+            let over_limit = row_len(lens) > MAX_NODE_DATA_LEN;
+            observer.finish_row(!over_limit);
+            if over_limit {
+                node_tags.clear();
+                node_bools.clear();
+                node_data.clear();
+                macro_rules! encode_without_features {
+                    ($observer:expr) => {
+                        node_encoder.encode_row_observed(
+                            access,
+                            node_tags,
+                            node_bools,
+                            node_data,
+                            f16_buf,
+                            key_bufs,
+                            resolve_overrides,
+                            Some(&oversized.nulls),
+                            $observer,
+                        )?
+                    };
+                }
+                // Cutoff stats, which observe whole rows, count the encoding stored.
+                lens = if observer.wants_create_time() {
+                    observer.start_row(create_time);
+                    let lens = encode_without_features!(observer);
+                    observer.finish_row(row_len(lens) <= MAX_NODE_DATA_LEN);
+                    lens
+                } else {
+                    encode_without_features!(&mut diskgraph_rowpack::NoOpObserver)
+                };
+                if row_len(lens) > MAX_NODE_DATA_LEN && oversized.stage {
+                    oversized.dropped = oversized.dropped.saturating_add(1);
+                    *node_data_dropped = node_data_dropped.saturating_add(1);
+                    *row_id = row_id.saturating_add(1);
+                    return Ok(());
+                }
+                oversized.stored = oversized.stored.saturating_add(1);
+            }
+            if row_len(lens) > MAX_NODE_DATA_LEN {
                 batcher.push_empty_node(shard)?;
             } else {
                 batcher.push_encoded_node(shard, lens, node_tags, node_bools, node_data)?;
             }
-            // Record the grouping timestamp 1:1 with the node just pushed (both
-            // the normal and oversized-empty paths emit a node). The two
-            // drop-paths above return early and never reach here, keeping the
+            // Record the grouping timestamp 1:1 with the node just pushed (every
+            // path here emits a node, oversized rows included). The drop-paths
+            // above return early and never reach here, keeping the
             // spill aligned with surviving nodes.
             if let Some(ts) = group_ts {
                 batcher.push_group_ts(shard, ts)?;
@@ -12134,6 +12240,7 @@ impl IngestContext {
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
             dropped_rows_counts,
+            oversized_rows_counts: self.oversized_rows_counts.clone(),
             source_rows_by_table: self.logical_source_rows_by_table.clone(),
             source_bytes_by_table: self.logical_arrow_source_bytes_by_table.clone(),
             trimmed_strings: if trimmed_strings > 0 {
@@ -16262,6 +16369,42 @@ fn build_resolve_runtime(
 /// placeholder array when building `RowAccess` columns.
 fn resolve_node_id_indices(runtime: &[ResolveColRuntime]) -> std::collections::HashSet<usize> {
     runtime.iter().map(|r| r.node_id_idx).collect()
+}
+
+/// The columns nulled in a row over `MAX_NODE_DATA_LEN`: every column but the
+/// keys, times and task columns that the index and sampling read back, and in a
+/// stage table the seed's task columns.
+fn oversized_row_nulls(
+    table: &TableSpec,
+    relations: &[RelationshipRuntime],
+    resolve_runtime: &[ResolveColRuntime],
+    sidecars: &StageSidecarColumns,
+    stage: bool,
+) -> Vec<bool> {
+    let kept: HashSet<&str> = [
+        &table.primary_key,
+        &table.create_time,
+        &table.end_time,
+        &table.weight,
+        &sidecars.binary_label_column,
+        &sidecars.sample_weight_column,
+    ]
+    .into_iter()
+    .flatten()
+    .map(String::as_str)
+    .chain(table.group_by_timestamp.then_some(TIMESTAMP_GROUP_COL))
+    .chain(relations.iter().map(|rel| rel.src_column.as_str()))
+    .collect();
+    let mut nulls: Vec<bool> = table
+        .columns
+        .iter()
+        .map(|col| !kept.contains(col.name.as_str()) && !(stage && is_seed_task_column(&col.name)))
+        .collect();
+    for resolve in resolve_runtime {
+        nulls[resolve.src_idx] = false;
+        nulls[resolve.node_id_idx] = false;
+    }
+    nulls
 }
 
 /// Build the per-column `ArrayRef` list for `RowAccess`, fetching real columns

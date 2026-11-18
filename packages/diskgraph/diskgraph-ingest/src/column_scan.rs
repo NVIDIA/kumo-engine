@@ -111,7 +111,7 @@ pub fn scan_chunk(
         }
         let (mut nodes, mut bytes) = (Vec::new(), 0);
         while node < end && bytes < budget.batch_bytes {
-            // Rows stored without node data, as oversized ones are, hold no values.
+            // A row over the node-data limit even without its features holds no values.
             if let Some(row) = shard.edges_for_node(node)?.node_data()? {
                 if !row.is_empty() {
                     decoder.decode_row_to_builders(row, &mut builders, &mask, &mut scratch)?;

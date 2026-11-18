@@ -1566,7 +1566,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_msgpack(raw)?;
+        let out = decoder.decode_msgpack(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 
@@ -1587,7 +1587,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_json(raw)?;
+        let out = decoder.decode_json(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 
@@ -1657,7 +1657,7 @@ impl TableReader {
         let column = &decoder.context().columns[col_idx];
         let node = || format!("{} node {node_id}", self.node_type);
         let value = decoder
-            .decode_column_value(row, col_idx, scratch)
+            .decode_column_value(decoder.row_or_null(row), col_idx, scratch)
             .with_context(node)?;
         let key =
             crate::layout::pk_key_from_value(pk, key_type, &value, column).with_context(node)?;
@@ -1849,6 +1849,7 @@ impl TableReader {
             Some(d) => d,
             None => return Ok(true),
         };
+        let raw = decoder.row_or_null(raw);
 
         let clock = decoder.clock();
         // Check create_time_col <= create_ref_ts

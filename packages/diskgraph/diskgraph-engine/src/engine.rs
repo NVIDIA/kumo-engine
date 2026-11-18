@@ -11,7 +11,9 @@ use crate::state::{
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
 use diskgraph_core::time::{convert_trunc, TimeUnit};
-use diskgraph_core::tt_builder::{Value, WEIGHT_COL};
+use diskgraph_core::tt_builder::{
+    is_seed_task_column, Value, FREQUENCY_COL, SPLIT_COL, WEIGHT_COL,
+};
 use diskgraph_index::layout::RelationSegment;
 use diskgraph_index::reader::ShardReader;
 use gxhash::HashMap as GxHashMap;
@@ -24,12 +26,6 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 const DETERMINISTIC_UNIFORM_SEED_V1: u64 = 41;
-const FREQUENCY_COL: &str = "__kumo_internal_frequency_column__";
-/// The customer-provided custom-TT split column (kumo baseline convention).
-/// It is dropped from the per-stage seed parquets at routing time (the primary
-/// guarantee), so it should never reach a seed rowpack; this is a cheap
-/// belt-and-suspenders so it can never be materialized as a feature.
-const SPLIT_COL: &str = "split_col";
 
 /// True when `name` is a reserved TT seed/stage rowpack column that is
 /// consumed for a task purpose and must NEVER be materialized as a model
@@ -2373,6 +2369,7 @@ impl DiskGraphEngine {
         output: &mut impl OutputHandler,
     ) -> Result<()> {
         if let Some(data) = node_data {
+            let data = decoder.row_or_null(data);
             let context = decoder.context();
             // Drop reserved columns (e.g. WEIGHT) from features via a per-column
             // mask; `flush_fused_features` projects the flush schema to the same
@@ -2554,7 +2551,7 @@ impl DiskGraphEngine {
                                 global_id
                             ))
                         })?;
-                    raw_rows.push(data);
+                    raw_rows.push(decoder.row_or_null(data));
                 }
 
                 let unique_batch = decoder
@@ -3768,15 +3765,7 @@ pub(crate) fn project_seed_rowpack(
         let name = field.name();
         if name.starts_with("TARGET") {
             target_indices.push(idx);
-        } else if name.starts_with("ENTITY")
-            || name == "TIMESTAMP"
-            || name == "entity_node_id"
-            || name == "target_node_ids"
-            || name == "exclude_node_ids"
-            || name == WEIGHT_COL
-            || name == FREQUENCY_COL
-            || name == SPLIT_COL
-        {
+        } else if is_seed_task_column(name) {
             // identity / anchor / FK-free resolution / exclude / supervision
             // weight columns: already lifted into task fields, never routed into
             // raw features. `split_col` (custom-TT split signal) is dropped at
