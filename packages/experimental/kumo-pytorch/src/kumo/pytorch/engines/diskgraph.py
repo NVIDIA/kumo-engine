@@ -2057,7 +2057,11 @@ class DiskGraphSource:
                 physical_relations[physical] = traversal.relation
                 fanouts[physical] = {
                     "fanout": traversal.fanout,
-                    "mode": "temporal_most_recent",
+                    "mode": (
+                        "temporal_most_recent_exclusive"
+                        if traversal.cutoff == "exclusive"
+                        else "temporal_most_recent"
+                    ),
                     "absent_key_policy": "reject_plan",
                 }
             layers.append({"fanouts": fanouts, "default_fanout": None})

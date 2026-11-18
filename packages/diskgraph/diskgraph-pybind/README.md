@@ -117,6 +117,11 @@ for event in features:
     print(event["batch"].schema)
 ```
 
+For temporal fanouts, `mode="temporal_most_recent"` selects neighbors at or
+before each seed's timestamp. Use `mode="temporal_most_recent_exclusive"` for
+strictly earlier neighbors. Both modes seek the eligible range before applying
+fanout and use the original seed timestamp at every hop.
+
 ### Prepared scalar materialization
 
 Scalar feature/target precomputation uses staged `row_aggregate` operations in

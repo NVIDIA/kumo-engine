@@ -12,6 +12,7 @@ against.
 from __future__ import annotations
 
 import hashlib
+import operator
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -238,10 +239,11 @@ class InMemoryGraphSampler:
                 raise ValueError(
                     f"{target_table!r} graph nodes are missing time column {time_column!r}"
                 )
+            eligible = operator.le if traversal.cutoff == "inclusive" else operator.lt
             candidates = [
                 candidate
                 for candidate in candidates
-                if timestamp_to_epoch(candidate[time_column]) <= root.cutoff
+                if eligible(timestamp_to_epoch(candidate[time_column]), root.cutoff)
             ]
         if traversal.strategy == "recent":
             if clock is None:

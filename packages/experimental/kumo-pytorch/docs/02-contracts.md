@@ -233,6 +233,12 @@ A neighborhood is another way to read the same relations: rows are nodes and
 declared key relationships are typed edges. It belongs in the sample; the batch
 only chooses node fields and encoders.
 
+Temporal traversals default to `cutoff="inclusive"` (`event_time <= request_time`).
+Set `cutoff="exclusive"` on each `GraphSample` (or `build.Hop`) that requires
+strict history (`event_time < request_time`). The policy filters candidates
+before fanout at every hop, without changing the request timestamp. Static
+traversals remain unfiltered.
+
 ```python
 neighborhood = api.NeighborhoodSpec(
     layers=(

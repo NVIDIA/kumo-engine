@@ -1647,6 +1647,7 @@ fn most_recent_neighbors(
     entries: &[(u8, u64)],
     anchor: i64,
     fanout: u32,
+    exclusive: bool,
 ) -> Vec<u64> {
     let dir = TempDir::new().unwrap();
     let (reader, _, ctx) = build_sort_key_shard(dir.path(), entries, 255, meta.width_bits);
@@ -1683,7 +1684,11 @@ fn most_recent_neighbors(
                     "E".to_string(),
                     FanoutSpec {
                         fanout,
-                        mode: SamplingMode::TemporalMostRecent,
+                        mode: if exclusive {
+                            SamplingMode::TemporalMostRecentExclusive
+                        } else {
+                            SamplingMode::TemporalMostRecent
+                        },
                         absent_key_policy: AbsentKeyPolicy::UniformFallback,
                     },
                 )]
@@ -1762,15 +1767,24 @@ fn test_temporal_most_recent_matches_linear_scan() {
                 })
                 .collect();
             entries.sort_by_key(|&(_, key)| std::cmp::Reverse(key));
-            let anchor = rng.gen_range(-100..2_100);
-            let fanout = rng.gen_range(1..=50);
+            let anchor = entries
+                .first()
+                .and_then(|&(_, key)| decoder.decode(key).0)
+                .filter(|_| rng.gen_bool(0.5))
+                .unwrap_or_else(|| rng.gen_range(-100..2_100));
+            let fanout = rng.gen_range(0..=50);
+            let exclusive = rng.gen_bool(0.5);
             let expected: Vec<u64> = entries
                 .iter()
-                .filter(|&&(_, key)| decoder.decode(key).0.is_none_or(|ts| ts <= anchor))
+                .filter(|&&(_, key)| {
+                    decoder.decode(key).0.is_none_or(|ts| {
+                        if exclusive { ts < anchor } else { ts <= anchor }
+                    })
+                })
                 .take(fanout as usize)
                 .map(|&(dst, _)| dst as u64)
                 .collect();
-            assert_eq!(most_recent_neighbors(meta, &entries, anchor, fanout), expected);
+            assert_eq!(most_recent_neighbors(meta, &entries, anchor, fanout, exclusive), expected);
         }
     }
 }

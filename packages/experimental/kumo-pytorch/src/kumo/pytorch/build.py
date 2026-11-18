@@ -345,6 +345,7 @@ class Hop:
     direction: Literal["forward", "reverse"] = "forward"
     time: str | None = None
     temporal: Literal["inherit", "static"] = "inherit"
+    cutoff: Literal["inclusive", "exclusive"] = "inclusive"
 
     def lower(self) -> GraphSample:
         """The equivalent `GraphSample`."""
@@ -355,6 +356,7 @@ class Hop:
             strategy=self.strategy,
             time_column=self.time,
             temporal=self.temporal,
+            cutoff=self.cutoff,
         )
 
 

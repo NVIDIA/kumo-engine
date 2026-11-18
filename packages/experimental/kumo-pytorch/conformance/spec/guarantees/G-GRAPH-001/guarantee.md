@@ -8,7 +8,8 @@ from the root entity. For every sample:
 1. **Fanout and time.** Each layer samples at most `fanout` neighbors per
    frontier node for each `GraphSample`. When the traversal is temporal
    (`temporal="inherit"` with a destination clock), only neighbors dated at or
-   before the anchor's cutoff are candidates. `strategy="recent"` keeps the
+   before the anchor's cutoff are candidates by default. `cutoff="exclusive"`
+   requires strictly earlier neighbors. `strategy="recent"` keeps the
    `fanout` most recent candidates.
 2. **Ties.** For keyed tables, which tied neighbors the engine keeps at the
    fanout limit is deterministic given the same data. It does not depend on row
@@ -27,8 +28,10 @@ equal-time tie breaks are local to the prepared dataset/index, as specified by
 
 ## Boundaries
 
-A neighbor dated exactly at the cutoff is a candidate; a later one is excluded. The cutoff
-is each request's own, also when requests for the same entity are passed
+A neighbor dated exactly at the cutoff is a candidate with `cutoff="inclusive"`
+(the default), and excluded with `cutoff="exclusive"`; a later one is always
+excluded. The policy applies before fanout at each traversal. The cutoff
+is each request's unchanged timestamp, also when requests for the same entity are passed
 together. A static traversal
 (`temporal="static"`) is deliberately unfiltered; `strategy="recent"` still
 orders its candidates by the clock.
