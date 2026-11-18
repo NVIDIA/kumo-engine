@@ -317,6 +317,7 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   import os
   import pyarrow as pa
   import pyarrow.compute as pc
+  import pyarrow.csv
   import pyarrow.dataset as ds
   import pyarrow.fs
   import pyarrow.parquet as papq
@@ -333,7 +334,11 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   if ENTITY_TIME:                                             # the entity Table's time_column, else None
       keep[ENTITY_TIME] = 'TIMESTAMP'
   source_fs, source_path = arrow_fs(ENTITY_SOURCE)
-  scanner = ds.dataset(source_path, format=ENTITY_FORMAT,
+  source_format = ENTITY_FORMAT
+  if ENTITY_FORMAT == 'csv' and ENTITY_TIME and ENTITY_TIME_FORMAT:   # text, for the format below
+      source_format = ds.CsvFileFormat(convert_options=pyarrow.csv.ConvertOptions(
+          column_types={ENTITY_TIME: pa.string()}))
+  scanner = ds.dataset(source_path, format=source_format,
                        filesystem=source_fs).scanner(columns=list(keep))
 
   def anchor_type(t):            # a timestamp keeps its unit; a DATE anchor reads as null: cast it
@@ -342,13 +347,14 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   schema = pa.schema([(keep[f.name], anchor_type(f.type) if keep[f.name] == 'TIMESTAMP' else f.type)
                       for f in scanner.projected_schema])
 
-  def to_column(col, field):     # a cast reads ISO-8601 text; other text needs the entity's format
-      try:
-          return pc.cast(col, field.type)
-      except pa.ArrowInvalid:
-          if not (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT):
-              raise
-          return pc.strptime(col, format=ENTITY_TIME_FORMAT, unit=field.type.unit)
+  def to_column(col, field):     # text in the entity's format reads as the graph reads it
+      if (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT
+              and (pa.types.is_string(col.type) or pa.types.is_large_string(col.type))):
+          try:
+              return pc.strptime(col, format=ENTITY_TIME_FORMAT, unit=field.type.unit)
+          except pa.ArrowInvalid:
+              pass               # a chrono directive Arrow cannot read, e.g. %.f: cast instead
+      return pc.cast(col, field.type)
 
   pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
   if isinstance(pop_fs, pyarrow.fs.LocalFileSystem):
@@ -375,11 +381,12 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. `ENTITY_TIME_FORMAT`
   is the `timestamp_format` the entity `Table` declares on its time column
   (`kumoai-reference/references/graph_construction.md`, *A time column must be a real date*), else
-  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The cast runs
-  first, so ISO text staged as before, fractional seconds included; only text it cannot read is
-  parsed with the format. That format is Kumo's (chrono) syntax, and Arrow's parser rejects
-  `%.f`, `%-m` and `%:z`: if the parse then fails, report the format and the failing value rather
-  than guessing another format. The population is
+  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. Text is parsed
+  with the format first, because ISO-looking text such as `2024-01-02` under `%Y-%d-%m` means what
+  the format says, as it does in the graph. That format is Kumo's (chrono) syntax, and Arrow's
+  parser rejects `%.f`, `%-m` and `%:z`; when it cannot parse, the column is cast instead, which
+  reads ISO-8601 text, fractional seconds included. If the cast then fails, report the format and
+  the failing value rather than guessing another format. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
   source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
   it, both in the config cell. Each run replaces its `population.parquet`, as Node 1d says. The
