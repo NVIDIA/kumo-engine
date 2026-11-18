@@ -7,18 +7,20 @@ from one engine revision, then the pinned SDM environment in
 `nvidia/Kumo-Relational` v1.0.1 checkpoint; the prior validation used
 snapshot `2bd603d3d8f25f67a7aaa8579908595e20567e22`.
 
-Set `FM_SDM_FIXTURE` to a directory containing `bundle/` and
-`workload.json`. The workload must be an eligible `native_multihop`
-contract. Set `FM_SDM_BUNDLE` when the bundle has another path. The notebook opens or creates `fm-index/` there, samples one
+The example includes `fixture/bundle/` and `fixture/workload.json`. Run the
+notebook from this directory to use them by default. Set `FM_SDM_FIXTURE` to
+another directory containing `bundle/` and `workload.json` to use your own
+eligible `native_multihop` workload. Set `FM_SDM_BUNDLE` when its bundle has
+another path. The notebook opens or creates `fm-index/` in the fixture directory, samples one
 batch, converts its retained Arrow tables through public
 `TableTensor.from_arrow` and `RelatedTables`, and exercises both model
 call forms. The helper only repairs zero-chunk columns and read-only string
 buffers when SDM requires it. The same batch is encoded as arrays and IPC.
 
-The committed smoke case can be recreated with
+Regenerate the included smoke case with
 `python benchmark/fm-payloads/make_fixture.py /tmp/fm-case` from the repository
-root. Set `FM_SDM_FIXTURE=/tmp/fm-case` and
-`FM_SDM_BUNDLE=/tmp/fm-case/supported` before running `walkthrough.ipynb`.
+root, then copy `bundle/` and `workload.json` into this directory's `fixture/`.
+You can also set `FM_SDM_FIXTURE=/tmp/fm-case` to use the generated copy.
 The notebook includes the local execution output: both model call forms
 agreed with a maximum absolute difference of 0.0 on this fixture.
 
