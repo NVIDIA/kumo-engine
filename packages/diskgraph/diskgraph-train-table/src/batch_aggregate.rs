@@ -2344,14 +2344,19 @@ fn execute_prepared_parallel(
     plan: &QueryPlan,
     pool: &rayon::ThreadPool,
 ) -> Result<QueryResult, String> {
-    if roots.len() != cutoffs.len() || roots.len() < 64 || pool.current_num_threads() == 1 {
+    let anchors_per_chunk = if plan.aggregates.is_empty() && !plan.sequences.is_empty() {
+        8
+    } else {
+        64
+    };
+    if roots.len() != cutoffs.len() || roots.len() < anchors_per_chunk || pool.current_num_threads() == 1 {
         if roots.len() != cutoffs.len() {
             return Err("root IDs and cutoffs must have equal length".into());
         }
         return execute_query(reader, root_type, roots, cutoffs, plan);
     }
     let started = Instant::now();
-    let chunks = roots.len().div_ceil(64).min(pool.current_num_threads() * 2);
+    let chunks = roots.len().div_ceil(anchors_per_chunk).min(pool.current_num_threads() * 2);
     let size = roots.len().div_ceil(chunks);
     let results = pool.install(|| {
         roots

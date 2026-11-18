@@ -10661,3 +10661,63 @@ fn integ_prepared_history_reuses_frames_and_binds_clock_before_iteration() {
     assert!(untimed.require_timed_sequence("history").unwrap_err().contains("timed frames"));
     assert!(untimed.execute(&reader, &[0], &[0], &pool).is_ok());
 }
+
+#[test]
+fn integ_parallel_history_preserves_ragged_batches() {
+    use diskgraph_index::pkmap::Key;
+    use diskgraph_train_table::batch_aggregate::PreparedTemporalPlan;
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"), &index,
+    ).unwrap();
+    let users = reader.table("users").unwrap();
+    let ids = (0..5).map(|id| users.node_id_from_pk(&Key::Int(id)).unwrap().unwrap())
+        .collect::<Vec<_>>();
+    let relation = reader.metadata().edge_relations.iter()
+        .find(|r| r.src_type == "users" && r.dst_type == "orders").unwrap().name.clone();
+    let pools = [1, 2, 8].map(|threads| {
+        rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()
+    });
+    for limit in [None, Some(1)] {
+        let json = serde_json::json!({
+            "frames": [{"name":"events", "root_type":"users",
+                "path":[{"relation":relation,"destination_type":"orders"}],
+                "time_column":"ts", "start_seconds":null,"stop_seconds":0,
+                "distinct":true,"columns":["price","status"]}],
+            "sequences":[
+                {"name":"history","frame":"events","columns":["price","status"],
+                    "order":"ascending","limit":limit},
+                {"name":"recent","frame":"events","columns":["status"],
+                    "order":"descending","limit":limit}]
+        });
+        let prepared = PreparedTemporalPlan::prepare_history(
+            &reader, "users", &json.to_string(),
+        ).unwrap();
+        for size in [0, 1, 7, 8, 31, 32, 63, 64, 65, 128, 256] {
+            for repeated in [false, true] {
+                let roots = (0..size).map(|i| ids[if repeated { 0 } else { i % ids.len() }])
+                    .collect::<Vec<_>>();
+                for empty in [false, true] {
+                    // An empty prefix checks concatenation when the first job
+                    // has no rows but later jobs do; roots may repeat freely.
+                    let cutoffs = (0..size).map(|i| if empty || i < 8 { 0 } else { 5000 })
+                        .collect::<Vec<_>>();
+                    let expected = prepared.execute(&reader, &roots, &cutoffs, &pools[0]).unwrap();
+                    for pool in &pools[1..] {
+                        let actual = prepared.execute(&reader, &roots, &cutoffs, pool).unwrap();
+                        assert_eq!(actual.sequences.len(), expected.sequences.len());
+                        for (actual, expected) in actual.sequences.iter().zip(&expected.sequences) {
+                            assert_eq!(actual.name, expected.name);
+                            assert_eq!(actual.offsets, expected.offsets);
+                            assert_eq!(actual.node_ids, expected.node_ids);
+                            assert_eq!(actual.timestamps, expected.timestamps);
+                            assert_eq!(actual.batch, expected.batch);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
