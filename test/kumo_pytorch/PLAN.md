@@ -1,5 +1,11 @@
 # Nightly prototype implementation plan
 
+Current increment: **L01, AML LI Medium / Combined only**. Add each selected
+binding and its feature requirements one at a time, retaining existing coverage.
+See [binding feature coverage](docs/binding-coverage.md#current-increment-l01-only)
+for F01–F05, F07–F08, F10–F11 and F14 checks. Equal-time history events may appear
+in either order; their membership, values and chronological groups remain checked.
+
 The supplied testing strategy specifies nightly coverage. Weekly and on-demand
 suite development are outside this task. Implement a simple working prototype
 incrementally; optimize runtime and calibrate performance gates afterwards.
@@ -13,11 +19,12 @@ and measurement gaps; the complete nightly specification is not yet satisfied.
 ## Required behavior is an assertion, not a capability gate
 
 Every in-scope required case must exist even if the package does not support
-its behavior yet. Assert successful, correct behavior and let unsupported
-operations or wrong results fail normally. Do not skip, xfail, catch an error
-as success, pre-filter inputs, or weaken assertions to accommodate missing
-support. Dataset/hardware cases run in their designated CI jobs; the required
-coverage must execute there. Explicit user scope deferrals remain separate
+its behavior yet. Assert correct behavior, accepting only the explicit refusals
+authorized in the [current policy](docs/required-coverage.md#capability-refusals).
+Do not skip, xfail, accept unrelated errors, pre-filter inputs, or weaken
+assertions to accommodate missing support. Dataset/hardware cases run in their
+designated CI jobs; the required coverage must execute there. Explicit user
+scope deferrals remain separate
 from implementation gaps. This rule applies to every remaining criterion.
 
 ## Agreed scope
@@ -48,9 +55,11 @@ from implementation gaps. This rule applies to every remaining criterion.
 - Start workload execution with AML HI-small v8/account-daily anchors: v2 for
   GraphSAGE and combined, v1 for sequence-only models. Preserve
   configuration support for the other AML variants.
-- Only AML is in the active prototype scope. Synthetic and MBD requirements
-  remain recorded in the original roadmap but receive no current implementation
-  or acquisition work. The user cancelled the synthetic download.
+- On 2026-11-17 the user approved the [binding expansion](docs/binding-coverage.md):
+  LI Medium first, then Synthetic Medium and MBD, preserving existing tests.
+  This supersedes the earlier AML-only restriction and synthetic deferral.
+  The first increment adds pinned binding records and native LI task checks;
+  real-data/model integration follows separately.
 - Use the existing PyTorch nightly workflow and build/setup conventions. Keep
   existing retail lifecycle and conformance coverage.
 - Run existing package regression tests in place in that workflow. Reuse their
@@ -1415,3 +1424,85 @@ excluded locally and remains in the GPU workflow. Worker validation required
 local shared-memory access outside the sandbox. Validation used the existing
 compatible native extension; no Linux/GPU CI run was launched. Scoped Ruff and
 whitespace checks pass. Independent review found no actionable issues.
+
+## Binding coverage expansion: first increment (2026-11-17)
+
+The [new roadmap](docs/binding-coverage.md) records the approved 16 base bindings
+and four separate contract extensions. All copied binding IDs, selectors,
+target meanings and split columns match Arena `220aa187`; the existing LI Medium
+anchor/identity pins also match. Existing HI Small cases remain unchanged.
+
+The first implementation reuses the Parquet population projection and AML input
+builders for LI Medium's combined amount/currency, nuFormer delay, GraphSAGE
+format and unmasked PRAGMA involvement tasks. Fourteen required fixture cases
+cover exact target shapes/values/masks, train-only vocabularies, valid unknown
+categories, graph clocks, schema validation and native iteration over two epochs.
+All 14 pass with the existing local native extension, as do 19 affected existing
+projection, input and benchmark checks. These are tiny-fixture results; model
+readouts, real-data campaigns and exact Linux/GPU validation remain pending.
+
+Independent review completed in two rounds. It found and verified fixes for
+wrong decimal source schemas and target/mask shape mismatches hidden by flattening.
+All 358 required CPU cases collect, with five GPU cases delegated. Scoped isort,
+flake8, formatting, license headers and repository documentation references pass.
+No package runtime, workflow or cloud-permission changes are included.
+
+## LI Medium heads and real-data jobs (2026-11-17)
+
+Added test-owned stored-target heads for L01–L04, independent per-output loss
+oracles, and native training/full-delivery runners. Reused strict CPU training
+acceptance and added trained-checkpoint evaluation. All existing HI Small tests
+and jobs remain. The nightly adds eight LI jobs and required report accounting.
+The ten-object read grant was applied with user authorization and reread to
+verify its exact scope; both existing bucket-policy statements were preserved.
+
+Validation: 224 affected new/existing tests pass with the existing local native
+extension. All 387 required CPU cases collect, with five GPU cases delegated.
+Scoped isort, flake8, formatting, license and documentation-reference checks
+pass; YAML lint passes with comment-spacing warnings. Full Linux/real-data
+acceptance and effective CI-role downloads remain unverified.
+
+Independent review completed in two rounds with no remaining findings. Added
+regressions and fixes for labels changing after initial delivery: probe, every
+training batch and validation/test batches now recheck source targets. Regression
+loss arithmetic uses float64 so large valid float32 amounts do not hide small
+loss improvements; a native trillion-unit target case passes strict training.
+No package runtime changes were made. LI timing/lifecycle, full-source resource
+validation and the Synthetic/MBD increments remain next work.
+
+
+## Shared dataset execution (2026-11-17)
+
+The binding catalog now owns separate HI Small and LI Medium dataset records,
+task/input/anchor profiles, model selections and enabled campaigns. The existing
+data, native anchor, contract, model, population, training and benchmark modules
+are reused. Separate LI runner/report wrappers and the duplicate AML selection
+file were removed. Dataset campaigns use one matrix and one result summary.
+
+Unrelated shop fixtures exercise different tables, IDs, millisecond-unit clocks,
+target columns and all four backbones through the same runner. Raw-format
+conversion is the remaining schema-specific boundary; already normalized
+Parquet uses shared preparation directly. This does not complete Synthetic/MBD
+or enable unvalidated LI lifecycle/timing campaigns. Package behavior and known
+native failures remain unchanged. See [binding structure](docs/binding-coverage.md#shared-structure).
+
+
+Validation for the shared execution increment: 316 tooling, catalog, source,
+anchor, model, benchmark and fitting checks pass, including all 19 new shared
+checks. The full CPU run before the final four boundary checks had 399 passes
+and three existing Fusion mid-epoch-resume failures. Their saved/restored data,
+contract and fitted-state identities match; anchor/task fingerprints differ and
+TaskBatches rejects the checkpoint. Those requirements remain failures. The final
+406-case CPU inventory collects exactly, with five GPU cases explicitly owned
+by GPU CI. The four final boundaries also pass in the focused run.
+
+Commands used: `python -m pytest -c test/kumo_pytorch/pytest.ini
+--confcutdir=test/kumo_pytorch test/kumo_pytorch/model_checks --required-coverage=cpu`,
+plus all `test/kumo_pytorch/checks/` and affected model files. Validation uses the existing compatible
+local native extension; no new Linux/CUDA or real-dataset CI acceptance is claimed.
+Repository isort/flake8, YAML lint, licensing, documentation/link checks and
+`git diff --check` pass (YAML retains existing comment-spacing warnings).
+Fresh-context adversarial review converged after three rounds: family/alternate-
+join capacity bounds, graph degrees and task/model compatibility were corrected;
+no blocking findings remain. Dataset shard artifacts have a separate prefix from
+the combined report, avoiding self-inclusion when summary jobs are rerun.

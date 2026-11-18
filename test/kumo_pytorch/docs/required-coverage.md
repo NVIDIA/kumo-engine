@@ -1,9 +1,15 @@
 # Required AML coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 344 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 387 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
+
+The LI Medium increments add 43 CPU checks for native target delivery, train-only
+fitting, masks, invalid source/binding rejection, stored-target heads, strict
+training replay and source-to-runner execution. They use tiny fixtures; real
+LI Medium campaign execution remains pending in the
+[binding expansion plan](binding-coverage.md).
 
 `--required-coverage=cpu` or `--required-coverage=gpu` requires the corresponding
 inventory. Missing/deleted cases, unexpected additions, collection-time skips,
@@ -202,3 +208,14 @@ required fault cases include a missing native history plan; first-epoch length
 planning and second-epoch cache reuse remain enforced. This follow-up does not
 claim repository-wide removal of request-based loading. Native package failures
 remain required failures.
+
+
+## Shared dataset checks
+
+The required inventory includes 19 dataset-general checks: unrelated table/ID/clock
+schemas through all four models and the shared profiler, all five existing HI
+bindings through the common population runner, multi-family/alternate-join
+history bounds, graph degrees and incompatible native objective/model pairs.
+The current reviewed inventory is 406 CPU cases and five GPU reference cases.
+Dataset registration alone does not add execution coverage; enabled campaigns
+and required test IDs remain explicit.

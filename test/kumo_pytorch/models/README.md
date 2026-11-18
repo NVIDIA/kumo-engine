@@ -1,4 +1,4 @@
-# AML test models
+# Test models
 
 These models belong to the repository testing suite, outside the installed
 `kumo.pytorch` package. They require no Arena checkout or imports.
@@ -11,13 +11,13 @@ These models belong to the repository testing suite, outside the installed
 | masked-value-pretrain | PRAGMA | nested field history, calendar, elapsed time | Masked-value cross-entropy, smoothing 0.1 |
 | next-token-pretrain | nuFormer | token history | Next-token cross-entropy |
 
-[aml.py](aml.py) builds a consumer from a fitted Kumo task and an entry in
-[the AML selection](../workloads/aml.json). Vocabulary sizes come from fitted
+[model factory](__init__.py) builds a consumer from a fitted Kumo task and an entry in
+[the binding catalog](../workloads/bindings.json). Vocabulary sizes come from fitted
 state. The small default dimensions are for the prototype.
 
 ```python
 import torch
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 
 model = build_model(task, selection, "graphsage")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -31,8 +31,8 @@ for batch in task.batches(split="train", batch_size=32):
 
 The CPU training step preserves the input batch and excludes padding and invalid
 targets. Kumo supplies masking and already-shifted next-token targets. GraphSAGE
-and combined require v2 selections and original `prediction_time_ns` request
-metadata; sampling uses the shifted execution cutoff. Combined keeps all three
+and combined require original `prediction_time_ns` metadata; the declared AML
+profiles use v2 anchors; sampling uses the shifted execution cutoff. Combined keeps all three
 branches in the same request order. Accelerator execution is not validated here.
 
 The [AML prototype runner](../docs/aml-prototype.md) prepares downloaded sources
@@ -45,7 +45,7 @@ execution remains pending in [the plan](../PLAN.md). The tiny
 Model Python modules were copied from Arena revision
 `b0701af6075de1cf79f0064d1f8213cc9fb4fbc6`, under its `models/` directory.
 The `graph_sequence_aggregates/` family implements **combined**. Standalone CLI
-smokes, platform locks and Arena orchestration were omitted. `aml.py` adapts the
+smokes, platform locks and Arena orchestration were omitted. The model factory adapts the
 model construction and objectives from `profiling/execution/model_execution.py`.
 Its lifecycle adapter also applies a binary involvement head to PRAGMA's user
 representation during finetuning. The local nuFormer `forward_kumo` now removes
@@ -63,3 +63,8 @@ GraphSAGE retains [RelBench provenance](graphsage/UPSTREAM.json) and
 [license](graphsage/LICENSE.relbench). PRAGMA retains its licenses and notices;
 see [its source record](pragma/REFERENCE.md). nuFormer and combined retain
 Arena's implementations with the local adaptations described above. Optional PRAGMA text encoders are not used by AML.
+
+Stored target heads in `stored_targets.py` share these backbones for binary,
+categorical and numerical objectives, including multiple independently valid
+outputs. Input tables, graph features and aggregate names come from the selected
+profile; the factory does not choose behavior from a dataset name.

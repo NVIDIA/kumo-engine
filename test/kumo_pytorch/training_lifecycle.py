@@ -20,19 +20,19 @@ import kumo.pytorch.api as r
 from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .involvement import verify_batch
 from .lifecycle import forbid_fitting, input_digest
-from .models.aml import build_model
+from .models import build_model
 
 
 def involvement_model(task, config, pretrained_weights=None):
     model = build_model(task, config["selection"], config["family"], **config["model"])
     if pretrained_weights is not None:
         model.load_state_dict(pretrained_weights, strict=True)
-    if model.workload != "account-involvement-next24h":
+    if model.kind != "binary":
         # Keep the learned backbone; only the downstream head starts fresh.
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(config["seed"])
             model.head = torch.nn.Linear(config["model"]["dim"], 1)
-        model.workload = "account-involvement-next24h"
+        model.kind = "binary"
     return model
 
 

@@ -8,5 +8,6 @@
   "seed": 0,
   "device": "cuda",
   "training": true,
-  "cache_mode": "uncontrolled"
+  "cache_mode": "uncontrolled",
+  "binding": "E02"
 }

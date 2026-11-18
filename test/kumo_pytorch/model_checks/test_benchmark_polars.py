@@ -5,9 +5,9 @@
 """Timing adapter integration; no cross-engine batch-equality assertions."""
 
 import json
-from test.kumo_pytorch.aml_benchmark import factory
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
+from test.kumo_pytorch.benchmarking.kumo import factory
 
 import pytest
 

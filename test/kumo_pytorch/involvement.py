@@ -21,7 +21,9 @@ import pyarrow.parquet as pq
 DAY = 86400
 
 
-def source_reference(path, entity_ids, variant="hi-small", *, include_values=False):
+def source_reference(
+    path, entity_ids, variant="hi-small", *, include_values=False, include_labels=True
+):
     roots = set(entity_ids)
     numbers = pa.array(sorted({json.loads(root)[3] for root in roots}))
     timeline, events = Counter(), []
@@ -32,8 +34,9 @@ def source_reference(path, entity_ids, variant="hi-small", *, include_values=Fal
         "from_account",
         "to_bank",
         "to_account",
-        "is_laundering",
     ]
+    if include_labels:
+        columns.append("is_laundering")
     value_fields = (
         "amount_paid",
         "payment_currency",
@@ -76,7 +79,7 @@ def source_reference(path, entity_ids, variant="hi-small", *, include_values=Fal
             endpoints = {sender, receiver}
             if not endpoints & roots:
                 continue
-            if row["is_laundering"] not in ("0", "1"):
+            if include_labels and row["is_laundering"] not in ("0", "1"):
                 raise ValueError("Expected binary source laundering flag")
             events.append(
                 {
@@ -85,9 +88,10 @@ def source_reference(path, entity_ids, variant="hi-small", *, include_values=Fal
                     "accounts": endpoints,
                     "sender": sender,
                     "receiver": receiver,
-                    "laundering": row["is_laundering"] == "1",
                 }
             )
+            if include_labels:
+                events[-1]["laundering"] = row["is_laundering"] == "1"
             if include_values:
                 events[-1]["values"] = {name: row[name] for name in value_fields}
         offset += batch.num_rows
@@ -217,6 +221,62 @@ def relationship_counts(row, reference):
                 event[role] == row["entity_id"] for event in window
             )
     return result
+
+
+def combined_features(binding, projection, mapping, state, *, mode):
+    """Build the existing source oracle for a bounded account/transfer binding.
+
+    Dataset identity comes from its declaration. This factory owns neither
+    execution nor targets; the shared runner verifies target values and losses.
+    """
+    from .bindings import dataset_definition, resolve
+    from .population_anchors import projected_rows
+    from .reference_tokens import verify_combined_values
+
+    assert binding["representation"] == "combined"
+    projected = [
+        row
+        for split in ("train", "valid", "test")
+        for row in projected_rows(projection, split)
+    ]
+    rows = [
+        {
+            "sample_id": row["sample_id"],
+            "entity_id": row["registered_entity_id"],
+            "as_of_time": row["prediction_time_ns"],
+            "split": row["split"],
+        }
+        for row in projected
+    ]
+    anchors = {row["sample_id"]: row for row in rows}
+    reference = source_reference(
+        mapping["sources"]["transactions"]["path"],
+        {row["entity_id"] for row in rows},
+        dataset_definition(binding)["source_options"]["variant"],
+        include_values=True,
+        include_labels=False,
+    )
+    # Derive identities from the original binding, not the converter's output.
+    names = (
+        pq.read_table(
+            mapping["sources"]["accounts_binding"]["path"], columns=["entity_id"]
+        )
+        .column(0)
+        .to_pylist()
+    )
+    identities = {
+        name: i for i, name in enumerate(sorted(names, key=lambda s: s.encode("utf-8")))
+    }
+    training = [row for row in rows if row["split"] == "train"]
+    source_targets = binding["feature_checks"].get("source_targets", {}).get(mode)
+    if source_targets:
+        resolve(source_targets)(projected, reference)
+
+    def check(batch):
+        verify_inputs(batch, "combined", anchors, reference, identities, training)
+        verify_combined_values(batch, anchors, reference, state, identities)
+
+    return check
 
 
 def verify_inputs(

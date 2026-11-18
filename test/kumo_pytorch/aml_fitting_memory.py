@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nightly 25k/400k fitting-memory campaigns for the five AML input contracts."""
+"""Catalog-driven 25k/400k fitting-memory campaigns over native anchors."""
 
 import argparse
 import hashlib
@@ -11,26 +11,20 @@ import os
 import platform
 import subprocess
 import traceback
-from collections import Counter
 from itertools import islice
 from pathlib import Path
 
-from .aml_inputs import verify_inputs
-from .aml_source import (
-    account_identity_map,
-    aml_data_schema,
-    prepare_aml_sources,
-    prepared_dataset,
-)
 from .benchmarking.fitting_memory import campaign, digest, save
-from .contracts import build_contract
-from .data import ROOT
-from .nightly import selected_cases
-from .population_anchors import (
-    add_identity,
-    project_population,
-    projected_rows,
+from .bindings import binding_for, contract_for, dataset_definition
+from .data import (
+    ROOT,
+    identity_map,
+    prepare_binding,
+    schema_for,
+    verify_dataset,
 )
+from .nightly import selected_cases
+from .population_anchors import add_identity, project_binding, projected_rows
 
 COUNTS = (25000, 400000)
 
@@ -49,22 +43,18 @@ def make_spec(
 ):
     """Build nested training-only prefixes outside the measured worker process."""
     directory.mkdir(parents=True, exist_ok=False)
-    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
-    graph = family in {"graphsage", "combined"}
-    contract = build_contract(
-        aml_data_schema(), family, native=native, max_events=capacity
-    )
+    binding = binding_for(selection, family)
+    contract = contract_for(schema_for(dataset, binding), binding, max_events=capacity)
     contract_path = directory / "contract.json"
     contract_path.write_text(contract.to_json())
     anchors = {}
     for count in counts:
         path = directory / f"anchors-{count}.parquet"
-        _, population = project_population(
+        anchor_table, population = project_binding(
             anchor_path,
             path,
             identities,
-            graph=graph,
-            native=native,
+            binding,
             limit=count,
             splits=("train",),
         )
@@ -83,7 +73,7 @@ def make_spec(
         == anchors[str(counts[0])]["population"]["ordered_sample_id_sha256"]["train"]
     ), "Smaller training population is not the larger population's prefix"
     spec = {
-        "id": f"{selection['selector']['workload_id']}-{family}",
+        "id": selection["case_name"],
         "selector": selection["selector"],
         "family": family,
         "contract": str(contract_path.resolve()),
@@ -102,7 +92,7 @@ def make_spec(
             "as_of_time": "as_of_time",
             "sample_id": "sample_id",
             "split": "split",
-            "targets": {} if native else {"label": "label"},
+            "targets": dict(anchor_table.targets),
             "metadata": [
                 "prediction_time_ns",
                 "registered_entity_id",
@@ -215,38 +205,30 @@ def main(argv=None):
             ).strip()
         )
         summary(args.output, report)
-        files = verify_inputs(args.data_dir)
-        report["inputs"] = list(files.values())
-        transactions = "datasets/aml-data/v8/hi-small/transactions.parquet"
-        binding = "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet"
-        prepared = args.output / "prepared"
-        report["mapping"] = prepare_aml_sources(
-            args.data_dir / transactions,
-            args.data_dir / binding,
-            prepared,
-            "hi-small",
-            expected_checksums={
-                "transactions": files[transactions]["sha256"],
-                "accounts_binding": files[binding]["sha256"],
-            },
-        )
-        dataset, identities = prepared_dataset(prepared), account_identity_map(prepared)
-        import pyarrow.parquet as pq
-
-        counts = Counter()
-        for batch in pq.ParquetFile(prepared / "account_events.parquet").iter_batches(
-            columns=["account_id"]
-        ):
-            counts.update(batch.column(0).to_pylist())
-        capacity = max(counts.values())
-        del counts
         for selection, family in cases:
-            name = f"{selection['selector']['workload_id']}-{family}"
+            name = selection["case_name"]
             try:
-                anchor_path = (
-                    args.data_dir
-                    / f"anchors/aml-data/v8/hi-small/account-daily/{selection['selector']['anchor_version']}/anchors.parquet"
+                binding = binding_for(selection, family)
+                definition = dataset_definition(binding)
+                files = verify_dataset(args.data_dir, binding)
+                inputs = args.output / "prepared-inputs" / name
+                inputs.mkdir(parents=True)
+                dataset, _, _, mapping, capacity = prepare_binding(
+                    args.data_dir,
+                    inputs,
+                    binding,
+                    files,
+                    limit=max(COUNTS),
+                    splits=("train",),
+                    full_sources=True,
                 )
+                identities = identity_map(args.data_dir, definition, files)
+                anchor_path = args.data_dir / definition["anchor_path"].format(
+                    population=binding["selector"]["population"],
+                    version=binding["selector"]["anchor_version"],
+                )
+                report.setdefault("inputs", {})[name] = list(files.values())
+                report.setdefault("mapping", {})[name] = mapping
                 spec = make_spec(
                     dataset,
                     identities,
@@ -274,9 +256,7 @@ def main(argv=None):
                 }
             report["cases"].append(case)
             summary(args.output, report)
-        assert len(report["cases"]) == len(cases), (
-            "Missing selected AML fitting contracts"
-        )
+        assert len(report["cases"]) == len(cases), "Missing selected fitting contracts"
         report["status"] = (
             "passed"
             if all(c["status"] == "passed" for c in report["cases"])

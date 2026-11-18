@@ -17,7 +17,7 @@ import kumo.pytorch.api as r
 
 from .anchor_tables import load_probe_anchors, write_probe_anchors
 from .lifecycle import forbid_fitting, input_digest
-from .models.aml import build_model
+from .models import build_model
 from .training_lifecycle import training_requests
 
 

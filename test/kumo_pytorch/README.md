@@ -38,6 +38,9 @@ See [coverage ownership](PLAN.md#coverage-ownership) and
 [required CI coverage](docs/required-coverage.md).
 The [Arena golden audit](docs/arena-golden-audit.md) maps existing assertion
 owners and records selective boundary-test ports without an Arena dependency.
+The [binding expansion plan](docs/binding-coverage.md) tracks the approved LI
+Medium, Synthetic Medium and MBD additions. LI now has native target/model checks
+and separate training/full-delivery jobs; real-data CI acceptance is pending.
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to
 existing tests and identifies the next AML additions.
 Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishes
@@ -161,7 +164,7 @@ DiskGraph was built from that base. The checks used
 Python 3.12.14, torch 2.13.0 and torch-geometric 2.8.1 on CPU. GitHub Actions
 execution has not yet been verified.
 
-[Workload selections](workloads/aml.json) retain split/target meanings and mark
+[Workload selections](workloads/bindings.json) retain split/target meanings and mark
 bounded prototype implementation. [Anchor selection](anchors/README.md) uses v2 for GraphSAGE
 and combined, v1 for sequence-only models. Do not change labels or splits to
 make a check pass.
@@ -171,3 +174,27 @@ Dataset records were copied from Arena revision
 [aml-source.json](datasets/aml-source.json) retains upstream identities, raw
 checksums and CDLA-Sharing-1.0 licensing. Historical records are not current
 execution results.
+
+### Dataset bindings
+
+The exact pinned-object grant is recorded in [datasets/ACCESS.md](datasets/ACCESS.md).
+HI Small and LI Medium use the same catalog and `nightly run` command.
+For example:
+
+```bash
+python -m test.kumo_pytorch.data fetch --dataset li-medium --data-dir /data/aml
+python -m test.kumo_pytorch.nightly run --binding L01 --mode smoke \
+  --data-dir /data/aml --output /results/smoke/L01 --batch-size 32
+python -m test.kumo_pytorch.nightly run --binding L01 --mode training \
+  --data-dir /data/aml --output /results/training/L01 --batch-size 32
+python -m test.kumo_pytorch.nightly run --binding L01 --mode full \
+  --data-dir /data/aml --output /results/full/L01 --batch-size 32
+```
+
+Training runs two deterministic 100-update CPU repetitions on 32 anchors per
+split. L01 smoke checks four anchors per split against the source feature/target
+oracles. Full mode checks every forecast-split anchor and rejects limits.
+The `kumo-pytorch-campaign-results` artifact and combined job summary show all
+24 training/population outcomes; per-job artifacts retain partial results on failure.
+See [binding coverage](docs/binding-coverage.md) for heads, loss definitions and
+remaining lifecycle/timing work.

@@ -7,11 +7,11 @@
 import hashlib
 import json
 from datetime import UTC, datetime
-from test.kumo_pytorch import aml_inputs
-from test.kumo_pytorch.aml_benchmark import counts, factory
+from test.kumo_pytorch import data
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
-from test.kumo_pytorch.data import ROOT
+from test.kumo_pytorch.benchmarking.kumo import counts, factory
+from test.kumo_pytorch.bindings import selections as catalog_selections
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -23,9 +23,7 @@ from kumo.pytorch.api import Batch
 from .test_aml_source import account, source_files
 
 CASES = [
-    (s["selector"]["workload_id"], f)
-    for s in json.loads((ROOT / "workloads/aml.json").read_text())
-    for f in s["models"]
+    (s["selector"]["workload_id"], f) for s in catalog_selections() for f in s["models"]
 ]
 
 
@@ -125,16 +123,19 @@ def source(tmp_path, monkeypatch):
                 column,
                 table[column].cast(pa.timestamp("ns")),
             )
+        table = table.set_column(
+            table.schema.get_field_index("involvement"),
+            "involvement",
+            table["involvement"].cast(pa.int32()),
+        )
         pq.write_table(table, path)
-    monkeypatch.setattr(aml_inputs, "verify_inputs", lambda directory: files)
-    monkeypatch.setattr(
-        aml_inputs,
-        "load_selections",
-        lambda directory, limit: {
-            "v1": {"split": groups, "forecast_split": groups},
-            "v2": {"forecast_split": graph_groups},
-        },
-    )
+        key = str(path.relative_to(tmp_path))
+        files[key] = {
+            "key": key,
+            "bytes": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    monkeypatch.setattr(data, "verify_dataset", lambda directory, binding: files)
     return tmp_path
 
 
@@ -199,16 +200,26 @@ def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
 
 
 def test_native_lengths_cover_every_anchor_across_partial_batches(source):
-    groups = aml_inputs.load_selections(source, limit=1)["v1"]["split"]
-    original = groups["train"][0]
-    groups["train"].extend(
-        {
-            **original,
-            "sample_id": f"extra-{i}",
-            "as_of_time": original["as_of_time"] + i * 86400 * 10**9,
-        }
-        for i in (1, 2)
-    )
+    path = source / "anchors/aml-data/v8/hi-small/account-daily/v1/anchors.parquet"
+    raw = pq.read_table(path).to_pylist()
+    groups = {
+        split: [
+            {**row, "as_of_time": int(row["as_of_time"].timestamp()) * 10**9}
+            for row in raw
+            if row["split"] == split
+        ]
+        for split in ("train", "valid", "test")
+    }
+    for split, rows in groups.items():
+        original = rows[0]
+        rows.extend(
+            {
+                **original,
+                "sample_id": f"{split}-extra-{i}",
+                "as_of_time": original["as_of_time"] + i * 86400 * 10**9,
+            }
+            for i in (1, 2)
+        )
     path = source / "anchors/aml-data/v8/hi-small/account-daily/v1/anchors.parquet"
     table = pa.Table.from_pylist([row for rows in groups.values() for row in rows])
     table = table.set_column(
@@ -217,6 +228,10 @@ def test_native_lengths_cover_every_anchor_across_partial_batches(source):
         table["as_of_time"].cast(pa.timestamp("ns")),
     )
     pq.write_table(table, path)
+    files = data.verify_dataset(source, None)
+    files[str(path.relative_to(source))].update(
+        bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()
+    )
     result = run(
         factory,
         {

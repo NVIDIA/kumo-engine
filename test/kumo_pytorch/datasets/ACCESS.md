@@ -27,3 +27,14 @@ verified all 11 objects in
 [CI run 43857600971](https://github.com/NVIDIA/kumo-engine/actions/runs/43857600971):
 375,509,265 transferred bytes in 2.84 seconds, including anchors and bindings.
 This verifies CI access; it does not establish workload correctness.
+
+## LI Medium access
+
+With user authorization on 2026-11-17,
+[ci-li-medium-read-policy.json](ci-li-medium-read-policy.json) was added for the
+same Engine test role: `s3:GetObject` on ten exact LI Medium objects from
+`inputs.json`. The eleventh input is the AML dataset manifest already covered by
+the HI Small grant. The policy was reread and matched the approved addition;
+both original statements, including the owner restriction, were unchanged.
+No IAM role policy, list, write or wildcard access was added. Effective downloads
+by the CI role still require verification in a LI Medium run.

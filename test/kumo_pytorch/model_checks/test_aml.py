@@ -4,13 +4,12 @@
 
 """Real Kumo-emitted tiny batches; no AWS, Arena imports or full AML run."""
 
-import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-from pathlib import Path
+from test.kumo_pytorch.bindings import selections as catalog_selections
 from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 
 import pytest
 import torch
@@ -19,7 +18,7 @@ import kumo.pytorch.api as r
 
 from .fixtures import build_fixture, probe_anchor_table
 
-SELECTIONS = json.loads((Path(__file__).parents[1] / "workloads/aml.json").read_text())
+SELECTIONS = catalog_selections()
 CASES = [
     (selection, family) for selection in SELECTIONS for family in selection["models"]
 ]

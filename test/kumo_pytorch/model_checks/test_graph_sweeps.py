@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import timedelta
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.involvement import history, verify_inputs
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.reference_tokens import history_tokens
 
 import pytest

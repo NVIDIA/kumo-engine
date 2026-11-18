@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stream original AML anchors into native execution tables without sampling full runs."""
+"""Project declared anchor columns into native tables without sampling full runs."""
 
 import hashlib
 import json
@@ -14,6 +14,9 @@ import pyarrow.parquet as pq
 import kumo.pytorch.api as r
 
 from .aml_inputs import SECOND, SPLITS
+from .bindings import profile as binding_profile
+from .bindings import task_definition
+from .targets import target_rules, target_value
 
 
 def add_identity(digest, sample_id):
@@ -21,28 +24,59 @@ def add_identity(digest, sample_id):
 
 
 def project_population(
-    path, destination, identities, *, graph, native, limit=None, splits=SPLITS
+    path,
+    destination,
+    identities,
+    *,
+    graph,
+    native,
+    limit=None,
+    splits=SPLITS,
+    workload="account-involvement-next24h",
+    profile=None,
+    rules=None,
 ):
     """Keep original order, labels and splits; v2 shifts only graph execution clocks."""
     if limit is not None and (type(limit) is not int or limit < 1):
         raise ValueError("limit must be positive or None for all eligible anchors")
     if not splits or len(set(splits)) != len(splits) or not set(splits) <= set(SPLITS):
         raise ValueError("Select distinct known anchor splits")
-    column = "split" if native else "forecast_split"
-    columns = ["sample_id", "entity_id", "as_of_time", column, "involvement"]
-    if graph:
-        columns.append("graph_as_of_time")
+    profile = profile or {
+        "sample_id": "sample_id",
+        "entity_id": "entity_id",
+        "time": "as_of_time",
+        "split": "split" if native else "forecast_split",
+        "time_unit": "ns",
+        "cadence_seconds": 86400,
+        "execution_offset_seconds": -1 if graph else 0,
+        **({"execution_time": "graph_as_of_time"} if graph else {}),
+    }
+    column = profile["split"]
+    rules = target_rules(workload) if rules is None else rules
+    sample_column, entity_column, time_column = (
+        profile[k] for k in ("sample_id", "entity_id", "time")
+    )
+    execution_column = profile.get("execution_time", time_column)
+    offset_seconds = profile.get("execution_offset_seconds", 0)
+    clocks = tuple(dict.fromkeys((time_column, execution_column)))
+    columns = [sample_column, entity_column, *clocks, column]
+    columns.extend(rule["column"] for rule in rules.values())
     source = pq.ParquetFile(path)
-    for name in ("as_of_time", "graph_as_of_time") if graph else ("as_of_time",):
-        if source.schema_arrow.field(name).type != pa.timestamp("ns"):
-            raise ValueError(f"Expected original nanosecond anchor clock: {name}")
+    for name in clocks:
+        if source.schema_arrow.field(name).type != pa.timestamp(profile["time_unit"]):
+            raise ValueError(
+                f"Expected declared anchor timestamp unit {profile['time_unit']}: {name}"
+            )
     schema = pa.schema(
         [
             ("sample_id", pa.string()),
             ("entity_id", pa.int64()),
             ("as_of_time", pa.int64()),
             ("split", pa.string()),
-            ("label", pa.float32()),
+            *(
+                (name, pa.string() if rule["kind"] == "category" else pa.float32())
+                for name, rule in rules.items()
+            ),
             ("prediction_time_ns", pa.int64()),
             ("registered_entity_id", pa.string()),
             ("anchor_row_position", pa.int64()),
@@ -57,13 +91,13 @@ def project_population(
             for item in pc.value_counts(batch.column(column)).to_pylist():
                 if item["values"] in source_counts:
                     source_counts[item["values"]] += item["counts"]
-            for name in (
-                ("as_of_time", "graph_as_of_time") if graph else ("as_of_time",)
-            ):
+            for name in clocks:
                 batch = batch.set_column(
                     batch.schema.get_field_index(name),
                     name,
-                    pc.cast(batch.column(name), pa.int64()),
+                    pc.cast(
+                        pc.cast(batch.column(name), pa.timestamp("ns")), pa.int64()
+                    ),
                 )
             records = []
             for position, row in enumerate(batch.to_pylist(), offset):
@@ -76,32 +110,40 @@ def project_population(
                     continue
                 if limit is not None and counts[split] >= limit:
                     continue
-                sample_id, entity = row["sample_id"], row["entity_id"]
+                sample_id, entity = row[sample_column], row[entity_column]
                 if not sample_id or sample_id in seen:
                     raise ValueError("Missing or duplicate selected sample identity")
                 if not entity or entity not in identities:
                     raise ValueError("Selected entity is absent from mapped source")
-                stamp = row["as_of_time"]
-                if stamp is None or stamp % (86400 * SECOND):
+                stamp = row[time_column]
+                cadence = profile.get("cadence_seconds")
+                if stamp is None or (
+                    cadence is not None and stamp % (cadence * SECOND)
+                ):
                     raise ValueError(
-                        "AML anchors require daily UTC midnight prediction times"
+                        "Prediction time violates the declared anchor cadence"
                     )
-                if graph and row["graph_as_of_time"] != stamp - SECOND:
+                if stamp % SECOND:
                     raise ValueError(
-                        "v2 graph cutoff must equal prediction time minus one second"
+                        "Native projection requires whole-second prediction clocks"
                     )
-                if row["involvement"] not in (None, 0, 1):
-                    raise ValueError("Involvement label must be binary or null")
-                clock = row["graph_as_of_time"] if graph else stamp
+                clock = stamp + offset_seconds * SECOND
+                if execution_column != time_column and row[execution_column] != clock:
+                    raise ValueError(
+                        "Graph cutoff must equal prediction time plus the declared execution offset"
+                    )
                 records.append(
                     {
                         "sample_id": sample_id,
                         "entity_id": identities[entity],
                         "as_of_time": clock // SECOND,
                         "split": split,
-                        "label": row["involvement"],
+                        **{
+                            name: target_value(row[rule["column"]], rule)
+                            for name, rule in rules.items()
+                        },
                         "prediction_time_ns": stamp,
-                        "registered_entity_id": entity,
+                        "registered_entity_id": str(entity),
                         "anchor_row_position": position,
                     }
                 )
@@ -142,7 +184,7 @@ def project_population(
         "as_of_time",
         sample_id="sample_id",
         split="split",
-        targets={} if native else {"label": "label"},
+        targets={} if native else {name: name for name in rules},
         metadata=("prediction_time_ns", "registered_entity_id", "anchor_row_position"),
     ), manifest
 
@@ -152,3 +194,76 @@ def projected_rows(path, split):
     for batch in pq.ParquetFile(path).iter_batches(batch_size=65536):
         mask = pc.equal(batch.column("split"), split)
         yield from batch.filter(mask).to_pylist()
+
+
+def validate_binding(binding):
+    family = binding["representation"]
+    graph = family in {"graphsage", "combined"}
+    anchor, inputs = (
+        binding_profile(binding, "anchor"),
+        binding_profile(binding, "input"),
+    )
+    task = task_definition(binding)
+    required_family = {"masked_values": "pragma", "next_token": "nuformer"}
+    if task["kind"] not in {"stored", *required_family} or (
+        task["kind"] in required_family and family != required_family[task["kind"]]
+    ):
+        raise ValueError(f"Task {task['kind']} is incompatible with model {family}")
+    native = task["kind"] != "stored"
+    rules = task["targets"]
+    if anchor.get("execution_offset_seconds", 0) != (-1 if graph else 0):
+        raise ValueError(
+            "Strict history profiles require graph cutoff T-1s and sequence cutoff T"
+        )
+    if (
+        binding["selector"]["anchor_version"] != anchor["version"]
+        or binding["split_column"] != anchor["split"]
+        or binding["input_variant"] != inputs["variant"]
+    ):
+        raise ValueError("Binding has incompatible anchors, splits or input variant")
+    if set(binding["targets"]) != set(rules):
+        raise ValueError("Binding targets differ from its registered task")
+    for name, rule in rules.items():
+        expected = binding["targets"][name]
+        if (
+            expected["column"] != rule["column"]
+            or expected["dtype"] != rule["dtype"]
+            or expected["all_true_columns"]
+            or not expected["non_null_required"]
+        ):
+            raise ValueError(f"Target meaning changed: {name}")
+    return family, graph, native, rules
+
+
+def project_binding(path, destination, identities, binding, **options):
+    """Reuse the native Parquet projection; never build a request population."""
+    _, graph, native, rules = validate_binding(binding)
+    schema = pq.ParquetFile(path).schema_arrow
+    types = {
+        "INTEGER": pa.int32(),
+        "DECIMAL(38,10)": pa.decimal128(38, 10),
+        "DOUBLE": pa.float64(),
+        "VARCHAR": pa.string(),
+    }
+    for rule in rules.values():
+        column, expected = rule["column"], types[rule["dtype"]]
+        if column not in schema.names or schema.field(column).type != expected:
+            raise ValueError(
+                f"Expected registered target dtype {expected} for {column}"
+            )
+    anchors, report = project_population(
+        path,
+        destination,
+        identities,
+        graph=graph,
+        native=native,
+        workload=binding["selector"]["workload_id"],
+        profile=binding_profile(binding, "anchor"),
+        rules=rules,
+        **options,
+    )
+    return anchors, {
+        **report,
+        "binding_id": binding["binding_id"],
+        "ref": binding["ref"],
+    }

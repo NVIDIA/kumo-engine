@@ -394,3 +394,35 @@ def account_identity_map(output_dir: str | Path) -> dict[str, int]:
     """Verify the view and expose its reversible canonical-to-integer identities."""
     directory, _ = _prepared_manifest(output_dir)
     return {row["entity_id"]: row["account_id"] for row in pq.read_table(directory / "accounts.parquet").to_pylist()}
+
+
+def normalize_sources(data_dir, directory, definition, files, roots):
+    """Convert the declared raw source format; campaign/anchor logic lives elsewhere."""
+    options = definition["source_options"]
+    tx, accounts = options["transactions"], options["accounts_binding"]
+    if directory.exists():
+        _, mapping = _prepared_manifest(directory)
+        expected_roots = None if roots is None else sorted(roots)
+        if (
+            mapping["variant"] != options["variant"]
+            or mapping["scope"]["complete_history_root_entity_ids"] != expected_roots
+        ):
+            raise ValueError(
+                "Prepared source belongs to another dataset or root population"
+            )
+        for role, key in (("transactions", tx), ("accounts_binding", accounts)):
+            if mapping["sources"][role]["sha256"] != files[key]["sha256"]:
+                raise ValueError("Prepared source checksum changed")
+        return prepared_dataset(directory), mapping
+    mapping = prepare_aml_sources(
+        data_dir / tx,
+        data_dir / accounts,
+        directory,
+        options["variant"],
+        expected_checksums={
+            "transactions": files[tx]["sha256"],
+            "accounts_binding": files[accounts]["sha256"],
+        },
+        root_entity_ids=roots,
+    )
+    return prepared_dataset(directory), mapping

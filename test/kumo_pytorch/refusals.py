@@ -17,6 +17,7 @@ _policy = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_policy)
 clean_refusal = _policy.clean_refusal
 record_refusal = _policy.record_refusal
+record_child_refusal = _policy.record_child_refusal
 pytest_plugin = _policy.pytest_plugin
 
 

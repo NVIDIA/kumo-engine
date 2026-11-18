@@ -303,5 +303,265 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if report["status"] == "passed" else 1
 
 
+def verify_dataset(data_dir, binding):
+    """Verify the selected inventory before any conversion or anchor selection."""
+    from .bindings import dataset_definition
+
+    definition = dataset_definition(binding)
+    entry = load_manifest()["datasets"][definition["inventory"]]
+    if any(
+        entry[key] != binding["selector"][key]
+        for key in ("dataset_id", "dataset_version", "population")
+    ):
+        raise ValueError("Pinned inventory identity differs from the selected dataset")
+    files = {item["key"]: item for item in entry["files"]}
+    for key, item in files.items():
+        verify_file(safe_path(Path(data_dir), key), item)
+    # Optional source-format metadata supplements the universal file pins.
+    manifest_format = definition.get("anchor_manifest_format")
+    if manifest_format not in (None, "arena"):
+        raise ValueError(f"Unknown anchor manifest format: {manifest_format}")
+    for version in entry.get("anchor_versions", ()) if manifest_format else ():
+        import pyarrow.parquet as pq
+
+        key = definition["anchor_path"].format(
+            population=entry["population"], version=version
+        )
+        manifest = json.loads(
+            safe_path(
+                Path(data_dir), str(PurePosixPath(key).with_name("manifest.json"))
+            ).read_text()
+        )
+        expected = {
+            "dataset_id": entry["dataset_id"],
+            "dataset_version": entry["dataset_version"],
+            "task_id": entry["population"],
+            "anchor_version": version,
+        }
+        if any(manifest["definition"][k] != v for k, v in expected.items()):
+            raise ValueError("Anchor manifest identity differs from the binding")
+        item = files[key]
+        if manifest["files"] != [
+            {
+                "path": "anchors.parquet",
+                "bytes": item["bytes"],
+                "sha256": item["sha256"],
+            }
+        ]:
+            raise ValueError("Anchor payload differs from the pinned manifest")
+        if (
+            pq.read_metadata(safe_path(Path(data_dir), key)).num_rows
+            != manifest["statistics"]["rows"]
+        ):
+            raise ValueError("Anchor row count differs from its manifest")
+    return files
+
+
+def schema_for(dataset, binding):
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch.api import DataSchema, RelationSpec, TableSpec
+
+    from .bindings import dataset_definition
+    from .contracts import schema_columns
+
+    definition = dataset_definition(binding)
+    return DataSchema(
+        tables=tuple(
+            TableSpec(
+                name,
+                entry["key"],
+                schema_columns(pq.read_schema(source.path)),
+                time_column=entry.get("time"),
+            )
+            for name, source in dataset.tables.items()
+            for entry in (definition["tables"][name],)
+        ),
+        relations=tuple(RelationSpec(*entry) for entry in definition["relations"]),
+    )
+
+
+def identity_map(data_dir, definition, files):
+    import pyarrow.parquet as pq
+
+    identity_path = definition["identity_path"]
+    verify_file(safe_path(data_dir, identity_path), files[identity_path])
+    names = (
+        pq.read_table(data_dir / identity_path, columns=[definition["identity_column"]])
+        .column(0)
+        .to_pylist()
+    )
+    if any(not isinstance(name, str) or not name for name in names) or len(
+        set(names)
+    ) != len(names):
+        raise ValueError("Identity mapping requires unique, nonempty canonical strings")
+    if definition.get("identity_id_column"):
+        ids = (
+            pq.read_table(
+                data_dir / identity_path, columns=[definition["identity_id_column"]]
+            )
+            .column(0)
+            .to_pylist()
+        )
+        if len(set(ids)) != len(ids) or any(type(i) is not int for i in ids):
+            raise ValueError("Mapped entity IDs must be unique integers")
+        identities = dict(zip(names, ids, strict=True))
+    else:
+        identities = {
+            name: i
+            for i, name in enumerate(
+                sorted(names, key=lambda name: name.encode("utf-8"))
+            )
+        }
+    return identities
+
+
+def prepare_binding(
+    data_dir,
+    directory,
+    binding,
+    files,
+    *,
+    limit,
+    prepared_dir=None,
+    recorder=None,
+    splits=("train", "valid", "test"),
+    full_sources=False,
+):
+    """Shared preparation for arbitrary datasets with declared source/anchor schemas."""
+    from collections import Counter
+    from contextlib import nullcontext
+
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch.api import Dataset, Parquet
+
+    from .bindings import dataset_definition, profile, resolve
+    from .population_anchors import project_binding, projected_rows
+
+    definition = dataset_definition(binding)
+    with recorder.span("source.read") if recorder else nullcontext():
+        identities = identity_map(data_dir, definition, files)
+        selector = binding["selector"]
+        anchor_path = definition["anchor_path"].format(
+            population=selector["population"], version=selector["anchor_version"]
+        )
+        verify_file(safe_path(data_dir, anchor_path), files[anchor_path])
+    projected = directory / "anchors.parquet"
+    with recorder.span("anchors.prepare") if recorder else nullcontext():
+        anchors, population = project_binding(
+            data_dir / anchor_path,
+            projected,
+            identities,
+            binding,
+            limit=limit,
+            splits=splits,
+        )
+    roots = (
+        None
+        if limit is None or full_sources
+        else {
+            row["registered_entity_id"]
+            for split in population["counts"]
+            for row in projected_rows(projected, split)
+        }
+    )
+    prepared_dir = Path(prepared_dir) if prepared_dir else directory / "prepared"
+    span = (
+        "source.read"
+        if prepared_dir.exists() or not definition.get("prepare")
+        else "source.convert"
+    )
+    with recorder.span(span) if recorder else nullcontext():
+        if definition.get("prepare"):
+            dataset, mapping = resolve(definition["prepare"])(
+                data_dir, prepared_dir, definition, files, roots
+            )
+        else:
+            for entry in definition["tables"].values():
+                verify_file(safe_path(data_dir, entry["path"]), files[entry["path"]])
+            dataset = Dataset(
+                {
+                    name: Parquet(str(data_dir / entry["path"]))
+                    for name, entry in definition["tables"].items()
+                }
+            )
+            mapping = {
+                "scope": {"kind": "full_source"},
+                "sources": {
+                    n: {**files[e["path"]], "path": str(data_dir / e["path"])}
+                    for n, e in definition["tables"].items()
+                },
+            }
+            mapping["tables"] = {
+                n: {
+                    "rows": pq.read_metadata(source.path).num_rows,
+                    "bytes": Path(source.path).stat().st_size,
+                }
+                for n, source in dataset.tables.items()
+            }
+    mapping = {
+        **mapping,
+        "table_paths": {n: str(source.path) for n, source in dataset.tables.items()},
+    }
+    with recorder.span("source.read") if recorder else nullcontext():
+        bounds = {}
+
+        def degree(table, column):
+            key = (table, column)
+            if key not in bounds:
+                counts = Counter()
+                for batch in pq.ParquetFile(dataset.tables[table].path).iter_batches(
+                    columns=[column]
+                ):
+                    counts.update(batch.column(0).to_pylist())
+                bounds[key] = max(counts.values(), default=1)
+            return bounds[key]
+
+        bound = definition.get("history_bound")
+        inputs = profile(binding, "input")
+        relations = {row[0]: row for row in definition["relations"]}
+        capacity = 0
+        for _, path, _, _ in inputs.get("families", ()):
+            table, population_bound = inputs["root_table"], 1
+            for relation in path:
+                edge = relations[relation]
+                if table == edge[1]:
+                    table = edge[3]
+                elif table == edge[3]:
+                    table = edge[1]
+                else:
+                    raise ValueError(f"Disconnected history path at {relation}")
+                population_bound *= pq.read_metadata(
+                    dataset.tables[table].path
+                ).num_rows
+            direct = relations[path[0]] if len(path) == 1 else None
+            if (
+                bound
+                and direct
+                and direct[1] == inputs["root_table"]
+                and direct[3] == bound["table"]
+                and direct[4] == bound["entity"]
+            ):
+                capacity += degree(bound["table"], bound["entity"])
+            else:
+                # Row products bound every path occurrence, including repeated
+                # families and alternate joins; they may conservatively overcount.
+                capacity += population_bound
+        graph_capacity = 1
+        if binding["representation"] in {"graphsage", "combined"}:
+            for relation in inputs["graph"]["relations"]:
+                edge = relations[relation]
+                if (
+                    edge[1] != inputs["root_table"]
+                    or edge[3] != inputs["graph"]["node_table"]
+                ):
+                    raise ValueError(
+                        f"Graph profile requires a direct root-to-node relation: {relation}"
+                    )
+                graph_capacity = max(graph_capacity, degree(edge[3], edge[4]))
+    return dataset, anchors, population, mapping, max(graph_capacity, capacity, 1)
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

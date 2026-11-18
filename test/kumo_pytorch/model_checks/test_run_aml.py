@@ -4,19 +4,18 @@
 
 """Exercise the real-data runner on a tiny raw AML-format Parquet fixture."""
 
-import json
 import os
 import subprocess
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 from test.kumo_pytorch import run_aml
 from test.kumo_pytorch.aml_source import (
     account_identity_map,
     prepare_aml_sources,
     prepared_dataset,
 )
+from test.kumo_pytorch.bindings import selections as catalog_selections
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.run_aml import run_case
 
@@ -96,11 +95,7 @@ def mapped(tmp_path_factory):
 
 
 CASES = [
-    (record, family)
-    for record in json.loads(
-        (Path(__file__).parents[1] / "workloads/aml.json").read_text()
-    )
-    for family in record["models"]
+    (record, family) for record in catalog_selections() for family in record["models"]
 ]
 
 

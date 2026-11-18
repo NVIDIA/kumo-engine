@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in CI enforcement of the reviewed AML test inventory and execution."""
+"""Opt-in CI enforcement of the reviewed dataset/model test inventory and execution."""
 
 import json
 from pathlib import Path
@@ -14,7 +14,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--required-coverage",
         choices=("cpu", "gpu"),
-        help="Require the reviewed AML cases; reject missing cases, skips and xfails",
+        help="Require the reviewed dataset/model cases; reject missing cases, skips and xfails",
     )
 
 
@@ -28,7 +28,7 @@ def pytest_configure(config):
             Path(__file__).with_name("required-tests.json").read_text()
         )
         config.pluginmanager.register(
-            RequiredCoverage(profile, manifest), "aml-required-coverage"
+            RequiredCoverage(profile, manifest), "dataset-required-coverage"
         )
 
 
@@ -43,7 +43,7 @@ class RequiredCoverage:
             or len(self.expected) != len(manifest[profile])
         ):
             raise pytest.UsageError(
-                "Required AML inventory must be nonempty, unique and have disjoint owners"
+                "Required dataset/model inventory must be nonempty, unique and have disjoint owners"
             )
         self.collected = set()
         self.calls = set()
@@ -67,7 +67,7 @@ class RequiredCoverage:
         extra = self.collected - self.expected
         if missing or extra:
             raise pytest.UsageError(
-                f"Required AML {self.profile} inventory differs: "
+                f"Required dataset/model {self.profile} inventory differs: "
                 f"missing={sorted(missing)}, unreviewed={sorted(extra)}"
             )
 
@@ -92,7 +92,7 @@ class RequiredCoverage:
         if self.problems:
             reporter = session.config.pluginmanager.getplugin("terminalreporter")
             if reporter:
-                reporter.write_sep("!", "Required AML coverage failed")
+                reporter.write_sep("!", "Required dataset/model coverage failed")
                 for problem in self.problems:
                     reporter.write_line(problem)
             session.exitstatus = pytest.ExitCode.TESTS_FAILED

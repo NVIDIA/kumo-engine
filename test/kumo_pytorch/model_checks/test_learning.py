@@ -21,7 +21,7 @@ from test.kumo_pytorch.masked_values import (
     verify_loss,
     verify_targets,
 )
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 
 import pytest
 import torch

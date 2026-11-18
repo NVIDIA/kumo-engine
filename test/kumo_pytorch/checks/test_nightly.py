@@ -11,6 +11,7 @@ from test.kumo_pytorch import nightly
 
 import pytest
 
+from .test_binding_results import reports as binding_reports
 from .test_fitting_memory import runs
 
 
@@ -41,6 +42,7 @@ def fitting_reports(root, case):
 
 
 def reports(root):
+    binding_reports(root)
     for row in nightly.matrix()["include"]:
         case = row["case"]
         selection, family = nightly.selected_cases(case)[0]
@@ -55,21 +57,6 @@ def reports(root):
                 },
             )
             write(base / case / "results.json", {"status": "complete", "runs": []})
-        for mode in ("smoke", "full"):
-            write(
-                root / mode / case / "report.json",
-                {
-                    "status": "passed",
-                    "full_population_verified": mode == "full",
-                    "cases": [
-                        {
-                            "selector": selection["selector"],
-                            "family": family,
-                            "status": "passed",
-                        }
-                    ],
-                },
-            )
 
 
 def test_plan_has_every_binding_and_no_native_import_requirement():
@@ -113,8 +100,8 @@ def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
 
 def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
     reports(tmp_path)
-    result = nightly.summarize(tmp_path)
-    assert result["status"] == "passed" and len(result["shards"]) == 40
+    result = nightly.summarize(tmp_path, "fixture-revision")
+    assert result["status"] == "passed" and len(result["shards"]) == 54
     case = nightly.matrix()["include"][0]["case"]
     combined = json.loads((tmp_path / "fitting" / case / "report.json").read_text())
     assert len(combined["cases"][0]["runs"]) == 6
@@ -127,16 +114,18 @@ def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
 @pytest.mark.parametrize("empty", [False, True])
 def test_summary_retains_refusals_without_claiming_population(tmp_path, fault, empty):
     reports(tmp_path)
-    case = nightly.matrix()["include"][0]["case"]
-    path = tmp_path / "full" / case / "report.json"
+    path = tmp_path / "full" / "E01" / "report.json"
     report = json.loads(path.read_text())
     report["full_population_verified"] = False
-    selected = report["cases"][0]
+    selected = report
     selected.update(
+        stage="prepare",
         outcome="refused",
         full_population_verified=False,
         splits={"train": {"status": "not_executed", "delivered": 0}},
         refusal={
+            "outcome": "refused",
+            "engine": "diskgraph",
             "stage": "preflight",
             "execution": "not_started",
             "issues": [
@@ -169,13 +158,13 @@ def test_summary_retains_refusals_without_claiming_population(tmp_path, fault, e
     elif fault == "delivered":
         selected["splits"]["train"]["delivered"] = 1
     write(path, report)
-    result = nightly.summarize(tmp_path)
+    result = nightly.summarize(tmp_path, "fixture-revision")
     assert result["status"] == ("passed" if fault is None else "failed")
     if fault is None:
         row = next(
             row
             for row in result["shards"]
-            if row["case"] == case and row["kind"] == "full"
+            if row["case"] == "E01" and row["kind"] == "full"
         )
         assert row["outcome"] == "refused" and row["refusal"] == selected["refusal"]
         assert "passed (refused)" in (tmp_path / "report.md").read_text()
@@ -207,9 +196,9 @@ def test_summary_rejects_lost_or_substituted_shards(tmp_path, fault):
             },
         )
     elif fault == "missing-population":
-        (tmp_path / "full" / case / "report.json").unlink()
+        (tmp_path / "full" / "E01" / "report.json").unlink()
     elif fault == "partial-population":
-        path = tmp_path / "full" / case / "report.json"
+        path = tmp_path / "full" / "E01" / "report.json"
         report = json.loads(path.read_text())
         report["full_population_verified"] = False
         write(path, report)
@@ -224,6 +213,6 @@ def test_summary_rejects_lost_or_substituted_shards(tmp_path, fault):
             else:
                 report["cases"][0]["runs"][0]["spec_sha256"] = "changed-inputs"
             write(path, report)
-    result = nightly.summarize(tmp_path)
+    result = nightly.summarize(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["shards"]) == 40  # Failure never suppresses other reports.
+    assert len(result["shards"]) == 54  # Failure never suppresses other reports.

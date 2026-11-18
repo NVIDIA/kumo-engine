@@ -12,7 +12,7 @@ from dataclasses import replace
 from test.kumo_pytorch.anchor_tables import write_probe_anchors
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.training_lifecycle import check_training
 
 import pytest

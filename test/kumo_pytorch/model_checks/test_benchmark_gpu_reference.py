@@ -7,9 +7,9 @@
 import json
 import os
 from collections.abc import Mapping
-from test.kumo_pytorch.aml_benchmark import counts, factory
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
+from test.kumo_pytorch.benchmarking.kumo import factory
 
 import pytest
 import torch
@@ -49,10 +49,12 @@ def test_gpu_loader_timings_and_state_reuse(source, workload, family):  # noqa: 
     def adapter(config, workdir):
         result = factory(config, workdir)
 
+        count_inputs = result.count
+
         def count(batch):
             payload = list(tensors(batch.inputs)) + list(tensors(batch.targets))
             assert payload and all(t.device.type == "cuda" for t in payload)
-            return counts(batch)
+            return count_inputs(batch)
 
         result.count = count
         return result

@@ -16,7 +16,7 @@ identifies the PDF's three AML workloads:
 | [a018](https://github.com/kumo-ai/kumo-engine-arena/blob/ebf3fd4ac4d4ee8a6bb549f4b2c0025174f78986/rdl_specs/verification-accepted.md#a018) | Next-token pretraining | nuFormer | v1, `split` |
 
 All use HI-small v8. The runner also includes the existing GraphSAGE and nuFormer
-account-involvement cases, using [the shared declarations](../workloads/aml.json).
+account-involvement cases, using [the shared declarations](../workloads/bindings.json).
 Historical a001 used v1; our graph cases deliberately use the user-approved v2
 cutoff correction. Historical acceptance is not evidence for these current
 contracts or the current Engine commit. Arena is a documentation reference only,

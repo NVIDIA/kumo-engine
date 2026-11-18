@@ -125,72 +125,6 @@ jobs:
           path: ${{ runner.temp }}/benchmark-memory
           retention-days: 14
 
-  aml-training-acceptance:
-    name: Training / AML / Acceptance
-    needs: diskgraph-wheel
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    environment:
-      name: gha-kumo-workflow-tests
-      deployment: false
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        working-directory: .
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-          torch-extra: cpu
-      - name: Read pinned AML inputs with the Engine test role
-        id: aml-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-          output-env-credentials: false
-          output-credentials: true
-          unset-current-credentials: true
-      - name: Download and verify pinned sources and anchors
-        env:
-          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
-        run: |
-          python -m test.kumo_pytorch.data fetch --dataset hi-small \
-            --data-dir "$RUNNER_TEMP/aml-training-data" --report "$RUNNER_TEMP/aml-training-acquisition.json"
-      - name: Train all five AML model-workload combinations for 100 CPU updates and repeat exactly
-        run: |
-          python -m test.kumo_pytorch.training_acceptance \
-            --data-dir "$RUNNER_TEMP/aml-training-data" --output "$RUNNER_TEMP/aml-training" \
-            --anchors-per-split 32 --batch-size 4
-      - name: Show training acceptance results
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/aml-training/report.md" ]; then
-            cat "$RUNNER_TEMP/aml-training/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Retain loss curves and per-parameter update reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ always() }}
-        with:
-          name: kumo-pytorch-aml-training-acceptance
-          path: |
-            ${{ runner.temp }}/aml-training-acquisition.json
-            ${{ runner.temp }}/aml-training/report.json
-            ${{ runner.temp }}/aml-training/report.md
-            ${{ runner.temp }}/aml-training/*/report.json
-            ${{ runner.temp }}/aml-training/*/contract.json
-            ${{ runner.temp }}/aml-training/*/repeat-*/report.json
-            ${{ runner.temp }}/aml-training/*/repeat-*/loss-curve.csv
-          retention-days: 14
-
   aml-fitting-memory:
     name: >-
       Memory / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / Repeat ${{ fromJSON('[1,2,3]')[matrix.repeat] }}
@@ -198,9 +132,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
-      matrix:
-        case: ${{ fromJSON(needs.plan.outputs.aml_cases) }}
-        repeat: [0, 1, 2]
+      matrix: ${{ fromJSON(needs.plan.outputs.fitting_cases) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     environment:
@@ -214,6 +146,7 @@ jobs:
         working-directory: .
     env:
       AML_CASE: ${{ matrix.case }}
+      DATASET: ${{ matrix.dataset }}
       AML_REPEAT: ${{ matrix.repeat }}
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
@@ -243,7 +176,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
         run: |
-          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+          python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-fitting-data" --report "$RUNNER_TEMP/aml-fitting-acquisition.json"
       - name: Compare fresh fitting at 25k and 400k training anchors
         run: |
@@ -265,7 +198,7 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP'])
           source = root / 'aml-fitting-memory'
-          dest = root / 'aml-parallel' / 'fitting' / os.environ['AML_CASE'] / ('repeat-' + os.environ['AML_REPEAT'])
+          dest = root / 'pytorch-campaigns' / 'fitting' / os.environ['AML_CASE'] / ('repeat-' + os.environ['AML_REPEAT'])
           for pattern in ('report.json', 'report.md', 'inputs/*/spec.json', 'inputs/*/contract.json',
                           'runs/*/report.json', 'runs/*/*.log', 'runs/*/*/report.json', 'runs/*/*/observations.jsonl'):
               for path in source.glob(pattern):
@@ -279,12 +212,12 @@ jobs:
         with:
           name: kumo-pytorch-aml-parallel-fitting-${{ matrix.case }}-${{ matrix.repeat }}
           path: |
-            ${{ runner.temp }}/aml-parallel/**/report.json
-            ${{ runner.temp }}/aml-parallel/**/report.md
-            ${{ runner.temp }}/aml-parallel/**/spec.json
-            ${{ runner.temp }}/aml-parallel/**/contract.json
-            ${{ runner.temp }}/aml-parallel/**/*.log
-            ${{ runner.temp }}/aml-parallel/**/observations.jsonl
+            ${{ runner.temp }}/pytorch-campaigns/**/report.json
+            ${{ runner.temp }}/pytorch-campaigns/**/report.md
+            ${{ runner.temp }}/pytorch-campaigns/**/spec.json
+            ${{ runner.temp }}/pytorch-campaigns/**/contract.json
+            ${{ runner.temp }}/pytorch-campaigns/**/*.log
+            ${{ runner.temp }}/pytorch-campaigns/**/observations.jsonl
           if-no-files-found: error
           retention-days: 14
 
@@ -367,9 +300,7 @@ jobs:
     # Each measurement has its own runner; do not contend for one GPU.
     strategy:
       fail-fast: false
-      matrix:
-        case: ${{ fromJSON(needs.plan.outputs.aml_cases) }}
-        mode: [training, index, timing-diskgraph, timing-polars, timing-gpu]
+      matrix: ${{ fromJSON(needs.plan.outputs.benchmark_cases) }}
     runs-on:
       group: nv-gpu-amd64-rtxpro6000-1gpu
       labels: linux-amd64-gpu-rtxpro6000-latest-1
@@ -385,6 +316,7 @@ jobs:
         working-directory: .
     env:
       AML_CASE: ${{ matrix.case }}
+      DATASET: ${{ matrix.dataset }}
       AML_MODE: ${{ matrix.mode }}
       POLARS_MAX_THREADS: '4'
     steps:
@@ -413,7 +345,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
         run: |
-          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+          python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
       - name: Plan the selected campaign
         run: |
@@ -436,7 +368,7 @@ jobs:
           if [[ "$AML_MODE" == timing-* ]]; then options+=(--measurement-profile timing); fi
           python -m test.kumo_pytorch.benchmarking.suite \
             --config "$RUNNER_TEMP/aml-case.json" \
-            --output "$RUNNER_TEMP/aml-parallel/$AML_MODE/$AML_CASE" \
+            --output "$RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE" \
             --isolate-memory --repetitions 3 --epochs 2 --worker-timeout 1800 \
             --gpu-interval 0.1 --memory-method sampled --memory-interval 0.01 "${options[@]}"
       - name: Validate sampled host memory on the GPU host
@@ -455,18 +387,18 @@ jobs:
       - name: Show this campaign's results
         if: ${{ always() }}
         run: |
-          report="$RUNNER_TEMP/aml-parallel/$AML_MODE/$AML_CASE/report.md"
+          report="$RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE/report.md"
           if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
           name: kumo-pytorch-aml-parallel-${{ matrix.mode }}-${{ matrix.case }}
           path: |
-            ${{ runner.temp }}/aml-parallel/**
-            !${{ runner.temp }}/aml-parallel/**/work/**
-            !${{ runner.temp }}/aml-parallel/**/*-fitted-state/**
-            !${{ runner.temp }}/aml-parallel/**/shared-index/**
-            !${{ runner.temp }}/aml-parallel/**/shared-prepared/**
+            ${{ runner.temp }}/pytorch-campaigns/**
+            !${{ runner.temp }}/pytorch-campaigns/**/work/**
+            !${{ runner.temp }}/pytorch-campaigns/**/*-fitted-state/**
+            !${{ runner.temp }}/pytorch-campaigns/**/shared-index/**
+            !${{ runner.temp }}/pytorch-campaigns/**/shared-prepared/**
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -478,16 +410,13 @@ jobs:
             ${{ runner.temp }}/aml-acquisition.json
           retention-days: 14
 
-  aml-population:
-    name: >-
-      Population / ${{ fromJSON('{"account-involvement-next24h-graphsage":"AML Involvement / GraphSAGE","account-involvement-next24h-combined":"AML Involvement / Fusion","account-involvement-next24h-nuformer":"AML Involvement / nuFormer","masked-value-pretrain-pragma":"AML Masked-Value / PRAGMA","next-token-pretrain-nuformer":"AML Next-Token / nuFormer"}')[matrix.case] || matrix.case }} / ${{ matrix.mode == 'full' && 'Full' || 'Smoke' }}
+  dataset-campaigns:
+    name: Dataset / ${{ matrix.dataset }} / ${{ matrix.binding }} / ${{ matrix.mode }}
     needs: [diskgraph-wheel, plan]
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
-      matrix:
-        case: ${{ fromJSON(needs.plan.outputs.aml_cases) }}
-        mode: [smoke, full]
+      matrix: ${{ fromJSON(needs.plan.outputs.dataset_campaigns) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     environment:
@@ -500,8 +429,11 @@ jobs:
       run:
         working-directory: .
     env:
-      AML_CASE: ${{ matrix.case }}
-      AML_MODE: ${{ matrix.mode }}
+      BINDING: ${{ matrix.binding }}
+      CAMPAIGN: ${{ matrix.mode }}
+      DATASET: ${{ matrix.dataset }}
+      BATCH_SIZE: ${{ matrix.batch_size }}
+      THREADS: ${{ matrix.threads }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -526,30 +458,37 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
         run: |
-          python -m test.kumo_pytorch.data fetch --dataset hi-small \
+          python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
-      - name: Check the complete selected population
+      - name: Check the selected binding
         run: |
-          options=()
-          if [[ "$AML_MODE" == smoke ]]; then options+=(--smoke-anchors 4); fi
-          python -m test.kumo_pytorch.population --case "$AML_CASE" --mode "$AML_MODE" \
+          python -m test.kumo_pytorch.nightly run --binding "$BINDING" --mode "$CAMPAIGN" \
             --data-dir "$RUNNER_TEMP/aml-data" \
-            --output "$RUNNER_TEMP/aml-parallel/$AML_MODE/$AML_CASE" \
-            --batch-size 4 --threads 4 "${options[@]}"
-      - name: Show population results
+            --output "$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING" \
+            --batch-size "$BATCH_SIZE" --threads "$THREADS"
+      - name: Show binding results
         if: ${{ always() }}
         run: |
-          report="$RUNNER_TEMP/aml-parallel/$AML_MODE/$AML_CASE/report.md"
+          report="$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING/report.md"
           if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
-          name: kumo-pytorch-aml-parallel-${{ matrix.mode }}-${{ matrix.case }}
+          name: kumo-pytorch-dataset-${{ matrix.mode }}-${{ matrix.binding }}
           path: |
-            ${{ runner.temp }}/aml-parallel/**/report.json
-            ${{ runner.temp }}/aml-parallel/**/report.md
-            ${{ runner.temp }}/aml-parallel/**/contract.json
+            ${{ runner.temp }}/pytorch-campaigns/**/report.json
+            ${{ runner.temp }}/pytorch-campaigns/**/report.md
+            ${{ runner.temp }}/pytorch-campaigns/**/contract.json
+            ${{ runner.temp }}/pytorch-campaigns/**/loss-curve.csv
+            ${{ runner.temp }}/pytorch-campaigns/**/model.pt
           if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-acquisition-${{ matrix.mode }}-${{ matrix.binding }}
+          path: ${{ runner.temp }}/aml-acquisition.json
           retention-days: 14
 
   aml-lifecycle:
@@ -635,8 +574,8 @@ jobs:
           retention-days: 14
 
   aml-summary:
-    name: Results / AML Summary
-    needs: [plan, benchmark-aml, aml-fitting-memory, aml-population, aml-lifecycle, aml-training-acceptance]
+    name: Results / Dataset Campaigns
+    needs: [plan, benchmark-aml, aml-fitting-memory, dataset-campaigns, aml-lifecycle]
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -650,13 +589,20 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: kumo-pytorch-aml-parallel-*
-          path: ${{ runner.temp }}/aml-parallel
+          path: ${{ runner.temp }}/pytorch-campaigns
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: ${{ always() }}
+        with:
+          pattern: kumo-pytorch-dataset-*
+          path: ${{ runner.temp }}/pytorch-campaigns
           merge-multiple: true
       - name: Account for every shard and compare all loader timings
+        if: ${{ always() }}
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
-          python3 -m test.kumo_pytorch.nightly summary --directory "$RUNNER_TEMP/aml-parallel"
+          python3 -m test.kumo_pytorch.nightly summary --directory "$RUNNER_TEMP/pytorch-campaigns" --revision "$GITHUB_SHA"
           python3 - <<'PYCODE'
           import json, os
           results = json.loads(os.environ['JOB_RESULTS'])
@@ -665,14 +611,14 @@ jobs:
       - name: Show combined results
         if: ${{ always() }}
         run: |
-          if [ -f "$RUNNER_TEMP/aml-parallel/report.md" ]; then
-            cat "$RUNNER_TEMP/aml-parallel/report.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/pytorch-campaigns/report.md" ]; then
+            cat "$RUNNER_TEMP/pytorch-campaigns/report.md" >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
-          name: kumo-pytorch-aml-benchmarks
-          path: ${{ runner.temp }}/aml-parallel
+          name: kumo-pytorch-campaign-results
+          path: ${{ runner.temp }}/pytorch-campaigns
           if-no-files-found: error
           retention-days: 14
 
@@ -707,7 +653,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      aml_cases: ${{ steps.aml.outputs.cases }}
+      benchmark_cases: ${{ steps.aml.outputs.benchmark_cases }}
+      fitting_cases: ${{ steps.aml.outputs.fitting_cases }}
+      dataset_campaigns: ${{ steps.aml.outputs.dataset_campaigns }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -719,10 +667,12 @@ jobs:
         run: |
           python3 - <<'PYCODE'
           import json, os
-          from test.kumo_pytorch.nightly import matrix
+          from test.kumo_pytorch.nightly import matrix, campaign_matrix
           selected = matrix()
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('cases=' + json.dumps([row['case'] for row in selected['include']]) + '\n')
+              output.write('benchmark_cases=' + json.dumps({'include': [{**row, 'mode': mode} for row in selected['include'] for mode in ('training', 'index', 'timing-diskgraph', 'timing-polars', 'timing-gpu')]}) + '\n')
+              output.write('fitting_cases=' + json.dumps({'include': [{**row, 'repeat': repeat} for row in selected['include'] for repeat in range(3)]}) + '\n')
+              output.write('dataset_campaigns=' + json.dumps({'include': campaign_matrix('training')['include'] + campaign_matrix('population')['include']}) + '\n')
           PYCODE
 
   run:
@@ -857,7 +807,7 @@ jobs:
 
   nightly-result:
     name: Results / Complete Nightly
-    needs: [dataset-tooling, diskgraph-wheel, benchmark-memory, aml-training-acceptance, aml-fitting-memory, benchmark-gpu, benchmark-aml, aml-population, aml-lifecycle, aml-summary, package-regressions, plan, run, aml-model-checks, checks, conformance]
+    needs: [dataset-tooling, diskgraph-wheel, benchmark-memory, aml-fitting-memory, benchmark-gpu, benchmark-aml, dataset-campaigns, aml-lifecycle, aml-summary, package-regressions, plan, run, aml-model-checks, checks, conformance]
     if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

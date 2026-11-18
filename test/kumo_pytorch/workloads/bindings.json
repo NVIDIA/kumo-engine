@@ -1,0 +1,1522 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "repository": "https://github.com/kumo-ai/kumo-engine-arena",
+    "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+    "files": {
+      "kumo_specs/workload-selection.v1.json": "17068718d8057c291c5e4087c8143c65723190e4528ff3ed90101f66ab219b99",
+      "benchmarks/registry/anchors.v1.json": "e4e83aaa3b2312d5c749e3310dd6625db2f4abb99cbbcc59169505ac9cebd825"
+    }
+  },
+  "bindings": [
+    {
+      "ref": "E01",
+      "binding_id": "kumo-binding-df6cf994161c360dac8eed2fd75823e568812607471d9e4e74a9bb9c4ffa52b9",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "graphsage",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "involvement": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "semantics": "aml-account-involvement-next24h-v2",
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "lifecycle",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "timing-polars",
+        "timing-gpu",
+        "fitting"
+      ],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast-graph",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1
+      },
+      "case": "account-involvement-next24h-graphsage"
+    },
+    {
+      "ref": "E02",
+      "binding_id": "kumo-binding-0b7ba9313e19cae69aec45e615aaf123e1ad27506efd3a3502ed7e4f3b61b4b2",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "combined",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "involvement": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "semantics": "aml-account-involvement-next24h-v2",
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "lifecycle",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "timing-polars",
+        "timing-gpu",
+        "fitting"
+      ],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast-graph",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1
+      },
+      "case": "account-involvement-next24h-combined"
+    },
+    {
+      "ref": "E03",
+      "binding_id": "kumo-binding-b1bfeb2538aaff06bcfdb4a4d8cbc74005102e9aa9c933680a5ff6456d7146f6",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "masked-value-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "pragma",
+      "split_column": "split",
+      "targets": {},
+      "semantics": "aml-masked-value-pretrain-v1",
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "lifecycle",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "timing-polars",
+        "timing-gpu",
+        "fitting"
+      ],
+      "inputs": "account-transactions",
+      "task": "masked-value-pretrain",
+      "anchors": "daily-pretrain",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1
+      },
+      "case": "masked-value-pretrain-pragma"
+    },
+    {
+      "ref": "E04",
+      "binding_id": "kumo-binding-f665a09c0be79cf81edf1c3107725913d90fd267fa7f6c387ab78510ef30f2a7",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-token-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {},
+      "semantics": "aml-next-token-pretrain-v1",
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "lifecycle",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "timing-polars",
+        "timing-gpu",
+        "fitting"
+      ],
+      "inputs": "account-transactions",
+      "task": "next-token-pretrain",
+      "anchors": "daily-pretrain",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1
+      },
+      "case": "next-token-pretrain-nuformer"
+    },
+    {
+      "ref": "E05",
+      "binding_id": "suite:aml-hi-small-involvement-nuformer",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "involvement": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "semantics": "aml-account-involvement-next24h-v1",
+      "origin": "Existing suite combination, additional to the PDF baseline",
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "lifecycle",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "timing-polars",
+        "timing-gpu",
+        "fitting"
+      ],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1
+      },
+      "case": "account-involvement-next24h-nuformer"
+    },
+    {
+      "ref": "L01",
+      "binding_id": "kumo-binding-7a40060237eb9ad8c664793abc87888879efbb99bc2ca964a535caaf68e3122a",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-amount-currency"
+      },
+      "input_variant": "default",
+      "representation": "combined",
+      "split_column": "forecast_split",
+      "targets": {
+        "amount": {
+          "all_true_columns": [],
+          "column": "next_amount",
+          "dtype": "DECIMAL(38,10)",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "next_amount": {
+              "dtype": "DECIMAL(38,10)",
+              "kind": "decimal_regression",
+              "nullable": true
+            }
+          }
+        },
+        "currency": {
+          "all_true_columns": [],
+          "column": "next_currency",
+          "dtype": "VARCHAR",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "next_currency": {
+              "kind": "categorical",
+              "nullable": true
+            }
+          }
+        }
+      },
+      "campaigns": [
+        "training",
+        "smoke",
+        "full"
+      ],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-amount-currency",
+      "anchors": "daily-forecast-graph",
+      "execution": {
+        "batch_size": 32,
+        "threads": 1
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.involvement:combined_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F03",
+          "F04",
+          "F05",
+          "F07",
+          "F08",
+          "F10",
+          "F11",
+          "F14"
+        ],
+        "source_targets": {
+          "smoke": "test.kumo_pytorch.targets:verify_next_outgoing"
+        }
+      }
+    },
+    {
+      "ref": "L02",
+      "binding_id": "kumo-binding-a89cd63158411b5899a9cb49d3dc0ba4858301950a6e26154c105acade5e88bc",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-delay"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "next_delay_seconds",
+          "dtype": "DOUBLE",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "next_delay_seconds": {
+              "kind": "regression",
+              "nullable": true,
+              "units": "seconds"
+            }
+          }
+        }
+      },
+      "campaigns": [
+        "training",
+        "full"
+      ],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-delay",
+      "anchors": "daily-forecast",
+      "execution": {
+        "batch_size": 32,
+        "threads": 1
+      }
+    },
+    {
+      "ref": "L03",
+      "binding_id": "kumo-binding-e7ffe3f2ecb17f5a8a24b6020be91f83105f8ca368d913d067d7ed1f74172e9e",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-format"
+      },
+      "input_variant": "default",
+      "representation": "graphsage",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "next_format",
+          "dtype": "VARCHAR",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "next_format": {
+              "kind": "categorical",
+              "nullable": "no event in horizon"
+            }
+          }
+        }
+      },
+      "campaigns": [
+        "training",
+        "full"
+      ],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-format",
+      "anchors": "daily-forecast-graph",
+      "execution": {
+        "batch_size": 32,
+        "threads": 1
+      }
+    },
+    {
+      "ref": "L04",
+      "binding_id": "kumo-binding-aae23270c079c2e03f5890d00147d5c98de04038881ffee9baa8f1d53b152c22",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "pragma",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "involvement": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "campaigns": [
+        "training",
+        "full"
+      ],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast",
+      "execution": {
+        "batch_size": 32,
+        "threads": 1
+      }
+    },
+    {
+      "ref": "S01",
+      "binding_id": "kumo-binding-c233cc4c1a1df11b3045558632072c8916724fd27a28a11a8f34d6f4cabbca33",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "weekly-account",
+        "workload_id": "account-masked-value-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "pragma",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "S02",
+      "binding_id": "kumo-binding-41605c06ba4a8facd8e18ee7034b4509a5098b3eb42a905069e707f78ca3566e",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "weekly-customer",
+        "workload_id": "customer-next-token-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "S03",
+      "binding_id": "kumo-binding-010c09e824f1a02885688c9ee8f57116dbf964905a6b44c9c0898f1eda90ab2a",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "weekly-account",
+        "workload_id": "aml_graph_user_last30d"
+      },
+      "input_variant": "default",
+      "representation": "graphsage",
+      "split_column": "split_aml_graph_user_last30d",
+      "targets": {
+        "label": {
+          "all_true_columns": [
+            "valid_aml_graph_user_last30d"
+          ],
+          "column": "label_aml_graph_user_last30d",
+          "dtype": "BOOLEAN",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "aml_graph_user_last30d": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "S04",
+      "binding_id": "kumo-binding-a53f69f20fa7930d17ea648a3c074f6eb02e881b8d131dd9a98fb2c2458925fa",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "ltv_positive_6m",
+        "workload_id": "ltv_positive_6m"
+      },
+      "input_variant": "default",
+      "representation": "combined",
+      "split_column": "split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "label",
+          "dtype": "BOOLEAN",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "label": {
+              "kind": "binary"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "M01",
+      "binding_id": "kumo-binding-5bdf42f5278436d5408e0ba57c34c719a5d056e29391d7cc9a1a2f1841b207ef",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "product-uptake",
+        "workload_id": "uptake-joint"
+      },
+      "input_variant": "trx",
+      "representation": "combined",
+      "split_column": "split",
+      "targets": {
+        "acquiring_target": {
+          "all_true_columns": [
+            "acquiring_valid"
+          ],
+          "column": "acquiring_target",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "acquiring_target": {
+              "kind": "binary",
+              "source": "targets.acquiring_target; stored supplied value preserved",
+              "validity_column": "acquiring_valid"
+            }
+          }
+        },
+        "bcard_target": {
+          "all_true_columns": [
+            "bcard_valid"
+          ],
+          "column": "bcard_target",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "bcard_target": {
+              "kind": "binary",
+              "source": "targets.bcard_target; stored supplied value preserved",
+              "validity_column": "bcard_valid"
+            }
+          }
+        },
+        "cred_target": {
+          "all_true_columns": [
+            "cred_valid"
+          ],
+          "column": "cred_target",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "cred_target": {
+              "kind": "binary",
+              "source": "targets.cred_target; stored supplied value preserved",
+              "validity_column": "cred_valid"
+            }
+          }
+        },
+        "zp_target": {
+          "all_true_columns": [
+            "zp_valid"
+          ],
+          "column": "zp_target",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "zp_target": {
+              "kind": "binary",
+              "source": "targets.zp_target; stored supplied value preserved",
+              "validity_column": "zp_valid"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "M02",
+      "binding_id": "kumo-binding-8f43cf6c0c8babbaede0b0f0ad1f09a70f34059a968d927c07caab1d32f25bc8",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "transaction-forecast",
+        "workload_id": "next-transaction-amount-currency"
+      },
+      "input_variant": "trx",
+      "representation": "pragma",
+      "split_column": "split",
+      "targets": {
+        "amount": {
+          "all_true_columns": [
+            "next_amount_currency_valid"
+          ],
+          "column": "next_amount",
+          "dtype": "DOUBLE",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "amount": {
+              "kind": "numeric",
+              "validity_column": "next_amount_currency_valid"
+            }
+          }
+        },
+        "currency": {
+          "all_true_columns": [
+            "next_currency_valid"
+          ],
+          "column": "next_currency",
+          "dtype": "DOUBLE",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "currency": {
+              "kind": "categorical",
+              "validity_column": "next_currency_valid"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "M03",
+      "binding_id": "kumo-binding-13fb18707441aaa64085ce5bb9a27889bd752ab012ae6221f8217bffe29575f5",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "transaction-forecast",
+        "workload_id": "next-transaction-category"
+      },
+      "input_variant": "trx",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {
+        "event_subtype": {
+          "all_true_columns": [
+            "next_event_subtype_valid"
+          ],
+          "column": "next_event_subtype",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "event_subtype": {
+              "kind": "categorical",
+              "validity_column": "next_event_subtype_valid"
+            }
+          }
+        },
+        "event_type": {
+          "all_true_columns": [
+            "next_event_type_valid"
+          ],
+          "column": "next_event_type",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "event_type": {
+              "kind": "categorical",
+              "validity_column": "next_event_type_valid"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    },
+    {
+      "ref": "M04",
+      "binding_id": "kumo-binding-352a09604a3988b3d2e83e525858db1fe8b5418c92001439c2d93abe2fa6e68e",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "transaction-forecast",
+        "workload_id": "future-trx-count"
+      },
+      "input_variant": "trx",
+      "representation": "graphsage",
+      "split_column": "split",
+      "targets": {
+        "count": {
+          "all_true_columns": [],
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "count": {
+              "kind": "count",
+              "validity": "all rows have recorded-span coverage"
+            }
+          }
+        }
+      },
+      "campaigns": [],
+      "pending": "Dataset sources, contracts and execution are not yet ported."
+    }
+  ],
+  "datasets": {
+    "aml-data/hi-small": {
+      "inventory": "hi-small",
+      "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
+      "identity_path": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet",
+      "anchor_path": "anchors/aml-data/v8/hi-small/{population}/{version}/anchors.parquet",
+      "source_options": {
+        "variant": "hi-small",
+        "transactions": "datasets/aml-data/v8/hi-small/transactions.parquet",
+        "accounts_binding": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet"
+      },
+      "identity_column": "entity_id",
+      "history_bound": {
+        "table": "account_events",
+        "entity": "account_id"
+      },
+      "tables": {
+        "accounts": {
+          "key": "account_id",
+          "time": "first_observed_time"
+        },
+        "transactions": {
+          "key": "transaction_id",
+          "time": "event_time"
+        },
+        "account_events": {
+          "key": "event_id",
+          "time": "event_time"
+        }
+      },
+      "relations": [
+        [
+          "account_touches",
+          "accounts",
+          "account_id",
+          "account_events",
+          "account_id"
+        ],
+        [
+          "sender",
+          "accounts",
+          "account_id",
+          "transactions",
+          "sender_id"
+        ],
+        [
+          "receiver",
+          "accounts",
+          "account_id",
+          "transactions",
+          "receiver_id"
+        ]
+      ],
+      "anchor_manifest_format": "arena"
+    },
+    "aml-data/li-medium": {
+      "inventory": "li-medium",
+      "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
+      "identity_path": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet",
+      "anchor_path": "anchors/aml-data/v8/li-medium/{population}/{version}/anchors.parquet",
+      "source_options": {
+        "variant": "li-medium",
+        "transactions": "datasets/aml-data/v8/li-medium/transactions.parquet",
+        "accounts_binding": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet"
+      },
+      "identity_column": "entity_id",
+      "history_bound": {
+        "table": "account_events",
+        "entity": "account_id"
+      },
+      "tables": {
+        "accounts": {
+          "key": "account_id",
+          "time": "first_observed_time"
+        },
+        "transactions": {
+          "key": "transaction_id",
+          "time": "event_time"
+        },
+        "account_events": {
+          "key": "event_id",
+          "time": "event_time"
+        }
+      },
+      "relations": [
+        [
+          "account_touches",
+          "accounts",
+          "account_id",
+          "account_events",
+          "account_id"
+        ],
+        [
+          "sender",
+          "accounts",
+          "account_id",
+          "transactions",
+          "sender_id"
+        ],
+        [
+          "receiver",
+          "accounts",
+          "account_id",
+          "transactions",
+          "receiver_id"
+        ]
+      ],
+      "anchor_manifest_format": "arena"
+    }
+  },
+  "semantics": {
+    "aml-account-involvement-next24h-v2": {
+      "anchor_binding": {
+        "split_column": "forecast_split",
+        "status": "contract_integration_pending",
+        "targets": {
+          "label": "involvement"
+        }
+      },
+      "semantic": {
+        "auxiliary_columns": {
+          "propensity_column": null,
+          "treatment_column": null,
+          "validity_column": null
+        },
+        "columns": {
+          "as_of_time": {
+            "column": "as_of_time",
+            "dtype": "TIMESTAMP_NS"
+          },
+          "entity_id": {
+            "column": "entity_id",
+            "dtype": "VARCHAR"
+          },
+          "sample_id": {
+            "column": "sample_id",
+            "dtype": "VARCHAR"
+          },
+          "trigger_id": null
+        },
+        "epoch": {
+          "bounded_probe_is_complete_epoch": false,
+          "count_duplicate_deliveries": false,
+          "count_sampler_padding": false,
+          "definition": "one complete pass over one explicitly selected anchor split",
+          "distributed_accounting": "union of nonpadding sample IDs across all ranks",
+          "dropped_tail_is_complete_epoch": false,
+          "nonpadding_deliveries_per_selected_sample": 1,
+          "ordering_shuffle_rank_partition_change_population": false,
+          "population_kind": "stored_label",
+          "require_all_selected_samples": true,
+          "require_reported_padding_count": true,
+          "unexpected_duplicates_fail_complete_epoch": true,
+          "unique_identity": "sample_id"
+        },
+        "native_eligibility": {
+          "rule": null,
+          "status": "not_applicable",
+          "usable_training_example_count": null
+        },
+        "prediction_time_definition": {
+          "rule": "daily UTC midnight",
+          "source_precision": "minutes",
+          "stored_precision": "nanoseconds",
+          "timezone": "UTC benchmark interpretation of source naive timestamps"
+        },
+        "root_definition": {
+          "identity": [
+            "variant",
+            "normalized_bank_id",
+            "original_account_number"
+          ],
+          "object": "account",
+          "preserve_account_leading_zeros": true
+        },
+        "root_table": "accounts",
+        "selection": {
+          "fit_split": "train",
+          "implicit_target_row_filter": false,
+          "iteration_splits": [
+            "train",
+            "valid",
+            "test"
+          ],
+          "null_split_policy": "exclude",
+          "require_explicit_split": true,
+          "row_filter": "selected split only; target validity does not remove anchor rows",
+          "split_column": "forecast_split",
+          "split_dtype": "VARCHAR"
+        },
+        "target_validity": {
+          "apply_per_target": true,
+          "evaluation_rules": {
+            "missing_targets": "excluded per output",
+            "native_position_mask": null,
+            "outputs": {
+              "label": {
+                "all_true_columns": [],
+                "column": "involvement",
+                "non_null_required": true
+              }
+            },
+            "padding_rows": "excluded",
+            "recorded_non_null_counts_are_final_evaluation_counts": false,
+            "report_exclusion_counts": true
+          },
+          "invalid_target_action": "mask that output; retain the selected anchor row",
+          "replace_missing_with_zero": false
+        },
+        "targets": {
+          "label": {
+            "all_true_columns": [],
+            "column": "involvement",
+            "dtype": "INTEGER",
+            "non_null_required": true,
+            "population_target_specifications": {
+              "involvement": {
+                "kind": "binary"
+              }
+            }
+          }
+        },
+        "trigger_definition": {
+          "cadence": "P1D",
+          "kind": "daily_cutoff",
+          "time_of_day": "00:00:00"
+        }
+      },
+      "execution_cutoff": {
+        "current_context": "unchanged; a trigger is not historical graph context",
+        "execution_time_column": "graph_as_of_time",
+        "execution_time_rule": "floor((prediction_time_epoch_ns - 1) / 1000000000)",
+        "execution_time_unit": "seconds",
+        "graph_upper_bound": "inclusive",
+        "labels_and_splits": "preserved from the source anchor population",
+        "permitted_history": "original source event_time < original prediction_time",
+        "policy_id": "inclusive-seconds-v1",
+        "prediction_time_column": "as_of_time"
+      }
+    },
+    "aml-account-involvement-next24h-v1": {
+      "anchor_binding": {
+        "split_column": "forecast_split",
+        "status": "contract_integration_pending",
+        "targets": {
+          "label": "involvement"
+        }
+      },
+      "semantic": {
+        "auxiliary_columns": {
+          "propensity_column": null,
+          "treatment_column": null,
+          "validity_column": null
+        },
+        "columns": {
+          "as_of_time": {
+            "column": "as_of_time",
+            "dtype": "TIMESTAMP_NS"
+          },
+          "entity_id": {
+            "column": "entity_id",
+            "dtype": "VARCHAR"
+          },
+          "sample_id": {
+            "column": "sample_id",
+            "dtype": "VARCHAR"
+          },
+          "trigger_id": null
+        },
+        "epoch": {
+          "bounded_probe_is_complete_epoch": false,
+          "count_duplicate_deliveries": false,
+          "count_sampler_padding": false,
+          "definition": "one complete pass over one explicitly selected anchor split",
+          "distributed_accounting": "union of nonpadding sample IDs across all ranks",
+          "dropped_tail_is_complete_epoch": false,
+          "nonpadding_deliveries_per_selected_sample": 1,
+          "ordering_shuffle_rank_partition_change_population": false,
+          "population_kind": "stored_label",
+          "require_all_selected_samples": true,
+          "require_reported_padding_count": true,
+          "unexpected_duplicates_fail_complete_epoch": true,
+          "unique_identity": "sample_id"
+        },
+        "native_eligibility": {
+          "rule": null,
+          "status": "not_applicable",
+          "usable_training_example_count": null
+        },
+        "prediction_time_definition": {
+          "rule": "daily UTC midnight",
+          "source_precision": "minutes",
+          "stored_precision": "nanoseconds",
+          "timezone": "UTC benchmark interpretation of source naive timestamps"
+        },
+        "root_definition": {
+          "identity": [
+            "variant",
+            "normalized_bank_id",
+            "original_account_number"
+          ],
+          "object": "account",
+          "preserve_account_leading_zeros": true
+        },
+        "root_table": "accounts",
+        "selection": {
+          "fit_split": "train",
+          "implicit_target_row_filter": false,
+          "iteration_splits": [
+            "train",
+            "valid",
+            "test"
+          ],
+          "null_split_policy": "exclude",
+          "require_explicit_split": true,
+          "row_filter": "selected split only; target validity does not remove anchor rows",
+          "split_column": "forecast_split",
+          "split_dtype": "VARCHAR"
+        },
+        "target_validity": {
+          "apply_per_target": true,
+          "evaluation_rules": {
+            "missing_targets": "excluded per output",
+            "native_position_mask": null,
+            "outputs": {
+              "label": {
+                "all_true_columns": [],
+                "column": "involvement",
+                "non_null_required": true
+              }
+            },
+            "padding_rows": "excluded",
+            "recorded_non_null_counts_are_final_evaluation_counts": false,
+            "report_exclusion_counts": true
+          },
+          "invalid_target_action": "mask that output; retain the selected anchor row",
+          "replace_missing_with_zero": false
+        },
+        "targets": {
+          "label": {
+            "all_true_columns": [],
+            "column": "involvement",
+            "dtype": "INTEGER",
+            "non_null_required": true,
+            "population_target_specifications": {
+              "involvement": {
+                "kind": "binary"
+              }
+            }
+          }
+        },
+        "trigger_definition": {
+          "cadence": "P1D",
+          "kind": "daily_cutoff",
+          "time_of_day": "00:00:00"
+        }
+      }
+    },
+    "aml-masked-value-pretrain-v1": {
+      "anchor_binding": {
+        "split_column": "split",
+        "status": "candidate_population; retained_token_eligibility_pending",
+        "targets": {}
+      },
+      "semantic": {
+        "auxiliary_columns": {
+          "propensity_column": null,
+          "treatment_column": null,
+          "validity_column": null
+        },
+        "columns": {
+          "as_of_time": {
+            "column": "as_of_time",
+            "dtype": "TIMESTAMP_NS"
+          },
+          "entity_id": {
+            "column": "entity_id",
+            "dtype": "VARCHAR"
+          },
+          "sample_id": {
+            "column": "sample_id",
+            "dtype": "VARCHAR"
+          },
+          "trigger_id": null
+        },
+        "epoch": {
+          "bounded_probe_is_complete_epoch": false,
+          "count_duplicate_deliveries": false,
+          "count_sampler_padding": false,
+          "definition": "one complete pass over one explicitly selected anchor split",
+          "distributed_accounting": "union of nonpadding sample IDs across all ranks",
+          "dropped_tail_is_complete_epoch": false,
+          "nonpadding_deliveries_per_selected_sample": 1,
+          "ordering_shuffle_rank_partition_change_population": false,
+          "population_kind": "native_candidate",
+          "require_all_selected_samples": true,
+          "require_reported_padding_count": true,
+          "unexpected_duplicates_fail_complete_epoch": true,
+          "unique_identity": "sample_id"
+        },
+        "native_eligibility": {
+          "rule": "retained-content and target-position eligibility require a separately versioned stage-4 encoding binding; candidate counts are not usable target counts",
+          "status": "candidate_only_pending_stage_4",
+          "usable_training_example_count": null
+        },
+        "prediction_time_definition": {
+          "rule": "daily UTC midnight",
+          "source_precision": "minutes",
+          "stored_precision": "nanoseconds",
+          "timezone": "UTC benchmark interpretation of source naive timestamps"
+        },
+        "root_definition": {
+          "identity": [
+            "variant",
+            "normalized_bank_id",
+            "original_account_number"
+          ],
+          "object": "account",
+          "preserve_account_leading_zeros": true
+        },
+        "root_table": "accounts",
+        "selection": {
+          "fit_split": "train",
+          "implicit_target_row_filter": false,
+          "iteration_splits": [
+            "train",
+            "valid",
+            "test"
+          ],
+          "null_split_policy": "exclude",
+          "require_explicit_split": true,
+          "row_filter": "selected split only; target validity does not remove anchor rows",
+          "split_column": "split",
+          "split_dtype": "VARCHAR"
+        },
+        "target_validity": {
+          "apply_per_target": true,
+          "evaluation_rules": {
+            "missing_targets": "excluded per output",
+            "native_position_mask": "encoding-time valid target mask",
+            "outputs": {},
+            "padding_rows": "excluded",
+            "recorded_non_null_counts_are_final_evaluation_counts": false,
+            "report_exclusion_counts": true
+          },
+          "invalid_target_action": "mask that output; retain the selected anchor row",
+          "replace_missing_with_zero": false
+        },
+        "targets": {},
+        "trigger_definition": {
+          "cadence": "P1D",
+          "kind": "daily_cutoff",
+          "time_of_day": "00:00:00"
+        }
+      }
+    },
+    "aml-next-token-pretrain-v1": {
+      "anchor_binding": {
+        "split_column": "split",
+        "status": "candidate_population; retained_token_eligibility_pending",
+        "targets": {}
+      },
+      "semantic": {
+        "auxiliary_columns": {
+          "propensity_column": null,
+          "treatment_column": null,
+          "validity_column": null
+        },
+        "columns": {
+          "as_of_time": {
+            "column": "as_of_time",
+            "dtype": "TIMESTAMP_NS"
+          },
+          "entity_id": {
+            "column": "entity_id",
+            "dtype": "VARCHAR"
+          },
+          "sample_id": {
+            "column": "sample_id",
+            "dtype": "VARCHAR"
+          },
+          "trigger_id": null
+        },
+        "epoch": {
+          "bounded_probe_is_complete_epoch": false,
+          "count_duplicate_deliveries": false,
+          "count_sampler_padding": false,
+          "definition": "one complete pass over one explicitly selected anchor split",
+          "distributed_accounting": "union of nonpadding sample IDs across all ranks",
+          "dropped_tail_is_complete_epoch": false,
+          "nonpadding_deliveries_per_selected_sample": 1,
+          "ordering_shuffle_rank_partition_change_population": false,
+          "population_kind": "native_candidate",
+          "require_all_selected_samples": true,
+          "require_reported_padding_count": true,
+          "unexpected_duplicates_fail_complete_epoch": true,
+          "unique_identity": "sample_id"
+        },
+        "native_eligibility": {
+          "rule": "retained-content and target-position eligibility require a separately versioned stage-4 encoding binding; candidate counts are not usable target counts",
+          "status": "candidate_only_pending_stage_4",
+          "usable_training_example_count": null
+        },
+        "prediction_time_definition": {
+          "rule": "daily UTC midnight",
+          "source_precision": "minutes",
+          "stored_precision": "nanoseconds",
+          "timezone": "UTC benchmark interpretation of source naive timestamps"
+        },
+        "root_definition": {
+          "identity": [
+            "variant",
+            "normalized_bank_id",
+            "original_account_number"
+          ],
+          "object": "account",
+          "preserve_account_leading_zeros": true
+        },
+        "root_table": "accounts",
+        "selection": {
+          "fit_split": "train",
+          "implicit_target_row_filter": false,
+          "iteration_splits": [
+            "train",
+            "valid",
+            "test"
+          ],
+          "null_split_policy": "exclude",
+          "require_explicit_split": true,
+          "row_filter": "selected split only; target validity does not remove anchor rows",
+          "split_column": "split",
+          "split_dtype": "VARCHAR"
+        },
+        "target_validity": {
+          "apply_per_target": true,
+          "evaluation_rules": {
+            "missing_targets": "excluded per output",
+            "native_position_mask": "encoding-time valid target mask",
+            "outputs": {},
+            "padding_rows": "excluded",
+            "recorded_non_null_counts_are_final_evaluation_counts": false,
+            "report_exclusion_counts": true
+          },
+          "invalid_target_action": "mask that output; retain the selected anchor row",
+          "replace_missing_with_zero": false
+        },
+        "targets": {},
+        "trigger_definition": {
+          "cadence": "P1D",
+          "kind": "daily_cutoff",
+          "time_of_day": "00:00:00"
+        }
+      }
+    }
+  },
+  "tasks": {
+    "account-involvement-next24h": {
+      "kind": "stored",
+      "targets": {
+        "label": {
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "kind": "binary"
+        }
+      }
+    },
+    "next-outgoing-amount-currency": {
+      "kind": "stored",
+      "targets": {
+        "amount": {
+          "column": "next_amount",
+          "dtype": "DECIMAL(38,10)",
+          "kind": "decimal"
+        },
+        "currency": {
+          "column": "next_currency",
+          "dtype": "VARCHAR",
+          "kind": "category"
+        }
+      }
+    },
+    "next-outgoing-delay": {
+      "kind": "stored",
+      "targets": {
+        "label": {
+          "column": "next_delay_seconds",
+          "dtype": "DOUBLE",
+          "kind": "delay_seconds"
+        }
+      }
+    },
+    "next-outgoing-format": {
+      "kind": "stored",
+      "targets": {
+        "label": {
+          "column": "next_format",
+          "dtype": "VARCHAR",
+          "kind": "category"
+        }
+      }
+    },
+    "masked-value-pretrain": {
+      "kind": "masked_values",
+      "targets": {}
+    },
+    "next-token-pretrain": {
+      "kind": "next_token",
+      "targets": {}
+    }
+  },
+  "input_profiles": {
+    "account-transactions": {
+      "root_table": "accounts",
+      "root_type": "account",
+      "families": [
+        [
+          "transactions",
+          [
+            "account_touches"
+          ],
+          "event_time",
+          [
+            [
+              "direction",
+              "direction",
+              "categorical"
+            ],
+            [
+              "amount_paid",
+              "amount_paid",
+              "numerical"
+            ],
+            [
+              "payment_currency",
+              "payment_currency",
+              "categorical"
+            ],
+            [
+              "amount_received",
+              "amount_received",
+              "numerical"
+            ],
+            [
+              "receiving_currency",
+              "receiving_currency",
+              "categorical"
+            ],
+            [
+              "payment_format",
+              "payment_format",
+              "categorical"
+            ]
+          ]
+        ]
+      ],
+      "graph": {
+        "node_table": "transactions",
+        "relations": [
+          "sender",
+          "receiver"
+        ],
+        "numerical": [
+          "amount_paid",
+          "amount_received"
+        ],
+        "categorical": [
+          "payment_currency",
+          "receiving_currency",
+          "payment_format"
+        ],
+        "timestamp": "event_time_seconds"
+      },
+      "aggregates": [
+        [
+          "all_history_total_touching_count",
+          [
+            "account_touches"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_sender_count",
+          [
+            "sender"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "all_history_receiver_count",
+          [
+            "receiver"
+          ],
+          "event_time",
+          null
+        ],
+        [
+          "24h_total_touching_count",
+          [
+            "account_touches"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_sender_count",
+          [
+            "sender"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "24h_receiver_count",
+          [
+            "receiver"
+          ],
+          "event_time",
+          -86400
+        ],
+        [
+          "7d_total_touching_count",
+          [
+            "account_touches"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_sender_count",
+          [
+            "sender"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "7d_receiver_count",
+          [
+            "receiver"
+          ],
+          "event_time",
+          -604800
+        ],
+        [
+          "30d_total_touching_count",
+          [
+            "account_touches"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_sender_count",
+          [
+            "sender"
+          ],
+          "event_time",
+          -2592000
+        ],
+        [
+          "30d_receiver_count",
+          [
+            "receiver"
+          ],
+          "event_time",
+          -2592000
+        ]
+      ],
+      "variant": "default"
+    }
+  },
+  "anchor_profiles": {
+    "daily-forecast": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "forecast_split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_offset_seconds": 0,
+      "version": "v1"
+    },
+    "daily-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "forecast_split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "version": "v2"
+    },
+    "daily-pretrain": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_offset_seconds": 0,
+      "version": "v1"
+    }
+  }
+}

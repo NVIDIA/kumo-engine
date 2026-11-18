@@ -31,6 +31,13 @@ def test_real_anchor_spec_is_training_only_and_nested(
 ):
     dataset, identities, selections = mapped
     source = source_anchors(selections, selection, tmp_path)
+    table = pq.read_table(source)
+    table = table.set_column(
+        table.schema.get_field_index("involvement"),
+        "involvement",
+        table["involvement"].cast(pa.int32()),
+    )
+    pq.write_table(table, source)
     spec_path = make_spec(
         dataset,
         identities,

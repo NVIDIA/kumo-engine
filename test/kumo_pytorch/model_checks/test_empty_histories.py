@@ -12,7 +12,7 @@ from test.kumo_pytorch.involvement import verify_batch, verify_inputs
 from test.kumo_pytorch.masked_values import original_tokens
 from test.kumo_pytorch.masked_values import verify_loss as masked_loss
 from test.kumo_pytorch.masked_values import verify_targets as verify_masked
-from test.kumo_pytorch.models.aml import build_model
+from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.next_token import verify_loss as next_loss
 from test.kumo_pytorch.next_token import verify_targets as verify_next
 

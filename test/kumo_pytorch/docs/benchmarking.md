@@ -79,37 +79,39 @@ fitting-anchor fingerprints. Anchor comparisons hash the table binding and
 Parquet bytes independently of each run's temporary path; the package's task
 anchor fingerprint is retained separately. Partial input-only reuse is labelled separately.
 
-## AML binding and process comparisons
+## Catalog bindings and process comparisons
 
-[aml_benchmark.py](../aml_benchmark.py) binds all five registered AML
-workload/model combinations to this interface. It verifies downloaded HI-small
-inputs, selects physical anchor rows per split, preserves full selected-root
+[benchmarking/kumo.py](../benchmarking/kumo.py) resolves dataset, anchor, input
+and model declarations from the shared binding catalog. The enabled real-data
+benchmark campaigns currently cover HI Small's five combinations. It verifies
+the selected dataset inventory, selects physical anchor rows per split, preserves full selected-root
 histories and executes the complete selected train split. This is a bounded
 population, not a full-AML benchmark. Graph workloads retain v2 anchors and the
 original prediction time; sequence workloads use v1. The adapter downloads no data.
 
-Source rows/bytes include transactions and account bindings. Observations retain
+Source rows/bytes include the selected source tables. Observations retain
 source, prepared-table and anchor identities. Read timing covers checksum
 verification; conversion includes its own source reads and output validation.
 These enclosing measurements are not exclusive costs. Events count emitted
-history occurrences, or transaction-node occurrences for graph-only inputs.
+history occurrences, or occurrences of declared event nodes for graph-only inputs.
 Tokens count valid input value/marker positions, excluding targets and parallel
 field IDs. Output size counts logical tensor occurrences in inputs and targets,
 including masks/layout arrays, excluding metadata and unique-storage accounting.
-Existing AML losses and model consumers are reused. CPU input validation remains
+Shared task losses and model consumers are reused. CPU input validation remains
 measured model-adaptation overhead before device transfer.
 
 The [example configuration](../workloads/aml-benchmark.json) selects runner-visible
 CUDA. Set its data directory to the runner's verified download directory and
-select another registered `workload`/`family` as needed:
+select its registered `binding` (for example `E02`). If present, `workload` and
+`family` must agree with that binding:
 
 ```sh
 python -m test.kumo_pytorch.benchmark \
-  --adapter test.kumo_pytorch.aml_benchmark:factory \
+  --adapter test.kumo_pytorch.benchmarking.kumo:factory \
   --config test/kumo_pytorch/workloads/aml-benchmark.json \
   --output /path/to/new-run --repetitions 1 --epochs 2
 python -m test.kumo_pytorch.benchmarking.campaign \
-  --adapter test.kumo_pytorch.aml_benchmark:factory \
+  --adapter test.kumo_pytorch.benchmarking.kumo:factory \
   --config test/kumo_pytorch/workloads/aml-benchmark.json \
   --output /path/to/new-campaign --repetitions 3 --epochs 2 --compare-fitting
 ```
@@ -552,7 +554,8 @@ without introducing a growth threshold.
 
 ## Parallel nightly execution
 
-The existing nightly workflow derives its matrix from `workloads/aml.json`:
+The nightly workflow derives dataset selection and campaign matrices from
+`workloads/bindings.json`:
 
 | Experiment | Independent jobs | Work retained within each job |
 | --- | ---: | --- |
@@ -560,7 +563,8 @@ The existing nightly workflow derives its matrix from `workloads/aml.json`:
 | Index lifecycle | 5 | One build followed by two reopens of the same index, two epochs per worker |
 | Loader timing comparisons | 15 | Five bindings across DiskGraph, Polars and GPU; three fresh/reused pairs, two epochs |
 | Fitting memory | 15 | Five bindings times three repetitions; both 25k/400k sizes use the same index within each repetition |
-| Population acceptance | 10 | Five bindings in smoke and full modes; full mode retains every anchor |
+| Population acceptance | 14 | HI Small: five smoke/full pairs; LI Medium: four full runs |
+| CPU training acceptance | 9 | Both datasets use the same 100-update runner and report schema |
 
 Measurements run sequentially within their experiment on a dedicated runner;
 parallel timing jobs do not share a GPU. All timing backends retain the same
@@ -571,10 +575,11 @@ Matrix jobs use `fail-fast: false`, preserving other evidence after failures.
 
 Each shard uploads a uniquely named `kumo-pytorch-aml-parallel-*` artifact. The
 combined-report job downloads them, rejects missing or mismatched cases and
-repetitions, and retains one `kumo-pytorch-aml-benchmarks` artifact. Its root
+repetitions, and retains one `kumo-pytorch-campaign-results` artifact. Its root
 `report.md` links every experiment, and `timings.json`/the timing tables combine
 all three loader backends. Payloads, indexes and fitted-state files are excluded.
-Real-AML lifecycle/history and training acceptance retain their separate artifacts.
+Training/population shards use `kumo-pytorch-dataset-*` artifacts and join the
+same summary. Existing lifecycle/history scenarios retain separate artifacts.
 
 Roughly 20 minutes end to end is a target, not a timeout or permission to reduce
 coverage. This layout removes accumulated campaign/repetition time, but runner

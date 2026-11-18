@@ -10,7 +10,8 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from test.kumo_pytorch import training_acceptance as acceptance
-from test.kumo_pytorch.models.aml import StepResult
+from test.kumo_pytorch.bindings import selections as catalog_selections
+from test.kumo_pytorch.models import StepResult
 from types import SimpleNamespace
 
 import pytest
@@ -197,7 +198,7 @@ def test_acceptance_detects_broken_training(tmp_path, monkeypatch, fault):
     result = acceptance.train_repetition(
         task,
         requests,
-        {"selector": {"workload_id": "account-involvement-next24h"}},
+        next(s for s, f in CASES if f == "combined"),
         "combined",
         directory=tmp_path / "trial",
         capacity=1,
@@ -260,7 +261,7 @@ def test_cli_keeps_failed_case_and_runs_all_five(tmp_path, monkeypatch):
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "unknown"])
 def test_training_matrix_cannot_drop_or_substitute_a_case(fault):
     # Start from the actual catalog, whose selection can name several models.
-    selections = json.loads((acceptance.ROOT / "workloads/aml.json").read_text())
+    selections = catalog_selections()
     assert len(acceptance.training_cases(selections)) == 5
     if fault == "missing":
         selections.pop()
@@ -276,7 +277,7 @@ def test_training_matrix_cannot_drop_or_substitute_a_case(fault):
     "selection,family", [(s, f) for s, f in CASES if f in {"graphsage", "combined"}]
 )
 def test_root_only_graph_preserves_predictions(selection, family, tmp_path_factory):
-    from test.kumo_pytorch.models.aml import build_model
+    from test.kumo_pytorch.models import build_model
     from test.kumo_pytorch.models.graphsage import GraphSAGEModel
     from test.kumo_pytorch.models.graphsage._relbench import HeteroGraphSAGE
 

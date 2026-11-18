@@ -12,6 +12,7 @@ import time
 import traceback
 from collections import Counter
 from pathlib import Path
+from test.kumo_pytorch.bindings import selections as catalog_selections
 
 import pyarrow.parquet as pq
 import torch
@@ -35,7 +36,7 @@ from .lifecycle import check_lifecycle
 from .masked_values import original_tokens
 from .masked_values import verify_loss as verify_masked_loss
 from .masked_values import verify_targets as verify_masked_targets
-from .models.aml import build_model
+from .models import build_model
 from .next_token import verify_loss as verify_next_loss
 from .next_token import verify_targets as verify_next_targets
 from .training_lifecycle import check_training
@@ -416,7 +417,7 @@ def main(argv=None):
             f"Prepared {mapping['tables']['transactions']['rows']} transactions; history bound {capacity} events",
             flush=True,
         )
-        workloads = json.loads((ROOT / "workloads/aml.json").read_text())
+        workloads = catalog_selections()
         for selection in workloads:
             for family in selection["models"]:
                 name = f"{selection['selector']['workload_id']}-{family}"

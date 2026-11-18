@@ -26,6 +26,9 @@ from .aml_source import (
     prepare_aml_sources,
     prepared_dataset,
 )
+from .bindings import binding_for
+from .bindings import profile as binding_profile
+from .bindings import task_definition
 from .contracts import GRAPH_TIMESTAMP_FIELD, build_contract
 from .data import ROOT
 from .nightly import selected_cases
@@ -35,6 +38,7 @@ from .population_anchors import (
     projected_rows,
 )
 from .run_aml import positive
+from .targets import verify_stored_batch, verify_target_fitting
 
 PDF_CASES = {
     ("account-involvement-next24h", "combined"): "a001",
@@ -50,7 +54,8 @@ def write_report(directory, report):
     temporary.replace(directory / "report.json")
 
 
-def check_batch(batch, expected, *, native, family, state):
+def check_delivery(batch, expected, *, graph_clocks=None):
+    """Assert identities, order, clocks, metadata and finite native outputs."""
     ids = list(batch.metadata["sample_ids"])
     rows = list(islice(expected, len(ids)))
     assert ids and ids == [row["sample_id"] for row in rows], (
@@ -85,6 +90,22 @@ def check_batch(batch, expected, *, native, family, state):
 
     finite(batch.inputs)
     finite(batch.targets)
+    if "graph" in batch.inputs:
+        for name, field in (
+            graph_clocks or {"transactions": GRAPH_TIMESTAMP_FIELD}
+        ).items():
+            nodes = batch.inputs["graph"]["nodes"][name]
+            times = nodes["features"][field]["values"].flatten()
+            cutoffs = batch.metadata["as_of_time"][nodes["batch"]]
+            assert (times <= cutoffs).all(), (
+                "Graph history leaked beyond the anchor cutoff"
+            )
+    return rows
+
+
+def check_batch(batch, expected, *, native, family, state):
+    rows = check_delivery(batch, expected)
+    ids = list(batch.metadata["sample_ids"])
     target_name = (
         ("masked_values" if family == "pragma" else "next_token") if native else "label"
     )
@@ -118,12 +139,104 @@ def check_batch(batch, expected, *, native, family, state):
             assert torch.equal(
                 target["values"][:, :-1][valid], history["value_ids"][:, 1:][valid]
             )
-    if "graph" in batch.inputs:
-        transactions = batch.inputs["graph"]["nodes"]["transactions"]
-        times = transactions["features"][GRAPH_TIMESTAMP_FIELD]["values"].flatten()
-        cutoffs = batch.metadata["as_of_time"][transactions["batch"]]
-        assert (times <= cutoffs).all(), "Graph history leaked beyond the v2 cutoff"
     return ids, int(target["valid"].sum())
+
+
+def verify_batch_for(binding, batch, expected, state):
+    """One delivery oracle for stored labels and native pretraining targets."""
+    task = task_definition(binding)
+    if task["kind"] != "stored":
+        family = binding["representation"]
+        _, eligible = check_batch(
+            batch, expected, native=True, family=family, state=state
+        )
+        return {task["kind"]: eligible}
+    graph = binding_profile(binding, "input").get("graph")
+    rows = check_delivery(
+        batch,
+        expected,
+        graph_clocks={graph["node_table"]: graph["timestamp"]} if graph else None,
+    )
+    return verify_stored_batch(task, batch, rows, state)
+
+
+def check_population(
+    task,
+    binding,
+    projection,
+    population,
+    directory,
+    report,
+    *,
+    batch_size,
+    seed=0,
+    features=None,
+):
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    assert isinstance(task._anchors, NativeAnchors), (
+        "Population requires native AnchorTable iteration"
+    )
+    frozen = task.fitted_state.fingerprint
+    state = task.fitted_state.to_dict()
+    report["fitted_state_sha256"] = frozen
+    task.to_artifact().save(directory / "fitted")
+    assert {s: task.count(s) for s in SPLITS} == population["counts"], (
+        "Native population counts differ"
+    )
+    if binding["targets"]:
+        verify_target_fitting(
+            task_definition(binding), projected_rows(projection, "train"), state
+        )
+    names = tuple(binding["targets"]) or (task_definition(binding)["kind"],)
+    splits = report["splits"] = {}
+    for split in SPLITS:
+        splits[split] = {
+            "status": "pending",
+            "expected": population["counts"][split],
+            "delivered": 0,
+            "batches": 0,
+            "eligible_targets": dict.fromkeys(names, 0),
+        }
+    for split in SPLITS:
+        result = splits[split]
+        result["status"] = "running"
+        expected, digest = projected_rows(projection, split), hashlib.sha256()
+        for batch in task.batches(
+            split=split,
+            epoch=0,
+            seed=seed,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            output_format="model",
+        ):
+            eligible = verify_batch_for(binding, batch, expected, state)
+            if features is not None:
+                features(batch)
+                for counts in report["feature_coverage"].values():
+                    counts[split] += len(batch.metadata["sample_ids"])
+            for sample in batch.metadata["sample_ids"]:
+                add_identity(digest, sample)
+            for name, count in eligible.items():
+                result["eligible_targets"][name] += count
+            result["delivered"] += len(batch.metadata["sample_ids"])
+            result["batches"] += 1
+            if result["batches"] % 100 == 0:
+                write_report(directory, report)
+        assert next(expected, None) is None, "Iteration dropped anchors"
+        assert result["delivered"] == result["expected"], "Incomplete split"
+        result["ordered_sample_id_sha256"] = digest.hexdigest()
+        assert digest.hexdigest() == population["ordered_sample_id_sha256"][split]
+        assert all(n > 0 for n in result["eligible_targets"].values()), (
+            "Split has no eligible targets"
+        )
+        assert task.fitted_state.fingerprint == frozen, (
+            "Batch iteration changed fitted state"
+        )
+        result["status"] = "passed"
+        write_report(directory, report)
+    return splits
 
 
 def run_case(
@@ -201,49 +314,19 @@ def run_case(
                 encoder_cutoff=manifest["encoder_cutoff_seconds"],
             ) as task,
         ):
-            frozen = task.fitted_state.fingerprint
-            report["fitted_state_sha256"] = frozen
-            task.to_artifact().save(directory / "fitted")
-            state = task.fitted_state.to_dict()
-            assert {s: task.count(s) for s in SPLITS} == manifest["counts"], (
-                "Native population counts differ"
+            check_population(
+                task,
+                binding_for(selection, family),
+                projection,
+                manifest,
+                directory,
+                report,
+                batch_size=batch_size,
             )
-            for split in SPLITS:
-                report["stage"] = f"iterate_{split}"
-                result = report["splits"][split]
-                result["status"] = "running"
-                write_report(directory, report)
-                expected = projected_rows(projection, split)
-                digest = hashlib.sha256()
-                for batch in task.batches(
-                    split=split,
-                    batch_size=batch_size,
-                    shuffle=False,
-                    drop_last=False,
-                    seed=0,
-                    epoch=0,
-                    output_format="model",
-                ):
-                    ids, eligible = check_batch(
-                        batch, expected, native=native, family=family, state=state
-                    )
-                    for sample_id in ids:
-                        add_identity(digest, sample_id)
-                    result["delivered"] += len(ids)
-                    result["batches"] += 1
-                    result["eligible_targets"] += eligible
-                    if result["batches"] % 100 == 0:
-                        write_report(directory, report)
-                assert next(expected, None) is None, "Iteration dropped anchors"
-                assert result["delivered"] == result["expected"], "Incomplete split"
-                result["ordered_sample_id_sha256"] = digest.hexdigest()
-                assert digest.hexdigest() == manifest["ordered_sample_id_sha256"][split]
-                assert task.fitted_state.fingerprint == frozen, (
-                    "Batch iteration changed fitted state"
-                )
-                assert result["eligible_targets"] > 0, "Split has no eligible targets"
-                result["status"] = "passed"
-                write_report(directory, report)
+            # Preserve the established single-output report shape for this CLI.
+            for split in report["splits"].values():
+                split["eligible_targets"] = sum(split["eligible_targets"].values())
+
         report.update(
             status="passed", stage="complete", full_population_verified=mode == "full"
         )

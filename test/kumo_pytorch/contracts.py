@@ -2,32 +2,37 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AML prototype input declarations adapted from Arena typed_contracts.
+"""Shared input declarations driven by schema profiles.
 
 Shared by real-data runs and tiny model checks. Full-history capacities must
 come from the prepared source, not arbitrary truncation limits.
 """
 
 from dataclasses import replace
-from test.kumo_pytorch.models.aml import AMOUNTS as GRAPH_AMOUNT_FIELDS
-from test.kumo_pytorch.models.aml import CATEGORIES as GRAPH_CATEGORY_FIELDS
 
 import kumo.pytorch.api as r
 
 GRAPH_TIMESTAMP_FIELD = "event_time_seconds"
 
 
-def build_contract(schema, family, *, native=False, max_events):
+def build_contract(schema, family, *, native=False, max_events, profile=None):
     """Declare full selected-root histories; v2 graph requests execute at T-1s."""
     if family not in {"graphsage", "combined", "pragma", "nuformer"}:
-        raise ValueError("Unknown AML model family")
+        raise ValueError("Unknown model family")
     if type(max_events) is not int or max_events < 1:
         raise ValueError("max_events must bound the complete selected-root histories")
+    if profile is None:
+        from .bindings import load_bindings
+        from .bindings import profile as input_profile
+
+        profile = input_profile(load_bindings()["E01"], "input")
     graph = family in {"graphsage", "combined"}
     if native and graph:
-        raise ValueError("Graph AML workloads use external involvement labels")
+        raise ValueError("Graph models require stored targets")
     if graph:
-        graph_spec = aml_graph(schema, max_transactions=max_events, inclusive=True)
+        graph_spec = aml_graph(
+            schema, max_transactions=max_events, inclusive=True, profile=profile
+        )
         if family == "graphsage":
             return replace(
                 graph_spec,
@@ -39,48 +44,19 @@ def build_contract(schema, family, *, native=False, max_events):
                     graph_spec.batch, targets={"label": r.LabelTarget("label", r.Raw())}
                 ),
             )
-    fields = tuple(
-        (name, name, "numerical" if name in GRAPH_AMOUNT_FIELDS else "categorical")
-        for name in (
-            "direction",
-            "amount_paid",
-            "payment_currency",
-            "amount_received",
-            "receiving_currency",
-            "payment_format",
-        )
-    )
     seq = sequence(
         schema,
         "nuformer" if graph else family,
-        families=(("transactions", ("account_touches",), "event_time", fields),),
-        root_table="accounts",
-        root_type="account",
+        families=profile["families"],
+        root_table=profile["root_table"],
+        root_type=profile["root_type"],
         max_events=max_events,
         native=native,
         inclusive=graph,
     )
     if not graph:
         return seq
-    agg = counts(
-        schema,
-        "accounts",
-        (
-            (f"{window}_{role}_count", (relation,), "event_time", start)
-            for window, start in (
-                ("all_history", None),
-                ("24h", -86400),
-                ("7d", -604800),
-                ("30d", -2592000),
-            )
-            for role, relation in (
-                ("total_touching", "account_touches"),
-                ("sender", "sender"),
-                ("receiver", "receiver"),
-            )
-        ),
-        inclusive=True,
-    )
+    agg = counts(schema, profile["root_table"], profile["aggregates"], inclusive=True)
     return replace(
         seq,
         sample=replace(
@@ -295,7 +271,7 @@ def counts(schema, root, declarations, *, normalize=True, inclusive=False):
     )
 
 
-def aml_graph(schema, *, max_transactions, inclusive=False):
+def aml_graph(schema, *, max_transactions, inclusive=False, profile=None):
     if type(max_transactions) is not int or max_transactions < 1:
         raise ValueError(
             "max_transactions must be a positive verified source-row bound"
@@ -306,42 +282,84 @@ def aml_graph(schema, *, max_transactions, inclusive=False):
             "the supported Kumo GraphSample API provides inclusive cutoffs only. "
             "Exclusive graph sampling is unsupported."
         )
+    if profile is None:
+        from .bindings import load_bindings
+        from .bindings import profile as input_profile
+
+        profile = input_profile(load_bindings()["E01"], "input")
+    graph = profile["graph"]
     neighborhood = r.NeighborhoodSpec(
         (
             r.GraphLayer(
                 tuple(
-                    r.GraphSample(role, max_transactions)
-                    for role in ("sender", "receiver")
+                    r.GraphSample(role, max_transactions) for role in graph["relations"]
                 )
             ),
             r.GraphLayer(
                 tuple(
                     r.GraphSample(role, 1, direction="reverse")
-                    for role in ("sender", "receiver")
+                    for role in graph["relations"]
                 )
             ),
         )
     )
     features = r.Fields(
         tuple(
-            [r.Encode(name, r.ZScore()) for name in GRAPH_AMOUNT_FIELDS]
-            + [r.Encode(name, r.Vocabulary()) for name in GRAPH_CATEGORY_FIELDS]
-            + [r.Encode(GRAPH_TIMESTAMP_FIELD, r.Raw())]
+            [r.Encode(name, r.ZScore()) for name in graph["numerical"]]
+            + [r.Encode(name, r.Vocabulary()) for name in graph["categorical"]]
+            + [r.Encode(graph["timestamp"], r.Raw())]
         )
     )
     return r.DataLoaderSpec(
         schema,
         r.SampleSpec(
-            r.EntitySpec("accounts", entity_type="account"),
+            r.EntitySpec(profile["root_table"], entity_type=profile["root_type"]),
             neighborhoods={"history_graph": neighborhood},
         ),
         r.BatchSpec(
             {
                 "graph": r.Input(
                     r.NeighborhoodSource("history_graph"),
-                    r.Graph({"transactions": features}),
+                    r.Graph({graph["node_table"]: features}),
                     None,
                 )
             }
+        ),
+    )
+
+
+def binding_contract(schema, binding, *, max_events):
+    from .bindings import profile as input_profile
+    from .population_anchors import validate_binding
+
+    family, _, native, rules = validate_binding(binding)
+    contract = build_contract(
+        schema,
+        family,
+        native=native,
+        max_events=max_events,
+        profile=input_profile(binding, "input"),
+    )
+    if native:
+        return contract
+    return replace(
+        contract,
+        sample=replace(
+            contract.sample,
+            targets={
+                name: r.ExternalTarget(
+                    r.DType("string" if rule["kind"] == "category" else "float32")
+                )
+                for name, rule in rules.items()
+            },
+        ),
+        batch=replace(
+            contract.batch,
+            targets={
+                name: r.LabelTarget(
+                    name, r.Vocabulary() if rule["kind"] == "category" else r.Raw()
+                )
+                for name, rule in rules.items()
+            },
         ),
     )

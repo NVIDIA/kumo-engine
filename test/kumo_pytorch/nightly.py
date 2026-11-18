@@ -9,17 +9,26 @@ import json
 import re
 from pathlib import Path
 
+from .bindings import (
+    binding_for,
+    contract_for,
+    dataset_definition,
+    load_bindings,
+    prepare_binding,
+    selected_bindings,
+    selection,
+)
+
 ROOT = Path(__file__).resolve().parent
 MODES = ("training", "index", "timing-diskgraph", "timing-polars", "timing-gpu")
 
 
 def selected_cases(case=None):
     cases = [
-        (selection, family)
-        for selection in json.loads((ROOT / "workloads/aml.json").read_text())
-        for family in selection["models"]
+        (selection(binding), binding["representation"])
+        for binding in selected_bindings(campaign="benchmark-training")
     ]
-    names = [f"{s['selector']['workload_id']}-{f}" for s, f in cases]
+    names = [s["case_name"] for s, _ in cases]
     if (
         not names
         or len(names) != len(set(names))
@@ -36,7 +45,39 @@ def selected_cases(case=None):
 def matrix():
     return {
         "include": [
-            {"case": f"{s['selector']['workload_id']}-{f}"} for s, f in selected_cases()
+            {
+                "case": s["case_name"],
+                "dataset": dataset_definition(binding_for(s, f))["inventory"],
+            }
+            for s, f in selected_cases()
+        ]
+    }
+
+
+def campaign_matrix(campaign):
+    modes = {
+        "training": ("training",),
+        "population": ("smoke", "full"),
+        "lifecycle": ("lifecycle",),
+        "benchmark": (
+            "benchmark-training",
+            "index",
+            "timing-diskgraph",
+            "timing-polars",
+            "timing-gpu",
+        ),
+    }[campaign]
+    return {
+        "include": [
+            {
+                "binding": b["ref"],
+                "mode": mode,
+                "dataset": dataset_definition(b)["inventory"],
+                **b["execution"],
+            }
+            for b in selected_bindings()
+            for mode in modes
+            if mode in b["campaigns"]
         ]
     }
 
@@ -48,6 +89,7 @@ def benchmark_config(case, mode, data_dir):
     config = json.loads((ROOT / "workloads/aml-benchmark.json").read_text())
     config.update(
         data_dir=str(data_dir),
+        binding=binding_for(selection, family)["ref"],
         family=family,
         workload=selection["selector"]["workload_id"],
         cache_mode="cold-warm",
@@ -63,7 +105,7 @@ def benchmark_config(case, mode, data_dir):
     return [
         {
             "name": case,
-            "adapter": "test.kumo_pytorch.aml_benchmark:factory",
+            "adapter": "test.kumo_pytorch.benchmarking.kumo:factory",
             "config": config,
         }
     ]
@@ -117,7 +159,113 @@ def combine_fitting(directory, case):
     return result
 
 
-def summarize(directory):
+def validate_binding_report(report, binding, mode, revision):
+    from .refusals import record_child_refusal
+
+    assert report["status"] == "passed", report.get("error", report["status"])
+    assert report["revision"] == revision, "Report belongs to another revision"
+    assert not report["dirty_checkout"], "CI report used a modified checkout"
+    assert report["mode"] == mode and report["ref"] == binding["ref"]
+    assert report["binding_id"] == binding["binding_id"]
+    assert report["selector"] == binding["selector"]
+    assert report["family"] == binding["representation"]
+    if report.get("outcome") == "refused":
+        assert report["stage"] == "prepare" and not report["full_population_verified"]
+        assert all(
+            row.get("delivered", 0) == 0 for row in report.get("splits", {}).values()
+        ), "Refusal after delivery"
+        record_child_refusal(report["refusal"])
+        return "refused"
+    assert report["stage"] == "complete"
+    assert report.get("outcome", "executed") == "executed"
+    import math
+
+    from .bindings import task_definition
+    from .refusals import record_child_refusal
+
+    objective = task_definition(binding)
+    targets = set(binding["targets"]) or {objective["kind"]}
+    assert set(report["splits"]) == {"train", "valid", "test"}
+    for split in report["splits"].values():
+        assert split["status"] == "passed"
+        assert split["delivered"] == split["expected"] and split["delivered"] > 0
+        assert set(split["eligible_targets"]) == targets
+        assert all(
+            n > 0 and (objective["kind"] != "stored" or n <= split["delivered"])
+            for n in split["eligible_targets"].values()
+        )
+    assert report["full_population_verified"] == (mode == "full")
+    requirements = binding.get("feature_checks", {})
+    if mode in requirements.get("modes", ()):
+        coverage = report["feature_coverage"]
+        assert set(coverage) == set(requirements["features"]), (
+            "Missing feature coverage"
+        )
+        expected = {s: row["delivered"] for s, row in report["splits"].items()}
+        assert all(counts == expected for counts in coverage.values()), (
+            "Features were not checked for every selected anchor and split"
+        )
+    if mode == "full":
+        assert report["population"]["mode"] == "full"
+        assert report["mapping"]["scope"]["kind"] == "full_source"
+    elif mode == "training":
+        assert report["reproducible"] and len(report["repeats"]) == 2
+        for repeat in report["repeats"]:
+            assert repeat["status"] == "passed" and repeat["completed_updates"] == 100
+            assert set(repeat["checks"]) == {
+                "100_updates",
+                "every_parameter_has_nonzero_gradient",
+                "every_parameter_updated",
+                "loss_decreased",
+            }
+            assert all(repeat["checks"].values())
+        assert (
+            report["evaluation_model_sha256"]
+            == report["repeats"][0]["final_model_sha256"]
+        )
+        assert set(report["evaluation"]) == {"valid", "test"}
+        for split, outputs in report["evaluation"].items():
+            assert set(outputs) == targets
+            for name, output in outputs.items():
+                assert (
+                    output["eligible"]
+                    == report["splits"][split]["eligible_targets"][name]
+                )
+                assert math.isfinite(output["mean_loss"])
+    return "executed"
+
+
+def summarize_bindings(directory, revision):
+    bindings = load_bindings()
+    rows = []
+    for binding in selected_bindings():
+        ref = binding["ref"]
+        for mode in (
+            m for m in ("training", "smoke", "full") if m in binding["campaigns"]
+        ):
+            path = directory / mode / ref / "report.json"
+            row = {"ref": ref, "mode": mode, "report": str(path.relative_to(directory))}
+            try:
+                report = json.loads(path.read_text())
+                row.update(
+                    outcome=validate_binding_report(
+                        report, bindings[ref], mode, revision
+                    ),
+                    status="passed",
+                )
+                if report.get("refusal"):
+                    row["refusal"] = report["refusal"]
+            except (OSError, ValueError, KeyError, TypeError, AssertionError) as error:
+                row.update(status="failed", error=str(error) or type(error).__name__)
+            rows.append(row)
+    return {
+        "status": "passed" if all(r["status"] == "passed" for r in rows) else "failed",
+        "revision": revision,
+        "cases": rows,
+    }
+
+
+def summarize(directory, revision):
     """Missing or unsuccessful shards fail; keep every worker's linked reports."""
     from .benchmarking.timing_report import timing_summary
 
@@ -127,7 +275,7 @@ def summarize(directory):
     for entry in matrix()["include"]:
         case = entry["case"]
         combine_fitting(directory / "fitting" / case, case)
-        for kind in (*MODES, "fitting", "smoke", "full"):
+        for kind in (*MODES, "fitting"):
             base = directory / kind / case
             path = base / ("results.json" if kind in MODES else "report.json")
             row = {"case": case, "kind": kind, "status": "missing"}
@@ -148,49 +296,14 @@ def summarize(directory):
                     ]
                     if identities != [case]:
                         raise ValueError("Shard reported a different case")
-                    selected = result["cases"][0]
-                    refused = selected.get("outcome") == "refused"
-                    if refused:
-                        evidence = selected["refusal"]
-                        assert kind in {"smoke", "full"}
-                        assert (evidence["stage"], evidence["execution"]) == (
-                            "preflight",
-                            "not_started",
-                        ) or (
-                            (evidence["stage"], evidence["execution"])
-                            == ("ingestion", "stopped_before_materialization")
-                            and evidence["engine"] == "diskgraph"
-                            and evidence["source_rows"] == 0
-                            and len(evidence["issues"]) == 1
-                            and evidence["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"
-                        )
-                        assert evidence["issues"] and all(
-                            all(
-                                issue.get(key)
-                                for key in ("code", "path", "reason", "suggestion")
-                            )
-                            for issue in evidence["issues"]
-                        )
-                        assert result["full_population_verified"] is False
-                        assert selected["full_population_verified"] is False
-                        assert selected["splits"] and all(
-                            split["status"] == "not_executed"
-                            and split["delivered"] == 0
-                            for split in selected["splits"].values()
-                        )
-                        row.update(outcome="refused", refusal=evidence)
-                    if (
-                        kind == "full"
-                        and not refused
-                        and not result["full_population_verified"]
-                    ):
-                        raise ValueError("Full population was not verified")
                 row["report"] = str((base / "report.md").relative_to(directory))
                 if kind.startswith("timing-"):
                     timing_cases.append({"name": f"{kind}/{case}/{case}"})
             except Exception as error:  # noqa: BLE001 - missing evidence must stay visible
                 row.update(status="failed", error=str(error))
             rows.append(row)
+    for entry in summarize_bindings(directory, revision)["cases"]:
+        rows.append({**entry, "case": entry["ref"], "kind": entry["mode"]})
     status = (
         "passed"
         if all(r["status"] in {"passed", "complete"} for r in rows)
@@ -199,7 +312,7 @@ def summarize(directory):
     result = {"status": status, "shards": rows}
     (directory / "report.json").write_text(json.dumps(result, indent=2) + "\n")
     lines = [
-        "# Parallel AML nightly",
+        "# PyTorch nightly campaigns",
         "",
         f"Status: **{status}**",
         "",
@@ -217,10 +330,262 @@ def summarize(directory):
     return result
 
 
+def execute(
+    task,
+    binding,
+    projection,
+    population,
+    directory,
+    report,
+    *,
+    mode,
+    capacity,
+    batch_size,
+    seed,
+):
+    from .population import check_population
+    from .training_acceptance import train_task
+
+    features = None
+    requirements = binding.get("feature_checks", {})
+    if mode in requirements.get("modes", ()):
+        from .bindings import resolve
+
+        features = resolve(requirements["factory"])(
+            binding,
+            projection,
+            report["mapping"],
+            task.fitted_state.to_dict(),
+            mode=mode,
+        )
+        report["feature_coverage"] = {
+            name: dict.fromkeys(population["counts"], 0)
+            for name in requirements["features"]
+        }
+    check_population(
+        task,
+        binding,
+        projection,
+        population,
+        directory,
+        report,
+        batch_size=batch_size,
+        seed=seed,
+        features=features,
+    )
+    report["full_population_verified"] = mode == "full"
+    if mode == "training":
+        train_task(
+            task,
+            binding,
+            projection,
+            population,
+            directory,
+            report,
+            capacity=capacity,
+            batch_size=batch_size,
+            seed=seed,
+            features=features,
+        )
+    return report
+
+
+def run_case(
+    dataset,
+    anchors,
+    population,
+    binding,
+    directory,
+    *,
+    mode,
+    capacity,
+    mapping,
+    batch_size=4,
+    threads=1,
+    seed=0,
+    report=None,
+):
+    import kumo.pytorch.api as r
+
+    from .data import schema_for
+    from .population import write_report
+    from .refusals import case_failure, executing_case
+
+    report = {
+        **(report or {}),
+        "status": "running",
+        "stage": "contract",
+        "ref": binding["ref"],
+        "binding_id": binding["binding_id"],
+        "selector": binding["selector"],
+        "family": binding["representation"],
+        "mode": mode,
+        "full_population_verified": False,
+        "population": population,
+        "mapping": mapping,
+    }
+    write_report(directory, report)
+    try:
+        if mode not in {"training", "smoke", "full"}:
+            raise ValueError(f"Unknown binding execution mode: {mode}")
+        if mode == "full" and population["mode"] != "full":
+            raise ValueError("Bounded anchors cannot qualify full-population delivery")
+        if mode == "full" and mapping["scope"]["kind"] != "full_source":
+            raise ValueError("Bounded sources cannot qualify full-population delivery")
+        contract = contract_for(
+            schema_for(dataset, binding), binding, max_events=capacity
+        )
+        (directory / "contract.json").write_text(contract.to_json())
+        report["stage"] = "prepare"
+        plan = r.prepare(
+            contract,
+            dataset,
+            r.DiskGraphEngine(index=directory / "index", num_threads=threads),
+        )
+        with plan, executing_case():
+            report["stage"] = "materialize"
+            task = plan.materialize(
+                anchors,
+                fit_split="train",
+                encoder_cutoff=population["encoder_cutoff_seconds"],
+            )
+            report["stage"] = "execute"
+            execute(
+                task,
+                binding,
+                directory / "anchors.parquet",
+                population,
+                directory,
+                report,
+                mode=mode,
+                capacity=capacity,
+                batch_size=batch_size,
+                seed=seed,
+            )
+        report.update(status="passed", stage="complete")
+    except Exception as error:
+        report.update(case_failure(error, allow_refusal=report["stage"] == "prepare"))
+    write_report(directory, report)
+    return report
+
+
+def run_binding(args):
+    import importlib.metadata
+    import subprocess
+    import time
+
+    import torch
+
+    from .data import verify_dataset
+    from .population import write_report
+    from .refusals import case_failure
+
+    binding = load_bindings()[args.binding]
+    args.output.mkdir(parents=True, exist_ok=False)
+    started = time.perf_counter()
+    report = {
+        "status": "running",
+        "stage": "verify_inputs",
+        "ref": args.binding,
+        "mode": args.mode,
+        "binding_id": binding["binding_id"],
+        "selector": binding["selector"],
+        "full_population_verified": False,
+    }
+    try:
+        torch.set_num_threads(args.threads)
+        report["revision"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True
+        ).strip()
+        report["dirty_checkout"] = bool(
+            subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
+        )
+        report["versions"] = {
+            p: importlib.metadata.version(p) for p in ("torch", "pyarrow", "diskgraph")
+        }
+        write_report(args.output, report)
+        files = verify_dataset(args.data_dir, binding)
+        report["inputs"] = list(files.values())
+        report["stage"] = "prepare_sources"
+        write_report(args.output, report)
+        dataset, anchors, population, mapping, capacity = prepare_binding(
+            args.data_dir,
+            args.output,
+            binding,
+            files,
+            limit=None
+            if args.mode == "full"
+            else args.anchors_per_split or (4 if args.mode == "smoke" else 32),
+        )
+        report["mapping"] = mapping
+        report["history_capacity"] = capacity
+        report.update(
+            run_case(
+                dataset,
+                anchors,
+                population,
+                binding,
+                args.output,
+                mode=args.mode,
+                capacity=capacity,
+                mapping=mapping,
+                batch_size=args.batch_size,
+                threads=args.threads,
+                seed=args.seed,
+                report=report,
+            )
+        )
+    except Exception as error:
+        report.update(case_failure(error, allow_refusal=False))
+    report["seconds"] = time.perf_counter() - started
+    write_report(args.output, report)
+    lines = [
+        f"# {args.binding}: {binding['selector']['workload_id']} / {binding['representation']}",
+        "",
+        f"Mode: **{args.mode}**; status: **{report['status']} ({report.get('outcome', 'executed')})**",
+        "",
+        f"Full population verified: **{report['full_population_verified']}**",
+        "",
+        "| Split | Delivered / expected | Eligible targets |",
+        "| --- | --- | --- |",
+    ]
+    for name, split in report.get("splits", {}).items():
+        lines.append(
+            f"| {name} | {split['delivered']} / {split['expected']} | {split['eligible_targets']} |"
+        )
+    for i, repeat in enumerate(report.get("repeats", [])):
+        lines.append(
+            f"\nRepetition {i}: {repeat['status']}; updates {repeat['completed_updates']}; probe loss {repeat.get('initial_loss')} -> {repeat.get('final_loss')}. [Details](repeat-{i}/report.json)."
+        )
+    if report.get("feature_coverage"):
+        lines += ["", "| Feature | Checked anchors by split |", "| --- | --- |"]
+        lines.extend(
+            f"| {name} | {counts} |"
+            for name, counts in report["feature_coverage"].items()
+        )
+    if report.get("error"):
+        lines += ["", "```text", report["error"], "```"]
+    (args.output / "report.md").write_text("\n".join(lines) + "\n")
+    print(f"{report['status']}: {args.output / 'report.md'}")
+    return int(report["status"] != "passed")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("matrix")
+    matrix_parser = commands.add_parser("matrix")
+    matrix_parser.add_argument(
+        "--campaign", choices=("training", "population", "lifecycle", "benchmark")
+    )
+    run = commands.add_parser("run")
+    run.add_argument("--binding", required=True)
+    run.add_argument("--mode", choices=("training", "smoke", "full"), required=True)
+    run.add_argument("--data-dir", type=Path, required=True)
+    run.add_argument("--output", type=Path, required=True)
+    run.add_argument("--anchors-per-split", type=int)
+    run.add_argument("--batch-size", type=int, default=4)
+    run.add_argument("--threads", type=int, default=1)
+    run.add_argument("--seed", type=int, default=17)
     config = commands.add_parser("benchmark-config")
     config.add_argument("--case", required=True)
     config.add_argument("--mode", choices=MODES, required=True)
@@ -228,15 +593,29 @@ def main(argv=None):
     config.add_argument("--output", type=Path, required=True)
     report = commands.add_parser("summary")
     report.add_argument("--directory", type=Path, required=True)
+    report.add_argument("--revision", required=True)
     args = parser.parse_args(argv)
+    if args.command == "run":
+        binding = load_bindings().get(args.binding)
+        if binding is None or args.mode not in binding["campaigns"]:
+            parser.error("Binding does not declare the requested campaign")
+        if (
+            args.batch_size < 1
+            or args.threads < 1
+            or (args.anchors_per_split is not None and args.anchors_per_split < 1)
+        ):
+            parser.error("Batch size, threads and anchor limit must be positive")
+        if args.mode == "full" and args.anchors_per_split is not None:
+            parser.error("Full-population runs cannot have an anchor limit")
+        return run_binding(args)
     if args.command == "matrix":
-        print(json.dumps(matrix()))
+        print(json.dumps(campaign_matrix(args.campaign) if args.campaign else matrix()))
     elif args.command == "benchmark-config":
         args.output.write_text(
             json.dumps(benchmark_config(args.case, args.mode, args.data_dir))
         )
     else:
-        return int(summarize(args.directory)["status"] != "passed")
+        return int(summarize(args.directory, args.revision)["status"] != "passed")
     return 0
 
 

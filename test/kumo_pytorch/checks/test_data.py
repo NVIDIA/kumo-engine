@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+from test.kumo_pytorch.bindings import selections as catalog_selections
 
 import pytest
 
@@ -244,7 +245,7 @@ def test_report_cannot_overwrite_local_source(tmp_path):
 
 
 def test_graph_workloads_select_v2_and_sequence_workloads_keep_v1():
-    workloads = json.loads((SUITE / "workloads/aml.json").read_text())
+    workloads = catalog_selections()
     selections = {}
     for workload in workloads:
         for model in workload["models"]:

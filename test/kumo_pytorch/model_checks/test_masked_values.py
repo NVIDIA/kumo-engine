@@ -4,12 +4,11 @@
 
 """PRAGMA AML task integration; generic masking mechanics stay in package tests."""
 
-import json
 import math
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
-from pathlib import Path
+from test.kumo_pytorch.bindings import selections as catalog_selections
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.masked_values import (
     FIELDS,
@@ -18,7 +17,7 @@ from test.kumo_pytorch.masked_values import (
     verify_loss,
     verify_targets,
 )
-from test.kumo_pytorch.models.aml import StepResult, build_model
+from test.kumo_pytorch.models import StepResult, build_model
 
 import pytest
 import torch
@@ -30,9 +29,7 @@ from .test_aml import assert_equal
 
 SELECTION = next(
     row
-    for row in json.loads(
-        (Path(__file__).parents[1] / "workloads/aml.json").read_text()
-    )
+    for row in catalog_selections()
     if row["selector"]["workload_id"] == "masked-value-pretrain"
 )
 

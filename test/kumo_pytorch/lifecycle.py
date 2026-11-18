@@ -20,7 +20,7 @@ import torch
 import kumo.pytorch.api as r
 
 from .anchor_tables import load_probe_anchors, write_probe_anchors
-from .models.aml import build_model
+from .models import build_model
 
 
 @contextmanager
