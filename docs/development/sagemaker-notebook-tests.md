@@ -73,6 +73,9 @@ plots and 30 PNG/SVG/PDF exports retain Snowflake's value, explicit-class,
 text-layout and checksum checks. Both the executed notebook export and native
 Studio initial/saved/reopened views run the same 800/1600px light/dark browser
 color-preference matrix. Native checks are scoped to the selected notebook panel.
+The explanation matrix collapses both Studio sidebars through the View menu,
+then restores their prior visibility, including on failure. The narrow-viewport
+check qualifies this focused notebook view, rather than a sidebar-crowded layout.
 Browser preference does not change the Studio account theme. Generation failures,
 malformed artifacts, GPU execution and cross-version compatibility remain separate
 API/training qualification work.

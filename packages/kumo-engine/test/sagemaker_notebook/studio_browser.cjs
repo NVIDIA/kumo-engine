@@ -86,6 +86,31 @@ async function verifyReceipt(panel, expected) {
     source_commit: actual.source_commit, wheel_sha256: actual.wheel_sha256 };
 }
 
+async function sidebar(frame, side, visible) {
+  const area = frame.locator(`#jp-${side.toLowerCase()}-stack`);
+  if (await area.isVisible() === visible) return;
+  await frame.getByRole('menuitem', { name: /^View$/ }).click();
+  await frame.locator('.lm-Menu:visible').getByText('Appearance', { exact: true }).hover();
+  await frame.getByRole('menuitemcheckbox', {
+    name: new RegExp(`^Show ${side} Sidebar(?:\\s|$)`),
+  }).click();
+  await area.waitFor({ state: visible ? 'visible' : 'hidden' });
+}
+
+async function checkExplanations(page, frame, panel, receipt, output, label, allowed) {
+  const left = await frame.locator('#jp-left-stack').isVisible();
+  const right = await frame.locator('#jp-right-stack').isVisible();
+  try {
+    await sidebar(frame, 'Left', false);
+    await sidebar(frame, 'Right', false);
+    return { ...await explanations.check(page, receipt, output, label, allowed, { root: panel }),
+      notebook_layout: 'sidebars-collapsed' };
+  } finally {
+    await sidebar(frame, 'Left', left);
+    await sidebar(frame, 'Right', right);
+  }
+}
+
 async function writeSaveProbe(page, frame, panel, saveProbe, mark) {
   mark('native-save-probe-edit');
   const notebook = panel.locator('.jp-Notebook');
@@ -174,9 +199,9 @@ async function main(input) {
     report.initial_receipt = await verifyReceipt(panel, input.receipt);
     mark('native-graph-controls');
     if (input.graph) report.initial = await graph.check(page, input.graph, output, 'studio-initial', true, true, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
-    if (input.graph) report.initial_explanations = await explanations.check(
-      page, input.graph, output, 'studio-initial',
-      async () => authenticated && safePage(page.url(), input.space_url), { root: panel });
+    if (input.graph) report.initial_explanations = await checkExplanations(
+      page, frame, panel, input.graph, output, 'studio-initial',
+      async () => authenticated && safePage(page.url(), input.space_url));
     const saveProbe = `KUMO_SAVE_PROBE=${input.receipt.attempt}-${input.invocation}`;
     requireThat(!content.toString().includes(saveProbe), 'Save probe already exists in the upload');
     await writeSaveProbe(page, frame, panel, saveProbe, mark);
@@ -201,9 +226,9 @@ async function main(input) {
     report.save_probe = 'passed';
     report.reopened_receipt = await verifyReceipt(panel, input.receipt);
     if (input.graph) report.reopened = await graph.checkSaved(page, input.graph, output, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
-    if (input.graph) report.reopened_explanations = await explanations.check(
-      page, input.graph, output, 'studio-reopened',
-      async () => authenticated && safePage(page.url(), input.space_url), { root: panel });
+    if (input.graph) report.reopened_explanations = await checkExplanations(
+      page, frame, panel, input.graph, output, 'studio-reopened',
+      async () => authenticated && safePage(page.url(), input.space_url));
     requireThat(errors.length === 0, 'Native Studio browser emitted an uncaught frontend error');
     report.uploaded_notebook = filename;
     report.uploaded_sha256 = input.notebook_sha256;
