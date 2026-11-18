@@ -178,6 +178,17 @@ jobs:
             test --manifest-path packages/diskgraph/Cargo.toml \
             --release --locked -p diskgraph-ingest --lib \
             rejects_windows_profiling_before_output_changes
+          cargo --config packages/diskgraph/.cargo/config.toml \
+            test --manifest-path packages/diskgraph/Cargo.toml \
+            --release --locked -p diskgraph-index --lib \
+            graph::scratch_cleanup_tests::sync_directory_flushes_completed_entry \
+            -- --exact | tee directory-sync-tests.log
+          grep -Eq '^test result: ok\. 1 passed;' directory-sync-tests.log
+          cargo --config packages/diskgraph/.cargo/config.toml \
+            test --manifest-path packages/diskgraph/Cargo.toml \
+            --release --locked -p diskgraph-ingest --lib \
+            snapshot_mirror::tests | tee snapshot-mirror-tests.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed;' snapshot-mirror-tests.log
 
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
       # Native Windows wheels are experimental internal CI artifacts only.
@@ -270,6 +281,9 @@ jobs:
 
   platform-qualification:
     needs: [build]
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/kumo-engine-platform-smoke.yml
 
   attach-to-release:

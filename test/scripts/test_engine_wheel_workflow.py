@@ -299,3 +299,37 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     # artifact while publishing the current build.
     assert 'run-id' not in download['with']
     assert 'github-token' not in download['with']
+
+
+def test_windows_reload_blocks_publication_with_current_wheel():
+    caller = JOBS['platform-qualification']
+    assert caller['permissions']['id-token'] == 'write'
+    workflow = yaml.safe_load((WORKFLOW.parent /
+                              'kumo-engine-platform-smoke.yml').read_text())
+    job = workflow['jobs']['windows-reload']
+    assert job['runs-on'] == 'windows-2022'
+    assert set(job['strategy']['matrix']['python']) == {
+        '3.11', '3.12', '3.13', '3.14'}
+    assert job['environment']['name'] == 'gha-kumo-workflow-tests'
+    download = next(step['with'] for step in job['steps']
+                    if step.get('uses', '').startswith(
+                        'actions/download-artifact@'))
+    assert download == {
+        'name': 'kumo-engine-wheel-windows-x86_64-${{ github.sha }}',
+        'path': '${{ runner.temp }}/windows-reload/artifacts'}
+    run = next(step['run'] for step in job['steps']
+               if step.get('name') ==
+               'Qualify the installed Windows wheel in fresh processes')
+    assert 'venv/Scripts/python.exe' in run
+    assert '--torch-backend=cpu "${wheels[0]}[cpu]"' in run
+    assert 'uv pip check --python "$python"' in run
+    assert 'desktop_reload_qualification.py run' in run
+    assert '--commit "$CANDIDATE_SHA"' in run
+    assert 'platform-qualification' in JOBS['attach-to-release']['needs']
+    build = _step('build', 'Test Windows path validation')['run']
+    assert '-p diskgraph-index --lib' in build
+    assert ('graph::scratch_cleanup_tests::'
+            'sync_directory_flushes_completed_entry') in build
+    assert '-- --exact | tee directory-sync-tests.log' in build
+    assert "grep -Eq '^test result: ok\\. 1 passed;'" in build
+    assert 'snapshot_mirror::tests | tee snapshot-mirror-tests.log' in build

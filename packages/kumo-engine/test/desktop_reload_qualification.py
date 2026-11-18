@@ -14,7 +14,6 @@ import os
 import platform
 import random
 import re
-import resource
 import shutil
 import signal
 import subprocess
@@ -28,6 +27,9 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
+
+if sys.platform != 'win32':
+    import resource
 
 GPU_SMOKE = Path(__file__).with_name('wheel_gpu_smoke.py')
 SPEC = util.spec_from_file_location(GPU_SMOKE.stem, GPU_SMOKE)
@@ -53,6 +55,8 @@ def label(device):
     """Name the OS or macOS version, CPU, device and Python of this run."""
     if sys.platform == 'darwin':
         host = 'macos-' + platform.mac_ver()[0].split('.')[0]
+    elif sys.platform == 'win32':
+        host = 'windows-native'
     elif 'microsoft' in platform.release().lower():
         host = 'windows-wsl'
     else:
@@ -187,30 +191,56 @@ def worker(phase, task, device, durable, out, base, data):
     out.with_suffix('.json').write_text(json.dumps(meta, default=sorted))
 
 
+def worker_environment(base, device, extra):
+    """Give each process fresh caches and ordinary-user loader defaults."""
+    drop = ('KUMO_', 'DISKGRAPH_')
+    masked = {'PYTEST_CURRENT_TEST', 'GITHUB_ACTIONS', 'SYNC_DATA_LOADER', 'CI'}
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(drop) and k not in masked}
+    env.update(extra, HOME=str(base / 'home'), USERPROFILE=str(base / 'home'),
+               TMPDIR=str(base / 'tmp'), TEMP=str(base / 'tmp'),
+               TMP=str(base / 'tmp'), XDG_CACHE_HOME=str(base / 'cache'),
+               PYTORCH_ENABLE_MPS_FALLBACK='0')
+    if device == 'cpu':
+        env['CUDA_VISIBLE_DEVICES'] = ''
+    return env
+
+
+def finish_process(process):
+    """Terminate timed-out workers and wait before deleting their storage."""
+    if sys.platform == 'win32':
+        if process.poll() is None:
+            try:
+                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                               check=True, capture_output=True)
+            except subprocess.CalledProcessError:
+                if process.poll() is None:
+                    raise
+    else:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    process.wait(timeout=30)
+
+
 def spawn(phase, task, device, durable, out, data=None, **extra):
-    """Run one worker in a new process. Then kill its process group and
-    delete its scratch, HOME, TMPDIR, XDG cache, cwd and fixture copy."""
-    base = Path(tempfile.mkdtemp(prefix='drq-', dir='/tmp'))
+    """Run and reap a worker, terminating its process tree on timeout.
+
+    Delete its scratch, HOME, TMPDIR, XDG cache, cwd and fixture copy.
+    """
+    base = Path(tempfile.mkdtemp(prefix='drq-'))
     for name in ('home', 'cache', 'cwd', 'tmp', 'scratch'):
         (base / name).mkdir()
-    drop = ('KUMO_', 'DISKGRAPH_')  # Could point at other binaries or data.
-    env = {k: v for k, v in os.environ.items() if not k.startswith(drop)}
-    env.update(extra, HOME=str(base / 'home'), TMPDIR=str(base / 'tmp'),
-               XDG_CACHE_HOME=str(base / 'cache'),
-               PYTORCH_ENABLE_MPS_FALLBACK='0')  # No silent CPU fallback.
-    if device == 'cpu':  # A CPU row must not reach a GPU.
-        env['CUDA_VISIBLE_DEVICES'] = ''
+    env = worker_environment(base, device, extra)
     command = [sys.executable, '-Iu', __file__, 'worker', phase, task, device]
     command += map(str, (durable, out, base, data))
     with open(out.with_suffix('.log'), 'wb') as log:
         process = subprocess.Popen(command, cwd=base / 'cwd', env=env,
                                    stdout=log, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
+                                   start_new_session=sys.platform != 'win32')
         try:
             return process.wait(timeout=3600)
         finally:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            finish_process(process)
             shutil.rmtree(base)
 
 
@@ -296,7 +326,7 @@ def main():
     summary = dict(label=label(args.device), commit=args.commit, started=now,
                    wheel=args.wheel.name, wheel_sha256=None,
                    cpus=os.cpu_count(), tasks={})
-    work = Path(tempfile.mkdtemp(prefix='drq-work-', dir='/tmp'))
+    work = Path(tempfile.mkdtemp(prefix='drq-work-'))
     try:
         for task in TASKS:
             started = time.monotonic()
@@ -313,9 +343,10 @@ def main():
                               error=f'{type(error).__name__}: {error}')
             result['seconds'] = round(time.monotonic() - started, 1)
             # The largest worker's ru_maxrss: KiB on Linux, bytes on macOS.
-            rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-            summary['peak_rss_mib'] = round(
-                rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
+            if sys.platform != 'win32':
+                rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+                summary['peak_rss_mib'] = round(
+                    rss / (1 << 20 if sys.platform == 'darwin' else 1 << 10))
             print(task, json.dumps(result), flush=True)
             (output / 'summary.json').write_text(json.dumps(summary, indent=1))
     finally:

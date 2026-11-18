@@ -11,6 +11,85 @@ permissions:
   contents: read
 
 jobs:
+  windows-reload:
+    name: Native Windows CPU reload (Python ${{ matrix.python }})
+    runs-on: windows-2022
+    timeout-minutes: 60
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    defaults: {run: {shell: bash}}
+    env:
+      PYTHONPATH: ''
+      UV_LINK_MODE: copy
+      UV_NO_CONFIG: 'true'
+      CANDIDATE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with: {ref: '${{ github.sha }}', persist-credentials: false}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8
+        with:
+          name: kumo-engine-wheel-windows-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/windows-reload/artifacts
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with: {enable-cache: false}
+      - id: aws
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and check the pinned PR172 inputs
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
+        run: |
+          uv run --no-project --python 3.12 --with 'boto3>=1.34,<2' python -I - <<'PY'
+          import boto3, hashlib, json, os, tarfile
+          from pathlib import Path
+          spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+          archive = Path(os.environ['RUNNER_TEMP'], 'reload-inputs.tar.gz')
+          boto3.client('s3', region_name=spec['region']).download_file(spec['bucket'], spec['key'], str(archive))
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != spec['sha256']:
+              raise SystemExit('PR172 input checksum differs')
+          with tarfile.open(archive) as source:
+              source.extractall(Path(os.environ['RUNNER_TEMP'], 'reload-inputs'), filter='data')
+          PY
+      - name: Qualify the installed Windows wheel in fresh processes
+        run: |
+          set -euo pipefail
+          [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || exec env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN bash --noprofile --norc -eo pipefail "$0"
+          stage="$(cygpath -u "$RUNNER_TEMP")/windows-reload"
+          inputs="$(cygpath -u "$RUNNER_TEMP")/reload-inputs"
+          mkdir -p "$stage/test" "$stage/results"
+          cp packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke}.py "$stage/test/"
+          cd "$stage"
+          wheels=(artifacts/kumo_engine-*.whl)
+          [ "${#wheels[@]}" -eq 1 ] && [ -f "${wheels[0]}" ]
+          uv venv --python '${{ matrix.python }}' venv
+          python="$stage/venv/Scripts/python.exe"
+          uv pip install --python "$python" --torch-backend=cpu "${wheels[0]}[cpu]" 2>&1 | tee results/install.log
+          uv pip check --python "$python" 2>&1 | tee results/dependencies.log
+          uv pip freeze --python "$python" > results/freeze.txt
+          "$python" -I test/desktop_reload_qualification.py run --wheel "${wheels[0]}" --device cpu \
+            --data-dir "$inputs" --output-dir results --commit "$CANDIDATE_SHA"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+        with:
+          name: engine-wheel-reload-windows-native-cpu-py${{ matrix.python }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/windows-reload/results
+            !${{ runner.temp }}/windows-reload/results/**/*.parquet
+            !${{ runner.temp }}/windows-reload/results/*/*.json
+          if-no-files-found: warn
+          retention-days: 14
+
   smoke:
     name: CPU wheel (${{ matrix.target.platform }}, Python ${{ matrix.python }})
     timeout-minutes: 60
