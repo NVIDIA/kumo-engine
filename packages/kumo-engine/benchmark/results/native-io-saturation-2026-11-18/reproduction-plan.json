@@ -44,7 +44,7 @@
     "prepared_oracle": "Generate new complete pristine owned-file manifests, source/config hashes and snapshot identifiers. Retain old prepared oracles as historical information, not acceptance authority for new data.",
     "scale": 768,
     "seed": 0,
-    "status": "PENDING",
+    "status": "QUALIFIED_SOURCE_BYTES_AND_SELECTED_LAYOUT_NEW_ORACLES_PENDING",
     "tasks": [
       "binary",
       "regression",
@@ -155,12 +155,12 @@
     {
       "deliverable": "Signed public recovery/rebuild provenance commit and root review",
       "phase": 1,
-      "state": "READY_FOR_REVIEW"
+      "state": "COMMITTED_AND_PUBLISHED"
     },
     {
       "deliverable": "Regenerated source/prepared data, fio fixture, new full-work template oracles and collector smoke qualification",
       "phase": 2,
-      "state": "PENDING"
+      "state": "DATA_QUALIFIED_OTHER_INPUTS_PENDING"
     },
     {
       "deliverable": "Fresh drive curve, two full actual profiles, principal70 matrix, independent raw replay, report/CSV/plots and action plan",
@@ -258,7 +258,7 @@
     "sha256": "6548db42d959793b969df54ca11d210934bb1233f447b9b2250793cd5e39dd75"
   },
   "source_plan_qualification": "The retained local plan predates runtime qualification. This public plan resolves runtime status and explicitly includes the nine new full-work pilot template cells; later execution plans must record all actual paths and qualified hashes.",
-  "status": "INERT_PENDING_DATA_AND_INPUT_QUALIFICATION",
+  "status": "INERT_DATA_QUALIFIED_PENDING_TEMPLATE_FIXTURE_AND_COLLECTOR_QUALIFICATION",
   "template_qualification": {
     "acceptance": "Unchanged validator must establish native/config identity, equal logical seeded work/layout/model/predictions within each relevant new group and across compatible regimes. No shortened workload, old golden substitution, or source-level acceptance relaxation.",
     "backends": [

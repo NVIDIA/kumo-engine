@@ -1,0 +1,184 @@
+{
+  "artifact_root_variable": "ARTIFACT_ROOT",
+  "durability": {
+    "global_sync_used": false,
+    "outside_timed_work": true,
+    "owned_directories_fsynced_bottom_up": 448,
+    "owned_files_fsynced": 6888,
+    "parents_fsynced": true
+  },
+  "epoch": "2026-11-18-post-reboot",
+  "metadata_review": {
+    "compared_fields": [
+      "configuration",
+      "typed table columns, primary/foreign keys and time columns",
+      "IDs, anchor, heldout population and training-row counts",
+      "generation plans",
+      "relative source SHA maps",
+      "actual native shard counts and prepared manifest hashes"
+    ],
+    "relocated_fields": "Connector identities and source-table paths differ with the new root; no equality claim for those fields.",
+    "root_acceptance": "DATA_INPUT_ONLY",
+    "status": "PASS"
+  },
+  "new_epoch_formal_measurement_trials_completed": 0,
+  "new_epoch_oracle_pilots_completed": 0,
+  "path_rule": "Artifact paths below are relative to the durable epoch root. Full local manifests and recipes remain outside public Git.",
+  "pending": [
+    "nine full-work pilot template cells",
+    "fio fixture",
+    "collector live smoke",
+    "fresh measurement-epoch host snapshot",
+    "all drive/profile/principal70 measurements"
+  ],
+  "performance_results_in_this_checkpoint": false,
+  "preparation_lineage": {
+    "historical_prepare_argv": "UNRECORDED",
+    "historical_prepare_cpu_affinity": "UNRECORDED",
+    "identity_gap": "Initial 28-shard and selected 5/5/6 preparations share the same apparent snapshot identity despite different physical layouts. Snapshot identity alone does not prove resource-dependent sharding provenance; retain actual configuration and physical-file manifests.",
+    "initial_attempt": "Initial 28-shard prepared outputs are retained as diagnostic evidence and excluded from pilot/formal inputs.",
+    "new_affinity": "CPUs 5-7 for binary/regression, 5-8 for temporal link; the actual public native converter was prequalified to resolve 5/5/6. This is a new control, not a recovered historical setting.",
+    "seeded_work_caveat": "Selected snapshot and training-table namespaces differ from historical ones. Matching source/native bytes and semantic preparation fields does not prove historical batch/prediction parity; new full-work within-epoch oracles are required.",
+    "selected_layout": "Actual native configurations and all 21 node-file families per task match historical shard counts; owned files are 160/130/165."
+  },
+  "qualification": {
+    "path": "data/data-qualification.json",
+    "sha256": "c5a85739cd4b6643d8fae548b6ae97bbdc0f4e620dd5eba64a6ed1fd5d70018a"
+  },
+  "recipe_and_completion_artifacts_sha256": {
+    "data/check-layout.py": "341369e8d904733333041f8d7c5b1da56b15a0bbf7f02e494678c6860141c632",
+    "data/completion.json": "b222d53caed52b16c84d593813c4527c2ce2f345beac75137b8df8cface84cd1",
+    "data/preparation-plan.json": "4479c2c1ffbab9c5b8acd2f82f068e3e0234ab880d9f4e8d75a4177bfbaba4b8",
+    "data/prepare-data.py": "f341c76dafd51e9e1b7af0bd8417c4b05fc37ea3c66e708adadbc54827856b8b",
+    "data/prepare-published-layout.py": "06dce03d80e6de17f280e6ec60ec47c562a32ce66d1a0623b44e1f36e88c7bf9",
+    "data/published-layout-completion.json": "2185b9e84abd2017d3a5c33824f954f2257fddfcdee116ec1776382c3a31aad6",
+    "data/published-layout-plan.json": "a0b023887090a74ff41403ae4a97ee026905ba71dc277ed1ca7daec8a26eef01",
+    "data/qualify-data.py": "a35cfd4ca612d98fa68ae39d00859428ccd573edb43114a39be8bcda8495947e",
+    "data/reconstruct-prepared.py": "9dd74c93463c830417583a695621b2a0b7d1e38b8cc9b10ad25923a12de835c6"
+  },
+  "recorded_utc": "2026-11-18T19:19:38.455043+00:00",
+  "runtime_summary": "rebuild.json",
+  "schema_version": 1,
+  "source_identity": {
+    "all_source_bytes_match_historical_oracles": true,
+    "data_kind": "Local reproducible synthetic graphs; no production/customer data.",
+    "old_archives_changed": false,
+    "parquet_files": 4716,
+    "prepared_index_byte_identity_to_historical": "NOT_ESTABLISHED",
+    "verification_scope": "Preparation controllers rehashed actual Parquet bytes, including before selected-layout reconstruction. This summary review independently verifies saved relative-path SHA maps and compact metadata; it does not claim another data-payload rehash."
+  },
+  "source_pins": {
+    "measurement_tools": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+    "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+    "published_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a"
+  },
+  "status": "DATA_INPUTS_ACCEPTED_NEW_FULL_WORK_ORACLES_PENDING",
+  "tasks": [
+    {
+      "all_source_hashes_match_historical": true,
+      "config_sha256": "a1944ee17b960bf5b121f05300ec8850cf87497883748758f4ab856d97eb39af",
+      "estimator_proof": {
+        "path": "data/binary-layout-estimator-proof.json",
+        "sha256": "0d71d38a14731c4155ceb954f525db4bd6a1f6e2d41ed30093d63a7b4fb685a2"
+      },
+      "heldout_entities": 98304,
+      "historical_semantic_preparation_fields_match": true,
+      "index_bytes": 10561111543,
+      "initial_28_shard_manifest": {
+        "path": "data/prepared/binary/manifest.json",
+        "sha256": "d7456dfe761ed16f5b9b95215fc545fb1bfb7f1492da8eb2e50814d29ef6e66f"
+      },
+      "native_config": {
+        "path": "data/prepared-published-layout/binary/scratch/snapshots/53900af4c99a658bbcf68088b6a599e18203f8adcb903e5ab83267e0e34bae14/e7a4e0050adc3be22805464ec6dd9a1a775cb86a62e074a558c8a8bdbb828c30/diskgraph_config.json",
+        "sha256": "000262e927a13e7873af565a09aff6207b2d3b918913f35613d5b38984cd8319"
+      },
+      "native_shards": 5,
+      "node_file_family_count": 21,
+      "owned_prepared_files": 160,
+      "physical_node_file_families_match_historical": true,
+      "preparation_cpu_affinity": [
+        5,
+        6,
+        7
+      ],
+      "prepared_manifest": {
+        "path": "data/prepared-published-layout/binary/manifest.json",
+        "sha256": "5d2bb522c75bfb6e0f2d33033c47565eddb4e4d3374bbab62f8cc9c00a76b344"
+      },
+      "source_parquet_files": 1572,
+      "task": "binary",
+      "training_rows": 6881280
+    },
+    {
+      "all_source_hashes_match_historical": true,
+      "config_sha256": "7e93689a6aba27c4e5a71af997b81c1e822c3f86abfbc80f214a174d0f2d745f",
+      "estimator_proof": {
+        "path": "data/regression-layout-estimator-proof.json",
+        "sha256": "d089cf2629a3cb4d13f4f157b8424eb9d3a5676f332a91f2bdb5af11af402941"
+      },
+      "heldout_entities": 98304,
+      "historical_semantic_preparation_fields_match": true,
+      "index_bytes": 10541210483,
+      "initial_28_shard_manifest": {
+        "path": "data/prepared/regression/manifest.json",
+        "sha256": "1f1abb1728229c810ae599b3422e920a7edcdf118d10562fa0180f1a7820f970"
+      },
+      "native_config": {
+        "path": "data/prepared-published-layout/regression/scratch/snapshots/b9aacd61e0e9d768d5fbdc37c64649d51d069d969a0e7b6c37206b33729796bf/41b42fceeab56d580afb22522629354b9d8161cab6fed8b744cca333193411ef/diskgraph_config.json",
+        "sha256": "857c7b32d7ffe08a7b105d8df62a0bb668574ba5a7a27d03241eba19040ee628"
+      },
+      "native_shards": 5,
+      "node_file_family_count": 21,
+      "owned_prepared_files": 130,
+      "physical_node_file_families_match_historical": true,
+      "preparation_cpu_affinity": [
+        5,
+        6,
+        7
+      ],
+      "prepared_manifest": {
+        "path": "data/prepared-published-layout/regression/manifest.json",
+        "sha256": "82ba6aeffa6893d85d55093218eff56a74fb7af386d88c822f153bc2d5f5e5f6"
+      },
+      "source_parquet_files": 1572,
+      "task": "regression",
+      "training_rows": 1474560
+    },
+    {
+      "all_source_hashes_match_historical": true,
+      "config_sha256": "770db80ad44775c33055cb036d958bacada26b9da67d7401156bbf8d7205d505",
+      "estimator_proof": {
+        "path": "data/temporal_link-layout-estimator-proof.json",
+        "sha256": "197a835bc358d5bc1a53f07642d691269f240663c335a35fb4c1e39d279cd67b"
+      },
+      "heldout_entities": 32768,
+      "historical_semantic_preparation_fields_match": true,
+      "index_bytes": 10701534617,
+      "initial_28_shard_manifest": {
+        "path": "data/prepared/temporal_link/manifest.json",
+        "sha256": "ace24d227cbf2cec91a87ff578f0827c0f7effa30c0732a0d559e7f279733deb"
+      },
+      "native_config": {
+        "path": "data/prepared-published-layout/temporal_link/scratch/snapshots/13678ad7851798fcf6dc97c23afdc682d22e6524ab821a72f4f8f15b4aeb2124/490ab7e23f8861d9b6e5232f757db9d134f16cdf7c9622a84c745ee8f4989df8/diskgraph_config.json",
+        "sha256": "2c025463f22b4e422e7ebe5205235c5cf0237cc24fbb434eea5d3c95aa6b20cd"
+      },
+      "native_shards": 6,
+      "node_file_family_count": 21,
+      "owned_prepared_files": 165,
+      "physical_node_file_families_match_historical": true,
+      "preparation_cpu_affinity": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "prepared_manifest": {
+        "path": "data/prepared-published-layout/temporal_link/manifest.json",
+        "sha256": "02779da7f55578ffb727e27387c47913e488cf321f345c4886b2f2a1eb550e68"
+      },
+      "source_parquet_files": 1572,
+      "task": "temporal_link",
+      "training_rows": 4554752
+    }
+  ]
+}
