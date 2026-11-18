@@ -228,8 +228,32 @@ class TestMaterialize:
     def test_a_split_cannot_be_applied_to_requests(self) -> None:
         with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
             task = plan.materialize(_table(), fit_split="train")
-            with pytest.raises(ValueError, match="requests carry their own"):
-                task.batches(_requests_for("train"), split="train", batch_size=4)
+            with pytest.raises(TypeError, match="requests"):
+                task.batches(requests=_requests_for("train"))
+            with pytest.raises(TypeError, match="split"):
+                task.request_batches(_requests_for("train"), split="train")
+
+    @pytest.mark.parametrize("split", [None, "train"])
+    def test_fitting_requests_must_be_supplied_again_for_batching(self, split) -> None:
+        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+            fit = _requests_for("train")
+            task = plan.materialize(fit, fit_split="train")
+            with pytest.raises(
+                ValueError, match="requires a materialized AnchorTable.*request_batches"
+            ):
+                task.batches(split=split)
+
+            supplied = [replace(fit[0], sample_id="new-request"), fit[1]]
+            first = task.request_batches(supplied, batch_size=1)
+            assert next(first).metadata["sample_ids"] == ("new-request",)
+            resumed = task.request_batches(supplied, batch_size=1)
+            resumed.load_state_dict(first.state_dict())
+            assert [b.metadata["sample_ids"] for b in resumed] == [(fit[1].sample_id,)]
+
+    def test_empty_explicit_selection_yields_no_batches(self) -> None:
+        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+            task = plan.materialize(_table(), fit_split="train")
+            assert list(task.request_batches([], output_format="model")) == []
 
     def test_table_and_requests_yield_the_same_samples(self) -> None:
         with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
@@ -245,7 +269,7 @@ class TestMaterialize:
             }
             from_requests = {
                 sample_id: score
-                for batch in task.batches(_requests_for("train"), batch_size=3)
+                for batch in task.request_batches(_requests_for("train"), batch_size=3)
                 for sample_id, score in zip(
                     batch.metadata["sample_ids"],
                     batch.inputs["entity"]["score"]["values"].tolist(),
@@ -445,7 +469,7 @@ class TestPaddingIdentity:
             for value in batch.inputs["entity"]["score"]["values"].tolist()
         ] == [float(index + 1) for index in positions]
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests", "explicit_requests"])
+    @pytest.mark.parametrize("source", ["table", "explicit_requests"])
     @pytest.mark.parametrize("batch_size", [1, 3])
     @pytest.mark.parametrize(
         ("ids", "world_size", "expected_ids", "positions", "padding"),
@@ -501,22 +525,26 @@ class TestPaddingIdentity:
                 "rank": world_size - 1,
                 "world_size": world_size,
             }
-            explicit = requests if source == "explicit_requests" else None
-            batches = list(task.batches(explicit, **settings))
+
+            def batches_for_rank():
+                if source == "explicit_requests":
+                    return task.request_batches(requests, **settings)
+                return task.batches(**settings)
+
+            batches = list(batches_for_rank())
             self._assert_rows(batches, expected_ids, positions, padding)
-            assert [b.metadata["sample_ids"] for b in task.batches(explicit, **settings)] == [
+            assert [b.metadata["sample_ids"] for b in batches_for_rank()] == [
                 b.metadata["sample_ids"] for b in batches
             ]
         assert [request.sample_id for request in requests] == ids
         assert all("_is_padding" not in request.metadata for request in requests)
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests"])
-    def test_padding_in_a_later_chunk_is_unique_and_resumable(self, source) -> None:
+    def test_padding_in_a_later_chunk_is_unique_and_resumable(self) -> None:
         requests = self._requests(["a", "b", "c", "d", "e", "f", "g", "b#padding1", "i"])
         # The first chunk owns b/d/f. The final chunk owns b#padding1 and the
         # repeat of b; its locally generated b#padding1 must avoid the real row.
         with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
-            task = self._materialize(plan, requests, source)
+            task = self._materialize(plan, requests, "table")
             settings = {"batch_size": 3, "chunk_batches": 1, "rank": 1, "world_size": 2}
             batches = list(task.batches(**settings))
             self._assert_rows(
@@ -804,7 +832,7 @@ class TestCandidates:
         with prepare(contract, DATASET, InMemoryEngine()) as plan:
             task = plan.materialize(self._table(), fit_split="train")
             from_table = next(iter(task.batches(split="train", batch_size=4)))
-            from_requests = next(iter(task.batches(requests, batch_size=4)))
+            from_requests = next(iter(task.request_batches(requests, batch_size=4)))
         assert from_table.inputs["peers"]["score"]["values"].equal(
             from_requests.inputs["peers"]["score"]["values"]
         )
@@ -995,7 +1023,7 @@ class TestDistributedTokenBudgets:
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
                 task.batches(split="train", rank=0, world_size=2)
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
-                task.batches(_requests_for("train"), rank=1, world_size=2)
+                task.request_batches(_requests_for("train"), rank=1, world_size=2)
             assert list(task.batches(split="train"))
 
 

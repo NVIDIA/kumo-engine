@@ -370,8 +370,9 @@ def _duplicate_layer_relation(tmp_path: Path) -> None:
     dataset = _written(tmp_path)
     engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with prepare(contract, dataset, engine) as plan:
-        task = plan.materialize([SampleRequest("a", 1, 100)])
-        next(iter(task.batches(batch_size=1)))
+        requests = [SampleRequest("a", 1, 100)]
+        task = plan.materialize(requests)
+        next(iter(task.request_batches(requests, batch_size=1)))
 
 
 #: Entries refused when batches are requested, each with the call that refuses it.

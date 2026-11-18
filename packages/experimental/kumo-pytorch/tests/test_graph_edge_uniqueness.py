@@ -84,7 +84,8 @@ def test_revisited_edges_appear_once_per_sample(engine_name):
         plan.materialize(requests) as task,
     ):
         batches = list(
-            task.batches(
+            task.request_batches(
+                requests,
                 batch_size=len(requests),
                 output_format="model" if engine_name == "diskgraph" else "inspectable",
             )

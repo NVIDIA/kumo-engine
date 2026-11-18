@@ -211,7 +211,9 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
     fingerprint = contract.fingerprint
     with api.prepare(contract, memory, api.InMemoryEngine()) as reference:
         expected = next(
-            reference.materialize(requests, fit_split="train").batches(requests, batch_size=4)
+            reference.materialize(requests, fit_split="train").request_batches(
+                requests, batch_size=4
+            )
         )
     with api.prepare(contract, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
         queries = _Queries(plan._source._sampler)
@@ -219,7 +221,7 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
         with plan.materialize(requests, fit_split="train") as task:
             assert not queries.calls
             fitted = task.bound_contract().to_json()
-            actual = next(task.batches(requests, batch_size=4, output_format="model"))
+            actual = next(task.request_batches(requests, batch_size=4, output_format="model"))
             pushed = type(limit) is int and limit == 2
             assert queries.calls[0]["sequences"][0]["limit"] == (2 if pushed else None)
             assert queries.calls[0]["sequences"][0]["order"] == (

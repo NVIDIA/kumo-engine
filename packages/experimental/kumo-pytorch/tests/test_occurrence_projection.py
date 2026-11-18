@@ -158,7 +158,7 @@ def test_projection_repeats_explicit_age_per_piece_and_follows_truncation(
     requests = (SampleRequest("one", 1, 100), SampleRequest("empty", 2, 100))
     with prepare(contract=contract, dataset=dataset, engine=InMemoryEngine()) as plan:
         task = plan.materialize(requests)
-        batch = next(task.batches(batch_size=2))
+        batch = next(task.request_batches(requests, batch_size=2))
         values = batch.inputs["ages"]["age"]
         if isinstance(layout, Packed):
             assert batch.inputs["profile"]["offsets"].tolist() == [0, len(ages), len(ages) + 1]

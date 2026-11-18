@@ -163,7 +163,7 @@ with (
     api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
-    batch = next(task.batches(output_format="model"))
+    batch = next(task.request_batches((request,), output_format="model"))
 print("spend:", batch.inputs["user"]["spend"]["values"].tolist())
 print("amounts:", batch.inputs["orders"]["amount"]["values"].tolist())
 ```
@@ -216,17 +216,21 @@ refusal](#choosing-an-engine-and-early-refusal).
 An anchor is one example to build: an entity ID, a prediction time, and
 optionally a split, labels, candidates and tracing metadata. For production
 training, evaluation, offline scoring, and benchmarks, materialize a Parquet
-`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`
-without an explicit request argument. This selects native model iteration for
-eligible contracts. Benchmarks of that iterator should verify the execution
-route because some contracts still use Python assembly.
+`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`.
+This selects native model iteration for eligible contracts. Benchmarks of
+that iterator should verify the execution route because some contracts
+fall back to reconstructing requests.
 
 Use Python `SampleRequest` objects for tests, debugging, or small sets of
-requests supplied at runtime. `task.batches(requests=...)` uses explicit
-request batching, even on a task materialized from an `AnchorTable`. A task
-materialized from a Python request sequence also stays request-backed when
-you call `task.batches(split=...)`. DiskGraph can still sample the data for
-these requests, but these calls bypass native AnchorTable batch iteration.
+requests supplied at runtime. Pass them to `task.request_batches(requests)`
+even if they were used to fit the task. This method can use DiskGraph sampling
+and bypasses native AnchorTable iteration. `task.batches()` requires a task
+materialized from an `AnchorTable`.
+
+When migrating, rename `task.batches(requests=...)` to `task.request_batches(...)`.
+If you relied on `batches(split=...)` after materializing Python requests,
+pass your selected requests explicitly or bind the population as an `AnchorTable`.
+Start a fresh iterator when migrating a paused request-backed split pass.
 
 This example shows how to bind a Parquet anchor table and select its splits:
 
@@ -362,7 +366,7 @@ with (
     api.prepare(contract=contract, dataset=in_memory, engine=api.InMemoryEngine()) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
-    batch = next(task.batches())
+    batch = next(task.request_batches((request,)))
 print("spend:", batch.inputs["user"]["spend"]["values"].tolist())
 print("amounts:", batch.inputs["orders"]["amount"]["values"].tolist())
 ```

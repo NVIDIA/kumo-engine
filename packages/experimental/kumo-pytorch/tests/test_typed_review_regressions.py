@@ -90,7 +90,8 @@ def _prepared(tmp_path, contract, tables, mode):
 def _batch(plan, requests, mode):
     task = plan.materialize(anchors=requests)
     return next(
-        task.batches(
+        task.request_batches(
+            requests,
             batch_size=len(requests),
             output_format="model" if mode == "native_model" else "inspectable",
         )

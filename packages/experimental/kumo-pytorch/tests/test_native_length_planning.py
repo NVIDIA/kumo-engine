@@ -288,7 +288,9 @@ def test_native_planning_matches_python_and_caches_lengths(
             expected = {}
             requests = task._anchors.fetch(frozenset({"train"}), range(n))
             for request in requests:
-                expected[request.sample_id] = next(task.batches([request], output_format="model"))
+                expected[request.sample_id] = next(
+                    task.request_batches([request], output_format="model")
+                )
 
             def forbidden(*args, **kwargs):
                 pytest.fail(
@@ -419,9 +421,9 @@ def test_precomputed_text_lengths_drive_native_budget_without_planning_encoding(
             assert "orders" in task.fitted_state.fit["inputs"]["statistics"]["token_lengths"]
             assert len(task._anchors._token_maps) == 1
             expected = {
-                r.sample_id: next(task.batches([r], output_format="model")).inputs["history"][
-                    "value_ids"
-                ]
+                r.sample_id: next(task.request_batches([r], output_format="model")).inputs[
+                    "history"
+                ]["value_ids"]
                 for r in task._anchors.fetch(api.ALL_ANCHORS, range(24))
             }
             monkeypatch.setattr(
@@ -688,7 +690,7 @@ def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
             else:
                 assert task._anchors._event_costs == {}
             expected = {
-                r.sample_id: next(task.batches([r], output_format="model"))
+                r.sample_id: next(task.request_batches([r], output_format="model"))
                 for r in task._anchors.fetch(api.ALL_ANCHORS, range(3))
             }
             for actual in task.batches(output_format="model"):

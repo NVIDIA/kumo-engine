@@ -148,7 +148,7 @@ def test_scalar_compatibility_and_real_execution(dtype, family, engine_name):
         prepare(contract, dataset, engine) as plan,
         plan.materialize(anchors) as task,
     ):
-        outputs = [next(task.batches(anchors, batch_size=2)).inputs["entity"]["value"]]
+        outputs = [next(task.request_batches(anchors, batch_size=2)).inputs["entity"]["value"]]
         torch_scalar = dtype.integer or dtype.name in {"float32", "float64", "bool"}
         if engine_name == "diskgraph":
             if family == "raw" and not torch_scalar:
@@ -160,10 +160,10 @@ def test_scalar_compatibility_and_real_execution(dtype, family, engine_name):
                     ),
                     pytest.raises(ValueError, match="Raw"),
                 ):
-                    next(task.batches(anchors, batch_size=2, output_format="model"))
+                    next(task.request_batches(anchors, batch_size=2, output_format="model"))
             else:
                 outputs.append(
-                    next(task.batches(anchors, batch_size=2, output_format="model")).inputs[
+                    next(task.request_batches(anchors, batch_size=2, output_format="model")).inputs[
                         "entity"
                     ]["value"]
                 )

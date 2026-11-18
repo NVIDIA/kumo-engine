@@ -113,7 +113,7 @@ def test_time_boundaries_across_outputs(engine_name, output_format, bounded, clo
     with bound_tables(contract, tables, engine_name) as (dataset, engine):
         with api.prepare(contract, dataset, engine) as plan:
             with plan.materialize(case.requests) as task:
-                for batch in task.batches(output_format=output_format):
+                for batch in task.request_batches(case.requests, output_format=output_format):
                     history = batch.inputs["history"]
                     graph = batch.inputs["graph"]["nodes"].get("events")
                     for index, sample_id in enumerate(batch.metadata["sample_ids"]):

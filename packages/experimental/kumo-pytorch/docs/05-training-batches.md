@@ -5,8 +5,7 @@ training split, layouts, previews, deterministic order and rank sharding.
 
 For training, evaluation, and benchmarks on DiskGraph, start with
 [the Parquet AnchorTable example](#training-on-the-diskgraph-engine). The
-in-memory examples below use a few Python requests to make the results easy
-to inspect.
+in-memory example uses a small `AnchorTable` to show the same split selection.
 
 ## A contract with a label
 
@@ -71,7 +70,7 @@ sample = api.SampleSpec(
 dataset = api.Dataset(
     tables={"users": api.InMemoryRows(rows=users), "purchases": api.InMemoryRows(rows=purchases)}
 )
-anchors = [
+requests = [
     api.SampleRequest(
         sample_id=f"user-{u}-day-{day}",
         entity_id=u,
@@ -81,6 +80,22 @@ anchors = [
     for u in range(1, 6)
     for day in (10, 15, 20)
 ]
+
+
+def anchor_table(requests: list[api.SampleRequest]) -> api.AnchorTable:
+    return api.AnchorTable(
+        source=api.InMemoryRows([
+            {"sample_id": r.sample_id, "user_id": r.entity_id, "as_of": r.as_of_time, "split": r.split}
+            for r in requests
+        ]),
+        entity_id="user_id",
+        as_of_time="as_of",
+        sample_id="sample_id",
+        split="split",
+    )
+
+
+anchors = anchor_table(requests)
 
 
 def contract(layout: api.SequenceLayout) -> api.DataLoaderSpec:
@@ -173,7 +188,7 @@ as offsets. If you want one flat token stream instead, use
 fitted state. It is the quickest way to check a contract against your data:
 
 ```python
-result = api.preview(task, anchors[:2])
+result = api.preview(task, requests[:2])
 print(len(result.samples), "samples;", tuple(result.batch.inputs))
 ```
 
@@ -274,7 +289,7 @@ A second task can reuse fitted state instead of fitting again, for example to
 score new anchors with the training vocabulary, or to fine-tune on a new label:
 
 ```python
-scoring = plan.materialize(anchors=anchors[:3], fitted=task.fitted_state)
+scoring = plan.materialize(anchors=anchor_table(requests[:3]), fitted=task.fitted_state)
 fine_tune = plan.materialize(anchors=anchors, fitted=task.fitted_state.inputs, fit_split="train")
 print(scoring.fitted_state == task.fitted_state)
 plan.close()
@@ -334,7 +349,7 @@ pq.write_table(
                 "as_of": datetime.fromtimestamp(a.as_of_time, UTC),
                 "split": a.split,
             }
-            for a in anchors
+            for a in requests
         ],
         schema=pa.schema(
             [

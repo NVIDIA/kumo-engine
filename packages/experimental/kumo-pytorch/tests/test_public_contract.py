@@ -243,7 +243,7 @@ def test_only_declared_components_contribute_to_fitted_encoders():
     assert task.encoders["country"].entries == (("US", 2),)
     assert task.output("events").field(name="amount").encoder.boundaries == (5.0,)
     assert all("noise" not in identity for identity in task.fitted_state["encoders"])
-    output = next(task.batches([SampleRequest("u1", 1, 100)], batch_size=1))
+    output = next(task.request_batches([SampleRequest("u1", 1, 100)], batch_size=1))
     assert tuple(output.inputs) == ("entity", "events")
     assert "field_ids" in output.inputs["entity"]
     assert "field_ids" in output.inputs["events"]
@@ -258,7 +258,7 @@ def test_profile_fields_and_history_layouts_are_independent():
         _tokens(profile_layout=Packed(), field_layout=Padded(), event_layout=Packed()),
         [SampleRequest("u1", 1, 100)],
     )
-    output = next(task.batches([SampleRequest("u1", 1, 100)], batch_size=1))
+    output = next(task.request_batches([SampleRequest("u1", 1, 100)], batch_size=1))
     assert output.inputs["entity"]["offsets"].tolist() == [0, 1]
     assert output.inputs["events"]["field_ids"].shape == (1, 1)
     assert output.inputs["events"]["sequence"]["offsets"].tolist() == [0, 1]

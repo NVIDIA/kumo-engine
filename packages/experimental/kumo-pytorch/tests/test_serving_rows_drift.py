@@ -105,7 +105,7 @@ def _run(case: DriftCase) -> tuple[api.Artifact, dict[str, api.Batch]]:
                 artifact = task.to_artifact()
         with api.prepare(artifact.contract, dataset, bound_engine) as plan:
             with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
-                batches = task.batches(batch_size=1, seed=SEED)
+                batches = task.request_batches(requests, batch_size=1, seed=SEED)
                 return artifact, {batch.metadata["sample_ids"][0]: batch for batch in batches}
 
 
