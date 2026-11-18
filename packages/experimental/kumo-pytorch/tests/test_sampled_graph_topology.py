@@ -166,6 +166,12 @@ def test_sampled_buffers_match_native_without_reconstruction(
             for table, values in original["num_sampled_nodes_dict"].items():
                 if table in {"people", "events"}:
                     assert nodes[table] == tuple(values.to_pylist())
+            physical = plan._source._sampling_plan(plan.contract.sample.neighborhoods["g"])[1]
+            assert dict(counts) == {
+                (kind["src"], kind["rel"], kind["dst"]): tuple(entry["counts"].to_pylist())
+                for entry in original["num_sampled_edges_dict"]
+                if (kind := entry["edge_type"])["rel"] in physical
+            }
             for entry in original["edge_index_dict"]:
                 kind = entry["edge_type"]
                 key = kind["src"], kind["rel"], kind["dst"]
@@ -334,3 +340,186 @@ def test_sampled_artifact_retains_mode_and_buffers(sampled_plan, tmp_path):
     assert pairs == {
         key: edge.index.to_pydict() for key, edge in held.inputs["graph"].edges.items()
     }
+
+
+def test_sampled_resume_retains_unconsumed_topology(sampled_plan):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        options = dict(split="train", batch_size=1, output_format="model", shuffle=True, seed=7)
+        batches = task.batches(**options)
+        next(batches)
+        state = batches.state_dict()
+        expected = list(batches)
+        resumed = task.batches(**options)
+        resumed.load_state_dict(state)
+        actual = list(resumed)
+        assert len(actual) == len(expected) == 3
+        for left, right in zip(actual, expected, strict=True):
+            assert left.metadata["sample_ids"] == right.metadata["sample_ids"]
+            left_graph, right_graph = left.inputs["graph"], right.inputs["graph"]
+            torch.testing.assert_close(left_graph["nodes"], right_graph["nodes"])
+            assert left_graph["num_sampled_nodes"] == right_graph["num_sampled_nodes"]
+            assert left_graph["num_sampled_edges"] == right_graph["num_sampled_edges"]
+            assert left_graph["edges"].keys() == right_graph["edges"].keys()
+            for key, edge in left_graph["edges"].items():
+                other = right_graph["edges"][key]
+                assert (edge["source_type"], edge["destination_type"]) == (
+                    other["source_type"],
+                    other["destination_type"],
+                )
+                torch.testing.assert_close(edge["index"], other["index"])
+
+
+@pytest.mark.parametrize("encoding", [api.ZScore(), api.Buckets(bins=3)])
+def test_sampled_reuses_relation_field_encodings(sampled_plan, encoding):
+    plan, anchors = sampled_plan
+    outputs = []
+    for topology in ("relations", "sampled"):
+        use = plan.contract.batch.inputs["graph"]
+        use = replace(
+            use,
+            representation=api.Graph(
+                {
+                    table: api.Fields((api.Encode("value", encoding),))
+                    for table in ("people", "events")
+                },
+                topology=topology,
+            ),
+        )
+        contract = replace(plan.contract, batch=replace(plan.contract.batch, inputs={"graph": use}))
+        with api.prepare(contract, plan.dataset, plan.engine) as bound:
+            with bound.materialize(anchors, fit_split="train") as task:
+                outputs.append(
+                    [
+                        batch.inputs["graph"]["nodes"]
+                        for batch in task.batches(split="train", output_format="model")
+                    ]
+                )
+    torch.testing.assert_close(outputs[0], outputs[1])
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable"])
+@pytest.mark.parametrize("cutoff", [-1, 0, 1])
+def test_sampled_enforces_entity_availability(sampled_plan, tmp_path, output_format, cutoff):
+    plan, _ = sampled_plan
+    contract = replace(
+        plan.contract,
+        sample=replace(
+            plan.contract.sample, entity=api.EntitySpec("people", available_from="created")
+        ),
+    )
+    path = tmp_path / "availability.parquet"
+    pq.write_table(
+        pa.table({"entity": [1], "cutoff": pa.array([cutoff], type=pa.timestamp("s", tz="UTC"))}),
+        path,
+    )
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    with api.prepare(contract, plan.dataset, plan.engine) as bound:
+        with bound.materialize(anchors) as task:
+            if cutoff <= 0:
+                with pytest.raises(ValueError, match="did not exist"):
+                    next(task.batches(output_format=output_format))
+            else:
+                assert next(task.batches(output_format=output_format)).inputs["graph"]
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
+@pytest.mark.parametrize(
+    "world_size,drop_last,splits", [(1, True, ["a", "b"]), (2, False, ["a", "b", "b"])]
+)
+def test_sampled_refuses_cross_split_batch_boundaries(
+    sampled_plan, tmp_path, output_format, world_size, drop_last, splits
+):
+    plan, _ = sampled_plan
+    path = tmp_path / "multiple-splits.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "entity": [1] * len(splits),
+                "cutoff": pa.array([35] * len(splits), type=pa.timestamp("s", tz="UTC")),
+                "split": splits,
+            }
+        ),
+        path,
+    )
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff", split="split")
+    with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+        with pytest.raises(ValueError, match="one (?:selected )?split"):
+            list(
+                task.batches(
+                    split={"a", "b"},
+                    output_format=output_format,
+                    batch_size=2,
+                    world_size=world_size,
+                    rank=world_size - 1,
+                    drop_last=drop_last,
+                )
+            )
+
+
+def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
+    timestamp = api.DType("timestamp", unit="s", timezone="UTC")
+    schema = api.DataSchema(
+        (
+            api.TableSpec(
+                "people",
+                "id",
+                {"id": api.DType("int64"), "manager": api.DType("int64"), "created": timestamp},
+                time_column="created",
+            ),
+        ),
+        (api.RelationSpec("manager", "people", "manager", "people", "id"),),
+    )
+    path = tmp_path / "cycle.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "manager": [2, 3, 4, 1],
+                "created": pa.array([0] * 4, type=timestamp.to_arrow()),
+            }
+        ),
+        path,
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        api.SampleSpec(
+            api.EntitySpec("people"),
+            neighborhoods={
+                "g": api.NeighborhoodSpec(
+                    tuple(api.GraphLayer((api.GraphSample("manager", 1),)) for _ in range(4))
+                )
+            },
+        ),
+        api.BatchSpec(
+            inputs={
+                "graph": api.Input(api.NeighborhoodSource("g"), api.Graph(topology="sampled"), None)
+            },
+            batching=api.Batching(max_samples=1),
+        ),
+    )
+    anchor_path = tmp_path / "anchor.parquet"
+    pq.write_table(pa.table({"entity": [1], "cutoff": [1]}), anchor_path)
+    with api.prepare(
+        contract,
+        api.Dataset({"people": api.Parquet(str(path))}),
+        api.DiskGraphEngine(index=tmp_path / "index", num_threads=2),
+    ) as plan:
+        with plan.materialize(
+            api.AnchorTable(api.Parquet(str(anchor_path)), "entity", "cutoff")
+        ) as task:
+            graph = next(task.batches(output_format="model")).inputs["graph"]
+    assert graph["nodes"]["people"]["ids"].tolist() == [1, 2, 3, 4]
+    assert graph["num_sampled_nodes"]["people"] == (1, 1, 1, 1, 0)
+    edge = next(edge for edge in graph["edges"].values() if edge["index"].numel())
+    assert edge["index"].tolist() == [[0, 1, 2, 3], [1, 2, 3, 0]]
+    # Adding reverse edges creates a shortcut from root A to D. Recovering BFS
+    # depths would move D from discovery hop three to hop one.
+    distances = {0: 0}
+    pairs = edge["index"].T.tolist()
+    for hop in range(4):
+        frontier = {node for node, distance in distances.items() if distance == hop}
+        for left, right in pairs + [pair[::-1] for pair in pairs]:
+            if left in frontier:
+                distances.setdefault(right, hop + 1)
+    assert distances[3] == 1

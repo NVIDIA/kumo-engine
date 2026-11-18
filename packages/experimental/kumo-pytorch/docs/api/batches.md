@@ -269,7 +269,7 @@ Node attributes use the same explicit field encodings as ordinary columns.
 **Parameters**
 
 - `node_fields`: table name to the `Fields` (scalar column encodings of physical columns) emitted for its nodes. Field-name IDs are not supported on graph nodes.
-- `topology`: `"relations"` keeps unique pairs in each declared relation's orientation (the existing output). `"sampled"` preserves DiskGraph's directed edge types, ordering and per-hop counts. It requires fixed-size native AnchorTable batches; it does not reconstruct topology.
+- `topology`: `"relations"` keeps each declared relation's orientation; model and inspectable output deduplicate pairs, while columnar output keeps repeats unless `deduplicate_edges=True`. `"sampled"` preserves DiskGraph's directed edge occurrences, ordering and per-hop counts. It requires fixed-size native AnchorTable batches from one split per pass; it does not reconstruct topology.
 
 ### `ColumnarGraph`
 

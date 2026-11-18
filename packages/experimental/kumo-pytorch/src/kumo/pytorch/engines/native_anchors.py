@@ -892,6 +892,12 @@ class NativeAnchors:
             anchors = self._batch_values(stage, runtime)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
+            if sample.entity.available_from is not None:
+                source._validate_root_ids_availability(
+                    sample,
+                    runtime["task"]["seed_node_ids"].to_pylist(),
+                    anchors.evaluation_times,
+                )
             if padded:
                 flags = [False] * (anchors.batch_size - padded) + [True] * padded
                 anchors = replace(
@@ -1219,6 +1225,11 @@ class NativeAnchors:
                     "projections": fields,
                 }
         stages = self._selection(selection)
+        if sampled and len(stages) > 1:
+            raise ValueError(
+                "sampled graph topology requires one split per pass; "
+                "select one split so native drop-last and rank padding retain their boundaries"
+            )
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = (
             output_format == "inspectable"

@@ -473,12 +473,17 @@ Existing sampling limits, including timeless destinations, still apply.
 ## Sampled graphs and logical relationships
 
 `Graph(node_fields=..., topology="relations")` retains the existing output:
-unique selected relationships in each declared relation's left-to-right
-orientation. Sampling direction and hop provenance are not part of that graph.
+selected relationships in each declared relation's left-to-right orientation.
+Model and inspectable output deduplicate pairs; columnar output keeps repeats
+unless `deduplicate_edges=True`. Sampling direction and hop provenance are not
+part of that graph.
 
 Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
 message-passing topology. It requires a DiskGraph AnchorTable and fixed-size
-batching. Each input keeps its neighborhood's native node order, directed edge
+batching with one selected split per pass. Selecting multiple splits is refused
+so native split boundaries cannot silently change drop-last or rank padding.
+Entity availability uses the same strict-before-cutoff check as other outputs.
+Each input keeps its neighborhood's native node order, directed edge
 occurrences and edge order. It does not deduplicate, symmetrize, reorder by
 shortest-path distance or rebuild a graph in Python. Multiple neighborhoods
 share the native anchor scheduler but retain their own topology and counts.
@@ -489,7 +494,8 @@ rather than logical relation names. The graph also exposes
 `num_sampled_nodes` (per table, including seed count then successive hops) and
 `num_sampled_edges` (per directed edge type and sampling hop). These counts
 refer to the returned native ordering. Nodes retain IDs, example ownership and
-the declared field encodings. Edges are in native traversal orientation; a
+the declared field encodings. Each node occurrence belongs to one anchor;
+shared global nodes are not merged across anchors. Edges are in native traversal orientation; a
 consumer using PyG's incoming-message convention may transpose endpoints and
 rename the corresponding reverse relation without recomputing topology.
 
@@ -499,3 +505,9 @@ coalescing would invalidate its hop accounting. Requests built in Python,
 length-aware graph batching and the in-memory engine do not implement this
 topology; they refuse it instead of silently reconstructing it. Existing
 relation graphs and saved default contracts keep their behavior and identity.
+
+Sampling hops are not shortest-path distances in the final relationship graph.
+For example, traversing `A -> B -> C -> D -> A` discovers D on hop three.
+Symmetrizing that cycle and recomputing BFS would place D one hop from A,
+changing which messages a layer receives. Sampled output retains the original
+discovery counts; it does not promise equivalence to that reconstructed graph.

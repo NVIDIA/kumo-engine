@@ -1574,14 +1574,23 @@ class DiskGraphSource:
     ) -> None:
         if not requests or spec.entity.available_from is None:
             return
+        self._validate_root_ids_availability(
+            spec,
+            self._root_ids(spec.entity.table, requests),
+            [self._cutoff(request.as_of_time) for request in requests],
+        )
+
+    def _validate_root_ids_availability(self, spec, node_ids, cutoffs) -> None:
+        """Use the same availability rule with already resolved native seeds."""
+        if not node_ids or spec.entity.available_from is None:
+            return
         table = spec.entity.table
         column = spec.entity.available_from
-        node_ids = self._root_ids(table, requests)
         times = self._feature_values(table, node_ids, column)
-        for request, value in zip(requests, times, strict=True):
+        for cutoff, value in zip(cutoffs, times, strict=True):
             if value is None:
                 raise ValueError(f"{table!r} row has no timestamp in {column!r}")
-            if self._cutoff(value) >= self._cutoff(request.as_of_time):
+            if self._cutoff(value) >= cutoff:
                 raise ValueError("entity did not exist before the requested sample time")
 
     def _root_ids(
