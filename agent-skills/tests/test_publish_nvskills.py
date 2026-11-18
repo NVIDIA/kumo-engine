@@ -147,7 +147,7 @@ def test_publish_keeps_signed_files_and_drops_files_no_longer_shipped(tmp_path: 
 
 
 def test_a_signed_skill_keeps_the_card_nvskills_ci_wrote(tmp_path: Path,
-                                                        catalog: Path) -> None:
+                                                         catalog: Path) -> None:
     """NVSkills CI rewrites a skill's card when it signs; the source card only seeds it."""
     dest = tmp_path / 'skills'
     publish_nvskills.publish(dest, catalog)
