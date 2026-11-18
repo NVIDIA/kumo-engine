@@ -265,11 +265,13 @@ import re
 import snowflake.connector
 
 def sf_name(database, schema, table):
-    """DATABASE.SCHEMA."table": database and schema unquoted, so they must be plain identifiers;
-    the table quoted, with any double quote in it doubled."""
+    """The table Kumo writes, as database.schema."table". Database and schema are written as
+    the connector was given them (§2): a plain identifier, which Snowflake upper-cases, or a
+    lower- or mixed-case name already in double quotes ('"my_schema"'), kept as it is. Anything
+    else is refused. The table is quoted, with any double quote in it doubled."""
     for part in (database, schema):
-        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_$]*', part or ''):
-            raise ValueError(f'not an unquoted Snowflake name: {part!r}; confirm it with the user')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+"', part or ''):
+            raise ValueError(f'not a Snowflake name: {part!r}; confirm it with the user')
     return f'{database}.{schema}."' + table.replace('"', '""') + '"'
 
 with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION,
