@@ -32,61 +32,185 @@ Credentials, private data, and tokens must not be command arguments or reports.
 The catalog delegates to existing harnesses. `readiness` is small pure Python;
 `public-connectors` uses the [existing public Docker runner](public-tests.md);
 `diskgraph-rust` compiles native tests. None replaces the full test matrix.
-The full [eight-task GPU CI](engine-pr-ci.md) still uses a pinned private fixture;
-the author tool does not claim to reproduce it without access to that fixture.
+The [eight-task GPU CI](engine-pr-ci.md) reuses the generated S3 fixture listed
+below. Download it once using authorized AWS access, then reuse it locally.
 
-## Use an existing dataset
+## Existing generated datasets: download once, reuse
 
-Reuse an already generated dataset when it is available. Data generation is
-not a prerequisite for these tools. Point the harness at the existing local
-Parquet tables and retain the dataset's identity, manifest/checksums and
-corresponding evaluation IDs, seeds and prediction times. Use the same inputs
-for baseline and candidate; do not regenerate data between variants. Keep the
-source data unchanged and use separate scratch/index and result locations.
+The data is already generated in S3. Download the required fixture or rung to
+local SSD once, then use that same cache for baseline and candidate. Keep its
+manifest, validation stamp and evaluation files. Do not regenerate inputs
+between variants; use separate scratch/index and output locations.
 
-For example, with an existing smoke dataset, Engine and a matching in-tree
-DiskGraph installed in your runtime environment:
+AWS access below uses your configured credentials with read permission for the
+selected objects. These are data downloads, not provisioning commands.
 
-```bash
-.venv/bin/python scripts/author_checks.py run commerce-snapshot-smoke \
-  --param data=/local-ssd/commerce-smoke/commerce/smoke \
-  --param scratch=/local-ssd/commerce-scratch-1 \
-  --param results=/local-ssd/commerce-snapshot-1 \
-  --disk-budget-gib 4 --reports /tmp/commerce-snapshot-receipt-1
+### Engine CI: the small eight-task fixture
+
+The [CI action](../../.github/actions/engine-gpu-smoke/action.yml) downloads this
+**`pr172-v1`** archive, pinned by
+[`inputs.json`](../../packages/kumo-engine/test/pr172/inputs.json):
+
+```text
+s3://kumo-unit-test/diskgraph-profiles/engine-pr/pr172-fixtures/v1/a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a/pr172-inputs-v1.tar.gz
 ```
 
-`--reports` holds the outer command receipt; `--param results` holds the existing
-harness's artifacts. The disk budget is a free-space preflight, not a quota or
-an estimate that the workload must fit. Snapshot-only success establishes
-neither model quality nor inference speed. For training and prediction, use the
-explicit budgets in the [commerce workflow guide](../../benchmark/commerce/README.md).
-For existing larger rungs, use the scale harness below rather than this bounded
-smoke profile.
+Region: `us-west-2`. Archive SHA-256:
 
-Verify existing data against its own manifest using its owning verifier. For
-commerce data with a manifest produced by the included generator, verification
-runs independently of generation:
+```text
+a20a1e1412c963bf732e6323c3aeac3e96e4b2c253d25a3c45c7f5acf37d6c9a
+```
+
+The [fixture contents](../../packages/kumo-engine/test/pr172/README.md) are:
+
+| Extracted path | Data |
+| --- | --- |
+| `adtech/pr/` | 556,127 table rows |
+| `delivery/pr/` | 1,442,968 table rows |
+| `commerce/pr/` | 74,416 table rows |
+| `graphs.json` | Graph/table/column/key/time/edge metadata used by the runner |
+
+With a prepared Python 3.12+ environment containing `boto3`, download and verify
+using the same manifest as CI. Choose a new cache directory; skip this block
+when you already have the verified fixture:
 
 ```bash
+.venv/bin/python - <<'PY'
+import hashlib
+import json
+import tarfile
+from pathlib import Path
+
+import boto3
+
+spec = json.loads(Path('packages/kumo-engine/test/pr172/inputs.json').read_text())
+root = Path('/local-ssd/engine-ci-inputs') / spec['version']
+root.mkdir(parents=True, exist_ok=False)
+archive = root / 'inputs.tar.gz'
+boto3.client('s3', region_name=spec['region']).download_file(
+    spec['bucket'], spec['key'], str(archive))
+with archive.open('rb') as stream:
+    if hashlib.file_digest(stream, 'sha256').hexdigest() != spec['sha256']:
+        raise SystemExit('CI fixture checksum differs; refusing extraction')
+with tarfile.open(archive) as source:
+    source.extractall(root, filter='data')
+print(root)
+PY
+```
+
+The existing [GPU runner](../../packages/kumo-engine/test/wheel_gpu_smoke.py)
+accepts that extracted root as `--data-dir` and its `graphs.json` as
+`--graph-metadata`. The CI action gives the installed-wheel, single-CUDA-GPU
+invocation and `0.005` reload tolerance. Reuse these files across runs; no
+replacement dataset or generator environment is needed. The local `readiness`
+profile runs pure output/workflow checks, not these eight GPU tasks.
+
+### Scale datasets: seven graphs, 100M through 50B
+
+The existing generated scale data is stored at:
+
+```text
+s3://kumo-test-dataplane-bucket/scale-bench/datasets/<graph>/<rung>/
+```
+
+| Graph | Prefix under `s3://kumo-test-dataplane-bucket/scale-bench/datasets/` |
+| --- | --- |
+| Commerce | `commerce/` |
+| Streaming | `streaming/` |
+| Community | `community/` |
+| Delivery | `delivery/` |
+| Adtech | `adtech/` |
+| Payments | `payments/` |
+| Fraud | `fraud/` |
+
+The documented rungs are `100M`, `1B`, `10B`, `25B`, and `50B`. For example:
+
+```text
+s3://kumo-test-dataplane-bucket/scale-bench/datasets/commerce/100M/
+s3://kumo-test-dataplane-bucket/scale-bench/datasets/commerce/1B/
+s3://kumo-test-dataplane-bucket/scale-bench/datasets/commerce/50B/
+```
+
+Each rung has table Parquet files, `manifest.json`, and `_VALIDATED.json`;
+retain `_eval/` when present for the corresponding test seeds. Select a rung
+that fits your SSD/RAM/time budget. The small CI archive above is a separate
+fixture, not a 100M or 50B rung.
+
+For example, download the existing commerce 100M rung into a new cache:
+
+```bash
+aws s3 sync \
+  s3://kumo-test-dataplane-bucket/scale-bench/datasets/commerce/100M/ \
+  /local-ssd/scale-bench/datasets/commerce/100M/ --only-show-errors
+```
+
+Before use, require the passing validation stamp to identify the downloaded
+manifest, then verify table checksums/schemas/row counts using the existing
+commerce verifier:
+
+```bash
+.venv/bin/python - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+rung = Path('/local-ssd/scale-bench/datasets/commerce/100M')
+manifest_sha = hashlib.sha256((rung / 'manifest.json').read_bytes()).hexdigest()
+stamp = json.loads((rung / '_VALIDATED.json').read_text())
+if stamp.get('ok') is not True or stamp.get('manifest_sha256') != manifest_sha:
+    raise SystemExit('Missing passing validation for this exact manifest')
+print('Validated manifest:', manifest_sha)
+PY
 .venv-generator/bin/python benchmark/commerce/generator/verify.py \
-  --root /local-ssd/commerce-data --rung 100M
+  --root /local-ssd/scale-bench/datasets --rung 100M
 ```
 
-Here `--root` contains `commerce/100M` and its generator manifest; substitute
-your actual root and rung. This verifier needs the
+The verifier needs its [declared dependencies](../../benchmark/commerce/generator/requirements.txt);
+it reads the existing files and does not generate data. The manifest identifies
+the generator/configuration and records per-file hashes. Retain it and the
+validation stamp in your experiment evidence. Do not update the cache with
+another S3 sync during a comparison.
+
+Ground-truth task labels, when needed by a task-specific evaluator, are separate:
+
+```text
+s3://kumo-test-dataplane-bucket/scale-bench/datasets/_ground_truth/<graph>/<rung>/labels/<task>/
+```
+
+Use them only for evaluation, never as model input. Keep the rung's original
+evaluation population and prediction times when comparing published workloads.
+The public placeholder generator can produce different bytes/distributions;
+it is not a substitute for these existing measured inputs.
+
+## Run on the cached scale data
+
+Use the [context harness](../../packages/diskgraph/scripts/benchmarks/commerce/README.md)
+to prepare seed IDs if absent, build a fresh index, and map IDs from the cached
+commerce rung. For a bounded first sampling matrix, substitute your prepared
+index and seed map:
+
+```bash
+.venv/bin/python packages/diskgraph/scripts/benchmarks/commerce/run_matrix.py \
+  --rung 100M --index /local-ssd/index --seedmap /local-ssd/seedmap.parquet \
+  --vcpus 4 --dg-threads 1 --hops 2,3 --scale 0.01 --cap-s 60 \
+  --out /local-ssd/sampling-attempt-1.jsonl
+```
+
+This uses four processes with one native thread each. Record the configuration,
+cache procedure, completed work and dataset identity. Size worker counts to RAM
+and CPU availability. Use separate index/scratch/results per variant when
+native formats differ. The harness owns its timers and incomplete-cell markers;
+a small run does not establish the larger rung's performance. For training and
+prediction budgets, use the [commerce workflow guide](../../benchmark/commerce/README.md).
+Do not add `--drop-all` on a shared machine. The old continuous ingest service
+can format/mount disks and update its checkout; it is absent from this catalog.
+
+## Optional: generate a new smoke dataset
+
+Only use generation for a new experiment or when no suitable existing dataset
+is accessible. Prepare the
 [generator environment](../../benchmark/commerce/generator/requirements.txt),
-but it does not regenerate or modify the dataset. Historical measured inputs
-need their original evaluation files to reproduce the historical workload.
-The linked commerce guides do not provide a download location for the original
-measured dataset. Reuse those inputs if you already have access.
-
-## Generate data only when needed
-
-Skip this section if you already have suitable data. Generation is useful for
-a new workload or when the existing fixture is unavailable. Use a separate
-environment prepared with
-[`benchmark/commerce/generator/requirements.txt`](../../benchmark/commerce/generator/requirements.txt).
-Choose new local output paths and a suitable SSD:
+choose new local output paths, and run:
 
 ```bash
 .venv-generator/bin/python scripts/author_checks.py run commerce-generate-smoke \
@@ -96,47 +220,9 @@ Choose new local output paths and a suitable SSD:
   --param data_root=/local-ssd/commerce-smoke --reports /tmp/commerce-verify-1
 ```
 
-The generator uses one worker and the checked-in small configuration. Choose
-the disk budget based on the workload and monitor space. Generation and
-verification are preparation, outside engine benchmark timers. Hidden
-`_ground_truth` files must not become model inputs. Keep the resulting dataset
-for subsequent comparisons instead of generating it on every run.
-
-## Scale on your own machine
-
-Use your existing `100M`, `1B`, or `50B` rung and its evaluation inputs.
-Decide your disk/RAM/time budget before building indexes or running the matrix.
-Skip generation when the required rung is already available.
-
-Only if you need a new rung, run from `benchmark/commerce/generator/` with its
-prepared environment. Start with one worker and the smallest useful rung:
-
-```bash
-python -m scalebench.generate run --graph commerce --rung 100M \
-  --config config.json --root /local-ssd/commerce-scale --workers 1
-python verify.py --root /local-ssd/commerce-scale --rung 100M
-```
-
-The public generator's placeholder distribution differs from the archived 50B
-reference data; generating a new rung does not reproduce its historical rates.
-Whether using existing or newly generated data, follow the [context harness](../../packages/diskgraph/scripts/benchmarks/commerce/README.md)
-to prepare seed IDs, build a fresh index, and map IDs. For a bounded first sampling
-matrix (substitute your prepared index and seed map):
-
-```bash
-.venv/bin/python packages/diskgraph/scripts/benchmarks/commerce/run_matrix.py \
-  --rung 100M --index /local-ssd/index --seedmap /local-ssd/seedmap.parquet \
-  --vcpus 4 --dg-threads 1 --hops 2,3 --scale 0.01 --cap-s 60 \
-  --out /local-ssd/sampling-attempt-1.jsonl
-```
-
-This uses four processes with one native thread each. Declare that configuration,
-cache procedure, completed work, input manifest, and dataset hashes alongside the
-result. Size worker counts to RAM and CPU availability. The harness controls its
-own timers and marks incomplete cells; interpret them using its guide. Do not
-add `--drop-all` on a shared machine. The old continuous ingest service can
-format/mount disks and update its checkout; it is intentionally absent from the
-author catalog.
+The disk budget is a free-space preflight, not a quota or a fit estimate.
+Generation and verification stay outside engine benchmark timers. Keep the
+result for subsequent runs; do not regenerate it between variants.
 
 ## Compare baseline and candidate
 

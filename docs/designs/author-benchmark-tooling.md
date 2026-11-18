@@ -38,7 +38,9 @@ exit zero alone is insufficient. Checkers run outside the timed trials;
 timed-output correctness remains the harness's responsibility.
 
 The [usage guide](../development/author-validation.md) starts with reusing
-existing data and its manifest/evaluation inputs; generation is an optional
+existing data and its manifest/evaluation inputs, including exact S3 locations
+for the Engine CI archive and the seven generated scale graphs. It provides
+download-once, checksum/validation and reuse commands; generation is an optional
 fallback. It provides exact smoke and opt-in scale commands, a runnable self-comparison control, and the distinction
 between complete-command timing and specialized operation/GPU measurements.
 
