@@ -60,7 +60,7 @@ class NativeAnchors:
     """An AnchorTask backed by a TT-NG seed extension, with bounded reads.
 
     Stage order is fixed at materialization. The native stage permutation owns
-    epoch shuffling; ranks partition that concatenation before marked padding.
+    epoch shuffling; each stage is partitioned between ranks before marked padding.
     Original row ordinals, rather than entity/time pairs, supply default IDs.
     """
 
@@ -777,6 +777,7 @@ class NativeAnchors:
         drop_last,
         output_format,
         deduplicate_edges=False,
+        padding_anchor=None,
     ):
         """One native iterator call per batch; no request objects or re-batching."""
         from dataclasses import replace
@@ -872,24 +873,26 @@ class NativeAnchors:
                     # batch, including repeated padding seeds and their histories.
                     chosen = ids.to_pylist() + [first] * remaining
                     runtime = next(self._iter(stage, **options, ids=chosen))
-                    yield runtime, remaining
+                    yield runtime, remaining, stage
                     remaining = 0
                 else:
-                    yield runtime, 0
+                    yield runtime, 0, stage
             if length_planning is not None:
                 self._last_length_planning_stats = iterator.length_planning_stats()
             if remaining:
+                padding_stage, padding_id = (
+                    padding_anchor()
+                    if first is None and padding_anchor is not None
+                    else (stage, 0 if first is None else first)
+                )
                 yield (
-                    next(
-                        self._iter(
-                            stage, **options, ids=[0 if first is None else first] * remaining
-                        )
-                    ),
+                    next(self._iter(padding_stage, **options, ids=[padding_id] * remaining)),
                     remaining,
+                    padding_stage,
                 )
 
-        for runtime, padded in runtime_batches():
-            anchors = self._batch_values(stage, runtime)
+        for runtime, padded, runtime_stage in runtime_batches():
+            anchors = self._batch_values(runtime_stage, runtime)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
             if sample.entity.available_from is not None:
@@ -1072,11 +1075,16 @@ class NativeAnchors:
             or policy.max_tokens is not None
             or policy.bucket_by_length
             or len(self._selection(selection)) > 1
+            and not all(
+                getattr(prepared.spec.representation, "topology", None) == "sampled"
+                for prepared in assembler._prepared_inputs.values()
+            )
             or assembler._source is not self._source
         ):
             raise ValueError(
                 "columnar output requires one graph-only input, fixed-size batching, "
-                "one selected split, and no targets, entity filters or availability"
+                "one selected split for relations topology, and no targets, "
+                "entity filters or availability"
             )
         for prepared in assembler._prepared_inputs.values():
             for fields in prepared.spec.representation.node_fields.values():
@@ -1225,11 +1233,6 @@ class NativeAnchors:
                     "projections": fields,
                 }
         stages = self._selection(selection)
-        if sampled and len(stages) > 1:
-            raise ValueError(
-                "sampled graph topology requires one split per pass; "
-                "select one split so native drop-last and rank padding retain their boundaries"
-            )
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
         inspectable_graph = (
             output_format == "inspectable"
@@ -1241,6 +1244,44 @@ class NativeAnchors:
             and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):
+            effective_drop = policy.drop_last if drop_last is None else drop_last
+            if sampled and len(stages) > 1 and effective_drop:
+                for stage in stages:
+                    if 0 < -(-stage["count"] // world_size) < size:
+                        raise ValueError(
+                            "drop_last=True leaves no complete native batch "
+                            f"in split {stage['split']!r}; "
+                            "use a smaller batch size or drop_last=False"
+                        )
+            first_owned = None
+
+            def padding_anchor():
+                nonlocal first_owned
+                if first_owned is None:
+                    for candidate in stages:
+                        if candidate["count"] > rank:
+                            runtime = next(
+                                self._iter(
+                                    candidate,
+                                    batch_size=1,
+                                    seed=seed,
+                                    epoch=epoch,
+                                    shuffle=shuffle,
+                                    rank=rank,
+                                    world_size=world_size,
+                                )
+                            )
+                            first_owned = (
+                                candidate,
+                                runtime["task"]["tt_stage_node_ids"][0].as_py(),
+                            )
+                            break
+                    else:
+                        # No owned anchor anywhere: equal steps require marked
+                        # padding from another rank, as for a short single split.
+                        first_owned = (next(stage for stage in stages if stage["count"]), 0)
+                return first_owned
+
             for value in self._sample.entity_values.values():
                 if isinstance(value, Field) and not value.path:
                     projections[self._sample.entity.table].append(value.column)
@@ -1261,6 +1302,7 @@ class NativeAnchors:
                     drop_last=policy.drop_last if drop_last is None else drop_last,
                     output_format=output_format,
                     deduplicate_edges=deduplicate_edges,
+                    padding_anchor=padding_anchor,
                 )
             return
 

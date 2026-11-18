@@ -226,6 +226,14 @@ class Task:
         marks those rows so a loss can exclude them. ``drop_last`` applies to
         the final batch of each rank's pass, not to every chunk.
 
+        Native DiskGraph model batches and sampled graph output keep complete
+        split-stage batches for refit: shuffle, rank partitioning, padding and
+        ``drop_last`` apply separately to each selected split, without mixing
+        partial tails. A sampled-graph multi-split pass refuses ``drop_last=True``
+        if it would remove every batch of a nonempty split. An empty stage shard pads from
+        an anchor the rank owns in another selected split; only a rank owning
+        no selected anchors borrows marked padding from another rank.
+
         Order is a pure function of ``seed``, ``epoch``, ``shuffle``, ``rank``
         and ``world_size``; ranks are disjoint before padding. A token budget
         (`Batching.max_tokens`) with ``world_size > 1`` is refused.
@@ -236,7 +244,8 @@ class Task:
         ``"columnar"`` emits `ColumnarGraph` inputs with Arrow feature tables
         and selected edge indexes, without tensor encoding. It requires
         materialized DiskGraph anchors, one graph input with explicit Raw
-        fields, fixed sample counts, and a selection contained in one split.
+        fields and fixed sample counts. Relations topology additionally requires
+        a selection contained in one split; sampled topology supports refit stages.
         Other sample values, targets, entity filters and availability checks
         are refused before iteration. Shuffle, sharding, padding, drop-last
         and resume retain their normal semantics. By default, selected edge pairs

@@ -462,7 +462,7 @@ Native buffers are shared where compatible; restoring declared types may
 allocate. All buffers remain valid after iteration and task closure, and
 `Batch.to(...)` keeps them as CPU Arrow values.
 
-This format currently supports one graph-only input, explicit Raw encodings,
+The default relations format supports one graph-only input, explicit Raw encodings,
 fixed sample counts, and a selection contained in one split. It refuses
 request-backed tasks, non-DiskGraph engines, other sample values, targets,
 entity filters, and availability checks before iteration. Select a single
@@ -480,8 +480,12 @@ part of that graph.
 
 Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
 message-passing topology. It requires a DiskGraph AnchorTable and fixed-size
-batching with one selected split per pass. Selecting multiple splits is refused
-so native split boundaries cannot silently change drop-last or rank padding.
+batching. Refit may select several splits; each stage shuffles and batches
+independently, without joining partial tails across splits. Drop-last applies
+per stage. If it would remove a selected nonempty stage completely, the pass
+raises before iteration; use a smaller batch or `drop_last=False`.
+Ranks pad from their own selected anchors when possible; a rank owning no
+anchors in any selected stage may borrow only explicitly marked padding.
 Entity availability uses the same strict-before-cutoff check as other outputs.
 Each input keeps its neighborhood's native node order, directed edge
 occurrences and edge order. It does not deduplicate, symmetrize, reorder by

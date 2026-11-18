@@ -423,18 +423,13 @@ def test_sampled_enforces_entity_availability(sampled_plan, tmp_path, output_for
                 assert next(task.batches(output_format=output_format)).inputs["graph"]
 
 
-@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
-@pytest.mark.parametrize(
-    "world_size,drop_last,splits", [(1, True, ["a", "b"]), (2, False, ["a", "b", "b"])]
-)
-def test_sampled_refuses_cross_split_batch_boundaries(
-    sampled_plan, tmp_path, output_format, world_size, drop_last, splits
-):
-    plan, _ = sampled_plan
-    path = tmp_path / "multiple-splits.parquet"
+def _refit_anchors(tmp_path, counts):
+    splits = [name for name, count in zip(("train", "valid", "test"), counts) for _ in range(count)]
+    path = tmp_path / "refit.parquet"
     pq.write_table(
         pa.table(
             {
+                "sid": list(range(len(splits))),
                 "entity": [1] * len(splits),
                 "cutoff": pa.array([35] * len(splits), type=pa.timestamp("s", tz="UTC")),
                 "split": splits,
@@ -442,19 +437,119 @@ def test_sampled_refuses_cross_split_batch_boundaries(
         ),
         path,
     )
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff", split="split")
+    return api.AnchorTable(
+        api.Parquet(str(path)), "entity", "cutoff", sample_id="sid", split="split"
+    ), splits
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
+@pytest.mark.parametrize("world_size", [1, 2, 4])
+@pytest.mark.parametrize("counts", [(1, 2), (5, 3, 1)])
+def test_sampled_native_refit_coverage_padding_and_resume(
+    sampled_plan, tmp_path, monkeypatch, output_format, world_size, counts
+):
+    plan, _ = sampled_plan
+    anchors, splits = _refit_anchors(tmp_path, counts)
     with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
-        with pytest.raises(ValueError, match="one (?:selected )?split"):
-            list(
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("native refit rebuilt per-anchor requests or resampled in Python")
+
+        monkeypatch.setattr(task._anchors, "_requests", forbidden)
+        monkeypatch.setattr(plan._source, "sample_graph", forbidden)
+        orders = []
+        for epoch in (0, 1, 0):
+            real = []
+            epoch_order = []
+            step_counts = []
+            for rank in range(world_size):
+                options = dict(
+                    output_format=output_format,
+                    batch_size=2,
+                    shuffle=True,
+                    seed=19,
+                    epoch=epoch,
+                    rank=rank,
+                    world_size=world_size,
+                    drop_last=False,
+                )
+                iterator = task.batches(**options)
+                first = next(iterator)
+                state = iterator.state_dict()
+                suffix = list(iterator)
+                resumed = task.batches(**options)
+                resumed.load_state_dict(state)
+                restored = list(resumed)
+                assert [b.metadata["sample_ids"] for b in restored] == [
+                    b.metadata["sample_ids"] for b in suffix
+                ]
+                batches = [first, *suffix]
+                step_counts.append(len(batches))
+                owned, padded = set(), []
+                for batch in batches:
+                    row_splits = []
+                    for sid, pad, meta in zip(
+                        batch.metadata["sample_ids"],
+                        batch.metadata["is_padding"].tolist(),
+                        batch.metadata["request_metadata"],
+                        strict=True,
+                    ):
+                        original = int(sid.split("#padding")[0]) if pad else sid
+                        assert meta["split"] == splits[original]
+                        row_splits.append(meta["split"])
+                        (padded if pad else real).append(original)
+                        if not pad:
+                            owned.add(original)
+                        epoch_order.append((rank, sid))
+                    assert len(set(row_splits)) == 1
+                if owned:
+                    assert set(padded) <= owned
+                else:
+                    assert all(b.metadata["is_padding"].all() for b in batches)
+            assert len(set(step_counts)) == 1
+            assert sorted(real) == list(range(len(splits)))
+            orders.append(epoch_order)
+        assert orders[0] == orders[2]
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
+@pytest.mark.parametrize("world_size", [1, 2])
+def test_sampled_refit_drop_last_is_stage_local(sampled_plan, tmp_path, output_format, world_size):
+    plan, _ = sampled_plan
+    anchors, splits = _refit_anchors(tmp_path, (5, 4))
+    with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+        steps = []
+        for rank in range(world_size):
+            batches = list(
                 task.batches(
-                    split={"a", "b"},
                     output_format=output_format,
                     batch_size=2,
                     world_size=world_size,
-                    rank=world_size - 1,
-                    drop_last=drop_last,
+                    rank=rank,
+                    drop_last=True,
                 )
             )
+            steps.append(len(batches))
+            assert all(len(b.metadata["sample_ids"]) == 2 for b in batches)
+            assert all(len({splits[sid] for sid in b.metadata["sample_ids"]}) == 1 for b in batches)
+        assert len(set(steps)) == 1
+        assert steps[0] == sum(((count + world_size - 1) // world_size) // 2 for count in (5, 4))
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
+def test_sampled_refit_refuses_completely_dropped_stage(
+    sampled_plan, tmp_path, monkeypatch, output_format
+):
+    plan, _ = sampled_plan
+    anchors, _ = _refit_anchors(tmp_path, (1, 2))
+    with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("empty-stage admission should happen before native iteration")
+
+        monkeypatch.setattr(task._anchors, "_iter", forbidden)
+        with pytest.raises(ValueError, match="no complete native batch in split"):
+            list(task.batches(output_format=output_format, batch_size=2, drop_last=True))
 
 
 def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):

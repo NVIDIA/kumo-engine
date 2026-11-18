@@ -127,8 +127,8 @@ class Graph:
         model and inspectable output deduplicate pairs, while columnar output
         keeps repeats unless ``deduplicate_edges=True``. ``"sampled"`` preserves
         DiskGraph's directed edge occurrences, ordering and per-hop counts. It
-        requires fixed-size native AnchorTable batches from one split per pass;
-        it does not reconstruct topology.
+        requires fixed-size native AnchorTable batches. Selected split stages
+        shuffle and batch independently; it does not reconstruct topology.
     """
 
     node_fields: Mapping[str, Fields] = dataclass_field(default_factory=dict)
