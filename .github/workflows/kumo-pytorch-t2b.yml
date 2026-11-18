@@ -350,6 +350,8 @@ jobs:
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
       threads: ${{ matrix.threads }}
+      runner: ${{ matrix.runner }}
+      min_free_gib: ${{ matrix.min_free_gib }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
   training:
@@ -368,6 +370,8 @@ jobs:
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
       threads: ${{ matrix.threads }}
+      runner: ${{ matrix.runner }}
+      min_free_gib: ${{ matrix.min_free_gib }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
   lifecycle:
@@ -386,6 +390,8 @@ jobs:
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
       threads: ${{ matrix.threads }}
+      runner: ${{ matrix.runner }}
+      min_free_gib: ${{ matrix.min_free_gib }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
   lifecycle-hi-small:
@@ -501,6 +507,8 @@ jobs:
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
       threads: ${{ matrix.threads }}
+      runner: ${{ matrix.runner }}
+      min_free_gib: ${{ matrix.min_free_gib }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
   fitting-memory:

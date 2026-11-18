@@ -49,6 +49,7 @@ def test_manifest_has_exact_starter_inputs():
         "li-small",
         "li-medium",
         "li-large",
+        "synthetic-medium-customers",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -57,6 +58,22 @@ def test_manifest_has_exact_starter_inputs():
     assert any(
         f["key"].endswith("account-daily/v1/anchors.parquet") for f in aml["files"]
     )
+
+
+@pytest.mark.parametrize("free_gib,expected", [(127, "failed"), (128, "passed")])
+def test_storage_preflight_checks_the_campaign_filesystem(
+    tmp_path, monkeypatch, free_gib, expected
+):
+    def usage(path):
+        assert path == tmp_path
+        return 200 * 1024**3, (200 - free_gib) * 1024**3, free_gib * 1024**3
+
+    monkeypatch.setattr(data.shutil, "disk_usage", usage)
+    report = data.storage_preflight(tmp_path, 128)
+    assert report["status"] == expected
+    assert report["free_bytes"] == free_gib * 1024**3
+    assert report["required_free_bytes"] == 128 * 1024**3
+    assert report["path"] == str(tmp_path.resolve())
 
 
 def test_local_copy_cache_and_corruption(tmp_path):
@@ -270,7 +287,45 @@ def test_graph_workloads_select_v2_and_sequence_workloads_keep_v1():
     }
     manifest = data.load_manifest()
     for name, entry in manifest["datasets"].items():
+        if not entry["dataset_id"].startswith("aml-data/"):
+            continue
         assert entry["anchor_versions"] == ["v1", "v2"]
         for version in entry["anchor_versions"]:
             suffix = f"{name}/account-daily/{version}/anchors.parquet"
             assert sum(f["key"].endswith(suffix) for f in entry["files"]) == 1
+
+
+def test_synthetic_customer_inventory_excludes_truth_and_unused_sources():
+    from test.kumo_pytorch.bindings import dataset_definition, load_bindings
+
+    binding = load_bindings()["S02"]
+    definition = dataset_definition(binding)
+    entry = data.load_manifest()["datasets"][definition["inventory"]]
+    assert entry["dataset_id"] == "pragma-synthetic-medium"
+    assert entry["population"] == "weekly-customer" and entry["anchor_versions"] == [
+        "v1"
+    ]
+    assert len(entry["files"]) == 1613
+    assert entry["source_bytes"] == 17606082087
+    public = {
+        f["key"].split("/")[4]
+        for f in entry["files"]
+        if f["key"].startswith("datasets/") and f["key"].endswith(".parquet")
+    }
+    assert public == {
+        "accounts",
+        "customers",
+        "card_txns",
+        "transfers",
+        "logins",
+        "profile_changes",
+        "disputes",
+        "lifelong_events",
+        "plan_events",
+    }
+    assert not any("_truth" in f["key"] for f in entry["files"])
+    assert (
+        binding["binding_id"]
+        == "kumo-binding-41605c06ba4a8facd8e18ee7034b4509a5098b3eb42a905069e707f78ca3566e"
+    )
+    assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}

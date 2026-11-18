@@ -6,6 +6,15 @@
     "files": {
       "kumo_specs/workload-selection.v1.json": "17068718d8057c291c5e4087c8143c65723190e4528ff3ed90101f66ab219b99",
       "benchmarks/registry/anchors.v1.json": "e4e83aaa3b2312d5c749e3310dd6625db2f4abb99cbbcc59169505ac9cebd825"
+    },
+    "synthetic_medium": {
+      "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+      "files": {
+        "kumo_specs/workload-selection.v1.json": "17068718d8057c291c5e4087c8143c65723190e4528ff3ed90101f66ab219b99",
+        "kumo_specs/synthetic_source.py": "c39419545babc71343feaae80f1b1117ba429f9e336107396d214f6fe0777de6",
+        "kumo_specs/synthetic_contracts.py": "97d7ee026bfa8f95897b73f297799067e5516059283f46a2e60245dfc62572c7",
+        "datasets/pragma-synthetic-data/medium/reference/accepted-20261019/manifest.json": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34"
+      }
     }
   },
   "bindings": [
@@ -515,8 +524,69 @@
       "representation": "nuformer",
       "split_column": "split",
       "targets": {},
-      "campaigns": [],
-      "pending": "Dataset sources, contracts and execution are not yet ported."
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "inputs": "customer-mixed-history",
+      "task": "next-token-pretrain",
+      "anchors": "weekly-pretrain",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 128
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:sequence_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F03",
+          "F07",
+          "F08",
+          "F10",
+          "F11",
+          "F13"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original customer identities and anchor clocks; historical events strictly precede cutoff.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          },
+          "history_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F03",
+              "F07",
+              "F08",
+              "F10",
+              "F11"
+            ],
+            "description": "All owned-account and customer events, each transfer once per customer; complete chronological encoded records with equal-time permutations permitted.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          },
+          "next_token_targets": {
+            "features": [
+              "F13",
+              "F11"
+            ],
+            "description": "The complete source-derived token sequence shifted exactly once, with padding and terminal positions excluded.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          }
+        }
+      }
     },
     {
       "ref": "S03",
@@ -889,6 +959,232 @@
         ]
       ],
       "anchor_manifest_format": "arena"
+    },
+    "pragma-synthetic-medium": {
+      "display_name": "Synthetic Medium",
+      "inventory": "synthetic-medium-customers",
+      "prepare": "test.kumo_pytorch.relational_sources:prepare_sources",
+      "identity_path": "datasets/pragma-synthetic/medium/v1/customers/part-00000.parquet",
+      "identity_column": "customer_id",
+      "identity_id_column": "customer_id",
+      "identity_encoding": "canonical_integer",
+      "anchor_path": "anchors/pragma-synthetic-medium/v1/{population}/{version}/anchors.parquet",
+      "anchor_manifest_format": "arena",
+      "source_options": {
+        "root": {
+          "table": "customers",
+          "key": "customer_id",
+          "time": "onboarded_at"
+        },
+        "ownership": {
+          "table": "accounts",
+          "key": "account_id",
+          "root": "customer_id"
+        },
+        "events": {
+          "card_txns": {
+            "key": "txn_id",
+            "time": "event_at",
+            "fields": {
+              "amount": "amount",
+              "mcc": "mcc",
+              "channel": "channel"
+            },
+            "ownership": {
+              "kind": "owned",
+              "column": "account_id",
+              "verify_root": "customer_id"
+            }
+          },
+          "transfers": {
+            "key": "transfer_id",
+            "time": "event_at",
+            "fields": {
+              "amount": "amount",
+              "transfer_type": "transfer_type",
+              "cross_border": "cross_border"
+            },
+            "ownership": {
+              "kind": "endpoints",
+              "columns": [
+                "src_account_id",
+                "dst_account_id"
+              ]
+            }
+          },
+          "logins": {
+            "key": "login_id",
+            "time": "event_at",
+            "fields": {
+              "ip_region": "ip_region",
+              "success": "success"
+            },
+            "ownership": {
+              "kind": "direct",
+              "column": "customer_id"
+            }
+          },
+          "profile_changes": {
+            "key": "change_id",
+            "time": "event_at",
+            "fields": {
+              "change_type": "change_type"
+            },
+            "ownership": {
+              "kind": "direct",
+              "column": "customer_id"
+            }
+          },
+          "disputes": {
+            "key": "dispute_id",
+            "time": "event_at",
+            "fields": {
+              "reason": "reason"
+            },
+            "ownership": {
+              "kind": "owned",
+              "column": "account_id",
+              "verify_root": "customer_id"
+            }
+          },
+          "lifelong_events": {
+            "key": "lifelong_id",
+            "time": "event_at",
+            "fields": {
+              "event_type": "event_type"
+            },
+            "ownership": {
+              "kind": "direct",
+              "column": "customer_id"
+            }
+          },
+          "plan_events": {
+            "key": "plan_event_id",
+            "time": "event_at",
+            "fields": {
+              "plan": "plan"
+            },
+            "ownership": {
+              "kind": "direct",
+              "column": "customer_id"
+            }
+          }
+        },
+        "tables": {
+          "accounts": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/accounts/"
+          },
+          "card_txns": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/card_txns/"
+          },
+          "customers": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/customers/"
+          },
+          "disputes": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/disputes/"
+          },
+          "lifelong_events": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/lifelong_events/"
+          },
+          "logins": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/logins/"
+          },
+          "plan_events": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/plan_events/"
+          },
+          "profile_changes": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/profile_changes/"
+          },
+          "transfers": {
+            "prefix": "datasets/pragma-synthetic/medium/v1/transfers/"
+          }
+        }
+      },
+      "tables": {
+        "roots": {
+          "key": "root_id",
+          "time": "available_at"
+        },
+        "card_txns": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "transfers": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "logins": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "profile_changes": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "disputes": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "lifelong_events": {
+          "key": "event_id",
+          "time": "event_time"
+        },
+        "plan_events": {
+          "key": "event_id",
+          "time": "event_time"
+        }
+      },
+      "relations": [
+        [
+          "root_card_txns",
+          "roots",
+          "root_id",
+          "card_txns",
+          "root_id"
+        ],
+        [
+          "root_transfers",
+          "roots",
+          "root_id",
+          "transfers",
+          "root_id"
+        ],
+        [
+          "root_logins",
+          "roots",
+          "root_id",
+          "logins",
+          "root_id"
+        ],
+        [
+          "root_profile_changes",
+          "roots",
+          "root_id",
+          "profile_changes",
+          "root_id"
+        ],
+        [
+          "root_disputes",
+          "roots",
+          "root_id",
+          "disputes",
+          "root_id"
+        ],
+        [
+          "root_lifelong_events",
+          "roots",
+          "root_id",
+          "lifelong_events",
+          "root_id"
+        ],
+        [
+          "root_plan_events",
+          "roots",
+          "root_id",
+          "plan_events",
+          "root_id"
+        ]
+      ]
     }
   },
   "semantics": {
@@ -1552,6 +1848,176 @@
         ]
       ],
       "variant": "default"
+    },
+    "customer-mixed-history": {
+      "variant": "default",
+      "root_table": "roots",
+      "root_type": "customer",
+      "families": [
+        [
+          "card_txns",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "mcc",
+              "mcc",
+              "categorical"
+            ],
+            [
+              "channel",
+              "channel",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "transfers",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "transfer_type",
+              "transfer_type",
+              "categorical"
+            ],
+            [
+              "cross_border",
+              "cross_border",
+              "categorical"
+            ],
+            [
+              "direction",
+              "direction",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "logins",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "ip_region",
+              "ip_region",
+              "categorical"
+            ],
+            [
+              "success",
+              "success",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "profile_changes",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "change_type",
+              "change_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "disputes",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "reason",
+              "reason",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "lifelong_events",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "event_type",
+              "event_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "plan_events",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "plan",
+              "plan",
+              "categorical"
+            ]
+          ]
+        ]
+      ]
     }
   },
   "anchor_profiles": {
@@ -1585,6 +2051,15 @@
       "cadence_seconds": 86400,
       "execution_offset_seconds": 0,
       "version": "v1"
+    },
+    "weekly-pretrain": {
+      "version": "v1",
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_offset_seconds": 0
     }
   }
 }

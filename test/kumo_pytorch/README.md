@@ -1,10 +1,11 @@
 # PyTorch full testing suite
 
 Standalone repository tests for `kumo.pytorch`, outside its installed package.
-Current implementation: AML acquisition, verified source/anchor preparation,
-[model consumers](models/README.md), task checks and bounded HI-small training
-with persistence, inference, frozen-input finetuning and fresh-process resume
-checks, plus two controlled learning checks on tiny fixtures.
+Current bindings cover AML HI Small, AML LI Medium and Synthetic Medium S02
+through shared acquisition, verified source/anchor preparation,
+[model consumers](models/README.md), task checks, training and lifecycle runners.
+Fixture validation and real-data acceptance are tracked separately in the
+[binding expansion plan](docs/binding-coverage.md).
 The [general benchmark interface](docs/benchmarking.md) now supports independent
 dataset/backend/model adapters, complete-epoch timing and readable/structured
 reports, AML bindings, fresh-process fitting comparisons and explicit Linux
@@ -48,8 +49,10 @@ See [coverage ownership](PLAN.md#coverage-ownership) and
 The [Arena golden audit](docs/arena-golden-audit.md) maps existing assertion
 owners and records selective boundary-test ports without an Arena dependency.
 The [binding expansion plan](docs/binding-coverage.md) tracks the approved LI
-Medium, Synthetic Medium and MBD additions. LI now has native target/model checks
-and separate training/full-delivery jobs; real-data CI acceptance is pending.
+Medium, Synthetic Medium and MBD additions. S02 adds customer-history next-token
+checks using original source rows. Its campaigns use the existing RTX runner
+with CPU training and a recorded storage preflight; full real-data acceptance
+is pending. The remaining selected bindings are added one at a time.
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to
 existing tests and identifies the next AML additions.
 Its [PDF reconciliation](docs/coverage-audit.md#pdf-reconciliation) distinguishes
@@ -96,8 +99,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the existing 26 binding campaigns into correctness (7),
-training (9), lifecycle (1) and full population (9). HI Small's original
+The planner partitions the 30 binding campaigns into correctness (8),
+training (10), lifecycle (2) and full population (10). HI Small's original
 lifecycle/history scenarios and H&M Small/Medium remain separately owned. It
 also retains 15 HI Small fitting repetitions and four L01 benchmark campaigns.
 The same resolved seed range feeds all conformance shards. Every test has one

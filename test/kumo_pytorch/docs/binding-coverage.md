@@ -31,7 +31,7 @@ independent: AML v8, Synthetic/MBD v1. Input variants are `default`, or `trx` fo
 | L03 | LI Medium / account-daily | next-outgoing-format | GraphSAGE | Native targets, heads and training/full-delivery jobs added; CI acceptance pending |
 | L04 | LI Medium / account-daily | account-involvement-next24h | PRAGMA | Unmasked supervised head and training/full-delivery jobs added; CI acceptance pending |
 | S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | Port base, then BPE variant |
-| S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Port owned-account history, contract and model |
+| S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Native customer-history correctness, training, delivery and lifecycle registered; real-data CI pending |
 | S03 | Synthetic / weekly-account | aml_graph_user_last30d | GraphSAGE | Port event-membership graph and retrospective binary target |
 | S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Port positive six-month LTV binary task, then aggregate variant |
 | M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
@@ -59,7 +59,7 @@ F13 next-token prediction and F14 supervised targets keep separate assertions.
 F17 candidates remains a documented limitation with refusal checks, not successful
 execution coverage. F18 lifecycle/delivery reuses shared checks on selected bindings.
 
-## Current increment: L01 only
+## L01 feature coverage
 
 The user selected AML LI Medium / Combined from *dataset-model-feature-coverage
 3.pdf* (pages 1, 3 and 6). Complete each binding's feature requirements before
@@ -192,17 +192,17 @@ anchor's identity/order, clocks, target values and masks, with a partial report
 written every 100 batches. It is a delivery campaign, not full-dataset training.
 Full-population acceptance is recorded only after all three splits finish.
 
-One dataset-campaign matrix uses the candidate DiskGraph wheel for 26 jobs:
+The categorized binding matrices use the candidate DiskGraph wheel for 30 jobs:
 HI Small's five bindings × training/smoke/full, and LI Medium's four bindings ×
-training/full, plus L01 bounded correctness, lifecycle and source histories. Each publishes JSON/Markdown reports;
-training adds loss curves and checkpoints. The summary requires all 26 reports and verifies
+training/full, plus L01 bounded correctness, lifecycle and source histories, and S02 correctness, training, full delivery and lifecycle. Each publishes JSON/Markdown reports;
+training adds loss curves and checkpoints. The summary requires all 30 reports and verifies
 their revision, binding identity and completion.
 Declared early refusals are labelled separately from executed campaigns.
 
 HI Small's five bindings additionally retain fitting-memory checks (three
 repetitions each), but no longer enable model profiling, index-reuse timing or
 DiskGraph/Polars/GPU loader timings. L01 retains its four benchmark campaigns.
-The combined summary therefore requires 35 reports: 26 dataset campaigns,
+The combined summary therefore requires 39 reports: 30 dataset campaigns,
 four L01 benchmarks and five combined HI Small fitting-memory reports.
 
 Local tiny-fixture validation does not establish real LI acceptance or runtime
@@ -314,3 +314,65 @@ collection, scoped lint/format checks and repository license checks also pass.
 The independent reviewer found no remaining issues; an exhaustive independent
 check agreed with the graph validator on 7,680 outcomes from 120 tiny cases.
 These results do not replace a real-data Linux/GPU nightly run.
+
+## Current increment: S02 / Synthetic Medium / nuFormer
+
+The next selected row in *dataset-model-feature-coverage 3.pdf* is the registered
+`customer-next-token-pretrain` binding, weekly-customer v1 anchors and dataset v1.
+Its binding ID ends in `ca3566e`. S01/PRAGMA (BPE) and S04/Combined (richer/grouped
+aggregates) remain the next increments; S03 is not selected by this PDF.
+
+The existing catalog, downloader, native anchor projector, nuFormer model,
+training checks, lifecycle checks and categorized workflow matrices are reused.
+`relational_sources.py` handles declared direct-owner, owned-entity and two-endpoint
+public Parquet events; `history_features.py` independently reads original rows.
+Neither component branches on a dataset ID, binding ID or model name. Future
+bindings supply source/ownership and input declarations rather than new runners.
+No package-runtime source changed. The shared worker accepts the catalog runner
+and free-space floor; it still installs CPU Torch for correctness/training.
+S02 uses the existing RTX PRO 6000 group with a provisional 128 GiB free-space
+floor after setup and before download. The acquisition artifact includes measured
+capacity and free bytes; insufficient space fails before any dataset transfer.
+This floor is not a measured peak-storage guarantee. Direct PR runner admission
+remains separately deferred; real-data storage and runtime need CI validation.
+
+The pinned inventory contains 1,613 objects: 1,610 public Parquet shards across
+customers, accounts and seven event families, the published source manifest,
+and the weekly-customer anchor manifest/payload. Public source bytes total
+17,606,082,087; the anchor payload adds 107,928,518 bytes. Truth tables, mutable
+risk/closure fields and unrelated public tables are excluded. The download
+verifies exact byte counts and SHA-256 values. The user-approved GetObject grant
+covers only these nine versioned public-table prefixes and the three exact
+metadata/anchor objects, with no list/write permission.
+
+Bounded campaigns retain complete selected-customer histories across all owned
+accounts. Full delivery selects every anchor and all source roots. Transfers
+with two accounts owned by the same customer appear once, with `self` direction;
+other endpoints receive their own incoming/outgoing event. Source mapping retains
+cutoff/future events for DiskGraph to reject at sampling time. Root identity
+is the original nonnegative integer, not a newly assigned row number.
+
+| Required assertion | Feature IDs | Independent answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original customer identity, sample identity and unchanged prediction clock |
+| `history_values` | F01, F02, F03, F07, F08, F10, F11 | Original rows joined by ownership; strictly earlier complete histories, source values, UTC age/calendar, saved scalar encodings, separators, source positions and tensor validity |
+| `next_token_targets` | F11, F13 | Original complete token stream shifted once, including its final target; exact padding/eligibility |
+
+Equal-time whole-event records may permute; cross-time order, multiplicity and
+values stay strict. Heterogeneous events contribute only their declared fields.
+`Tokens(missing="error")` rejects NULL values in declared fields; it does not
+require fields belonging exclusively to another event type. Corruption tests
+exercise both allowed ties and rejected ordering, ownership, values, masks,
+terminal targets and source-index changes.
+
+Correctness/training require individual evidence for every selected train,
+validation and test anchor. Training retains two reproducible 100-update CPU
+runs and source checks on optimizer/probe/evaluation batches. Lifecycle reuses
+native next-token loss/target validation with frozen input fitting. No Synthetic
+benchmark campaigns are enabled in this feature increment. Real-data execution,
+resource use and full-population acceptance still require CI evidence.
+
+Source preparation preserves schema for empty event families; any DiskGraph
+capability refusal remains the package’s responsibility. Two-endpoint event
+identities require source IDs in `[0, 2**62 - 1]`; larger values fail preparation
+with the family/column and supported bound before arithmetic overflow.

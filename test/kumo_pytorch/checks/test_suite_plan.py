@@ -31,7 +31,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 26
+    assert len(grouped) == len(expected) == 30
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -67,6 +67,44 @@ def test_all_triggers_resolve_identical_plan_without_native_imports(tmp_path):
         )
         plans.append(json.loads(path.read_text()))
     assert all(plan == plans[0] for plan in plans)
+
+
+def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
+    plan = nightly.execution_plan()
+    campaigns = [
+        r
+        for name in ("correctness", "training", "lifecycle", "population")
+        for r in plan[name]["include"]
+    ]
+    synthetic = [r for r in campaigns if r["binding"] == "S02"]
+    assert {r["mode"] for r in synthetic} == {"smoke", "training", "lifecycle", "full"}
+    for row in synthetic:
+        assert json.loads(row["runner"]) == {
+            "group": "nv-gpu-amd64-rtxpro6000-1gpu",
+            "labels": "linux-amd64-gpu-rtxpro6000-latest-1",
+        }
+        assert row["min_free_gib"] == 128
+    assert all(
+        json.loads(r["runner"]) == "ubuntu-24.04"
+        for r in campaigns
+        if r["binding"] != "S02"
+    )
+    workflow = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
+    assert "runs-on: ${{ fromJSON(inputs.runner) }}" in workflow
+    assert "torch-extra: cpu" in workflow
+    assert workflow.index("storage_preflight(root,") < workflow.index(
+        "data fetch --dataset"
+    )
+    assert workflow.index("raise SystemExit('Insufficient free space") < workflow.index(
+        "data fetch --dataset"
+    )
+
+
+def test_campaign_resource_errors_fail_during_planning():
+    with pytest.raises(ValueError, match="Unknown campaign runner"):
+        nightly.campaign_resources({"runner": "missing"})
+    with pytest.raises(ValueError, match="min_free_gib"):
+        nightly.campaign_resources({"min_free_gib": -1})
 
 
 def test_only_full_suite_has_external_triggers():

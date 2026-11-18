@@ -52,7 +52,7 @@ def update(task, model, optimizer, requests, config, *, epoch):
     inputs = input_digest(batch.inputs)
     if not config.get("source_anchor_table"):
         assert set(batch.targets) == {"label"}, "Finetuning kept a pretraining target"
-    if model.family == "pragma":
+    if model.family == "pragma" and model.kind != "masked_values":
         assert not (batch.inputs["history"]["value_ids"] == 2).any(), (
             "Finetuning kept input masking"
         )
@@ -62,9 +62,10 @@ def update(task, model, optimizer, requests, config, *, epoch):
     result = model.training_step(batch)
     assert result.weight > 0 and torch.isfinite(result.loss)
     if config.get("source_anchor_table"):
-        from .bindings import binding_for
+        from .bindings import binding_for, task_definition
+        from .population import verify_batch_for
         from .population_anchors import projected_rows
-        from .targets import verify_stored_batch, verify_stored_loss
+        from .targets import verify_stored_loss
 
         binding = binding_for(config["selection"], config["family"])
         records = {
@@ -73,13 +74,25 @@ def update(task, model, optimizer, requests, config, *, epoch):
                 config["source_anchor_table"]["source"]["path"], "train"
             )
         }
-        verify_stored_batch(
+        verify_batch_for(
             binding,
             batch,
             [records[sid] for sid in batch.metadata["sample_ids"]],
             task.fitted_state.to_dict(),
         )
-        verify_stored_loss(binding, batch, result)
+        kind = task_definition(binding)["kind"]
+        if kind == "stored":
+            verify_stored_loss(binding, batch, result)
+        elif kind == "next_token":
+            from .next_token import verify_loss
+
+            verify_loss(batch, result)
+        elif kind == "masked_values":
+            from .masked_values import verify_loss
+
+            verify_loss(batch, result)
+        else:
+            raise ValueError(f"Unknown finetuning objective: {kind}")
     else:
         verify_batch(
             batch, result, {row.sample_id: row.targets[0].value for row in requests}

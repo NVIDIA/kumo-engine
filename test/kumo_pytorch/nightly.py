@@ -83,6 +83,27 @@ def benchmark_matrix():
     }
 
 
+def campaign_resources(execution):
+    runners = {
+        "cpu": "ubuntu-24.04",
+        "rtxpro6000": {
+            "group": "nv-gpu-amd64-rtxpro6000-1gpu",
+            "labels": "linux-amd64-gpu-rtxpro6000-latest-1",
+        },
+    }
+    runner = execution.get("runner", "cpu")
+    if runner not in runners:
+        raise ValueError(f"Unknown campaign runner: {runner}")
+    minimum = execution.get("min_free_gib", 0)
+    if type(minimum) is not int or minimum < 0:
+        raise ValueError("Campaign min_free_gib must be a nonnegative integer")
+    return {
+        **execution,
+        "runner": json.dumps(runners[runner]),
+        "min_free_gib": minimum,
+    }
+
+
 def campaign_matrix(campaign):
     modes = {
         "training": ("training",),
@@ -105,7 +126,7 @@ def campaign_matrix(campaign):
                 "mode": mode,
                 "dataset": dataset_definition(b)["inventory"],
                 "label": binding_label(b),
-                **b["execution"],
+                **campaign_resources(b["execution"]),
             }
             for b in selected_bindings()
             for mode in modes

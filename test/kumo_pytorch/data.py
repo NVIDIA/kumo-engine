@@ -174,6 +174,23 @@ def inventory(manifest: dict, dataset: str) -> dict:
     )
 
 
+def storage_preflight(root: Path, min_free_gib: int) -> dict:
+    """Measure the filesystem used by both downloads and campaign output."""
+    if type(min_free_gib) is not int or min_free_gib < 0:
+        raise ValueError("min_free_gib must be a nonnegative integer")
+    total, used, free = shutil.disk_usage(root)
+    required = min_free_gib * 1024**3
+    return {
+        "status": "passed" if free >= required else "failed",
+        "path": str(root.resolve()),
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "required_free_bytes": required,
+        "scope": "Admission floor; actual prepared-table and index growth is not yet measured.",
+    }
+
+
 def execute(
     command: str,
     manifest: dict,
@@ -391,6 +408,10 @@ def identity_map(data_dir, definition, files):
         .column(0)
         .to_pylist()
     )
+    if definition.get("identity_encoding") == "canonical_integer":
+        if any(type(name) is not int or not 0 <= name < 2**63 for name in names):
+            raise ValueError("Canonical identities require nonnegative int64 values")
+        names = [str(name) for name in names]
     if any(not isinstance(name, str) or not name for name in names) or len(
         set(names)
     ) != len(names):
@@ -538,13 +559,14 @@ def prepare_binding(
                 ).num_rows
             direct = relations[path[0]] if len(path) == 1 else None
             if (
-                bound
-                and direct
+                direct
                 and direct[1] == inputs["root_table"]
-                and direct[3] == bound["table"]
-                and direct[4] == bound["entity"]
+                and (
+                    not bound
+                    or (direct[3] == bound["table"] and direct[4] == bound["entity"])
+                )
             ):
-                capacity += degree(bound["table"], bound["entity"])
+                capacity += degree(direct[3], direct[4])
             else:
                 # Row products bound every path occurrence, including repeated
                 # families and alternate joins; they may conservatively overcount.

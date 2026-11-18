@@ -22,6 +22,13 @@ on:  # yamllint disable-line rule:truthy
       threads:
         type: number
         required: true
+      runner:
+        description: JSON runs-on value from the shared campaign plan
+        type: string
+        required: true
+      min_free_gib:
+        type: number
+        required: true
       diskgraph-wheel-artifact:
         type: string
         required: true
@@ -32,7 +39,7 @@ permissions:
 jobs:
   binding:
     name: Execute binding
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 180
     environment:
       name: gha-kumo-workflow-tests
@@ -49,6 +56,7 @@ jobs:
       DATASET: ${{ inputs.dataset }}
       BATCH_SIZE: ${{ inputs.batch_size }}
       THREADS: ${{ inputs.threads }}
+      MIN_FREE_GIB: ${{ inputs.min_free_gib }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -57,6 +65,24 @@ jobs:
         with:
           diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
           torch-extra: cpu
+      - name: Verify campaign storage before downloading
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from test.kumo_pytorch.data import storage_preflight
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          report = storage_preflight(root, int(os.environ['MIN_FREE_GIB']))
+          text = json.dumps(report, indent=2) + '\n'
+          (root / 'storage-preflight.json').write_text(text)
+          print(text)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Storage preflight\n\n```json\n' + text + '```\n')
+          if report['status'] != 'passed':
+              raise SystemExit('Insufficient free space for the declared campaign budget')
+          PY
       - name: Read private dataset inputs with the Engine test role
         id: aml-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -106,5 +132,7 @@ jobs:
         if: ${{ always() }}
         with:
           name: kumo-pytorch-acquisition-${{ inputs.mode }}-${{ inputs.binding }}
-          path: ${{ runner.temp }}/aml-acquisition.json
+          path: |
+            ${{ runner.temp }}/aml-acquisition.json
+            ${{ runner.temp }}/storage-preflight.json
           retention-days: 14

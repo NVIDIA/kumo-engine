@@ -1531,3 +1531,40 @@ and changed-document link checks passed. Independent review confirmed the
 original 976 conformance checks have no omissions or duplicate shard ownership;
 new shard-guard regressions are additional checks. Live full-suite acceptance
 and end-to-end runtime improvements require CI evidence on the published revision.
+
+
+### Synthetic Medium increment: S02
+
+Implement the PDF bindings one at a time, starting with customer-history
+next-token prediction (S02). The existing full-suite plan now includes its
+correctness, training, population and lifecycle campaigns. Additions use shared
+Parquet ownership mapping and source-derived sequence assertions; no dataset
+workflow, model wrapper or package-runtime changes. S01 BPE and S04 grouped
+aggregates remain next. The existing AML campaigns are preserved.
+
+The input inventory pins nine public tables and weekly-customer anchors. The
+user approved and the agent applied the limited GetObject bucket statement on
+2026-11-18, preserving all existing statements. Local fixture results do not
+claim real-data CI acceptance. See the [binding coverage](docs/binding-coverage.md)
+for fields, assertions and source scope.
+
+The user approved the existing RTX PRO 6000 runner for S02's shared campaigns;
+training stays on CPU. The catalog declares a provisional 128 GiB free-space
+floor, measured after setup and before download, with evidence in the acquisition
+artifact. Actual full-dataset/index peaks and direct PR runner admission remain
+unverified; no infrastructure provisioning or runner-permission change was made.
+
+Self-review: two independent rounds. Addressed the standard runner's insufficient
+documented storage with shared resource selection/preflight, preserved empty
+event schemas, and rejected source IDs outside the two-slot int64 mapping range
+with a named diagnostic. The reviewer found no remaining blockers. New oracle
+checks follow declared-field missingness and Parquet timestamp precision rather
+than assuming all heterogeneous families contain every field.
+
+Local validation: **394 passed** in 76 seconds using the existing compatible
+native extension, not a fresh Linux build. The focused command covers `checks/`,
+`model_checks/test_relational_history.py`, `model_checks/test_dataset_bindings.py`
+and `model_checks/test_finetuning.py` with `-c test/kumo_pytorch/pytest.ini`
+and `--confcutdir=test/kumo_pytorch`. Required collection confirms 510 CPU tests
+and five GPU tests delegated to their own job. Branch-native, real-data CI
+execution remains pending.
