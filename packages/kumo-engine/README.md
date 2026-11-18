@@ -18,7 +18,7 @@ pip install kumo-engine
 | Requirement | Details |
 | --- | --- |
 | Python | CPython 3.11 or later |
-| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
+| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows x86-64 on CPU. Windows through WSL2 also supports NVIDIA GPUs. |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
@@ -27,6 +27,7 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 
 | Extra | Adds |
 | --- | --- |
+| `cpu` | CPU Faiss for recommendation retrieval on native Windows and Linux ARM64 |
 | `s3` | Amazon S3 |
 | `gcs` | Google Cloud Storage |
 | `adls` | Azure Data Lake Storage Gen2 |
@@ -39,7 +40,9 @@ The base package reads and writes local CSV and Parquet files. Optional extras a
 
 Kumo Engine trains on an NVIDIA GPU or an Apple silicon GPU when one is available, and on the CPU otherwise. To choose the device, pass `accelerator="gpu"`, `"mps"`, or `"cpu"` to `Trainer`.
 
-Recommendation tasks use Faiss for retrieval. On Linux x86-64 and macOS, `pip install kumo-engine` installs Faiss as a dependency. On Linux ARM64, Faiss is optional, and other tasks run without it. To run recommendation tasks there, install CPU Faiss with `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`, or follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md) to build GPU Faiss. The guide also covers CUDA training on ARM64.
+On native Windows, install `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. Native Windows CUDA support is deferred; use WSL2 for NVIDIA GPU workloads.
+
+Recommendation tasks use Faiss for retrieval. On Linux x86-64 and macOS, `pip install kumo-engine` installs Faiss as a dependency. On native Windows and Linux ARM64, Faiss is optional, and other tasks run without it. To run recommendation tasks there, install CPU Faiss with `pip install "kumo-engine[cpu]"` and pass `accelerator="cpu"` to `Trainer`. For GPU Faiss on Linux ARM64, follow the [DGX Spark guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/dgx-spark.md), which also covers CUDA training on ARM64.
 
 On NVIDIA GPUs, the optional `torch-scatter` package speeds up some training workloads. Install the build for your PyTorch and CUDA versions as described in [PyG's installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html).
 
