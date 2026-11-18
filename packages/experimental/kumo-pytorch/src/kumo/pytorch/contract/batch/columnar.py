@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pyarrow as pa
 
@@ -33,18 +33,21 @@ class ColumnarNodes:
 
 @dataclass(frozen=True)
 class ColumnarEdges:
-    """Selected edges in declared left-to-right relation orientation.
+    """Selected edges in the graph topology's declared orientation.
 
     ``index`` is an Arrow table with non-null uint32 or uint64 ``source`` and
     ``destination`` columns, indexing rows in the corresponding node tables.
     Endpoints always belong to the same example. Only edges selected by the
     sampling layers are included, never all links among returned nodes.
-    Reverse traversals are reoriented, including self-relations. Chunks may
+    In relations topology, reverse traversals are reoriented, including
+    self-relations. Chunks may
     repeat a pair selected in both directions. Consumers must normalize these
     pairs or request ``Task.batches(..., deduplicate_edges=True)`` to retain
     the first occurrence per relation, at the cost of edge-array allocation.
     Deduplication uses node positions, preserving separate examples even when
-    entity IDs repeat. Chunk order is not traversal provenance.
+    entity IDs repeat. Chunk order is not traversal provenance. Sampled
+    topology instead preserves native direction/order and exposes hop counts
+    on ColumnarGraph; deduplication is refused for that topology.
     """
 
     source_type: str
@@ -56,7 +59,11 @@ class ColumnarEdges:
 class ColumnarGraph:
     """CPU Arrow graph buffers emitted by ``Task.batches(output_format="columnar")``.
 
-    ``nodes`` uses table names and ``edges`` uses declared relation names.
+    ``nodes`` uses table names. With relations topology, ``edges`` uses declared
+    relation names. Sampled topology instead uses native directed
+    ``(source_type, relation, destination_type)`` keys, retaining edge order and
+    per-hop counts without reorienting or deduplicating edges. Counts align with
+    the native node and edge ordering, not a newly computed shortest-path order.
     The first ``Batch.batch_size`` rows of ``nodes[root_type]`` are the roots,
     in batch order, including repeated entities at distinct prediction times.
     Isolated roots and empty declared node/edge types are retained.
@@ -70,4 +77,6 @@ class ColumnarGraph:
 
     root_type: str
     nodes: Mapping[str, ColumnarNodes]
-    edges: Mapping[str, ColumnarEdges]
+    edges: Mapping[str | tuple[str, str, str], ColumnarEdges]
+    num_sampled_nodes: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
+    num_sampled_edges: Mapping[tuple[str, str, str], tuple[int, ...]] = field(default_factory=dict)

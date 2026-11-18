@@ -469,3 +469,33 @@ entity filters, and availability checks before iteration. Select a single
 split explicitly when anchors span several splits. Shuffle, rank sharding,
 padding, drop-last, and iterator resume retain their existing behavior.
 Existing sampling limits, including timeless destinations, still apply.
+
+## Sampled graphs and logical relationships
+
+`Graph(node_fields=..., topology="relations")` retains the existing output:
+unique selected relationships in each declared relation's left-to-right
+orientation. Sampling direction and hop provenance are not part of that graph.
+
+Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
+message-passing topology. It requires a DiskGraph AnchorTable and fixed-size
+batching. Each input keeps its neighborhood's native node order, directed edge
+occurrences and edge order. It does not deduplicate, symmetrize, reorder by
+shortest-path distance or rebuild a graph in Python. Multiple neighborhoods
+share the native anchor scheduler but retain their own topology and counts.
+
+Model/inspectable graph dictionaries retain `nodes` and `edges`. Sampled
+`edges` uses native `(source_type, relation, destination_type)` tuple keys,
+rather than logical relation names. The graph also exposes
+`num_sampled_nodes` (per table, including seed count then successive hops) and
+`num_sampled_edges` (per directed edge type and sampling hop). These counts
+refer to the returned native ordering. Nodes retain IDs, example ownership and
+the declared field encodings. Edges are in native traversal orientation; a
+consumer using PyG's incoming-message convention may transpose endpoints and
+rename the corresponding reverse relation without recomputing topology.
+
+Columnar sampled graphs expose the same counts on `ColumnarGraph`, preserving
+Arrow edge buffers. `deduplicate_edges=True` is refused in sampled topology:
+coalescing would invalidate its hop accounting. Requests built in Python,
+length-aware graph batching and the in-memory engine do not implement this
+topology; they refuse it instead of silently reconstructing it. Existing
+relation graphs and saved default contracts keep their behavior and identity.

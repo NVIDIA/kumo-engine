@@ -258,7 +258,10 @@ Encode one sampled field, optionally translating IDs into a final space.
 *class* · `kumo.pytorch.api.Graph`
 
 ```python
-class Graph(node_fields: Mapping[str, Fields] = {})
+class Graph(
+    node_fields: Mapping[str, Fields] = {},
+    topology: Literal['relations', 'sampled'] = 'relations',
+)
 ```
 
 Node attributes use the same explicit field encodings as ordinary columns.
@@ -266,6 +269,7 @@ Node attributes use the same explicit field encodings as ordinary columns.
 **Parameters**
 
 - `node_fields`: table name to the `Fields` (scalar column encodings of physical columns) emitted for its nodes. Field-name IDs are not supported on graph nodes.
+- `topology`: `"relations"` keeps unique pairs in each declared relation's orientation (the existing output). `"sampled"` preserves DiskGraph's directed edge types, ordering and per-hop counts. It requires fixed-size native AnchorTable batches; it does not reconstruct topology.
 
 ### `ColumnarGraph`
 
@@ -275,13 +279,19 @@ Node attributes use the same explicit field encodings as ordinary columns.
 class ColumnarGraph(
     root_type: str,
     nodes: Mapping[str, ColumnarNodes],
-    edges: Mapping[str, ColumnarEdges],
+    edges: Mapping[str | tuple[str, str, str], ColumnarEdges],
+    num_sampled_nodes: Mapping[str, tuple[int, ...]] = {},
+    num_sampled_edges: Mapping[tuple[str, str, str], tuple[int, ...]] = {},
 )
 ```
 
 CPU Arrow graph buffers emitted by `Task.batches(output_format="columnar")`.
 
-`nodes` uses table names and `edges` uses declared relation names.
+`nodes` uses table names. With relations topology, `edges` uses declared
+relation names. Sampled topology instead uses native directed
+`(source_type, relation, destination_type)` keys, retaining edge order and
+per-hop counts without reorienting or deduplicating edges. Counts align with
+the native node and edge ordering, not a newly computed shortest-path order.
 The first `Batch.batch_size` rows of `nodes[root_type]` are the roots,
 in batch order, including repeated entities at distinct prediction times.
 Isolated roots and empty declared node/edge types are retained.
@@ -319,18 +329,21 @@ the node count. All three outputs otherwise have the same row order.
 class ColumnarEdges(source_type: str, destination_type: str, index: Table)
 ```
 
-Selected edges in declared left-to-right relation orientation.
+Selected edges in the graph topology's declared orientation.
 
 `index` is an Arrow table with non-null uint32 or uint64 `source` and
 `destination` columns, indexing rows in the corresponding node tables.
 Endpoints always belong to the same example. Only edges selected by the
 sampling layers are included, never all links among returned nodes.
-Reverse traversals are reoriented, including self-relations. Chunks may
+In relations topology, reverse traversals are reoriented, including
+self-relations. Chunks may
 repeat a pair selected in both directions. Consumers must normalize these
 pairs or request `Task.batches(..., deduplicate_edges=True)` to retain
 the first occurrence per relation, at the cost of edge-array allocation.
 Deduplication uses node positions, preserving separate examples even when
-entity IDs repeat. Chunk order is not traversal provenance.
+entity IDs repeat. Chunk order is not traversal provenance. Sampled
+topology instead preserves native direction/order and exposes hop counts
+on ColumnarGraph; deduplication is refused for that topology.
 
 ### `Columns`
 

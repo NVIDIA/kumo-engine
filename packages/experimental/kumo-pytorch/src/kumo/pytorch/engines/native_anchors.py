@@ -1137,6 +1137,19 @@ class NativeAnchors:
         source = self._source
         policy = assembler.spec.batching
         fixed = policy.max_tokens is None and not policy.bucket_by_length
+        sampled = any(
+            isinstance(prepared.spec.representation, Graph)
+            and prepared.spec.representation.topology == "sampled"
+            for prepared in assembler._prepared_inputs.values()
+        )
+        if sampled and (not fixed or assembler._source is not self._source):
+            raise ValueError(
+                "sampled graph topology requires fixed-size native AnchorTable batches"
+            )
+        if sampled and deduplicate_edges:
+            raise ValueError(
+                "sampled graph topology preserves edge occurrences; do not deduplicate"
+            )
         maximum = batch_size if batch_size is not None else policy.max_samples
         size = maximum if fixed else chunk
         neighborhoods = {
@@ -1213,7 +1226,7 @@ class NativeAnchors:
             and self._can_batch_inspectable_graph(assembler)
         )
         if (
-            (output_format in {"model", "columnar"} or inspectable_graph)
+            (output_format in {"model", "columnar"} or inspectable_graph or sampled)
             and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):

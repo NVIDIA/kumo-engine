@@ -1,0 +1,336 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Sampled graphs retain the directed native buffers and hop accounting."""
+
+from dataclasses import replace
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import torch
+
+from kumo.pytorch import api
+from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+
+@pytest.fixture
+def sampled_plan(tmp_path):
+    schema = api.DataSchema(
+        tables=(
+            api.TableSpec(
+                "people",
+                "id",
+                {
+                    "id": api.DType("int64"),
+                    "created": api.DType("timestamp", unit="s", timezone="UTC"),
+                    "value": api.DType("float64"),
+                    "manager": api.DType("int64"),
+                },
+                time_column="created",
+            ),
+            api.TableSpec(
+                "events",
+                "id",
+                {
+                    "id": api.DType("int64"),
+                    "owner": api.DType("int64"),
+                    "time": api.DType("timestamp", unit="s", timezone="UTC"),
+                    "value": api.DType("float64"),
+                },
+                time_column="time",
+            ),
+        ),
+        relations=(
+            api.RelationSpec("owner", "events", "owner", "people", "id"),
+            api.RelationSpec("manager", "people", "manager", "people", "id"),
+        ),
+    )
+    timestamp = pa.timestamp("s", tz="UTC")
+    paths = {name: tmp_path / f"{name}.parquet" for name in ("people", "events", "anchors")}
+    pq.write_table(
+        pa.table(
+            {
+                "id": [1, 2, 3],
+                "created": pa.array([0, 0, 0], type=timestamp),
+                "value": [1.0, 2.0, 3.0],
+                "manager": [2, 3, 3],
+            }
+        ),
+        paths["people"],
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "id": [10, 11, 12],
+                "owner": [1, 1, 2],
+                "time": pa.array([10, 20, 30], type=timestamp),
+                "value": [10.0, 11.0, 12.0],
+            }
+        ),
+        paths["events"],
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "entity": [1, 1, 3, 2],
+                "cutoff": pa.array([25, 15, 35, 35], type=timestamp),
+                "split": ["train"] * 4,
+            }
+        ),
+        paths["anchors"],
+    )
+    sample = api.SampleSpec(
+        entity=api.EntitySpec("people"),
+        neighborhoods={
+            "g": api.NeighborhoodSpec(
+                (
+                    api.GraphLayer((api.GraphSample("owner", 2, direction="reverse"),)),
+                    api.GraphLayer((api.GraphSample("owner", 1),)),
+                )
+            )
+        },
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        sample,
+        api.BatchSpec(
+            inputs={
+                "graph": api.Input(
+                    api.NeighborhoodSource("g"),
+                    api.Graph(
+                        node_fields={
+                            name: api.Fields((api.Encode("value", api.Raw()),))
+                            for name in ("people", "events")
+                        },
+                        topology="sampled",
+                    ),
+                    None,
+                )
+            },
+            batching=api.Batching(max_samples=2),
+        ),
+    )
+    dataset = api.Dataset(
+        tables={name: api.Parquet(str(paths[name])) for name in ("people", "events")}
+    )
+    anchors = api.AnchorTable(api.Parquet(str(paths["anchors"])), "entity", "cutoff", split="split")
+    with api.prepare(
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    ) as plan:
+        yield plan, anchors
+
+
+@pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_sampled_buffers_match_native_without_reconstruction(
+    sampled_plan, monkeypatch, output_format, batch_size
+):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        native = []
+        iterate = task._anchors._iter
+
+        def capture(*args, **kwargs):
+            for batch in iterate(*args, **kwargs):
+                native.append(batch)
+                yield batch
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("sampled output reconstructed or deduplicated native topology")
+
+        monkeypatch.setattr(task._anchors, "_iter", capture)
+        monkeypatch.setattr(NativeAnchors, "_requests", forbidden)
+        monkeypatch.setattr(plan._source, "_runtime_graph_events", forbidden)
+        monkeypatch.setattr(plan._source, "_graph_output", forbidden)
+        monkeypatch.setattr("kumo.pytorch.engines.diskgraph._first_occurrences", forbidden)
+        actual = list(
+            task.batches(split="train", batch_size=batch_size, output_format=output_format)
+        )
+        assert len(actual) == len(native) == 4 // batch_size
+        for result, raw in zip(actual, native, strict=True):
+            graph = result.inputs["graph"]
+            original = raw["graphs"]["main"]
+            edges = graph.edges if output_format == "columnar" else graph["edges"]
+            counts = (
+                graph.num_sampled_edges
+                if output_format == "columnar"
+                else graph["num_sampled_edges"]
+            )
+            nodes = (
+                graph.num_sampled_nodes
+                if output_format == "columnar"
+                else graph["num_sampled_nodes"]
+            )
+            for table, values in original["num_sampled_nodes_dict"].items():
+                if table in {"people", "events"}:
+                    assert nodes[table] == tuple(values.to_pylist())
+            for entry in original["edge_index_dict"]:
+                kind = entry["edge_type"]
+                key = kind["src"], kind["rel"], kind["dst"]
+                if key not in edges:
+                    continue
+                edge = edges[key]
+                if output_format == "columnar":
+                    assert edge.index["source"].to_pylist() == entry["src"].to_pylist()
+                    assert edge.index["destination"].to_pylist() == entry["dst"].to_pylist()
+                else:
+                    assert edge["index"].tolist() == [
+                        entry["src"].to_pylist(),
+                        entry["dst"].to_pylist(),
+                    ]
+                assert sum(counts[key]) == len(entry["src"])
+            # Both directions survive as separate native relation keys.
+            assert any(key[0] == "people" and key[2] == "events" for key in edges)
+            assert any(key[0] == "events" and key[2] == "people" for key in edges)
+            if output_format != "columnar":
+                assert graph["nodes"]["people"]["batch"].dtype == torch.long
+
+
+def test_sampled_rejects_requests_and_deduplication(sampled_plan):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        requests = task._anchors.fetch(api.ALL_ANCHORS, [0, 1])
+        with pytest.raises(ValueError, match="native AnchorTable"):
+            list(task.batches(requests, output_format="model"))
+        with pytest.raises(ValueError, match="preserves edge occurrences"):
+            list(task.batches(output_format="columnar", deduplicate_edges=True))
+
+
+def test_topology_validation_and_fingerprint(sampled_plan):
+    plan, _ = sampled_plan
+    with pytest.raises(ValueError, match="graph topology"):
+        api.Graph(topology="unknown")
+    graph = plan.contract.batch.inputs["graph"]
+    relations = replace(graph, representation=replace(graph.representation, topology="relations"))
+    changed = replace(
+        plan.contract, batch=replace(plan.contract.batch, inputs={"graph": relations})
+    )
+    assert changed.fingerprint != plan.contract.fingerprint
+    assert api.Graph().topology == "relations"
+
+
+def test_multiple_sampled_neighborhoods_share_schedule(sampled_plan, monkeypatch):
+    plan, anchors = sampled_plan
+    contract = plan.contract
+    neighborhood = contract.sample.neighborhoods["g"]
+    contract = replace(
+        contract,
+        sample=replace(contract.sample, neighborhoods={"g": neighborhood, "h": neighborhood}),
+        batch=replace(
+            contract.batch,
+            inputs={
+                name: replace(contract.batch.inputs["graph"], source=api.NeighborhoodSource(source))
+                for name, source in (("graph", "g"), ("other", "h"))
+            },
+        ),
+    )
+    with api.prepare(contract, plan.dataset, plan.engine) as bound:
+        with bound.materialize(anchors, fit_split="train") as task:
+
+            def forbidden(*args, **kwargs):
+                pytest.fail("multiple sampled neighborhoods used per-request sampling")
+
+            monkeypatch.setattr(bound._source, "sample_graph", forbidden)
+            monkeypatch.setattr(task._anchors, "_requests", forbidden)
+            for batch in task.batches(split="train", output_format="model"):
+                left, right = batch.inputs["graph"], batch.inputs["other"]
+                assert left["num_sampled_nodes"] == right["num_sampled_nodes"]
+                assert left["num_sampled_edges"] == right["num_sampled_edges"]
+                for key in left["edges"]:
+                    torch.testing.assert_close(
+                        left["edges"][key]["index"], right["edges"][key]["index"]
+                    )
+
+
+def test_sampled_sharding_padding_and_resume(sampled_plan):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        seen = []
+        for rank in range(3):
+            options = dict(
+                split="train",
+                output_format="model",
+                rank=rank,
+                world_size=3,
+                shuffle=True,
+                seed=7,
+                epoch=1,
+            )
+            batches = task.batches(**options)
+            first = next(batches)
+            state = batches.state_dict()
+            resumed = task.batches(**options)
+            resumed.load_state_dict(state)
+            assert list(resumed) == list(batches) == []
+            seen.extend(
+                sid
+                for sid, pad in zip(
+                    first.metadata["sample_ids"], first.metadata["is_padding"], strict=True
+                )
+                if not pad
+            )
+            graph = first.inputs["graph"]
+            for key, edge in graph["edges"].items():
+                assert edge["index"].shape[1] == sum(graph["num_sampled_edges"][key])
+        assert sorted(seen) == list(range(4))
+
+
+def test_sampled_self_relation_keeps_both_native_directions(sampled_plan, monkeypatch):
+    plan, anchors = sampled_plan
+    neighborhood = api.NeighborhoodSpec(
+        (
+            api.GraphLayer((api.GraphSample("manager", 1),)),
+            api.GraphLayer((api.GraphSample("manager", 2, direction="reverse"),)),
+        )
+    )
+    contract = replace(
+        plan.contract,
+        sample=replace(plan.contract.sample, neighborhoods={"g": neighborhood}),
+        batch=replace(
+            plan.contract.batch,
+            inputs={
+                "graph": replace(
+                    plan.contract.batch.inputs["graph"],
+                    representation=api.Graph(
+                        {
+                            "people": plan.contract.batch.inputs[
+                                "graph"
+                            ].representation.node_fields["people"]
+                        },
+                        topology="sampled",
+                    ),
+                )
+            },
+        ),
+    )
+    with api.prepare(contract, plan.dataset, plan.engine) as bound:
+        with bound.materialize(anchors, fit_split="train") as task:
+
+            def forbidden(*args, **kwargs):
+                pytest.fail("sampled self-relationship was deduplicated")
+
+            monkeypatch.setattr("kumo.pytorch.engines.diskgraph._first_occurrences", forbidden)
+            batch = next(task.batches(split="train", output_format="model"))
+            graph = batch.inputs["graph"]
+            assert len(graph["edges"]) == 2
+            assert all(key[0] == key[2] == "people" for key in graph["edges"])
+            assert len({key[1] for key in graph["edges"]}) == 2
+            for key, edge in graph["edges"].items():
+                assert sum(graph["num_sampled_edges"][key]) == edge["index"].shape[1]
+
+
+def test_sampled_artifact_retains_mode_and_buffers(sampled_plan, tmp_path):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        artifact = task.to_artifact()
+        artifact.save(tmp_path / "artifact")
+        loaded = api.Artifact.load(tmp_path / "artifact")
+        assert loaded.contract.batch.inputs["graph"].representation.topology == "sampled"
+        assert loaded.contract.fingerprint == artifact.contract.fingerprint
+        held = next(task.batches(split="train", output_format="columnar"))
+        pairs = {key: edge.index.to_pydict() for key, edge in held.inputs["graph"].edges.items()}
+    assert pairs == {
+        key: edge.index.to_pydict() for key, edge in held.inputs["graph"].edges.items()
+    }

@@ -490,7 +490,9 @@ class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
 Rows belonging to one sampled neighborhood around the entity.
 
 Layers expand in order from the entity. A row or edge reached more than once
-appears once per sample. Node attributes are chosen in `BatchSpec` through
+appears once per sample in the default relations topology.
+`Graph(topology="sampled")` instead retains native direction and hop counts.
+Node attributes are chosen in `BatchSpec` through
 a `Graph` representation, not here.
 
 ### `GraphLayer`

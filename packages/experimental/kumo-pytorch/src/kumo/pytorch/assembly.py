@@ -2214,6 +2214,7 @@ class PreparedBatchPlan:
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
+                    topology=prepared.spec.representation.topology,
                 )
                 if columnar:
                     result[name] = self._source.columnar_graph_batch(

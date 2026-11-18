@@ -1231,6 +1231,10 @@ class DiskGraphSource:
         seed: int,
         epoch: int,
     ) -> dict[str, Any]:
+        if getattr(spec, "topology", "relations") == "sampled":
+            raise ValueError(
+                "sampled graph topology requires fixed-size native AnchorTable batches"
+            )
         del seed, epoch
         if self._sampler is None:
             raise RuntimeError("DiskGraph source is closed")
@@ -1275,6 +1279,42 @@ class DiskGraphSource:
             }
         else:
             selected = runtime
+        if spec.topology == "sampled":
+            graph = self.columnar_graph_batch(sample, spec, selected)
+            return {
+                "nodes": {
+                    table: {
+                        "ids": _graph_node_ids(
+                            node.ids.combine_chunks()
+                            if isinstance(node.ids, self._pa.ChunkedArray)
+                            else node.ids
+                        ),
+                        "batch": torch.from_numpy(
+                            node.owners.to_numpy(zero_copy_only=False)
+                        ).long(),
+                        "features": {
+                            name: encoder.encode_arrow(node.features[name])
+                            for name, encoder in state.get(table, {}).items()
+                        },
+                    }
+                    for table, node in graph.nodes.items()
+                },
+                "edges": {
+                    key: {
+                        "index": torch.stack(
+                            tuple(
+                                torch.from_numpy(column.to_numpy(zero_copy_only=False)).long()
+                                for column in edge.index.columns
+                            )
+                        ),
+                        "source_type": edge.source_type,
+                        "destination_type": edge.destination_type,
+                    }
+                    for key, edge in graph.edges.items()
+                },
+                "num_sampled_nodes": dict(graph.num_sampled_nodes),
+                "num_sampled_edges": dict(graph.num_sampled_edges),
+            }
         previous = getattr(self, "_runtime_batch", None)
         self._runtime_batch = selected
         try:
@@ -1336,6 +1376,54 @@ class DiskGraphSource:
                 ids=columns[definition.primary_key] if definition.primary_key else ids,
                 owners=owners,
                 features=pa.table({name: columns[name] for name in names}),
+            )
+        if spec.topology == "sampled":
+            if deduplicate_edges:
+                raise ValueError("sampled graph topology preserves edge occurrences")
+
+            def key(entry):
+                edge = entry["edge_type"]
+                return edge["src"], edge["rel"], edge["dst"]
+
+            counts = {
+                key(entry): tuple(entry["counts"].to_pylist())
+                for entry in graph["num_sampled_edges_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            edges = {
+                key(entry): ColumnarEdges(
+                    entry["edge_type"]["src"],
+                    entry["edge_type"]["dst"],
+                    pa.table({"source": entry["src"], "destination": entry["dst"]}),
+                )
+                for entry in graph["edge_index_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            for edge in counts:
+                edges.setdefault(
+                    edge,
+                    ColumnarEdges(
+                        edge[0],
+                        edge[2],
+                        pa.table(
+                            {
+                                "source": pa.array([], type=pa.uint64()),
+                                "destination": pa.array([], type=pa.uint64()),
+                            }
+                        ),
+                    ),
+                )
+            return ColumnarGraph(
+                sample.entity.table,
+                nodes,
+                edges,
+                {
+                    table: tuple(graph["num_sampled_nodes_dict"][table].to_pylist())
+                    if table in graph["num_sampled_nodes_dict"]
+                    else (0,)
+                    for table in nodes
+                },
+                counts,
             )
         parts = defaultdict(list)
         for edge in graph["edge_index_dict"]:
