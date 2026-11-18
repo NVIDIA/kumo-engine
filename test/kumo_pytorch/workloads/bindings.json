@@ -495,7 +495,7 @@
     },
     {
       "ref": "S01",
-      "binding_id": "kumo-binding-c233cc4c1a1df11b3045558632072c8916724fd27a28a11a8f34d6f4cabbca33",
+      "binding_id": "suite:S01:bpe-v1",
       "selector": {
         "anchor_version": "v1",
         "dataset_id": "pragma-synthetic-medium",
@@ -503,12 +503,84 @@
         "population": "weekly-account",
         "workload_id": "account-masked-value-pretrain"
       },
-      "input_variant": "default",
+      "input_variant": "bpe",
       "representation": "pragma",
       "split_column": "split",
       "targets": {},
-      "campaigns": [],
-      "pending": "Dataset sources, contracts and execution are not yet ported."
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "inputs": "account-mixed-history",
+      "task": "masked-value-pretrain",
+      "anchors": "weekly-pretrain",
+      "source_view": "accounts",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 128
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:masked_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F03",
+          "F07",
+          "F08",
+          "F09",
+          "F10",
+          "F11",
+          "F12"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original account identity and prediction clock.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "history_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F03",
+              "F07",
+              "F08",
+              "F10",
+              "F11"
+            ],
+            "description": "Own financial events and owner-level events; strict cutoff, tied-event membership, encoded fields, positions and packed layout.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "masked_targets": {
+            "features": [
+              "F11",
+              "F12"
+            ],
+            "description": "Recover source values before corruption; verify masks, reconstruction labels and eligible positions.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "bpe_pieces": {
+            "features": [
+              "F09",
+              "F10"
+            ],
+            "description": "Original dispute text resolves to the complete saved BPE piece sequence, shared ID mapping, per-field positions and field identities without truncation.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          }
+        }
+      },
+      "base_binding_id": "kumo-binding-c233cc4c1a1df11b3045558632072c8916724fd27a28a11a8f34d6f4cabbca33"
     },
     {
       "ref": "S02",
@@ -1184,7 +1256,27 @@
           "plan_events",
           "root_id"
         ]
-      ]
+      ],
+      "views": {
+        "accounts": {
+          "inventory": "synthetic-medium-accounts",
+          "identity_path": "datasets/pragma-synthetic/medium/v1/accounts/part-00000.parquet",
+          "identity_column": "account_id",
+          "identity_id_column": "account_id",
+          "source_options": {
+            "root": {
+              "table": "accounts",
+              "key": "account_id",
+              "time": "opened_at"
+            },
+            "root_level": "owned",
+            "parent": {
+              "table": "customers",
+              "key": "customer_id"
+            }
+          }
+        }
+      }
     }
   },
   "semantics": {
@@ -2018,6 +2110,184 @@
           ]
         ]
       ]
+    },
+    "account-mixed-history": {
+      "variant": "bpe",
+      "root_table": "roots",
+      "root_type": "account",
+      "families": [
+        [
+          "card_txns",
+          [
+            "root_card_txns"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "mcc",
+              "mcc",
+              "categorical"
+            ],
+            [
+              "channel",
+              "channel",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "transfers",
+          [
+            "root_transfers"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "transfer_type",
+              "transfer_type",
+              "categorical"
+            ],
+            [
+              "cross_border",
+              "cross_border",
+              "categorical"
+            ],
+            [
+              "direction",
+              "direction",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "logins",
+          [
+            "root_logins"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "ip_region",
+              "ip_region",
+              "categorical"
+            ],
+            [
+              "success",
+              "success",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "profile_changes",
+          [
+            "root_profile_changes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "change_type",
+              "change_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "disputes",
+          [
+            "root_disputes"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "reason",
+              "reason",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "lifelong_events",
+          [
+            "root_lifelong_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "event_type",
+              "event_type",
+              "categorical"
+            ]
+          ]
+        ],
+        [
+          "plan_events",
+          [
+            "root_plan_events"
+          ],
+          "event_time",
+          [
+            [
+              "source_kind",
+              "source_kind",
+              "categorical"
+            ],
+            [
+              "plan",
+              "plan",
+              "categorical"
+            ]
+          ]
+        ]
+      ],
+      "encodings": {
+        "reason": {
+          "kind": "text",
+          "vocabulary_size": 256,
+          "min_frequency": 2,
+          "empty": "empty"
+        }
+      }
     }
   },
   "anchor_profiles": {

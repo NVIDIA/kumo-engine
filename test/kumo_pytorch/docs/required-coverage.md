@@ -1,6 +1,6 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 510 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 552 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
@@ -21,6 +21,10 @@ assertions are unchanged. Local focused runs may omit the option.
 S02 adds 28 required native fixture checks for source ownership, mixed-event
 encoding, chronological ties, corruption detection, training and lifecycle. Its
 real-data campaigns use the same required-report accounting as AML.
+
+S01 adds 42 required account-history/BPE fixture checks, including ownership,
+complete piece sequences, corruption/masking, fitting cutoffs and all four shared
+campaign paths. S01 is one extended binding, not separate base/BPE campaigns.
 
 ## Capability refusals
 

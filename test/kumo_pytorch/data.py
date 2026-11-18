@@ -48,6 +48,13 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         raise ValueError("Invalid expected bucket owner")
     identities = {}
     for entry in manifest["datasets"].values():
+        shared = entry.get("file_sets", ())
+        unknown = set(shared) - manifest.get("file_sets", {}).keys()
+        if unknown:
+            raise ValueError(f"Unknown file sets: {sorted(unknown)}")
+        entry["files"] = [
+            item for name in shared for item in manifest["file_sets"][name]
+        ] + entry["files"]
         if not entry["files"]:
             raise ValueError("Empty file inventory")
         keys = set()

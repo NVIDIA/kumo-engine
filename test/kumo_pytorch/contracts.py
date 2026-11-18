@@ -53,6 +53,7 @@ def build_contract(schema, family, *, native=False, max_events, profile=None):
         max_events=max_events,
         native=native,
         inclusive=graph,
+        encodings=profile.get("encodings"),
     )
     if not graph:
         return seq
@@ -133,6 +134,7 @@ def sequence(
     field_state=None,
     targets=None,
     inclusive=False,
+    encodings=None,
 ):
     pragma = representation == "pragma"
     if field_state is not None:
@@ -141,6 +143,18 @@ def sequence(
         )
     cuts = numerical_boundaries or {}
     kinds = {alias: kind for _, _, _, fields in families for alias, _, kind in fields}
+    configured = encodings or {}
+    if set(configured) - set(kinds):
+        raise ValueError("Encoder overrides must name declared sequence fields")
+
+    def encoding(name, kind):
+        if name in configured:
+            options = dict(configured[name])
+            if options.pop("kind") != "text":
+                raise ValueError(f"Unsupported sequence encoder override: {name}")
+            return r.Text(**options)
+        return buckets(cuts.get(name)) if kind == "numerical" else r.Vocabulary()
+
     events = _events(families, pragma=pragma, inclusive=inclusive)
     sample = r.SampleSpec(
         r.EntitySpec(root_table, entity_type=root_type),
@@ -155,7 +169,7 @@ def sequence(
     encodes = tuple(
         r.Encode(
             name,
-            buckets(cuts.get(name)) if kind == "numerical" else r.Vocabulary(),
+            encoding(name, kind),
             "history",
         )
         for name, kind in kinds.items()
@@ -163,7 +177,11 @@ def sequence(
     if pragma:
         history = r.Fields(
             encodes,
-            row=r.Tokens(max_tokens=len(kinds), keep="first", missing="omit"),
+            row=r.Tokens(
+                max_tokens=None if configured else len(kinds),
+                keep="first",
+                missing="omit",
+            ),
             field_names="fields",
             field_space="history",
             forbidden_fields=("entity_id", "sample_id", "label", "split"),

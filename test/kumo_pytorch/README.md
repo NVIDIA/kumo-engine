@@ -1,7 +1,7 @@
 # PyTorch full testing suite
 
 Standalone repository tests for `kumo.pytorch`, outside its installed package.
-Current bindings cover AML HI Small, AML LI Medium and Synthetic Medium S02
+Current bindings cover AML HI Small, AML LI Medium and Synthetic Medium S01/S02
 through shared acquisition, verified source/anchor preparation,
 [model consumers](models/README.md), task checks, training and lifecycle runners.
 Fixture validation and real-data acceptance are tracked separately in the
@@ -50,7 +50,8 @@ The [Arena golden audit](docs/arena-golden-audit.md) maps existing assertion
 owners and records selective boundary-test ports without an Arena dependency.
 The [binding expansion plan](docs/binding-coverage.md) tracks the approved LI
 Medium, Synthetic Medium and MBD additions. S02 adds customer-history next-token
-checks using original source rows. Its campaigns use the existing RTX runner
+checks; S01 adds account-history masked reconstruction with BPE. Both use original
+source rows for feature assertions. Their campaigns use the existing RTX runner
 with CPU training and a recorded storage preflight; full real-data acceptance
 is pending. The remaining selected bindings are added one at a time.
 The [coverage audit](docs/coverage-audit.md) maps the remaining requirements to
@@ -99,8 +100,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 30 binding campaigns into correctness (8),
-training (10), lifecycle (2) and full population (10). HI Small's original
+The planner partitions the 34 binding campaigns into correctness (9),
+training (11), lifecycle (3) and full population (11). HI Small's original
 lifecycle/history scenarios and H&M Small/Medium remain separately owned. It
 also retains 15 HI Small fitting repetitions and four L01 benchmark campaigns.
 The same resolved seed range feeds all conformance shards. Every test has one
@@ -261,7 +262,7 @@ oracles. Full mode checks every forecast-split anchor and rejects limits.
 L01's reports identify graph, history, aggregate and target assertions separately,
 with checked-anchor counts by split and execution phase. Expected answers come
 from original source rows and declared semantics; missing evidence fails summary
-validation. See the [feature-to-check map](docs/binding-coverage.md#current-increment-l01-only)
+validation. See the [feature-to-check map](docs/binding-coverage.md#l01-feature-coverage)
 for scope and references.
 The `kumo-pytorch-campaign-results` artifact and combined job summary show all
 26 correctness/training/lifecycle/history outcomes plus nine benchmark/fitting reports;

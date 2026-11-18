@@ -50,6 +50,7 @@ def test_manifest_has_exact_starter_inputs():
         "li-medium",
         "li-large",
         "synthetic-medium-customers",
+        "synthetic-medium-accounts",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -210,6 +211,73 @@ def test_conflicting_shared_file_identity_is_rejected(tmp_path):
     path.write_text(json.dumps(m))
     with pytest.raises(ValueError, match="Conflicting"):
         data.load_manifest(path)
+
+
+@pytest.mark.parametrize("fault", [None, "unknown", "duplicate", "conflicting"])
+def test_shared_inventory_is_resolved_and_validated(tmp_path, fault):
+    manifest, item = fixture_manifest()
+    manifest["file_sets"] = {"public": [item]}
+    entry = manifest["datasets"]["fixture"]
+    entry.update(file_sets=["public"], files=[])
+    if fault == "unknown":
+        entry["file_sets"] = ["missing"]
+    elif fault == "duplicate":
+        entry["files"] = [item]
+    elif fault == "conflicting":
+        manifest["datasets"]["other"] = {
+            **entry,
+            "file_sets": [],
+            "files": [{**item, "sha256": "0" * 64}],
+        }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    if fault:
+        with pytest.raises(
+            ValueError,
+            match={
+                "unknown": "Unknown file sets",
+                "duplicate": "Duplicate key",
+                "conflicting": "Conflicting identity",
+            }[fault],
+        ):
+            data.load_manifest(path)
+    else:
+        assert data.load_manifest(path)["datasets"]["fixture"]["files"] == [item]
+
+
+def test_account_binding_reuses_public_sources_with_distinct_roots_and_anchors():
+    from test.kumo_pytorch.bindings import dataset_definition, load_bindings
+
+    catalog = load_bindings()
+    assert len([ref for ref in catalog if ref.startswith("S01")]) == 1
+    binding = catalog["S01"]
+    accounts = dataset_definition(binding)
+    customers = dataset_definition(catalog["S02"])
+    assert accounts["source_options"]["tables"] == customers["source_options"]["tables"]
+    assert accounts["source_options"]["root"]["table"] == "accounts"
+    assert customers["source_options"]["root"]["table"] == "customers"
+    # Returned declarations are independent, including nested shared structures.
+    accounts["source_options"]["root"]["table"] = "changed"
+    assert dataset_definition(binding)["source_options"]["root"]["table"] == "accounts"
+    manifest = data.load_manifest()
+    left, right = [
+        {item["key"]: item for item in manifest["datasets"][d["inventory"]]["files"]}
+        for d in (accounts, customers)
+    ]
+    assert len(left) == len(right) == 1613
+    shared = left.keys() & right.keys()
+    assert len(shared) == 1611 and all(left[key] == right[key] for key in shared)
+    extra = left.keys() - right.keys()
+    assert len(extra) == 2 and all("weekly-account/v1/" in key for key in extra)
+    grant = json.loads(
+        (SUITE / "datasets/ci-synthetic-medium-read-policy.json").read_text()
+    )["Statement"][1]
+    assert grant["Action"] == "s3:GetObject" and grant["Effect"] == "Allow"
+    assert set(grant["Resource"]) == {
+        f"arn:aws:s3:::{manifest['bucket']}/{key}" for key in extra
+    }
+    assert binding["binding_id"] == "suite:S01:bpe-v1"
+    assert binding["base_binding_id"].endswith("abbca33")
 
 
 def test_required_files_are_not_silently_omitted_on_partial_failure(tmp_path):

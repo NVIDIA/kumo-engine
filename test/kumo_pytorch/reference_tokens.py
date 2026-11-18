@@ -2,16 +2,18 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Source-to-token oracle shared by AML task checks, without engine encoders.
+"""Source-to-token oracles shared by binding checks, without engine encoders.
 
 Fitting and ID-space allocation are covered by package tests. Given their saved
-state, independently apply the prototype's vocabulary and numeric-bin rules.
+state, independently apply the declared vocabulary, numeric-bin and BPE rules.
 """
 
 import json
+import re
 from bisect import bisect_right
 from collections import Counter
 from datetime import datetime, timezone
+from functools import lru_cache
 from itertools import groupby
 
 FIELDS = (
@@ -72,6 +74,95 @@ def encoded_value(state, field, value):
             else bisect_right(encoder["boundaries"], float(value)) + 1
         )
     return dict(state["spaces"]["history"]["members"][binding])[local]
+
+
+@lru_cache(maxsize=64)
+def _bpe_state(serialized):
+    from tokenizers import Tokenizer
+
+    config = json.loads(serialized)
+    model = config["model"]
+    assert model["type"] == "BPE" and not model.get("dropout")
+    assert config["normalizer"] is None and config["post_processor"] is None
+    assert not model.get("continuing_subword_prefix") and not model.get(
+        "end_of_word_suffix"
+    )
+    assert not any(
+        model.get(key) for key in ("fuse_unk", "byte_fallback", "ignore_merges")
+    )
+    added = config["added_tokens"]
+    assert all(
+        not any(token[key] for key in ("single_word", "lstrip", "rstrip", "normalized"))
+        for token in added
+    ), "The declared BPE recipe uses literal special tokens"
+    specials = {token["content"]: token["id"] for token in added}
+    pattern = (
+        re.compile(
+            "("
+            + "|".join(re.escape(s) for s in sorted(specials, key=len, reverse=True))
+            + ")"
+        )
+        if specials
+        else None
+    )
+    pairs = [
+        tuple(pair.split(" ") if isinstance(pair, str) else pair)
+        for pair in model["merges"]
+    ]
+    # Use the serialized tokenizer's preprocessing only. Merge selection and ID
+    # lookup below are independent of Kumo and Tokenizer.encode().
+    tokenizer = Tokenizer.from_str(serialized)
+    return (
+        model,
+        dict(zip(pairs, range(len(pairs)), strict=True)),
+        tokenizer.pre_tokenizer,
+        specials,
+        pattern,
+    )
+
+
+def encoded_pieces(state, field, value):
+    binding = json.dumps(["inputs", "history", "fields", field], separators=(",", ":"))
+    encoder = state["encoders"][binding]
+    if encoder["kind"] != "text":
+        return [encoded_value(state, field, value)]
+    model, ranks, pre_tokenizer, specials, pattern = _bpe_state(
+        encoder["tokenizer_json"]
+    )
+    vocab = model["vocab"]
+    unknown = model["unk_token"]
+    if value is None:
+        local = [encoder["roles"]["missing"]]
+    else:
+        local = []
+        segments = pattern.split(value) if pattern else [value]
+        words = []
+        for segment in segments:
+            if segment in specials:
+                words.append((True, segment))
+            else:
+                words.extend(
+                    (False, word) for word, _ in pre_tokenizer.pre_tokenize_str(segment)
+                )
+        for special, word in words:
+            if special:
+                local.append(specials[word])
+                continue
+            pieces = [char if char in vocab else unknown for char in word]
+            while len(pieces) > 1:
+                choices = [
+                    (ranks[pair], i)
+                    for i, pair in enumerate(zip(pieces, pieces[1:]))
+                    if pair in ranks
+                ]
+                if not choices:
+                    break
+                _, i = min(choices)
+                stop = i + 2
+                pieces[i:stop] = [pieces[i] + pieces[i + 1]]
+            local.extend(vocab[piece] for piece in pieces)
+    members = dict(state["spaces"]["history"]["members"][binding])
+    return [members[index] for index in local]
 
 
 def verify_history_values(batch, anchors, reference, state):

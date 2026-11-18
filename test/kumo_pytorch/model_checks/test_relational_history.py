@@ -22,8 +22,8 @@ import pytest
 STAMP = 1735689600 + 100 * 86400
 
 
-def inputs(tmp_path, *, homogeneous=False):
-    binding = load_bindings()["S02"]
+def inputs(tmp_path, *, homogeneous=False, binding_ref="S02"):
+    binding = load_bindings()[binding_ref]
     definition = dataset_definition(binding)
     binding["dataset"] = definition
     root = tmp_path / "data"
@@ -49,10 +49,13 @@ def inputs(tmp_path, *, homogeneous=False):
             "risk_tier": [999, 999],
         },
     )
-    definition["identity_path"] = prefix + "customers/part-00000.parquet"
     write(
         prefix + "accounts/part-00000.parquet",
-        {"account_id": [100, 101, 200], "customer_id": [10, 10, 20]},
+        {
+            "account_id": [100, 101, 200],
+            "customer_id": [10, 10, 20],
+            "opened_at": [STAMP - 86400] * 3,
+        },
     )
     defaults = dict(
         amount=12.5,
@@ -87,13 +90,15 @@ def inputs(tmp_path, *, homogeneous=False):
         values["final_risk"] = [999] * 5
         write(prefix + family + "/part-00000.parquet", values)
     anchor = definition["anchor_path"].format(
-        population="weekly-customer", version="v1"
+        population=binding["selector"]["population"], version="v1"
     )
     write(
         anchor,
         {
             "sample_id": ["tr-a", "tr-b", "tr-c", "va-a", "te-b"],
-            "entity_id": ["10", "20", "10", "10", "20"],
+            "entity_id": ["100", "101", "100", "200", "200"]
+            if binding_ref.startswith("S01")
+            else ["10", "20", "10", "10", "20"],
             "as_of_time": pa.array([STAMP * 10**9] * 5, pa.timestamp("ns")),
             "split": ["train", "train", "train", "valid", "test"],
         },
@@ -113,8 +118,10 @@ def inputs(tmp_path, *, homogeneous=False):
     return root, files, binding
 
 
-def prepared(tmp_path, *, homogeneous=False, limit=None):
-    root, files, binding = inputs(tmp_path, homogeneous=homogeneous)
+def prepared(tmp_path, *, homogeneous=False, limit=None, binding_ref="S02"):
+    root, files, binding = inputs(
+        tmp_path, homogeneous=homogeneous, binding_ref=binding_ref
+    )
     output = tmp_path / "output"
     output.mkdir()
     values = prepare_binding(root, output, binding, files, limit=limit)

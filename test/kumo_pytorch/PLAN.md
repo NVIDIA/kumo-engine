@@ -2,7 +2,7 @@
 
 Current increment: **L01, AML LI Medium / Combined only**. Add each selected
 binding and its feature requirements one at a time, retaining existing coverage.
-See [binding feature coverage](docs/binding-coverage.md#current-increment-l01-only)
+See [binding feature coverage](docs/binding-coverage.md#l01-feature-coverage)
 for F01–F05, F07–F08, F10–F11 and F14 checks. Equal-time history events may appear
 in either order; their membership, values and chronological groups remain checked.
 
@@ -1568,3 +1568,53 @@ and `model_checks/test_finetuning.py` with `-c test/kumo_pytorch/pytest.ini`
 and `--confcutdir=test/kumo_pytorch`. Required collection confirms 510 CPU tests
 and five GPU tests delegated to their own job. Branch-native, real-data CI
 execution remains pending.
+
+
+### Synthetic Medium increment: S01 with BPE
+
+The user selected the next PDF row, account-history masked reconstruction with
+PRAGMA, and clarified that each row gets one binding including its feature
+additions. S01 now uses `suite:S01:bpe-v1`, with the original Arena ID retained as
+`base_binding_id`. The categorical dispute-reason input is replaced by Text BPE,
+and packed row tokens retain all pieces. There is no separate S01 base campaign.
+S02 remains the existing customer-history binding; S04 is still deferred to the
+next selected increment. No package runtime changed.
+
+Shared declarations select the account-root view, preserve account-specific
+financial events and expand parent-level events to owned accounts. Both Synthetic
+bindings reuse 1,611 source/metadata pins and the existing acquisition, native
+AnchorTable, model, training, lifecycle and workflow paths. S01 adds two exact
+weekly-account objects. Their GetObject-only grant was explicitly approved,
+applied and verified with every pre-existing bucket-policy statement unchanged.
+No full source payload was downloaded locally.
+
+Correctness, training, population and lifecycle are enabled through the shared
+catalog. This makes 34 binding campaigns and 43 aggregate reports. S01 retains
+CPU training on the previously approved RTX runner, with the existing 128 GiB
+storage preflight. No Synthetic timing benchmarks are enabled.
+
+Required source assertions cover F01/F02/F03/F07/F08/F09/F10/F11/F12. Saved BPE
+preprocessing is reused, while merge selection, piece IDs, field identities,
+positions, corruption and reconstruction labels are independently checked.
+Tied records are matched bijectively without requiring a particular permutation;
+chronology, values and multiplicity remain strict. Forty-two native fixture and
+oracle checks exercise all four campaigns plus text, tensor and ownership
+boundaries. The required inventory is now 552 CPU cases and five delegated GPU
+cases. Full real-data execution and acceptance remain pending.
+
+Independent review completed in two rounds with no remaining findings. Fixed
+literal tokenizer-special handling, complete derived tensor type/shape/padding
+validation and recursive tied-record matching. The reviewer also checked all
+65,536 four-by-four matching graphs and a 1,200-record tie group. These checks
+validate the suite additions; they do not establish real-data CI success.
+
+
+Validation used the existing compatible local native extension: all 42 S01
+cases passed (60 seconds), as did all 28 S02 regressions. Shared harness,
+unrelated-dataset, existing masked-value and binding-runner checks produced
+397 passes and one LI Medium lifecycle failure: iterator restore rejects the
+saved task identity. An isolated export of prior commit `304a5874` reproduces
+that same failure without the S01 changes. Its assertion remains unchanged.
+Required collection confirms exactly 552 CPU cases with five GPU cases delegated.
+Import ordering, formatting, Flake8, license headers, documentation links and
+`git diff --check` pass. Real-data CI acceptance remains pending.

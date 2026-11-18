@@ -107,7 +107,7 @@ def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
 def test_summary_recombines_all_experiments_and_fitting_repetitions(tmp_path):
     reports(tmp_path)
     result = nightly.summarize(tmp_path, "fixture-revision")
-    assert result["status"] == "passed" and len(result["shards"]) == 39
+    assert result["status"] == "passed" and len(result["shards"]) == 43
     case = nightly.matrix()["include"][0]["case"]
     combined = json.loads((tmp_path / "fitting" / case / "report.json").read_text())
     assert len(combined["cases"][0]["runs"]) == 6
@@ -222,7 +222,7 @@ def test_summary_rejects_lost_or_substituted_shards(tmp_path, fault):
             write(path, report)
     result = nightly.summarize(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["shards"]) == 39  # Failure never suppresses other reports.
+    assert len(result["shards"]) == 43  # Failure never suppresses other reports.
 
 
 def test_li_campaign_scope_does_not_enable_reference_backends_or_fitting():

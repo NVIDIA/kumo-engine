@@ -22,6 +22,18 @@
         "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-customer/v1/manifest.json",
         "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-customer/v1/anchors.parquet"
       ]
+    },
+    {
+      "Sid": "ReadPytorchSyntheticMediumAccountAnchors",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-account/v1/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-account/v1/anchors.parquet"
+      ]
     }
   ]
 }

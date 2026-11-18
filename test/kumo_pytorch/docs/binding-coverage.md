@@ -12,12 +12,15 @@ Its Engine audit revision `9432cddf` is historical provenance; execution must
 test the PR's actual revision. [bindings.json](../workloads/bindings.json) pins
 the 16 PDF bindings plus E05, the existing supervised HI Small nuFormer case.
 It retains selectors, representations, split columns, target meanings and source
-catalog hashes. E05 is a suite identity, not a newly registered Arena binding. Registration is not execution coverage.
+catalog hashes. E05 and extended contracts such as S01 have suite identities, not new Arena
+registrations. Extended contracts retain their original `base_binding_id` as
+provenance. Registration is not execution coverage.
 
 ## Base bindings
 
 GraphSAGE/combined use v2 anchors; PRAGMA/nuFormer use v1. Dataset versions are
-independent: AML v8, Synthetic/MBD v1. Input variants are `default`, or `trx` for MBD.
+independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or `trx` for MBD; S01 uses the suite
+BPE extension.
 
 | Ref | Dataset / population | Workload | Model | Status / next work |
 | --- | --- | --- | --- | --- |
@@ -30,19 +33,22 @@ independent: AML v8, Synthetic/MBD v1. Input variants are `default`, or `trx` fo
 | L02 | LI Medium / account-daily | next-outgoing-delay | nuFormer | Native targets, heads and training/full-delivery jobs added; CI acceptance pending |
 | L03 | LI Medium / account-daily | next-outgoing-format | GraphSAGE | Native targets, heads and training/full-delivery jobs added; CI acceptance pending |
 | L04 | LI Medium / account-daily | account-involvement-next24h | PRAGMA | Unmasked supervised head and training/full-delivery jobs added; CI acceptance pending |
-| S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | Port base, then BPE variant |
+| S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | One BPE contract with required source checks and shared campaigns; real-data CI pending |
 | S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Native customer-history correctness, training, delivery and lifecycle registered; real-data CI pending |
 | S03 | Synthetic / weekly-account | aml_graph_user_last30d | GraphSAGE | Port event-membership graph and retrospective binary target |
-| S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Port positive six-month LTV binary task, then aggregate variant |
+| S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Port positive six-month LTV task including richer/grouped aggregates |
 | M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
 | M02 | MBD / transaction-forecast | next-transaction-amount-currency | PRAGMA | Port mixed targets and independent validity |
-| M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Port event type/subtype targets, then aligned-target variant |
-| M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Port stored count, then generated-count variant |
+| M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Port event type/subtype targets including auxiliary target checks |
+| M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Port stored count including generated-count comparison |
 
-## Distinct contract variants
+## Feature additions within each selected binding
 
-Preserve base bindings and assign separate suite variant identities. Do not
-regenerate sources or anchor tables or imply Arena registered these extensions.
+Use one binding per row in *dataset-model-feature-coverage 3.pdf*. Extend that
+binding's contract and add independent checks together; do not schedule separate
+base and extended bindings. Retain the Arena base ID as provenance and use a
+suite identity for the extended contract. Reuse existing sources and anchors.
+Previously enabled coverage remains in place.
 
 | Base | Additional declarations and assertions |
 | --- | --- |
@@ -132,10 +138,11 @@ increment. These figures describe the preceding fixture increment, not real-data
    unmasked PRAGMA supervision, real-data selection, CLI/report integration,
    smoke/full populations, lifecycle/training and timing campaigns. Exercise
    native AnchorTable planning/cache reuse wherever that coverage is claimed.
-3. **Synthetic:** pin the necessary sources/anchors; port the four bases with
-   independent boundary fixtures, then implement S01/S04 variants separately.
-4. **MBD:** pin required `trx` sources and anchor populations; port the four
-   bases and their validity rules, then M03/M04 variants separately.
+3. **Synthetic:** add each selected row with its required feature additions
+   and independent boundary fixtures: S02, S01 with BPE, then S04 with grouped
+   aggregates.
+4. **MBD:** pin the required `trx` sources and anchors; add M04 with generated
+   counts and M03 with auxiliary target checks, one row at a time.
 5. **Complete accounting:** map required assertions to execution owners, reject
    missing tests and retain real-data, full-population and profiling evidence.
 
@@ -192,17 +199,17 @@ anchor's identity/order, clocks, target values and masks, with a partial report
 written every 100 batches. It is a delivery campaign, not full-dataset training.
 Full-population acceptance is recorded only after all three splits finish.
 
-The categorized binding matrices use the candidate DiskGraph wheel for 30 jobs:
+The categorized binding matrices use the candidate DiskGraph wheel for 34 jobs:
 HI Small's five bindings × training/smoke/full, and LI Medium's four bindings ×
-training/full, plus L01 bounded correctness, lifecycle and source histories, and S02 correctness, training, full delivery and lifecycle. Each publishes JSON/Markdown reports;
-training adds loss curves and checkpoints. The summary requires all 30 reports and verifies
+training/full, plus L01 bounded correctness, lifecycle and source histories, and S01/S02 correctness, training, full delivery and lifecycle. Each publishes JSON/Markdown reports;
+training adds loss curves and checkpoints. The summary requires all 34 reports and verifies
 their revision, binding identity and completion.
 Declared early refusals are labelled separately from executed campaigns.
 
 HI Small's five bindings additionally retain fitting-memory checks (three
 repetitions each), but no longer enable model profiling, index-reuse timing or
 DiskGraph/Polars/GPU loader timings. L01 retains its four benchmark campaigns.
-The combined summary therefore requires 39 reports: 30 dataset campaigns,
+The combined summary therefore requires 43 reports: 34 dataset campaigns,
 four L01 benchmarks and five combined HI Small fitting-memory reports.
 
 Local tiny-fixture validation does not establish real LI acceptance or runtime
@@ -315,12 +322,12 @@ The independent reviewer found no remaining issues; an exhaustive independent
 check agreed with the graph validator on 7,680 outcomes from 120 tiny cases.
 These results do not replace a real-data Linux/GPU nightly run.
 
-## Current increment: S02 / Synthetic Medium / nuFormer
+## S02 / Synthetic Medium / nuFormer
 
-The next selected row in *dataset-model-feature-coverage 3.pdf* is the registered
+The first Synthetic row in *dataset-model-feature-coverage 3.pdf* uses the registered
 `customer-next-token-pretrain` binding, weekly-customer v1 anchors and dataset v1.
-Its binding ID ends in `ca3566e`. S01/PRAGMA (BPE) and S04/Combined (richer/grouped
-aggregates) remain the next increments; S03 is not selected by this PDF.
+Its binding ID ends in `ca3566e`. S01/PRAGMA is described below; S04/Combined
+with richer/grouped aggregates remains next. S03 is not selected by this PDF.
 
 The existing catalog, downloader, native anchor projector, nuFormer model,
 training checks, lifecycle checks and categorized workflow matrices are reused.
@@ -376,3 +383,53 @@ Source preparation preserves schema for empty event families; any DiskGraph
 capability refusal remains the package’s responsibility. Two-endpoint event
 identities require source IDs in `[0, 2**62 - 1]`; larger values fail preparation
 with the family/column and supported bound before arithmetic overflow.
+
+
+## S01 / Synthetic Medium / PRAGMA
+
+One selected binding extends Arena's `account-masked-value-pretrain` contract.
+`suite:S01:bpe-v1` keeps the original ID ending `abbca33` as `base_binding_id`.
+Weekly-account v1 anchors, public sources, masking policy and PRAGMA consumer are
+reused. The contract now declares `Text` BPE for `disputes.reason`, with vocabulary
+size 256, minimum frequency 2 and empty-string behavior `empty`. Packed row tokens
+have no scalar-field token cap, so every BPE piece reaches the model. Compatible
+scalar fields share one fitted encoder across event families; field IDs still
+identify the source family and field.
+
+The same catalog, source mapper, native AnchorTable projector, training runner,
+lifecycle runner and workflow matrices serve S01 and S02. A declared account
+view changes the root from customer to account. Financial events stay with their
+account; owner-level events are expanded to each selected account. A transfer
+between sibling accounts is outgoing/incoming, while an actual same-account
+transfer is `self` once. IDs stay stable when selecting a bounded root population.
+Strictly earlier histories exclude equal/future events; stored-column encoder
+fitting separately follows the package's inclusive table cutoff, across entities.
+The shared projector sets that fitting cutoff one second before the latest
+selected training prediction clock.
+
+| Required assertion | Feature IDs | Independent answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original account/sample identity and prediction clock |
+| `history_values` | F01, F02, F03, F07, F08, F10, F11 | Original rows joined by ownership; complete eligible events, scalar encodings, field identities, positions, packed offsets and padded event layout; UTC calendar values and age |
+| `bpe_pieces` | F09, F10 | Apply saved BPE merge ranks and ID mapping independently to original text; require all pieces, positions and field identities without truncation |
+| `masked_targets` | F11, F12 | Original pre-corruption IDs, masked/unknown positions, reconstruction labels and eligible loss positions |
+
+Equal-time whole-event records may permute only within their eligible timestamp
+group. Bijection checks preserve multiplicity even when masking hides a value.
+The BPE oracle uses the saved tokenizer only for preprocessing; merge selection
+and ID lookup are independent of its encoder. Fixtures include hand-calculated
+merges and corruption cases for pieces, values, masks, ownership, chronology,
+offsets, positions and derived outputs. Shared 100-update training checks retain
+finite losses/gradients, every trainable parameter update and loss decrease.
+
+The inventory shares 1,611 pinned public/source-manifest objects with S02 and
+adds the weekly-account anchor manifest and 141,305,955-byte anchor payload.
+The payload declares 58,264,001 anchors. The separately authorized GetObject
+statement covers only these two additional objects; the existing grant is
+preserved. No new workflow, dataset/model wrapper, Arena dependency or package
+runtime change is introduced. S01 uses the same RTX runner and 128 GiB storage
+preflight with CPU training. No Synthetic timing campaign is enabled.
+
+Correctness, training, full-population and lifecycle campaigns are required.
+Real-data CI execution, storage/runtime measurements and full-population
+acceptance remain pending; local fixtures do not establish those results.

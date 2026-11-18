@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pinned base bindings from the November 2026 coverage plan.
+"""Selected dataset/task/model bindings and their pinned Arena provenance.
 
 Registration describes the requested workload, not successful execution. The
 suite's existing required-test inventory remains the execution authority.
@@ -101,7 +101,17 @@ def dataset_definition(binding):
     if "dataset" in binding:
         return deepcopy(binding["dataset"])
     catalog = _catalog()
-    return deepcopy(catalog["datasets"][binding["selector"]["dataset_id"]])
+    definition = deepcopy(catalog["datasets"][binding["selector"]["dataset_id"]])
+    views = definition.pop("views", {})
+    if "source_view" in binding:
+        view = views[binding["source_view"]]
+        options = {
+            **definition.get("source_options", {}),
+            **view.get("source_options", {}),
+        }
+        definition.update(view)
+        definition["source_options"] = options
+    return definition
 
 
 def binding_label(binding):

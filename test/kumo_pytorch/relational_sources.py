@@ -55,6 +55,9 @@ def prepare_sources(data_dir, output, definition, files, roots):
     output.mkdir(parents=True, exist_ok=False)
     root = options["root"]
     owner = options["ownership"]
+    level = options.get("root_level", "owner")
+    if level not in {"owner", "owned"}:
+        raise ValueError(f"Unknown root ownership level: {level}")
     root_rows = pq.read_table(paths[root["table"]], columns=[root["key"], root["time"]])
     root_ids = root_rows[root["key"]].combine_chunks()
     _required_integers(root_ids, root["key"])
@@ -67,9 +70,20 @@ def prepare_sources(data_dir, output, definition, files, roots):
     owners = ownership[owner["root"]].combine_chunks()
     _required_integers(child_ids, owner["key"])
     _required_integers(owners, owner["root"])
+    parent_ids = root_ids
+    if level == "owned":
+        parent = options["parent"]
+        parent_ids = pq.read_table(paths[parent["table"]], columns=[parent["key"]])[
+            parent["key"]
+        ].combine_chunks()
+        _required_integers(parent_ids, parent["key"])
+        if len(pc.unique(parent_ids)) != len(parent_ids) or set(
+            child_ids.to_pylist()
+        ) != set(root_ids.to_pylist()):
+            raise ValueError("Duplicate parent or root/owned identities disagree")
     if (
         len(pc.unique(child_ids)) != len(child_ids)
-        or pc.any(pc.invert(pc.is_in(owners, value_set=root_ids))).as_py()
+        or pc.any(pc.invert(pc.is_in(owners, value_set=parent_ids))).as_py()
     ):
         raise ValueError("Duplicate owned identity or unknown root owner")
     selected = (
@@ -92,6 +106,22 @@ def prepare_sources(data_dir, output, definition, files, roots):
         ),
         output / "roots.parquet",
     )
+
+    # Slots use the complete ownership table, preserving IDs in bounded runs.
+    fanout, members = 1, None
+    if level == "owned":
+        ordered = pa.table({"__parent": owners, "__member": child_ids}).sort_by(
+            [("__parent", "ascending"), ("__member", "ascending")]
+        )
+        slots, previous, slot = [], None, 0
+        for parent_id in ordered["__parent"].to_pylist():
+            slot = slot + 1 if parent_id == previous else 0
+            slots.append(slot)
+            previous = parent_id
+        fanout = max(slots, default=0) + 1
+        members = ordered.append_column("__slot", pa.array(slots, pa.int64())).filter(
+            pc.is_in(ordered["__member"], value_set=selected)
+        )
 
     def owner_ids(values):
         indices = pc.index_in(values, value_set=child_ids)
@@ -124,19 +154,34 @@ def prepare_sources(data_dir, output, definition, files, roots):
                     )
                 for batch in batches:
                     data = pa.Table.from_batches([batch])
+                    kind = ownership_spec["kind"]
+                    multiplier = fanout if level == "owned" and kind == "direct" else 2
                     identity, stamp = data[spec["key"]], data[spec["time"]]
                     _required_integers(identity, spec["key"])
-                    if pc.any(pc.greater(identity, 2**62 - 1)).as_py():
+                    maximum = (2**63 - multiplier) // multiplier
+                    if pc.any(pc.greater(identity, maximum)).as_py():
                         raise ValueError(
-                            f"{family}.{spec['key']} exceeds {2**62 - 1}; "
-                            "two-endpoint identity mapping requires two int64 slots per source row"
+                            f"{family}.{spec['key']} exceeds {maximum}; "
+                            f"identity mapping requires {multiplier} int64 slots per source row"
                         )
                     if stamp.type != pa.int64() or stamp.null_count:
                         raise ValueError("Event clocks require integral Unix seconds")
-                    kind = ownership_spec["kind"]
+                    if level == "owned" and kind == "direct":
+                        parents = data[ownership_spec["column"]]
+                        _required_integers(parents, "event owner")
+                        if pc.any(
+                            pc.invert(pc.is_in(parents, value_set=parent_ids))
+                        ).as_py():
+                            raise ValueError("Unknown parent event owner")
+                        data = data.append_column("__parent", parents).join(
+                            members, keys="__parent", join_type="inner"
+                        )
+                    identity, stamp = data[spec["key"]], data[spec["time"]]
                     if kind == "endpoints":
+                        endpoints = [data[c] for c in ownership_spec["columns"]]
+                        parent_endpoints = [owner_ids(values) for values in endpoints]
                         sender, receiver = (
-                            owner_ids(data[c]) for c in ownership_spec["columns"]
+                            endpoints if level == "owned" else parent_endpoints
                         )
                         same = pc.fill_null(pc.equal(sender, receiver), False)
                         emissions = [
@@ -153,9 +198,19 @@ def prepare_sources(data_dir, output, definition, files, roots):
                                 1,
                             ),
                         ]
+                    elif level == "owned" and kind == "direct":
+                        emissions = [
+                            (
+                                data["__member"],
+                                pa.repeat(True, len(data)),
+                                None,
+                                data["__slot"],
+                            )
+                        ]
                     else:
                         values = data[ownership_spec["column"]]
-                        target = owner_ids(values) if kind == "owned" else values
+                        parent_target = owner_ids(values) if kind == "owned" else values
+                        target = values if level == "owned" else parent_target
                         _required_integers(target, "event owner")
                         if kind not in {"owned", "direct"}:
                             raise ValueError(f"Unknown ownership kind: {kind}")
@@ -167,17 +222,18 @@ def prepare_sources(data_dir, output, definition, files, roots):
                             declared = data[ownership_spec["verify_root"]]
                             if declared.null_count or (
                                 len(data)
-                                and not pc.all(pc.equal(target, declared)).as_py()
+                                and not pc.all(
+                                    pc.equal(parent_target, declared)
+                                ).as_py()
                             ):
                                 raise ValueError(
                                     "Event ownership disagrees with its owned entity"
                                 )
                         emissions = [(target, pa.repeat(True, len(data)), None, 0)]
                     for target, eligible, direction, side in emissions:
-                        # Two endpoint slots keep physical identities stable across
-                        # bounded/full populations and deduplicate self transfers.
+                        # Endpoint/member slots retain stable physical identities.
                         event_id = pc.add_checked(
-                            pc.multiply_checked(identity, 2), side
+                            pc.multiply_checked(identity, multiplier), side
                         )
                         values = {
                             "event_id": event_id,

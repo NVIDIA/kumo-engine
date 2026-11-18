@@ -31,7 +31,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 30
+    assert len(grouped) == len(expected) == 34
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -76,7 +76,7 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
         for name in ("correctness", "training", "lifecycle", "population")
         for r in plan[name]["include"]
     ]
-    synthetic = [r for r in campaigns if r["binding"] == "S02"]
+    synthetic = [r for r in campaigns if r["binding"] in {"S01", "S02"}]
     assert {r["mode"] for r in synthetic} == {"smoke", "training", "lifecycle", "full"}
     for row in synthetic:
         assert json.loads(row["runner"]) == {
@@ -87,7 +87,7 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
     assert all(
         json.loads(r["runner"]) == "ubuntu-24.04"
         for r in campaigns
-        if r["binding"] != "S02"
+        if r["binding"] not in {"S01", "S02"}
     )
     workflow = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     assert "runs-on: ${{ fromJSON(inputs.runner) }}" in workflow
