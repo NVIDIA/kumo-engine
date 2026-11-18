@@ -311,7 +311,3 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
-
-The PR331 Actions trial is complete. Workflow dispatch and the shared guard
-require main-only admission, independent approval and disabled administrator
-bypass. The trial branch and self-approval exceptions have been removed.
