@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import pathlib
+import shutil
 import struct
 from typing import Any
 
@@ -325,6 +326,81 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
             batch,
             batch_size=3,
             n_users=seed_table_fixture["n_users"],
+        )
+
+
+def test_external_extension_runs_without_an_index_local_copy(seed_table_fixture, tmp_path):
+    parent = tmp_path / "parent"
+    shutil.copytree(seed_table_fixture["parent_root"], parent)
+    external = tmp_path / "consumer" / seed_table_fixture["tt_id"]
+    external.parent.mkdir()
+    shutil.move(str(parent / "train_tables" / seed_table_fixture["tt_id"]), external)
+    before = {str(p.relative_to(parent)): p.read_bytes()
+              for p in parent.rglob("*") if p.is_file()}
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    batches = list(iterator)
+    assert len(batches) == 2
+    for batch in batches:
+        _assert_runtime_batch_dict_contract(batch, 3, seed_table_fixture["n_users"])
+    assert {str(p.relative_to(parent)): p.read_bytes()
+            for p in parent.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("directory", ["train_tables", "pred_tables"])
+def test_extension_reference_preserves_legacy_layout(tmp_path, directory):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    assert _extension_ref_from_stage_path(
+        str(parent), str(parent / directory / "task")
+    ) == f"{directory}/task"
+
+
+@pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local"])
+def test_extension_reference_refuses_non_extension_paths(tmp_path, kind):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    parent.mkdir()
+    (parent / "index_metadata.json").write_text("{}")
+    stage = tmp_path / "stage"
+    if kind == "empty":
+        stage.mkdir()
+    elif kind == "base":
+        stage = parent
+    elif kind == "base_alias":
+        stage.symlink_to(parent, target_is_directory=True)
+    elif kind == "index_local":
+        stage = parent / "arbitrary-directory"
+        stage.mkdir()
+        (stage / "index_metadata.json").write_text("{}")
+    with pytest.raises(diskgraph.DiskgraphConfigError):
+        _extension_ref_from_stage_path(str(parent), str(stage))
+
+
+def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
+    external = tmp_path / "not-an-index"
+    external.mkdir()
+    (external / "index_metadata.json").write_text("{}")
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphSystemError, match="extension"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False, num_threads=1,
         )
 
 

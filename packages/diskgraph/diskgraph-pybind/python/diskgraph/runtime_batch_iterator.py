@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
@@ -113,10 +114,15 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     """Recover the seed-table extension reference from a stage ``index_path``.
 
     The stage path itself is the source of truth: return a relative
-    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent.
+    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
+    or an absolute external extension path for a read-only base index. External
+    paths require finalized index metadata; the native reader validates it.
     """
     abs_parent = os.path.abspath(parent_root.rstrip("/"))
     abs_stage = os.path.abspath(stage_index_path.rstrip("/"))
+    parent, stage = Path(abs_parent).resolve(), Path(abs_stage).resolve()
+    if stage == parent:
+        raise DiskgraphConfigError("stage index_path must identify an extension, not the base")
     for extension_dir in ("train_tables", "pred_tables"):
         expected_prefix = os.path.join(abs_parent, extension_dir) + os.sep
         if not abs_stage.startswith(expected_prefix):
@@ -128,11 +134,15 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
                 f"{stage_index_path}"
             )
         return f"{extension_dir}/{extension_id}"
-    raise DiskgraphConfigError(
-        "stage index_path must live under <graph_index_path>/train_tables/ "
-        "or <graph_index_path>/pred_tables/: "
-        f"parent={abs_parent}, stage={abs_stage}"
-    )
+    if stage.is_relative_to(parent):
+        raise DiskgraphConfigError(
+            "an index-local stage index_path must live under train_tables/ or pred_tables/"
+        )
+    if not (stage / "index_metadata.json").is_file():
+        raise DiskgraphConfigError(
+            f"external stage index_path has no finalized index_metadata.json: {abs_stage}"
+        )
+    return abs_stage
 
 
 def _sampling_plan_json(sampling_plan: Any) -> str:
@@ -458,5 +468,4 @@ class RuntimeIndex:
             projections,
         )
         return iterator, iterator.num_samples()
-
 
