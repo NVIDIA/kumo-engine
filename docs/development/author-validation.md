@@ -35,27 +35,17 @@ The catalog delegates to existing harnesses. `readiness` is small pure Python;
 The full [eight-task GPU CI](engine-pr-ci.md) still uses a pinned private fixture;
 the author tool does not claim to reproduce it without access to that fixture.
 
-## Generate and verify a public smoke dataset
+## Use an existing dataset
 
-Use a separate environment prepared with
-[`benchmark/commerce/generator/requirements.txt`](../../benchmark/commerce/generator/requirements.txt).
-All paths below are local; choose new output paths and a suitable SSD.
+Reuse an already generated dataset when it is available. Data generation is
+not a prerequisite for these tools. Point the harness at the existing local
+Parquet tables and retain the dataset's identity, manifest/checksums and
+corresponding evaluation IDs, seeds and prediction times. Use the same inputs
+for baseline and candidate; do not regenerate data between variants. Keep the
+source data unchanged and use separate scratch/index and result locations.
 
-```bash
-.venv-generator/bin/python scripts/author_checks.py run commerce-generate-smoke \
-  --param data_root=/local-ssd/commerce-smoke \
-  --disk-budget-gib 2 --reports /tmp/commerce-generate-1
-.venv-generator/bin/python scripts/author_checks.py run commerce-verify-smoke \
-  --param data_root=/local-ssd/commerce-smoke --reports /tmp/commerce-verify-1
-```
-
-The budget checks available disk space on output filesystems; **it is not a
-quota or an estimate that the workload must fit**. Choose a budget based on your
-inputs and keep monitoring space. The generator uses one worker and the checked-in
-small configuration. Generation and verification are preparation, not timed
-engine work. Hidden `_ground_truth` files must not become model inputs.
-
-With Engine and a matching in-tree DiskGraph installed in your runtime environment:
+For example, with an existing smoke dataset, Engine and a matching in-tree
+DiskGraph installed in your runtime environment:
 
 ```bash
 .venv/bin/python scripts/author_checks.py run commerce-snapshot-smoke \
@@ -66,19 +56,60 @@ With Engine and a matching in-tree DiskGraph installed in your runtime environme
 ```
 
 `--reports` holds the outer command receipt; `--param results` holds the existing
-harness's artifacts. Snapshot-only success establishes neither model quality nor
-inference speed. For training and prediction, use the small explicit budgets in
-the [commerce workflow guide](../../benchmark/commerce/README.md).
+harness's artifacts. The disk budget is a free-space preflight, not a quota or
+an estimate that the workload must fit. Snapshot-only success establishes
+neither model quality nor inference speed. For training and prediction, use the
+explicit budgets in the [commerce workflow guide](../../benchmark/commerce/README.md).
+For existing larger rungs, use the scale harness below rather than this bounded
+smoke profile.
+
+Verify existing data against its own manifest using its owning verifier. For
+commerce data with a manifest produced by the included generator, verification
+runs independently of generation:
+
+```bash
+.venv-generator/bin/python benchmark/commerce/generator/verify.py \
+  --root /local-ssd/commerce-data --rung 100M
+```
+
+Here `--root` contains `commerce/100M` and its generator manifest; substitute
+your actual root and rung. This verifier needs the
+[generator environment](../../benchmark/commerce/generator/requirements.txt),
+but it does not regenerate or modify the dataset. Historical measured inputs
+need their original evaluation files to reproduce the historical workload.
+The linked commerce guides do not provide a download location for the original
+measured dataset. Reuse those inputs if you already have access.
+
+## Generate data only when needed
+
+Skip this section if you already have suitable data. Generation is useful for
+a new workload or when the existing fixture is unavailable. Use a separate
+environment prepared with
+[`benchmark/commerce/generator/requirements.txt`](../../benchmark/commerce/generator/requirements.txt).
+Choose new local output paths and a suitable SSD:
+
+```bash
+.venv-generator/bin/python scripts/author_checks.py run commerce-generate-smoke \
+  --param data_root=/local-ssd/commerce-smoke \
+  --disk-budget-gib 2 --reports /tmp/commerce-generate-1
+.venv-generator/bin/python scripts/author_checks.py run commerce-verify-smoke \
+  --param data_root=/local-ssd/commerce-smoke --reports /tmp/commerce-verify-1
+```
+
+The generator uses one worker and the checked-in small configuration. Choose
+the disk budget based on the workload and monitor space. Generation and
+verification are preparation, outside engine benchmark timers. Hidden
+`_ground_truth` files must not become model inputs. Keep the resulting dataset
+for subsequent comparisons instead of generating it on every run.
 
 ## Scale on your own machine
 
-The existing generator also supports `100M`, `1B`, and `50B` rungs. These are
-large workloads, not smoke defaults. Decide your disk/RAM/time budget first;
-start with one generator worker and the smallest useful rung. The public
-placeholder distribution differs from the archived 50B reference data: this
-creates a new experiment, not a reproduction of its historical rates.
+Use your existing `100M`, `1B`, or `50B` rung and its evaluation inputs.
+Decide your disk/RAM/time budget before building indexes or running the matrix.
+Skip generation when the required rung is already available.
 
-From `benchmark/commerce/generator/`, with its prepared environment:
+Only if you need a new rung, run from `benchmark/commerce/generator/` with its
+prepared environment. Start with one worker and the smallest useful rung:
 
 ```bash
 python -m scalebench.generate run --graph commerce --rung 100M \
@@ -86,7 +117,9 @@ python -m scalebench.generate run --graph commerce --rung 100M \
 python verify.py --root /local-ssd/commerce-scale --rung 100M
 ```
 
-Then follow the [context harness](../../packages/diskgraph/scripts/benchmarks/commerce/README.md)
+The public generator's placeholder distribution differs from the archived 50B
+reference data; generating a new rung does not reproduce its historical rates.
+Whether using existing or newly generated data, follow the [context harness](../../packages/diskgraph/scripts/benchmarks/commerce/README.md)
 to prepare seed IDs, build a fresh index, and map IDs. For a bounded first sampling
 matrix (substitute your prepared index and seed map):
 

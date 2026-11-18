@@ -37,8 +37,9 @@ A fresh JSON receipt must match explicit, type-sensitive expected content;
 exit zero alone is insufficient. Checkers run outside the timed trials;
 timed-output correctness remains the harness's responsibility.
 
-The [usage guide](../development/author-validation.md) provides exact smoke and
-opt-in scale commands, a runnable self-comparison control, and the distinction
+The [usage guide](../development/author-validation.md) starts with reusing
+existing data and its manifest/evaluation inputs; generation is an optional
+fallback. It provides exact smoke and opt-in scale commands, a runnable self-comparison control, and the distinction
 between complete-command timing and specialized operation/GPU measurements.
 
 ## Failure and evidence semantics
