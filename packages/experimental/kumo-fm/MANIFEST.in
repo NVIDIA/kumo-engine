@@ -1,0 +1,2 @@
+recursive-include examples/local_sdm *.py *.ipynb *.md *.lock
+recursive-include tests *.py

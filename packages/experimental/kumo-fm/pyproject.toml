@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77", "pyarrow==24.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-fm"
+version = "0.1.0a1"
+description = "FM payload loader over Kumo PyTorch and DiskGraph"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "duckdb==2.0.0",
+  "kumo-pytorch>=0.1.0a1",
+  "numpy>=1.26,<3",
+  "pyarrow==24.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+relbench = ["PyYAML>=6,<7"]
+
+[tool.uv.sources]
+kumo-pytorch = {workspace = true}
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["kumo.fm*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"kumo.fm._dataset_support" = ["presets/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

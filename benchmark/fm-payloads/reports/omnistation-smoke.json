@@ -1,0 +1,139 @@
+{
+  "bundle_manifest_sha256": "756537788732b93e1c94f24c386cf253d867adc5220e4689d636c1627a88467b",
+  "workload_sha256": "df440df955a2edcae0f64acc5b5061272afd855006f944afbc0108a0b0eaf3c0",
+  "wheel_sha256": {
+    "kumo_fm-0.1.0a1-cp311-cp311-linux_x86_64.whl": "c55014ca6868058f9ddbd4efdcc57032eba24e9152dc445e6e4d95e56edc5818"
+  },
+  "snapshot_id": "7a69e955e84d54d6b3b2711be57f9bf1569ada00abbae1a658fb31b0cfdaa76e",
+  "engine_revision": "9637e9cc9e2da877959b3c6b9db88c0fc7e35f3f",
+  "reference_revision": "b4516394e98929c5b4752745866d5e3138276255",
+  "checkout_dirty": true,
+  "machine": {
+    "platform": "Linux-7.0.0-1010-aws-x86_64-with-glibc2.39",
+    "processor": "x86_64",
+    "python": "3.11.15"
+  },
+  "versions": {
+    "kumo-fm": "0.1.0a1",
+    "kumo-pytorch": "0.1.0a1",
+    "diskgraph": "0.2.0",
+    "fm-dataloader": "0.1.0",
+    "duckdb": "2.0.0",
+    "pyarrow": "24.0.0",
+    "numpy": "2.4.6"
+  },
+  "cases": [
+    {
+      "encoding": "arrays",
+      "context_rows": 2,
+      "predict_rows": 4,
+      "logical_arrow_bytes": 584,
+      "new_body_bytes": 3374,
+      "reference_body_bytes": 3374,
+      "draws": [
+        {
+          "reference_full_ms": 41.190471,
+          "new_load_ms": 3.740637,
+          "new_encode_ms": 0.731258
+        },
+        {
+          "reference_full_ms": 40.420899,
+          "new_load_ms": 3.376303,
+          "new_encode_ms": 0.704164
+        },
+        {
+          "reference_full_ms": 40.677103,
+          "new_load_ms": 3.644739,
+          "new_encode_ms": 0.743447
+        },
+        {
+          "reference_full_ms": 41.676955,
+          "new_load_ms": 3.449625,
+          "new_encode_ms": 0.73143
+        },
+        {
+          "reference_full_ms": 40.691307,
+          "new_load_ms": 3.642878,
+          "new_encode_ms": 0.74569
+        }
+      ]
+    },
+    {
+      "encoding": "arrow_ipc",
+      "context_rows": 2,
+      "predict_rows": 4,
+      "logical_arrow_bytes": 584,
+      "new_body_bytes": 8859,
+      "reference_body_bytes": 8859,
+      "draws": [
+        {
+          "reference_full_ms": 41.208853,
+          "new_load_ms": 3.451474,
+          "new_encode_ms": 0.460802
+        },
+        {
+          "reference_full_ms": 39.633872,
+          "new_load_ms": 3.457388,
+          "new_encode_ms": 0.443918
+        },
+        {
+          "reference_full_ms": 40.712534,
+          "new_load_ms": 3.589053,
+          "new_encode_ms": 0.422048
+        },
+        {
+          "reference_full_ms": 42.041882,
+          "new_load_ms": 3.405239,
+          "new_encode_ms": 0.445812
+        },
+        {
+          "reference_full_ms": 40.765063,
+          "new_load_ms": 3.608553,
+          "new_encode_ms": 0.46231
+        }
+      ]
+    }
+  ],
+  "warmups": 2,
+  "draws_per_encoding": 5,
+  "graph": {
+    "layers": [
+      [
+        {
+          "relation": "interaction_user",
+          "direction": "reverse",
+          "fanout": 1
+        }
+      ]
+    ],
+    "table_rows": {
+      "interactions": 4,
+      "users": 3
+    },
+    "relations": [
+      "interaction_user"
+    ]
+  },
+  "eligibility": "supported",
+  "exclusion_reasons": [],
+  "index_marker_sha256": "58ff9e961cf4bf9ed58598f4ae8ea483c3a0af5e0a819efdc5679b90eec236d5",
+  "selected_rows": {
+    "context": {
+      "interactions": 2,
+      "users": 2
+    },
+    "predict": {
+      "interactions": 3,
+      "users": 4
+    }
+  },
+  "selected_edges": {
+    "context": {
+      "interaction_user": 2
+    },
+    "predict": {
+      "interaction_user": 3
+    }
+  },
+  "correctness": "passed"
+}
