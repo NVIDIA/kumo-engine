@@ -29,6 +29,36 @@ real. Do not generalize for hypothetical callers. No change needed is a valid
 conclusion. Review substantive disagreements with the design, not just whether
 its prose accurately describes the code.
 
+## Review the proposal and its explanation
+
+For feature changes and design proposals, are the assumptions supported by the
+actual workload, deployment, data and existing contracts? Check whether the
+chosen design follows from those assumptions. Does the description explain the
+relevant alternatives considered and why they were not chosen? Are material
+tradeoffs explicit, including costs, limitations, compatibility and operational
+burden? Separate measured facts, estimates and unverified assumptions. Request
+missing rationale when it affects the design decision; do not invent rejected
+designs or demand an alternatives essay for a straightforward fix.
+
+The description should let a human reviewer understand the problem, resulting
+behavior, design rationale, evidence and remaining limits. Use clear sections
+proportional to complexity and define unfamiliar terms. Identify contradictions,
+buried caveats or unclear reasoning that obstruct review; do not impose a fixed
+template or turn wording preferences into defects. More prose is not stronger
+evidence, and describing a symptom does not establish its root cause.
+
+## Review comments in the code
+
+Check added or modified comments for useful information: a non-obvious reason,
+invariant, constraint, units, ownership rule or necessary warning. Are they
+accurate and as concise as that information permits? Avoid comments that merely
+repeat the code, narrate the patch history or rationalize an avoidable defect.
+An acknowledged limitation is not evidence that a broken contract is acceptable;
+check whether the behavior itself needs correcting. Assess the technical claim,
+not the author's motives. Preserve required license/provenance headers and
+useful rationale. Raise misleading or materially distracting comments; group
+optional concision suggestions rather than generating line-by-line style noise.
+
 ## Follow the affected contracts
 
 | Lens | Questions to resolve from source and evidence |
@@ -86,15 +116,21 @@ do not require every PR to run a full benchmark matrix.
 ## Make findings useful
 
 Report a concrete trigger, affected path, consequence, supporting evidence and
-suggested correction. Separate proven defects from questions and optional
-improvements. Do not turn a plausible concern into a defect without checking
+suggested correction. Use an inline comment when a specific code location owns
+the problem. Use PR-level feedback for cross-cutting design, assumptions,
+alternatives, tradeoffs or description clarity; cite relevant files without
+forcing the finding onto an arbitrary diff line. Group related concerns and
+avoid repeating them in both channels. Separate proven defects from questions
+and optional improvements. Do not turn a plausible concern into a defect without checking
 reachable callers, actual layouts and established contracts. Avoid pre-existing
 unrelated issues, duplicate findings, praise and style noise.
 
 [CodeRabbit configuration](../../.coderabbit.yaml) applies this guide through
 its code-guideline context, general and subsystem path instructions, and the
 existing advisory change-map design check. The design check assesses the whole
-proposal; inline findings identify concrete code locations. Automated review
-can miss defects or raise incorrect concerns; a passing check is not proof of
+proposal and reports its reasoning in the PR Walkthrough; inline findings
+identify concrete code locations. See
+[CodeRabbit custom checks](https://docs.coderabbit.ai/pr-reviews/custom-checks)
+for supported context and reporting limits. Automated review can miss defects or raise incorrect concerns; a passing check is not proof of
 correctness, scalability or merge readiness. Draft auto-review and existing
 check modes are unchanged.

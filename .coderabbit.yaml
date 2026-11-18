@@ -80,7 +80,14 @@ reviews:
         evidence-backed regressions or material design flaws with a trigger,
         consequence and correction. Label uncertainty as a question; do not
         invent a defect, demand speculative generalization, or request benchmarks
-        or design documents merely because a category changed. CI owns style.
+        or design documents merely because a category changed. Check added or
+        modified code comments for accurate, necessary information and concise
+        rationale, not restated code or excuses for an avoidable defect. Preserve
+        legal/provenance headers and useful explanations; avoid wording nits.
+        Use PR-level feedback for cross-cutting design or description concerns;
+        use inline findings for naturally localized defects. Do not force a
+        whole-PR concern onto an arbitrary line or duplicate it across channels.
+        CI owns formatting.
     - path: "packages/diskgraph/**"
       instructions: |
         Check persisted-format and Python/native contracts, ID and timestamp
@@ -153,8 +160,16 @@ reviews:
           Apply docs/development/code-review.md. Is the problem demonstrated or
           the requested behavior clear? Does this change address its cause at
           the right layer, reuse the existing contract, and stop at the needed
-          scope? Consider simpler alternatives and material tradeoffs; do not
-          invent requirements or require a new document, issue or benchmark.
+          scope? Does it fix the root cause rather than hide the symptom?
+          For feature/design proposals, verify assumptions against actual
+          workloads and contracts. Does the description explain relevant
+          alternatives and why they were not chosen, and disclose material
+          costs, limitations and tradeoffs? Distinguish facts from assumptions.
+          Is the explanation human-readable and organized into clear sections
+          proportional to complexity, with evidence and caveats easy to find?
+          Flag missing rationale that obstructs assessing the design, not prose
+          preferences. Consider simpler alternatives; do not invent rejected
+          designs or require a new document, issue or benchmark.
           Check omitted behavior and compatibility, and whether validation and
           performance claims establish what they say. For broader designs trace
           data/control flow, ownership, lifecycle and failure recovery across
@@ -166,7 +181,9 @@ reviews:
           <=1000 additions plus deletions; file-level allowed above that).
           The deterministic change-table check owns coverage and formatting;
           do not repeat it or enumerate every symbol. Keep optional refinements
-          separate and do not duplicate inline findings.
+          separate and do not duplicate inline findings. Explain cross-cutting
+          findings at proposal level in this check's Walkthrough result, with
+          evidence and consequences; no single diff-line anchor is required.
       - name: "PR size"
         mode: "warning"
         instructions: |
