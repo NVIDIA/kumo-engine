@@ -21,6 +21,7 @@ from typing import Any, Literal
 import numpy as np
 import torch
 
+from kumo.pytorch._storage import ColumnCache, normalize_work_dir
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
@@ -215,8 +216,10 @@ class DiskGraphEngine:
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
     :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
-    :param work_dir: external task/cache directory; required by existing-index factories.
-        Source-ingestion callers may omit it to retain the original index-local behavior.
+    :param work_dir: task/cache directory. Omit it or pass the index path (including
+        an alias resolving to it) for the original index-local layout and cache reuse.
+        Other paths must be outside the index; existing-index factories require an
+        external directory.
     :param source_versions: optional table-to-identity mapping for source ingestion/reuse.
         Each entry has nonempty ``source`` (connector plus source identity) and ``version``
         strings. These trusted connector versions replace file path/size/mtime identity;
@@ -245,9 +248,7 @@ class DiskGraphEngine:
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
-        self.work_dir = None if work_dir is None else Path(work_dir).resolve()
-        if self.work_dir is not None and self.work_dir.is_relative_to(self.index.resolve()):
-            raise ValueError("work_dir must be outside the base index")
+        self.work_dir = normalize_work_dir(self.index, work_dir)
         self.source_versions = (
             None
             if source_versions is None
@@ -273,6 +274,7 @@ class DiskGraphEngine:
         are hashed once; engine provenance and PyTorch manifests avoid that scan.
         ``work_dir`` holds task extensions and derived caches outside the base.
         """
+        work_dir = normalize_work_dir(index, work_dir, external_only=True)
         result = cls(index=index, ingest="never", work_dir=work_dir, num_threads=num_threads)
         result._binding = open_index(index)
         return result
@@ -287,6 +289,7 @@ class DiskGraphEngine:
         unnecessary. Load exported snapshots through the existing engine loader.
         No source export, base ingestion or additional metadata file is needed.
         """
+        work_dir = normalize_work_dir(snapshot.index_path, work_dir, external_only=True)
         result = cls(
             index=snapshot.index_path, ingest="never", work_dir=work_dir, num_threads=num_threads
         )
@@ -551,11 +554,8 @@ class DiskGraphSource:
                 json.dumps(dict(artifact.manifest), sort_keys=True).encode()
             ).hexdigest()
         )
-        self._cache_root = (
-            Path(artifact.path)
-            if work_dir is None
-            else work_dir / "cache" / hashlib.sha256(cache_id.encode()).hexdigest()
-        )
+        self._column_cache = ColumnCache.for_work_dir(artifact.path, work_dir, cache_id)
+        self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
@@ -1243,10 +1243,6 @@ class DiskGraphSource:
             cache_root=self._cache_root,
         )
 
-    def _cache_file(self, name: str) -> Path:
-        existing = Path(self._index_path, "col_stats", name)
-        return existing if existing.is_file() else self._cache_root / "col_stats" / name
-
     def column_text(self, encoder: TableColumnEncoder, cutoff: int | None) -> tuple[str, str]:
         ticks = (
             None
@@ -1254,7 +1250,7 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = encoder.tokenizer_file(ticks, self._clock)
-        path = self._cache_file(name)
+        path = self._column_cache.resolve(name)
         if path.is_file():
             try:
                 document = json.loads(path.read_text())
@@ -1303,7 +1299,7 @@ class DiskGraphSource:
             else self._diskgraph.convert_ticks(cutoff, "nanoseconds", self._clock, rounding="floor")
         )
         name = token_lengths_file(table, columns, required, ticks, self._clock)
-        path = self._cache_file(name)
+        path = self._column_cache.resolve(name)
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
