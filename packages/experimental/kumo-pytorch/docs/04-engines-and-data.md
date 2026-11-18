@@ -203,7 +203,7 @@ rows, rather than converting them.
 ### What it supports
 
 The DiskGraph engine supports entity fields, event histories, typed
-calculations, aggregates, generated labels and recent graph neighborhoods. A
+calculations, aggregates, generated labels and recent or uniform graph neighborhoods. A
 few contract features are outside what it runs today. `DiskGraphEngine.unsupported`
 lists them, each with a code, what is refused and a next step, and the
 [limitations](limitations.md#diskgraph) page shows the list. When a contract

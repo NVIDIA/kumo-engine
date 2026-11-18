@@ -89,7 +89,6 @@ def _graph_case(path: str, ties: str) -> tuple[api.DataLoaderSpec, Tables, list[
         "schema_shape.graph_orientation": "aligned",
         "contract.graph_direction": "forward",
         "contract.graph_fanout": 2,
-        "contract.graph_temporal": "inherit",
         "time.graph_ties": ties,
         "time.cutoffs": "mixed",
     }

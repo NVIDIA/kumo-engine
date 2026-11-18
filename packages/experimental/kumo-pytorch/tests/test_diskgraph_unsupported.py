@@ -206,16 +206,8 @@ CHECK_CASES: dict[str, Callable[[], tuple[DataLoaderSpec, Dataset]]] = {
         BASE,
         Dataset({**PARQUET.tables, "accounts": Parquet("s3://bucket/accounts")}),
     ),
-    "DG-UNIFORM-GRAPH": lambda: (
-        _graph(GraphSample("user_events", 2, strategy="uniform")),
-        PARQUET,
-    ),
     "DG-GRAPH-CLOCK-OVERRIDE": lambda: (
         _graph(GraphSample("user_events", 2, strategy="recent", time_column="synced_at")),
-        PARQUET,
-    ),
-    "DG-STATIC-TIMED-TRAVERSAL": lambda: (
-        _graph(GraphSample("user_events", 2, strategy="recent", temporal="static")),
         PARQUET,
     ),
     "DG-REDUCTION-OPERAND": lambda: (

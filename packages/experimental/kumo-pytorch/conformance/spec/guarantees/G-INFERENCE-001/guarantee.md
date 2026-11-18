@@ -56,6 +56,8 @@ keeps at its fanout limit depends on the index layout, which is the known gap
 `GAP-GRAPH-TIES-DG` against G-GRAPH-001 rule 2 in
 [registry.py](../../../registry.py). Until that gap is fixed, samples with a tie
 at a fanout limit are excluded from the future-row rule on the DiskGraph engine.
+Explicit uniform graph traversals ignore real-time anchors, so their future
+neighbors are also outside that rule.
 The `graph_inference_exact` property checks the rule on graphs for every other
 sample, and for tied samples wherever the index is built deterministically (one
 shard or one thread).

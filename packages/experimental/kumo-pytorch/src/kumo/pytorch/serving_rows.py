@@ -590,7 +590,7 @@ class _Reads:
                         self.column(route.table, clock, "time column")
                     time = (
                         (clock, None, 0)
-                        if clock is not None and traversal.temporal == "inherit"
+                        if clock is not None and traversal.strategy == "recent"
                         else None
                     )
                     if traversal.strategy == "recent" and clock is not None:

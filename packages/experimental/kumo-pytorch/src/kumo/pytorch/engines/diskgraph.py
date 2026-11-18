@@ -168,20 +168,6 @@ def _sample_refusals(spec: SampleSpec, path: str = "sample") -> list[ValidationI
         else:
             rows(target.rows, f"{location}.rows")
             fields(target.fields, f"{location}.fields", f"row target {name!r}")
-    for name, neighborhood in spec.neighborhoods.items():
-        for layer_index, layer in enumerate(neighborhood.layers):
-            for sample_index, traversal in enumerate(layer.samples):
-                # Native uniform sampling ignores each seed's own timestamp (one coarse
-                # NodeCutoff per request, diskgraph-engine engine.rs); only recent is exact.
-                if traversal.strategy == "uniform":
-                    issues.append(
-                        _refusal(
-                            "DG-UNIFORM-GRAPH",
-                            f"{path}.neighborhoods.{name}.layers[{layer_index}]"
-                            f".samples[{sample_index}].strategy",
-                            "DiskGraph does not sample graph neighbors uniformly",
-                        )
-                    )
     return issues
 
 
@@ -202,13 +188,18 @@ class DiskGraphEngine:
 
     Supported: direct entity fields, historical event fields, typed scalar
     calculations, aggregates and comparisons, nested grouping, generated scalar
-    and row labels, recent graph neighborhoods with node fields, and columnar
+    and row labels, recent or uniform graph neighborhoods with node fields, and columnar
     ``output_format="model"`` batches. What it doesn't support yet is listed in
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
     :param index: directory of the base index.
     :param num_threads: native sampling threads.
+    :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
+        ``None`` uses fresh randomness. A fixed seed repeats selections for the
+        same index and sampling plan across epochs. This is independent of the
+        seed used by ``Task.batches`` for anchor shuffling. Rebuilding an index
+        can change selections because native sampling uses physical node IDs.
     :param num_shards: index shards.
     :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
         requires an existing one. A mismatching manifest is an error, never
@@ -225,6 +216,7 @@ class DiskGraphEngine:
         *,
         index: str | Path,
         num_threads: int | None = None,
+        random_seed: int | None = 0,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
@@ -235,6 +227,11 @@ class DiskGraphEngine:
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
         self.index = Path(index)
         self.num_threads = num_threads
+        if random_seed is not None and (
+            type(random_seed) is not int or not 0 <= random_seed < 2**64
+        ):
+            raise ValueError("random_seed must be None or an unsigned 64-bit integer")
+        self.random_seed = random_seed
         self.num_shards = num_shards
         self.ingest = ingest
         self.encoder_cutoffs = tuple(
@@ -354,14 +351,6 @@ class DiskGraphEngine:
                                 "DiskGraph cannot override the destination table clock",
                             )
                         )
-                    if traversal.temporal == "static" and clock is not None:
-                        issues.append(
-                            _refusal(
-                                "DG-STATIC-TIMED-TRAVERSAL",
-                                path + ".temporal",
-                                "DiskGraph cannot disable filtering of a timed table",
-                            )
-                        )
         return tuple(issues)
 
     @staticmethod
@@ -413,6 +402,7 @@ class DiskGraphEngine:
             artifact,
             schema,
             num_threads=self.num_threads,
+            random_seed=self.random_seed,
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
@@ -430,6 +420,7 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
+        random_seed: int | None = 0,
     ) -> None:
         try:
             import diskgraph
@@ -448,6 +439,7 @@ class DiskGraphSource:
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
         self._num_threads = num_threads
+        self._random_seed = random_seed
         self._tables = {table.name: table for table in schema.tables}
         self._relations = {relation.name: relation for relation in schema.relations}
         self._relation_mapping = artifact.manifest["relation_mapping"]
@@ -459,6 +451,7 @@ class DiskGraphSource:
         self._bind_sampler(
             diskgraph.SamplerEngine(
                 artifact.path,
+                random_seed=random_seed,
                 num_threads=num_threads,
             )
         )
@@ -472,7 +465,11 @@ class DiskGraphSource:
         # Reopen the base context only if a later preparation call needs it.
         if self._sampler_context is None:
             self._bind_sampler(
-                self._diskgraph.SamplerEngine(self._index_path, num_threads=self._num_threads)
+                self._diskgraph.SamplerEngine(
+                    self._index_path,
+                    random_seed=self._random_seed,
+                    num_threads=self._num_threads,
+                )
             )
         return self._sampler_context
 
@@ -510,6 +507,8 @@ class DiskGraphSource:
 
         from diskgraph import convert_ticks
 
+        if value is None:
+            return 0  # Clockless contracts have no anchor timestamp.
         if isinstance(value, dt.date) and not isinstance(value, dt.datetime):
             value = dt.datetime.combine(value, dt.time(), tzinfo=dt.UTC)
         if isinstance(value, dt.datetime) or isinstance(value, self._pa.TimestampScalar):
@@ -1396,7 +1395,7 @@ class DiskGraphSource:
 
     def _runtime_graph_events(self, sample, source, runtime):
         neighborhood = sample.neighborhoods[source]
-        graph = runtime["graphs"]["main"]
+        graph = runtime["graphs"].get(source, runtime["graphs"]["main"])
         events = []
         for table, ids in graph["node_ids"].items():
             if table in self._node_types:
@@ -2024,8 +2023,6 @@ class DiskGraphSource:
         for layer in neighborhood.layers:
             fanouts = {}
             for traversal in layer.samples:
-                if traversal.strategy != "recent":
-                    raise ValueError("DiskGraph does not support uniform graph sampling")
                 relation = self._relations[traversal.relation]
                 target_table = (
                     relation.right_table
@@ -2038,11 +2035,6 @@ class DiskGraphSource:
                         "the DiskGraph backend cannot override a destination "
                         f"table clock; {target_table!r} is indexed by {clock!r}, but the "
                         f"traversal requests {traversal.time_column!r}"
-                    )
-                if traversal.temporal == "static" and clock is not None:
-                    raise ValueError(
-                        "the DiskGraph backend cannot disable temporal filtering "
-                        f"for timestamped destination table {target_table!r}"
                     )
                 mapping = self._relation_mapping[traversal.relation]
                 physical = mapping[traversal.direction]
@@ -2061,7 +2053,7 @@ class DiskGraphSource:
                 physical_relations[physical] = traversal.relation
                 fanouts[physical] = {
                     "fanout": traversal.fanout,
-                    "mode": "temporal_most_recent",
+                    "mode": "temporal_most_recent" if traversal.strategy == "recent" else "uniform",
                     "absent_key_policy": "reject_plan",
                 }
             layers.append({"fanouts": fanouts, "default_fanout": None})

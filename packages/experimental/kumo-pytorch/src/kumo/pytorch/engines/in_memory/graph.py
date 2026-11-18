@@ -180,8 +180,7 @@ class InMemoryGraphSampler:
 
         An explicit ``GraphSample.time_column`` wins; otherwise the destination
         table's declared ``time_column`` is inherited. This answers *which*
-        column, not *whether* it filters — ``temporal`` decides that, so a
-        deliberately non-temporal traversal can still order by recency.
+        column for recent sampling; uniform sampling does not filter by time.
         """
 
         if traversal.time_column is not None:
@@ -232,7 +231,7 @@ class InMemoryGraphSampler:
             raise ValueError(f"{current_table!r} row is missing relation column {source_key!r}")
         candidates = list(self._index(target_table, target_key).get(row[source_key], ()))
         clock = self._traversal_clock(traversal, target_table)
-        time_column = clock if traversal.temporal == "inherit" else None
+        time_column = clock if traversal.strategy == "recent" else None
         if time_column is not None:
             if any(candidate.get(time_column) is None for candidate in candidates):
                 raise ValueError(

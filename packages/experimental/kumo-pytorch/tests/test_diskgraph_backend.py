@@ -835,7 +835,7 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
                     next(iter(task.batches((unavailable,), output_format=output_format)))
 
 
-def test_diskgraph_check_refuses_unsupported_work_before_ingestion(tmp_path: Path) -> None:
+def test_diskgraph_checks_graph_support_before_ingestion(tmp_path: Path) -> None:
     schema = _schema()
     dataset = api.Dataset({table.name: api.Parquet("/does/not/exist") for table in schema.tables})
     engine = api.DiskGraphEngine(index=tmp_path / "not-created")
@@ -845,6 +845,7 @@ def test_diskgraph_check_refuses_unsupported_work_before_ingestion(tmp_path: Pat
         schema,
         api.SampleSpec(
             entity=contract.sample.entity,
+            targets=contract.sample.targets,
             neighborhoods={
                 "activity": api.NeighborhoodSpec(
                     layers=(
@@ -855,10 +856,7 @@ def test_diskgraph_check_refuses_unsupported_work_before_ingestion(tmp_path: Pat
         ),
         contract.batch,
     )
-    assert any(
-        issue.path.startswith("sample.neighborhoods")
-        for issue in api.check(uniform, dataset, engine)
-    )
+    assert not api.check(uniform, dataset, engine)
     with_values = api.DataLoaderSpec(
         schema,
         api.SampleSpec(
