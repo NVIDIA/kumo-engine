@@ -5,13 +5,14 @@
 """The engine interface: what an engine must provide, and how a caller picks one.
 
 A :class:`~kumo.pytorch.dataset.Dataset` says where the data is;
-an :class:`Engine` says what reads it. Both are supplied by the caller, and
-neither names the other.
+an :class:`Engine` says what reads it. Source ingestion supplies both.
+An existing-index ``DiskGraphEngine`` supplies the data binding itself, so
+``prepare`` and ``check`` accept it without a ``Dataset``.
 
 An engine is a factory, not a holder of data: :meth:`Engine.open` binds a
 dataset and returns a :class:`SampleSource`. Construction-time configuration
 (artifact directories, index paths) belongs to the engine; data binding belongs
-to the dataset.
+to the dataset or the explicitly adopted index.
 
 Distributed execution is expressed by ``rank``/``world_size`` on
 ``Task.batches``.
