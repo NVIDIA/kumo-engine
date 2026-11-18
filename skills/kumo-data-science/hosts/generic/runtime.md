@@ -315,6 +315,7 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
 
   ```python
   import os
+  import re
   import pyarrow as pa
   import pyarrow.compute as pc
   import pyarrow.csv
@@ -334,10 +335,14 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   if ENTITY_TIME:                                             # the entity Table's time_column, else None
       keep[ENTITY_TIME] = 'TIMESTAMP'
   source_fs, source_path = arrow_fs(ENTITY_SOURCE)
+  # Arrow parses C-style directives only; chrono's own (%.f, %-m, %:z, %3f, %f) it cannot.
+  ARROW_FORMAT = (ENTITY_TIME_FORMAT
+                  if ENTITY_TIME_FORMAT and not re.search(r'%[-_0^#.:+\d]|%f', ENTITY_TIME_FORMAT)
+                  else None)
   source_format = ENTITY_FORMAT
-  if ENTITY_FORMAT == 'csv' and ENTITY_TIME and ENTITY_TIME_FORMAT:   # text, for the format below
+  if ENTITY_FORMAT == 'csv' and ENTITY_TIME and ARROW_FORMAT:   # text for the format; '' is null
       source_format = ds.CsvFileFormat(convert_options=pyarrow.csv.ConvertOptions(
-          column_types={ENTITY_TIME: pa.string()}))
+          column_types={ENTITY_TIME: pa.string()}, strings_can_be_null=True))
   scanner = ds.dataset(source_path, format=source_format,
                        filesystem=source_fs).scanner(columns=list(keep))
 
@@ -348,12 +353,9 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
                       for f in scanner.projected_schema])
 
   def to_column(col, field):     # text in the entity's format reads as the graph reads it
-      if (field.name == 'TIMESTAMP' and ENTITY_TIME_FORMAT
+      if (field.name == 'TIMESTAMP' and ARROW_FORMAT
               and (pa.types.is_string(col.type) or pa.types.is_large_string(col.type))):
-          try:
-              return pc.strptime(col, format=ENTITY_TIME_FORMAT, unit=field.type.unit)
-          except pa.ArrowInvalid:
-              pass               # a chrono directive Arrow cannot read, e.g. %.f: cast instead
+          return pc.strptime(col, format=ARROW_FORMAT, unit=field.type.unit)  # raises on a misfit
       return pc.cast(col, field.type)
 
   pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
@@ -381,12 +383,14 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   `ENTITY_FORMAT` its format as preflight found it, `'csv'` or `'parquet'`. `ENTITY_TIME_FORMAT`
   is the `timestamp_format` the entity `Table` declares on its time column
   (`kumoai-reference/references/graph_construction.md`, *A time column must be a real date*), else
-  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. Text is parsed
-  with the format first, because ISO-looking text such as `2024-01-02` under `%Y-%d-%m` means what
-  the format says, as it does in the graph. That format is Kumo's (chrono) syntax, and Arrow's
-  parser rejects `%.f`, `%-m` and `%:z`; when it cannot parse, the column is cast instead, which
-  reads ISO-8601 text, fractional seconds included. If the cast then fails, report the format and
-  the failing value rather than guessing another format. The population is
+  `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The format is
+  Kumo's (chrono) syntax. When Arrow can parse it too, a CSV time column is read as text, with an
+  empty cell as null, and parsed with the format, because ISO-looking text such as `2024-01-02`
+  under `%Y-%d-%m` means what the format says, as it does in the graph. Arrow cannot parse
+  chrono's own directives (`%.f`, `%-m`, `%:z`); with one of those the column is read and cast as
+  without a format, which keeps the type the reader inferred: nanoseconds, or a UTC offset as a
+  time zone. If the parse or the cast fails, report the format and the failing value rather than
+  guessing another format. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
   source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
   it, both in the config cell. Each run replaces its `population.parquet`, as Node 1d says. The
