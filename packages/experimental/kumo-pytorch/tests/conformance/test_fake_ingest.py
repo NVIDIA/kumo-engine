@@ -86,7 +86,14 @@ class Shape:
 class _Source:
     """In place of DiskGraphSource: what the engine hands the sampler."""
 
-    def __init__(self, artifact: _DiskGraphIndex, schema: DataSchema, *, num_threads: int | None):
+    def __init__(
+        self,
+        artifact: _DiskGraphIndex,
+        schema: DataSchema,
+        *,
+        num_threads: int | None,
+        work_dir: Path | None = None,
+    ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
 
 
@@ -381,7 +388,11 @@ def _resize(path: Path) -> None:
 
 @pytest.mark.parametrize("change", ("mtime", "size", "extra_file"))
 def test_a_changed_dataset_is_refused_not_reused(change: str, tmp_path: Path) -> None:
-    """M06: the dataset fingerprint covers each file's path, size and mtime."""
+    """M06: source ingestion without connector versions validates path/size/mtime.
+
+    Explicit existing-index adoption and version-aware restaging are covered
+    by test_existing_index; those modes do not require the original files.
+    """
 
     with _built(tmp_path, parts=2) as (dataset, index):
         before = _snapshot(index)

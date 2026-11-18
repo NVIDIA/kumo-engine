@@ -69,8 +69,8 @@ logger = logging.getLogger(__name__)
 
 def check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
@@ -91,12 +91,14 @@ def check(
 
 def _check(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
     *,
     anchors: AnchorTable | None = None,
     inference: bool = False,
 ) -> tuple[DataLoaderSpec, tuple[ValidationIssue, ...]]:
+    if engine is None:
+        raise TypeError("engine is required")
     entity_issues = _entity_key_issues(contract)
     if entity_issues:
         return contract, entity_issues
@@ -105,6 +107,8 @@ def _check(
     try:
         # Keep reporting declaration issues for a bad binding when types are
         # already known, but never read metadata through a missing binding.
+        if dataset is None and not issues:
+            contract = replace(contract, schema=engine._resolve_index_schema(contract.schema))
         contract = contract.resolve(dataset=None if issues else dataset)
     except (ValueError, KeyError, OSError) as error:
         if not issues:
@@ -163,7 +167,7 @@ class Plan:
     def __init__(
         self,
         contract: DataLoaderSpec,
-        dataset: Dataset,
+        dataset: Dataset | None,
         engine: Engine,
         source: SampleSource,
         *,
@@ -174,7 +178,9 @@ class Plan:
         self.engine = engine
         self.inference = inference
         self._source: SampleSource | None = source
-        self._dataset_fingerprint = _fingerprint(dataset)
+        self._dataset_fingerprint = getattr(source, "artifact_identity", None) or _fingerprint(
+            dataset
+        )
 
     def materialize(
         self,
@@ -272,8 +278,8 @@ class Plan:
 
             from kumo.pytorch.aggregate_materialization import materialize_values
 
-            parent = Path(source._index_path) / "tasks"
-            parent.mkdir(exist_ok=True)
+            parent = Path(source._work_dir) / "tasks"
+            parent.mkdir(parents=True, exist_ok=True)
             directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
             try:
                 values = materialize_values(
@@ -574,12 +580,16 @@ def reused_state(
 
 def prepare(
     contract: DataLoaderSpec,
-    dataset: Dataset,
-    engine: Engine,
+    dataset: Dataset | None = None,
+    engine: Engine | None = None,
     *,
     inference: bool = False,
 ) -> Plan:
-    """Validate, then bind the dataset through the engine.
+    """Validate, then bind sources or an existing index through the engine.
+
+    Omit ``dataset`` only for a DiskGraphEngine created with ``from_index`` or
+    ``from_snapshot``. Its stored schema supplies omitted types; it never reads
+    the original sources or rebuilds the base. ``engine`` is always required.
 
     Every check that does not need data happens first, so an unexecutable
     combination is refused before a row is read. Anchors, and everything fitted
@@ -660,10 +670,17 @@ def preview(
 
 def _binding_issues(
     contract: DataLoaderSpec,
-    dataset: Dataset,
+    dataset: Dataset | None,
     engine: Engine,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    _check_binding = getattr(engine, "_check_binding", None)
+    if _check_binding is not None:
+        issues.extend(_check_binding(dataset, contract.schema))
+    if dataset is None:
+        if _check_binding is None:
+            issues.append(ValidationIssue("dataset", "this engine requires a Dataset"))
+        return issues
     declared = [table.name for table in contract.schema.tables]
     missing = dataset.missing_for(declared)
     if missing:

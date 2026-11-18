@@ -74,8 +74,8 @@ class NativeAnchors:
         self._source, self._sample, self._table = source, sample, table
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
-        parent = Path(source._index_path)
-        (parent / "tasks").mkdir(exist_ok=True)
+        parent = Path(source._work_dir)
+        (parent / "tasks").mkdir(parents=True, exist_ok=True)
         (parent / "train_tables").mkdir(exist_ok=True)
         self._temporary = directory or tempfile.TemporaryDirectory(
             prefix="task-", dir=parent / "tasks"
@@ -470,7 +470,9 @@ class NativeAnchors:
                 raise ValueError(
                     "event token costs do not match the designated input's fitted recipe"
                 )
-            fixed, values = read_token_lengths(self._source._index_path, entry)
+            fixed, values = read_token_lengths(
+                self._source._index_path, entry, cache_root=self._source._cache_root
+            )
             if values is not None:
                 self._token_maps.append(values)
             self._event_costs[table] = dict(
