@@ -102,7 +102,18 @@ def bq_location(project, dataset, credentials=None):
     """The location a dataset lives in; the dataset must already exist."""
     return bigquery.Client(project=project, credentials=credentials).get_dataset(
         f'{project}.{dataset}').location
+
+def bq_name(*parts):
+    """`project`.`dataset`.`table`, or one `column`, for BigQuery SQL. A backtick, backslash or
+    line break is in no BigQuery name and would end the quoting, so such a part is refused."""
+    for part in parts:
+        if not part or any(c in part for c in '`\\\n\r'):
+            raise ValueError(f'not a BigQuery name: {part!r}')
+    return '.'.join(f'`{part}`' for part in parts)
 ```
+
+Build every BigQuery table or column name in SQL with `bq_name`, never by pasting a name into the
+query text.
 
 Each BigQuery identity comes with the Google credentials its direct clients use: the location
 lookups, the population query (§3.1) and the read-back (§3). With an explicit `BigQueryIdentity`
@@ -226,8 +237,8 @@ written = ds.dataset(OUTPUT_LOCATION, format=OUTPUT_FORMAT).count_rows()  # full
 # BigQuery — as the destination's identity (§2)
 from google.cloud import bigquery
 bq = bigquery.Client(project=OUTPUT_PROJECT, credentials=OUTPUT_BQ_CREDENTIALS)
-written = next(iter(bq.query(
-    f'SELECT COUNT(*) FROM `{OUTPUT_PROJECT}.{OUTPUT_DATASET}.{OUTPUT_TABLE}`').result()))[0]
+count_sql = f'SELECT COUNT(*) FROM {bq_name(OUTPUT_PROJECT, OUTPUT_DATASET, OUTPUT_TABLE)}'
+written = next(iter(bq.query(count_sql).result()))[0]
 
 # Databricks — with the confirmed SQL warehouse; wait_timeout is at most '50s', so poll
 import time
@@ -250,12 +261,21 @@ written = int(r.result.data_array[0][0])
 
 # Snowflake — through the same connections.toml entry and warehouse. Kumo keeps the table
 # name's case, so quote it (kumo_finetuning_sdk.md §9.1); database and schema as in §2.
+import re
 import snowflake.connector
+
+def sf_name(database, schema, table):
+    """DATABASE.SCHEMA."table": database and schema unquoted, so they must be plain identifiers;
+    the table quoted, with any double quote in it doubled."""
+    for part in (database, schema):
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_$]*', part or ''):
+            raise ValueError(f'not an unquoted Snowflake name: {part!r}; confirm it with the user')
+    return f'{database}.{schema}."' + table.replace('"', '""') + '"'
+
 with snowflake.connector.connect(connection_name=SNOWFLAKE_CONNECTION,
                                  warehouse=SNOWFLAKE_WAREHOUSE) as conn:
-    table = '"' + OUTPUT_TABLE.replace('"', '""') + '"'
-    written = conn.cursor().execute(
-        f'SELECT COUNT(*) FROM {OUTPUT_DATABASE}.{OUTPUT_SCHEMA}.{table}').fetchone()[0]
+    count_sql = f'SELECT COUNT(*) FROM {sf_name(OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE)}'
+    written = conn.cursor().execute(count_sql).fetchone()[0]
 
 assert written - before == prediction_result.num_rows, (written, before, prediction_result.num_rows)
 ```
@@ -412,11 +432,12 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
 
   if f'{POP_PROJECT}.{POP_DATASET}.{POP_TABLE}' != POPULATION_CONFIRMED:   # approved at Node 1d
       raise RuntimeError('The population table changed after Node 1d: confirm the new one first.')
-  time_col = f', CAST({ENTITY_TIME} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
-  bigquery.Client(project=POP_PROJECT, credentials=BQ_CREDENTIALS).query(   # §2
-      f'CREATE OR REPLACE TABLE `{POP_PROJECT}.{POP_DATASET}.{POP_TABLE}` AS '
-      f'SELECT {ENTITY_KEY} AS ENTITY1{time_col} '
-      f'FROM `{PROJECT_ID}.{DATASET_ID}.{ENTITY_TABLE}`').result()   # waits; raises on failure
+  time_col = f', CAST({bq_name(ENTITY_TIME)} AS TIMESTAMP) AS `TIMESTAMP`' if ENTITY_TIME else ''
+  create_sql = (f'CREATE OR REPLACE TABLE {bq_name(POP_PROJECT, POP_DATASET, POP_TABLE)} AS '
+                f'SELECT {bq_name(ENTITY_KEY)} AS ENTITY1{time_col} '
+                f'FROM {bq_name(PROJECT_ID, DATASET_ID, ENTITY_TABLE)}')       # bq_name: §2
+  job = bigquery.Client(project=POP_PROJECT, credentials=BQ_CREDENTIALS).query(create_sql)  # §2
+  job.result()   # waits; raises on failure
   population_connector = kumo.BigQueryConnector(
       project_id=POP_PROJECT, dataset_id=POP_DATASET,
       identity=BQ_IDENTITY,                                      # the source's, §2
