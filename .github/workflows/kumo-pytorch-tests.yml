@@ -2,65 +2,141 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch tests
+name: PyTorch — Original vs Expanded DiskGraph Tests
 
-# kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
-# suite, style and the package build. The in-memory engine computes column
-# statistics with DiskGraph's collector, so DiskGraph is built from this commit.
+# One-off comparison branch, not a change to PR #353 or the production workflows.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   diskgraph-wheel:
+    name: Build latest-main DiskGraph once
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
-  cpu:
-    name: kumo-pytorch-tests
+  compare:
+    name: ${{ matrix.label }}
     needs: diskgraph-wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: original
+            label: Original / DiskGraph-only baseline
+          - lane: package
+            label: Expanded / Package checks
+          - lane: fixtures
+            label: Expanded / Dataset and model fixtures
+          - lane: difficult
+            label: Expanded / Difficult Behavior
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    defaults:
-      run:
-        shell: bash
-        working-directory: packages/experimental/kumo-pytorch
+    env:
+      OMP_NUM_THREADS: '1'
+      KUMO_CI_LABEL: ${{ matrix.label }}
+      KUMO_CI_REPORTS: $RUNNER_TEMP/comparison.xml
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
+      - name: Fetch the pinned proposed tests
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          ref: 5b1c9f2c1f97c59ff612034f6ff6f683b2e238bf
+          path: proposed
+          persist-credentials: false
+      - name: Prepare reporting before dependency installation
+        run: |
+          mkdir -p test/kumo_pytorch
+          cp proposed/test/kumo_pytorch/ci_reporting.py test/kumo_pytorch/
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Golden cases on the in-memory engine
-        run: python -m conformance --engine in_memory
-      - name: Test suite
-        run: python -m pytest -q
-      - name: Style
+      - name: Install shared test-only dependency
+        run: uv pip install polars==2.1.0
+      - name: Prepare tests without replacing package code
+        env:
+          LANE: ${{ matrix.lane }}
         run: |
-          uvx ruff@0.17.3 check .
-          uvx ruff@0.17.3 format --check .
-      - name: Package build
-        run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+          python3 - <<'PYCODE'
+          import json, os, shutil, subprocess
+          from pathlib import Path
+          root = Path.cwd()
+          proposed = root / 'proposed'
+          suite = root / 'test/kumo_pytorch'
+          suite.mkdir(parents=True, exist_ok=True)
+          if os.environ['LANE'] == 'original':
+              shutil.copy2(proposed / 'test/kumo_pytorch/ci_reporting.py', suite)
+          else:
+              shutil.copytree(proposed / 'test/kumo_pytorch', suite, dirs_exist_ok=True)
+              for name in ('tests', 'conformance'):
+                  target = root / 'packages/experimental/kumo-pytorch' / name
+                  shutil.rmtree(target)
+                  shutil.copytree(proposed / 'packages/experimental/kumo-pytorch' / name, target)
+          runtime = ['packages/experimental/kumo-pytorch/src', 'packages/diskgraph']
+          subprocess.run(['git', 'diff', '--exit-code', '3fde15c7f9a9652f40ed77b2704479e9ce868f4b', '--', *runtime], check=True)
+          if os.environ['LANE'] == 'original':
+              subprocess.run(['git', 'diff', '--exit-code', '--', 'packages/experimental/kumo-pytorch/tests', 'packages/experimental/kumo-pytorch/conformance'], check=True)
+          import kumo.pytorch
+          expected = root / 'packages/experimental/kumo-pytorch/src'
+          assert Path(kumo.pytorch.__file__).is_relative_to(expected), kumo.pytorch.__file__
+          evidence = {
+              'package_and_diskgraph_revision': '3fde15c7f9a9652f40ed77b2704479e9ce868f4b',
+              'expanded_tests_revision': '5b1c9f2c1f97c59ff612034f6ff6f683b2e238bf',
+              'lane': os.environ['LANE'], 'package_import': kumo.pytorch.__file__,
+              'runtime_unchanged': True,
+          }
+          Path(os.environ['RUNNER_TEMP'], 'comparison-revision.json').write_text(json.dumps(evidence, indent=2))
+          PYCODE
+          echo "BASELINE_SELECTION=$RUNNER_TEMP/baseline-selection.json" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/packages/experimental/kumo-pytorch:$GITHUB_WORKSPACE/packages/experimental/kumo-pytorch/src" >> "$GITHUB_ENV"
+      - name: Run original DiskGraph tests unchanged
+        if: matrix.lane == 'original'
+        run: |
+          python3 test/kumo_pytorch/ci_reporting.py run --title "$KUMO_CI_LABEL" -- \
+            python .github/scripts/pytorch-original-baseline.py --tb=long \
+            --junitxml="$RUNNER_TEMP/comparison.xml"
+      - name: Run expanded package checks on latest main
+        if: matrix.lane == 'package'
+        working-directory: packages/experimental/kumo-pytorch
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title "$KUMO_CI_LABEL" -- \
+            python -m pytest -q --require-imports --tb=long --ignore=tests/conformance \
+            --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py \
+            --ignore=tests/e2e/test_training.py --junitxml="$RUNNER_TEMP/comparison.xml"
+      - name: Run required added fixture coverage on latest main
+        if: matrix.lane == 'fixtures' || matrix.lane == 'difficult'
+        env:
+          LANE: ${{ matrix.lane }}
+        run: |
+          if [ "$LANE" = fixtures ]; then
+            tests=model_checks
+            profile=cpu
+          else
+            tests=difficult_behavior
+            profile=difficult
+          fi
+          python3 test/kumo_pytorch/ci_reporting.py run --title "$KUMO_CI_LABEL" -- \
+            python -m pytest -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
+            "test/kumo_pytorch/$tests" --required-coverage="$profile" -q --tb=long \
+            --junitxml="$RUNNER_TEMP/comparison.xml"
+      - name: Retain comparison evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: comparison-${{ matrix.lane }}
+          path: |
+            ${{ runner.temp }}/comparison.xml
+            ${{ runner.temp }}/comparison-revision.json
+            ${{ runner.temp }}/baseline-selection.json
+            ${{ runner.temp }}/pytorch-ci-logs
+          retention-days: 14
+      - name: Publish readable results
+        if: ${{ always() }}
+        uses: ./proposed/.github/actions/kumo-pytorch-results
+        with:
+          title: ${{ matrix.label }}
+          artifact: comparison-diagnostics-${{ matrix.lane }}
+          status: ${{ job.status }}
