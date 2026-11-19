@@ -274,6 +274,10 @@ Leakage causes to screen for:
   by the end of that period.
 - A supposedly static entity column is overwritten over time, so the historical value is not
   recoverable.
+- A whole table holds cumulative or end-of-extract values (lifetime totals, last-seen dates, a
+  final report) with no earlier versions. No time column and no column selection makes it safe:
+  a last-activity date as `time_column` hides the row exactly when the activity continues past
+  the anchor. Exclude the table and use the event table it summarizes.
 - Training and holdout periods overlap or are ordered incorrectly.
 
 Fix the source timeline or drop the leaking field. Do not compensate with model tuning.

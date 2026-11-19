@@ -175,9 +175,25 @@ primary keys, time columns, links, `table_mode: all-connected [default]` — eac
 view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. **Stop and wait for confirmation.**
 User-supplied values take precedence over inferred ones.
 
-**Mandatory column-availability pass.** Before presenting the graph, decide the selected columns
-for every included table and add an `Excluded columns` section to the proposal.
+**Mandatory column-availability pass.** Before presenting the graph, decide which reachable tables
+are included and the selected columns for every included table, and add `Excluded tables` and
+`Excluded columns` sections to the proposal.
 
+- **Check each table as a whole before its columns.** A table of cumulative or end-of-extract
+  values — one row per entity, pair or period holding lifetime or period totals, counts, rates,
+  last-seen dates, or a final report — with no earlier versions cannot be read as of an earlier
+  anchor. It describes the extract, so it already contains the future the task predicts.
+  - No time column repairs it. A refresh, report or extract timestamp falls after the anchors, and
+    a last-activity date is itself future information: Kumo shows a row only once its time column
+    has passed, so whether the row is visible at the anchor reveals whether the activity
+    continued.
+  - Dropping its value columns does not repair it either. Which rows and links exist, and the
+    dates left on them, still reveal future activity.
+  - Exclude the **whole table** under `Excluded tables` and say which table carries the same
+    history as dated events, if one does. Do not keep it as a key-only or date-only table.
+  - Not this case: a table whose rows each carry the time their values were computed, with earlier
+    versions kept (a dated snapshot series). Use that time as its `time_column`.
+  - Decide by what the values describe, never by the table's name.
 - When a table's `time_column` marks the beginning of a row's validity or an interval, exclude any
   candidate feature whose value is determined only after that time: the interval's eventual
   endpoint, its realized duration, or a summary of the completed interval. At the row timestamp
