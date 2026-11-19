@@ -180,6 +180,10 @@ def _field_groups(value: Input):
 class BatchSpec:
     """Named model inputs and targets, with explicit shared mappings.
 
+    The iteration order of ``inputs`` and ``targets`` is not specified and may differ
+    between a built contract and one read by ``Artifact.load``. Look entries up by name;
+    do not depend on order, e.g. ``torch.cat(list(batch.inputs.values()), -1)``.
+
     :param inputs: named inputs, each selecting sampled data, encoding ordered
         fields and choosing a layout.
     :param targets: named targets. Encoding a target never inserts it into an
@@ -351,6 +355,10 @@ class Batch:
     ``entity_ids``, ``as_of_time``, ``splits``, ``is_padding``, request metadata,
     fingerprints and candidate
     identities; it is not a route for undeclared features.
+
+    The iteration order of ``inputs`` and ``targets`` is not specified and may differ
+    between a built contract and one read by ``Artifact.load``. Look entries up by name;
+    do not depend on order, e.g. ``torch.cat(list(batch.inputs.values()), -1)``.
     """
 
     inputs: Mapping[str, Any]
