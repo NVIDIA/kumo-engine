@@ -115,8 +115,8 @@ def prepare(dataset=None, spec=None, *, index=None, threads=2, verify_files=True
         if dataset is not None or spec is not None or index is not None:
             raise ValueError("Snapshot and bundle inputs cannot be mixed")
         return SnapshotFMLoader(engine=engine, sample=sample, target=target,
-            task=task, features=features, classes=classes, batch_size=batch_size,
-            budgets=budgets, schema=schema)
+                                task=task, features=features, classes=classes, batch_size=batch_size,
+                                budgets=budgets, schema=schema)
     if schema is not None:
         raise ValueError("schema is only valid with an adopted engine")
     if dataset is None or spec is None or index is None:

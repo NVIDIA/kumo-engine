@@ -9,20 +9,21 @@ retain timestamp[us] as the physical type, with zero subsecond components.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from kumo.fm.bundle import Bundle, TYPES, digest, identity
+from kumo.fm.bundle import TYPES, Bundle, digest, identity
 
 
 def scalar(value):
     if isinstance(value, datetime):
         return value.isoformat().replace('+00:00', 'Z')
     return value
+
 
 CUTOFF = datetime(2026, 2, 1, tzinfo=timezone.utc)
 DAY_SECONDS = 86400
@@ -47,7 +48,7 @@ def commerce():
     tables = {
         "users": table("user_id", {"user_id": column("int64"), "segment": column("string", stype="categorical"), "active": column("bool")}),
         "interactions": table("interaction_id", {"interaction_id": column("int64"), "user_id": column("int64", True),
-            "item_id": column("string", True), "event_time": column("timestamp[us]", True), "amount": column("float64", True, "numerical")}, "event_time"),
+                                                 "item_id": column("string", True), "event_time": column("timestamp[us]", True), "amount": column("float64", True, "numerical")}, "event_time"),
         "items": table("item_id", {"item_id": column("string"), "category_id": column("int64"), "description": column("string", stype="text")}),
         "categories": table("category_id", {"category_id": column("int64"), "name": column("string", stype="categorical")}),
     }
@@ -91,7 +92,7 @@ def marketo():
     relations, layer = {}, []
     for name, (fk, tc) in facts.items():
         tables[name] = table("event_id", {"event_id": column("int64"), fk: column("int64", True),
-                                         tc: column("timestamp[us]", True), "value": column("float64", True, "numerical")}, tc)
+                                          tc: column("timestamp[us]", True), "value": column("float64", True, "numerical")}, tc)
         rows[name] = [] if name == "notes" else [
             {"event_id": k, fk: u, tc: CUTOFF + timedelta(seconds=dt), "value": None if k == 3 else 1.0}
             for k, u, dt in [(1, USER_A, -1), (2, USER_A, -1), (3, USER_A, -1),
@@ -155,7 +156,7 @@ def write_bundle(root, tables, relations, rows, tasks, *, recipe, reverse_layout
     report = {"status": "passed", **provisional.validate()}
     (root / "validation.json").write_text(json.dumps(report, indent=2) + "\n")
     (root / "_COMPLETE.json").write_text(json.dumps({"manifest_sha256": digest(root / "manifest.json"),
-        "validation_sha256": digest(root / "validation.json")}, indent=2) + "\n")
+                                                     "validation_sha256": digest(root / "validation.json")}, indent=2) + "\n")
     return Bundle(root)
 
 
@@ -168,6 +169,7 @@ def generate(root: Path, preset="commerce_v1", *, reverse_layout=False, row_grou
                {"instance_id": 1, "entity_key": USER_B, "anchor_time": CUTOFF - timedelta(days=40)}]
     predict = [{"instance_id": i, "entity_key": key, "anchor_time": CUTOFF}
                for i, key in [(100, USER_A), (101, USER_B), (102, USER_A), (103, 42)]]
+
     def count(seed):
         return sum(1 for r in rows[fact] if r[fk] == seed["entity_key"] and r[tc] is not None
                    and seed["anchor_time"] <= r[tc] < seed["anchor_time"] + timedelta(days=30))

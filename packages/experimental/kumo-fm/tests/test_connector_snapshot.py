@@ -17,8 +17,9 @@ from kumo import fm
 from kumo.pytorch import api
 
 kumo = pytest.importorskip("kumo.engine")
-from kumo.engine._scratch import get_scratch_dir  # noqa: E402
 from kumoapi.typing import Stype  # noqa: E402
+
+from kumo.engine._scratch import get_scratch_dir  # noqa: E402
 
 
 def inventory(root):
@@ -42,33 +43,35 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
     graph = kumo.Graph(tables={
         "users": kumo.Table.from_source_table(connector["users.parquet"], primary_key="id"),
         "events": kumo.Table.from_source_table(connector["events.parquet"],
-            primary_key="id", time_column="at").with_column("user", stype=Stype.ID),
+                                               primary_key="id", time_column="at").with_column("user", stype=Stype.ID),
     }, edges=[kumo.Edge(src_table="events", fkey="user", dst_table="users")])
     previous = get_scratch_dir()
     try:
         kumo.configure(scratch_dir=tmp_path / "producer")
         snapshot = graph.snapshot()
         original_hashes = inventory(snapshot.index_path)
+
         def run(snapshot, work):
             engine = api.DiskGraphEngine.from_snapshot(snapshot, work_dir=work,
                                                        num_threads=2)
             physical = engine.schema.relations[0]
             alias = api.RelationSpec("events_selected", physical.left_table,
-                physical.left_key, physical.right_table, physical.right_key)
+                                     physical.left_key, physical.right_table, physical.right_key)
             schema = api.DataSchema(engine.schema.tables, (alias,))
-            sample = api.SampleSpec(entity=api.EntitySpec("users"),
-                targets={"next": api.Aggregate(api.Rows(path=(alias.name,),
-                    time=api.TimeWindow("at", start=0, stop=10)), "count")},
-                neighborhoods={"history": api.NeighborhoodSpec((api.GraphLayer((
-                    api.GraphSample(alias.name, direction="reverse", fanout=2,
-                                    strategy="recent"),)),))})
+            future = api.Aggregate(api.Rows(
+                path=(alias.name,), time=api.TimeWindow("at", start=0, stop=10)), "count")
+            layer = api.GraphLayer((api.GraphSample(
+                alias.name, direction="reverse", fanout=2, strategy="recent"),))
+            sample = api.SampleSpec(
+                entity=api.EntitySpec("users"), targets={"next": future},
+                neighborhoods={"history": api.NeighborhoodSpec((layer,))})
             with fm.prepare(engine=engine, schema=schema, sample=sample, target="next",
                             task="regression", features={"users": [], "events": ["at"]},
                             batch_size=1) as loader:
                 batch = loader.load(context=fm.Context(pairs=[(-5, at(15), 88),
-                    (-5, at(15), 89), (9007199254740993, at(15), 90)]),
-                    query=fm.Query(pairs=[(-5, at(40), 91),
-                                          (9007199254740993, at(40), 92)]))
+                                                              (-5, at(15), 89), (9007199254740993, at(15), 90)]),
+                                    query=fm.Query(pairs=[(-5, at(40), 91),
+                                                          (9007199254740993, at(40), 92)]))
             context = batch.tables("context")
             assert [(row["instance_id"], row["__fm_target"])
                     for row in context["instance_table"].to_pylist()] == [
@@ -76,7 +79,7 @@ def test_connector_export_reuse_and_aliased_relation(tmp_path):
             rows = context["related_tables"]["events"].to_pylist()
             assert [(row["instance_id"], row["id"], row["__fm_edge_events_selected"])
                     for row in rows] == [(88, 1, -5), (89, 1, -5),
-                                        (90, 4, 9007199254740993)]
+                                         (90, 4, 9007199254740993)]
             assert "__fm_target" not in batch.tables("predict")["instance_table"].column_names
             arrays, ipc = batch.encode("arrays"), batch.encode("arrow_ipc")
             assert arrays == batch.encode("arrays") and ipc == batch.encode("arrow_ipc")

@@ -134,6 +134,7 @@ def import_relbench(root, cache, dataset, config=None):
     cache.mkdir(parents=True, exist_ok=True)
     source_budget = Budget(cache, cfg)
     source_budget.check()
+
     def get(relative):
         return fetch(cache, relative, source_budget)
     source_manifest = get(f"{dataset}/manifest.yaml")

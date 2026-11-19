@@ -12,7 +12,6 @@ import pytest
 from kumo import fm
 from kumo.pytorch import api
 
-
 UTC = timezone.utc
 LARGE = 9007199254740993
 
@@ -55,8 +54,8 @@ def build_index(tmp_path):
         pq.write_table(table, path)
         sources[name] = api.Parquet(str(path))
         tables.append(api.TableSpec(name, keys[name],
-            {field.name: api.DType.from_arrow(field.type) for field in table.schema},
-            time_column="at" if name != "users" else api.NON_TEMPORAL))
+                                    {field.name: api.DType.from_arrow(field.type) for field in table.schema},
+                                    time_column="at" if name != "users" else api.NON_TEMPORAL))
     relations = (
         api.RelationSpec("order_user", "orders", "user_id", "users", "user_id"),
         api.RelationSpec("payment_order", "payments", "order_id", "orders", "order_id"),
@@ -64,10 +63,10 @@ def build_index(tmp_path):
         api.RelationSpec("note_audit", "notes", "audit_id", "audits", "audit_id"),
     )
     schema = api.DataSchema(tuple(tables), relations)
+    first_layer = api.GraphLayer((api.GraphSample(
+        "order_user", direction="reverse", fanout=2, strategy="recent"),))
     graph = api.SampleSpec(entity=api.EntitySpec("users"),
-        neighborhoods={"history": api.NeighborhoodSpec((api.GraphLayer((
-            api.GraphSample("order_user", direction="reverse", fanout=2,
-                            strategy="recent"),)),))})
+                           neighborhoods={"history": api.NeighborhoodSpec((first_layer,))})
     contract = api.DataLoaderSpec(schema, graph, api.BatchSpec(inputs={
         "graph": api.Input(api.NeighborhoodSource("history"), api.Graph(node_fields={
             name: api.Fields(tuple(api.Encode(column, api.Raw()) for column in keys_and_types))
@@ -88,14 +87,13 @@ def test_snapshot_multihop_and_occurrence_alignment(tmp_path, depth):
     engine = api.DiskGraphEngine.from_index(index, work_dir=work, num_threads=2)
     assert engine.schema == schema
     names = ("order_user", "payment_order", "audit_payment", "note_audit")
-    sample = api.SampleSpec(entity=api.EntitySpec("users"),
-        targets={"future": api.Aggregate(api.Rows(
-            path=(names[0],), time=api.TimeWindow("at", start=0, stop=7*86400)),
-            "count")},
-        neighborhoods={"history": api.NeighborhoodSpec(tuple(
-            api.GraphLayer((api.GraphSample(name, direction="reverse", fanout=2,
-                                            strategy="recent"),))
-            for name in names[:depth]))})
+    future = api.Aggregate(api.Rows(
+        path=(names[0],), time=api.TimeWindow("at", start=0, stop=7*86400)), "count")
+    layers = tuple(api.GraphLayer((api.GraphSample(
+        name, direction="reverse", fanout=2, strategy="recent"),))
+        for name in names[:depth])
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"future": future},
+                            neighborhoods={"history": api.NeighborhoodSpec(layers)})
     tables = ("users", "orders", "payments", "audits", "notes")[:depth+1]
     features = {name: [] for name in tables}
     context = fm.Context(pairs=[(LARGE, when(10), 100),

@@ -10,10 +10,10 @@ from types import MappingProxyType
 
 import pyarrow as pa
 
-from ._encoding import encode_arrow_table
-from ._contract import metadata_for
-from .bundle import TYPES
 from . import native_json
+from ._contract import metadata_for
+from ._encoding import encode_arrow_table
+from .bundle import TYPES
 
 
 def _typed_table(table, columns, max_columns):

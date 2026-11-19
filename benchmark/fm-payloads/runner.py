@@ -11,13 +11,13 @@ import platform
 import random
 import subprocess
 import time
-from urllib.parse import urlparse
 from pathlib import Path
+from urllib.parse import urlparse
 
 from kumo import fm
+from kumo.fm._pytorch import compatibility_issues
 from kumo.fm.bundle import Bundle
 from kumo.fm.workload import Workload
-from kumo.fm._pytorch import compatibility_issues
 
 
 def revision(path):

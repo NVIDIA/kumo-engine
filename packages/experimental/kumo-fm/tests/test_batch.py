@@ -12,7 +12,6 @@ import pytest
 
 from kumo.fm.batch import PayloadBatch
 
-
 BIG_ID = 9007199254740993
 
 
@@ -39,6 +38,7 @@ def request(work):
     anchor = datetime(2026, 2, 1, tzinfo=timezone.utc)
     context = [{"instance_id": 7, "entity_key": BIG_ID, "anchor_time": anchor, "target": 1}]
     predict = [{"instance_id": 8, "entity_key": BIG_ID, "anchor_time": anchor}]
+
     def related(instance_id):
         return {
             "users": pa.table({"instance_id": pa.array([instance_id], pa.int64()),

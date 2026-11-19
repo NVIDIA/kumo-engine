@@ -7,10 +7,9 @@ from copy import deepcopy
 from datetime import timedelta
 
 import pyarrow.parquet as pq
+from _fixture import CUTOFF, USER_A, USER_B, generate, write_bundle
 
 from kumo import fm
-
-from _fixture import CUTOFF, USER_A, USER_B, generate, write_bundle
 
 
 def fixture(tmp_path):

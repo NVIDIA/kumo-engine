@@ -5,9 +5,8 @@
 """Preparation-time native sampling compatibility checks."""
 import duckdb
 
-from .bundle import quote
 from ._phase import phase
-
+from .bundle import quote
 
 
 def validate_contract(workload):

@@ -10,16 +10,15 @@ the optional SDM environment. See README.md for the checkpoint and dataset.
 from datetime import datetime, timezone
 from pathlib import Path
 
-import kumo.engine as kumo
-from kumo.engine import datasets
-from kumo.pytorch import api
-from kumoapi.typing import Stype
 import torch
+from adapter import arrow_to_sdm
+from kumoapi.typing import Stype
 from sdm.models import KumoRelational
 
+import kumo.engine as kumo
 from kumo import fm
-from adapter import arrow_to_sdm
-
+from kumo.engine import datasets
+from kumo.pytorch import api
 
 root = Path("scratch/connector-to-prediction").resolve()
 root.mkdir(parents=True, exist_ok=True)
