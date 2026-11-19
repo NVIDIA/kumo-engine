@@ -6,7 +6,7 @@
 
 ``python -m tests.e2e.runs TIER FLOW SEED --e2e-dir DIR`` prepares the tier's data
 under ``DIR/<tier>`` and trains into ``DIR/<tier>/<flow>-seed<seed>``, the layout
-``test_lifecycle.py`` reads. A finished run (``run.json``) on the same tables and
+the correctness, training and lifecycle checks read. A finished run (``run.json``) on the same tables and
 training anchors is reused, not retrained: after changing a flow, use a fresh
 ``DIR``. With ``KUMO_PYTORCH_E2E_REUSE_ONLY=1`` (the CI checks job) a missing run
 is an error instead.
@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from e2e.datasets.hm import HMDataset, generate, sample_anchors
+
 from tests.e2e.tiers import BY_NAME, Tier
 
 REPOSITORY = Path(__file__).resolve().parents[2]

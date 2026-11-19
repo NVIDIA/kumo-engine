@@ -7,6 +7,7 @@
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         r
         for name in ("correctness", "training", "lifecycle", "population")
         for r in plan[name]["include"]
+        if r["executor"] == "binding"
     ]
     expected = [
         r
@@ -31,7 +33,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 42
+    assert len(grouped) == len(expected) == 36
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -179,3 +181,249 @@ def test_stage_timing_preserves_failures_and_partial_evidence(monkeypatch):
     }
     assert snapshots[0]["active_timing_stage"] == "materialization"
     assert "active_timing_stage" not in snapshots[-1]
+
+
+def worker_step(name):
+    text = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
+    return re.search(
+        r"^      - name: " + re.escape(name) + r"\n(.*?)(?=^      - |\Z)",
+        text,
+        re.M | re.S,
+    )[1]
+
+
+@pytest.mark.parametrize(
+    "group,mode,step,module,artifact",
+    [
+        (
+            "lifecycle",
+            "lifecycle",
+            "Check bounded AML HI Small training lifecycle and mid-epoch resume",
+            "test.kumo_pytorch.run_aml",
+            "kumo-pytorch-aml-lifecycle",
+        ),
+        (
+            "correctness",
+            "histories",
+            "Check real AML HI Small multi-source histories",
+            "test.kumo_pytorch.history_checks",
+            "kumo-pytorch-aml-histories",
+        ),
+        (
+            "correctness",
+            "smoke",
+            "Check real AML HI Small source inputs, targets and losses",
+            "test.kumo_pytorch.run_aml",
+            "kumo-pytorch-aml-source-correctness",
+        ),
+    ],
+)
+def test_hi_small_checks_use_their_own_matrix_with_original_commands(
+    tmp_path, group, mode, step, module, artifact
+):
+    import textwrap
+    from test.kumo_pytorch.bindings import selected_bindings
+
+    plan = nightly.execution_plan()
+    rows = plan[group]["include"]
+    grouped = [
+        row for row in rows if row["executor"] != "binding" and row["mode"] == mode
+    ]
+    assert len(grouped) == 1
+    row = grouped[0]
+    assert (row["executor"], row["binding"], row["dataset"], row["mode"]) == (
+        "aml-prototype",
+        "hi-small",
+        "hi-small",
+        mode,
+    )
+    assert row["batch_size"] == 2 and row["threads"] == 1
+    assert {b["ref"] for b in selected_bindings(campaign="legacy-lifecycle")} == {
+        "E01",
+        "E02",
+        "E03",
+        "E04",
+        "E05",
+    }
+    suite = (ROOT / ".github/workflows/kumo-pytorch-t2b.yml").read_text()
+    assert "lifecycle-hi-small" not in suite
+    job = re.split(r"\n  (?=\S)", suite.split(f"\n  {group}:\n", 1)[1])[0]
+    assert "executor: ${{ matrix.executor }}" in job
+    assert "uses: ./.github/workflows/_kumo-pytorch-binding.yml" in job
+    assert "fail-fast: false" in job
+    assert "needs: [diskgraph-wheel, plan]" in job
+    assert all(r["mode"] == "lifecycle" for r in plan["lifecycle"]["include"])
+    assert all(
+        r["mode"] in {"smoke", "histories"} for r in plan["correctness"]["include"]
+    )
+    worker = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
+    assert (
+        "timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 180 }}"
+        in worker
+    )
+    artifact_step = worker_step(
+        "Retain real AML HI Small "
+        + {
+            "lifecycle": "lifecycle",
+            "histories": "history",
+            "smoke": "source correctness",
+        }[mode]
+        + " reports"
+    )
+    assert f"name: {artifact}" in artifact_step
+    assert f"inputs.mode == '{mode}'" in artifact_step
+    assert "always() && inputs.executor == 'aml-prototype'" in artifact_step
+    if mode == "histories":
+        assert "inputs.mode == 'histories'" in worker_step(
+            "Show real AML HI Small history results"
+        )
+    log = tmp_path / "commands.jsonl"
+    fake = tmp_path / "python"
+    fake.write_text(
+        f'#!{sys.executable}\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a") as stream: stream.write(json.dumps(sys.argv[1:])+"\\n")\n'
+    )
+    fake.chmod(0o755)
+    text = worker_step(step)
+    assert (
+        f"!cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == '{mode}' && steps.aml-data.outcome == 'success'"
+        in text
+    )
+    command = textwrap.dedent(text.split("        run: |\n", 1)[1])
+    subprocess.run(
+        ["bash", "-e", "-c", command],
+        check=True,
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+            "RUNNER_TEMP": str(tmp_path),
+            "BATCH_SIZE": str(row["batch_size"]),
+            "THREADS": str(row["threads"]),
+            "COMMAND_LOG": str(log),
+        },
+    )
+    args = json.loads(log.read_text().splitlines()[-1])
+    assert args[:2] == ["-m", module]
+    assert args[args.index("--anchors-per-split") + 1] == "4"
+    assert args[args.index("--threads") + 1] == "1"
+    if mode == "lifecycle":
+        assert args[args.index("--batch-size") + 1] == "2"
+        assert args[args.index("--steps") + 1] == "1"
+    if module.endswith("run_aml"):
+        assert args[args.index("--campaign") + 1] == (
+            "correctness" if mode == "smoke" else "lifecycle"
+        )
+
+
+@pytest.mark.parametrize(
+    "executor,dataset,binding,mode,success",
+    [
+        ("binding", "li-medium", "L01", "lifecycle", True),
+        ("aml-prototype", "hi-small", "hi-small", "lifecycle", True),
+        ("aml-prototype", "hi-small", "hi-small", "histories", True),
+        ("aml-prototype", "hi-small", "hi-small", "smoke", True),
+        ("aml-prototype", "li-medium", "hi-small", "lifecycle", False),
+        ("aml-prototype", "li-medium", "hi-small", "histories", False),
+        ("aml-prototype", "hi-small", "L01", "lifecycle", False),
+        ("aml-prototype", "hi-small", "hi-small", "training", False),
+        ("unknown", "hi-small", "hi-small", "lifecycle", False),
+    ],
+)
+def test_matrix_worker_rejects_mismatched_entry_points(
+    executor, dataset, binding, mode, success
+):
+    import textwrap
+
+    text = worker_step("Validate campaign entry point")
+    command = textwrap.dedent(text.split("        run: |\n", 1)[1])
+    result = subprocess.run(
+        ["bash", "-e", "-c", command],
+        env={
+            **os.environ,
+            "EXECUTOR": executor,
+            "DATASET": dataset,
+            "BINDING": binding,
+            "CAMPAIGN": mode,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == success
+
+
+def test_only_li_medium_combined_is_in_any_active_campaign(tmp_path):
+    from test.kumo_pytorch.bindings import load_bindings
+
+    plan = nightly.execution_plan()
+    medium = [
+        row
+        for section in plan.values()
+        for row in section["include"]
+        if row.get("dataset") in {"li-medium", "hi-medium"}
+    ]
+    assert medium and {row["dataset"] for row in medium} == {"li-medium"}
+    assert {row.get("binding", row.get("case")) for row in medium} == {
+        "L01",
+        "li-medium-combined",
+    }
+    catalog = load_bindings()
+    assert all(catalog[ref]["campaigns"] == [] for ref in ("L02", "L03", "L04"))
+    for ref in ("L02", "L03", "L04"):
+        with pytest.raises(SystemExit) as error:
+            nightly.main(
+                [
+                    "run",
+                    "--binding",
+                    ref,
+                    "--mode",
+                    "training",
+                    "--data-dir",
+                    str(tmp_path / "absent"),
+                    "--output",
+                    str(tmp_path / "out"),
+                ]
+            )
+        assert error.value.code == 2
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("campaign", ["correctness", "training", "lifecycle"])
+def test_hm_checks_select_one_owner_and_reuse_saved_runs(tmp_path, campaign):
+    import textwrap
+
+    worker = (ROOT / ".github/workflows/kumo-pytorch-t2a.yml").read_text()
+    check = re.search(
+        r"      - name: Check the runs\n(.*?)(?=      - name:)", worker, re.S
+    )[1]
+    assert "KUMO_PYTORCH_E2E_REUSE_ONLY: '1'" in check
+    command = textwrap.dedent(check.split("        run: |\n", 1)[1])
+    fake = tmp_path / "python"
+    fake.write_text(
+        f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n"
+    )
+    fake.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-c", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+            "CAMPAIGN": campaign,
+            "TIER": "t2a",
+            "RUNNER_TEMP": str(tmp_path),
+        },
+    )
+    args = json.loads(result.stdout)
+    assert [arg for arg in args if arg.startswith("tests/")] == [
+        f"tests/e2e/test_{campaign}.py"
+    ]
+    assert "--require-imports" in args and "--t2a" in args
+    assert f"--junitxml={tmp_path}/{campaign}.xml" in args
+    suite = (ROOT / ".github/workflows/kumo-pytorch-t2b.yml").read_text()
+    checks = suite.split("\n  hm-checks:\n", 1)[1].split("\n  population:", 1)[0]
+    assert "needs: [diskgraph-wheel, hm-runs]" in checks
+    assert "fail-fast: false" in checks
+    assert f"campaign: {campaign}" in checks
+    assert "name: ${{ matrix.group.label }} / H&M ${{ matrix.dataset.scale }}" in checks
+    assert "inputs.campaign }}-predictions-and-metrics" in worker

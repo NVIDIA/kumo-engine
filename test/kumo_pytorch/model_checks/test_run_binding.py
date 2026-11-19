@@ -182,7 +182,7 @@ def test_li_runner_native_delivery_and_training(tmp_path, monkeypatch, ref, mode
         row["seconds"] >= 0 and row["failures"] == 0
         for row in report["stage_timings"].values()
     )
-    if ref == "L02" and mode == "full":
+    if ref == "L01" and mode == "full":
         # Exercise the real CLI -> catalog preparation wrapper as well as
         # run_case; the fixture inventory replaces only the remote file pins.
         monkeypatch.setattr(

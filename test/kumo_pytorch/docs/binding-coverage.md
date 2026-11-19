@@ -29,9 +29,9 @@ independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or
 | E04 / a018 | HI Small / account-daily | next-token-pretrain | nuFormer | Existing tests; retain outstanding CI failures |
 | E05 | HI Small / account-daily | account-involvement-next24h | nuFormer | Existing additional supervised case retained |
 | L01 | LI Medium / account-daily | next-outgoing-amount-currency | Combined | Required feature, target, training and delivery checks added; CI acceptance pending |
-| L02 | LI Medium / account-daily | next-outgoing-delay | nuFormer | Native targets, heads and training/full-delivery jobs added; CI acceptance pending |
-| L03 | LI Medium / account-daily | next-outgoing-format | GraphSAGE | Native targets, heads and training/full-delivery jobs added; CI acceptance pending |
-| L04 | LI Medium / account-daily | account-involvement-next24h | PRAGMA | Unmasked supervised head and training/full-delivery jobs added; CI acceptance pending |
+| L02 | LI Medium / account-daily | next-outgoing-delay | nuFormer | Fixture coverage retained; real-data campaigns disabled by user (L01 only) |
+| L03 | LI Medium / account-daily | next-outgoing-format | GraphSAGE | Fixture coverage retained; real-data campaigns disabled by user (L01 only) |
+| L04 | LI Medium / account-daily | account-involvement-next24h | PRAGMA | Unmasked supervised fixture coverage retained; real-data campaigns disabled by user (L01 only) |
 | S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | One BPE contract with required source checks and shared campaigns; real-data CI pending |
 | S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Native customer-history correctness, training, delivery and lifecycle registered; real-data CI pending |
 | S03 | Synthetic / weekly-account | aml_graph_user_last30d | GraphSAGE | Port event-membership graph and retrospective binary target |
@@ -250,7 +250,7 @@ without adding dataset-specific runner or profiler adapters.
 Existing focused HI fixtures and lifecycle/history CLIs retain their expected
 answers and domain scenarios. They are not templates to copy for another dataset.
 L01 enables the shared lifecycle helpers and benchmark adapter; other LI
-bindings retain their existing campaign scope. Other Synthetic/MBD entries remain
+bindings retain fixture coverage but their real-data campaigns are now disabled. Other Synthetic/MBD entries remain
 pending; complex validity rules and contract variants still need implementation.
 
 
@@ -273,8 +273,10 @@ Only AML LI Medium / Combined is expanded in this increment. Its catalog enables
   empty/mixed histories. Targets and head schemas remain those of L01.
 
 Every enabled campaign is required in the combined summary. HI's existing
-standalone lifecycle job is retained (`legacy-lifecycle` in the catalog); the
-new catalog runner reuses its persistence helpers. All additions are test-owned.
+grouped scenario (`legacy-lifecycle` in the catalog) has separate Lifecycle and
+Correctness matrix entries. The source-history sweep runs in Correctness,
+independently of lifecycle; its commands, bounded source checks and report
+artifacts are retained. The catalog runner reuses its persistence helpers. All additions are test-owned.
 
 Local probes expose two package gaps: combined mid-epoch reload changes the
 materialized task fingerprint, and length-based combined batching falls back
@@ -563,3 +565,57 @@ remain delegated. Independent review verified all 1,005 source pins against the
 original extraction inventory and found no remaining issues after adding clock
 corruption and empty-selected-history regressions. No package runtime files
 changed in this increment.
+
+
+## Current campaign selection and lifecycle organization
+
+AML Medium runs only L01 / LI Medium / Combined. L02, L03 and L04 remain in the
+catalog with their fixture tests, but no real-data campaigns are enabled. HI
+Medium has no active binding. Correctness, training, population, lifecycle and
+benchmark planning all use this same selection on PR, nightly and manual runs.
+
+HI Small has three grouped matrix entries: lifecycle in Lifecycle, and source
+correctness plus history sweeps in Correctness. All five workload/model
+combinations remain, with four anchors per split, two-example batches and one
+thread. Correctness validates original-source labels, input membership, masks,
+targets and losses without optimizer updates. Lifecycle performs one setup update
+before persistence, inference, finetuning and exact resume. The existing `all`
+CLI mode remains available locally, but CI explicitly selects each owner.
+Each grouped job has a 45-minute timeout, its own reports and independent failure
+status. There are 36 per-binding campaigns plus three grouped entries, four L01
+benchmarks and 15 HI Small fitting repetitions.
+
+### Lifecycle ownership after extraction
+
+| Owner | Checks |
+| --- | --- |
+| HI Small Correctness / smoke | Original-source labels; input membership, masks, targets and loss oracles (`run_aml --campaign correctness`) |
+| HI Small Correctness / histories | Independent windows, filters, ordering and limit sweeps |
+| H&M Correctness | Future-row cutoffs, generator labels, sampling-tie eligibility and empty histories (`tests/e2e/test_correctness.py`) |
+| H&M Training/evaluation | Baseline identity, AUROC bands/seed spread, score distribution and active/dormant ranking (`tests/e2e/test_training.py`) |
+| Lifecycle | Fresh-process reload/inference, serving equivalence, frozen-input finetuning, artifact compatibility and exact resumed batches |
+
+H&M's `tests/e2e/conftest.py` registers shared fixtures once; `hm_support.py` owns
+their native helpers. Its original combined
+scored-anchor/quality test is split into delivery under Lifecycle and distribution
+under Training, preserving every assertion. Setup trains/persists/infers/serves
+each flow/seed once. Independent checks jobs for both scales consume those
+artifacts with `KUMO_PYTORCH_E2E_REUSE_ONLY=1`; missing runs fail instead of
+retraining. All six check jobs and the producer matrix are required by the gate.
+Reports use category-specific artifact names to prevent collisions.
+
+The shared binding runner's four-anchor-per-split delivery check remains a
+bounded integrity check, not a full-population campaign. Lifecycle launches no
+standalone fitting-memory or timing benchmark; elapsed times are diagnostics.
+No package runtime behavior, oracle values or tolerances changed.
+
+Validation: 364 harness checks and 11 HI Small native runner cases pass,
+including all five correctness-only probes; one Combined mid-epoch resume case
+fails with `this state was saved for a different task`. The same case fails with
+the pre-extraction `run_aml.py` from `98583e45`, confirming the existing package
+identity issue remains exposed. All 19 lightweight H&M dataset/reuse tests pass;
+both tiers collect 48 campaign cases, and all 626 required CPU cases collect
+(five GPU cases delegated). Independent review verified all 45 original H&M
+assertions are preserved and each shared fixture is registered once. Workflow,
+Python and documentation checks pass. Full H&M training and real-data CI were
+not rerun locally.

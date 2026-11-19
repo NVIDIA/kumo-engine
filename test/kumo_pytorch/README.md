@@ -89,7 +89,7 @@ chunk-boundary cases from #361/#362/#363. See the [current requirements status](
 | Shared checks | Existing package, conformance, example and fixture tests | One owner per check; three conformance shards |
 | Correctness | `nightly run`, source feature/history checks | Binding and declared smoke/history campaign |
 | Training | Shared training acceptance runner | Binding, retaining both 100-update repetitions |
-| Lifecycle | Shared binding runner; retained HI Small/H&M scenarios | Binding or existing H&M scale and seed |
+| Lifecycle | Shared binding runner and saved H&M runs | Reload, inference, serving, finetuning and resume |
 | Population | Native AnchorTable population runner | Complete binding population |
 | Benchmarks | Existing benchmark and fitting-memory runners | Binding, experiment and repetition |
 | Results | `nightly summary`, `automation record` | Binding overview and complete job gate |
@@ -102,9 +102,14 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 42 binding campaigns into correctness (11),
-training (13), lifecycle (5) and full population (13). HI Small's original
-lifecycle/history scenarios and H&M Small/Medium remain separately owned. It
+The planner partitions the 36 binding campaigns into correctness (11),
+training (10), lifecycle (5) and full population (10). The Lifecycle matrix also
+contains one grouped HI Small entry, preserving its original five model/workload
+checks. HI Small's source/target oracles and history sweeps run in separate
+Correctness matrix entries; the source/target pass makes no optimizer updates.
+H&M Small/Medium train and save their runs once, then reuse those artifacts in
+six checks jobs: Correctness, Training/evaluation and Lifecycle for each scale. Only L01 / Combined is enabled for AML Medium; L02/L03/L04 real-data
+campaigns are disabled while their fixture tests remain. The plan
 also retains 15 HI Small fitting repetitions and four L01 benchmark campaigns.
 The same resolved seed range feeds all conformance shards. Every test has one
 owner; a seed's properties stay together, and each worker retains its required

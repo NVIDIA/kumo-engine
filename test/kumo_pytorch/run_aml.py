@@ -106,7 +106,13 @@ def run_case(
     seed,
     expected_labels=None,
     input_reference=None,
+    campaign="all",
 ):
+    if campaign not in {"all", "correctness", "lifecycle"}:
+        raise ValueError(f"Unknown AML campaign: {campaign}")
+    lifecycle = campaign != "correctness"
+    if campaign == "lifecycle":
+        expected_labels = input_reference = None
     graph = family in {"graphsage", "combined"}
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"
     masked_checks = family == "pragma" and input_reference is not None
@@ -132,6 +138,7 @@ def run_case(
     fit_cutoff = max(row["as_of_time"] // 1_000_000_000 - 1 for row in groups["train"])
     report = {
         "family": family,
+        "campaign": campaign,
         "selector": selection["selector"],
         "status": "running",
         "fit_split": "train",
@@ -161,14 +168,18 @@ def run_case(
         model = build_model(
             task, selection, family, max_seq_len=11 * capacity, seed=seed
         )
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
+        optimizer = (
+            torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
+            if lifecycle
+            else None
+        )
         fitted_before = task.fitted_state.fingerprint
         fitted_reference = (
             task.fitted_state.to_dict() if masked_checks or next_checks else None
         )
         report["fitted_state_sha256"] = fitted_before
         for split in SPLITS:
-            training = split == "train"
+            training = lifecycle and split == "train"
             model.train(training)
             seen, batches, weight, numerator = [], 0, 0, 0.0
             evaluation = {"loss_sum": 0.0, "eligible": 0, "invalid": 0, "padding": 0}
@@ -205,7 +216,8 @@ def run_case(
                         fitted_reference,
                         identities,
                     )
-                optimizer.zero_grad(set_to_none=True)
+                if training:
+                    optimizer.zero_grad(set_to_none=True)
                 with torch.set_grad_enabled(training):
                     result = model.training_step(batch)
                 reference = None
@@ -276,39 +288,41 @@ def run_case(
                     else None
                 )
                 report["splits"][split]["independent_evaluation"] = evaluation
-        if not report["optimizer_updates"]:
+        if lifecycle and not report["optimizer_updates"]:
             raise ValueError("No training update completed")
         if task.fitted_state.fingerprint != fitted_before:
             raise ValueError("Evaluation changed the training fitted state")
-        report["lifecycle"] = check_lifecycle(
-            plan,
-            task,
-            model,
-            dataset,
-            requests["valid"] + requests["test"],
-            selection,
-            family,
-            directory=directory / "lifecycle",
-            index=directory / "index",
-            batch_size=batch_size,
-            threads=threads,
-            seed=seed,
-            max_seq_len=11 * capacity,
-        )
-    with executing_case():
-        report["finetuning"] = check_training(
-            directory / "lifecycle",
-            requests_for(
-                selections[version]["forecast_split"]["train"],
-                identities,
-                split="train",
-                graph=graph,
-                native=False,
-            ),
-        )
-        report["mid_epoch_resume"] = check_resume(
-            directory / "lifecycle", requests["train"]
-        )
+        if lifecycle:
+            report["lifecycle"] = check_lifecycle(
+                plan,
+                task,
+                model,
+                dataset,
+                requests["valid"] + requests["test"],
+                selection,
+                family,
+                directory=directory / "lifecycle",
+                index=directory / "index",
+                batch_size=batch_size,
+                threads=threads,
+                seed=seed,
+                max_seq_len=11 * capacity,
+            )
+    if lifecycle:
+        with executing_case():
+            report["finetuning"] = check_training(
+                directory / "lifecycle",
+                requests_for(
+                    selections[version]["forecast_split"]["train"],
+                    identities,
+                    split="train",
+                    graph=graph,
+                    native=False,
+                ),
+            )
+            report["mid_epoch_resume"] = check_resume(
+                directory / "lifecycle", requests["train"]
+            )
     report["status"] = "passed"
     report["target_and_loss_checks"] = "passed" if target_checks else "not_checked"
     report["input_membership_and_counts"] = (
@@ -343,6 +357,9 @@ def main(argv=None):
     parser.add_argument("--steps", type=positive, default=1)
     parser.add_argument("--threads", type=positive, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--campaign", choices=("all", "correctness", "lifecycle"), default="all"
+    )
     args = parser.parse_args(argv)
     args.output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(args.threads)
@@ -366,41 +383,45 @@ def main(argv=None):
         print("Verifying downloaded HI-small files and selecting anchors", flush=True)
         files = verify_inputs(args.data_dir)
         selections = load_selections(args.data_dir, limit=args.anchors_per_split)
-        print(
-            "Reading independent AML task references from source transactions",
-            flush=True,
-        )
-        forecast_rows = [
-            row for rows in selections["v1"]["forecast_split"].values() for row in rows
-        ]
-        reference = source_reference(
-            args.data_dir / "datasets/aml-data/v8/hi-small/transactions.parquet",
-            [
-                row["entity_id"]
-                for groups in selections["v1"].values()
-                for rows in groups.values()
-                for row in rows
-            ],
-            include_values=True,
-        )
-        expected_labels = verify_anchors(forecast_rows, reference)
-        verify_anchors(
-            [
+        reference = expected_labels = None
+        if args.campaign != "lifecycle":
+            print(
+                "Reading independent AML task references from source transactions",
+                flush=True,
+            )
+            forecast_rows = [
                 row
-                for rows in selections["v2"]["forecast_split"].values()
+                for rows in selections["v1"]["forecast_split"].values()
                 for row in rows
-            ],
-            reference,
-        )
-        report["involvement_reference"] = {
-            "status": "passed",
-            "source_rows": reference["source_rows"],
-            "split_boundaries_seconds": reference["cuts"],
-            "observation_end_seconds": reference["end"],
-            "unique_anchors": len(expected_labels),
-            "positive_labels": sum(expected_labels.values()),
-            "scope": "selected anchors; classification metrics and thresholds remain unspecified",
-        }
+            ]
+            reference = source_reference(
+                args.data_dir / "datasets/aml-data/v8/hi-small/transactions.parquet",
+                [
+                    row["entity_id"]
+                    for groups in selections["v1"].values()
+                    for rows in groups.values()
+                    for row in rows
+                ],
+                include_values=True,
+            )
+            expected_labels = verify_anchors(forecast_rows, reference)
+            verify_anchors(
+                [
+                    row
+                    for rows in selections["v2"]["forecast_split"].values()
+                    for row in rows
+                ],
+                reference,
+            )
+            report["involvement_reference"] = {
+                "status": "passed",
+                "source_rows": reference["source_rows"],
+                "split_boundaries_seconds": reference["cuts"],
+                "observation_end_seconds": reference["end"],
+                "unique_anchors": len(expected_labels),
+                "positive_labels": sum(expected_labels.values()),
+                "scope": "selected anchors; classification metrics and thresholds remain unspecified",
+            }
         (args.output / "anchors.json").write_text(
             json.dumps(selections, indent=2) + "\n"
         )
@@ -440,6 +461,7 @@ def main(argv=None):
                         seed=args.seed,
                         expected_labels=expected_labels,
                         input_reference=reference,
+                        campaign=args.campaign,
                     )
                 except Exception as error:
                     from .refusals import case_failure

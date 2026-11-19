@@ -1,6 +1,6 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 621 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 626 CPU cases and
 five CUDA reference cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.

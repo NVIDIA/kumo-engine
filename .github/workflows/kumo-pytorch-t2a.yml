@@ -2,11 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: PyTorch — H&M Lifecycle
+name: PyTorch — H&M Checks
 
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
+      campaign:
+        type: string
+        required: true
       tier:
         type: string
         required: true
@@ -19,6 +22,7 @@ permissions:
 
 env:
   TIER: ${{ inputs.tier }}
+  CAMPAIGN: ${{ inputs.campaign }}
 
 defaults:
   run:
@@ -27,7 +31,8 @@ defaults:
 
 jobs:
   plan:
-    name: Setup / Lifecycle Plan
+    name: Setup / H&M Run Plan
+    if: ${{ inputs.campaign == 'prepare' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -44,7 +49,8 @@ jobs:
         run: echo "matrix=$(python3 tests/e2e/tiers.py $TIER)" >> "$GITHUB_OUTPUT"
 
   training:
-    name: Lifecycle / H&M / ${{ matrix.flow == 'gnn' && 'GNN' || 'PRAGMA' }} / Seed ${{ matrix.seed }}
+    if: ${{ inputs.campaign == 'prepare' }}
+    name: Setup / H&M / ${{ matrix.flow == 'gnn' && 'GNN' || 'PRAGMA' }} / Seed ${{ matrix.seed }}
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 75
@@ -74,9 +80,8 @@ jobs:
           retention-days: 14
 
   results:
-    name: Lifecycle / H&M / Results
-    needs: training
-    if: ${{ !cancelled() }}
+    name: Check ${{ inputs.campaign }}
+    if: ${{ inputs.campaign != 'prepare' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -90,6 +95,10 @@ jobs:
         with:
           pattern: kumo-pytorch-${{ inputs.tier }}-*-seed*
           path: ${{ runner.temp }}/e2e-runs
+      - name: Validate campaign and tier
+        run: |
+          case "$TIER" in t2a|t2b) ;; *) exit 1 ;; esac
+          case "$CAMPAIGN" in correctness|training|lifecycle) ;; *) exit 1 ;; esac
       - name: Place the runs where the checks read them
         run: |
           mkdir -p "$RUNNER_TEMP/e2e/$TIER"
@@ -101,13 +110,13 @@ jobs:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
           python -m pytest -q --require-imports --$TIER --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
-            tests/e2e/test_lifecycle.py --junitxml="$RUNNER_TEMP/lifecycle.xml"
+            "tests/e2e/test_${CAMPAIGN}.py" --junitxml="$RUNNER_TEMP/$CAMPAIGN.xml"
       - name: Summarize metrics and run times
         if: ${{ always() }}
         run: |
           if [ -f "$RUNNER_TEMP/e2e/$TIER/metrics.json" ]; then
             {
-              echo "### H&M $TIER metrics"
+              echo "### H&M $TIER $CAMPAIGN metrics"
               echo '```json'
               cat "$RUNNER_TEMP/e2e/$TIER/metrics.json"
               echo '```'
@@ -116,9 +125,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
-          name: kumo-pytorch-${{ inputs.tier }}-predictions-and-metrics
+          name: kumo-pytorch-${{ inputs.tier }}-${{ inputs.campaign }}-predictions-and-metrics
           path: |
-            ${{ runner.temp }}/lifecycle.xml
+            ${{ runner.temp }}/${{ inputs.campaign }}.xml
             ${{ runner.temp }}/e2e/${{ inputs.tier }}/metrics.json
             ${{ runner.temp }}/e2e/${{ inputs.tier }}/*/*.json
             ${{ runner.temp }}/e2e/${{ inputs.tier }}/*/*.parquet

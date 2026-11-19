@@ -7,6 +7,10 @@ name: PyTorch — Binding Checks
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     inputs:
+      executor:
+        description: Existing campaign entry point selected by the plan
+        type: string
+        default: binding
       binding:
         type: string
         required: true
@@ -38,9 +42,9 @@ permissions:
 
 jobs:
   binding:
-    name: Execute binding
+    name: Execute campaign
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 180
+    timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 180 }}
     environment:
       name: gha-kumo-workflow-tests
       deployment: false
@@ -65,6 +69,21 @@ jobs:
         with:
           diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
           torch-extra: cpu
+      - name: Validate campaign entry point
+        env:
+          EXECUTOR: ${{ inputs.executor }}
+        run: |
+          case "$EXECUTOR" in
+            binding) ;;
+            aml-prototype)
+              test "$DATASET" = hi-small && test "$BINDING" = hi-small || exit 1
+              case "$CAMPAIGN" in
+                lifecycle|histories|smoke) ;;
+                *) echo "Unknown grouped campaign: $CAMPAIGN" >&2; exit 1 ;;
+              esac
+              ;;
+            *) echo "Unknown campaign entry point: $EXECUTOR" >&2; exit 1 ;;
+          esac
       - name: Verify campaign storage before downloading
         run: |
           python - <<'PY'
@@ -102,18 +121,79 @@ jobs:
           python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
       - name: Check the selected binding
+        if: ${{ inputs.executor == 'binding' }}
         run: |
           python -m test.kumo_pytorch.nightly run --binding "$BINDING" --mode "$CAMPAIGN" \
             --data-dir "$RUNNER_TEMP/aml-data" \
             --output "$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING" \
             --batch-size "$BATCH_SIZE" --threads "$THREADS"
       - name: Show binding results
-        if: ${{ always() }}
+        if: ${{ always() && inputs.executor == 'binding' }}
         run: |
           report="$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING/report.md"
           if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Check bounded AML HI Small training lifecycle and mid-epoch resume
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'lifecycle' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.run_aml \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --prepared-dir "$RUNNER_TEMP/aml-lifecycle-prepared" \
+            --output "$RUNNER_TEMP/lifecycle-hi-small" --anchors-per-split 4 \
+            --batch-size "$BATCH_SIZE" --steps 1 --threads "$THREADS" --campaign lifecycle
+      - name: Check real AML HI Small source inputs, targets and losses
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'smoke' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.run_aml \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --prepared-dir "$RUNNER_TEMP/aml-correctness-prepared" \
+            --output "$RUNNER_TEMP/correctness-hi-small" --anchors-per-split 4 \
+            --batch-size "$BATCH_SIZE" --threads "$THREADS" --campaign correctness
+      - name: Check real AML HI Small multi-source histories
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'histories' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python -m test.kumo_pytorch.history_checks \
+            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-histories" \
+            --anchors-per-split 4 --threads "$THREADS"
+      - name: Show real AML HI Small history results
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'histories' }}
+        run: |
+          if [ -f "$RUNNER_TEMP/aml-histories/report.md" ]; then
+            cat "$RUNNER_TEMP/aml-histories/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain real AML HI Small lifecycle reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'lifecycle' }}
+        with:
+          name: kumo-pytorch-aml-lifecycle
+          path: |
+            ${{ runner.temp }}/lifecycle-hi-small/report.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/result.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/report.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/*.log
+          retention-days: 14
+
+      - name: Retain real AML HI Small history reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'histories' }}
+        with:
+          name: kumo-pytorch-aml-histories
+          path: |
+            ${{ runner.temp }}/aml-histories/report.json
+            ${{ runner.temp }}/aml-histories/report.md
+          retention-days: 14
+
+      - name: Retain real AML HI Small source correctness reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'smoke' }}
+        with:
+          name: kumo-pytorch-aml-source-correctness
+          path: |
+            ${{ runner.temp }}/correctness-hi-small/report.json
+            ${{ runner.temp }}/correctness-hi-small/**/result.json
+          retention-days: 14
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ always() }}
+        if: ${{ always() && inputs.executor == 'binding' }}
         with:
           name: kumo-pytorch-dataset-${{ inputs.mode }}-${{ inputs.binding }}
           path: |

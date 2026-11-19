@@ -123,6 +123,7 @@ def campaign_matrix(campaign):
         "include": [
             {
                 "binding": b["ref"],
+                "executor": "binding",
                 "mode": mode,
                 "dataset": dataset_definition(b)["inventory"],
                 "label": binding_label(b),
@@ -140,6 +141,28 @@ def execution_plan(seed_start=0):
     if seed_start < 0:
         raise ValueError("Conformance seed start must be nonnegative")
     population = campaign_matrix("population")["include"]
+    lifecycle = campaign_matrix("lifecycle")
+    correctness = {
+        "include": [r for r in population if r["mode"] == "smoke"]
+        + campaign_matrix("histories")["include"]
+    }
+    if selected_bindings(campaign="legacy-lifecycle"):
+        # Retain the grouped HI Small checks under their respective owners.
+        for group, mode in (
+            (lifecycle, "lifecycle"),
+            (correctness, "histories"),
+            (correctness, "smoke"),
+        ):
+            group["include"].append(
+                {
+                    "binding": "hi-small",
+                    "executor": "aml-prototype",
+                    "mode": mode,
+                    "dataset": "hi-small",
+                    "label": "AML HI Small",
+                    **campaign_resources({"batch_size": 2, "threads": 1}),
+                }
+            )
     return {
         "conformance": {
             "include": [
@@ -147,12 +170,9 @@ def execution_plan(seed_start=0):
                 for shard in range(3)
             ]
         },
-        "correctness": {
-            "include": [r for r in population if r["mode"] == "smoke"]
-            + campaign_matrix("histories")["include"]
-        },
+        "correctness": correctness,
         "training": campaign_matrix("training"),
-        "lifecycle": campaign_matrix("lifecycle"),
+        "lifecycle": lifecycle,
         "population": {"include": [r for r in population if r["mode"] == "full"]},
         "benchmarks": benchmark_matrix(),
         "fitting": {
@@ -496,7 +516,7 @@ def summarize(directory, revision):
             ]
             if not selected:
                 cells.append(
-                    "Legacy campaign"
+                    "Grouped lifecycle matrix"
                     if group == "Lifecycle"
                     and "legacy-lifecycle" in binding["campaigns"]
                     else "Not enabled"

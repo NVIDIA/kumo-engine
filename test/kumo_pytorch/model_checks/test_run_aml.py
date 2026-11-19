@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from test.kumo_pytorch import run_aml
 from test.kumo_pytorch.aml_source import (
     account_identity_map,
@@ -180,6 +181,7 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
             steps=1,
             threads=1,
             seed=0,
+            campaign="lifecycle",
         )
     finally:
         torch.set_num_threads(previous)
@@ -277,3 +279,56 @@ def test_raw_files_through_training_and_evaluation(mapped, selection, family, tm
         )
         assert child.returncode != 0 and "not equal" in child.stderr
         assert not (directory / "result.json").exists()
+
+
+@pytest.mark.parametrize(
+    "selection,family",
+    CASES,
+    ids=[f"{r['selector']['workload_id']}-{f}" for r, f in CASES],
+)
+def test_correctness_campaign_has_source_oracles_without_training_or_lifecycle(
+    mapped, selection, family, tmp_path, monkeypatch
+):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Correctness entered training or lifecycle")
+
+    for name in ("check_lifecycle", "check_training", "check_resume"):
+        monkeypatch.setattr(run_aml, name, forbidden)
+    monkeypatch.setattr(torch.optim, "AdamW", forbidden)
+    dataset, identities, selections = mapped
+    reference = run_aml.source_reference(
+        Path(dataset.tables["transactions"].path).parent.parent / "source.parquet",
+        identities,
+        include_values=True,
+        include_labels=False,
+    )
+    labels = {
+        row["sample_id"]: row["involvement"]
+        for group in selections["v1"]["forecast_split"].values()
+        for row in group
+    }
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        result = run_case(
+            *mapped,
+            selection,
+            family,
+            directory=tmp_path,
+            capacity=5,
+            batch_size=1,
+            steps=1,
+            threads=1,
+            seed=0,
+            expected_labels=labels,
+            input_reference=reference,
+            campaign="correctness",
+        )
+    finally:
+        torch.set_num_threads(previous)
+    assert result["status"] == "passed" and result["optimizer_updates"] == 0
+    assert result["target_and_loss_checks"] == "passed"
+    assert result["input_membership_and_counts"] == "passed"
+    assert not {"lifecycle", "finetuning", "mid_epoch_resume"} & result.keys()
+    assert result["splits"]["train"]["batches"] == 2
+    assert all("independent_evaluation" in row for row in result["splits"].values())

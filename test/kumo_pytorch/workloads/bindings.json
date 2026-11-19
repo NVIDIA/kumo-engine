@@ -413,17 +413,15 @@
           }
         }
       },
-      "campaigns": [
-        "training",
-        "full"
-      ],
+      "campaigns": [],
       "inputs": "account-transactions",
       "task": "next-outgoing-delay",
       "anchors": "daily-forecast",
       "execution": {
         "batch_size": 32,
         "threads": 1
-      }
+      },
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
     },
     {
       "ref": "L03",
@@ -452,17 +450,15 @@
           }
         }
       },
-      "campaigns": [
-        "training",
-        "full"
-      ],
+      "campaigns": [],
       "inputs": "account-transactions",
       "task": "next-outgoing-format",
       "anchors": "daily-forecast-graph",
       "execution": {
         "batch_size": 32,
         "threads": 1
-      }
+      },
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
     },
     {
       "ref": "L04",
@@ -490,17 +486,15 @@
           }
         }
       },
-      "campaigns": [
-        "training",
-        "full"
-      ],
+      "campaigns": [],
       "inputs": "account-transactions",
       "task": "account-involvement-next24h",
       "anchors": "daily-forecast",
       "execution": {
         "batch_size": 32,
         "threads": 1
-      }
+      },
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
     },
     {
       "ref": "S01",

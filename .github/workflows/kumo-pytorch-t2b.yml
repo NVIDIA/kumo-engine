@@ -345,6 +345,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.correctness) }}
     uses: ./.github/workflows/_kumo-pytorch-binding.yml
     with:
+      executor: ${{ matrix.executor }}
       binding: ${{ matrix.binding }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
@@ -385,6 +386,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.lifecycle) }}
     uses: ./.github/workflows/_kumo-pytorch-binding.yml
     with:
+      executor: ${{ matrix.executor }}
       binding: ${{ matrix.binding }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
@@ -394,89 +396,8 @@ jobs:
       min_free_gib: ${{ matrix.min_free_gib }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
-  lifecycle-hi-small:
-    name: Lifecycle / AML HI Small
-    needs: diskgraph-wheel
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    environment:
-      name: gha-kumo-workflow-tests
-      deployment: false
-    permissions:
-      contents: read
-      id-token: write
-    defaults:
-      run:
-        working-directory: .
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/kumo-pytorch-setup
-        with:
-          diskgraph-wheel-artifact: diskgraph-wheel
-          torch-extra: cpu
-      - name: Read private dataset inputs with the Engine test role
-        id: aml-credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-          output-env-credentials: false
-          output-credentials: true
-          unset-current-credentials: true
-      - name: Download and verify pinned sources and anchors
-        id: aml-data
-        env:
-          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
-        run: |
-          python -m test.kumo_pytorch.data fetch --dataset hi-small \
-            --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
-      - name: Check bounded AML HI Small training lifecycle and mid-epoch resume
-        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
-        run: |
-          python -m test.kumo_pytorch.run_aml \
-            --data-dir "$RUNNER_TEMP/aml-data" \
-            --prepared-dir "$RUNNER_TEMP/aml-lifecycle-prepared" \
-            --output "$RUNNER_TEMP/lifecycle-hi-small" --anchors-per-split 4 \
-            --batch-size 2 --steps 1 --threads 1
-      - name: Check real AML HI Small multi-source histories
-        if: ${{ !cancelled() && steps.aml-data.outcome == 'success' }}
-        run: |
-          python -m test.kumo_pytorch.history_checks \
-            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-histories" \
-            --anchors-per-split 4 --threads 1
-      - name: Show real AML HI Small history results
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/aml-histories/report.md" ]; then
-            cat "$RUNNER_TEMP/aml-histories/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Retain real AML HI Small lifecycle reports
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ always() }}
-        with:
-          name: kumo-pytorch-aml-lifecycle
-          path: |
-            ${{ runner.temp }}/lifecycle-hi-small/report.json
-            ${{ runner.temp }}/lifecycle-hi-small/**/result.json
-            ${{ runner.temp }}/lifecycle-hi-small/**/report.json
-            ${{ runner.temp }}/lifecycle-hi-small/**/*.log
-          retention-days: 14
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ always() }}
-        with:
-          name: kumo-pytorch-aml-histories
-          path: |
-            ${{ runner.temp }}/aml-histories/report.json
-            ${{ runner.temp }}/aml-histories/report.md
-          retention-days: 14
-
-  lifecycle-hm:
-    name: Lifecycle / H&M ${{ matrix.scale }}
+  hm-runs:
+    name: Setup / H&M ${{ matrix.scale }}
     needs: diskgraph-wheel
     strategy:
       fail-fast: false
@@ -488,7 +409,33 @@ jobs:
             scale: Medium
     uses: ./.github/workflows/kumo-pytorch-t2a.yml
     with:
+      campaign: prepare
       tier: ${{ matrix.tier }}
+      diskgraph-wheel-artifact: diskgraph-wheel
+
+  hm-checks:
+    name: ${{ matrix.group.label }} / H&M ${{ matrix.dataset.scale }}
+    needs: [diskgraph-wheel, hm-runs]
+    if: ${{ !cancelled() && needs.diskgraph-wheel.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset:
+          - tier: t2a
+            scale: Small
+          - tier: t2b
+            scale: Medium
+        group:
+          - campaign: correctness
+            label: Correctness
+          - campaign: training
+            label: Training
+          - campaign: lifecycle
+            label: Lifecycle
+    uses: ./.github/workflows/kumo-pytorch-t2a.yml
+    with:
+      campaign: ${{ matrix.group.campaign }}
+      tier: ${{ matrix.dataset.tier }}
       diskgraph-wheel-artifact: diskgraph-wheel
 
   population:
@@ -723,7 +670,7 @@ jobs:
 
   binding-results:
     name: Results / Dataset Campaigns
-    needs: [plan, benchmarks, fitting-memory, correctness, training, lifecycle, population, lifecycle-hi-small]
+    needs: [plan, benchmarks, fitting-memory, correctness, training, lifecycle, population]
     if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -772,7 +719,7 @@ jobs:
 
   gate:
     name: kumo-pytorch-gate
-    needs: [changes, plan, diskgraph-wheel, tooling, package, examples, fixtures, conformance, host-metrics, gpu-checks, correctness, training, lifecycle, lifecycle-hi-small, lifecycle-hm, population, fitting-memory, benchmarks, binding-results]
+    needs: [changes, plan, diskgraph-wheel, tooling, package, examples, fixtures, conformance, host-metrics, gpu-checks, correctness, training, lifecycle, hm-runs, hm-checks, population, fitting-memory, benchmarks, binding-results]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
