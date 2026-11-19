@@ -15,6 +15,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import resource
 import shutil
 import signal
@@ -833,6 +834,38 @@ def explain(root, *, check_local_permissions=True):
                 denied_artifact_access=denied, incomplete_artifact=incomplete)
 
 
+def workload(args):
+    """Load explicitly supplied customer code without changing isolated sys.path."""
+    path = getattr(args, 'workload', None)
+    if path is None:
+        return None
+    spec = importlib.util.spec_from_file_location('mlops_customer_workload', path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f'Cannot load workload at {path}')
+    module = importlib.util.module_from_spec(spec)
+    # Dataclasses and native model serializers resolve classes by module name.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    phases = getattr(module, 'PHASES', ())
+    require(isinstance(phases, (tuple, list)) and phases,
+            'Workload must declare a nonempty PHASES sequence')
+    require(all(isinstance(name, str) and re.fullmatch('[a-z][a-z0-9_-]*', name)
+                for name in phases), 'Workload phase names must be safe filenames')
+    require(len(set(phases)) == len(phases), 'Workload phases must be unique')
+    require(not set(phases) & {'summary', 'platform', 'platform-prerequisite'},
+            'summary, platform and platform-prerequisite are reserved for the harness')
+    require(callable(getattr(module, 'run_phase', None)),
+            'Workload must implement run_phase(name, root, profile)')
+    return module
+
+
+def phase_names(custom, profile):
+    if custom is not None:
+        prefix = ('platform-prerequisite',) if profile is not None else ()
+        return prefix + tuple(custom.PHASES)
+    return ('negative', 'fit', 'score', 'evaluate') if profile is not None else PHASES
+
+
 def phase(args):
     started = time.monotonic()
     report = dict(status='failed', phase=args.phase)
@@ -852,13 +885,25 @@ def phase(args):
                                       experiment=profile.experiment,
                                       artifact_root=profile.artifact_root,
                                       placement=profile.placement())
-        import torch
+        custom = workload(args)
+        require(args.phase in phase_names(custom, profile),
+                f'Unknown workload phase: {args.phase}')
+        if custom is not None:
+            report['workload'] = dict(path=str(args.workload),
+                                      sha256=digest(args.workload))
+            if args.phase == 'platform-prerequisite':
+                report['result'] = profile.negative()
+            else:
+                report['result'] = custom.run_phase(
+                    args.phase, args.output_dir, profile)
+        else:
+            import torch
 
-        import kumo.engine as kumo
+            import kumo.engine as kumo
 
-        torch.set_num_threads(2)
-        kumo.configure(scratch_dir=args.output_dir / f'scratch-{args.phase}')
-        report['result'] = globals()[args.phase](args.output_dir)
+            torch.set_num_threads(2)
+            kumo.configure(scratch_dir=args.output_dir / f'scratch-{args.phase}')
+            report['result'] = globals()[args.phase](args.output_dir)
         report['status'] = 'passed'
     except (ImportError, PermissionError, PrerequisiteError):
         report['status'] = 'blocked'
@@ -871,7 +916,8 @@ def phase(args):
     finally:
         report['seconds'] = time.monotonic() - started
         report['resources'] = dict(
-            device='cpu', torch_threads=2,
+            device=None if getattr(args, 'workload', None) else 'cpu',
+            torch_threads=None if getattr(args, 'workload', None) else 2,
             maxrss_self_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
             maxrss_terminated_children_kib=resource.getrusage(
                 resource.RUSAGE_CHILDREN).ru_maxrss,
@@ -897,12 +943,22 @@ def run(args):
             report['platform_helpers_sha256'] = digest(
                 Path(__file__).with_name('wheel_mlops_platform.py'))
         profile = platform_backend(root)
+        custom = workload(args)
+        phases = phase_names(custom, profile)
+        report['phases'] = {
+            name: dict(status='blocked', reason='Prerequisite has not passed')
+            for name in phases
+        }
+        if custom is not None:
+            report['workload'] = dict(path=str(args.workload),
+                                      sha256=digest(args.workload),
+                                      phases=list(custom.PHASES))
         if profile is not None:
-            report['required_gaps'] = {
-                'exported_epoch_history': dict(
+            report['required_gaps'] = {}
+            if custom is None:
+                report['required_gaps']['exported_epoch_history'] = dict(
                     status='not implemented',
-                    reason='Managed profiles do not yet exercise epoch-history export/reload.'),
-            }
+                    reason='Managed profiles do not yet exercise epoch-history export/reload.')
             report['required_gaps']['ui_review'] = {
                 'status':
                 'blocked',
@@ -916,8 +972,9 @@ def run(args):
                     'reason':
                     'Client execution does not qualify the managed runtime',
                 }
-        report['gpu_helpers_sha256'] = digest(
-            Path(__file__).with_name('wheel_gpu_smoke.py'))
+        if custom is None:
+            report['gpu_helpers_sha256'] = digest(
+                Path(__file__).with_name('wheel_gpu_smoke.py'))
         if profile is not None and profile.config['environment'] == 'managed':
             report['environment'] = check_install(args.wheel,
                                                   args.expected_version,
@@ -930,9 +987,6 @@ def run(args):
                 [sys.executable, '-I', '-m', 'pip', '--isolated', 'check'],
                 stdout=log, stderr=subprocess.STDOUT, check=True, timeout=120)
         execution_started = True
-        phases = (('negative', 'fit', 'score',
-                   'evaluate') if profile is not None else PHASES)
-        report['phases'] = {name: report['phases'][name] for name in phases}
         for name in phases:
             command = [
                 sys.executable, '-I',
@@ -941,6 +995,8 @@ def run(args):
                 str(args.wheel), '--expected-version', args.expected_version,
                 '--phase', name
             ]
+            if custom is not None:
+                command += ['--workload', str(args.workload)]
             if profile is not None:
                 command.append('--execute-platform')
             with (root / f'{name}.log').open('w') as log:
@@ -967,7 +1023,7 @@ def run(args):
             if scratch.exists():
                 shutil.rmtree(scratch)
             require(not scratch.exists(), 'Producer scratch survived cleanup')
-            if name == 'fit':
+            if custom is None and name == 'fit':
                 for source in root.glob('data-*'):
                     shutil.rmtree(source)
                 require(not list(root.glob('data-*')),
@@ -1026,7 +1082,9 @@ def main(argv=None):
     parser.add_argument('--platform-config', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--execute-platform', action='store_true',
                         help=argparse.SUPPRESS)
-    parser.add_argument('--phase', choices=PHASES, help=argparse.SUPPRESS)
+    parser.add_argument('--workload', type=Path,
+                        help='Python module declaring PHASES and run_phase(name, root, profile)')
+    parser.add_argument('--phase', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if (args.platform_config is not None or
         (args.phase is not None and
@@ -1037,6 +1095,12 @@ def main(argv=None):
         )
     if args.phase_timeout <= 0:
         parser.error('--phase-timeout must be positive')
+    if args.phase is not None and not re.fullmatch('[a-z][a-z0-9_-]*', args.phase):
+        parser.error('Invalid phase name')
+    if args.workload is not None:
+        args.workload = args.workload.resolve(strict=True)
+    elif args.phase is not None and args.phase not in PHASES:
+        parser.error(f'Unknown built-in phase: {args.phase}')
     args.output_dir = args.output_dir.resolve()
     args.wheel = args.wheel.resolve(strict=True)
     return phase(args) if args.phase else run(args)
