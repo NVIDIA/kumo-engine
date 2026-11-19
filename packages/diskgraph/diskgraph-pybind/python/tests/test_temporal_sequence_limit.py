@@ -311,6 +311,24 @@ def test_unsupported_fast_paths_keep_full_frame(history_graph, guard):
         assert a["batch"].to_pylist() == expected
 
 
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+@pytest.mark.parametrize("distinct", [True, False])
+def test_traversal_order_frames_keep_the_full_frame(history_graph, order, distinct):
+    # Traversal order selects rows by position, so no cap may preselect by time.
+    for limit in (1, 3, 20):
+        plan = plan_for(history_graph, order=order, limit=limit, distinct=distinct)
+        plan["frames"][0]["preserve_traversal_order"] = True
+        reference = copy.deepcopy(plan)
+        reference["aggregates"] = [{"name": "all", "frame": "f", "operation": "count"}]
+        actual = query(history_graph, plan)["sequences"][0]
+        expected = query(history_graph, reference)["sequences"][0]
+        for key in ("offsets", "timestamps", "node_ids"):
+            assert actual[key] == expected[key], limit
+        assert actual["batch"].equals(expected["batch"])
+        lengths = query_lengths(history_graph, plan)["sequences"][0]["lengths"]
+        assert lengths.to_pylist() == np.diff(actual["offsets"]).tolist()
+
+
 def test_model_and_length_paths_agree(history_graph):
     plan = plan_for(history_graph)
     inspected = query(history_graph, plan)["sequences"][0]

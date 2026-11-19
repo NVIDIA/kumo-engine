@@ -624,7 +624,9 @@ fn relation_columns(
                 for (&destination, &key) in batch {
                     if seen.insert(destination) {
                         destinations.push(destination);
-                        sort_keys.push(key);
+                        if include_sort_keys {
+                            sort_keys.push(key);
+                        }
                     }
                 }
             } else {
@@ -665,7 +667,7 @@ fn distinct_prefix(
     order: SequenceOrder,
     edges_visited: &mut u64,
 ) -> (usize, Vec<u64>, Vec<u64>, HashSet<u64>) {
-    let mut seen = HashSet::<u64>::with_capacity(limit.min(range.len()));
+    let mut seen = HashSet::<u64>::with_capacity(limit.min(range.len()).min(4096));
     let mut destinations = Vec::new();
     let mut sort_keys = Vec::new();
     let mut destination_buffer = [0u64; 256];
@@ -1018,6 +1020,9 @@ fn materialize_frame(
             let window = decoder
                 .as_ref()
                 .map(|decoder| (decoder, lower, upper, plan.name.as_str()));
+            // Traversal order selects rows by position, so it needs the whole frame.
+            let capped = sequence
+                .filter(|_| hops.len() == 1 && window.is_some() && !plan.preserve_traversal_order);
             let mut next = Vec::new();
             for node_id in frontier {
                 next.extend(relation_destinations(
@@ -1025,7 +1030,7 @@ fn materialize_frame(
                     &table.relations()[edge.relation_idx].name,
                     node_id,
                     window,
-                    sequence.filter(|_| hops.len() == 1 && window.is_some()),
+                    capped,
                     plan.distinct,
                     stats,
                 )?);
