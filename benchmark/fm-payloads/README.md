@@ -37,8 +37,8 @@ counts. Median phase times in milliseconds:
 
 | Encoding | DuckDB reference full payload | DiskGraph load and assembly | Encoding retained batch |
 | --- | ---: | ---: | ---: |
-| Arrays | 42.336 | 4.113 | 0.748 |
-| Arrow IPC | 44.005 | 3.446 | 0.448 |
+| Arrays | 41.228 | 3.541 | 0.720 |
+| Arrow IPC | 40.517 | 3.549 | 0.440 |
 
 The backend paths and measured phase boundaries differ. This small smoke
 case validates parity and timing instrumentation, not general throughput.
