@@ -286,6 +286,13 @@ history capping/decoding and cross-component event merging are separate work.
 A selection spanning multiple split stages uses native stage batches. Each stage
 is shuffled independently; batches never mix split stages. The output covers the
 same anchors, while its order differs from the previous global Python shuffle.
+Native graph output formats partition ranks, pad and drop partial
+tails per stage. Refit does not combine partial tails from different splits.
+With `drop_last=True`, either topology may drop a split completely when it is
+smaller than one full batch. Padding uses a rank-owned anchor from another
+selected stage if its current shard is empty; only a rank with no owned anchors
+in the whole selection borrows marked padding from another rank. Padding-only
+batches retain their source anchor's split and metadata.
 Encoder fitting remains a separate stage and is not made streaming here.
 
 The native model path avoids rebuilding a `SampleRequest` for each anchor.

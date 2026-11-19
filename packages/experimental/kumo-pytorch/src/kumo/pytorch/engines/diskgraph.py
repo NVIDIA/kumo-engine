@@ -1231,6 +1231,10 @@ class DiskGraphSource:
         seed: int,
         epoch: int,
     ) -> dict[str, Any]:
+        if getattr(spec, "topology", "relations") == "sampled":
+            raise ValueError(
+                "sampled graph topology requires fixed-size native AnchorTable batches"
+            )
         del seed, epoch
         if self._sampler is None:
             raise RuntimeError("DiskGraph source is closed")
@@ -1275,6 +1279,48 @@ class DiskGraphSource:
             }
         else:
             selected = runtime
+        if spec.topology == "sampled":
+            graph = self.columnar_graph_batch(sample, spec, selected)
+            return {
+                "nodes": {
+                    table: {
+                        "ids": _graph_node_ids(
+                            node.ids.combine_chunks()
+                            if isinstance(node.ids, self._pa.ChunkedArray)
+                            else node.ids
+                        ),
+                        "batch": torch.from_numpy(
+                            node.owners.to_numpy(zero_copy_only=False)
+                        ).long(),
+                        "features": {
+                            name: encoder.encode_arrow(node.features[name])
+                            for name, encoder in state.get(table, {}).items()
+                        },
+                    }
+                    for table, node in graph.nodes.items()
+                },
+                "edges": {
+                    key: {
+                        "index": torch.stack(
+                            tuple(
+                                torch.from_numpy(column.to_numpy(zero_copy_only=False)).long()
+                                for column in edge.index.columns
+                            )
+                        ),
+                        "source_type": edge.source_type,
+                        "destination_type": edge.destination_type,
+                        "relation": edge.relation,
+                        "direction": edge.direction,
+                    }
+                    for key, edge in graph.edges.items()
+                },
+                "num_sampled_nodes": {
+                    key: list(counts) for key, counts in graph.num_sampled_nodes.items()
+                },
+                "num_sampled_edges": {
+                    key: list(counts) for key, counts in graph.num_sampled_edges.items()
+                },
+            }
         previous = getattr(self, "_runtime_batch", None)
         self._runtime_batch = selected
         try:
@@ -1336,6 +1382,59 @@ class DiskGraphSource:
                 ids=columns[definition.primary_key] if definition.primary_key else ids,
                 owners=owners,
                 features=pa.table({name: columns[name] for name in names}),
+            )
+        if spec.topology == "sampled":
+            if deduplicate_edges:
+                raise ValueError("sampled graph topology preserves edge occurrences")
+
+            counts = {
+                entry["edge_type"]["rel"]: tuple(entry["counts"].to_pylist())
+                for entry in graph["num_sampled_edges_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            edge_types = {
+                entry["edge_type"]["rel"]: entry["edge_type"]
+                for entry in (*graph["edge_index_dict"], *graph["num_sampled_edges_dict"])
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            buffers = {
+                entry["edge_type"]["rel"]: pa.table(
+                    {"source": entry["src"], "destination": entry["dst"]}
+                )
+                for entry in graph["edge_index_dict"]
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            edges = {}
+            for physical, kind in edge_types.items():
+                logical = physical_relations[physical]
+                index = buffers.get(physical)
+                if index is None:
+                    index = pa.table(
+                        {
+                            "source": pa.array([], type=pa.uint64()),
+                            "destination": pa.array([], type=pa.uint64()),
+                        }
+                    )
+                edges[physical] = ColumnarEdges(
+                    kind["src"],
+                    kind["dst"],
+                    index,
+                    logical,
+                    "forward"
+                    if physical == self._relation_mapping[logical]["forward"]
+                    else "reverse",
+                )
+            return ColumnarGraph(
+                sample.entity.table,
+                nodes,
+                edges,
+                {
+                    table: tuple(graph["num_sampled_nodes_dict"][table].to_pylist())
+                    if table in graph["num_sampled_nodes_dict"]
+                    else (0,)
+                    for table in nodes
+                },
+                counts,
             )
         parts = defaultdict(list)
         for edge in graph["edge_index_dict"]:
@@ -1486,14 +1585,23 @@ class DiskGraphSource:
     ) -> None:
         if not requests or spec.entity.available_from is None:
             return
+        self._validate_root_ids_availability(
+            spec,
+            self._root_ids(spec.entity.table, requests),
+            [self._cutoff(request.as_of_time) for request in requests],
+        )
+
+    def _validate_root_ids_availability(self, spec, node_ids, cutoffs) -> None:
+        """Use the same availability rule with already resolved native seeds."""
+        if not node_ids or spec.entity.available_from is None:
+            return
         table = spec.entity.table
         column = spec.entity.available_from
-        node_ids = self._root_ids(table, requests)
         times = self._feature_values(table, node_ids, column)
-        for request, value in zip(requests, times, strict=True):
+        for cutoff, value in zip(cutoffs, times, strict=True):
             if value is None:
                 raise ValueError(f"{table!r} row has no timestamp in {column!r}")
-            if self._cutoff(value) >= self._cutoff(request.as_of_time):
+            if self._cutoff(value) >= cutoff:
                 raise ValueError("entity did not exist before the requested sample time")
 
     def _root_ids(

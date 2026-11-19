@@ -73,7 +73,7 @@ The [guide](../README.md) explains the concepts in order. The behavior spec, wit
 | [`Graph`](batches.md#graph) | `kumo.pytorch.api` | Node attributes use the same explicit field encodings as ordinary columns. |
 | [`ColumnarGraph`](batches.md#columnargraph) | `kumo.pytorch.api` | CPU Arrow graph buffers emitted by `Task.batches(output_format="columnar")`. |
 | [`ColumnarNodes`](batches.md#columnarnodes) | `kumo.pytorch.api` | Aligned columns for node occurrences, isolated per example. |
-| [`ColumnarEdges`](batches.md#columnaredges) | `kumo.pytorch.api` | Selected edges in declared left-to-right relation orientation. |
+| [`ColumnarEdges`](batches.md#columnaredges) | `kumo.pytorch.api` | Selected edges in the graph topology's declared orientation. |
 | [`Columns`](batches.md#columns) | `kumo.pytorch.api` | Keep selected encoded fields as separate typed columns. |
 | [`Tokens`](batches.md#tokens) | `kumo.pytorch.api` | Concatenate one row's encoded IDs in the declared field order. |
 | [`Composite`](batches.md#composite) | `kumo.pytorch.api` | One category ID for the ordered tuple of scalar component results. |
