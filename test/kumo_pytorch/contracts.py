@@ -465,7 +465,11 @@ def aml_graph(schema, *, max_transactions, inclusive=False, profile=None):
             tuple(
                 [r.Encode(name, r.ZScore()) for name in graph["numerical"]]
                 + [r.Encode(name, r.Vocabulary()) for name in graph["categorical"]]
-                + [r.Encode(graph["timestamp"], r.Raw())]
+                + (
+                    [r.Encode(graph["timestamp"], r.Raw())]
+                    if graph.get("timestamp")
+                    else []
+                )
             )
         )
         for node, graph in nodes.items()

@@ -54,6 +54,7 @@ def test_manifest_has_exact_starter_inputs():
         "synthetic-medium-ltv",
         "mbd-transaction-forecast",
         "mbd-transaction-category",
+        "streaming-25b",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -526,3 +527,54 @@ def test_category_forecast_reuses_sources_and_limits_new_read_grant():
         "arn:aws:s3:::kumo-engine-arena/" + key for key in extra
     }
     assert task_definition(selected)["auxiliary_checks"] == ["aligned", "matching"]
+
+
+def test_dataset_bucket_override_reaches_s3_client(tmp_path):
+    manifest, item = fixture_manifest()
+    manifest["datasets"]["fixture"].update(
+        bucket="engine-test-bucket", expected_bucket_owner="012345678901"
+    )
+    calls = []
+
+    class Client:
+        def get_object(self, **kwargs):
+            calls.append(kwargs)
+            return {"Body": io.BytesIO(b"golden input")}
+
+    result = data.execute("fetch", manifest, "fixture", tmp_path, client=Client())
+    assert result["status"] == "passed"
+    assert calls == [
+        {
+            "Bucket": "engine-test-bucket",
+            "Key": item["key"],
+            "ExpectedBucketOwner": "012345678901",
+        }
+    ]
+
+
+def test_streaming_inventory_and_shared_binding():
+    from test.kumo_pytorch.bindings import dataset_definition, load_bindings
+    from test.kumo_pytorch.nightly import campaign_matrix
+
+    binding = load_bindings()["T01"]
+    definition = dataset_definition(binding)
+    inventory = data.load_manifest()["datasets"][definition["inventory"]]
+    assert inventory["bucket"] == "kumo-test-dataplane-bucket"
+    assert len(inventory["files"]) == 746
+    sources = [f for f in inventory["files"] if f["key"].endswith(".parquet")]
+    assert len(sources) == 744 and sum(f["bytes"] for f in sources) == 512202229780
+    assert len(definition["tables"]) == 7 and not definition.get("prepare")
+    assert definition["anchor_generation"]["cohort_size"] == 10000
+    assert binding["representation"] == "graphsage"
+    assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
+    rows = [
+        row
+        for mode in ("population", "training", "lifecycle")
+        for row in campaign_matrix(mode)["include"]
+        if row["binding"] == "T01"
+    ]
+    assert len(rows) == 4 and all(row["dataset"] == "streaming-25b" for row in rows)
+    assert all(
+        not any(v in f["key"] for v in ("_eval", "_transcode", "ground_truth"))
+        for f in sources
+    )

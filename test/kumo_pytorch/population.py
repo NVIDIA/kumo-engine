@@ -114,7 +114,9 @@ def check_delivery(batch, expected, *, graph_clocks=None):
     finite(batch.targets)
     if "graph" in batch.inputs:
         for name, field in (
-            graph_clocks or {"transactions": GRAPH_TIMESTAMP_FIELD}
+            graph_clocks
+            if graph_clocks is not None
+            else {"transactions": GRAPH_TIMESTAMP_FIELD}
         ).items():
             nodes = batch.inputs["graph"]["nodes"].get(name)
             if nodes is None:
@@ -201,6 +203,7 @@ def verify_batch_for(binding, batch, expected, state):
         graph_clocks={
             node: fields["timestamp"]
             for node, fields in graph_layout(inputs)[0].items()
+            if fields.get("timestamp")
         }
         if "graph" in inputs
         else None,

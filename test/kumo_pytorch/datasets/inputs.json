@@ -589,6 +589,3747 @@
           "sha256": "5a6476f7fc67761595ac063ba9892a8d9fbc08ff0f6e73b4dc8b4983efbbd5b6"
         }
       ]
+    },
+    "streaming-25b": {
+      "dataset_id": "streaming/25B",
+      "dataset_version": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+      "population": "viewer-weekly-10k",
+      "anchor_versions": [],
+      "bucket": "kumo-test-dataplane-bucket",
+      "expected_bucket_owner": "926922431314",
+      "source_bytes": 512202229780,
+      "files": [
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00000.parquet",
+          "bytes": 1383213968,
+          "sha256": "88e55762d7625f67d19173ecb3d412812f55e48e08b6c6e7542c924ce5b1b183"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00001.parquet",
+          "bytes": 1381794378,
+          "sha256": "c8c3900fcb1f12ccf785b29ece026b3dfe60a9b2dd845bd79714e7767cbeea26"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00002.parquet",
+          "bytes": 1382449294,
+          "sha256": "041748bd4f41b22596f034e9e3fb1666c92d91defa80f61380ed17ee92dd7e06"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00003.parquet",
+          "bytes": 1377059222,
+          "sha256": "9060172904b4692e5ed806573bd0835a679a4c3198570832a58f9179fc515cc0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00004.parquet",
+          "bytes": 1379866678,
+          "sha256": "b6388b774ad1c281af47980dc732ae30c596ab94db8f9fa0d92a2d3b6f058f1a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00005.parquet",
+          "bytes": 1376674820,
+          "sha256": "8fb62474298b9e002f4c7314eb25902ebfc8883b9eb8cef99d33f51e926145f3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00006.parquet",
+          "bytes": 1380972264,
+          "sha256": "357ab604bf8113a07384ece7ab2d411c99781e083d0b70c12666532f18a28f40"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00007.parquet",
+          "bytes": 1383443871,
+          "sha256": "578ba94f23ce4296426c3f7b1250174d05475a5e2f2f436086dc332a2d2cc95b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00008.parquet",
+          "bytes": 1378851358,
+          "sha256": "335adebcd641c22dc5d75cc3c3e32d20ade4ed001aef9d6a30fb7a29996739f8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00009.parquet",
+          "bytes": 1374653204,
+          "sha256": "7c72a6b4518a4f7bb467588dd5dbc4a680fd9cd917895d3b110bd4fc6e185c18"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00010.parquet",
+          "bytes": 1380142716,
+          "sha256": "00a1b9f9bbd44cbf484c6a35e19463267689ae8aabdeb8cc16fd6cf502f558d4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00011.parquet",
+          "bytes": 1378428627,
+          "sha256": "d795a95fe905d8cf1f79fe6ace0591c2bb205b6ab3acc8877774a5b27831d51b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00012.parquet",
+          "bytes": 1375778560,
+          "sha256": "1dd3ec78db7cc34d10338dc0aaf7486b41f0f8c1e13fc528d4cd2a542dd8d49d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00013.parquet",
+          "bytes": 1376304870,
+          "sha256": "f3225232234e49ea693a13030ae031144897257ad973ff623835f9406df751b8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00014.parquet",
+          "bytes": 1374728988,
+          "sha256": "0d2da3da93a85464bf2f8f4b55c5cdc58c5a2f1c01c0854898cbbe3179d93513"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00015.parquet",
+          "bytes": 1385534566,
+          "sha256": "4d5fca6100970e804c9c80eaf1c756f3a91db9308e0bf451274431d88a80d241"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00016.parquet",
+          "bytes": 1378312042,
+          "sha256": "23e24c70b5e7396760eddddce96380c000436f9a871eeac0c9f790b16b8beeb7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00017.parquet",
+          "bytes": 1377372834,
+          "sha256": "c8cb25ef9b4e112fa75e2b6b11018732b930a802884fb803e7042be4264c5a34"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00018.parquet",
+          "bytes": 1380973610,
+          "sha256": "2df8d7b768480265244440b0788a67f0bf98bd2e25a36b6b351706e7c7d1edb6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00019.parquet",
+          "bytes": 1372649882,
+          "sha256": "fa2ac1a0b715bb92ea600341ac435a3194e6cce3d034f02304f2079668cfb943"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00020.parquet",
+          "bytes": 1378428958,
+          "sha256": "c37efab8d6ca80908b2cf988fe090943a748f6eb35ee2a50d64166756521ca88"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00021.parquet",
+          "bytes": 1377272014,
+          "sha256": "85b95085855d8fec6924bcae84fec36b68d363518d0fd5a402cfe685f046ef02"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00022.parquet",
+          "bytes": 1380413640,
+          "sha256": "8b9cfbfe6a097970091429bb2eb64748a3c9d070a5076f2b761173ca24a25d9b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00023.parquet",
+          "bytes": 1374874865,
+          "sha256": "9b5a6ac488d56f6eb4746793ae5d2481cd62c177fd747bd9bf046bfc1bc4167e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00024.parquet",
+          "bytes": 1377027325,
+          "sha256": "f5e59213d96762461af145a8e1fd32e431ed747708529ee206cfdcc85fb46337"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00025.parquet",
+          "bytes": 1375104613,
+          "sha256": "ea124c55a740a025a4984d31c57b20121bb4ed2f3eac6e5c59481d15a57ff33c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00026.parquet",
+          "bytes": 1381264690,
+          "sha256": "3a2b49fc64a3b38415c8aacef8e35044e78cca45ec7d6f84b562bd9482aaf523"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00027.parquet",
+          "bytes": 1380665182,
+          "sha256": "a416a77c6c46a1d9140a0a1f35dc36c13455f4406bdbd1a1dc68293ffde81bc9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00028.parquet",
+          "bytes": 1378081869,
+          "sha256": "348f31adc159dc74f9e182809fef4c78bb467ec3b0341dc247db55798a734567"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00029.parquet",
+          "bytes": 1379842890,
+          "sha256": "7ab34540b03f7bf43129ea83a7f62dd9e21cf418fcc6618d435c0f42759a8ffc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00030.parquet",
+          "bytes": 1376852477,
+          "sha256": "3b80d5a7290e5553a0e3f56573a55bc36d2775c7c6fe93c11ad8d58a495fc638"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00031.parquet",
+          "bytes": 1380988592,
+          "sha256": "ad5535372f5ee46b86dab80e6e17d05ef118637b5808fc9d4f232b97149ee90d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00032.parquet",
+          "bytes": 1374174482,
+          "sha256": "cee3ce6a3285313a0908cb3c3f176a2b413154372d5fb367e54e39e887196e10"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00033.parquet",
+          "bytes": 1373952648,
+          "sha256": "10709a2acdc9e8bbaa6bd90e81f3ec37b6794bc6a254b498ff7475abe34db4b8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00034.parquet",
+          "bytes": 1373360047,
+          "sha256": "84e2b22c5f8d8577e1f523cb3420cf2e5e21efa0ae5c6384d5da32cd541ae77f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00035.parquet",
+          "bytes": 1378277628,
+          "sha256": "88488940bde930b6c5988163b16f6d28ebb39e123ef774adeca1b7114331c345"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00036.parquet",
+          "bytes": 1375685859,
+          "sha256": "f900cbad3cf65f44f86ac6975a6156df5cf9f16ba3ca861f3712e1891c833415"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00037.parquet",
+          "bytes": 1377596902,
+          "sha256": "57ba7d6f76d3ee5e47b2262c4340f3759e319296cbf59fa021ff055b2180e1f4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00038.parquet",
+          "bytes": 1383494091,
+          "sha256": "27f79a0f93cde58e996c970eeb0be82f6dd64c082efc582b28e69f1e3d3731e6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00039.parquet",
+          "bytes": 1379442012,
+          "sha256": "24ad2e8e082438a1736bf5d70c3a16a1923695a105a364cd2300d9a3e75a50ff"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00040.parquet",
+          "bytes": 1377635701,
+          "sha256": "b3ea59202003f05f978b09ff1b9042703326ba417b0df35468308f344a43f578"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00041.parquet",
+          "bytes": 1376575400,
+          "sha256": "a60a263eaa3b4743b6202d019a488dc1a86c11d9d598ca172b0849337f1e7b58"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00042.parquet",
+          "bytes": 1379631483,
+          "sha256": "7add3a62e54316f5c9a1d852dcdde4e90a23a99db52a4fc87df8eb88f3134275"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00043.parquet",
+          "bytes": 1380151083,
+          "sha256": "db4789af93eb9f15e03c46addcf40b1f9293003d804fcb36283fcb4b1eccc8be"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00044.parquet",
+          "bytes": 1375673383,
+          "sha256": "5fa35d2324c063a8840fd95fcb34cd93e24d49dad9ca49ff6d83065c499b771a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00045.parquet",
+          "bytes": 1377558870,
+          "sha256": "2fcd8ef68ce73bac187612c652024b059f96d06f6a3933942fc6901941cc10c7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00046.parquet",
+          "bytes": 1381211012,
+          "sha256": "07b97a6372e535eaa6606a54584af7cd67cef86acd6d0b7fd23bfe343e7e2dab"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00047.parquet",
+          "bytes": 1381748996,
+          "sha256": "cbe6814e61dc2ae4142cdd1efe0f4068426c5c120b8416626a8e950f9fb6defb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00048.parquet",
+          "bytes": 1378692315,
+          "sha256": "84e267b56c53e5181c8dcb9e49655468afe8fb4ccdba99ae06628c05f1119ef5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00049.parquet",
+          "bytes": 1381741364,
+          "sha256": "7a1991c1ccec85dc18266244bba8577a441170f1472362f203d2370f9c54f89d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00050.parquet",
+          "bytes": 1378062674,
+          "sha256": "27be7ba49d8431d0a9a14a6201d26749ae2cdbf6ad91224b1ae7a6a2e4231397"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00051.parquet",
+          "bytes": 1379943982,
+          "sha256": "637ea024c309b3abe9b4b5df83368e7118f70d36528967acf4809abe8c8101ff"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00052.parquet",
+          "bytes": 1383609615,
+          "sha256": "f0df4945fdf6bc5af4d89a2dc5a1a8c61a68a3ecaf05afb5cd76f35c52efdc90"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00053.parquet",
+          "bytes": 1379161619,
+          "sha256": "e8799472d20ddc899b95c7cc2047b9461b2aec062750963b403b7d7bb1cc6174"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00054.parquet",
+          "bytes": 1380666413,
+          "sha256": "19faaa604dd7b33534c3d67e29741183609202718df51344426c2854c2889293"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00055.parquet",
+          "bytes": 1381868479,
+          "sha256": "033836d9cb107f9d3adffe7cc2ee6c64f2423afc68f6dee68b988531b1eeb7d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00056.parquet",
+          "bytes": 1378640785,
+          "sha256": "b50c5ef77d171b4da2355f3db29deea9ba289278caf5ccbc1f18600f762fd2ad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00057.parquet",
+          "bytes": 1380781428,
+          "sha256": "d17e5100ac333c0b59de3e3abf34def8a3b0db8c2a4890f46bf104087a01aece"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00058.parquet",
+          "bytes": 1382288179,
+          "sha256": "9dd7c78c2f271cdd3f1f0b01bac8bb3dbe1162dca3488d5ce3666ecee112d5a2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00059.parquet",
+          "bytes": 1379402162,
+          "sha256": "01f4f59717ba47035876c71a62e955aaf0a4025a60d9c5f119016a812f6a222d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00060.parquet",
+          "bytes": 1377175519,
+          "sha256": "cea43a93005fedee8629ba76c52ec5062af81f141783f5faaf53a7205f35e913"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00061.parquet",
+          "bytes": 1379210464,
+          "sha256": "11301e626b167525dc39ce756cdbce1c197c8d14fcab336c69888b7543e127f9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00062.parquet",
+          "bytes": 1378085408,
+          "sha256": "85184ff79ff24f81e4c5c8a666d1f244cf0cd5ccb9803f8ed9c09c0ed43170bd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00063.parquet",
+          "bytes": 1375082327,
+          "sha256": "c1a648029390c47846a7659b83d2f93eaee9f796cf396863b0192a4e07336d39"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00064.parquet",
+          "bytes": 1380158084,
+          "sha256": "38d1db0663d78d384415e0b846b1a7340721cd5285eed11b58fb7220a4023cad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00065.parquet",
+          "bytes": 1380882585,
+          "sha256": "9e00218038180276e11c7418d7f101f1b68e5d6991ceaa79cd991158dfeb9886"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00066.parquet",
+          "bytes": 1380502330,
+          "sha256": "fe0c1f236f62120508b0b3abab31739aab3edcb61352fdd4359e78940057564f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00067.parquet",
+          "bytes": 1375909040,
+          "sha256": "f96930d3b0d994ac071664184dcea17e8c4027f3f37c761aa25e6ba91a9baebe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00068.parquet",
+          "bytes": 1371826963,
+          "sha256": "eb454e326cd20c14a55e166e4fb421ce6c08fcc305e5ebf38608c74caf03c0c4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00069.parquet",
+          "bytes": 1379213572,
+          "sha256": "2ee0408b7d18ca5a59b8291328188f9dcffb90af9e05761311a9af459399d4bb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00070.parquet",
+          "bytes": 1374572232,
+          "sha256": "befeb4fb350c72b5ebe4a7cffa05ca521f3749ecdba0d3b75b3b40d3975f4aed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00071.parquet",
+          "bytes": 1381335502,
+          "sha256": "78be4188238d76961a28a5fb0736b9a5a7c1b8ef2b423c2f7816622bbe49a04d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00072.parquet",
+          "bytes": 1381750865,
+          "sha256": "2080d400d74aa524e9fdf67130ad2504856b6484135b76a4bf4c55e517b64da2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00073.parquet",
+          "bytes": 1380357645,
+          "sha256": "0113027f13c5ade31c4ac8f2d3c5d08757777b75640601fbe47595bfb32bc403"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00074.parquet",
+          "bytes": 1377901726,
+          "sha256": "dede891251b5ff0862b773608db994710bcd12c22a79c94918e55c140888703a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00075.parquet",
+          "bytes": 1378920536,
+          "sha256": "9bb5b8ecf96f1195ea48c37cb45c2b6d8cc4ea5686fdc462145ab441924394ea"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00076.parquet",
+          "bytes": 1377789160,
+          "sha256": "f6d882987533f4ebbbe6d7978d15bbb75700938fe60e9cf93ebe9652e5b59140"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00077.parquet",
+          "bytes": 1376241901,
+          "sha256": "4756d7e097967af45a6a3e06ac667ecbe0b3f617b6d695f2ebab1ca70a38c6a9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00078.parquet",
+          "bytes": 1380241230,
+          "sha256": "71bddd1a14543c97a74c3bdf17156540ce80c2eee1d24f9836ddfbd189ad59e1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00079.parquet",
+          "bytes": 1373277612,
+          "sha256": "bf9227943cac4f5e7cb2d388b613e960c7b4f1b1fa8d7aa3d800708c62c42b87"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00080.parquet",
+          "bytes": 1380573015,
+          "sha256": "6141aee2ef64ece00133294df3ed8cb46fa018dcef792ef4a65038c6961c7d3b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00081.parquet",
+          "bytes": 1379912798,
+          "sha256": "17f907e0a5cc2afa26309c66d7ad8207551d6171e0a67777b601614540657934"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00082.parquet",
+          "bytes": 1378365200,
+          "sha256": "d4786829db432974e2467893a5d4f021f33047f1467821fc7561c9efd3ae9bf3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00083.parquet",
+          "bytes": 1380366340,
+          "sha256": "c8b66c3b3d187889776a582f0865e9a10cb160d6ce2950cea650ea0197ad45c7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00084.parquet",
+          "bytes": 1376052246,
+          "sha256": "99d63d14043f9eeb6e3b77ea51aee537cc34a71c74cf01151943f1dfba5dc2ea"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00085.parquet",
+          "bytes": 1378026285,
+          "sha256": "435e8e8c9175dc497b369e6852983ede59d8fac7a3d138aacc165b93c326e29c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00086.parquet",
+          "bytes": 1377507641,
+          "sha256": "85c5ea879e7a393a8cbdd627cdbe715b89f66cb0b61325344039a7420db509b8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00087.parquet",
+          "bytes": 1376898052,
+          "sha256": "47f2bd1a7cacf07895e84bb384f443294b27ec8e4092eb494751dc3d4aa9d9ed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00088.parquet",
+          "bytes": 1381464508,
+          "sha256": "746711d47e52ee4011828498fa4c5522696ca08f8cf15a9f8c53bc5d54896f2e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00089.parquet",
+          "bytes": 1380830953,
+          "sha256": "84c2075111f795bc90305c53c24bd8f15aa192169ea3c06949405de5c72c3db1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00090.parquet",
+          "bytes": 1373675755,
+          "sha256": "ee72a26e98bf97b2c4c9dab1c3d66fedfb3b18a873542f9c0d70f70cf574eba1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00091.parquet",
+          "bytes": 1382331105,
+          "sha256": "352bec9d2d9b1ca9c309c98dd7bff28e4d0edbe723bdb444eeee6bef88f47c12"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00092.parquet",
+          "bytes": 1378277093,
+          "sha256": "9fc266e4bff4ff736aa0ae1d773992cbd04969877e7f16fdca5ae20342431dd8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00093.parquet",
+          "bytes": 1378336416,
+          "sha256": "26cd35341cc31dd60726e6d9da4b30be017101ba7f99026c9a3edea6a05693f2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00094.parquet",
+          "bytes": 1377423643,
+          "sha256": "eadd8cc464acbeb5468ce03095b90353caf841b186d8bea5c575a2f8ab267395"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00095.parquet",
+          "bytes": 1380058928,
+          "sha256": "234e47b3dbc254adec0da45c943a0339d898271f6b11bc3bd336c371c09ee530"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00096.parquet",
+          "bytes": 1379363821,
+          "sha256": "4e41615e3352d084f5126c9f0535a7ccba5de36e305a6376b37ee90b1e30a367"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00097.parquet",
+          "bytes": 1376426326,
+          "sha256": "1ceaf1cc60fe42faa395f9a2599f976eac6e22ed1cd23a5a88266f97bc1c0490"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00098.parquet",
+          "bytes": 1378991085,
+          "sha256": "0f86017a8c267b1c25d625c8baa10f1c6c06ae1d3a92b26b1eaaac7b7744ea0b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00099.parquet",
+          "bytes": 1380353793,
+          "sha256": "08de857611593ddf8e8c54f969fc134d7cf85a28a5dcec43a8c763281e0e917d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00100.parquet",
+          "bytes": 1380185000,
+          "sha256": "73c247dbaa340fd3cadc8c357032a2d36f754102716c15b1fef4a57c0d8204c5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00101.parquet",
+          "bytes": 1376129243,
+          "sha256": "9a1836c5f2d6e1cb70269007b737e2091c73aa328d370a0b1d1008337d66aca0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00102.parquet",
+          "bytes": 1377430782,
+          "sha256": "72822a0b2b82261ea2912d125a4581a4448be4a12e3e70c6a40fabb8066f0091"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00103.parquet",
+          "bytes": 1382774321,
+          "sha256": "e1317e4a2e0a649734d04e84cd019d8342d537343e8c1b264cf7ac1b223dde4e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00104.parquet",
+          "bytes": 1377412359,
+          "sha256": "46acca55ea69da2861737ef0e8d515da0ca1b0f10ab79e1aad0d0cfa657fd23d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00105.parquet",
+          "bytes": 1379216496,
+          "sha256": "2c0b8ee74127b2ec9ad32a9bd2f598905c8f44248e89f3f19c701c6728703dbe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00106.parquet",
+          "bytes": 1378562239,
+          "sha256": "dfbb9a1ad7764bea23f650b04b2b44b29d173d760699d827cc169be5397593f2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00107.parquet",
+          "bytes": 1378371316,
+          "sha256": "88dff1bc7f1ad4047c05ee70c4609cdf64540f04c3720c58d1dbf7a30be2c841"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00108.parquet",
+          "bytes": 1380805921,
+          "sha256": "0e6bbe6873b18ffa92f549a48879ccbdd2c031868963e76158e3365351a4a9ca"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00109.parquet",
+          "bytes": 1377505015,
+          "sha256": "6af211f94b0574242c6b4620d52ea37a84edbed57997938fe76e74450cee5bf9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00110.parquet",
+          "bytes": 1377742221,
+          "sha256": "06f747f916bae210a94a3cfd43df0bbe2e4a59bc9504fb0045a2d0d68f5b0d92"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00111.parquet",
+          "bytes": 1377383463,
+          "sha256": "e0a13dcfdd60aad33819d181774e90e511afb31522bf99229ee0495b751c874d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00112.parquet",
+          "bytes": 1384985649,
+          "sha256": "c7c6538b09d1e50f75f26cb35df11592e954ecb0c506ad9b77417507f0016b7d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00113.parquet",
+          "bytes": 1378654999,
+          "sha256": "39d0746f3ac2c2a69e564aabc5401a66216ed4729ba222f6c1b1e03c754665d1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00114.parquet",
+          "bytes": 1374595898,
+          "sha256": "b18d53414854a96ecef3b358417551726a39a3786138a57ecdd80e4bc1cbb19b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00115.parquet",
+          "bytes": 1377957972,
+          "sha256": "85e0a31dbb8422c75e6e9b6f94ea67cdd7cd597a4f1417014f6858e823470f58"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00116.parquet",
+          "bytes": 1382561458,
+          "sha256": "cf39e5d8ef0b7a0f8e37c3b8683451f2288158527b4307c917d100ab1dbafcb9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00117.parquet",
+          "bytes": 1378542125,
+          "sha256": "8f18aa29cdb99e2f732ca15d50b6cd2d1246c1a7f63b3acef27459b73e343dfd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00118.parquet",
+          "bytes": 1379109046,
+          "sha256": "db2571c82c61eba79ab92f17da8bafb101000b149d464ce38b006b1bc4263569"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00119.parquet",
+          "bytes": 1377653658,
+          "sha256": "1fd76b6db27e9d5c6be7110a722dfac604267925b679b461b93f65adce30a14c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00120.parquet",
+          "bytes": 1375637667,
+          "sha256": "715e654ac8f42f83722e90fc2b5b697b3539abc4b4c0b7af0e231a482cbdac3b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00121.parquet",
+          "bytes": 1382379991,
+          "sha256": "45c7837b8d2917b85a72e316095ca43e56ca7b8aba8134a5f5028fecb35d0266"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00122.parquet",
+          "bytes": 1378478877,
+          "sha256": "a89c124eaf1274326527211ed3144d081aaa561e3a73ebd2a92d86a227a2d58b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00123.parquet",
+          "bytes": 1373677931,
+          "sha256": "00ce03c63a70e06362841c9c46783aff3fc0f9968ffadc5eea42591de83de110"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00124.parquet",
+          "bytes": 1375182791,
+          "sha256": "89f7b5bb94704ce40c13d40c0982c7fb8441a7b05471feb70942e26b34169be2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00125.parquet",
+          "bytes": 1377632465,
+          "sha256": "63fc2098176bdc6160c97574c3012960514d1e7c7a3dfdb1fb5641b0a18bfad1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00126.parquet",
+          "bytes": 1381673708,
+          "sha256": "af1d5cadcd9303c5a5e5d2faec59c8a5e0dda3b1bc0e4bc0fa3c4f49304daa65"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00127.parquet",
+          "bytes": 1381970318,
+          "sha256": "dbfb39c22b7afcdb98a0454b3d43e11f1e6874b89e85a425547b833c3be3c4d6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00128.parquet",
+          "bytes": 1382546508,
+          "sha256": "89ae5b3faec6f00c010515a8ecfe51a9f2ada0e22beb9392cd25b3090901dd99"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00129.parquet",
+          "bytes": 1375618709,
+          "sha256": "cb425e490915515d5ad2822d1ce18d6e3ffe0376646b6d2f1daf61e04ba81d84"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00130.parquet",
+          "bytes": 1376466004,
+          "sha256": "c16384581b9377b6571357233f9169e6dfc84e58bdb28251bc78868d60b35688"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00131.parquet",
+          "bytes": 1380506804,
+          "sha256": "2a0bfa63b7a8ce21583bc6683005f8be6e245429f8bac1961d2d269836bbf0cb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00132.parquet",
+          "bytes": 1378648314,
+          "sha256": "860ed97228f7447531e893299367ced253acd3a97378d54f19e4ad14d5392de5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00133.parquet",
+          "bytes": 1383829265,
+          "sha256": "9e2fd3880ebdda2ca15089e79b317474cd7bfe5203bc65dfeeca26f4e0c502b1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00134.parquet",
+          "bytes": 1380918309,
+          "sha256": "fea79f014bf314676fda20846c9f25d5ad3cb9c17185c3475f1087891eb0c12d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00135.parquet",
+          "bytes": 1378832311,
+          "sha256": "fe27c92405e3774c794f3775f575edaa1ad8a59bfa74bc06cb6376ba89203d11"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00136.parquet",
+          "bytes": 1376499069,
+          "sha256": "3b7cc1c74b28a096bebe76018185c8e47a45493ad1be043cad96455d955c6041"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00137.parquet",
+          "bytes": 1376232398,
+          "sha256": "61df4b91a67921a973a22fe6efec2e82e91135e93117afa72c11bb4766c27cc1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00138.parquet",
+          "bytes": 1380396148,
+          "sha256": "2a2999120d3d65620d53941022e204f861bde00cdfacc061098f4cfd9cc53091"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00139.parquet",
+          "bytes": 1381008709,
+          "sha256": "aee405a44fe2d3c5ea9d8f5d120e61839ce57b0fc890b855f0dbce76cfcfb50e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00140.parquet",
+          "bytes": 1377831502,
+          "sha256": "1191f31580a269b22e3eacb596fa488657ba334ea72d8bea5001e8e1781bf0d0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00141.parquet",
+          "bytes": 1376451366,
+          "sha256": "c6ac20bc4c1d077ca1ab6ee630ea867552f909e00cffc9c63cdacc061a5456ee"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00142.parquet",
+          "bytes": 1378088187,
+          "sha256": "0643870ce1dc64051e8321b20ac8423d9264b411180725f4911a795b8a45f902"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00143.parquet",
+          "bytes": 1381643018,
+          "sha256": "3afc74ff3e885a897476f93310d3ad7c2465b53b8fda6364df7770d7e49716a3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00144.parquet",
+          "bytes": 1379251315,
+          "sha256": "9abf646c4fde5de51d0f22a4b28b8d216b1dbd2e324d13663e26ebe6673ac28b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00145.parquet",
+          "bytes": 1379231291,
+          "sha256": "e8377c1d2b831efb558a8c51ccf96a0fc3d895c7599423608a80723fe3763098"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00146.parquet",
+          "bytes": 1380215413,
+          "sha256": "18f3314ea6c332a52eb9b80d6966265f4951980ed9754aff534e7b7c1e4d2530"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00147.parquet",
+          "bytes": 1375284388,
+          "sha256": "b6f485c84893a1742aae03089afb9788ebe77b19e1c1b241e7f09138136cdd4f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00148.parquet",
+          "bytes": 1381970821,
+          "sha256": "d4194131fc7e60b32ecef9415eb7c7f7ddf06ad8e04004a13902710b634cb8d8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00149.parquet",
+          "bytes": 1378843213,
+          "sha256": "b1aa49820e6e24ba4bd419a70b07775514a13afb6b3a5b5e3f578a1c7eef9def"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00150.parquet",
+          "bytes": 1379165400,
+          "sha256": "ebe5a45e9c61fd5e71dc83d5d7c54a88b8b7a6e14c6d3c7157f7715b29754bf7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00151.parquet",
+          "bytes": 1373784649,
+          "sha256": "5d9aa8b78f71c45d4e841a55d1f967437b8e35d18ce6e6b4efc37a1dd4a985f2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00152.parquet",
+          "bytes": 1378188269,
+          "sha256": "8196b35d3abe8d5f6f55f9f5ed853d4081f0373a36cd2f2a75439f72075ee13a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00153.parquet",
+          "bytes": 1380258134,
+          "sha256": "15178151f8fb1d5c09f42a25f2917fb72c0ef7e728e4b7b5a781e1081440e0c9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00154.parquet",
+          "bytes": 1378106290,
+          "sha256": "856d6d6182adb09640daaaf2411356aaab038b940b7f58620734464e234fb317"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00155.parquet",
+          "bytes": 1378759327,
+          "sha256": "5993ac404d208c507af5e69faa7b9980d324e55718660a62a51498d8814cac4c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00156.parquet",
+          "bytes": 1380127490,
+          "sha256": "3d35996145e00188fbb0017248c7fea4cdd0265c1d1285f482acb8660d449344"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00157.parquet",
+          "bytes": 1374404089,
+          "sha256": "14f1e7d7e1a77105e8270e9fde04c413cc50b20ddc690ce0788a239aa9150592"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00158.parquet",
+          "bytes": 1383807855,
+          "sha256": "da08cd01920adfd901b989980011329dac28fcfd6e656902e81b5115ef28a778"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00159.parquet",
+          "bytes": 1378425116,
+          "sha256": "c7425adf72855f9047eaddcb9d14ba05f17830cdf94d31260e9fc0e4bac3ba49"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00160.parquet",
+          "bytes": 1381623680,
+          "sha256": "cc0d71f242e04046f095c2f44f5bae19d84a2b5a67a9494f015a8558a480aeaa"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00161.parquet",
+          "bytes": 1380528094,
+          "sha256": "05fff3d10ad5e6520add67517f3e48fb5270360521432a37af9a5c7643e93981"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00162.parquet",
+          "bytes": 1379635886,
+          "sha256": "7484dbc2bf17ca155b19bd3869b532b1c4e13b4b21d52331fcc046790defff85"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00163.parquet",
+          "bytes": 1378965668,
+          "sha256": "0cb524fb779ae3bddd127ddb18689c3ca7d4ece63b84575fb291b6b26082ffeb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00164.parquet",
+          "bytes": 1375707620,
+          "sha256": "e1f14d87b167d25f4b951e63e3b6938c65a24971a87d802a03223076938e01bb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00165.parquet",
+          "bytes": 1376678869,
+          "sha256": "48049bf1eb6214c3e0b645261c36dd8d66b39106fecdd25c14beff66d27b5559"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00166.parquet",
+          "bytes": 1383146386,
+          "sha256": "4d0d1363c6b64af4ddfde55f661c21ac8bf815d1fdbe41b1df7ab8e811f9b465"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00167.parquet",
+          "bytes": 1382635547,
+          "sha256": "0b00d7c9cb3f0a3c2943956c744f4fb1c55124cdb06b8f5af4c14eccd94e1ef2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00168.parquet",
+          "bytes": 1379438838,
+          "sha256": "1ea9971bfcccd14588c5aaf4f3c6b20d7556b7a4a7117925e54e6608360d53f1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00169.parquet",
+          "bytes": 1378824570,
+          "sha256": "9b01483cfce668e41a74d6aedaf978df54b1884bee525311918f6646b638280d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00170.parquet",
+          "bytes": 1380264424,
+          "sha256": "198505825d33c47afda9a21198604f7dd1c3d3bbbfea3907a3c1ada4d22cb161"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00171.parquet",
+          "bytes": 1375502295,
+          "sha256": "cdf3660ce2d1c6d3d58205a62b370939fda487e1f49e63d4fd62d81b4c825f3b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00172.parquet",
+          "bytes": 1382471532,
+          "sha256": "d12866b101a9a65f03c3df1cf33c30d0a95ba8b01e7ea135f53bf71599b555ca"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00173.parquet",
+          "bytes": 1377568277,
+          "sha256": "29b9c4103634b2e133d5f3ee511d8224181494935240859ad2d199ecf12f9ca1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00174.parquet",
+          "bytes": 1381709054,
+          "sha256": "8a67b70a237dd728b99e9131f9a1d084c92b9da189e453492191a2b30ac32e31"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00175.parquet",
+          "bytes": 1381183999,
+          "sha256": "0acaf776b152f808ee9a3bd2c46d91ffff8b8661e8d865dbcd7f3f95990405f7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00176.parquet",
+          "bytes": 1378801222,
+          "sha256": "ef3e034d6ad8eb1c70fe48ec0a6bd61cb8aa1f56c40a19ad67960e636b2b7c48"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00177.parquet",
+          "bytes": 1383870461,
+          "sha256": "338e8524aeb838ee13de377413ebbab3bc76a8bfb29a984122cd450bdd9807c9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00178.parquet",
+          "bytes": 1380403892,
+          "sha256": "33a0ccb5c25913c6e9b361e654e682c4a5d2429b35ba9e065c7a13ae4702375a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00179.parquet",
+          "bytes": 1377339972,
+          "sha256": "74a9e12756350ab069241ebf33a6d9e3f06f96f2bbcc8f7b646404590dc498aa"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00180.parquet",
+          "bytes": 1376095993,
+          "sha256": "cbc59239d34543a673aa7b4ab343ba2807d13b9b7e1cf241f82b64d49e252c56"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00181.parquet",
+          "bytes": 1380020536,
+          "sha256": "66069227f0444a8d5d3969d0a2032f4cca1e928b4daa688c5ea31ba834e43526"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00182.parquet",
+          "bytes": 1380504605,
+          "sha256": "9a589c277277d0f09f625873dcfc0eb3db6209f65a73a99a3877871c88d78b94"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00183.parquet",
+          "bytes": 1379840847,
+          "sha256": "978a8573a092dc59ecb69c9b77310c593349be07426e9657f86076db93dc9a4b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00184.parquet",
+          "bytes": 1380475891,
+          "sha256": "76dd5179730142a00b8056b0087c68e3fe7a0378dbaed09e6c9745ea491bd1f4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00185.parquet",
+          "bytes": 1378331533,
+          "sha256": "298d16cd99d226bd6c228be0523c1e8a46f5783c6692eacdbde871c591cc50d6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00186.parquet",
+          "bytes": 1378976606,
+          "sha256": "4ee70c7bbca09adf3d854335c708d54fb270696564be1ded9db914ad622197b0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00187.parquet",
+          "bytes": 1375986494,
+          "sha256": "8f4238b0b941b025103c2afae4f34dc39dc0eaf659184c98d7ca6e48cc7bba2a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00188.parquet",
+          "bytes": 1380326473,
+          "sha256": "d3586ea909120a925fa437f0d6ef67269a575525d42976d65ce968af2752f869"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00189.parquet",
+          "bytes": 1373916569,
+          "sha256": "e397a5487b2febed10127c5eb6d747ef8ab807cda8f38e9d8331e1f4d1c4804d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00190.parquet",
+          "bytes": 1381270984,
+          "sha256": "6fb426ee9f942aa9cd24dd4cc013dbe85cd579fe4bccbee986d6012218cff74a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00191.parquet",
+          "bytes": 1379256299,
+          "sha256": "44b1a4cd49115d3ed48dd8d27b98e6aa7bcd2a205a141138744ccffadb8cfbc3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00192.parquet",
+          "bytes": 1380379090,
+          "sha256": "80730a80d4bc26e40dd3927246f81aaf80b10721ccb586a45e5db97a2adebe77"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00193.parquet",
+          "bytes": 1379412258,
+          "sha256": "66e8036be01712836db3d2b8888467f75455ca18c20a18753abbc53536d04ef1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00194.parquet",
+          "bytes": 1381148204,
+          "sha256": "e47528bdc4217b2dc41201869113b435fcc03e22dee25f61d9f8125c8013b7a4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00195.parquet",
+          "bytes": 1375375225,
+          "sha256": "f0a0fc9092132215cd6c57ce9ceab74c5d855ad41e226573ce3b57f3814ac020"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00196.parquet",
+          "bytes": 1383313588,
+          "sha256": "fdb9666f6c67dc59a20498d94be3e7542431670d6b9b2a7f427b2a6b579facd0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00197.parquet",
+          "bytes": 1377418222,
+          "sha256": "75ed24b6d041d7e2fdf70400a1d7a9ff38affcb4f2c188bc864c1ed1543f9590"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00198.parquet",
+          "bytes": 1381639250,
+          "sha256": "01090ddc806ab9614921b79828ace5cd8449ab2e2d5b0ca686e55c2054fd0cb8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00199.parquet",
+          "bytes": 1381151381,
+          "sha256": "2b5c60da741d71dbc0c5ea7a503e25ed5e9ef4416bc9ec4f98bcb7ec165131c8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00200.parquet",
+          "bytes": 1376461858,
+          "sha256": "f80db5f0a47400f56958c56403dbcb8b72ce4a189ee6b51ee85ebe22ae248475"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00201.parquet",
+          "bytes": 1377207432,
+          "sha256": "5eb4fd4915dd4f9886422fd547d0ddd70a68e6cafa2f37c2cf8e11bbbec5b044"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00202.parquet",
+          "bytes": 1375991601,
+          "sha256": "cf7035a9ea5bfc7efeb023711cad5fdc633c276b15916dc5afcea95b87925767"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00203.parquet",
+          "bytes": 1377759969,
+          "sha256": "da6c84ba90e6128380e4fe242480ffd06072ef42395c7aa3c92b718e3b684471"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00204.parquet",
+          "bytes": 1381540663,
+          "sha256": "a4fc474c9ab607b96bb2029bc96ffc64f7a60c2eff92c6527f489ee95c2e56dc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00205.parquet",
+          "bytes": 1380825438,
+          "sha256": "5e648d0688e6363d8da51a678ed6194e1a8f6bf82cf9a69113e83169a90854b2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00206.parquet",
+          "bytes": 1376490430,
+          "sha256": "c4a7ce69b96f7235c667964f5dd64ff6381084ea026c5163ea00bf230cbcb715"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00207.parquet",
+          "bytes": 1375398955,
+          "sha256": "4f3ad8f5df916bc7a1f763045bb16ce3706886aecd00e223dda6de91327841db"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00208.parquet",
+          "bytes": 1375829125,
+          "sha256": "8be7808bf6a418a2e38540407ec58b47aaf379ca4fe0866f3e257012ef23a22d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00209.parquet",
+          "bytes": 1381463719,
+          "sha256": "4c0cf3055138c6a29d95e7d02eecebf061d069a4d1e0caaf687c9ed9fb812398"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00210.parquet",
+          "bytes": 1382314419,
+          "sha256": "476acbeb98c96d40c7a2683283aaff8a0118d942e48b7614b0255f104d267136"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00211.parquet",
+          "bytes": 1383199837,
+          "sha256": "b72412095c0f4ff6e86fa617d8e075c890dfd6423e9050e1037d06dc75ed6430"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00212.parquet",
+          "bytes": 1377245189,
+          "sha256": "419925a6dec7e470e58517f42c1cc7d9cad3f7807c8e3fe7322f58f6ff5bae5f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00213.parquet",
+          "bytes": 1382069985,
+          "sha256": "a73adce214c031239be576b6f29a5cd0bbac6f7fda8ac8f3a291f9a6e4f54032"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00214.parquet",
+          "bytes": 1382466969,
+          "sha256": "6b8fa7eb9a514dc3832ccf3c93985b88096c2931bcdc692a06539cc780009ac7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00215.parquet",
+          "bytes": 1381982323,
+          "sha256": "b238676a8825296af1a0d21aa78abeef0ec63bdae5fe8f84b7576cd066536365"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00216.parquet",
+          "bytes": 1377916432,
+          "sha256": "30267f60f670f8134dfa0ba991bb22083e00eb62be428209c18be511f5ad4995"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00217.parquet",
+          "bytes": 1378496006,
+          "sha256": "b3d68b37e730d7d631a3eedfad22bfd9e1bfadab89de2b1cf04764f00ae83247"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00218.parquet",
+          "bytes": 1378416361,
+          "sha256": "717538b0c006def4ef3224d06f809635ccec9c044e797bd9ecb8607461f038ee"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00219.parquet",
+          "bytes": 1380910008,
+          "sha256": "4a0805c09ed89260e8b3e52dd8d1e2659439334c505956675613b29aec4e77a6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00220.parquet",
+          "bytes": 1381465987,
+          "sha256": "7c55ccc5a98225d3ac6f2125197b1932bcbcb8798ea7ac2afaa2e0259466abde"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00221.parquet",
+          "bytes": 1379103551,
+          "sha256": "c19f0a5da0d86c115c735e084917978bbe9b440294d722a0328642cbd188da61"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00222.parquet",
+          "bytes": 1377052643,
+          "sha256": "4845b772672eca12493fa19b84af9edfabb247c469e2710942ef7d87e835c110"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00223.parquet",
+          "bytes": 1378481805,
+          "sha256": "82a8ae154348397e48d97e6577fd71c5f0f6f86f4c18120e406dc70067e13bd8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00224.parquet",
+          "bytes": 1375777035,
+          "sha256": "c99b15c11bfe93a330181fd90933986d1cfd2bf70ea9bc6e9dc5b39192be4fb1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00225.parquet",
+          "bytes": 1381891301,
+          "sha256": "701730e9773f8c3959f43d5e7af80abed23793d7d2c6ba250067d95cd6234e21"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00226.parquet",
+          "bytes": 1379279064,
+          "sha256": "774e516150dd0753414e09a4bdb3b9c469e7800fbb64bd577907009fb3ea455f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00227.parquet",
+          "bytes": 1378165905,
+          "sha256": "ca12c06851ff35d33087cc940c6dc776e9dc5881ccb57a4149a8f04b2b5aa270"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00228.parquet",
+          "bytes": 1380844066,
+          "sha256": "4b4fe9ce916daa4fd7d085f6cbd514252d7f854dca5abd2a3b2ee14b20ba71cc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00229.parquet",
+          "bytes": 1383475775,
+          "sha256": "a1e9df55a6158283ed02434a21c7249c12f831472e69b20524dffd35e6668598"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00230.parquet",
+          "bytes": 1378306500,
+          "sha256": "a0702b27974f74d3b95f28599c86f708a636facabea0b55b76252ee0d4796f95"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00231.parquet",
+          "bytes": 1374211381,
+          "sha256": "5a5acb9255e34eed69f2f5fee5afa750c5ade845d8512b0699b6aad5a1f47ef6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00232.parquet",
+          "bytes": 1377560464,
+          "sha256": "a3b64e67dfe56ff31ddde02f5a369fef67235c5f45cac5d1f62244fd1bf1906b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00233.parquet",
+          "bytes": 1374303091,
+          "sha256": "243b3e3d3df08e041b449befe4b259166e9f2eabd63769a3e5189b614aa1bdcc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00234.parquet",
+          "bytes": 1384351889,
+          "sha256": "e57cd29204985a14e9a7d58af9ead93831c4c3bf3b2e79981bd37ff2e0ca2373"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00235.parquet",
+          "bytes": 1380800935,
+          "sha256": "4e647f19a291a211253247d3a4bd51fdf9d93f0557e7beef7ef2c6e8491f1305"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00236.parquet",
+          "bytes": 1380432109,
+          "sha256": "280cea8f4e60a2c4fbfc13884ff62a5eac6156943e78e2afb1b3238615aed2eb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00237.parquet",
+          "bytes": 1375932630,
+          "sha256": "96c16495393b47106bafedc80f459ffc7bb86e1a803a91e0b5126cc801e9ddcb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00238.parquet",
+          "bytes": 1381820944,
+          "sha256": "28cd0eb589e408cefe3dc2733f0f182d962a49896c3441b507411f792e20dc81"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00239.parquet",
+          "bytes": 1382439662,
+          "sha256": "e3dfadcaf6f85b4792d19bbd704a8379a14efa57e5353bb9d8284adf58e98d8c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00240.parquet",
+          "bytes": 1381559008,
+          "sha256": "9f66b74eb2a7f25454a176b6c97cbf60e0415f66d787dee744a772f437789375"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00241.parquet",
+          "bytes": 1381462378,
+          "sha256": "7f5ab1d4b0cb4cece21aad465b76df1839294f52190d117cf9f6a73a79a0caba"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00242.parquet",
+          "bytes": 1380865957,
+          "sha256": "6f9a20d99fbf470855eb71f63b91940da2c44b1532923903aa05ef1495d55cfe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00243.parquet",
+          "bytes": 1375707459,
+          "sha256": "31b981e7cc2940c5287488bbb1a97b9f52d61ca778733d52351ec3f0e49fc8d6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00244.parquet",
+          "bytes": 1380014801,
+          "sha256": "08b3c8e44a5d35cdf69e4ab7151f991088d1c33a75512d902de78136c2352501"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00245.parquet",
+          "bytes": 1377151267,
+          "sha256": "1600d4cf42c771dc4c6147926c34a998e419323b44ae30a626c8559089147257"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00246.parquet",
+          "bytes": 1377901923,
+          "sha256": "15df03927db8b4ebf8d54e6ffaba926dc399013fd4534e09ff19cba0ff0d5ac9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00247.parquet",
+          "bytes": 1375356823,
+          "sha256": "73c99c50fe4f107e2402fc00b1b1c4ab8ccc45ed445a463482d8debcfeabb904"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00248.parquet",
+          "bytes": 1379729866,
+          "sha256": "5e59ca55553e28701483a0257ae796963fdc5c08d1bb92ed3241fa687fdca640"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00249.parquet",
+          "bytes": 1379895744,
+          "sha256": "1fc4cb4afa207ebc788d657fd98ad5fdcf82be1661540d45bb39c074f53d4dc2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00250.parquet",
+          "bytes": 1379786688,
+          "sha256": "3eb4898389c7989f099a86f17d99dead8adb5b2abe2b4927fe7e999107720e19"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00251.parquet",
+          "bytes": 1379052775,
+          "sha256": "7eb8a1750b8b37fa79fc098f21e4ff96a4b25d69004e61f4c3f0cf86be7243d4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00252.parquet",
+          "bytes": 1377787023,
+          "sha256": "7b1ec3b69843c606e2218b9d7c9fcfbee0f3fc3b7b8e876d12082a7aa3466dc7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00253.parquet",
+          "bytes": 1376537168,
+          "sha256": "56b245dae3b908f4a2432aa6ca7144ad63398d8bf1fcc524e9ae4f71736b3c24"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00254.parquet",
+          "bytes": 1380353833,
+          "sha256": "0954f84afff6e7b249cebc74e0542c12571731e2ce41adf5553b2828d5308e7e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00255.parquet",
+          "bytes": 1381611235,
+          "sha256": "c7ac030b46f192f77fbf7b43919092a0c54c212d0dea8e9d5e596d90f1ac39f0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00256.parquet",
+          "bytes": 1381162550,
+          "sha256": "6b0787f3dd16806e5888c9d062aaef46fd4721d41750510cc286c78983ffcf42"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00257.parquet",
+          "bytes": 1381075156,
+          "sha256": "db0faaaa8945bdf0e4371878c14efb5099178ab69fef709dcb879659a2f3305e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00258.parquet",
+          "bytes": 1378055827,
+          "sha256": "5bdca1dcdda56356dfc7938c8743277836ed2cd0b8b156a042dcba9edd74c358"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00259.parquet",
+          "bytes": 1380755531,
+          "sha256": "5d886df318c3afbb930aa5285fa7df751572a4bc30f4f8fd4dae6fcab0ac7ed3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00260.parquet",
+          "bytes": 1377776981,
+          "sha256": "80d65f7b0d6cfb72476787a4e52f85d790a8a73e5dfa505cccd146973c3f33af"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00261.parquet",
+          "bytes": 1379944725,
+          "sha256": "3d82b3b9afa3cb44ceb822a5ac524413386880b29327ebba061fe71d073a4ee5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00262.parquet",
+          "bytes": 1383293397,
+          "sha256": "5cb742ba3b28b2fe616e671d94488710a77f4da02ad0561513a2a032fdd5e765"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00263.parquet",
+          "bytes": 1380305686,
+          "sha256": "38af51e39828d6665fea9a2acc31500743c5ce91d4843dd900137466654534ff"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00264.parquet",
+          "bytes": 1381014961,
+          "sha256": "9e3488cd64580a39e59975ddd7c3046b84d0d7fa2c5d00b49dba7aba6eac799c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00265.parquet",
+          "bytes": 1378535533,
+          "sha256": "6fd3bcaf440fb246be3c0330b924df1011f46a69579bcac4d27d1da937d2a910"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00266.parquet",
+          "bytes": 1378688622,
+          "sha256": "fd4dd394c17d03828b61bedfa663ec32051c08c91812a23b8d39900c564f57cc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00267.parquet",
+          "bytes": 1377723435,
+          "sha256": "7d16fe5e2462268cf8c7c4cec5c1bb6093332f7a82ae3dd0e479e826c4e0b387"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00268.parquet",
+          "bytes": 1377692346,
+          "sha256": "bb513a29f0eb5ccf3204c7836b29bf3be82df187486056add44c3adc536718d6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00269.parquet",
+          "bytes": 1377020106,
+          "sha256": "aa1a64763efc9325cb3b04d284400db8148cddc37ea6e8ace7fe836fddbc71c6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00270.parquet",
+          "bytes": 1375916456,
+          "sha256": "0f04be7dbcc948f76c3e7403265ff137f88645cf1868f6f4d4fd3ef602fb6903"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00271.parquet",
+          "bytes": 1378265787,
+          "sha256": "4deef935ddb78b445ca3390dd610404a35c73c2de14e280dd442643991f4eace"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00272.parquet",
+          "bytes": 1382097294,
+          "sha256": "9dcf7540898f0a4c929aa6ad801e61b735ccbd458dbc093e48339611844b8abf"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00273.parquet",
+          "bytes": 1382512124,
+          "sha256": "2b9987568533da6447435d77e87b22698ef7ec7a246ccbb849f73b3c54951e35"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00274.parquet",
+          "bytes": 1377887056,
+          "sha256": "5938da038591c33a5d46a21185421aa93f7a4e5a4813bc7a541208d6d19035bc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00275.parquet",
+          "bytes": 1382188827,
+          "sha256": "8e1e638acbcb4b80c105d8fdfe3c1b5fb33e6356a9ea25f559e504adfff24bed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00276.parquet",
+          "bytes": 1377863994,
+          "sha256": "27b105b39af2eb3d973bbf6fc04209e3afea1dc955eef68e6bd8e3fa344f3113"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00277.parquet",
+          "bytes": 1382344443,
+          "sha256": "1cf3e828df05c4fb7a41439b93e38c9ef678d256f4a6e70d666df10d2282a89c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00278.parquet",
+          "bytes": 1379900378,
+          "sha256": "6364d3da7a06e203fb4d861a449d341a4ca51851bb198183ee90553eb170da6e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00279.parquet",
+          "bytes": 1378879492,
+          "sha256": "2bc2338e26b6d110aee7b7b6a135c1849393aaac099c26f169021b864f42fb32"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00280.parquet",
+          "bytes": 1376582846,
+          "sha256": "076d4c2215e9c7ade208cbe94d0dda05141d34cef5d3b9bdfb82640d315a7609"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00281.parquet",
+          "bytes": 1375319623,
+          "sha256": "7415d98f3adce511f2a3cea220641c346c04160646b2092445200e170594466f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00282.parquet",
+          "bytes": 1381204861,
+          "sha256": "ebd340271326bed8fbb51c39432a3594529301c4c9680ff07f31a06937e15698"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00283.parquet",
+          "bytes": 1376631082,
+          "sha256": "a24495da98aa2db497d7a049a891137d1846e9d32548a0b179553eb781506db6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00284.parquet",
+          "bytes": 1383461912,
+          "sha256": "f46af4ff2a92afce2ffcc48cac53590ffbf67ca7b2700a283feb8816a9f3ca7a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00285.parquet",
+          "bytes": 1380200967,
+          "sha256": "90a41984d61ac69247f14449da756e30ad262e526af4a218036f2baddd87a175"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00286.parquet",
+          "bytes": 1378480617,
+          "sha256": "7f6143fc6b408bbfb62fa07f76df94742a701c4113b97ac9703b4f9a59e8214c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00287.parquet",
+          "bytes": 1381844639,
+          "sha256": "590b02533072a9d47389d7463a16989b7c77752e21703aef58a2811e21d855fb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00288.parquet",
+          "bytes": 1386287750,
+          "sha256": "c41c735d3b907292f858b05a3943691fdb32a104919b70778690da602579eabe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00289.parquet",
+          "bytes": 1374500745,
+          "sha256": "4029474af18fa6b7628ea60e4e854d9ad71a9f53dafa8701d35c4228519869d7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00290.parquet",
+          "bytes": 1376179799,
+          "sha256": "0d4df2cacf948c1aeb07a4fdeb986c80f09d98889f6988c7f83f2e22c62f9810"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00291.parquet",
+          "bytes": 1379149190,
+          "sha256": "8207615f6d1aafe8f862bfd69ff6427663af35ad3b8653980646ab33a648d83b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00292.parquet",
+          "bytes": 1380773184,
+          "sha256": "4b9ebaf5ea76d353e9fe62bf2dcb2d3efc8c877968525e972136e5709c1f507e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00293.parquet",
+          "bytes": 1378873089,
+          "sha256": "7b18550b3285e6c35a4456b51dd6b2a2bb1331c999f1758572ed41ff24b9ff52"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00294.parquet",
+          "bytes": 1378272072,
+          "sha256": "832704b18b276f018397da92d1896b6d9b19ebcc9b9c8e93e80236574eb80563"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00295.parquet",
+          "bytes": 1380564484,
+          "sha256": "ecc6905dde0208b8d3ca6e000ea56c3d5172083e87b20b290e2cd008217a2f75"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00296.parquet",
+          "bytes": 1383055877,
+          "sha256": "30d097754f0eb1fa2320039490fe52ce4c7da3748936f5c280232ef018ddc027"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00297.parquet",
+          "bytes": 1380935519,
+          "sha256": "7386b7c320e2d159a51973e99121b81bbf7c650d8238d3f51b130a36e2001121"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00298.parquet",
+          "bytes": 1383053654,
+          "sha256": "47be1b0e68381d233cfa78f12beef2685ebb49b4757c6d805588a2158eba8447"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00299.parquet",
+          "bytes": 1379109959,
+          "sha256": "1e908fee53a3e7dbd705b75ad69fa190956f85f303a704efb84aecbe991698c8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00300.parquet",
+          "bytes": 1382010418,
+          "sha256": "b92201511cd54b70510ce671be4621f00579d427c60a6a518d74092875cd14f3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00301.parquet",
+          "bytes": 1376524610,
+          "sha256": "5dc14d5eb7fa49b1e0456a496f38b0368e241d1679854823c0ecba6974b3911e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00302.parquet",
+          "bytes": 1381334879,
+          "sha256": "3cf880a121ce96ef52430839593a8a1a9416b1957d0a5db8eb02da0a2bec7e97"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00303.parquet",
+          "bytes": 1372936297,
+          "sha256": "7a71dd6c8588a736429fa4fd790fce44a7f46b4e5a3092e116c7bc9ea4ac8884"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00304.parquet",
+          "bytes": 1377607869,
+          "sha256": "b30c810d7fc62e7cbeaf1ecd2c1d8b1e9f5090dcaa9ac407c95cba478ae7c1bd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00305.parquet",
+          "bytes": 1379750648,
+          "sha256": "df1ea2fcdc21848e9ccc701764280b8b8d4cf127d516fd2892db61381d37c2d9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00306.parquet",
+          "bytes": 1378181839,
+          "sha256": "6686779ac1433b9db82c95f9743cd2dbbddbc0767ae9c88e4d04910a466e54f1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00307.parquet",
+          "bytes": 1378257984,
+          "sha256": "6d9aec6f54d73d8c84628060be0165ee185e84174c6bb7a6883300b402bafdb8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00308.parquet",
+          "bytes": 1375288365,
+          "sha256": "a8dc673707c466d751a1089fdeaa348efd8faa6e169455824246818d8f1c91ea"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00309.parquet",
+          "bytes": 1381900884,
+          "sha256": "36e9ca59c2ceadcb348bd8144500a5d6859380a5ad07c1d50c192e522df1c437"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00310.parquet",
+          "bytes": 1383995164,
+          "sha256": "ff56dba678217bc6cd1e70116ac34933eca3e2ce3bde65689674656c5702ee82"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00311.parquet",
+          "bytes": 1377954582,
+          "sha256": "7ee8a15ca62115387451fc7bf9fc782e71f399b7731e24cfaee017cf8315516c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00312.parquet",
+          "bytes": 1375412490,
+          "sha256": "6435b64668c807e014b28833e9c03ecd1ccb55ca6e310f917a93459c2a43f62b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00313.parquet",
+          "bytes": 1377238708,
+          "sha256": "de71b21cb9f2a3ed7d14c42a47989d47603de707aef7407c49fc6ebc8a1b6e0b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00314.parquet",
+          "bytes": 1384870871,
+          "sha256": "9b0b4807cab56af779762cd563e8f741d061633e1c19b38f6a4d9986b38f78bc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00315.parquet",
+          "bytes": 1380474111,
+          "sha256": "f6731fe17c4168b3413c1db6de07acc24c01d50fa1f38bd4daf7ffd167cf700d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00316.parquet",
+          "bytes": 1378397498,
+          "sha256": "f8b8527db6d1d60266f1404b72ecc4cb40a80bd7135fd2067f274ecfff899fc8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00317.parquet",
+          "bytes": 1384651411,
+          "sha256": "3c542e3464c745cd9f316410d7663965a0d57c57d94e04022654ccdb0a855abc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00318.parquet",
+          "bytes": 1382727804,
+          "sha256": "9bf9d43a323aa007b3bbf2dccb32117119eff2e2ba2cac3cf34b1f75606fbd82"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00319.parquet",
+          "bytes": 1377017010,
+          "sha256": "c539e4efc73a503557a049110f28099f7807c25d835cbfe91fdc7c3f44682e14"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00320.parquet",
+          "bytes": 1380869899,
+          "sha256": "b457e0d4aaf6299b7a61036b9d64c9400dc63988f67722490c8025ebcecb7eb3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00321.parquet",
+          "bytes": 1377991504,
+          "sha256": "735e3db6129a9882b74a68d29a5cec5a831ca9342b49ebce770c198354cee955"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00322.parquet",
+          "bytes": 1379702167,
+          "sha256": "69073c44577dd0f7c3c985b53f39354a9f64a9602567bb6da625e1d02eed8628"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00323.parquet",
+          "bytes": 1380679252,
+          "sha256": "a25122b453e5826e5c4159a9390da6af4c189b06eea19c1f9d7cdd612edb8dc4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00324.parquet",
+          "bytes": 1382251387,
+          "sha256": "145b1c0895443e94ed35cdc9b06e9912546873f15014c13c34484a73a7946649"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00325.parquet",
+          "bytes": 1380623998,
+          "sha256": "869dded475c1c582663b8fe196aecf9a50c869a4a67443a105f5e2c1e7c602e0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00326.parquet",
+          "bytes": 1378819723,
+          "sha256": "73a9b3ae5263ca68a740cf5466685e363da18332267cb95a77c63d73e60be046"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00327.parquet",
+          "bytes": 1377741421,
+          "sha256": "d566696e318138a08f65f9523b8aeb0f5a9e9498021460e8ed6fd075546b9dbc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00328.parquet",
+          "bytes": 1380899791,
+          "sha256": "784b87a58598646c1de4a059a7f52ce26805fa6ead06e969c61db5aa58797bf6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00329.parquet",
+          "bytes": 1378721792,
+          "sha256": "0e685a2a906b063383a52b9ff969d6f7fc8d0f15f54a46da1cdf8ed6477c9ea8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00330.parquet",
+          "bytes": 1376817227,
+          "sha256": "773f9b6f21d0333a1fc3566df24cf299db84ddfae31eea71cc36cef17610b3c0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00331.parquet",
+          "bytes": 1379154316,
+          "sha256": "3c9b0d67223d2d7277d20afd0a14edec1e9f1c5f79fa92dd35c44fa7d2e20b42"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00332.parquet",
+          "bytes": 1377356915,
+          "sha256": "1e8ad823fc4e39ea5abf52dc0b6aa121ce68261ec9c6c19cd65f90e221d12391"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00333.parquet",
+          "bytes": 1379103715,
+          "sha256": "0a334d982f7863a7fe480e5daa7ffe1e4a357c0a78e0e10dcb64dcdfeef0d4e9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00334.parquet",
+          "bytes": 1384569517,
+          "sha256": "a945806dce82e0d63798f67b6c3461cf93b7a1738fccb6218aee5d7571e13122"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00335.parquet",
+          "bytes": 1379151368,
+          "sha256": "9e0e1172bd4597f152f5635fa35de8251e374f74654fc583b4644d2bb09fbd37"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00336.parquet",
+          "bytes": 1379622095,
+          "sha256": "1197e1d86a111c627b2003f22ebca1e3dec2159deb6274b8ca85fc3097788f12"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00337.parquet",
+          "bytes": 1376944120,
+          "sha256": "b19e929baf068b85be7e729283b34cbb05ce5fe889dc7eb61b92e9c55d8321df"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00338.parquet",
+          "bytes": 1381627742,
+          "sha256": "0961315a42ce56dd92111957070cb58015ac6ea851bce69027b66164e557a732"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00339.parquet",
+          "bytes": 1377848378,
+          "sha256": "433078bf4428aebcdfd2eb927908abfa769dc1dafa0313f3c16a3c2d5ed3341c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00340.parquet",
+          "bytes": 1379629514,
+          "sha256": "52c2dd270e85631adee0ae8e7fbc42835fbd0aa936056c283f4841b8c51ebbaf"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00341.parquet",
+          "bytes": 1380845357,
+          "sha256": "52a28b7de1bdb50261a853c7c1470307ca3727dbc26b73d862b56a47bd6a54dc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00342.parquet",
+          "bytes": 1379724019,
+          "sha256": "31662b1f2f5ffc18c6ea55cc721ed30a06e9f0b8fdf7911925e414ac678a86d8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00343.parquet",
+          "bytes": 1382061435,
+          "sha256": "379d9a51d5f8fb975f32e9a256b1a26e9fb829f988bc1a384f2abc5d8f08573f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00344.parquet",
+          "bytes": 1380605306,
+          "sha256": "9dce32226d4468391281cc3c5d00037a2fd3e1d732970787c39e48278ec111db"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00345.parquet",
+          "bytes": 1375192710,
+          "sha256": "354992cb24ea975f4c515405f8cdecebbb66872bde2e66934c3f242b3d1396fe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00346.parquet",
+          "bytes": 1377036104,
+          "sha256": "19269d65a84aa4cab79181c7191ff05370b16ee16cbe5f352c0d68b20f784b8e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00347.parquet",
+          "bytes": 1378517176,
+          "sha256": "04131d1c310ec3f7218dec2de577d571fe91303d6f0c1679eb90b7920531bbeb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00348.parquet",
+          "bytes": 1383009769,
+          "sha256": "125ed8b10824fcd115ae6b42e2c8973894f57a6a09559f071aec7aabb1bb00cd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00349.parquet",
+          "bytes": 1379116595,
+          "sha256": "f7ce49eb55819becd6350b7e21f1e62e6c7dc8fe9e79492c19d4a4e38a9fcfe6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00350.parquet",
+          "bytes": 1379545753,
+          "sha256": "df1628ae5cfbb23abd8654c3eba7a67d7a8984ec4bdff37f1631638b79ebf182"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00351.parquet",
+          "bytes": 1377256275,
+          "sha256": "6a7673d3df8cdf88e27be86c1b3c43ba44e22e24fcec84c3df28e52915622d4b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00352.parquet",
+          "bytes": 1379762478,
+          "sha256": "519ab11e9142c2be962f30e9f59140173830a3f449123c542b26c63ad6ee3887"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00353.parquet",
+          "bytes": 1379235539,
+          "sha256": "e766f6eaa3f69a6a56cecdc83f69f3784e4818a1d67444ea13c9656486a8bada"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00354.parquet",
+          "bytes": 1381748955,
+          "sha256": "f02f52c0b43c56ad2d5f3c1478262a2684afd16710787beb0db4d5be8e6c7225"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/sessions/part-00355.parquet",
+          "bytes": 195790908,
+          "sha256": "4a7f0ed93b52abcdefd45313cad52f74639a5febb3fb6259bceb0e666b787b8d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00000.parquet",
+          "bytes": 30455997,
+          "sha256": "8abae8eb0cfc28504fe3512f8ce6d8059e3539ff14a484589a7ef6d4804cf2ec"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00001.parquet",
+          "bytes": 30436250,
+          "sha256": "1786cca118b5b3c207c34216c2e9b74241b24a938a860620b6216c4f1f443b6d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00002.parquet",
+          "bytes": 30473805,
+          "sha256": "286ad96626074f5a9721fc217d8aee076c3c10520cc8fd209a5e637e344c7361"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00003.parquet",
+          "bytes": 30318676,
+          "sha256": "0e76c788f309fc7fabe79d8114c3170267c7bf4b42c8ad5baca85eec5a3bb531"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00004.parquet",
+          "bytes": 30384869,
+          "sha256": "ed9eebb2f1795006b7a65031fdae251496fdba15d7ed116d827280af2a144da6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00005.parquet",
+          "bytes": 30329027,
+          "sha256": "54e4bc4c4167a8b75625d7aad4b2b1842941b986dac35ea14b8c81446ebe98cc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00006.parquet",
+          "bytes": 30353540,
+          "sha256": "3b2f933c826a83c99f06e892caa1220b91c796fc6e2f59084b11e34a0c207ee4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00007.parquet",
+          "bytes": 30379095,
+          "sha256": "e618c416a20eaf8fdc0d7bdb849f9c1d3b3e886b819f166e3af552c6afda9d09"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00008.parquet",
+          "bytes": 30423927,
+          "sha256": "58443147e017fc4496e8cec45edc1dd8bd2339748cde79daaf9a963b91221a84"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00009.parquet",
+          "bytes": 30379378,
+          "sha256": "03dbb7775d09333b6367a31769135533ca2ee501e9c3295e0a782976c1aa5547"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00010.parquet",
+          "bytes": 30534235,
+          "sha256": "301ab792e75173b56decc2e0b8dad9771a6282c440f311948d4fe5c1f1690200"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00011.parquet",
+          "bytes": 30332453,
+          "sha256": "4bf23323856faf8ba16be9e3a5553d1e328d73c9d01d0522ade682a7c986f7db"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00012.parquet",
+          "bytes": 30315767,
+          "sha256": "dd956f2b40aacbbad2ea319c4e960a54bd829337dac3324188054f2f7a9027e2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00013.parquet",
+          "bytes": 30370575,
+          "sha256": "2419a2744d7fce3df24e8c78e06c9be7b20597be13a39eaaf764393115f3fbed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00014.parquet",
+          "bytes": 30360800,
+          "sha256": "52ab3ccb03722fa4f368e12819dd605430e858410c7efdcb979040b4405efa00"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00015.parquet",
+          "bytes": 30529940,
+          "sha256": "76af02b8781001fbfea2f97c8a071c812dc823f7f42269b630d4eb579a363949"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00016.parquet",
+          "bytes": 30470312,
+          "sha256": "6d5d09c530ced833bb49043304430cb0200863ca74d39d15d535420550c8c89f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00017.parquet",
+          "bytes": 30319910,
+          "sha256": "e210fc2d5877932c7ea3a3050af4848e01bdcd57041dda860a3aa2504fc75ba8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00018.parquet",
+          "bytes": 30467968,
+          "sha256": "a8faebc9a3d664313b18e08eca8e0721b96a453e2ddcc37e6a8b7c06cee9d621"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00019.parquet",
+          "bytes": 30313843,
+          "sha256": "1d42acbd424c86dbaf922453adf32ce59ef8faa473d5b35fff0db9a5bf5c997d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00020.parquet",
+          "bytes": 30443586,
+          "sha256": "2027c78daf8b9503c419c668d87f93e2a6545b2210da8f4bb0abb9b19ee000a6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00021.parquet",
+          "bytes": 30364454,
+          "sha256": "1b15880d2a65462065cc9006f3243ddc5bc10504d22e7ecc4a802cd875fa99ba"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00022.parquet",
+          "bytes": 30360779,
+          "sha256": "c136386715de897548eba9ec27ebe4395a713c66ba3e9e0c308cc71bc5c5ff08"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00023.parquet",
+          "bytes": 30296196,
+          "sha256": "489044cdf6946270d2db8efc1cf755e7c1bd89f6468762afb635e85d87cc5b3d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00024.parquet",
+          "bytes": 30346919,
+          "sha256": "67b7771a19d9d9805918c47cd441c111103743acb3d67fd724ee911ad621e4d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00025.parquet",
+          "bytes": 30402765,
+          "sha256": "234357e1f85610ffac5517de546b105dfc2a599c310f58c7e5e0540997027a9b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00026.parquet",
+          "bytes": 30298600,
+          "sha256": "70371382149aa6120a218cc6f65c8a1c1b33ebc223c0066bf330d92ddea45a62"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00027.parquet",
+          "bytes": 30483176,
+          "sha256": "2d1cf352ba231ddeb8d0e2af39076818c5a64c2a583491a865b8ceda0faf576b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00028.parquet",
+          "bytes": 30418186,
+          "sha256": "a65f647dc60d7eed960fc0275147d815d7822fbee13429e49190bed0b734a8eb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00029.parquet",
+          "bytes": 30472850,
+          "sha256": "9d6a87011b1d99dcd1c5e9f06b14985e88a41a275d9d3edcf586d90f58973d03"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00030.parquet",
+          "bytes": 30470572,
+          "sha256": "377dda391722f8f5c1896f0fd2c5e3db7af9a7b9d9250c359e08f6ad05d9a565"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00031.parquet",
+          "bytes": 30423481,
+          "sha256": "1f174ff4050a54685453b6f461052e0aa2f73bda5895b0f3ebb42d6ac0c60450"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00032.parquet",
+          "bytes": 30222719,
+          "sha256": "c34635951d93276132a8996f5ca9e104c763a7f411aaab3d65e886a09169f7b9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00033.parquet",
+          "bytes": 30347420,
+          "sha256": "f1c9d39423322ac900ef088eefd39870cb2523132c1fc78b48b86b95ee74212b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00034.parquet",
+          "bytes": 30338001,
+          "sha256": "fefc8f7dfeea237b92fc216152580404c51b7edbe1b8d6d62075063acf42ae19"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00035.parquet",
+          "bytes": 30382910,
+          "sha256": "7ceec6b45c91945e2cc818ea728566c46cb129f2c8b19874842f2ba2abd72e4f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00036.parquet",
+          "bytes": 30344023,
+          "sha256": "bdf880390a94be0398cb0d8ff2818b456bd71a90753785c242105b6ed0c079e6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00037.parquet",
+          "bytes": 30373104,
+          "sha256": "e3b4447736560681c9d461d17fd12692154cb541df49c04b1ef8778484e118e5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00038.parquet",
+          "bytes": 30477168,
+          "sha256": "1033e4dabd39dcccdec3d940dce6d881363cc804a0a12ce92a35219d1f126cb2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00039.parquet",
+          "bytes": 30335941,
+          "sha256": "f3b19f7f5d85f90f47c403641a7b45e579494ac1b236796e0fdac6323a61989c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00040.parquet",
+          "bytes": 30397822,
+          "sha256": "eb98c7bfab47c9e580205b2cf5a3ea0687366ddb85aa6591cb87f09b454b2f0c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00041.parquet",
+          "bytes": 30368628,
+          "sha256": "dc2cbfcd0c0df3f78e697667584064a13b428516545d5eb85d55159717d04039"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00042.parquet",
+          "bytes": 30396404,
+          "sha256": "29bb91f997923dd77208448d217ced9881d46a2ba8600d2c9e167077b4224f55"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00043.parquet",
+          "bytes": 30400879,
+          "sha256": "f4976bbb8a4f22df3eeb0548465ffce4b9f83aa1468d335b5b9bd610472f1150"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00044.parquet",
+          "bytes": 30259948,
+          "sha256": "1326436feba5eadcbf2def68030678b9d58cd342d0aa644d7601fd6775f3d213"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00045.parquet",
+          "bytes": 30445386,
+          "sha256": "c49cab12c48279a69b97e73ac42408fa148ebd6e284e4b81d4c822af60220e6b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00046.parquet",
+          "bytes": 30467156,
+          "sha256": "ccfc6f23fc892870d441a23075846a3844e59e417ccc83b35c72ef2c3cacaa94"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00047.parquet",
+          "bytes": 30443937,
+          "sha256": "110c9e16d42f084dd744bb478d6c63fb6b4a4a83cff9448d5062388151901cf6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00048.parquet",
+          "bytes": 30386958,
+          "sha256": "dc930fb717363e9729687b1c8d3a2a08bc743095f92bff7331e1779e1044dee7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00049.parquet",
+          "bytes": 30531456,
+          "sha256": "8ae8d9ef008c1065e3c482afcfa6617f327f9043c00139c7077cb57a8d35c272"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00050.parquet",
+          "bytes": 30502798,
+          "sha256": "e3f233136a36f12e927433d0561e84541b3d4f0140858ed781a8d36c800018b6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00051.parquet",
+          "bytes": 30440586,
+          "sha256": "195c7de3f6921bb546b7c994c56e7479236234161b1c72a2bd18a02e240991f9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00052.parquet",
+          "bytes": 30447733,
+          "sha256": "09f51003228077d7df0c31f06b979b5f6414f64bd8fa5f747c9719e00e7eace1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00053.parquet",
+          "bytes": 30333267,
+          "sha256": "c07392efa4068cd04cae94d9d4623dca21f65198336bd522ce2d0509357c95a4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00054.parquet",
+          "bytes": 30333070,
+          "sha256": "991595feab07702b70f510d4cc6400a52c6c07d637105656bd996c46e85cd4f8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00055.parquet",
+          "bytes": 30431389,
+          "sha256": "e2d42286fffd3dee7ac6394414eca52e2f2decbe30953240289d80b26150c3b9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00056.parquet",
+          "bytes": 30346876,
+          "sha256": "d5bd0b8ecccb8436e232c4231ed1c68bbcc3e6da9d35c053e431e287eb6bf734"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00057.parquet",
+          "bytes": 30441460,
+          "sha256": "2cc43b77fe94f2eec1df7d2e0847f95056550b69306d53ca3991b2f53376f2d9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00058.parquet",
+          "bytes": 30457560,
+          "sha256": "23e1f346d1c333e1ea197d2e5e0c7c0d78a788a7ac3a9e1e3187886af5c3196e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00059.parquet",
+          "bytes": 30445148,
+          "sha256": "e6cba3f50e0427e98ec911baea73a2220ecea91546972747c2328d05039379c9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00060.parquet",
+          "bytes": 30438353,
+          "sha256": "74406d776113fb1a184a68fe6b9d52dbd28dbdf5a882a83e55084c9b3eb784b3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00061.parquet",
+          "bytes": 30270833,
+          "sha256": "9d2cdf220aa6b3bf95a54ec51e3f1394f863391b2288ebd0430b28cc44211118"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00062.parquet",
+          "bytes": 30341410,
+          "sha256": "cbbc8804595270059e0a72860e1c68bcde472cddc07bdc5e515233cf751a388b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00063.parquet",
+          "bytes": 30451409,
+          "sha256": "56d786041ac15cbde61b388eba2d0907b88f35ff6092bb9c408685cf038585de"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00064.parquet",
+          "bytes": 30431986,
+          "sha256": "f2ad2183886b7fc6d3a6c0c6033820c6d91c875ee0601520705dd776ef29e680"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00065.parquet",
+          "bytes": 30530680,
+          "sha256": "9f393fcd85b4c36d96fe7485afde0b632015a6d03a5ed904ee6ecb5c2714372f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00066.parquet",
+          "bytes": 30422064,
+          "sha256": "44143d6f156d7639fed75c8746f1fff205b7a84bbca09d745b03f45fd01b7293"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00067.parquet",
+          "bytes": 30454097,
+          "sha256": "58e5f58ef27658871762dc00954e22f6cb3bb25215c7c7c559e5959e4eca6da2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00068.parquet",
+          "bytes": 30393377,
+          "sha256": "05c18fd0791b51ab30a8c83f99f1d2d3a4eca14e94186cc65f2af85eaa679292"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00069.parquet",
+          "bytes": 30392802,
+          "sha256": "791a12df794c22920bba126bace1dae0f4be74c81c9be31dbb26aaf7782948a6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00070.parquet",
+          "bytes": 30260590,
+          "sha256": "7b228095d1dd7de7feb13924c31e526d2c3a26a88101c9cd5f0af60df836dc2e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00071.parquet",
+          "bytes": 30421204,
+          "sha256": "262d8e88a951f2f731eba7756f938f8f900c5698349b297f679b10b21ff575e5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00072.parquet",
+          "bytes": 30369365,
+          "sha256": "77ff85b20d3000c6fa548a5472e58d500a841b006293f4b3e51734f88bd5ae41"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00073.parquet",
+          "bytes": 30379274,
+          "sha256": "d6ab8c4ac0c444c84119e83c2b6fd8faf072b0a61b925447acd0d142612441a4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00074.parquet",
+          "bytes": 30300739,
+          "sha256": "4cd1cbb18d451b2bc19ce845ce98180ef480091683d836d69b714d7ff3b920b8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00075.parquet",
+          "bytes": 30372202,
+          "sha256": "da97cfd30f20585f2fc63c12263a0a7f829cab17b9c7405329ebbf8b611df6ab"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00076.parquet",
+          "bytes": 30452353,
+          "sha256": "969fa67428627b37233544b78886091213225ca9b322b0cecb20839ea3c8b3e7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00077.parquet",
+          "bytes": 30303303,
+          "sha256": "9f0ac583d320f7f4cf09fca68c498d39cd2a4cb37f2f821c500977420aa43abe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00078.parquet",
+          "bytes": 30470916,
+          "sha256": "ce4cb33c2a5c2970a7f62df36af9db4f75547d6af8e75cca7c9ba681fbf6c497"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00079.parquet",
+          "bytes": 30388324,
+          "sha256": "c1bbeb4607de060256e008e5082eacc5aae15aff1992b1a2d78a9554af473e20"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00080.parquet",
+          "bytes": 30397520,
+          "sha256": "e587bf521001ceab885b99c7fc24e6378073f6f606c8feb39a484fe41c31fc4a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00081.parquet",
+          "bytes": 30535135,
+          "sha256": "170e216d9c9b6d73c152db9cba48767e86ff287feac89de52790443d50c40bcb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00082.parquet",
+          "bytes": 30376888,
+          "sha256": "3a193110e078f7c57502b1766c1d2160b6af8f360f07d246f3db116381352158"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00083.parquet",
+          "bytes": 30332661,
+          "sha256": "0c5905487d87e56b61ffcd2c872b61eae100827b28aa4f2b1a6c8b61bf8cacc1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00084.parquet",
+          "bytes": 30317535,
+          "sha256": "caa2dda98b7baace4003c2bde28e8ace91fab3e293cea13d5be03fc04eadf716"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00085.parquet",
+          "bytes": 30449731,
+          "sha256": "63331c36c13b324fc153bb1befa90547cb27de04b7f805a5f911b3ae733108a6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00086.parquet",
+          "bytes": 30384482,
+          "sha256": "61bf85d15d6f3064e9d0d5c8d88095296a91d5ea72fbc143c5cd23beb7b7d5d8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00087.parquet",
+          "bytes": 30410546,
+          "sha256": "5515bc16a4e2fcf9f007654073920f4e4ab715f995a2af888540b68ce838378a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00088.parquet",
+          "bytes": 30383922,
+          "sha256": "3c15b6d5e21bde5dda287a32a1832b04a2cb7f8f0f7cf34bd446db976175d8b4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00089.parquet",
+          "bytes": 30408386,
+          "sha256": "5a750a56eb387e487a82c67b39e682260490c3fa7210b14ff262df2820b42b02"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00090.parquet",
+          "bytes": 30375264,
+          "sha256": "7b74d01cfb575bf111d74e1ea0ef5d1a08aeacf285acd339f1d538f1fc5ed095"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00091.parquet",
+          "bytes": 30545801,
+          "sha256": "595f0b7b2fda4a4682ac1968e4b8bef9c991eb4a55b3303543f8e94255b3e378"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00092.parquet",
+          "bytes": 30339430,
+          "sha256": "37650e8018e43d79d082ce68a04f797536f112c098014fa0e0788e559d280163"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00093.parquet",
+          "bytes": 30461861,
+          "sha256": "a207083ae54d370374f702792d54f6923172f94d182a4a9a422bdc0c23c3231e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00094.parquet",
+          "bytes": 30404233,
+          "sha256": "fa73128c8694e64a91069e04519000d27a5713ed0510461a5799d8a7af846164"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00095.parquet",
+          "bytes": 30456517,
+          "sha256": "d9ef9b1adbadc110ba36cd437f8c73853bb32aa5d60be952093384dac5e42a1f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00096.parquet",
+          "bytes": 30398597,
+          "sha256": "1a922d643d112e85f403ebe2ed7d9182768642c5ea729699bb448b4618c5a700"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00097.parquet",
+          "bytes": 30384077,
+          "sha256": "b6f1af01dc8c9916c1dfd5789fbe4e38b7c5c8b1c88c01f6a9ec36eb1c65c51b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00098.parquet",
+          "bytes": 30457845,
+          "sha256": "dec11688c48ae678ca588e4736483da41768410c94a2b9a35130cd604ae8ae3a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00099.parquet",
+          "bytes": 30346990,
+          "sha256": "daf2bb5b8ae16e17ebd2f469484f768aead3d30965d752cd8caf6a5e22bab523"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00100.parquet",
+          "bytes": 30389813,
+          "sha256": "12f61de101a53398571a8539c2258ec81d1791ae4633f2d28a060b589951d33e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00101.parquet",
+          "bytes": 30371785,
+          "sha256": "8987c0bddf86fcf9f940ce20331a7aefa38183160cbcb86a6e9b5d02ee9bbabc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00102.parquet",
+          "bytes": 30429726,
+          "sha256": "9c7b6b930af934b9a6bc04ca2956b3249ba0039fb883cb6f7394c28b81e88623"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00103.parquet",
+          "bytes": 30476286,
+          "sha256": "3d155adee14fdfc6245b44cd33dd552366f336ae5b9f13e8722851c7e42f3b79"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00104.parquet",
+          "bytes": 30376189,
+          "sha256": "9005633ccc52bea5b8cc84a12e1cbfd017386f07518898a6df9cb02add5e8379"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00105.parquet",
+          "bytes": 30437021,
+          "sha256": "b0ba739a41846c25557c76cd1194fc6a6388dd01e5e21e84136f829b124ca55b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00106.parquet",
+          "bytes": 30376916,
+          "sha256": "ae1f39e477f278cac107f5b6253f2e93e80384d717b37d791102397a8cbc4d12"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00107.parquet",
+          "bytes": 30327831,
+          "sha256": "45bc9c70cc11e1c83d067031830aa87cdbf22e637e0758a1dce7356e2f8a3b43"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00108.parquet",
+          "bytes": 30492040,
+          "sha256": "9e3a5459431c7ab1c836ca82519356b82d655a7d8d00233d3bad9c15e83b2c12"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00109.parquet",
+          "bytes": 30370621,
+          "sha256": "290e8ab2a02c820d1eb4b93bfe72ace2f625e0fe7322a5be88181493f78bf259"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00110.parquet",
+          "bytes": 30479143,
+          "sha256": "818f5382bbea20c79920a113d858c6c6b961d4ead29a2848499fbe1fb56549d1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00111.parquet",
+          "bytes": 30383493,
+          "sha256": "7ab497fefeaa175b7d1f3c48b7e8faa971df1b615c1a85c447efd5336ab91684"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00112.parquet",
+          "bytes": 30518786,
+          "sha256": "ece09856e185907e6c64d1d50edf07b3b68dfae23dd0915c21f474f02f62a8be"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00113.parquet",
+          "bytes": 30499788,
+          "sha256": "5b1cf6fc9a7861ae148fd0547f880386d78f0bc1bae789c6dcd8844827e231a0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00114.parquet",
+          "bytes": 30319788,
+          "sha256": "a7d04be7355bda927572dbcc7ad3c294e907af53cf3a0e65f07f19bc913356ad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00115.parquet",
+          "bytes": 30354803,
+          "sha256": "5f12d02af5d5243210a5133662af2331a6267116a5b53370c65ea34e84f0c6a9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00116.parquet",
+          "bytes": 30434510,
+          "sha256": "ce6062d3114968f44bd1d9ba6e8dafd907581b491065249a3e69aec7a4beff2a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00117.parquet",
+          "bytes": 30479325,
+          "sha256": "0150e7aac839fed4decd47b43ff12f1463757e3729f4aa2179dae2ad0ca5ec40"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00118.parquet",
+          "bytes": 30366092,
+          "sha256": "c2ba3f2f7d0354dace8c70a17738cef7506b8d0b378766acc412e5b5c9a448ae"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00119.parquet",
+          "bytes": 30359950,
+          "sha256": "1e55aca6d0db4ddf79d339461e9c4afee5e9209abf9f841013b601a3fc8b62be"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00120.parquet",
+          "bytes": 30402399,
+          "sha256": "9ded7ba0786c1048d3286cf98feaf496d9f3809ed9c2e2fc9ea7e17b921bc557"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00121.parquet",
+          "bytes": 30474151,
+          "sha256": "ce6c76ec74dd785ddf180758ac72b648b79aa5636a2190103e45c0532d0d21a2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00122.parquet",
+          "bytes": 30387416,
+          "sha256": "1e03f944ab9e85e7c098dfc2d2d9c63c85e31f5829e125ac92cc9fe8c156be04"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00123.parquet",
+          "bytes": 30344227,
+          "sha256": "1ef4e3d97354e6ff7d4dad57328cd70880ccbe48a42071d754d2ba18a599465a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00124.parquet",
+          "bytes": 30416317,
+          "sha256": "93f3252d13865a93609b8d106dde52a9b3931d409d42a44d40eaae1f4e450754"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00125.parquet",
+          "bytes": 30312206,
+          "sha256": "c7766c750a345b129747d88a4b7ea8d76aa0cbca2d64cc86a14bd911767cea82"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00126.parquet",
+          "bytes": 30375788,
+          "sha256": "0d0b48985ea8405a7174c1c243489f42d9b48fd297ab6af44eb1ea4179d5d694"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00127.parquet",
+          "bytes": 30431549,
+          "sha256": "42cf0fe289fd483f0943a45b039a69b24a8966f2482faa6f6979fbde17c2e0d9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00128.parquet",
+          "bytes": 30405321,
+          "sha256": "0dbf65c3b40c37546a9521db2ce123ea9525dff7d02e362bfd42bfc695854ab2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00129.parquet",
+          "bytes": 30425666,
+          "sha256": "b950abdff6d3c9bf45c2aa31aa457ae646d0eeb535018b402ff6fe59df64a7ee"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00130.parquet",
+          "bytes": 30311080,
+          "sha256": "84f4e0155b7c59428cb8de383cdfffddc8eb068d5a17c2bf8c2572918ff264b3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00131.parquet",
+          "bytes": 30431822,
+          "sha256": "9dc7c01b04949e4d22a7db692d669b68678aac9110d192b0dd617e60345c96f5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00132.parquet",
+          "bytes": 30457962,
+          "sha256": "478b9a2f462c5d032514f70a6ee595581100d88884ee76b7cb891c898232dfff"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00133.parquet",
+          "bytes": 30427386,
+          "sha256": "7c4fa0cf8153f357d615188da4819cc5f1014075ea4c44d4ca68c2fd60d058d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00134.parquet",
+          "bytes": 30415023,
+          "sha256": "c8c898349a4d6dd2ac5e0d74aa6e3d73f3ec4d30aeb7f9b8a2fbb8c0ce5e6c9a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00135.parquet",
+          "bytes": 30402770,
+          "sha256": "1638d4a980879dbba275e27abbbb6953430a1c53c4aed9883f4f8092e09324d5"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00136.parquet",
+          "bytes": 30311056,
+          "sha256": "3eae7088cdd43a700465378962d179f77a89a8a8d20f9dbf179e9c568a1e4880"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00137.parquet",
+          "bytes": 30339942,
+          "sha256": "cb215a8dcac6e3083371d0c1fe03b1ecbe33e2756d13a76dc1111a21af6acb72"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00138.parquet",
+          "bytes": 30434713,
+          "sha256": "646c515f640444394250bccb4b385281cf075281998fddd123f1449cc27cc199"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00139.parquet",
+          "bytes": 30471263,
+          "sha256": "3e7e8303105b2049f0f2edcbbb66ffb7192bcc9ba1108e7474e2d401c004f5f1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00140.parquet",
+          "bytes": 30312895,
+          "sha256": "3df5f0392a8a147eef562f66d9e9c4f5e890613df4ee54c69d64dbdab5d72421"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00141.parquet",
+          "bytes": 30382702,
+          "sha256": "aa451be07609319b16dd8badeea6c39ac5d2e0d45a4fed69f78031a3e550a295"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00142.parquet",
+          "bytes": 30290661,
+          "sha256": "c69e6fea9dc248c0448c6eda34a3bddfebb6ad879caccad3c729851c3d329bf3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00143.parquet",
+          "bytes": 30485492,
+          "sha256": "2061407eb53941cfa65f240909add0823f553ad33476c129b700541f51bbe694"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00144.parquet",
+          "bytes": 30388194,
+          "sha256": "0837b5a80ef54958715a3b518f1cc586b46d5036c1b3ce338b7b825659fa174d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00145.parquet",
+          "bytes": 30528262,
+          "sha256": "1d41767c7f386e2dd5e37d4b5d8835e5989fdce9d119bf14bccf4336360ea31c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00146.parquet",
+          "bytes": 30388251,
+          "sha256": "2a7f4c45ff0533ed08e46b78682c8d86328248ad3853132e5313df1fd3804ebf"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00147.parquet",
+          "bytes": 30299103,
+          "sha256": "bf53713e54b7e8b3abefe803642bfe8df50f3256581c42651201a085f26d53f6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00148.parquet",
+          "bytes": 30391908,
+          "sha256": "ae2f4ae3f79a1268263c916b671df1b7c1f0c3dd15dea593a4db2f006e13d85c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00149.parquet",
+          "bytes": 30372187,
+          "sha256": "02194ce8407eaa1ef546ba6fdd7a41d742c0bf558b3583300166f6dab03df967"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00150.parquet",
+          "bytes": 30447924,
+          "sha256": "a1f5404951fda5e96aa75f95c67197f0fd1920f2bff56ec0156c6872a0055d0f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00151.parquet",
+          "bytes": 30327939,
+          "sha256": "5eb586a00e10d1440bf64ba628612886a9fccbafcf5d728375b0b762f0e663cd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00152.parquet",
+          "bytes": 30390390,
+          "sha256": "9dc77460142014280b24ffa6074b8ed9a1b3cef0de365eb11d573247c0006f9f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00153.parquet",
+          "bytes": 30492093,
+          "sha256": "73994f1dab91e9fedc6c1863a464c81406254f14a2fe055b00c41a895efde5ac"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00154.parquet",
+          "bytes": 30367017,
+          "sha256": "c25d8ecded81f0b0590d640d41d91e0a2ae5505e0e85bd7dd8f8e254ff77dcab"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00155.parquet",
+          "bytes": 30510177,
+          "sha256": "562bf9dc5b4c7dd65bf540f8875300f0959bc68d7312d213c4ad5fcfcc00f9f0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00156.parquet",
+          "bytes": 30412730,
+          "sha256": "93b17dcfe262b5cb526469eda330d442926339a17b25f456d132d346ce72d391"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00157.parquet",
+          "bytes": 30375816,
+          "sha256": "88d6907f639ac75f8348b7acd1df54f8c0e050cde5d50feeb5e248ebc6c91e37"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00158.parquet",
+          "bytes": 30422098,
+          "sha256": "85af07ac38660899960bed0182e28cca843dd1257cb4cb04dccb0e3f21192c37"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00159.parquet",
+          "bytes": 30458700,
+          "sha256": "ec529338e69d2c5f747d893acbc400320df9b4e64d46398e22a3c9b59f8ca88c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00160.parquet",
+          "bytes": 30505083,
+          "sha256": "8e4bdfaef2eecfa20362df814e83b378233150cf44a8f8fb940b087129ed483b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00161.parquet",
+          "bytes": 30410827,
+          "sha256": "340deb60eaed841d7e5e4616552a9a5ee0b9a9fc1c0459cc0d85b6d8ced6a4a9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00162.parquet",
+          "bytes": 30469398,
+          "sha256": "97f4be8052dd32673ef3ac4be31c437fada199dc6571749ef0b0f1d474bb2b06"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00163.parquet",
+          "bytes": 30396450,
+          "sha256": "3a6f63a31a71238dde1fc4877bae4aa720a22971c803c347a5f2feae912629ca"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00164.parquet",
+          "bytes": 30280831,
+          "sha256": "615beec2c96847ce227189fd8731f062dc13bde2369a00837453696ba80b88ea"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00165.parquet",
+          "bytes": 30319710,
+          "sha256": "e43dfe3cb5be272947bfe2b171ff58f51d79c9a72a15301ad08bed6ebc4e1d6f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00166.parquet",
+          "bytes": 30556639,
+          "sha256": "0cd32ac33d4f604633240c61bad066edc6bfa3e1e4228bb894b6c859e54bdc69"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00167.parquet",
+          "bytes": 30420269,
+          "sha256": "dd223c88d7733970822d3560ec739c52f86944c35e2ff2c00b55c9a47db530e3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00168.parquet",
+          "bytes": 30335362,
+          "sha256": "9235a99383eb8f3cafbb5938c15fa19045706db66386344df227047a8aa0ace1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00169.parquet",
+          "bytes": 30315912,
+          "sha256": "40ff849ab02b30634dd273e46fdd3bb8c09209c0bc6dfa0cf0539a719ba917a4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00170.parquet",
+          "bytes": 30349549,
+          "sha256": "fa5e46f861df947b7036954b95b9db0bafe7178b9875bba03d38ffe74ea54ea8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00171.parquet",
+          "bytes": 30377952,
+          "sha256": "067f6280900bddc4645fdd9add8630dcd0f0122dc737eda4a4459397eeaf1c39"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00172.parquet",
+          "bytes": 30365256,
+          "sha256": "533eaf9fda3799909186b9da4caa7aa77caf6a5fcb97b600180f615d092a2c99"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00173.parquet",
+          "bytes": 30408382,
+          "sha256": "58e102c287b94b756a31a67071e1452a5c3674f9b4664d80ddda7385b34fae74"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00174.parquet",
+          "bytes": 30424664,
+          "sha256": "3915fc0360e16f68d6d0f5ed16851ccde758c8432894d6e78e72db32136de806"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00175.parquet",
+          "bytes": 30457131,
+          "sha256": "24d945a7fe329097946398a7fdd0bc17332d68cb273ee7256f2146d74599148a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00176.parquet",
+          "bytes": 30452350,
+          "sha256": "ad20aa466dd1052d064e436704a6079bbf74690a8c45c224146a658807761571"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00177.parquet",
+          "bytes": 30432879,
+          "sha256": "b4f491f0346e016593a779a38ab47cd0a3038bb94d6d7dc621175c9dbde218aa"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00178.parquet",
+          "bytes": 30404532,
+          "sha256": "05b05c96aa830f6838778addd4e924a633c3b0998c2d85b8d9eaff539f31e5a4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00179.parquet",
+          "bytes": 30254496,
+          "sha256": "8284bc576b42328e3fc62340ef6afba4b402d6fede7c7a3a7bb4ff2c35d3080c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00180.parquet",
+          "bytes": 30351405,
+          "sha256": "1d05c4b88e69f9b03497e2d19100e1b01b13a1cda2451559a50b98f2668961fe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00181.parquet",
+          "bytes": 30495098,
+          "sha256": "97ea89bcfcf38f86af3c464f3bcc8825c2fa12f02c30e805620f2352946bb977"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00182.parquet",
+          "bytes": 30482280,
+          "sha256": "b9f6c5e49ea8b87535cc28f7e933dbb4f8e50e7d077738f0672b48aec96db2c2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00183.parquet",
+          "bytes": 30407758,
+          "sha256": "12994587b45c3fc7aa28b240a3b98c92dda210106dd02571c258c7646c36dd33"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00184.parquet",
+          "bytes": 30394869,
+          "sha256": "cace3d8ac774cf80f6eeb465e533d5b9a3d63162fb4726afbfef3b1d5da4bb62"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00185.parquet",
+          "bytes": 30388112,
+          "sha256": "14331f7a26ada6bc3758506bb2e474c1f6aee01c02f3a90b4f98f2896f55816e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00186.parquet",
+          "bytes": 30392938,
+          "sha256": "c67e33a5ae32ad7f534ec479d994c405698d996fa960aaf6d7bafc8b5696971d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00187.parquet",
+          "bytes": 30405857,
+          "sha256": "bb0276f5a4af3c237c42d69e9c6efe36f22ee5dd994699db321b6319b9a31460"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00188.parquet",
+          "bytes": 30517380,
+          "sha256": "1edcd5dd4fbf3eda2fa41cadb78630cd61c1e5a34df1bf43e4fc6001792f7137"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00189.parquet",
+          "bytes": 30316362,
+          "sha256": "0ba903a93651da3cadb2d6ffe263e06a227698f269244a22b3494f4e5d7fd607"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00190.parquet",
+          "bytes": 30454148,
+          "sha256": "aa1c5c611308dd15856212bbd1f672fb7cf5e1c527120e8e72796f56d341bdad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00191.parquet",
+          "bytes": 30338171,
+          "sha256": "83eb99b14226607f4b2b551c442b8d775596f0c73e19bad63170aff3dd74faba"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00192.parquet",
+          "bytes": 30423608,
+          "sha256": "94926af37dd4ae4e2fec6b06f84f4cb59e5651ca8d7c9b89c273ae51d24af0f6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00193.parquet",
+          "bytes": 30463935,
+          "sha256": "c373317d23cbc8c0598b9e4425e817681dd6255d3463a3e43643d14dd44aa78b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00194.parquet",
+          "bytes": 30521251,
+          "sha256": "45d44942ccf34ce686b1243a867d305314e5b707f5a929c14cbbcdb3075b6a35"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00195.parquet",
+          "bytes": 30353435,
+          "sha256": "f0347bbf6e64974188ed0728a17df4539681cdd909347c2b207a2b22c0c56ebc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00196.parquet",
+          "bytes": 30478517,
+          "sha256": "638b3e3ea2b1391e588935842aa971239471f9f31a5007a771c923072e6be1ce"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00197.parquet",
+          "bytes": 30347886,
+          "sha256": "908a245a90bf1b0a06bf4a269a43451a764009ba2a92b67031be9dc795e50029"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00198.parquet",
+          "bytes": 30383414,
+          "sha256": "684a4bf0a4b7b8ef02f492c2718ed53737c67493a99ce3c3cc8752be09b78b87"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00199.parquet",
+          "bytes": 30310834,
+          "sha256": "d51c5ad7aa352fe0a7b1046839758746c4935642584d81d91edb304f31896983"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00200.parquet",
+          "bytes": 30358303,
+          "sha256": "d285b9d783a3d33b7daf469e47dc128847a311913bfb748cec40571f591e7b82"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00201.parquet",
+          "bytes": 30467092,
+          "sha256": "2be9bc035d4d26587a71ee2b719ddc0be6637a70d1962e009c05efd2794e2d35"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00202.parquet",
+          "bytes": 30353141,
+          "sha256": "1e56b9c5a98f785891165c335024ee7bfb773c072e0ca3501dcb77150902a0d9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00203.parquet",
+          "bytes": 30367335,
+          "sha256": "2f2c43296a852eb5a7e143910ef51b659600f82676ab57b35752a95a83ff72d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00204.parquet",
+          "bytes": 30432822,
+          "sha256": "2d4d6c8ff52070ece2a4ca46fabc0cecbfc292758fe5314b8cf98bb4b64b69c8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00205.parquet",
+          "bytes": 30507178,
+          "sha256": "156688031be312361079e8f137a603fda9647c818ee6f2ea684c135708400bd9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00206.parquet",
+          "bytes": 30309421,
+          "sha256": "064d2a6fcbc616d56ad689c2e05bf282a7181e674fec22eea6610a7718ce5fae"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00207.parquet",
+          "bytes": 30354280,
+          "sha256": "7647840d1d15a1796f2773228e78d2317eccd610102dc756b423f013dce86cf1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00208.parquet",
+          "bytes": 30429489,
+          "sha256": "01749e9b7cb5cb37037ea5e738a6c3adb14aaa8d55235be32c6f6e7f25fd3924"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00209.parquet",
+          "bytes": 30411925,
+          "sha256": "313f045d09d017b1f33c8699341dc29c374395690fec23fc8100a34e28653dac"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00210.parquet",
+          "bytes": 30415241,
+          "sha256": "5f4b910a9ea4772924c614a0dda2a69c7760922872a28f8d00bef35352b6f43a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00211.parquet",
+          "bytes": 30526512,
+          "sha256": "ce9dff8d6a013496afe2b68c03f606c5748f0bad70bb5ced2b4bb3c5f529d480"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00212.parquet",
+          "bytes": 30270387,
+          "sha256": "bd344ff3b3b5d5eed7c09010fdbf38662bb54852fc5dccbe22b4efd9ac1f2e32"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00213.parquet",
+          "bytes": 30346435,
+          "sha256": "3c8ba529554d8fb4ab9823217d3372b1857ba202e559902408733e3a7558d49c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00214.parquet",
+          "bytes": 30416034,
+          "sha256": "039010577e8f9fd31b38a8859fa31bd98f33f8cb7554338b72a4c930b4d8b0f9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00215.parquet",
+          "bytes": 30497166,
+          "sha256": "0b1cecf9f65552d327b450d355df76a48433872bf331f8b95fbbd9a45558885b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00216.parquet",
+          "bytes": 30390296,
+          "sha256": "ca9d2815d879e332cea6e077c2cefe03847dc5646c660e5a3be669c40355a5c6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00217.parquet",
+          "bytes": 30270693,
+          "sha256": "5b5b21e057489b4905a447b6e8a872a274fd8e29d126ff0a1b96d7eae8809d59"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00218.parquet",
+          "bytes": 30334798,
+          "sha256": "53b4626264a889a95655c882c3423ca0eb3942a6eaaadf4c4b48c0ed1ab61918"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00219.parquet",
+          "bytes": 30472477,
+          "sha256": "249c3edf7211f58d9d4c95627a26224a76590cca206ff08a65f94aa949866b0a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00220.parquet",
+          "bytes": 30383344,
+          "sha256": "d151dd281099b8a54c9c307819d2d17368d46ccfa90d6e0d7550cebdfa59a84f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00221.parquet",
+          "bytes": 30473311,
+          "sha256": "2dca126e14184fdbec171625f3e381e3e9b41a2722cc768d11e8a707752bb24b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00222.parquet",
+          "bytes": 30306217,
+          "sha256": "6d1cb01b9330beb4b2245e58c199b1f1a484785ad355368d7eb8c254ee84f221"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00223.parquet",
+          "bytes": 30318432,
+          "sha256": "c32ba30e5c2ac437a2c9ac213e215d13806533638597a23b48f630de1aa54ec4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00224.parquet",
+          "bytes": 30393683,
+          "sha256": "7223fc08a33f772be370d7b57791072499d165a392e430dc8183ee589707c749"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00225.parquet",
+          "bytes": 30427606,
+          "sha256": "c3797f2e6cf6b1ecdc3f2191add0a9b7ad4364facfc8d7fe5532c8a1fe2aaed9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00226.parquet",
+          "bytes": 30349330,
+          "sha256": "2c82fed6c6e6b506b0e98fe7ed62d9ed4b378cf419c75c2283f044eaf5a7757e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00227.parquet",
+          "bytes": 30357105,
+          "sha256": "5712382646c4a5282be41037cb4845d4ed8753502488301d6fee1b16c2f3c7e3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00228.parquet",
+          "bytes": 30479303,
+          "sha256": "b8d57afa7095f821adbbb5ba9ecf8d4ec813a50350d4c3e1d5849dceded788dc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00229.parquet",
+          "bytes": 30363935,
+          "sha256": "9301ab16064cf83868f643c22c12b9f69cd440038f42c5ee57138084a8d645b7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00230.parquet",
+          "bytes": 30410970,
+          "sha256": "b8a5fbb0940c7ab04fb358e5b44c1bd027fb21f4a7e3dc7610415106db4f08ad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00231.parquet",
+          "bytes": 30298168,
+          "sha256": "3d787275234155ee5ef93d7afd83fb2020a0cfdcde95de71fe13405599c3f4a9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00232.parquet",
+          "bytes": 30381089,
+          "sha256": "f770334651a05722149a8ec8db657c145f3cf5fcfbc1d1206a63c651229ae8d0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00233.parquet",
+          "bytes": 30364107,
+          "sha256": "d8f030dc3a87791fc0749540e7b3f6b060ebfac8cc15e259a28adb7d28c4214c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00234.parquet",
+          "bytes": 30429881,
+          "sha256": "44078993176ed28cc5478ba4115362886a46a1055e25a9ecd4b2f0fc9d2d46a7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00235.parquet",
+          "bytes": 30480521,
+          "sha256": "f3dee46fa80c25e3aec0de96790638f58e721644a2a198360421416b9ba7c39e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00236.parquet",
+          "bytes": 30425154,
+          "sha256": "8c1c21f403e79f14fde50abdb74f6a0c9ad8a79732b8f97bd50696e14596f426"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00237.parquet",
+          "bytes": 30391224,
+          "sha256": "c0f36e2cc5276d80a23f77b3580d15e4b9f4d262f47e31ee52b6080324462ab9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00238.parquet",
+          "bytes": 30407986,
+          "sha256": "c4e809b910a18f44a427c31a38123a028d57b16cdc001a91f403b3c8e17e411f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00239.parquet",
+          "bytes": 30568129,
+          "sha256": "49e542e3f886359391a8e6a85859c1ea4f4f2c0b3434dedb7e2fa60fef58b1cb"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00240.parquet",
+          "bytes": 30383090,
+          "sha256": "99bfa224c6964935f8029598eabc865062bc0b956d086022c7fefd576ad0c851"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00241.parquet",
+          "bytes": 30377802,
+          "sha256": "4ba5c8adebcaaef26b4a2a02952a79d49897f71757e3385d2854ae0de21f68e3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00242.parquet",
+          "bytes": 30562848,
+          "sha256": "4cb8149fe261e90b8b11a80abf25957bec236b9c6a95ac56fd0947a07ecd4bfe"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00243.parquet",
+          "bytes": 30448648,
+          "sha256": "466f52b17cb09e034a550e9c1bd3ec051b652b769137e0e90cb7fac3049a17ad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00244.parquet",
+          "bytes": 30395606,
+          "sha256": "774b23dc3b5a3d16734b6ed4183a87cd74d0ba665303ef1552795352b2acd9e9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00245.parquet",
+          "bytes": 30405332,
+          "sha256": "79c71671d90a53fd8c66b8242775e9970b37c6312676793a53ef26dfbc3200ce"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00246.parquet",
+          "bytes": 30378859,
+          "sha256": "bb594096020b306da9354d6ca9c30fbfe2b5125c6839cdcd3791ce2615f40f12"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00247.parquet",
+          "bytes": 30400535,
+          "sha256": "dd0a73dc8a52e8884c7285e085627743d66b6da4f71c6513268f73cfe574a7cc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00248.parquet",
+          "bytes": 30595813,
+          "sha256": "5784a3f8d95803e3fcb5035014550a061b2cb6ff9182365d237e4ab1ea046289"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00249.parquet",
+          "bytes": 30436964,
+          "sha256": "e3706ff47f9d69fd15c33f8211b78cdd8999bab55e6785d54e84b7c4844d05a0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00250.parquet",
+          "bytes": 30357105,
+          "sha256": "7dfeeb65b4ad4f768d022972c4e910cc8ccc673a65a51a1374a23a7828b0a4d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00251.parquet",
+          "bytes": 30407323,
+          "sha256": "0e750ed872edd33abcaf8337d2e1d46a2030b9c8ebfdae7b58f15b70c77fc4b6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00252.parquet",
+          "bytes": 30443243,
+          "sha256": "0cc2b3e85fae1427e070bfd1f4f81d6e57df2f6f361bb572abe2c9aa02398549"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00253.parquet",
+          "bytes": 30485434,
+          "sha256": "717974d5be9639739e1581c9733a7b511c0df194fc9f6372af7a8ffc12d3a350"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00254.parquet",
+          "bytes": 30445433,
+          "sha256": "f7a72a6f4d1bca73820c4510499a7259cf2532548dc119085f22321ea8d48df7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00255.parquet",
+          "bytes": 30398842,
+          "sha256": "0398a36a64c9cc1415271dcf940c4826b3705cc7b47e9d338d32e211041f0782"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00256.parquet",
+          "bytes": 30460293,
+          "sha256": "0b343a64c720c9139e5cd9ccbb78565116446a4e67fed800b3831dce433a20f0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00257.parquet",
+          "bytes": 30482448,
+          "sha256": "032099fc218018d1324cf273a41b28cdb2afc3540b402155c6612fe9b8559195"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00258.parquet",
+          "bytes": 30267524,
+          "sha256": "8a3f8d28e83d61da7b4468b92162820c2727f42d8c910f02c363e97f517aff72"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00259.parquet",
+          "bytes": 30349699,
+          "sha256": "a9d86fc6aa5c31ce3ed7d48f424496f46a0bab64a183b1b1c465209b6b0cc30b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00260.parquet",
+          "bytes": 30483185,
+          "sha256": "46ff4e83a41bfd2e1fd21b01e875eb6607b7486b85ce888aa0905c5f0e0b2d01"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00261.parquet",
+          "bytes": 30277507,
+          "sha256": "435ca469ed4f6b42b01e31a79b9fbe139e3afe2e989f0de624b83a9602a9fe11"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00262.parquet",
+          "bytes": 30514170,
+          "sha256": "7f6e4bd5252e0e998f5e7c1869e2e685e51f62056eee2ecadea23488c1b2278b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00263.parquet",
+          "bytes": 30348198,
+          "sha256": "4fd6bfe2332251759906232e20e24f033880f2135bc01f20b604f5b306a1b74c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00264.parquet",
+          "bytes": 30328238,
+          "sha256": "6025e7e87486ddaec26fd7725cc0d3ff622081a42e88e8da52ac0055af81931c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00265.parquet",
+          "bytes": 30555003,
+          "sha256": "0088e10650591b877fdf018fa315d8e509bbc2ec6ebfdfc3518abf267378aa9a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00266.parquet",
+          "bytes": 30465600,
+          "sha256": "8634a31a92ba052deec0a92ae8fb34714c747a88e03473002bc8e8a093ee2060"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00267.parquet",
+          "bytes": 30309955,
+          "sha256": "1d94f08a6f690c97ecebfb7034ecd2e1b9dbc9d1f173839c6a84d0375375b53b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00268.parquet",
+          "bytes": 30324669,
+          "sha256": "638677529166042d04d5cdecc7f69a71ee2676f5c3fdf4f802d75a604d22eb52"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00269.parquet",
+          "bytes": 30392198,
+          "sha256": "b73fa1c31af24d35e1b1242f2448c6bc0a3906496e07c210c782414c3072d04a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00270.parquet",
+          "bytes": 30333676,
+          "sha256": "b9b921999e0c38ba5b580ec370ef885b5cdbe69ecddf7d87504e9eb7befca125"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00271.parquet",
+          "bytes": 30322204,
+          "sha256": "9c25536ee940c302f7e9929aa027e19a08ee5dc8d74c0a6ca4f9aa48b335fef0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00272.parquet",
+          "bytes": 30452824,
+          "sha256": "c7ffb2b28c838dcd8ffcaa2021631da75106a233c4a83cc1fe21b06ec565b5e8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00273.parquet",
+          "bytes": 30444244,
+          "sha256": "6f4939863e20d202692318e5d2a2e217c2ca818fc4f1f65456f30622894d9267"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00274.parquet",
+          "bytes": 30325103,
+          "sha256": "a6c404ea334abd78646e17894e921d7d6b816a007efbbe4dab794125c4cd8f4a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00275.parquet",
+          "bytes": 30440633,
+          "sha256": "e4686cbbdb2a83187ae321b27b23493711a6714da303cc128f0ad6ca43f80a06"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00276.parquet",
+          "bytes": 30335179,
+          "sha256": "86fc18f6167dbc8677f1a00e6c42a8c20a09605a9d663ecc6404df5f7bb0694a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00277.parquet",
+          "bytes": 30458727,
+          "sha256": "72faf4a6e65d05773306459d7656b1b726acfc96a538f79085e66906bca31f61"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00278.parquet",
+          "bytes": 30435986,
+          "sha256": "52b55d18c64a0ed44bfd7a609636bebb29f3001753cb8498f2bbf8780b777cf6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00279.parquet",
+          "bytes": 30385030,
+          "sha256": "0a54ef93f7f975d62a42b50a52c5219e04e80548f733b9687fbb456b78beae2e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00280.parquet",
+          "bytes": 30389605,
+          "sha256": "1a59024f294e5f698bfded5f50576165d711785e2e022a5f3308a6013ed5662c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00281.parquet",
+          "bytes": 30389194,
+          "sha256": "b5cf4e3f88ca238ba719763a20664de374cf34e8402dce6977222cd052ae3f67"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00282.parquet",
+          "bytes": 30467014,
+          "sha256": "50373de9e29963b0d04a17df64ea95811e9a6b76c8c1b8ce46b8e07e1aebb370"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00283.parquet",
+          "bytes": 30346720,
+          "sha256": "75869c7874c68417d9e087961fff5050629432d19a1dace05be35f40416c39af"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00284.parquet",
+          "bytes": 30460663,
+          "sha256": "ac0ae0fd6349b9a5d22cea1dba23813d4bd4e47164eb6738359f0ee136aa5f0a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00285.parquet",
+          "bytes": 30505668,
+          "sha256": "9c52a101bccc1559f9d8c4522e8d130bab21330f76176fd815569b734692329c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00286.parquet",
+          "bytes": 30367078,
+          "sha256": "6d5c00544581ad2afe6e77b0bbbad161e6031ac92d57ec17b88a7cc39ff69882"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00287.parquet",
+          "bytes": 30384613,
+          "sha256": "9c0a9e75e8d5e43270cc806c52cd393699ecc3df7ffb5b791794780c8800b10e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00288.parquet",
+          "bytes": 30444044,
+          "sha256": "012436819c1f11780c31d56b6df7e68e54f28ca8df493c023209db42fcea8d77"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00289.parquet",
+          "bytes": 30448864,
+          "sha256": "16e73186c51639d52bf8cf25592df179b2f6ac270070a6b1016bcfef44ec5cb7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00290.parquet",
+          "bytes": 30410087,
+          "sha256": "d2292fe122413c456316d8562a781f1364f8fd9e99ca9aca34a3c91788c2800e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00291.parquet",
+          "bytes": 30377546,
+          "sha256": "7bb406bb97b76c3223e038d743e6cfd4d661c1c5da95f79cbfc0442e399b6163"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00292.parquet",
+          "bytes": 30400042,
+          "sha256": "2440556babf71fdbea92e571c5cf570da2689bd6ffe9c1a2d1cb35ac5e4ef366"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00293.parquet",
+          "bytes": 30414697,
+          "sha256": "c6989805052a7b99e42ffabc975db1534cfbc41d9581417de6f00e21eb7c21d4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00294.parquet",
+          "bytes": 30441406,
+          "sha256": "e8397e707f962efbc53d40a09e1e20a3af617a9bc5fd37a1a2bbc6dd05c90fef"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00295.parquet",
+          "bytes": 30422497,
+          "sha256": "0ca2efa537eb9d0393fa840241a426869f9b2d581b97a819635ce054f148c48b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00296.parquet",
+          "bytes": 30520119,
+          "sha256": "a731e15578e4a47b3c28c00d3c1e1514c4a5809920cb59535179454fae08557c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00297.parquet",
+          "bytes": 30496953,
+          "sha256": "973d8f31483c08c2215affb1ad52350db263abd8df115fd85014496c3d75b072"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00298.parquet",
+          "bytes": 30316225,
+          "sha256": "c2af1708d4d88caa797a1263dcd3f09803a202a5930c1268e29ad4477d03f507"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00299.parquet",
+          "bytes": 30582905,
+          "sha256": "ebfa0e269418628967ec7ee2ba2563a32800260a9470c2ed5239bc67ecafbfca"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00300.parquet",
+          "bytes": 30435700,
+          "sha256": "6c0c1559b452aa20381335e84236622f4f0ae2b77554a909afeaaeb6a53edc24"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00301.parquet",
+          "bytes": 30357007,
+          "sha256": "a1300b487076a197208605567d8b7e6bb7353e46435dd235effb5f6d7ccac6bc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00302.parquet",
+          "bytes": 30441299,
+          "sha256": "a854709868cf074d23ba6bc43589929ac5dcc54606fda2e6bb37cbf2b191b120"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00303.parquet",
+          "bytes": 30298890,
+          "sha256": "3cedc796256b28a973e929eff6030083374a5e0332776b82f707c3202e1bb5ed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00304.parquet",
+          "bytes": 30409871,
+          "sha256": "11840a32202f374051bc2608b0e9fd59331f39c5b4b88218208eb6077d83cb70"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00305.parquet",
+          "bytes": 30409971,
+          "sha256": "8047a987cd85f937d79179adea49d23ecb91951c99163a097be8ea1866befd41"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00306.parquet",
+          "bytes": 30459432,
+          "sha256": "cb70b08cf2503e7bfedf843834a46878755161b5e771db034f3eaf3b2f737a85"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00307.parquet",
+          "bytes": 30363107,
+          "sha256": "155118dbc9555bb7d7547f5a2abd80948a6bd983dc1e96b9b7d0ccf16cb188ed"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00308.parquet",
+          "bytes": 30355751,
+          "sha256": "b05b7c4270a76b7b62dec1ae4e0cb515620ed8756b89c71e491e9bf6208e18a7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00309.parquet",
+          "bytes": 30404278,
+          "sha256": "c676ee82fa996af1c0d6d3bfdd12adf79d125ddfb8c14504e2c8f686ff4a5e96"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00310.parquet",
+          "bytes": 30451917,
+          "sha256": "d9edc661cca269d85ad020af837b294a2399c71182e1509d29f313044f79dfc3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00311.parquet",
+          "bytes": 30292553,
+          "sha256": "8de8fafef4bec2bdaf6d439e5b0b7eb69f83c314c6c3ab1b1048701e618df907"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00312.parquet",
+          "bytes": 30359031,
+          "sha256": "ad5599767f2b6eaede224876b537b2250db0267faedaa02079754c83704808fc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00313.parquet",
+          "bytes": 30384669,
+          "sha256": "237ab4289ada0cd37bbfb7bc8fb2f2c139d32867e616b0553695c3166f5b881b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00314.parquet",
+          "bytes": 30536538,
+          "sha256": "6b188f7b48faaf5a781453da972cc548aa6746f880972ca375a6eebc73c37c2e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00315.parquet",
+          "bytes": 30463518,
+          "sha256": "fc202abe717e986283e11a26942cc86ecfede03c0428db8df54172cd86b7c5e8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00316.parquet",
+          "bytes": 30448708,
+          "sha256": "f4195f372731d82019be5f6ab637d4da30964884d45cc34db2a974bf4a22d187"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00317.parquet",
+          "bytes": 30457995,
+          "sha256": "6fcc68041743a09a42025fe87cba96492e86d87b9dbb03e0142d0f10ea125dcd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00318.parquet",
+          "bytes": 30448424,
+          "sha256": "676606f208a16c4d2918c314f5963399dd9222c8fa704b0b9beeeaca8cd7c84c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00319.parquet",
+          "bytes": 30443334,
+          "sha256": "9b3702fe930f9ac6b664c9a91b8f3b221a11f4b208d33a6777d82b3a26a67867"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00320.parquet",
+          "bytes": 30376087,
+          "sha256": "e6b10983454e99f3f77b7f44eed0eaf2bfa2373d1be8c873a34191bbd14c5763"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00321.parquet",
+          "bytes": 30410994,
+          "sha256": "9882e55f0ce9853e5286bd0ca1cb6fb13b0f32a462c6a2220147b5d5279ce593"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00322.parquet",
+          "bytes": 30253004,
+          "sha256": "e56cf1420a2e449ad8aa2bd7dd4ae595b527a80a70c41b964eecdb6ec371f4a8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00323.parquet",
+          "bytes": 30449398,
+          "sha256": "3d4954dc7d97929d885fa5150bf128fc6420f0729d7b4710c7936229b7f1a65e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00324.parquet",
+          "bytes": 30443051,
+          "sha256": "e47412f00583953424646ba21b47066bd87e811dd399946a2c5134b61e0cd916"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00325.parquet",
+          "bytes": 30423174,
+          "sha256": "f7a277d144bc635a78158e892699dcf918d642d6f8d57257f7c26e86788dcb61"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00326.parquet",
+          "bytes": 30396346,
+          "sha256": "f218ad281ae96575506974a1eccd8ddc8e3dc5dda3baeb00822b278eac021cff"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00327.parquet",
+          "bytes": 30370033,
+          "sha256": "256524c3e50da3138e977823944bc2cd81729d42e8d1d021bfe92348f9655b7e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00328.parquet",
+          "bytes": 30455969,
+          "sha256": "a944a2a4bf2a19be238f08c5e2bdd440c5990938ca369c7de5b39938eecf09ea"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00329.parquet",
+          "bytes": 30490721,
+          "sha256": "77b6e775ced79217761be06abffcef3de738e73d265fd17888f56e77bc635573"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00330.parquet",
+          "bytes": 30360635,
+          "sha256": "76cc2708391eef1ea9efd392b726f02a1c4d7014addc0d72ccbed7f012f7f1ef"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00331.parquet",
+          "bytes": 30380188,
+          "sha256": "36e9ff5a7573e367b0f89742f99c75295d325d924ccf048d4061ef542e9b277d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00332.parquet",
+          "bytes": 30386606,
+          "sha256": "955bc6c9e16b434c4459fa28e6eb31cbce6741e9cca87edaefc23fda75310765"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00333.parquet",
+          "bytes": 30488764,
+          "sha256": "45f0587f9c747daf4c61b9410147e9317a503c57dfb5c5c31836cb5a2eac9ac2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00334.parquet",
+          "bytes": 30451461,
+          "sha256": "6a69c8f7de93ba26e456ff919472146e49678f2b28f92d534f553b85e06db821"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00335.parquet",
+          "bytes": 30376131,
+          "sha256": "ba0cf6c3b90a4cd99a1fc812ac91f05fbf5e2b3362346c8ba292ba424e9d204b"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00336.parquet",
+          "bytes": 30338407,
+          "sha256": "52e748ef09e07baf0d0788d1125f90c2c5b776b2ba773181aea7076c541d67d2"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00337.parquet",
+          "bytes": 30312621,
+          "sha256": "d1925f082a94ac371257ef2b80f9bc342e76ca13fe07196330b59ad87d1b586f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00338.parquet",
+          "bytes": 30427243,
+          "sha256": "7578877c78b26f750342f86aa6c897e4af76a188576126a8e9002e5355394fa4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00339.parquet",
+          "bytes": 30433541,
+          "sha256": "1d34b05756e582da7c18417a14182bcb71fbec14ecc7538f39969d7986fdbe8a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00340.parquet",
+          "bytes": 30465721,
+          "sha256": "8dc78118f1bbeebec584a4f115f5d9d08554708ba8c1b19ba086f202b1defabd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00341.parquet",
+          "bytes": 30354014,
+          "sha256": "2b2f8f2e7aca1856846841ec3fae756555c4a4123d74163584ab646320128d42"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00342.parquet",
+          "bytes": 30424839,
+          "sha256": "1216dc9702eed519c5058eaae9da7ec589ea726743d2b702a7acf8f65cbf4c5a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00343.parquet",
+          "bytes": 30409090,
+          "sha256": "21ec435e469a48b828e1a8cc59d56f560ff5eb8b447a5dd31cc1d3cbd1682cd9"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00344.parquet",
+          "bytes": 30410561,
+          "sha256": "ac82c117a202cd3052bb618f21a4e7e2b8862adbf7e80696b7728ab6f5868fa1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00345.parquet",
+          "bytes": 30349334,
+          "sha256": "fbea796cab1ca18edfbe8f557c8b096cbf7c0943d8e19ec781e3d70396e5814d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00346.parquet",
+          "bytes": 30401453,
+          "sha256": "66032ceeabd18c7fde5b839e3aae310024084121591df6d972f4fb12cced48c6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00347.parquet",
+          "bytes": 30515102,
+          "sha256": "88acf1e963155d2991d0d15bc278394cf36463f622b4e94ec9a3df2120289752"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00348.parquet",
+          "bytes": 30551322,
+          "sha256": "1d7f8c2401586757d1be310ece093577bb3d4df5f62eef9159c2032e5380bf22"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00349.parquet",
+          "bytes": 30372301,
+          "sha256": "4ccd90cb662c66a48d248a37edade15fa727662c5dbd0881be0fecacfc736a7c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00350.parquet",
+          "bytes": 30509325,
+          "sha256": "7ea329ce2f47da82242b045e07a3d0a24ab78a2d57bec99f085b88cc310eb704"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00351.parquet",
+          "bytes": 30406298,
+          "sha256": "eeefc3c0b7f63e6316b05a9d14c1cb380b33c59f199b6ec1e5f6283854f1111c"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00352.parquet",
+          "bytes": 30380032,
+          "sha256": "5ca8703852f7ca4f4048346eaeee98b416631ce110b439fb86b248cf88e8e02f"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00353.parquet",
+          "bytes": 30295037,
+          "sha256": "8b49d364c967122bf86d8bbe8aa05e3fc9a658ea920d803d1f093c4ae64a87e3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00354.parquet",
+          "bytes": 30382333,
+          "sha256": "0a73407cc02a0aff497a7780bfb65937af99d6de4f2bfbbfd2b1c1539bddbfad"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/ratings/part-00355.parquet",
+          "bytes": 4532785,
+          "sha256": "cde7affe876e99f25565ac37b213b07d116ed80e1484cd801470c4d4bf02a152"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/titles/part-00000.parquet",
+          "bytes": 7330591,
+          "sha256": "7c688626e3732abf03aa0e6fa25055b3eba7af4c38d0c3612fdc190b2ceab1c7"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/titles/part-00001.parquet",
+          "bytes": 2344515,
+          "sha256": "370081424e423d132e7a1600a5341c75e5575986a9c276d045360cfb5bfa4358"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/titles/part-00002.parquet",
+          "bytes": 528313,
+          "sha256": "7ca28bf5300404c9ceb4e0e92c43c77fdc8e3052522b47481400907cbf04eecf"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/series/part-00000.parquet",
+          "bytes": 186082,
+          "sha256": "c9726aab160b9b57fcb1de6229bb09b439e1dc500508049814f92ebfdf5b4b54"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/series/part-00001.parquet",
+          "bytes": 56305,
+          "sha256": "961f8d83b79fdfd6a8e7e4d6f7ba00cd812a35ddb9c9a9746ceb9950a17acda0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/series/part-00002.parquet",
+          "bytes": 13918,
+          "sha256": "95add3418da8b173c52b96b40ce05e3b73d6fb173833f68d3db1741a02307ef3"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/title_genres/part-00000.parquet",
+          "bytes": 3412796,
+          "sha256": "1d8a6b5f17a9d584f889e7eb522f15442224886d8935abe948ad08f236ce3da8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/title_genres/part-00001.parquet",
+          "bytes": 1179995,
+          "sha256": "0ae1b4f9a979e0048c12408b58519b050f620b083c8e31756832672c58a95cbc"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/title_genres/part-00002.parquet",
+          "bytes": 262192,
+          "sha256": "255a3f19617a80d658093d1fcbcfc839ec29725c54e2da3788492fa546e5b7d8"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/genres/part-00000.parquet",
+          "bytes": 1238,
+          "sha256": "78d4ca3d63c73eb018dae06921b792ca38c6ae9f0f83318d974cb6be1da475de"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00000.parquet",
+          "bytes": 532182025,
+          "sha256": "5921b55dbe3d84ee615183b0cf8232abd307588035e91f9d380ccce66583836a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00001.parquet",
+          "bytes": 532175661,
+          "sha256": "a6bbeb556edb13edf4c11fb5a25b77491a22c7de3578ad126d75e651190e1040"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00002.parquet",
+          "bytes": 532178170,
+          "sha256": "8d7d14e4e85ab1d8fa2171e4801e59f8f0645afcd01816d74be779c661feb748"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00003.parquet",
+          "bytes": 532181320,
+          "sha256": "a06dc02da09b636459b14a2ab2d8af9b8aada97f575370bae7b6d67120007c8e"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00004.parquet",
+          "bytes": 532173716,
+          "sha256": "02aa3732ae484d7247c51884c12022df33f6fec536ef2fce6c7edeba7e9cfb01"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00005.parquet",
+          "bytes": 532181475,
+          "sha256": "613bb41452460f2aa43aa27b38b6c9ffa1d23874f3d79fdb9e61fd3d5a00b738"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00006.parquet",
+          "bytes": 532180814,
+          "sha256": "865bc8df25766a485f8c1235252d8c9208abc8ac626407dd68656112ed6ba916"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00007.parquet",
+          "bytes": 532179015,
+          "sha256": "d634063456ae25956ac221998f48ddb37d03de506ffac1bd9ed35c4bfd0d1eba"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00008.parquet",
+          "bytes": 532175370,
+          "sha256": "39c9e9f77317706950cfdd2c887b403a92f1cddd267ac49a282e8f5735295180"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00009.parquet",
+          "bytes": 532180969,
+          "sha256": "063b61c87531bd2a4a2db362307c76ca160e811b78d3b4d005a6250e389d98c6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00010.parquet",
+          "bytes": 532178171,
+          "sha256": "e05f61b0f502ad79cddf3fcc76d12ba99ad55cc67cdd7456d61a43895b134f2a"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00011.parquet",
+          "bytes": 532176758,
+          "sha256": "ff568957bfef109b993fc46414185cb9d6ab71fb090ffb17f80e5bb39734c874"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00012.parquet",
+          "bytes": 532172729,
+          "sha256": "da44de8ccc6ec8c9ed0729f94a328ef7f40d8ac26b152d767bb6461cdc5c8fc4"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00013.parquet",
+          "bytes": 532183589,
+          "sha256": "894a2f433c3ff7a71332d170eb14b02415bac19238c64b70a37e8fc50c244348"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00014.parquet",
+          "bytes": 532185548,
+          "sha256": "5c4344be5f1a1d46ec6e09a221cbbc86d57535590a6a177c160d3ac2e216d1e0"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00015.parquet",
+          "bytes": 532171956,
+          "sha256": "bc6eebce41ea14e117cbf0a30365f294cc58e0235da274275d73e644879673fd"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00016.parquet",
+          "bytes": 532173153,
+          "sha256": "ce9b97c97d7710888bf572007d528b33699e82c3de8740c6f7f6d346168a0ff6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00017.parquet",
+          "bytes": 532173278,
+          "sha256": "5d49227c4bafbf4cf70170f15337d6299d5375c8d58afd7c2319c0f8e2e5b1e6"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00018.parquet",
+          "bytes": 532171224,
+          "sha256": "ba78c0ea06ae2a6badec5aefe3d429dcc541adc24ce92826ab27438f00a3073d"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00019.parquet",
+          "bytes": 532174992,
+          "sha256": "00aefd46cf8ee38cc62ccaef94ad09dbfdb1d75f3fbfc3723485e4f9faa58e94"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00020.parquet",
+          "bytes": 532177359,
+          "sha256": "aa70c6d1b849ce7bda0fc908ac8a4578b1b581aee8b4196a143aca6ef1b24cee"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/viewers/part-00021.parquet",
+          "bytes": 429601418,
+          "sha256": "68a2b1d9f638c09c4f6352119e31008017cf5e980d77b5cf000e73e072979682"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/manifest.json",
+          "bytes": 164613,
+          "sha256": "169455eac395e84508d83e575f5ed4f9e1489693421b0ae43f7227db31a151a1"
+        },
+        {
+          "key": "scale-bench/datasets/streaming/25B/_VALIDATED.json",
+          "bytes": 27577,
+          "sha256": "7c878c60865bb9844ed35edcfddd43c1e0f2abd40ca7daf1144fb3c1a583c134"
+        }
+      ]
     }
   },
   "file_sets": {

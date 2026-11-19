@@ -48,6 +48,14 @@ def load_manifest(path: Path = MANIFEST) -> dict:
         raise ValueError("Invalid expected bucket owner")
     identities = {}
     for entry in manifest["datasets"].values():
+        location = {
+            key: entry.get(key, manifest[key])
+            for key in ("bucket", "expected_bucket_owner")
+        }
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]+", location["bucket"]):
+            raise ValueError("Invalid dataset S3 bucket")
+        if not re.fullmatch(r"[0-9]{12}", location["expected_bucket_owner"]):
+            raise ValueError("Invalid dataset bucket owner")
         shared = entry.get("file_sets", ())
         unknown = set(shared) - manifest.get("file_sets", {}).keys()
         if unknown:
@@ -68,8 +76,8 @@ def load_manifest(path: Path = MANIFEST) -> dict:
             size = item["bytes"]
             if type(size) is not int or size < 0:
                 raise ValueError("Expected nonnegative file size")
-            previous = identities.setdefault(item["key"], item)
-            if previous != item:
+            previous = identities.setdefault(item["key"], (location, item))
+            if previous != (location, item):
                 raise ValueError(f"Conflicting identity: {item['key']}")
     return manifest
 
@@ -209,12 +217,17 @@ def execute(
     jobs: int = 4,
 ) -> dict:
     started = time.perf_counter()
-    files = manifest["datasets"][dataset]["files"]
+    entry = manifest["datasets"][dataset]
+    files = entry["files"]
+    location = {
+        **manifest,
+        **{k: entry[k] for k in ("bucket", "expected_bucket_owner") if k in entry},
+    }
 
     def one(item):
         return acquire(
             item,
-            manifest,
+            location,
             root,
             fetch=command == "fetch",
             source_dir=source_dir,
@@ -382,7 +395,7 @@ def verify_dataset(data_dir, binding):
 
 
 def schema_for(dataset, binding):
-    import pyarrow.parquet as pq
+    import pyarrow.dataset as ds
 
     from kumo.pytorch.api import (
         NON_TEMPORAL,
@@ -400,7 +413,7 @@ def schema_for(dataset, binding):
             TableSpec(
                 name,
                 entry["key"],
-                schema_columns(pq.read_schema(source.path)),
+                schema_columns(ds.dataset(source.path, format="parquet").schema),
                 time_column=entry.get("time", NON_TEMPORAL),
             )
             for name, source in dataset.tables.items()
@@ -479,16 +492,25 @@ def prepare_binding(
 
     definition = dataset_definition(binding)
     with recorder.span("source.read") if recorder else nullcontext():
-        identities = identity_map(data_dir, definition, files)
-        selector = binding["selector"]
-        anchor_path = definition["anchor_path"].format(
-            population=selector["population"], version=selector["anchor_version"]
-        )
-        verify_file(safe_path(data_dir, anchor_path), files[anchor_path])
+        if definition.get("anchor_generation"):
+            from .cohort_anchors import generate
+
+            source_anchor, identities, anchor_identity = generate(
+                data_dir, directory, definition, files
+            )
+        else:
+            identities = identity_map(data_dir, definition, files)
+            selector = binding["selector"]
+            anchor_path = definition["anchor_path"].format(
+                population=selector["population"], version=selector["anchor_version"]
+            )
+            source_anchor = safe_path(data_dir, anchor_path)
+            verify_file(source_anchor, files[anchor_path])
+            anchor_identity = files[anchor_path]
     projected = directory / "anchors.parquet"
     with recorder.span("anchors.prepare") if recorder else nullcontext():
         anchors, population = project_binding(
-            data_dir / anchor_path,
+            source_anchor,
             projected,
             identities,
             binding,
@@ -516,33 +538,52 @@ def prepare_binding(
                 data_dir, prepared_dir, definition, files, roots
             )
         else:
-            for entry in definition["tables"].values():
-                verify_file(safe_path(data_dir, entry["path"]), files[entry["path"]])
+            from .cohort_anchors import table_files
+
+            sources = {
+                name: table_files(data_dir, entry, files)
+                for name, entry in definition["tables"].items()
+            }
             dataset = Dataset(
                 {
-                    name: Parquet(str(data_dir / entry["path"]))
+                    name: Parquet(
+                        str(
+                            safe_path(
+                                data_dir,
+                                entry.get("path") or entry["prefix"].rstrip("/"),
+                            )
+                        )
+                    )
                     for name, entry in definition["tables"].items()
                 }
             )
             mapping = {
                 "scope": {"kind": "full_source"},
                 "sources": {
-                    n: {**files[e["path"]], "path": str(data_dir / e["path"])}
-                    for n, e in definition["tables"].items()
+                    name: items[0] if "path" in definition["tables"][name] else items
+                    for name, items in sources.items()
                 },
-            }
-            mapping["tables"] = {
-                n: {
-                    "rows": pq.read_metadata(source.path).num_rows,
-                    "bytes": Path(source.path).stat().st_size,
-                }
-                for n, source in dataset.tables.items()
+                "tables": {
+                    name: {
+                        "rows": sum(
+                            pq.read_metadata(item["path"]).num_rows for item in items
+                        ),
+                        "bytes": sum(item["bytes"] for item in items),
+                    }
+                    for name, items in sources.items()
+                },
             }
     mapping = {
         **mapping,
         "table_paths": {n: str(source.path) for n, source in dataset.tables.items()},
-        "anchor_source": {**files[anchor_path], "path": str(data_dir / anchor_path)},
+        "anchor_source": {**anchor_identity, "path": str(source_anchor)},
     }
+    sampling_limit = profile(binding, "input").get("sampling_limit")
+    if sampling_limit is not None:
+        if type(sampling_limit) is not int or sampling_limit < 1:
+            raise ValueError("sampling_limit must be a positive integer")
+        mapping["sampling_limit"] = sampling_limit
+        return dataset, anchors, population, mapping, sampling_limit
     with recorder.span("source.read") if recorder else nullcontext():
         bounds = {}
 

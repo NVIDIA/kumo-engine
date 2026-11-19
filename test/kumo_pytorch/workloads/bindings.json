@@ -24,6 +24,11 @@
         "kumo_specs/mbd_contracts.py": "e5a701285c2a14c764af9713a64c77e1bb27f622fdce039240c3536b281c19c2",
         "datasets/mbd/extraction.json": "db51ea0bf5bcae9252b87b684720dd7d74520acc34a4f042788abae1e0eb4bb5"
       }
+    },
+    "streaming_25b": {
+      "case": "packages/kumo-engine/test/cases/streaming_temporal_link.py",
+      "generator_revision": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+      "manifest_sha256": "169455eac395e84508d83e575f5ed4f9e1489693421b0ae43f7227db31a151a1"
     }
   },
   "bindings": [
@@ -1156,6 +1161,85 @@
           }
         }
       }
+    },
+    {
+      "ref": "T01",
+      "binding_id": "suite:T01:session-count-v1",
+      "selector": {
+        "dataset_id": "streaming/25B",
+        "dataset_version": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+        "population": "viewer-weekly-10k",
+        "anchor_version": "v1",
+        "workload_id": "next-7d-session-count"
+      },
+      "origin": "Engine streaming_temporal_link case sources; suite-owned session-count task and fixed cohort.",
+      "input_variant": "sessions",
+      "representation": "graphsage",
+      "split_column": "split",
+      "targets": {
+        "count": {
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "all_true_columns": []
+        }
+      },
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "inputs": "viewer-session-graph",
+      "anchors": "weekly-session-count",
+      "task": "next-7d-session-count",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 512
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.parquet_features:count_graph_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F04",
+          "F08",
+          "F14"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original viewer membership and strict historical cutoff.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          },
+          "graph_values": {
+            "features": [
+              "F01",
+              "F02",
+              "F04",
+              "F08"
+            ],
+            "description": "Sampled session identities, values, connectivity and eligible tie alternatives.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          },
+          "stored_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Original session counts and their float32 target projection.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          }
+        }
+      }
     }
   ],
   "datasets": {
@@ -1607,6 +1691,121 @@
             "event_identity_order": "timestamp"
           }
         }
+      }
+    },
+    "streaming/25B": {
+      "display_name": "Streaming 25B",
+      "inventory": "streaming-25b",
+      "tables": {
+        "viewers": {
+          "prefix": "scale-bench/datasets/streaming/25B/viewers/",
+          "key": "viewer_id",
+          "time": "signup_time"
+        },
+        "genres": {
+          "prefix": "scale-bench/datasets/streaming/25B/genres/",
+          "key": "genre_id"
+        },
+        "series": {
+          "prefix": "scale-bench/datasets/streaming/25B/series/",
+          "key": "series_id",
+          "time": "created_time"
+        },
+        "titles": {
+          "prefix": "scale-bench/datasets/streaming/25B/titles/",
+          "key": "title_id",
+          "time": "added_time"
+        },
+        "title_genres": {
+          "prefix": "scale-bench/datasets/streaming/25B/title_genres/",
+          "key": null
+        },
+        "sessions": {
+          "prefix": "scale-bench/datasets/streaming/25B/sessions/",
+          "key": "session_id",
+          "time": "start_time"
+        },
+        "ratings": {
+          "prefix": "scale-bench/datasets/streaming/25B/ratings/",
+          "key": null,
+          "time": "rated_time"
+        }
+      },
+      "relations": [
+        [
+          "genres_series",
+          "genres",
+          "genre_id",
+          "series",
+          "genre_id"
+        ],
+        [
+          "series_titles",
+          "series",
+          "series_id",
+          "titles",
+          "series_id"
+        ],
+        [
+          "titles_title_genres",
+          "titles",
+          "title_id",
+          "title_genres",
+          "title_id"
+        ],
+        [
+          "genres_title_genres",
+          "genres",
+          "genre_id",
+          "title_genres",
+          "genre_id"
+        ],
+        [
+          "viewers_sessions",
+          "viewers",
+          "viewer_id",
+          "sessions",
+          "viewer_id"
+        ],
+        [
+          "titles_sessions",
+          "titles",
+          "title_id",
+          "sessions",
+          "title_id"
+        ],
+        [
+          "viewers_ratings",
+          "viewers",
+          "viewer_id",
+          "ratings",
+          "viewer_id"
+        ],
+        [
+          "titles_ratings",
+          "titles",
+          "title_id",
+          "ratings",
+          "title_id"
+        ]
+      ],
+      "anchor_generation": {
+        "root_table": "viewers",
+        "root_time": "signup_time",
+        "event_table": "sessions",
+        "event_root": "viewer_id",
+        "event_time": "start_time",
+        "cohort_size": 10000,
+        "window_seconds": 604800,
+        "prediction_times": {
+          "train": "2025-12-10T00:00:00Z",
+          "valid": "2025-12-17T00:00:00Z",
+          "test": "2025-12-24T00:00:00Z"
+        },
+        "coverage": [
+          "2024-01-01T00:00:00Z",
+          "2025-12-31T00:00:00Z"
+        ]
       }
     }
   },
@@ -2171,6 +2370,16 @@
       "forecast": {
         "family": "transactions",
         "window_seconds": 2592000
+      }
+    },
+    "next-7d-session-count": {
+      "kind": "stored",
+      "targets": {
+        "count": {
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "kind": "count"
+        }
       }
     }
   },
@@ -3679,6 +3888,30 @@
           "field": "root_id"
         }
       }
+    },
+    "viewer-session-graph": {
+      "variant": "sessions",
+      "root_table": "viewers",
+      "root_type": "viewer",
+      "sampling_limit": 32,
+      "graph": {
+        "nodes": {
+          "sessions": {
+            "numerical": [
+              "watch_seconds",
+              "completion_frac"
+            ],
+            "categorical": [
+              "device_type"
+            ],
+            "time_column": "start_time"
+          }
+        },
+        "relations": {
+          "viewers_sessions": "sessions"
+        },
+        "reverse_hop": false
+      }
     }
   },
   "anchor_profiles": {
@@ -3749,6 +3982,15 @@
       "time": "as_of_time",
       "split": "split",
       "time_unit": "ns",
+      "version": "v1"
+    },
+    "weekly-session-count": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_offset_seconds": -1,
       "version": "v1"
     }
   }

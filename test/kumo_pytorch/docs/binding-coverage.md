@@ -692,3 +692,37 @@ times, verify stable bounded/full keys and cover signed clock boundaries. The
 review also tightened empty-history and isolated invalid-offset fixtures. No
 remaining actionable review findings. Input-value checks apply saved encoder
 state; they do not independently establish every input fitting algorithm.
+
+## T01 — Streaming 25B / GraphSAGE
+
+This suite-owned binding uses the seven public tables from Engine's
+`packages/kumo-engine/test/cases/streaming_temporal_link.py`. It predicts session
+count over `[T, T + 7 days)` rather than the case's title-ranking task.
+The source manifest pins 744 Parquet files (512,202,229,780 bytes); acquisition
+also verifies the manifest and validation marker. Hidden evaluation/generator
+state is excluded. The shared downloader supports this dataset's Engine bucket.
+
+All seven tables feed the native index, including in bounded campaigns.
+The fixed cohort is the 10,000 smallest integer viewer IDs with signup before
+2025-12-10 UTC. Each viewer has train/valid/test anchors at 2025-12-10,
+2025-12-17 and 2025-12-24 UTC: 30,000 anchors total. Full-population coverage
+means this declared cohort, not all 894,960,000 source viewers. Original IDs are
+preserved. Parquet projections and streaming reductions generate count labels;
+there is no population-wide Python identity map or copied source dataset.
+
+GraphSAGE receives up to 32 historical sessions per viewer, with watch duration,
+completion fraction and device type. Graph cutoff is conservatively `T - 1 second` (the final subsecond interval
+before T is omitted from graph inputs); count
+labels cover `[T, T + 7 days)`. Named assertions independently check original
+source membership, temporal eligibility, graph features/connectivity, stored
+float32 targets and exact future-window counts. Native AnchorTable owns batching.
+The optional native aggregate comparison from M04 is not part of this basic
+binding: its integer-second `(start, stop]` window cannot express the exact
+`[T, T + 7 days)` labels over these original millisecond timestamps.
+
+T01 uses the same correctness, 100-step CPU training, full-population and
+fresh-process lifecycle campaigns, existing RTX runner and reporting as other
+large bindings. No new workflow, host provisioning or scratch manager is added.
+Stage timings remain in the campaign reports; no separate timing comparison is
+enabled. Full-data acceptance remains pending a CI execution; local fixtures do
+not establish capacity or runtime on 25B rows.

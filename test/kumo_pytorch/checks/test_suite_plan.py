@@ -41,7 +41,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 40
+    assert len(grouped) == len(expected) == 44
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -87,7 +87,9 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
         for r in plan[name]["include"]
     ]
     large = [
-        r for r in campaigns if r["binding"] in {"S01", "S02", "S04", "M03", "M04"}
+        r
+        for r in campaigns
+        if r["binding"] in {"S01", "S02", "S04", "M03", "M04", "T01"}
     ]
     assert {r["mode"] for r in large} == {"smoke", "training", "lifecycle", "full"}
     for row in large:
@@ -95,11 +97,11 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
             "group": "nv-gpu-amd64-rtxpro6000-1gpu",
             "labels": "linux-amd64-gpu-rtxpro6000-latest-1",
         }
-        assert row["min_free_gib"] == 128
+        assert row["min_free_gib"] == (512 if row["binding"] == "T01" else 128)
     assert all(
         json.loads(r["runner"]) == "ubuntu-24.04"
         for r in campaigns
-        if r["binding"] not in {"S01", "S02", "S04", "M03", "M04"}
+        if r["binding"] not in {"S01", "S02", "S04", "M03", "M04", "T01"}
     )
     workflow = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     assert "runs-on: ${{ fromJSON(inputs.runner) }}" in workflow

@@ -246,7 +246,7 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
                                 name: fields[node][name]["vocabulary_size"]
                                 for name in graph_profile["categorical"]
                             },
-                            timestamp=graph_profile["timestamp"],
+                            timestamp=graph_profile.get("timestamp"),
                         )
                         for node, graph_profile in nodes.items()
                     },

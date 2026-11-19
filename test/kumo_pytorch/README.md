@@ -1,7 +1,7 @@
 # PyTorch full testing suite
 
 Standalone repository tests for `kumo.pytorch`, outside its installed package.
-Current bindings cover AML HI Small, AML LI Medium, Synthetic Medium S01/S02/S04 and MBD M04
+Current bindings cover AML HI Small, AML LI Medium, Synthetic Medium S01/S02/S04, MBD M03/M04 and Streaming 25B T01
 through shared acquisition, verified source/anchor preparation,
 [model consumers](models/README.md), task checks, training and lifecycle runners.
 Fixture validation and real-data acceptance are tracked separately in the
@@ -112,8 +112,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 40 binding campaigns into correctness (12),
-training (11), lifecycle (6) and full population (11). The Lifecycle matrix also
+The planner partitions the 44 binding campaigns into correctness (13),
+training (12), lifecycle (7) and full population (12). The Lifecycle matrix also
 contains one grouped HI Small entry, preserving its original five model/workload
 checks. HI Small's source/target oracles and history sweeps run in separate
 Correctness matrix entries; the source/target pass makes no optimizer updates.
