@@ -1,14 +1,17 @@
 # Difficult Behavior
 
-A separate **Difficult Behavior** Actions workflow checks small, awkward feature
-combinations against independent answers. It uses the same commit's DiskGraph
-wheel, environment setup, refusal policy, required-case inventory and readable
-reporting as the full suite. It is separate from the real-data binding matrix
-and the `kumo-pytorch-gate`; it does not download datasets or require a GPU.
+The required **Difficult Behavior** group in **PyTorch — Full Suite** checks
+small, awkward feature combinations against independent answers, alongside
+Lifecycle. Its reusable workflow consumes the suite's shared DiskGraph wheel
+and uses the common setup, refusal policy, required-case inventory and readable
+reporting. Failures, cancellations and unexpected skips block `kumo-pytorch-gate`.
+It is separate from the real-data binding matrix and needs no datasets or GPU.
 
-The workflow runs the same 82 cases on relevant PRs, manual dispatch and the
-09:00 UTC schedule after merge. There are 60 package-interaction/regression
-cases and 22 oracle mutation checks. All cases are required: missing cases, unexpected
+The full suite runs the same 82 cases on relevant PRs, main pushes, manual
+dispatch and the 09:00 UTC schedule after merge. Difficult Behavior has no
+independent trigger or duplicate DiskGraph build. There are 60 package-interaction
+and regression cases and 22 oracle mutation checks. All cases are required:
+missing cases, unexpected
 additions, skips, xfails and unexecuted required bodies fail the job. A known
 package defect stays a failing assertion, with its reproducer retained.
 
@@ -45,13 +48,13 @@ expect automatic reciprocal edges or conflate traversal with emitted orientation
 ## Feature audit and ownership
 
 Reviewed against the public schema, sample, batch, encoding, target and lifecycle
-interfaces. Existing ordinary tests remain their owners; the new workflow adds
+interfaces. Existing ordinary tests remain their owners; Difficult Behavior adds
 interaction coverage rather than running the package suite twice. The table
 lists coverage owners, **not a promise that every feature is supported or every
 combination is tested**. Paths below `tests/` refer to
 `packages/experimental/kumo-pytorch/tests/`.
 
-| Public feature family | Existing coverage owner | New workflow scope |
+| Public feature family | Existing coverage owner | Difficult Behavior scope |
 | --- | --- | --- |
 | Schema, dtypes, temporal/non-temporal tables, relation keys, Parquet | `tests/test_entity_contract.py`, `tests/test_diskgraph_decimals.py`, G-TYPE-001 | Typed partitioned sources; exact wide integers, NULLs and timed joins |
 | Native AnchorTable, splits, order, shuffle, rank/padding/drop-last | `tests/test_anchor_tables.py`, `tests/test_native_anchor_handoff.py` | Native table ownership, train/evaluation split, partial batches; distributed and shuffled cases stay with existing owners |
@@ -105,8 +108,8 @@ intermediate traversal and row filters). No skips or xfails. The original
 
 This run used the existing compatible local DiskGraph extension. It is local
 fixture evidence, not a branch-built Linux CI
-result or a claim of complete public API conformance. The new workflow builds
-DiskGraph from the branch before testing it.
+result or a claim of complete public API conformance. The full suite builds
+DiskGraph from the branch and shares that wheel with this group.
 
 Independent review completed in two rounds. It identified missing follower-mask
 assertions and an unchecked epoch-two anchor population; both are now covered,
@@ -114,7 +117,7 @@ including isolated mask mutations and complete anchor multiplicity checks.
 A separate fresh-context review reproduced all 11 regression failures, accepted
 the seven documented defect families, and verified that A01 remains explicitly
 ambiguous rather than counted as a confirmed bug.
-The 397 harness checks, unchanged 671-case CPU inventory collection, scoped
+The 406 harness checks, unchanged 671-case CPU inventory collection, scoped
 Flake8/isort, YAML/actionlint, license headers and documentation checks pass.
 The shared reporter's 23 checks cover readable expectations and observations,
 unchanged outcomes, full evidence retention and cancellation. Independent review

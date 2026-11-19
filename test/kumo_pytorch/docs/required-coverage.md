@@ -13,7 +13,8 @@ LI Medium campaign execution remains pending in the
 
 `--required-coverage=cpu`, `--required-coverage=gpu` or
 `--required-coverage=difficult` requires the corresponding inventory. The last
-profile belongs to the separate [Difficult Behavior workflow](difficult-behavior.md). Missing/deleted cases, unexpected additions, collection-time skips,
+profile belongs to the required [Difficult Behavior group](difficult-behavior.md).
+Missing/deleted cases, unexpected additions, collection-time skips,
 missing imports, deselection of required cases, runtime skips and xfails fail
 execution. A required case must execute or verify a declared preflight refusal
 as described below. Other setup failures remain failures. Expected output
@@ -132,8 +133,8 @@ also remains. These are local fixture findings, not full AML/GPU CI results.
 
 PR #353 owns `kumo-pytorch-gate` in the **PyTorch — Full Suite** workflow.
 Direct PR, main, scheduled and manual executions use the same complete plan,
-including real-data training, full populations and GPU benchmarks. Existing
-package/example/H&M workflows are reusable workers, not independent triggers.
+including Difficult Behavior, real-data training, full populations and GPU
+benchmarks. Existing package/example/H&M workflows are reusable workers, not independent triggers.
 A single candidate DiskGraph wheel feeds all native checks. Unrelated PRs pass
 through explicit changed-file detection; API errors run the suite instead of
 assuming an exemption. Missing jobs, failures, cancellations and unexpected

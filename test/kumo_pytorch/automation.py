@@ -18,6 +18,7 @@ SUITE_JOBS = frozenset(
         "package",
         "examples",
         "fixtures",
+        "difficult-behavior",
         "conformance",
         "host-metrics",
         "gpu-checks",

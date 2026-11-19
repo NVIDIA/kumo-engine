@@ -138,14 +138,15 @@ def scheduled():
 @pytest.mark.parametrize(
     "fault", ["missing", "extra", "failure", "skipped", "cancelled"]
 )
-def test_nightly_never_hides_missing_or_unsuccessful_jobs(fault):
+@pytest.mark.parametrize("job", ["gpu-checks", "difficult-behavior"])
+def test_nightly_never_hides_missing_or_unsuccessful_jobs(fault, job):
     jobs = results()
     if fault == "missing":
-        jobs.pop("gpu-checks")
+        jobs.pop(job)
     elif fault == "extra":
         jobs["unregistered"] = {"result": "success"}
     else:
-        jobs["gpu-checks"]["result"] = fault
+        jobs[job]["result"] = fault
     assert evidence(jobs)["status"] == "failed"
 
 

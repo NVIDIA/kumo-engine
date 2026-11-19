@@ -211,6 +211,13 @@ jobs:
     with:
       diskgraph-wheel-artifact: diskgraph-wheel
 
+  difficult-behavior:
+    name: Difficult Behavior
+    needs: diskgraph-wheel
+    uses: ./.github/workflows/kumo-pytorch-difficult-behavior.yml
+    with:
+      diskgraph-wheel-artifact: diskgraph-wheel
+
   conformance:
     name: Shared / Conformance / Shard ${{ matrix.shard }}
     needs: [diskgraph-wheel, plan]
@@ -873,7 +880,7 @@ jobs:
 
   gate:
     name: kumo-pytorch-gate
-    needs: [changes, plan, diskgraph-wheel, tooling, package, examples, fixtures, conformance, host-metrics, gpu-checks, correctness, training, lifecycle, hm-runs, hm-checks, population, fitting-memory, benchmarks, binding-results]
+    needs: [changes, plan, diskgraph-wheel, tooling, package, examples, fixtures, difficult-behavior, conformance, host-metrics, gpu-checks, correctness, training, lifecycle, hm-runs, hm-checks, population, fitting-memory, benchmarks, binding-results]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

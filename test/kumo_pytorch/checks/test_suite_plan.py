@@ -121,7 +121,7 @@ def test_campaign_resource_errors_fail_during_planning():
         nightly.campaign_resources({"min_free_gib": -1})
 
 
-def test_full_suite_and_difficult_behavior_are_the_external_entry_points():
+def test_full_suite_is_the_only_external_entry_point():
     workflows = ROOT / ".github/workflows"
     suite = (workflows / "kumo-pytorch-t2b.yml").read_text()
     assert "name: PyTorch — Full Suite" in suite and "name: kumo-pytorch-gate" in suite
@@ -131,16 +131,16 @@ def test_full_suite_and_difficult_behavior_are_the_external_entry_points():
     assert not (workflows / "kumo-pytorch-gate.yml").exists()
     difficult = (workflows / "kumo-pytorch-difficult-behavior.yml").read_text()
     assert "name: Difficult Behavior" in difficult
-    for event in ("pull_request:", "schedule:", "workflow_dispatch:"):
-        assert f"  {event}" in difficult
     assert "--required-coverage=difficult" in difficult
     assert "continue-on-error" not in difficult
-    assert "needs: diskgraph-wheel" in difficult
+    assert "  diskgraph-wheel:" not in difficult
+    assert "diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}" in difficult
+    caller = suite.split("  difficult-behavior:\n", 1)[1].split("\n  conformance:", 1)[0]
+    assert "needs: diskgraph-wheel" in caller
+    assert "uses: ./.github/workflows/kumo-pytorch-difficult-behavior.yml" in caller
+    assert "diskgraph-wheel-artifact: diskgraph-wheel" in caller
     for path in workflows.glob("*kumo-pytorch*.yml"):
-        if path.name not in {
-            "kumo-pytorch-t2b.yml",
-            "kumo-pytorch-difficult-behavior.yml",
-        }:
+        if path.name != "kumo-pytorch-t2b.yml":
             text = path.read_text()
             assert "  workflow_call:" in text
             assert all(

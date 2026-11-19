@@ -27,8 +27,10 @@ for every required group. Package, example and H&M workflows are reusable worker
 they no longer launch overlapping runs independently. Unrelated PRs retain an
 explicit changed-file exemption; relevant PRs run the full suite.
 
-**Difficult Behavior** is a separate workflow for small, adversarial feature
-combinations with independent expected answers. Its [feature map and run guide](docs/difficult-behavior.md)
+**Difficult Behavior** is a required group in the same full suite, alongside
+Lifecycle, for small, adversarial feature combinations with independent expected
+answers. It shares the suite's DiskGraph build and contributes to the final gate.
+Its [feature map and run guide](docs/difficult-behavior.md)
 describe the additional cases and existing coverage owners. It reuses setup,
 refusal enforcement and reporting, without adding another dataset campaign.
 

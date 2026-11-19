@@ -5,42 +5,19 @@
 name: Difficult Behavior
 
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'test/kumo_pytorch/**'
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - '.github/workflows/kumo-pytorch-difficult-behavior.yml'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/actions/kumo-pytorch-results/**'
-      - '.github/actions/rust-toolchain/**'
-      - '.github/actions/apt-install/**'
-      - 'scripts/diskgraph'
-      - 'setup.py'
-      - 'pyproject.toml'
-      - 'uv.lock'
-  schedule:
-    - cron: '0 9 * * *'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      diskgraph-wheel-artifact:
+        description: DiskGraph wheel built by the full suite
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  diskgraph-wheel:
-    name: Setup / DiskGraph Build
-    uses: ./.github/workflows/_diskgraph-wheel.yml
-    with:
-      readable-output: true
-
   difficult-behavior:
     name: Difficult Behavior / Feature Interactions
-    needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -53,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
-          diskgraph-wheel-artifact: diskgraph-wheel
+          diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
       - name: Check difficult feature interactions
         run: |
           python3 test/kumo_pytorch/ci_reporting.py run \
