@@ -94,8 +94,9 @@ def test_resume_tracks_consumption_and_can_change_prefetch_depth(save_depth, res
                 _equal(old.metadata, new.metadata)
 
 
+@pytest.mark.parametrize("depth", [0, 3])
 @pytest.mark.parametrize("error", [RuntimeError("producer failed"), KeyboardInterrupt()])
-def test_producer_errors_follow_queued_batches_and_close_the_iterator(error):
+def test_producer_errors_follow_queued_batches_and_close_the_iterator(error, depth):
     closed = threading.Event()
 
     def produce():
@@ -106,14 +107,16 @@ def test_producer_errors_follow_queued_batches_and_close_the_iterator(error):
         finally:
             closed.set()
 
-    with batches(produce, 3) as iterator:
+    with batches(produce, depth) as iterator:
         assert next(iterator) == 0
         assert next(iterator) == 1
         with pytest.raises(type(error)):
             next(iterator)
         assert list(iterator) == []
         assert iterator.state_dict()["batches"] == 2
-    assert closed.is_set()
+        assert closed.is_set()
+        with pytest.raises(ValueError, match="before iteration starts"):
+            iterator.load_state_dict(iterator.state_dict())
 
 
 def test_empty_source_and_factory_failure():
