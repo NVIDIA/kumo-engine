@@ -41,7 +41,6 @@ from kumo.pytorch.contract.batch import (
     LabelTarget,
     MaskedValuesTarget,
     MatchingGroupTarget,
-    NeighborhoodSource,
     Nested,
     NextTokenTarget,
     OccurrencesOf,
@@ -2186,7 +2185,21 @@ class PreparedBatchPlan:
                         "inspectable output or an explicit encoder"
                     )
 
-    def _collate(self, values: Any, *, epoch: int, seed: int, model=False, requests=()) -> Batch:
+    def _collate(
+        self,
+        values: Any,
+        *,
+        epoch: int,
+        seed: int,
+        model=False,
+        requests=(),
+        columnar=False,
+        deduplicate_edges=False,
+        encoding_model=None,
+    ) -> Batch:
+        # Native buffers and the requested encoding surface are independent:
+        # inspectable output still permits Raw values without tensor encodings.
+        encoding_model = model if encoding_model is None else encoding_model
         declarations = {
             name: value.declarations
             for name, value in self._prepared_inputs.items()
@@ -2205,7 +2218,16 @@ class PreparedBatchPlan:
                 graph = SimpleNamespace(
                     source=prepared.spec.source.name,
                     node_fields=prepared.spec.representation.node_fields,
+                    topology=prepared.spec.representation.topology,
                 )
+                if columnar:
+                    result[name] = self._source.columnar_graph_batch(
+                        self.sample,
+                        graph,
+                        values.runtime_batch,
+                        deduplicate_edges=deduplicate_edges,
+                    )
+                    continue
                 if model and getattr(values, "runtime_batch", None) is not None:
                     result[name] = self._source.sample_graph_batch(
                         self.sample, graph, prepared.state, values.runtime_batch
@@ -2235,7 +2257,7 @@ class PreparedBatchPlan:
                 )
             elif isinstance(prepared.spec.representation.row, Columns):
                 result[name] = _column_output(
-                    prepared, rows[name], model=model, state=self._input_state
+                    prepared, rows[name], model=encoding_model, state=self._input_state
                 )
             else:
                 result[name], produced = _token_output(
@@ -2245,7 +2267,7 @@ class PreparedBatchPlan:
                     self._input_state,
                     self._emitted,
                     entity_ids,
-                    model=model,
+                    model=encoding_model,
                     packer=getattr(self._source, "pack_token_stream", None) if model else None,
                     seed=seed,
                     epoch=epoch,
@@ -2259,7 +2281,7 @@ class PreparedBatchPlan:
                     self._prepared_inputs,
                     rows,
                     values,
-                    model=model,
+                    model=encoding_model,
                 )
             )
         if model:
@@ -2616,13 +2638,12 @@ def fit_plan(
         raise ValueError("at least one fitting request is required")
     if input_state is not None and target_encoders is None:
         _check_reused_target_spaces(spec, input_state)
+    # Graph fields are fitted separately by fit_graph_fields; they do not need
+    # per-anchor records for the other inputs or targets in a mixed contract.
     model = (
         callable(getattr(source, "build_model", None))
         and not sample.dated_entity_values
-        and all(
-            not isinstance(value.source, (CandidateSource, NeighborhoodSource))
-            for value in spec.inputs.values()
-        )
+        and all(not isinstance(value.source, CandidateSource) for value in spec.inputs.values())
     )
 
     def values_for(sample_spec):

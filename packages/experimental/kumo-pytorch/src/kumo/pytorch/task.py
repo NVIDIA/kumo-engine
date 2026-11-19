@@ -209,7 +209,8 @@ class Task:
         world_size: int = 1,
         drop_last: bool | None = None,
         chunk_batches: int = 8,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
+        deduplicate_edges: bool = False,
     ) -> TaskBatches:
         """Emit batches over this task's anchors, or over requests built in code.
 
@@ -225,6 +226,17 @@ class Task:
         marks those rows so a loss can exclude them. ``drop_last`` applies to
         the final batch of each rank's pass, not to every chunk.
 
+        Native DiskGraph graph batches keep complete
+        split-stage batches for refit: shuffle, rank partitioning, padding and
+        ``drop_last`` apply separately to each selected split, without mixing
+        partial tails. A split smaller than one batch may be dropped completely
+        with ``drop_last=True``, independently of graph topology.
+        An empty stage shard pads from
+        an anchor the rank owns in another selected split; only a rank owning
+        no selected anchors borrows marked padding from another rank.
+        Relations-inspectable contracts using Python fallback (for example,
+        those with targets) retain their existing scheduling instead.
+
         Order is a pure function of ``seed``, ``epoch``, ``shuffle``, ``rank``
         and ``world_size``; ranks are disjoint before padding. A token budget
         (`Batching.max_tokens`) with ``world_size > 1`` is refused.
@@ -236,6 +248,17 @@ class Task:
         ``output_format="model"`` refuses raw types without a tensor
         representation before fetching a batch; ``"inspectable"`` keeps them
         as Arrow arrays. Both emit the same `Batch` structure.
+
+        ``"columnar"`` emits `ColumnarGraph` inputs with Arrow feature tables
+        and selected edge indexes, without tensor encoding. It requires
+        materialized DiskGraph anchors, one graph input with explicit Raw
+        fields and fixed sample counts. Both topologies support refit stages.
+        Other sample values, targets, entity filters and availability checks
+        are refused before iteration. Shuffle, sharding, padding, drop-last
+        and resume retain their normal semantics. By default, selected edge pairs
+        may repeat across native chunks. ``deduplicate_edges=True`` is available
+        only for columnar output: it allocates edge arrays to retain the first
+        occurrence of each pair per relation, preserving example isolation.
         """
 
         if requests is not None and split is not None:
@@ -269,8 +292,18 @@ class Task:
             "chunk_batches": chunk_batches,
             "output_format": output_format,
         }
-        if output_format not in {"inspectable", "model"}:
-            raise ValueError("output_format must be 'inspectable' or 'model'")
+        if output_format not in {"inspectable", "model", "columnar"}:
+            raise ValueError("output_format must be 'inspectable', 'model', or 'columnar'")
+        if not isinstance(deduplicate_edges, bool):
+            raise ValueError("deduplicate_edges must be a bool")
+        if deduplicate_edges and output_format != "columnar":
+            raise ValueError("deduplicate_edges requires columnar output")
+        if output_format == "columnar":
+            config["deduplicate_edges"] = deduplicate_edges
+            validate = getattr(self._anchors, "validate_columnar", None)
+            if requests is not None or not callable(validate):
+                raise ValueError("columnar output requires materialized DiskGraph anchors")
+            validate(self._assembler, selection)
         if requests is None:
             self._anchors.count(selection)  # an unknown split is refused now, not mid-iteration
             max_samples = (
@@ -294,6 +327,7 @@ class Task:
                     world_size=world_size,
                     drop_last=drop_last,
                     output_format=output_format,
+                    deduplicate_edges=deduplicate_edges,
                 )
 
         else:
@@ -327,7 +361,8 @@ class Task:
         rank: int,
         world_size: int,
         drop_last: bool | None,
-        output_format: Literal["inspectable", "model"] = "inspectable",
+        output_format: Literal["inspectable", "model", "columnar"] = "inspectable",
+        deduplicate_edges: bool = False,
     ) -> Iterator[Batch]:
         anchors = self._anchors
         view = getattr(anchors, "iteration_anchors", None)
@@ -347,6 +382,7 @@ class Task:
                 world_size=world_size,
                 drop_last=drop_last,
                 output_format=output_format,
+                **({"deduplicate_edges": deduplicate_edges} if output_format == "columnar" else {}),
             )
             return
         positions = padded_positions(

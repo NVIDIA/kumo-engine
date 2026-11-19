@@ -102,8 +102,10 @@ dependencies, and running the tests.
 
 ## Quick start
 
-Here are two small tables, users and purchases, saved as Parquet files. We
-build one batch for two users, each as of January 10.
+Here are two small tables, users and purchases, saved as Parquet files. A
+separate Parquet anchor file selects two users to score as of January 10. Use
+this `AnchorTable` pattern for training, evaluation, offline scoring, and
+loader benchmarks.
 
 <!-- test: diskgraph -->
 ```python
@@ -183,9 +185,21 @@ batch = api.BatchSpec(
 
 # Two examples to build: users 1 and 2, both as of January 10.
 now = datetime(2024, 1, 10, tzinfo=timezone.utc)
-requests = (
-    api.SampleRequest(sample_id="user-1", entity_id=1, as_of_time=now),
-    api.SampleRequest(sample_id="user-2", entity_id=2, as_of_time=now),
+pq.write_table(
+    pa.Table.from_pylist(
+        [
+            {"sample_id": f"user-{user_id}", "user_id": user_id, "as_of": now, "split": "train"}
+            for user_id in (1, 2)
+        ]
+    ),
+    data / "anchors.parquet",
+)
+anchors = api.AnchorTable(
+    source=api.Parquet(path=str(data / "anchors.parquet")),
+    entity_id="user_id",
+    as_of_time="as_of",
+    sample_id="sample_id",
+    split="split",
 )
 
 # Put it together. The DiskGraph engine indexes the files the first time, then builds the batch.
@@ -199,9 +213,9 @@ dataset = api.Dataset(
 engine = api.DiskGraphEngine(index=data / "index", ingest="if_missing")
 with (
     api.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
-    plan.materialize(anchors=requests) as task,
+    plan.materialize(anchors=anchors, fit_split="train") as task,
 ):
-    result = next(task.batches(requests=requests))
+    result = next(task.batches(split="train", output_format="model"))
 
 print("inputs:", tuple(result.inputs))
 print("history amount shape:", tuple(result.inputs["history"]["amount"]["values"].shape))
@@ -217,6 +231,11 @@ history valid rows: [[True, True], [True, False]]
 User 1 also bought something on January 12, but that's after the prediction
 time, so only their two earlier purchases show up. User 2 has just one purchase,
 so the second slot in their history is padding and is marked as not valid.
+
+Use Python `SampleRequest` objects for quick checks, tests, and small sets of
+requests supplied at runtime. They bypass native AnchorTable iteration even
+when the engine is DiskGraph. See [choosing how to supply
+anchors](docs/04-engines-and-data.md#anchor-tables).
 
 ## Learn more
 

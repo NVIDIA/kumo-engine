@@ -7,6 +7,10 @@ it with a graph neighborhood and caller-supplied candidates. Blocks execute in
 order on DiskGraph. The uniform-graph and candidate sections describe required
 behavior that DiskGraph currently refuses; their tests remain failures.
 
+These snippets use Python requests to inspect a few examples. For training,
+evaluation, or benchmarking on DiskGraph, use the
+[Parquet AnchorTable recipe](05-training-batches.md#training-on-the-diskgraph-engine).
+
 ## The schema: types, keys and clocks
 
 Declare each stored column once with its raw scalar type, the relations between

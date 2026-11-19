@@ -168,14 +168,19 @@ def inspect(cursor, kind, qualified, value, ended):
     if len(found) != 1:
         raise ValueError('Ambiguous retained object')
     observed = found[0]
-    owner = 'owner_role' if kind == 'CODE BUNDLE' else 'owner'
+    owner = 'owner_role' if kind == 'CODE BUNDLE' and 'owner_role' in observed else 'owner'
     required = {'database_name', 'schema_name', 'created_on', owner}
     if not required <= observed.keys():
         raise ValueError('Provider ownership metadata is incomplete')
     if (observed['database_name'] != launch.DATABASE
             or observed['schema_name'] != launch.SCHEMA
-            or observed[owner] != launch.ROLE or
-        (kind == 'CODE BUNDLE' and observed.get('owner_role_type') != 'ROLE')
+            or observed[owner] != launch.ROLE
+            or (kind == 'CODE BUNDLE' and
+                ('owner_role' in observed or 'owner_role_type' in observed)
+                and observed.get('owner_role_type') != 'ROLE')
+            or (kind == 'CODE BUNDLE' and 'owner_role' in observed
+                and 'owner' in observed
+                and observed['owner'] != observed['owner_role'])
             or not value['created_unix'] <= timestamp(
                 observed['created_on']) <= ended):
         raise ValueError('Retained object ownership or creation time changed')

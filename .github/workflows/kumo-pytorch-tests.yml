@@ -40,7 +40,7 @@ jobs:
         $RUNNER_TEMP/*.xml
         $RUNNER_TEMP/*acquisition.json
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
@@ -50,8 +50,21 @@ jobs:
         run: |
           python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
             --title "$KUMO_CI_LABEL / Test suite" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py --ignore=tests/e2e/test_training.py --junitxml="$RUNNER_TEMP/package-tests.xml"
+          python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py --ignore=tests/e2e/test_training.py --basetemp="$RUNNER_TEMP/package-checks" --junitxml="$RUNNER_TEMP/package-tests.xml"
           KUMO_CI_COMMAND
+      - name: Retain lifecycle subprocess diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-pytorch-package-lifecycle-diagnostics
+          path: |
+            ${{ runner.temp }}/package-checks/**/*.log
+            ${{ runner.temp }}/package-checks/**/report.json
+            ${{ runner.temp }}/package-checks/**/result.json
+            ${{ runner.temp }}/package-checks/**/expected.json
+            ${{ runner.temp }}/package-checks/**/restore-fingerprints.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Style
         if: ${{ !cancelled() }}
         run: |

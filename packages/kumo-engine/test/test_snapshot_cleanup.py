@@ -185,3 +185,15 @@ def test_snapshot_warns_on_foreign_keys_that_mostly_miss(tmp_path, recwarn):
         'to users.id; unmatched rows get no edge. Check that both columns '
         'hold the same IDs.'
     ]
+
+
+def test_snapshot_lock_file_stays_after_release(tmp_path, monkeypatch):
+    import kumo.engine._scratch as scratch
+    from kumo.engine.graph import _lock
+
+    monkeypatch.setattr(scratch, '_root', tmp_path)
+    lock = _lock('graph')
+    with lock:
+        pass
+
+    assert Path(lock.lock_file).exists()

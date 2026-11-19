@@ -24,7 +24,7 @@ use diskgraph_index::pkmap::{Key, KeyType};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
+use pyo3::types::{PyAny, PyByteArray, PyDict, PyList, PyString, PyTuple};
 
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(
@@ -996,6 +996,43 @@ impl SamplerEngine {
             )));
         }
         py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
+    }
+
+    /// Sorted int64 IDs of `node_type`'s canonical rows (one per primary
+    /// key), keeping only rows that pass `row_filter`: a compiled ``RowFilter``
+    /// JSON on the table's own columns.
+    #[pyo3(signature = (node_type, row_filter=None))]
+    pub fn rhs_catalog<'py>(
+        &self,
+        py: Python<'py>,
+        node_type: String,
+        row_filter: Option<String>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let row_filter: Option<diskgraph_core::tt_builder::RowFilter> = row_filter
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|error| DiskgraphConfigError::new_err(format!("invalid row filter: {error}")))?;
+        let reader = Arc::clone(&self.reader);
+        let engine = Arc::clone(&self.engine);
+        let catalog = py
+            .detach(move || {
+                diskgraph_train_table::rhs_catalog::rhs_catalog(
+                    &reader,
+                    &node_type,
+                    row_filter.as_ref(),
+                    &engine.thread_pool,
+                )
+            })
+            .map_err(map_ttgen_err)?;
+        let width = size_of::<i64>();
+        let buffer = PyByteArray::new_with(py, catalog.len() * width, |bytes| {
+            for (out, node_id) in bytes.chunks_exact_mut(width).zip(catalog.node_ids()) {
+                out.copy_from_slice(&(node_id as i64).to_ne_bytes());
+            }
+            Ok(())
+        })?;
+        py.import("numpy")?
+            .call_method1("frombuffer", (buffer, "int64"))
     }
 
     #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]

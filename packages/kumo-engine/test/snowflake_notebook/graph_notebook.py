@@ -8,12 +8,15 @@ import json
 import re
 from pathlib import Path
 
+from explanation import FILES as EXPLANATION_FILES
+from explanation import PLOTS
 from resources import admit_candidate, candidate_path
 
 MODULES = {
     'graph.py', 'table.py', '_widget.py', '_visualization.py',
     '_visualization_viewer.py', '_visualization_pdf.py',
-    '_visualization_layout.py'
+    '_visualization_layout.py', 'explain/results.py', 'explain/_artifacts.py',
+    'explain/plotting.py', 'explain/types.py', 'explain/errors.py'
 }
 
 
@@ -38,7 +41,7 @@ def collect(receipt, spec, root, key_file):
     stage = base + spec['attempt'] + '/results/' + execution
     names = {
         'graph.svg', 'graph.pdf', 'graph.md', 'default.html', 'sampled.html',
-        'graph-result.json'
+        'graph-result.json', *EXPLANATION_FILES
     }
     if (not re.fullmatch(r'[0-9a-f]{12}', execution)
             or receipt.get('output_stage') != stage
@@ -50,6 +53,21 @@ def collect(receipt, spec, root, key_file):
         if receipt['uploaded']['graph.' +
                                suffix] != receipt['exports'][suffix]['sha256']:
             raise ValueError('Uploaded graph differs from verified export')
+    explanations = receipt.get('explanations', {})
+    if explanations.get('status') != 'passed':
+        raise ValueError('Actual refit explanation checks must pass')
+    for kind, plot in explanations.get('plots', {}).items():
+        if set(plot.get('sha256', {})) != {'png', 'svg', 'pdf'}:
+            raise ValueError(
+                'All three explanation export formats are required')
+        for suffix, digest in plot['sha256'].items():
+            if receipt['uploaded'].get(
+                    f'explanation-{kind}.{suffix}') != digest:
+                raise ValueError(
+                    'Uploaded explanation differs from verified export')
+    if set(explanations.get('plots', {})) != set(PLOTS):
+        raise ValueError(
+            'Binary and class-selected explanation plots are required')
     root = Path(root)
     root.mkdir(mode=0o700, exist_ok=False)
     with launch.connect(key_file) as connection, connection.cursor() as cursor:
@@ -72,6 +90,9 @@ def collect(receipt, spec, root, key_file):
     if stored != expected_report:
         raise ValueError(
             'Visible notebook result differs from retained receipt')
+    if json.loads(
+        (root / 'explanation-result.json').read_text()) != explanations:
+        raise ValueError('Explanation receipt differs from retained artifacts')
     tree = ElementTree.fromstring((root / 'graph.svg').read_bytes())
     tables = {
         node.get('data-kumo-table')
@@ -114,7 +135,8 @@ def load_config(path):
             'pr172/inputs.json').read_text())['sha256']
     if value['fixture_sha256'] != expected_fixture or set(
             value['test_helper_sha256']) != {
-                'graph_fixture.py', 'wheel_gpu_smoke.py'
+                'graph_fixture.py', 'wheel_gpu_smoke.py',
+                'wheel_mlops_lifecycle.py', 'explanation.py'
             }:
         raise ValueError(
             'Notebook must identify the shared graph fixture and test helpers')
@@ -160,23 +182,16 @@ def prepare(destination, pdf_asset, source_commit, module_hashes,
     ]
     candidate = json.loads(candidate_path().read_text())
     payload = {
-        'candidate.json':
-        candidate,
-        'wheelhouse-manifest.json':
-        candidate['dependencies'],
-        'pdf-asset.json':
-        pdf_asset,
-        'fixture-asset.json':
-        fixture_asset,
-        'fixture-manifest.json':
-        fixture_manifest,
-        'source.json':
-        dict(commit=source_commit, modules=module_hashes),
-        'identity.json':
-        identity,
+        'candidate.json': candidate,
+        'wheelhouse-manifest.json': candidate['dependencies'],
+        'pdf-asset.json': pdf_asset,
+        'fixture-asset.json': fixture_asset,
+        'fixture-manifest.json': fixture_manifest,
+        'source.json': dict(commit=source_commit, modules=module_hashes),
+        'identity.json': identity,
     }
     files = {name: json.dumps(value) for name, value in payload.items()}
-    for name in ('offline_support.py', 'graph_fixture.py'):
+    for name in ('offline_support.py', 'graph_fixture.py', 'explanation.py'):
         files[name] = (source / name).read_text()
     for name in ('wheel_gpu_smoke.py', 'wheel_mlops_lifecycle.py'):
         files[name] = (source.parent / name).read_text()
@@ -222,8 +237,7 @@ with tarfile.open(ROOT / fixture['name']) as archive:
 sys.path.insert(0, str(ROOT))
 from offline_support import unpack
 wheelhouse = ROOT / 'wheelhouse'
-if not wheelhouse.exists():
-    unpack(ROOT, wheelhouse)
+unpack(ROOT, wheelhouse)
 wheel = ROOT / candidate['candidate']['wheel_file']
 command = [sys.executable, '-m', 'pip', '--isolated', 'install', '--no-index', '--find-links', str(wheelhouse), str(wheel) + '[snowflake]', str(ROOT / pdf['name'])]
 with (ROOT / 'install.log').open('w') as log:
@@ -272,10 +286,13 @@ fixture_asset = json.loads((ROOT / 'fixture-asset.json').read_text())
 with (ROOT / fixture_asset['name']).open('rb') as stream:
     assert hashlib.file_digest(stream, 'sha256').hexdigest() == fixture_manifest['sha256']
 report = exercise(RESULTS, ROOT / 'fixtures', display=display)
+from explanation import exercise as explain
+report['explanations'] = explain(RESULTS, display)
 report['installation'] = installation
 report['execution_id'] = execution
 report['fixture_sha256'] = fixture_manifest['sha256']
-report['test_helper_sha256'] = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in ['graph_fixture.py', 'wheel_gpu_smoke.py']}
+report['test_helper_sha256'] = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in ['graph_fixture.py', 'wheel_gpu_smoke.py', 'wheel_mlops_lifecycle.py',
+                'explanation.py']}
 report['identity'] = dict(zip(['account', 'user', 'role', 'warehouse', 'database', 'schema'], identity))
 report['runtime'] = dict(python=sys.version, source=source, wheel=candidate['candidate'], workspace=True, extensions=sorted(get_ipython().extension_manager.loaded))
 (RESULTS / 'graph-result.json').write_text(json.dumps(report, indent=2))
@@ -306,7 +323,10 @@ print('KUMO_GRAPH_RESULT=' + json.dumps(report))
                     modules=module_hashes), candidate=candidate['candidate'],
         fixture_sha256=fixture_manifest['sha256'], test_helper_sha256={
             name: hashlib.sha256(files[name].encode()).hexdigest()
-            for name in ['graph_fixture.py', 'wheel_gpu_smoke.py']
+            for name in [
+                'graph_fixture.py', 'wheel_gpu_smoke.py',
+                'wheel_mlops_lifecycle.py', 'explanation.py'
+            ]
         }, sha256=hashlib.sha256(Path(destination).read_bytes()).hexdigest())
 
 

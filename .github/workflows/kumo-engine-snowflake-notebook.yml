@@ -163,7 +163,7 @@ jobs:
           retention-days: 7
   notebook-ui:
     needs: [configuration, wheel]
-    name: Snowflake notebook graph UI
+    name: Snowflake notebook graph and explanation UI
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
       github.ref == 'refs/heads/main' &&
@@ -232,7 +232,7 @@ jobs:
         run: |
           npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
           node packages/kumo-engine/test/snowflake_notebook/browser/node_modules/playwright/cli.js install --with-deps chromium
-      - name: Run the same graph notebook UI command as local testing
+      - name: Run the same graph and explanation notebook UI command as local testing
         env:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
