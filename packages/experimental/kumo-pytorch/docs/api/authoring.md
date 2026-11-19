@@ -136,6 +136,7 @@ class Hop(
     direction: Literal['forward', 'reverse'] = 'forward',
     time: str | None = None,
     temporal: Literal['inherit', 'static'] = 'inherit',
+    cutoff: Literal['inclusive', 'exclusive'] = 'inclusive',
 )
 ```
 

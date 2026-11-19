@@ -144,12 +144,14 @@ pub enum SamplingMode {
     Uniform,
     /// Uniform selection with a deterministic internal seed.
     DeterministicUniform,
-    /// Deterministic selection of the most recent edges.
+    /// Deterministic selection of the most recent edges at or before the seed timestamp.
     TemporalMostRecent,
     /// Probabilistic selection based on edge weight.
     Weighted { weighting: Weighting },
     /// Probabilistic selection based on time-decayed weight.
     TemporalWeighted { weighting: Weighting },
+    /// Most recent edges strictly before the seed timestamp, filtered before fanout.
+    TemporalMostRecentExclusive,
 }
 
 /// Configurable weighting functions.

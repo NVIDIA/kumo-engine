@@ -519,6 +519,7 @@ class GraphSample(
     strategy: Literal['recent', 'uniform'] = 'recent',
     time_column: str | None = None,
     temporal: Literal['inherit', 'static'] = 'inherit',
+    cutoff: Literal['inclusive', 'exclusive'] = 'inclusive',
 )
 ```
 
@@ -536,6 +537,7 @@ the native traversal direction instead.
 - `strategy`: how to choose when more neighbors exist than `fanout`: `"recent"` (the default) keeps the most recent and needs a clock, even when `temporal="static"`; `"uniform"` draws evenly among the candidates. Which tied neighbors at the fanout limit are kept is unspecified (G-GRAPH-001). The DiskGraph engine supports `"recent"` only.
 - `time_column`: overrides the destination table's declared clock.
 - `temporal`: `"inherit"` filters by the resolved clock; `"static"` states that this traversal is deliberately unfiltered.
+- `cutoff`: `"inclusive"` admits events at the request timestamp; `"exclusive"` requires strictly earlier events. Applied before fanout at each traversal, using the unchanged request timestamp. Ignored when `temporal="static"`.
 
 ### `ExternalTarget`
 

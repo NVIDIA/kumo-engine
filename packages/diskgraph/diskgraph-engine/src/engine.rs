@@ -2662,6 +2662,7 @@ impl DiskGraphEngine {
                 SamplingMode::Uniform
                     | SamplingMode::DeterministicUniform
                     | SamplingMode::TemporalMostRecent
+                    | SamplingMode::TemporalMostRecentExclusive
             )
         {
             return Ok(());
@@ -2669,7 +2670,9 @@ impl DiskGraphEngine {
         let cutoff = cutoff.filter(|c| self.relation_info.get(rel_id) == Some(&c.type_id));
 
         match fanout_spec.mode {
-            SamplingMode::TemporalMostRecent => {
+            SamplingMode::TemporalMostRecent | SamplingMode::TemporalMostRecentExclusive => {
+                let exclusive = matches!(fanout_spec.mode, SamplingMode::TemporalMostRecentExclusive);
+                let too_new = |ts: i64, anchor: i64| ts > anchor || (exclusive && ts == anchor);
                 let decoder = self
                     .decoders
                     .get(rel_id)
@@ -2685,7 +2688,7 @@ impl DiskGraphEngine {
                     .and_then(|v| v.get(node.seed_index as usize).copied());
                 if let (Some(dec), Some(anch)) = (decoder, anchor) {
                     let newer = unpacker
-                        .partition_point(|key| dec.decode(key).0.is_some_and(|ts| ts > anch));
+                        .partition_point(|key| dec.decode(key).0.is_some_and(|ts| too_new(ts, anch)));
                     unpacker.advance(newer);
                 }
 
@@ -2711,7 +2714,7 @@ impl DiskGraphEngine {
                         if let (Some(dec), Some(anch)) = (decoder, anchor) {
                             let (edge_ts, _) = dec.decode(sort_key);
                             if let Some(ts) = edge_ts {
-                                if ts > anch {
+                                if too_new(ts, anch) {
                                     continue;
                                 }
                             }

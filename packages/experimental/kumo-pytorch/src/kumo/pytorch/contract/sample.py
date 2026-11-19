@@ -707,6 +707,10 @@ class GraphSample:
     :param time_column: overrides the destination table's declared clock.
     :param temporal: ``"inherit"`` filters by the resolved clock; ``"static"``
         states that this traversal is deliberately unfiltered.
+    :param cutoff: ``"inclusive"`` admits events at the request timestamp;
+        ``"exclusive"`` requires strictly earlier events. Applied before fanout
+        at each traversal, using the unchanged request timestamp. Ignored when
+        ``temporal="static"``.
     """
 
     relation: str
@@ -715,6 +719,7 @@ class GraphSample:
     strategy: Literal["recent", "uniform"] = "recent"
     time_column: str | None = None
     temporal: Literal["inherit", "static"] = "inherit"
+    cutoff: Literal["inclusive", "exclusive"] = "inclusive"
 
     def __post_init__(self) -> None:
         if self.fanout <= 0:
@@ -725,6 +730,8 @@ class GraphSample:
             raise ValueError("graph strategy must be 'uniform' or 'recent'")
         if self.temporal not in {"inherit", "static"}:
             raise ValueError("graph temporal must be 'inherit' or 'static'")
+        if self.cutoff not in {"inclusive", "exclusive"}:
+            raise ValueError("graph cutoff must be 'inclusive' or 'exclusive'")
 
 
 @dataclass(frozen=True)
