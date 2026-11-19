@@ -187,7 +187,6 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
-    diskgraph_ingest::raise_open_file_limit();
     if !args.worker {
         let diagnostic_paths = local_diagnostic_paths(&args);
         if let Some((final_path, worker_path)) = &diagnostic_paths {

@@ -736,48 +736,65 @@ fn validate_exact_category_count_options(options: &IngestOptions) -> Result<()> 
 }
 
 #[cfg(unix)]
-pub fn raise_open_file_limit() {
+const SOFT_OPEN_FILE_LIMIT_FOR_UNLIMITED_HARD: libc::rlim_t = 10240;
+
+#[cfg(unix)]
+fn soft_open_file_limit_target(hard: libc::rlim_t) -> libc::rlim_t {
+    if hard == libc::RLIM_INFINITY {
+        SOFT_OPEN_FILE_LIMIT_FOR_UNLIMITED_HARD
+    } else {
+        hard
+    }
+}
+
+#[cfg(unix)]
+fn raise_open_file_limit() {
     let mut lim = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0
-        || lim.rlim_cur >= lim.rlim_max
-    {
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let target = soft_open_file_limit_target(lim.rlim_max);
+    if lim.rlim_cur >= target {
         return;
     }
     let old = lim.rlim_cur;
-    lim.rlim_cur = lim.rlim_max;
+    lim.rlim_cur = target;
     if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } == 0 {
-        tracing::info!(old, new = lim.rlim_max, "raised soft RLIMIT_NOFILE");
+        tracing::info!(old, new = target, "raised soft RLIMIT_NOFILE");
     } else {
         tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
     }
 }
 
 #[cfg(not(unix))]
-pub fn raise_open_file_limit() {}
+fn raise_open_file_limit() {}
 
 #[cfg(all(test, unix))]
 mod open_file_limit_tests {
     use super::*;
 
     #[test]
-    fn raise_open_file_limit_lifts_the_soft_limit_to_the_hard_limit() {
+    fn raise_open_file_limit_lifts_the_soft_limit_to_the_target() {
         let mut lim = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
         assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
-        if lim.rlim_max == libc::RLIM_INFINITY || lim.rlim_max < 2 {
-            return;
-        }
-        let hard = lim.rlim_max;
-        lim.rlim_cur = hard - 1;
+        let target = soft_open_file_limit_target(lim.rlim_max);
+        lim.rlim_cur = target - 1;
         assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
         raise_open_file_limit();
         assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
-        assert_eq!(lim.rlim_cur, hard);
+        assert_eq!(lim.rlim_cur, target);
+    }
+
+    #[test]
+    fn soft_open_file_limit_target_is_finite_when_the_hard_limit_is_unlimited() {
+        assert_eq!(soft_open_file_limit_target(libc::RLIM_INFINITY), 10240);
+        assert_eq!(soft_open_file_limit_target(4096), 4096);
     }
 }
 
