@@ -293,9 +293,15 @@ class Task:
 
         Use ``with task.batches(prefetch_batches=1) as batches:`` when stopping
         early. Closing the iterator, task or plan waits for in-flight native
-        work before releasing its resources. CPU grad/inference/autocast context
-        is captured when iteration starts. Backend observation hooks must
-        support producer-thread calls; owning-thread-only hooks need adaptation.
+        work before releasing its resources. Context variables are copied when
+        iteration starts; PyTorch grad/inference/autocast modes are not inherited.
+        Backend observation hooks must support producer-thread calls.
+
+        With prefetch, source ``last_temporal_profile``, ``last_length_profile``,
+        ``last_graph_profile`` and anchor ``_last_length_planning_stats`` describe
+        producer activity and may be up to ``prefetch_batches`` batches ahead.
+        They are not synchronized snapshots of the batch just returned; inspect
+        them after iteration finishes or the iterator is closed.
         """
 
         if requests is not None and split is not None:

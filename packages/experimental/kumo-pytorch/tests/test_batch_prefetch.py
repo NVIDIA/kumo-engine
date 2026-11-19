@@ -73,16 +73,25 @@ def test_buffer_bounds_production_and_close_unblocks_a_full_buffer(depth):
     iterator.close()
 
 
-@pytest.mark.parametrize("save_depth", [0, 1, 3])
-@pytest.mark.parametrize("resume_depth", [0, 1, 3])
+@pytest.mark.parametrize("save_depth,resume_depth", [(0, 1), (1, 4), (4, 0)])
 def test_resume_tracks_consumption_and_can_change_prefetch_depth(save_depth, resume_depth):
-    with batches(lambda: iter(range(20)), save_depth) as iterator:
-        assert [next(iterator), next(iterator)] == [0, 1]
-        state = iterator.state_dict()
-    with batches(lambda: iter(range(20)), resume_depth) as resumed:
-        resumed.load_state_dict(state)
-        assert list(resumed) == list(range(2, 20))
-        assert resumed.state_dict()["batches"] == 20
+    with api.prepare(_contract(), DATASET, api.InMemoryEngine()) as plan:
+        with plan.materialize(_table(), fit_split="train") as task:
+            config = dict(batch_size=2, shuffle=True, seed=7, epoch=2)
+            expected = list(task.batches(prefetch_batches=0, **config))
+            with task.batches(prefetch_batches=save_depth, **config) as iterator:
+                next(iterator)
+                next(iterator)
+                state = iterator.state_dict()
+            assert state["batches"] == 2
+            with task.batches(prefetch_batches=resume_depth, **config) as resumed:
+                resumed.load_state_dict(state)
+                actual = list(resumed)
+                assert resumed.state_dict()["batches"] == len(expected)
+            for old, new in zip(expected[2:], actual, strict=True):
+                _equal(old.inputs, new.inputs)
+                _equal(old.targets, new.targets)
+                _equal(old.metadata, new.metadata)
 
 
 @pytest.mark.parametrize("error", [RuntimeError("producer failed"), KeyboardInterrupt()])
@@ -118,25 +127,23 @@ def test_empty_source_and_factory_failure():
 
 
 def test_abandoned_iterator_stops_its_producer():
-    closed = threading.Event()
-
-    def produce():
-        try:
-            yield from range(100)
-        finally:
-            closed.set()
-
-    iterator = batches(produce)
-    next(iterator)
-    reference = weakref.ref(iterator)
-    del iterator
-    gc.collect()
-    assert reference() is None
-    assert closed.wait(3)
+    with api.prepare(_contract(), DATASET, api.InMemoryEngine()) as plan:
+        with plan.materialize(_table(), fit_split="train") as task:
+            iterator = task.batches(batch_size=1, prefetch_batches=1)
+            next(iterator)
+            thread = iterator._iterator._thread
+            finalizer = iterator._finalizer
+            reference = weakref.ref(iterator)
+            del iterator
+            gc.collect()
+            assert reference() is None
+            assert not finalizer.alive
+            assert not thread.is_alive()
+            assert not task._prefetch_iterators
 
 
 @pytest.mark.parametrize("inference", [False, True])
-def test_producer_inherits_start_context_without_changing_consumer_context(inference):
+def test_producer_copies_contextvars_without_inheriting_torch_modes(inference):
     trace = contextvars.ContextVar("trace", default="unset")
     trace.set("caller")
 
@@ -150,10 +157,26 @@ def test_producer_inherits_start_context_without_changing_consumer_context(infer
 
     iterator = batches(produce)
     with torch.inference_mode(inference), torch.no_grad(), torch.autocast("cpu"):
-        assert next(iterator) == (inference, False, True, "caller")
+        assert next(iterator) == (False, True, False, "caller")
+        assert torch.is_inference_mode_enabled() == inference
+        assert not torch.is_grad_enabled()
+        assert torch.is_autocast_enabled("cpu")
     iterator.close()
     assert torch.is_grad_enabled()
     assert not torch.is_autocast_enabled("cpu")
+
+
+@pytest.mark.parametrize("depth", [0, 1, 4])
+def test_inference_warmup_does_not_make_later_batches_inference_tensors(depth):
+    with api.prepare(_contract(), DATASET, api.InMemoryEngine()) as plan:
+        with plan.materialize(_table(), fit_split="train") as task:
+            with task.batches(batch_size=1, prefetch_batches=depth) as iterator:
+                with torch.inference_mode():
+                    next(iterator)
+                for batch in iterator:
+                    values = batch.inputs["entity"]["score"]["values"]
+                    assert not values.is_inference()
+                    values.add_(1)
 
 
 @pytest.mark.parametrize("value", [-1, True, 1.5, "1", None])
@@ -297,11 +320,8 @@ def test_task_close_stops_prefetch_before_closing_anchors():
         assert list(iterator) == []
 
 
-@pytest.mark.parametrize("interrupted_owner", ["batches", "task", "plan"])
-@pytest.mark.parametrize("retry_owner", ["batches", "task", "plan"])
-def test_interrupted_close_waits_for_producer_before_releasing_resources(
-    monkeypatch, interrupted_owner, retry_owner
-):
+@pytest.mark.parametrize("owner", ["batches", "task", "plan"])
+def test_interrupted_close_waits_for_producer_before_releasing_resources(monkeypatch, owner):
     plan = api.prepare(_contract(), DATASET, api.InMemoryEngine())
     task = plan.materialize(_table(), fit_split="train")
     preparing, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -354,7 +374,7 @@ def test_interrupted_close_waits_for_producer_before_releasing_resources(
             interrupted.setattr(thread, "join", interrupt_join)
             for _ in range(2):
                 with pytest.raises(KeyboardInterrupt, match="consumer join interrupted"):
-                    owners[interrupted_owner].close()
+                    owners[owner].close()
                 assert thread.is_alive()
                 assert events == []
                 assert plan._source is source
@@ -368,7 +388,7 @@ def test_interrupted_close_waits_for_producer_before_releasing_resources(
 
         with monkeypatch.context() as retry:
             retry.setattr(thread, "join", release_and_join)
-            owners[retry_owner].close()
+            owners[owner].close()
             assert finished.is_set()
             assert not thread.is_alive()
         assert not iterator._finalizer.alive

@@ -12,8 +12,6 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from typing import TypeVar
 
-import torch
-
 T = TypeVar("T")
 
 
@@ -24,44 +22,35 @@ class PrefetchIterator(Iterator[T]):
         self._stopped = False
         self._done = False
         self._error: BaseException | None = None
-        inference = torch.is_inference_mode_enabled()
-        grad = torch.is_grad_enabled()
-        autocast = torch.is_autocast_enabled("cpu")
-        autocast_dtype = torch.get_autocast_dtype("cpu")
 
         def run():
             iterator = None
             try:
-                with (
-                    torch.inference_mode(inference),
-                    torch.set_grad_enabled(grad),
-                    torch.autocast("cpu", enabled=autocast, dtype=autocast_dtype),
-                ):
-                    iterator = produce()
-                    for _ in range(skip):
-                        with self._condition:
-                            if self._stopped:
-                                return
-                        next(iterator)
-                    while True:
-                        with self._condition:
-                            self._condition.wait_for(
-                                lambda: self._stopped or len(self._ready) < capacity
-                            )
-                            if self._stopped:
-                                return
-                        # Reserve space before producing, bounding queued plus
-                        # in-flight batches, not just the completed queue.
-                        try:
-                            value = next(iterator)
-                        except StopIteration:
+                iterator = produce()
+                for _ in range(skip):
+                    with self._condition:
+                        if self._stopped:
                             return
-                        with self._condition:
-                            if self._stopped:
-                                return
-                            self._ready.append(value)
-                            del value
-                            self._condition.notify_all()
+                    next(iterator)
+                while True:
+                    with self._condition:
+                        self._condition.wait_for(
+                            lambda: self._stopped or len(self._ready) < capacity
+                        )
+                        if self._stopped:
+                            return
+                    # Reserve space before producing, bounding queued plus
+                    # in-flight batches, not just the completed queue.
+                    try:
+                        value = next(iterator)
+                    except StopIteration:
+                        return
+                    with self._condition:
+                        if self._stopped:
+                            return
+                        self._ready.append(value)
+                        del value
+                        self._condition.notify_all()
             except BaseException as error:
                 self._error = error
             finally:

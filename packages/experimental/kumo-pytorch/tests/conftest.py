@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from functools import wraps
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     from tests.conformance.conftest import add_conformance_options
 
     add_conformance_options(parser)
+    parser.addoption(
+        "--prefetch-batches",
+        type=int,
+        choices=(0, 1, 4),
+        default=0,
+        help="default Task.batches prefetch depth for existing tests",
+    )
     parser.addoption(
         "--require-imports",
         action="store_true",
@@ -43,6 +51,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="keep the end-to-end runs, predictions and metrics.json under DIR/<tier>; "
         "finished runs there are reused, so use a fresh DIR after changing a flow",
     )
+
+
+@pytest.fixture(autouse=True)
+def default_prefetch_batches(request, monkeypatch):
+    if depth := request.config.getoption("--prefetch-batches"):
+        from kumo.pytorch.task import Task
+
+        original = Task.batches
+
+        @wraps(original)
+        def batches(self, *args, **kwargs):
+            kwargs.setdefault("prefetch_batches", depth)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Task, "batches", batches)
 
 
 E2E_TIERS = ("t2a", "t2b")
