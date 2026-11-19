@@ -9555,6 +9555,7 @@ impl IngestContext {
                         } else {
                             None
                         };
+                        let scratch = &mut std::mem::take(scratch);
                         let mut fkey_bitmaps: Vec<memmap2::MmapMut> = Vec::new();
                         for rel in relationships.iter().filter(|r| r.src_table == table_name) {
                             let path = root.join(temp_fkey_bitmap_path(&table_name, &rel.name_forward, shard));
@@ -9579,8 +9580,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Int64);
-                                    pkmap.seen_u64.clear();
                                     reserve_map(&mut pkmap.seen_u64, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -9700,16 +9699,12 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::VarBytes);
-                                    let pre_clear_cap = pkmap.seen_bytes.capacity();
-                                    pkmap.seen_bytes.clear();
                                     reserve_map(&mut pkmap.seen_bytes, reserve_rows_usize);
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
                                         table = %table_name, shard, phase = "task_start",
                                         seen_len = 0u64,
                                         seen_cap = pkmap.seen_bytes.capacity() as u64,
-                                        prev_seen_cap = pre_clear_cap as u64,
                                         reserve_rows = reserve_rows_usize as u64,
                                         union_rows = union_rows,
                                         avg_var_bytes = avg_var_bytes,
@@ -9882,8 +9877,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid);
-                                    pkmap.seen_uuid.clear();
                                     reserve_map(&mut pkmap.seen_uuid, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10004,8 +9997,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid256);
-                                    pkmap.seen_uuid256.clear();
                                     reserve_map(&mut pkmap.seen_uuid256, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10126,8 +10117,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Ip);
-                                    pkmap.seen_ip.clear();
                                     reserve_map(&mut pkmap.seen_ip, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10244,6 +10233,7 @@ impl IngestContext {
                                 }
                             }
                         }?;
+                        update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                         if duplicate_count > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
                             duplicate_counts
