@@ -554,8 +554,9 @@ def _genie_walk(w: Any, target: str, remote: dict[str, Path],
 
 
 def _active_session() -> Any:
-    context = _import_provider('snowflake.snowpark.context', 'snowflake')
-    return context.get_active_session()
+    # The connectors' lookup, which skips sessions Kumo opened.
+    sessions = _import_provider('kumo_snowflake.session', 'snowflake')
+    return sessions._active_session(hint='Pass session=.')
 
 
 def _put(session: Any, pkg: Path, root: str) -> None:

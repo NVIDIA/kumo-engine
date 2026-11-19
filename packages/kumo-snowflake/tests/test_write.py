@@ -56,6 +56,12 @@ def test_streamed_parquet_export_preserves_timestamp_logical_types() -> None:
         if statement.startswith("CREATE TEMPORARY FILE FORMAT"))
     copy = next(statement for statement in connection.statements
                 if statement.startswith("COPY INTO"))
+    assert create_format.startswith(
+        'CREATE TEMPORARY FILE FORMAT "DB"."PUBLIC"."__kumo_tmp_fmt_')
+    create_stage = next(statement for statement in connection.statements
+                        if statement.startswith('CREATE TEMPORARY STAGE'))
+    assert create_stage.startswith(
+        'CREATE TEMPORARY STAGE "DB"."PUBLIC"."__kumo_tmp_stage_')
     assert "TYPE = PARQUET USE_LOGICAL_TYPE = TRUE" in create_format
     assert "FILE_FORMAT = (TYPE = PARQUET USE_LOGICAL_TYPE = TRUE)" in copy
 
@@ -182,3 +188,29 @@ def test_artifact_write_preserves_expired_credential_classification() -> None:
     assert '_ExpiredTokenError errno=390114 sqlstate=08001' in message
     assert 'as role' not in message
     assert 'privilege' not in message
+
+
+def test_inference_literals_address_the_qualified_temporary_objects(monkeypatch):
+    import sqlglot
+
+    connection = _Connection()
+    schema = r"schema\n'quoted"
+    monkeypatch.setattr(connection, '_qualified_table_name',
+                        lambda name: f'"DB"."{schema}"."{name}"')
+
+    write_artifacts_to_table(connection, 'PREDICTIONS', 's3://bucket/run/')
+
+    create_format = next(statement for statement in connection.statements
+                         if statement.startswith('CREATE TEMPORARY FILE FORMAT'))
+    format_name = create_format.removeprefix(
+        'CREATE TEMPORARY FILE FORMAT ').split(' TYPE =')[0]
+    create_stage = next(statement for statement in connection.statements
+                        if statement.startswith('CREATE TEMPORARY STAGE'))
+    stage_name = create_stage.removeprefix('CREATE TEMPORARY STAGE ').split(
+        '\nURL =')[0]
+    inference = next(statement for statement in connection.statements
+                     if statement.startswith('CREATE TABLE'))
+    parsed = sqlglot.parse_one(inference, read='snowflake')
+    literals = {node.this for node in parsed.find_all(sqlglot.exp.Literal)
+                if node.is_string}
+    assert literals == {f'@{stage_name}', format_name}

@@ -102,7 +102,8 @@ def test_an_overwrite_retries_once_with_a_fresh_session_after_token_expiry(
                                      upload_local=upload)
 
     monkeypatch.setattr(backend, "_session", open_session)
-    monkeypatch.setattr(backend, "_principal", lambda _connector: object())
+    monkeypatch.setattr(backend, "_principal",
+                        lambda _connector, **_kwargs: object())
     monkeypatch.setattr(sink, "_owned_session", open_retry_session)
     monkeypatch.setattr(backend, "_qualified", lambda *_: '"PREDICTIONS"')
     monkeypatch.setattr(sink, "_require_snowpark", lambda _session: None)

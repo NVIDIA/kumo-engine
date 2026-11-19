@@ -197,8 +197,8 @@ Jobs that load `alias="champion"` pick up the new version on their next run.
 - Building `kumo.MLOps` creates a missing experiment; if MLflow refuses (on Databricks, the experiment's folder must exist), it raises and says so.
 
 `SnowflakeTracking(source, *, experiment_name, database=None, schema_name=None, run_name=None, tags=None, native_model_lineage=False, serving_options=None)`:
-- `source` is a `SnowflakeConnector`, whose identity opens the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
-- `database` and `schema_name` default to the session's (`PUBLIC` when only `database` is given). The fit is in Snowsight under AI & ML » Experiments.
+- `source` is a `SnowflakeConnector`, which provides the session and whose Snowflake Model Registry `MLOps(registry=)` registers in, or a Snowpark session, which tracks only.
+- `database` and `schema_name` default to the connector's database and schema, or a session's current ones. Given only `database`, the schema is `PUBLIC`; given only `schema_name`, the database is the session's. The fit is in Snowsight under AI & ML » Experiments.
 - The registered version carries the bundle; load it with `Trainer.load_from_connector`.
 - It needs `CREATE EXPERIMENT` on the schema, or `MODIFY` on an existing experiment.
 - `serving_options` sets how a registered version runs in Snowflake (see [Batch inference in Snowflake](#batch-inference-in-snowflake)).
@@ -466,7 +466,7 @@ snowflake = SnowflakeTracking(SnowflakeConnector(warehouse="<wh>", database="ML"
                               experiment_name="USERS_CHURN")
 ```
 
-`load_model(uri, target=...)` and `log_model(..., target=...)` take the same targets. A `DatabricksConnector` without an identity uses a notebook, a job or a `~/.databrickscfg` profile with no environment variables to set. MLflow has no per-client credentials, so with explicit credentials each MLflow call kumo-engine makes sets `DATABRICKS_HOST` and a short-lived `DATABRICKS_TOKEN` (never the secret), or the SageMaker tracking URI and AWS session, and restores them afterwards: don't call MLflow or Databricks yourself on other threads during a fit. For your own MLflow calls as that identity, use `with tracking.client() as client:`, an `MlflowClient` for the tracker's server with the same state set for the block (`mlflow.search_runs` inside it reaches that server too). A `SnowflakeConnector` without `role=` uses the user's default role. `examples/mlops/smoke.py databricks|sagemaker|snowflake` is a manual live check per platform.
+`load_model(uri, target=...)` and `log_model(..., target=...)` take the same targets. A `DatabricksConnector` without an identity uses a notebook, a job or a `~/.databrickscfg` profile with no environment variables to set. MLflow has no per-client credentials, so with explicit credentials each MLflow call kumo-engine makes sets `DATABRICKS_HOST` and a short-lived `DATABRICKS_TOKEN` (never the secret), or the SageMaker tracking URI and AWS session, and restores them afterwards: don't call MLflow or Databricks yourself on other threads during a fit. For your own MLflow calls as that identity, use `with tracking.client() as client:`, an `MlflowClient` for the tracker's server with the same state set for the block (`mlflow.search_runs` inside it reaches that server too). A `SnowflakeConnector` with an identity and no `role=` uses that user's default role; one sharing a notebook session uses the session's role. `examples/mlops/smoke.py databricks|sagemaker|snowflake` is a manual live check per platform.
 
 ### SageMaker managed MLflow
 

@@ -12,11 +12,9 @@ This path assumes (a) Kumo is already present in the execution runtime and (b) t
 
 **Assume Kumo is present.** Setting up the environment is not this skill's job — never raise it with the user, and never generate a cell that does it. If `import kumo.engine` raises, the environment is not ready: report that and stop.
 
-**Authenticate in this order of priority** (§3): (1) the runtime's mounted OAuth token, through `from_spcs_env()`; (2) a `connections.toml` entry, through `from_connection_toml()`; (3) a key pair read from Snowflake secrets attached to the notebook, through `SnowflakeIdentity`. Generated code tries them in that order at run time.
+**Share the runtime's Snowpark session** (§3) with `SnowflakeConnector.from_session()`. It uses the notebook's warehouse and role. For a separate session, use `from_spcs_env()`, `from_connection_toml()`, or a `SnowflakeIdentity` from secrets.
 
-**If the CoCo runtime does not have Kumo present, or none of the three is available, this deployment mode is blocked** — report it and stop. Confirm the runtime with the CoCo team before building on it (`INTEGRATION.md` §10).
-
-An active Snowpark session alone is **not** a substitute for any of the three.
+**If Kumo is absent or no session or identity is available, this deployment mode is blocked** — report it and stop. Confirm the runtime with the CoCo team before building on it (`INTEGRATION.md` §10).
 
 
 ---
@@ -73,56 +71,31 @@ The runtime executing Python must reach: Snowflake authentication services inclu
 ---
 ## 3. Setup cell — scratch directory and connector
 
-There is **no backend object**. Two calls get you connected.
+There is **no backend object**. Configure scratch storage, then share the runtime's session.
 
 ```python
-import os
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumo_snowflake.spcs import SPCS_TOKEN_PATH
+from snowflake.snowpark.context import get_active_session
 
 scratch = Path('/tmp/kumo-run/scratch')
 scratch.mkdir(parents=True, exist_ok=True)
-kumo.configure(scratch_dir=scratch)          # optional; once, before anything else
+kumo.configure(scratch_dir=scratch)
 
-TARGET = dict(warehouse=WAREHOUSE, database=DATABASE, schema_name=SCHEMA)
-if os.path.exists(SPCS_TOKEN_PATH):                                  # 1. runtime token
-    connector = kumo.SnowflakeConnector.from_spcs_env(**TARGET)
-else:
-    try:                                                             # 2. connections.toml
-        connector = kumo.SnowflakeConnector.from_connection_toml(
-            connection_name=CONNECTION_NAME, **TARGET)
-    except ValueError as err:
-        if 'connections.toml has no connection' not in str(err):
-            raise
-        from snowflake.snowpark.secrets import get_generic_secret_string
-        identity = kumo.SnowflakeIdentity(                           # 3. key pair from secrets
-            account=ACCOUNT, username=USERNAME,
-            private_key=get_generic_secret_string(PRIVATE_KEY_SECRET),
-            private_key_passphrase=get_generic_secret_string(PASSPHRASE_SECRET))
-        connector = kumo.SnowflakeConnector(identity=identity, **TARGET)
-
+session = get_active_session()
+connector = kumo.SnowflakeConnector.from_session(
+    session, database=DATABASE, schema_name=SCHEMA)
 assert connector.table_names(), 'Connector reached no tables.'
 ```
 
-- `DATABASE` and `SCHEMA` are declared Snowflake identifiers. A lower-case name keeps its double
-  quotes inside the string (`SCHEMA = '"my_schema"'`); unquoted, it is folded to upper case and
-  the connector reaches no tables (`kumoai-reference/references/kumo_finetuning_sdk.md` §3).
-- Take the Snowpark session with `get_active_session()` once, before this block, and reuse it.
-  Kumo opens its own session, so a later call raises (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3).
-- `kumo.configure(scratch_dir=...)` is the **only** process-wide setup call, and it is optional
-  (default `~/.cache/kumo-engine`). Call it once, early, before any `Graph` or `Trainer`.
-- `from_spcs_env()` builds the connector **and its identity** from the runtime's mounted SPCS
-  credentials; `from_connection_toml()` does the same from the named entry. Neither puts any
-  credential in a cell.
-- The key-pair branch reads the key and its passphrase from Snowflake secrets attached to the
-  notebook; the code holds only the secret **names**. `ACCOUNT` and `USERNAME` are the Snowflake
-  account identifier and the key's user. Ask the user for these names only when the first two
-  options are unavailable in their runtime — never for a secret's value.
-- Always pass `warehouse`, `database`, `schema_name` explicitly — they default to `None`.
-- `SPCS_TOKEN_PATH` is imported, never hardcoded.
-- Full signatures in `kumoai-reference/references/kumo_finetuning_sdk.md` §3.
+- `DATABASE` and `SCHEMA` are declared Snowflake identifiers. Keep double quotes inside lower-case or mixed-case names (`SCHEMA = '"my_schema"'`); unquoted names fold to upper case.
+- `from_session()` uses the session's warehouse and role. Confirm they are the intended ones. It preserves the session's context and lifetime; `get_active_session()` remains usable when this is the only session.
+- Database and schema overrides support table access. SQL sources require matching session context; call `session.use_database(...)` and `session.use_schema(...)`, or omit the overrides.
+- Kumo's DDL commits any open transaction. Kumo propagates a lapsed shared-session token rather than reconnecting it.
+- `kumo.configure(scratch_dir=...)` is optional (default `~/.cache/kumo-engine`); call it before constructing a `Graph` or `Trainer`.
+- For a separate session, use `from_spcs_env()` (user's default role unless `role=` is passed), `from_connection_toml()`, or `SnowflakeIdentity` from secrets. Remote execution, including Ray workers, needs `identity=`; a carried session is dropped when pickled.
+- Full signatures and credential examples: `kumoai-reference/references/kumo_finetuning_sdk.md` §3.
 
 **`kumo.set_backend`, `kumo.LocalBackend`, `kumo.Storage`, `kumo.FilesystemArtifactLocation`,
 `kumo.create_identity` and `kumo.test_identity_credentials` no longer exist.** If a user's
@@ -142,34 +115,23 @@ lifetime.
 ---
 ## 4. What the Snowflake runtime provides
 
-| Item | Value |
-|---|---|
-| Account | env var `SNOWFLAKE_ACCOUNT` |
-| Host | env var `SNOWFLAKE_HOST` |
-| OAuth token | file at `/snowflake/session/token` (`SPCS_TOKEN_PATH`) |
+Use the runtime's active Snowpark session through `from_session()`. It supplies the authenticated user, role and warehouse; no token file or separate identity is needed. The shared session's role needs the source and destination privileges (§6).
 
-`from_spcs_env()` reads these for you. You should not need to touch them directly.
+For a separate session, `from_spcs_env()` reads `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_HOST` and the mounted OAuth token at `SPCS_TOKEN_PATH`. Use `from_connection_toml()` or a `SnowflakeIdentity` from secrets when those runtime credentials are unavailable (§3).
 
-**Hard rule for generated code: no password, private key, API key, or token literal may ever
-appear.** Never prompt the user for a credential's value and never inline one. A key pair is
-read from a Snowflake secret by name, never pasted.
+**No password, private key, API key, or token literal may appear in generated code.** Never prompt the user for a credential's value. Read a key pair from a Snowflake secret by name.
 
-An active Snowpark session alone is **not** sufficient. Without the token file, fall back to
-`connections.toml`, then to the key pair from secrets (§0) — never to pasted credentials.
-
-Creating a connector grants nothing in Snowflake. The identity authenticates as the principal
-behind the runtime token, and that principal needs its own privileges (§6).
+Creating a connector or identity grants no Snowflake permissions.
 
 > Not verified: the key-pair branch (`SnowflakeIdentity` built by hand) against this runtime.
-> It is the last resort; prefer the factories (`from_spcs_env`, `from_connection_toml`).
 
 
 ---
 ## 6. Snowflake-side permissions
 
-The identity authenticates as the Snowflake principal behind the runtime token. **Creating a Kumo identity does not create a Snowflake user and grants no permissions.**
+The shared session uses its current Snowflake role. A separate session uses the role configured by its identity factory or connector.
 
-The identity needs access to the warehouse and source data. Query, staging, export, and output permissions depend on the connector and workflow and must be confirmed with a Snowflake administrator. Writing predictions requires access to the chosen output destination.
+The session's role needs access to the warehouse and source data. Query, staging, export, and output permissions depend on the connector and workflow and must be confirmed with a Snowflake administrator. Writing predictions requires access to the chosen output destination.
 
 > Not verified: the concrete GRANT statements for the local-backend path. Do not emit a grant set borrowed from the native-app or Kumo-cloud modes as if it were required here.
 
@@ -181,7 +143,7 @@ Write-back is the reason this skill exists, and it is the only durable home for 
 
 The verified write-back form — `kumo.PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=)` passed to `trainer.predict(..., snapshot=snapshot, output_config=...)` — is in `kumoai-reference/references/kumo_finetuning_sdk.md` §9. Emit that and nothing else. **The table is written with exactly the name you pass**; read it back and compare row counts. An APPEND write adds the run's columns, as `kumoai-reference/references/outputs.md` *Write predictions* says.
 
-Two further facts: the target destination must be writable by the identity's principal, and a passing credential check does not prove it. Verify with a trivial write before a long job.
+The session's role must be able to write to the destination; a successful connection does not prove it. Verify with a trivial write before a long job.
 
 
 ---
@@ -189,8 +151,7 @@ Two further facts: the target destination must be writable by the identity's pri
 
 1. Confirm `import kumo.engine` succeeds and the runtime can authenticate (§0, §1.1). If not — stop.
 2. Create a writable scratch directory (§1.2).
-3. `kumo.configure(scratch_dir=...)`, then the connector, in the §3 order: `from_spcs_env`,
-   `from_connection_toml`, key pair from secrets.
+3. `kumo.configure(scratch_dir=...)`, then `SnowflakeConnector.from_session()` (§3).
 4. Assert `connector.table_names()` (§3).
 5. Tables → graph → `validate()` → predictive query → `snapshot()` → train → predict
    (portable core; `snapshot=` is required on `fit` and `predict`).

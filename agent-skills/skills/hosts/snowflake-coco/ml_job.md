@@ -106,7 +106,7 @@ script rebuilds it.
 ```python
 from snowflake.snowpark.context import get_active_session
 
-session = get_active_session()   # first line of work: before any Kumo connector exists
+session = get_active_session()
 
 from pathlib import Path
 
@@ -114,7 +114,6 @@ import kumo.engine as kumo
 from kumoapi.jobs import MetadataField, PredictionArtifactType, WriteMode
 
 # Literals from the Node 1d restatement, written into this file (replace each placeholder).
-WAREHOUSE = '<warehouse>'
 SOURCE_DATABASE, SOURCE_SCHEMA = '<source_db>', '<source_schema>'
 REGISTRY_DATABASE, REGISTRY_SCHEMA = '<registry_db>', '<registry_schema>'
 OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE = '<output_db>', '<output_schema>', '<output_table>'
@@ -128,8 +127,8 @@ scratch.mkdir(parents=True, exist_ok=True)
 kumo.configure(scratch_dir=scratch)
 
 def connect(database, schema_name):
-    return kumo.SnowflakeConnector.from_spcs_env(
-        warehouse=WAREHOUSE, database=database, schema_name=schema_name)
+    return kumo.SnowflakeConnector.from_session(
+        session, database=database, schema_name=schema_name)
 
 source = connect(SOURCE_DATABASE, SOURCE_SCHEMA)
 registry = connect(REGISTRY_DATABASE, REGISTRY_SCHEMA)
@@ -187,15 +186,8 @@ trained query: `binary_classification_threshold=THRESHOLD` for binary classifica
 at intake. Link prediction fails in `predict` without it
 (`kumoai-reference/references/kumo_finetuning_sdk.md` §9).
 
-- **Take the session once, at the top, before any Kumo connector.** The job's launcher already
-  holds a Snowpark session, and `from_spcs_env` opens a second one. After that,
-  `get_active_session()` and `Session.builder.getOrCreate()` both raise
-  `SnowparkSessionException (1409): More than one active session`. This was measured in a job.
-  Reuse `session` for every Snowflake call in the script (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3).
-- **Connectors come from `from_spcs_env` only.** The job container mounts the runtime token, and a
-  connector built from it worked inside a job. The `connections.toml` and secrets fallbacks of
-  `runtime.md` §3 do not apply here. Always pass `warehouse`, `database` and `schema_name`: the
-  container's own defaults name the job's schema, not the user's data.
+- **Share the launcher's Snowpark session with `from_session(session)`.** It uses the job's warehouse and role without changing its context or opening another session. Pass database and schema overrides for the source, registry and output targets (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3).
+- Kumo's DDL commits any open transaction on this session. A lapsed token propagates to the job; Kumo does not reconnect the shared session.
 - Everything in the container, `/tmp` included, is gone when the job ends. The output table is the
   only result that survives (`runtime.md` §3.1).
 - Let a failure raise. Do not catch broad exceptions, so that a failed scoring run ends the job as
@@ -206,9 +198,7 @@ at intake. Link prediction fails in `predict` without it
 
 ## 6. Submission, waiting and the result
 
-The submission cell runs in the notebook. That notebook may already hold a Kumo connector, so
-pass `session=` explicitly. Without it the submission looks up the active session itself and
-fails with "More than one active session is found".
+The submission cell runs in the notebook. Pass `session=` explicitly to select the runtime session.
 
 ```python
 from snowflake.ml import jobs
@@ -285,8 +275,6 @@ failures to reach `grafana.com`, and Ray start-up lines. That noise is not the f
 
 | Log signal | Cause and fix |
 |---|---|
-| `SnowparkSessionException`, `1409`, "More than one active session" | The script asked for the session after a Kumo connector existed. Take it once at the top (§5) |
-| "More than one active session is found. Please specify the session explicitly" at submission | The submission cell omitted `session=` (§6) |
 | `ModuleNotFoundError: No module named 'kumo'` | Kumo is not present in the job container: the host's job values are missing or wrong. That is for the administrator, not something to add to the job |
 | An error raised importing torch, or from a torch version check | The runtime was not pinned. Use `KUMO_JOB_RUNTIME` |
 | The status stays `PENDING` | The pool is starting a node, or it is busy. Not a failure |
