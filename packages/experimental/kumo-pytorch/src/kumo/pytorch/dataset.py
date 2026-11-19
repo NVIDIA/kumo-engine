@@ -25,6 +25,7 @@ from glob import glob, has_magic
 from pathlib import Path
 from typing import Any
 
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema
 
@@ -135,26 +136,37 @@ class Dataset:
         import pyarrow.parquet as pq
 
         tables = []
+        errors = []
         for table in schema.tables:
             if table.columns is not None and all(table.columns.values()):
                 tables.append(table)
                 continue
             source = self.tables.get(table.name)
-            if not isinstance(source, Parquet):
-                raise ValueError(
-                    f"schema.tables.{table.name}.columns: type inference requires Parquet "
-                    "metadata; declare every DType for InMemoryRows"
-                )
-            columns = None if table.columns is None else dict(table.columns)
-            for path in _local_parquet_files(source.path):
-                try:
+            path = source.path if isinstance(source, Parquet) else None
+            try:
+                if not isinstance(source, Parquet):
+                    raise ValueError(
+                        f"schema.tables.{table.name}.columns: type inference requires Parquet "
+                        "metadata; declare every DType for InMemoryRows"
+                    )
+                columns = None if table.columns is None else dict(table.columns)
+                for path in _local_parquet_files(source.path):
                     metadata = pq.read_schema(path)
                     physical = {
                         source.columns.get(field.name, field.name): field.type for field in metadata
                     }
                     if columns is None:
                         columns = dict.fromkeys(physical)
-                    elif table.columns is None and set(columns) != set(physical):
+                    missing = sorted(set(columns) - set(physical))
+                    if missing:
+                        suggestion = _column_name_suggestion(missing, physical)
+                        raise ValueError(
+                            f"is missing columns {missing}"
+                            + (f", {suggestion}" if suggestion else "")
+                            + (" " if suggestion and suggestion.endswith("?") else ". ")
+                            + "Use the stored names in the contract, or rename the stored columns."
+                        )
+                    if table.columns is None and set(columns) != set(physical):
                         raise ValueError(
                             "column names differ across Parquet files; "
                             "select shared columns explicitly with TableSpec.columns"
@@ -166,10 +178,17 @@ class Dataset:
                                 f"declared {declared!r}, physical type resolves to {actual!r}"
                             )
                         columns[name] = actual
-                except (KeyError, ValueError, OSError) as error:
-                    raise ValueError(f"bind {table.name} in {path!r}: {error}") from error
-            tables.append(replace(table, columns=columns))
-        return replace(schema, tables=tuple(tables))
+                tables.append(replace(table, columns=columns))
+            except (KeyError, ValueError, OSError) as error:
+                errors.append(f"bind {table.name} in {path!r}: {error}")
+                tables.append(table)
+        try:
+            schema = replace(schema, tables=tuple(tables))
+        except ValueError as error:
+            errors.append(str(error))
+        if errors:
+            raise ValueError("\n".join(errors))
+        return schema
 
 
 def _local_parquet_files(value: str) -> list[str]:

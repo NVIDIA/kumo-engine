@@ -144,6 +144,8 @@ and `prepare` resolve them without reading any rows. The resolved contract is
 what gets saved and fingerprinted, so if a column's type in the files later
 changes, loading fails loudly instead of quietly reading a different type.
 
+Column names are case-sensitive; when column names or types are omitted, resolution reports every table whose stored columns do not match, with close-match suggestions. Fully declared tables are checked when DiskGraph prepares the data.
+
 ## The DiskGraph engine
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the

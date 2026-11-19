@@ -45,6 +45,144 @@ def _source_contract(columns=None):
     )
 
 
+@pytest.mark.parametrize("declaration", ["undeclared", "partial", "full"])
+@pytest.mark.parametrize("uppercase", [True, False])
+def test_check_reports_column_names_for_every_table(tmp_path, declaration, uppercase):
+    types = {"id": api.DType("int64"), "value": api.DType("float64")}
+    columns = {
+        "undeclared": None,
+        "partial": {"id": types["id"], "value": None},
+        "full": types,
+    }[declaration]
+    contract = _source_contract(columns)
+    tables = tuple(
+        replace(contract.schema.tables[0], name=name) for name in ("users", "items", "orders")
+    )
+    contract = replace(contract, schema=api.DataSchema(tables=tables))
+    sources = {}
+    for table in tables:
+        path = tmp_path / f"{table.name}.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "ID" if uppercase else "id": [1],
+                    "VALUE" if uppercase else "value": [1.5],
+                }
+            ),
+            path,
+        )
+        sources[table.name] = api.Parquet(path=str(path))
+    dataset = api.Dataset(tables=sources)
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    with (
+        patch("pyarrow.parquet.read_table", side_effect=AssertionError("read source rows")),
+        patch("pyarrow.parquet.read_schema", side_effect=AssertionError("read declared metadata"))
+        if declaration == "full"
+        else nullcontext(),
+    ):
+        issues = api.check(contract, dataset, engine)
+    if declaration == "full":
+        assert issues == ()
+        if uppercase:
+            pytest.importorskip("diskgraph")
+            with pytest.raises(ValueError, match=r"is missing columns \['id', 'value'\]") as caught:
+                api.prepare(contract, dataset, engine)
+            assert "'ID'" in str(caught.value) and "'VALUE'" in str(caught.value)
+            assert str(caught.value).endswith(
+                "stored as 'ID', 'VALUE'; column names are case-sensitive. "
+                "Use the stored names in the contract, or rename the stored columns."
+            )
+        return
+    if not uppercase:
+        assert issues == ()
+        return
+    with pytest.raises(ValueError) as caught:
+        contract.resolve(dataset=dataset)
+    message = str(caught.value)
+    assert len(issues) == 1 and issues[0].message == message
+    for table in tables:
+        line = next(line for line in message.splitlines() if f"{table.name}.parquet" in line)
+        assert table.name in line and "'id'" in line and "'ID'" in line
+        assert "stored as 'ID'" in line
+        assert line.count("column names are case-sensitive") == 1
+    with pytest.raises(api.ValidationError) as caught:
+        api.prepare(contract, dataset, engine)
+    assert caught.value.issues == issues
+
+
+@pytest.mark.parametrize("stored", ["VALUE", "vaule", "unrelated"])
+def test_check_suggests_stored_names_for_undeclared_feature_columns(tmp_path, stored):
+    path = tmp_path / "users.parquet"
+    pq.write_table(pa.table({"id": [1], stored: [1.5]}), path)
+    dataset = api.Dataset(tables={"users": api.Parquet(path=str(path))})
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    issues = api.check(_source_contract(), dataset, engine)
+    assert len(issues) == 1
+    assert issues[0].path == "sample.entity_values.value.column"
+    assert issues[0].message == "unknown column users.value"
+    assert (
+        issues[0].suggestion
+        == {
+            "VALUE": "stored as 'VALUE'; column names are case-sensitive",
+            "vaule": "did you mean 'vaule'?",
+            "unrelated": None,
+        }[stored]
+    )
+    with pytest.raises(api.ValidationError) as caught:
+        api.prepare(_source_contract(), dataset, engine)
+    assert caught.value.issues == issues
+
+
+@pytest.mark.parametrize("glob", [False, True])
+def test_check_reports_a_missing_column_in_a_later_shard(tmp_path, glob):
+    pq.write_table(pa.table({"id": [1], "value": [1.5]}), tmp_path / "a.parquet")
+    pq.write_table(pa.table({"id": [2], "VALUE": [2.5]}), tmp_path / "b.parquet")
+    source = str(tmp_path / "*.parquet") if glob else str(tmp_path)
+    dataset = api.Dataset(tables={"users": api.Parquet(path=source)})
+    contract = _source_contract({"id": api.DType("int64"), "value": None})
+    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    assert len(issues) == 1
+    assert "b.parquet" in issues[0].message and "'value'" in issues[0].message
+    assert "'VALUE'" in issues[0].message
+    with pytest.raises(ValueError) as caught:
+        contract.resolve(dataset=dataset)
+    assert str(caught.value) == issues[0].message
+
+
+def test_resolution_reports_schema_key_failures_across_tables(tmp_path):
+    contract = _source_contract()
+    tables = (
+        *contract.schema.tables,
+        api.TableSpec(name="items", primary_key="id", time_column=api.NON_TEMPORAL),
+        api.TableSpec(name="orders", primary_key="id", time_column="at"),
+    )
+    contract = replace(
+        contract,
+        schema=api.DataSchema(
+            tables=tables,
+            relations=(api.RelationSpec("owner", "users", "owner_id", "items", "id"),),
+        ),
+    )
+    stored = {
+        "users": pa.table({"id": [1], "value": [1.5], "OWNER_ID": [1]}),
+        "items": pa.table({"ID": [1]}),
+        "orders": pa.table({"id": [1], "AT": pa.array([0], type=pa.timestamp("s", tz="UTC"))}),
+    }
+    sources = {}
+    for name, data in stored.items():
+        path = tmp_path / f"{name}.parquet"
+        pq.write_table(data, path)
+        sources[name] = api.Parquet(str(path))
+    dataset = api.Dataset(sources)
+    with pytest.raises(ValueError) as caught:
+        contract.resolve(dataset=dataset)
+    message = str(caught.value)
+    for name, column in (("items", "id"), ("orders", "at"), ("users", "owner_id")):
+        assert name in message and column in message and repr(column.upper()) in message
+    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    assert len(issues) == 1 and issues[0].message == message
+
+
 @pytest.mark.parametrize("columns", [None, {"id": api.DType(name="int64"), "value": None}])
 @pytest.mark.parametrize("values", [[], [None], [1.5]])
 def test_metadata_resolves_empty_null_and_present_columns_without_reading_rows(
@@ -136,15 +274,16 @@ def test_discovery_checks_all_file_columns_while_explicit_selection_can_ignore_e
 def test_metadata_inference_honors_logical_column_renames(tmp_path):
     path = tmp_path / "rows.parquet"
     pq.write_table(pa.table({"physical_id": [1], "physical_value": [1.5]}), path)
-    resolved = _source_contract().resolve(
-        dataset=api.Dataset(
-            tables={
-                "users": api.Parquet(
-                    path=str(path), columns={"physical_id": "id", "physical_value": "value"}
-                )
-            }
-        )
+    dataset = api.Dataset(
+        tables={
+            "users": api.Parquet(
+                path=str(path), columns={"physical_id": "id", "physical_value": "value"}
+            )
+        }
     )
+    engine = api.DiskGraphEngine(index=tmp_path / "index")
+    assert api.check(_source_contract(), dataset, engine) == ()
+    resolved = _source_contract().resolve(dataset=dataset)
     assert resolved.schema.tables[0].columns == {
         "id": api.DType(name="int64"),
         "value": api.DType(name="float64"),
