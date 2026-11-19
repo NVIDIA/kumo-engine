@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "logical_id": "b1b964d2a964e4fb95b4cb093d5de467199f2b10b67970e8fe3b5407d7b8137a",
+  "snapshot_id": "7a69e955e84d54d6b3b2711be57f9bf1569ada00abbae1a658fb31b0cfdaa76e",
+  "task": "binary_classification",
+  "prediction_cutoff": "2026-02-01T00:00:00Z",
+  "selection": "native_multihop",
+  "deduplication": "per_instance",
+  "fanout_scope": "per_source_relation_hop",
+  "layers": [
+    [
+      {
+        "relation": "interaction_user",
+        "direction": "reverse",
+        "fanout": 1
+      }
+    ]
+  ],
+  "projections": {
+    "users": [
+      "user_id",
+      "segment",
+      "active"
+    ],
+    "interactions": [
+      "interaction_id",
+      "user_id",
+      "item_id",
+      "event_time",
+      "amount"
+    ]
+  },
+  "encoding": "arrays"
+}
