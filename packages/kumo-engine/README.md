@@ -120,7 +120,7 @@ if explanations.availability["gradient"].available:
     print(explanations.gradient_scores().to_pandas())
 ```
 
-See the [training explanations guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md) for plots, column cohorts, and sampled training context.
+See the [training and batch prediction explanations guide](https://github.com/NVIDIA/kumo-engine/blob/main/packages/kumo-engine/explainability.md) for plots, column cohorts, sampled graphs, and opt-in prediction explanations.
 
 ### Run in Production
 

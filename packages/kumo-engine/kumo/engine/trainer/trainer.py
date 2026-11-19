@@ -49,6 +49,9 @@ from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
 )
+from kumo_core.prediction_explanation_result import (
+    PredictionExplanationOptions,
+)
 from kumo_core.resolved_task import check_prediction_plan
 from kumo_core.summaries import Note, Scalar, Summary
 from kumo_core.train.artifact_manifest import PredictionSelectionRef
@@ -111,7 +114,10 @@ from kumo.engine._tracking import (
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.explain._artifacts import explanation_trial
-from kumo.engine.explain.results import TrainingExplanations
+from kumo.engine.explain.results import (
+    PredictionExplanations,
+    TrainingExplanations,
+)
 from kumo.engine.graph import (
     GraphSnapshot,
     index_timestamp_precision,
@@ -341,6 +347,9 @@ class PredictionResult:
                                              repr=False)
     _exported: Optional['_Export'] = field(default=None, compare=False,
                                            repr=False)
+
+    explanations: PredictionExplanations = field(
+        default_factory=PredictionExplanations.unavailable)
 
     @property
     def tracking(self) -> Optional[TrackingRef]:
@@ -1595,6 +1604,7 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         prediction_table: Optional[PredictionTable] = None,
         mlops: Optional[Any] = None,
+        explanations: bool | PredictionExplanationOptions = False,
     ) -> PredictionResult:
         r"""Score a snapshot and return durable file-backed results.
 
@@ -1637,8 +1647,20 @@ class Trainer:
 
         Omitted arguments fall back to the bundle's :attr:`scoring_defaults`.
 
+        ``explanations=True`` replays a bounded sample of these prediction
+        inputs to generate column cohorts and sampled graphs when supported.
+        The optional replay adds computation. Its failure leaves predictions
+        available and is recorded on ``result.explanations``. Retain that
+        object's ``run_root`` separately; exports do not include diagnostics.
+        Pass ``PredictionExplanationOptions(cohort_rows=..., sample_rows=...)``
+        to set independent row limits. Omitted limits retain the defaults.
+
         With MLOps on, the run is stored under ``predictions/<id>/``.
         """
+        if not isinstance(explanations, (bool, PredictionExplanationOptions)):
+            raise ValueError('explanations must be a boolean or '
+                             'PredictionExplanationOptions')
+
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
             validate_prediction_workers,
@@ -1679,7 +1701,7 @@ class Trainer:
                 num_workers=num_workers,
                 binary_classification_threshold=(
                     binary_classification_threshold),
-                settings=settings)
+                settings=settings, explanations=explanations)
 
     def _prediction_table(self, snapshot: GraphSnapshot,
                           entities: Optional[SourceTable],
@@ -1719,6 +1741,7 @@ class Trainer:
         binary_classification_threshold: Optional[float] = None,
         settings: Optional[Any] = None,
         extra_fields: Sequence[str] = (),
+        explanations: bool | PredictionExplanationOptions = False,
     ) -> PredictionResult:
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction import score_prediction
@@ -1732,6 +1755,7 @@ class Trainer:
         from kumo.engine.trainer._provenance import count_edges
 
         training_result = self._fitted('predict')
+        enabled = bool(explanations)
         defaults = training_result.scoring_defaults
         arguments = binary_classification_threshold, num_classes_to_return
         if binary_classification_threshold is None:
@@ -1817,9 +1841,9 @@ class Trainer:
             count_edges=count_edges(training_result.manifest, task_type),
         )
 
-        del encoders
-        _collect_garbage('predict')
-        result = PredictionResult(selection, artifact_type)
+        result = PredictionResult(selection, artifact_type,
+                                  explanations=PredictionExplanations.from_run(
+                                      run_dir))
         manifest = _run_manifest.start(
             result=result, trainer=self, snapshot=snapshot,
             prediction_table=prediction_table,
@@ -1833,9 +1857,30 @@ class Trainer:
                                             num_classes_to_return, 'query'),
                 num_workers=num_workers,
             ), started_at=started_at.isoformat(timespec='seconds'))
-        tracking = _run_manifest.finish(result, manifest, output_config,
-                                        settings, training_result, snapshot)
-        return replace(result, _tracking=tracking)
+        try:
+            tracking = _run_manifest.finish(result, manifest, output_config,
+                                            settings, training_result, snapshot)
+        except BaseException:
+            encoders = None
+            _collect_garbage('predict')
+            raise
+        result = replace(result, _tracking=tracking)
+        if enabled:
+            _collect_garbage('predict')
+        from kumo.engine.explain._prediction import explain_run
+
+        try:
+            explanation_result = explain_run(
+                run_root=str(run_dir), run_id=run_id, task_type=task_type,
+                materialized=materialized, model_dir=model_dir,
+                explanations=explanations, top_k=num_classes_to_return,
+                binary_threshold=threshold, task_options=task_options,
+                embedding_models=self._embedding_models, encoders=encoders,
+                accelerator=self._accelerator)
+        finally:
+            del encoders
+            _collect_garbage('predict')
+        return replace(result, explanations=explanation_result)
 
     def _trained_encoders(self, training_result: TrainingResult) -> Any:
         from kumo_core.encoders.config import EncodersConfig
