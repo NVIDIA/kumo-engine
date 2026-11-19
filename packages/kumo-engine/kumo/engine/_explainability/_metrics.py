@@ -1,23 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The Metrics card, shared by every model type.
+"""The Metrics card, shared by every model type, and the widget header.
 
 Holdout scores describe the evaluated fit, before any full-data refit.
 Training and validation scores use the original run's last epoch.
 """
 
 import math
-import posixpath
 import re
-import sys
-from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
 
-from kumo.engine._explainability import _files
 from kumo.engine._explainability import _format as fmt
+from kumo.engine._explainability._forecasting import period
 from kumo.engine._explainability._run import (
     CLASS_LABELED,
     CLASSIFICATION,
@@ -25,521 +22,272 @@ from kumo.engine._explainability._run import (
     LINK_PREDICTION,
     REGRESSION,
     Run,
+    mapping,
 )
 
-HIGHER_IS_BETTER = {'auroc', 'ap', 'auprc', 'map', 'recall', 'precision', 'f1'}
-LOWER_IS_BETTER = {'mae', 'mse', 'rmse', 'loss'}
-
-_NAMES = {
-    'auroc': 'AUROC',
-    'ap': 'AP',
-    'auprc': 'AUPRC',
-    'mae': 'MAE',
-    'mse': 'MSE',
-    'rmse': 'RMSE',
-    'loss': 'Loss',
-    'map': 'MAP',
-    'recall': 'Recall',
-    'precision': 'Precision',
-    'f1': 'F1',
-    'acc': 'Accuracy',
-    'accuracy': 'Accuracy',
-    'smape': 'SMAPE',
-    'r2': 'R²',
-    'mape': 'MAPE',
-    'ndcg': 'NDCG',
-}
+_NAMES = dict(auroc='AUROC', ap='AP', auprc='AUPRC', mae='MAE', mse='MSE',
+              rmse='RMSE', loss='Loss', map='MAP', recall='Recall',
+              precision='Precision', f1='F1', acc='Accuracy',
+              accuracy='Accuracy', smape='SMAPE', r2='R²', mape='MAPE',
+              ndcg='NDCG')
 _RANKING_ORDER = ('f1', 'map', 'precision', 'recall')
-_LOCALITY = 'locality_score'
+
+Baselines = dict[str, list[tuple[str, float]]]
 
 
-def family(metric: str) -> str:
-    return metric.split('@')[0]
-
-
-def top_k(metric: str) -> Optional[int]:
+def _top_k(metric: str) -> Optional[int]:
     match = re.fullmatch(r'[a-z0-9_]+@(\d+)', metric)
     return int(match.group(1)) if match else None
 
 
 def display_name(metric: str) -> str:
-    name = _NAMES.get(family(metric), family(metric).upper())
-    k = top_k(metric)
+    family = metric.split('@')[0]
+    name = _NAMES.get(family, family.upper())
+    k = _top_k(metric)
     return name if k is None else f'{name}@{k}'
 
 
-def higher_is_better(metric: str) -> Optional[bool]:
-    if family(metric) in HIGHER_IS_BETTER:
-        return True
-    if family(metric) in LOWER_IS_BETTER:
-        return False
-    return None
-
-
-@dataclass(frozen=True)
-class Fits:
-    """Retained holdout scores and the fit they describe."""
-
-    holdout: dict[str, float]
-    refit: bool
-    full_refit: bool
-
-
-def _prefixed(values: Any, prefix: str) -> dict[str, float]:
-    if not isinstance(values, dict):
-        return {}
+def _prefixed(run: Run, prefix: str) -> dict[str, float]:
     return {
-        key.removeprefix(prefix): float(value)
-        for key, value in values.items()
-        if key.startswith(prefix) and isinstance(value, (int, float))
-        and not isinstance(value, bool) and math.isfinite(value)
+        key.removeprefix(prefix): value
+        for key, value in run.metrics.items() if key.startswith(prefix)
     }
 
 
-def fits(run: Run) -> Fits:
-    refit_holdout = _prefixed(run.metrics, 'test_refit_')
-    refit = run.files.refit or bool(refit_holdout)
-    holdout = refit_holdout if refit else {
-        k: v
-        for k, v in _prefixed(run.metrics, 'test_').items()
-        if not k.startswith('refit_')
+def _refit(run: Run) -> bool:
+    return run.refit or any(
+        key.startswith('test_refit_') for key in run.metrics)
+
+
+def _holdout(run: Run) -> dict[str, float]:
+    if _refit(run):
+        return _prefixed(run, 'test_refit_')
+    return {
+        key: value
+        for key, value in _prefixed(run, 'test_').items()
+        if not key.startswith('refit_')
     }
-    provenance = _files.read_json(
-        posixpath.join(run.files.bundle, '_provenance.json'))
-    config = _files.read_json(
-        posixpath.join(run.files.bundle, 'model', 'config.json'))
-    refit_cfg = config.get('refit_cfg') if isinstance(config, dict) else None
-    full_refit = (provenance.get('fit_mode') == 'refit_full'
-                  if isinstance(provenance, dict) and provenance.get('fit_mode')
-                  else isinstance(refit_cfg, dict)
-                  and refit_cfg.get('refitted_full') is True)
-    return Fits(holdout, refit, full_refit)
-
-
-# ---------------------------------------------------------------- baselines
-
-
-@dataclass(frozen=True)
-class Baseline:
-    name: str
-    value: float
-
-
-def _regression_baselines(run: Run) -> dict[str, list[Baseline]]:
-    if run.holdout is None:
-        return {}
-    actual = run.holdout['TARGET'].to_numpy(dtype=float)
-    if actual.size == 0:
-        return {}
-    out: dict[str, list[Baseline]] = {}
-    for name, pred in (('predict zero', np.zeros_like(actual)),
-                       ('predict the mean', np.full_like(actual,
-                                                         actual.mean()))):
-        error = pred - actual
-        values = {
-            'mae': float(np.abs(error).mean()),
-            'mse': float((error**2).mean()),
-            'rmse': float(np.sqrt((error**2).mean())),
-        }
-        for metric, value in values.items():
-            out.setdefault(metric, []).append(Baseline(name, value))
-    return out
 
 
 def positive_share(run: Run) -> Optional[float]:
-    if run.task_type in CLASS_LABELED:
-        return None
-    if run.holdout is None or len(run.holdout) == 0:
+    if run.task_type in CLASS_LABELED or run.holdout is None:
         return None
     return float(run.holdout['TARGET'].astype(bool).mean())
 
 
-def _classification_baselines(run: Run) -> dict[str, list[Baseline]]:
-    out = {'auroc': [Baseline('chance', 0.5)]}
-    share = positive_share(run)
-    if share is not None:
-        out['ap'] = [Baseline('base rate', share)]
-        out['auprc'] = [Baseline('base rate', share)]
-    return out
-
-
-@dataclass(frozen=True)
-class Catalog:
-    size: int
-    mean_targets: float
-    table: str
-
-
-def catalog(run: Run) -> Optional[Catalog]:
-    """Catalog size and mean holdout list length for random baselines."""
-    files = run.files
-    if files.table is None or files.snapshot is None:
-        return None
-    manifest = _files.read_json(
-        posixpath.join(files.table, 'diskgraph_manifest.json'))
-    stats = _files.read_json(posixpath.join(files.snapshot,
-                                            'ingest_stats.json'))
-    if not isinstance(manifest, dict) or not isinstance(stats, dict):
-        return None
-    rhs = (manifest.get('task_dataset') or {}).get('rhs_node_type')
-    counts = (stats.get('stats') or {}).get('node_counts') or {}
-    size = counts.get(rhs) if isinstance(rhs, str) else None
-    seeds = _files.read_parquet_dir(posixpath.join(files.table, 'test_seeds'),
-                                    ['TARGET1'])
-    if not isinstance(size,
-                      int) or size <= 0 or seeds is None or not len(seeds):
-        return None
-    lengths = seeds['TARGET1'].map(len).to_numpy(dtype=float)
-    return Catalog(size, float(lengths.mean()), str(rhs))
-
-
-def _random_baselines(run: Run) -> dict[str, list[Baseline]]:
-    cat = catalog(run)
-    if cat is None:
-        return {}
-    out: dict[str, list[Baseline]] = {}
-    for metric in run.training_job.get('metrics') or []:
-        k = top_k(metric)
-        if k is None:
-            continue
-        if family(metric) == 'recall':
-            out[metric] = [Baseline('random', k / cat.size)]
-        elif family(metric) == 'precision':
-            out[metric] = [Baseline('random', cat.mean_targets / cat.size)]
-    return out
-
-
-def baselines(run: Run) -> dict[str, list[Baseline]]:
+def baselines(run: Run) -> Baselines:
+    out: Baselines = {}
+    if run.task_type in CLASS_LABELED:
+        return out
     if run.model_type == CLASSIFICATION:
-        return {} if run.task_type in CLASS_LABELED else _classification_baselines(
-            run)
-    if run.model_type in (REGRESSION, FORECASTING):
-        return _regression_baselines(run)
-    return _random_baselines(run)
-
-
-# --------------------------------------------------------------------- card
+        out['auroc'] = [('chance', 0.5)]
+        share = positive_share(run)
+        if share is not None:
+            out['ap'] = out['auprc'] = [('base rate', share)]
+    elif run.model_type == LINK_PREDICTION and run.catalog is not None:
+        size, mean_targets, _ = run.catalog
+        for metric in run.metric_names:
+            k = _top_k(metric)
+            if k is not None and metric.startswith('recall@'):
+                out[metric] = [('random', k / size)]
+            elif k is not None and metric.startswith('precision@'):
+                out[metric] = [('random', mean_targets / size)]
+    elif run.model_type != LINK_PREDICTION and run.holdout is not None:
+        actual = run.holdout['TARGET'].to_numpy(dtype=float)
+        for name, pred in (('predict zero', 0.0), ('predict the mean',
+                                                   actual.mean())):
+            error = pred - actual
+            mse = float((error**2).mean())
+            for metric, value in (('mae', float(np.abs(error).mean())),
+                                  ('mse', mse), ('rmse', math.sqrt(mse))):
+                out.setdefault(metric, []).append((name, value))
+    return out
 
 
 def tile_metrics(run: Run) -> list[str]:
-    job = run.training_job
-    metrics = [m for m in job.get('metrics') or [] if isinstance(m, str)]
-    tune = job.get('tune_metric')
-    if not isinstance(tune, str):
-        tune = metrics[0] if metrics else None
+    metrics = run.metric_names
+    tune = run.tune or (metrics[0] if metrics else None)
     if tune is None:
         return []
     if run.model_type == LINK_PREDICTION:
-        k = top_k(tune)
+        k = _top_k(tune)
         order = [tune
                  ] + ([] if k is None else [f'recall@{k}', f'precision@{k}'])
     else:
-        names = set(metrics)
         order = [tune] + [
-            m for m in metrics if not (m == 'auprc' and 'ap' in names)
-            and not (m == 'mse' and 'rmse' in names)
+            m for m in metrics if not (m == 'auprc' and 'ap' in metrics)
+            and not (m == 'mse' and 'rmse' in metrics)
         ]
-    seen: list[str] = []
-    for metric in order:
-        if metric not in seen:
-            seen.append(metric)
-    return seen[:3]
+    return list(dict.fromkeys(order))[:3]
 
 
-def _best(metric: str, items: list[Baseline]) -> Optional[Baseline]:
-    direction = higher_is_better(metric)
-    if not items or direction is None:
-        return None
-    return (max if direction else min)(items, key=lambda b: b.value)
-
-
-def tile(run: Run, fit: Fits, metric: str,
-         base: dict[str, list[Baseline]]) -> Optional[dict[str, Any]]:
-    holdout = fit.holdout.get(metric)
-    if holdout is None:
-        return None
-    training = _prefixed(run.metrics, 'train_').get(metric)
-    items = base.get(metric, [])
+def _tile(run: Run, metric: str, holdout: float, training: Optional[float],
+          items: list[tuple[str, float]]) -> dict[str, Any]:
     callout = None
     if run.model_type == LINK_PREDICTION:
-        rand = items[0] if items else None
-        if rand is not None and rand.value > 0:
-            callout = f'{fmt.multiple(holdout / rand.value)} random'
-    else:
-        best = _best(metric, items)
-        if best is not None:
-            callout = f'{fmt.signed(holdout - best.value)} vs {best.name}'
-    gap = None if training is None else holdout - training
-    return {
-        'metric':
-        metric,
-        'name':
-        display_name(metric),
-        'tune':
-        metric == run.training_job.get('tune_metric'),
-        'holdout':
-        holdout,
-        'holdout_text':
-        fmt.number(holdout),
-        'holdout_label':
-        'holdout · before full refit' if fit.full_refit else 'holdout',
-        'training':
-        training,
-        'training_text':
-        None if training is None else fmt.number(training),
-        'training_scope':
-        'Last training epoch; predictions use the selected checkpoint.',
-        'gap':
-        gap,
-        'gap_text':
-        None if gap is None else f'holdout minus training: {fmt.signed(gap)}',
-        'baselines': [{
-            'name': b.name,
-            'value': b.value,
-            'text': f'{b.name} {fmt.number(b.value)}'
-        } for b in items],
-        'callout':
-        callout,
-    }
+        if items and items[0][1] > 0:
+            callout = f'{holdout / items[0][1]:.1f}× random'
+    elif items:
+        from kumo_core.evaluation.suite import MetricStore
+
+        best = max if MetricStore.tune_mode(metric) == 'max' else min
+        name, value = best(items, key=lambda item: item[1])
+        callout = f'{fmt.signed(holdout - value)} vs {name}'
+    return dict(
+        name=display_name(metric), tune=metric == run.tune,
+        holdout_text=fmt.number(holdout),
+        holdout_label=('holdout · before full refit'
+                       if run.full_refit else 'holdout'),
+        training_text=None if training is None else fmt.number(training),
+        training_scope=('Last training epoch; predictions use the selected '
+                        'checkpoint.'), gap_text=None if training is None else
+        f'holdout minus training: {fmt.signed(holdout - training)}', baselines=[
+            dict(text=f'{name} {fmt.number(value)}') for name, value in items
+        ], callout=callout)
 
 
-def table_metrics(run: Run, fit: Fits) -> list[str]:
-    metrics = [
-        m for m in run.training_job.get('metrics') or [] if isinstance(m, str)
-    ]
-    if run.model_type != LINK_PREDICTION:
-        return metrics
-
-    def order(metric: str) -> tuple[int, int]:
-        fam = family(metric)
-        rank = (_RANKING_ORDER.index(fam)
-                if fam in _RANKING_ORDER else len(_RANKING_ORDER))
-        return rank, top_k(metric) or 0
-
-    return sorted(metrics, key=order)
-
-
-def _split(stats: Optional[dict[str, Any]], name: str) -> dict[str, Any]:
-    value = (stats or {}).get(f'{name}_table_stats')
-    return value if isinstance(value, dict) else {}
-
-
-def _rows(split: dict[str, Any]) -> Optional[int]:
-    value = split.get('num_train_rows')
-    return value if isinstance(value, int) else None
-
-
-def _detail_anchor(split: dict[str, Any]) -> Optional[str]:
-    rows = _rows(split)
-    if rows is None or not split.get('anchor_date'):
+def _detail(split: dict[str, Any], *dates: str) -> Optional[str]:
+    rows = split.get('num_train_rows')
+    if not isinstance(rows, int) or not all(split.get(d) for d in dates):
         return None
-    return f'{fmt.count(rows)} rows · {fmt.date(split["anchor_date"])}'
+    return f'{rows:,} rows · ' + ' to '.join(str(split[d])[:10] for d in dates)
 
 
-def _detail_range(split: dict[str, Any]) -> Optional[str]:
-    rows = _rows(split)
-    if rows is None or not split.get('min_date') or not split.get('max_date'):
-        return None
-    return (f'{fmt.count(rows)} rows · {fmt.date(split["min_date"])} to '
-            f'{fmt.date(split["max_date"])}')
-
-
-def table(run: Run, fit: Fits) -> dict[str, Any]:
-    stats = _files.split_stats(run.files)
-    train, val, test = (_split(stats, s) for s in ('train', 'val', 'test'))
-    holdout_detail = _detail_anchor(test)
-    groups = [{
-        'title':
-        'Model before full refit' if fit.full_refit else 'Published model',
-        'span': 1
-    }, {
-        'title': 'Training run · last epoch',
-        'span': 2
-    }]
+def _table(run: Run, holdout: dict[str, float]) -> dict[str, Any]:
+    splits = run.splits
     columns = [
-        {
-            'label': 'Holdout',
-            'detail': holdout_detail,
-            'values': fit.holdout
-        },
-        {
-            'label': 'Validation',
-            'detail': _detail_anchor(val),
-            'values': _prefixed(run.metrics, 'val_')
-        },
-        {
-            'label': 'Training',
-            'detail': _detail_range(train),
-            'values': _prefixed(run.metrics, 'train_')
-        },
+        ('Holdout', _detail(splits['test'], 'anchor_date'), holdout),
+        ('Validation', _detail(splits['val'],
+                               'anchor_date'), _prefixed(run, 'val_')),
+        ('Training', _detail(splits['train'], 'min_date',
+                             'max_date'), _prefixed(run, 'train_')),
     ]
-    tune = run.training_job.get('tune_metric')
-    rows = []
-    for metric in table_metrics(run, fit):
-        values = [column['values'].get(metric) for column in columns]
-        if all(v is None for v in values):
-            continue
-        rows.append({
-            'metric':
-            metric,
-            'name':
-            display_name(metric),
-            'tune':
-            metric == tune,
-            'values':
-            values,
-            'texts': [None if v is None else fmt.number(v) for v in values]
-        })
+    metrics = list(run.metric_names)
     if run.model_type == LINK_PREDICTION:
-        values: list[Optional[float]] = [None] * len(columns)
-        holdouts = [i for i, c in enumerate(columns) if c['label'] == 'Holdout']
-        sources = [
-            f'test_refit_{_LOCALITY}' if fit.refit else f'test_{_LOCALITY}'
-        ]
-        for index, key in zip(holdouts, sources):
-            values[index] = run.metrics.get(key)
-        if any(v is not None for v in values):
-            rows.append({
-                'metric':
-                _LOCALITY,
-                'name':
-                'Locality score',
-                'tune':
-                False,
-                'values':
-                values,
-                'texts': [None if v is None else fmt.number(v) for v in values]
-            })
+        metrics.sort(key=lambda m: (_RANKING_ORDER.index(m.split('@')[0])
+                                    if m.split('@')[0] in _RANKING_ORDER else
+                                    len(_RANKING_ORDER), _top_k(m) or 0))
+    rows = [(display_name(m), m == run.tune, [v.get(m) for _, _, v in columns])
+            for m in metrics]
+    if run.model_type == LINK_PREDICTION:
+        prefix = 'test_refit_' if _refit(run) else 'test_'
+        rows.append(('Locality score', False,
+                     [run.metrics.get(prefix + 'locality_score'), None, None]))
+    rows = [row for row in rows if any(v is not None for v in row[2])]
     # Drop columns no row fills, such as training values a bundle lacks.
-    keep = [
-        i for i in range(len(columns))
-        if any(row['values'][i] is not None for row in rows)
+    keep = [i for i in range(3) if any(row[2][i] is not None for row in rows)]
+    groups = [
+        ('Model before full refit' if run.full_refit else 'Published model',
+         int(0 in keep)),
+        ('Training run · last epoch', len([i for i in keep if i])),
     ]
-    start = 0
-    kept_groups = []
-    for group in groups:
-        span = len([i for i in keep if start <= i < start + group['span']])
-        if span:
-            kept_groups.append({**group, 'span': span})
-        start += group['span']
-    for row in rows:
-        row['values'] = [row['values'][i] for i in keep]
-        row['texts'] = [row['texts'][i] for i in keep]
-    return {
-        'groups':
-        kept_groups,
-        'columns': [{
-            'label': columns[i]['label'],
-            'detail': columns[i]['detail']
-        } for i in keep],
-        'rows':
-        rows,
-    }
+    return dict(
+        groups=[dict(title=title, span=span) for title, span in groups if span],
+        columns=[dict(label=columns[i][0], detail=columns[i][1]) for i in keep],
+        rows=[
+            dict(
+                name=name, tune=tune, texts=[
+                    None if values[i] is None else fmt.number(values[i])
+                    for i in keep
+                ]) for name, tune, values in rows
+        ])
 
 
 def _history(run: Run) -> Optional[dict[str, Any]]:
     """Search-trial scalars with the same tags and epoch labels as the UI."""
-    history = _files.read_json(_files.bundle_file(run.files, 'metric_history'))
-    if history is None and run.files.first is not None:
-        history = _files.read_json(
-            posixpath.join(posixpath.dirname(run.files.first),
-                           'auto_train_progress.json'))
-    trials = history.get('trial_progress') if isinstance(history,
-                                                         dict) else None
-    if not isinstance(trials, dict):
-        return None
     experiments = []
-    tags: set[str] = set()
-
-    # Object.keys in the web client enumerates array indices first, then
-    # named trials in their original order.
-    def trial_order(key: str) -> int:
-        if re.fullmatch(r'0|[1-9][0-9]{0,9}', key):
-            return min(int(key), 2**32 - 1)
-        return 2**32 - 1
-
-    for key in sorted(trials, key=trial_order):
-        trial = trials[key]
-        records = trial.get('metrics') if isinstance(trial, dict) else None
-        if not isinstance(records, dict):
-            continue
+    for trial in mapping(mapping(run.history).get('trial_progress')).values():
         series: dict[str, list[tuple[int, Optional[float]]]] = {}
-        for epoch, record in records.items():
-            if not re.fullmatch(r'[0-9]{1,10}', epoch) or not isinstance(
-                    record, dict):
+        for epoch, record in mapping(mapping(trial).get('metrics')).items():
+            if not re.fullmatch(r'[0-9]+', epoch):
                 continue
             for field, prefix in (('train_metrics', 'train_'),
                                   ('validation_metrics', 'val_')):
-                values = record.get(field)
-                if not isinstance(values, dict):
-                    continue
-                for tag, value in values.items():
-                    if not tag.startswith(prefix) or '_per_label_' in tag:
-                        continue
-                    number = value if (
-                        isinstance(value, (float, int))
-                        and not isinstance(value, bool)
-                        and abs(value) <= sys.float_info.max) else None
-                    series.setdefault(tag, []).append((int(epoch), number))
-        if not series:
-            continue
+                for tag, value in mapping(mapping(record).get(field)).items():
+                    if tag.startswith(prefix) and '_per_label_' not in tag:
+                        finite = (isinstance(value, (int, float))
+                                  and not isinstance(value, bool)
+                                  and math.isfinite(value))
+                        series.setdefault(tag, []).append(
+                            (int(epoch), value if finite else None))
         for tag, points in series.items():
             points.sort(key=lambda point: point[0])
             # The TensorBoard hook adjusts each series independently.
             if points[0][0] == 0:
                 series[tag] = [(epoch + 1, value) for epoch, value in points]
-        tags.update(series)
-        experiments.append(series)
+        if series:
+            experiments.append(series)
     if not experiments:
         return None
-    metrics = list(dict.fromkeys(tag.split('_', 1)[1] for tag in sorted(tags)))
-    tune = run.training_job.get('tune_metric')
-    if tune in metrics:
-        metrics.remove(tune)
-        metrics.insert(0, tune)
-    return {
-        'id': 'history',
-        'label': 'Epoch history',
-        'metrics': metrics,
-        'experiments': experiments
-    }
+    tags = sorted(tag for series in experiments for tag in series)
+    metrics = list(dict.fromkeys(tag.split('_', 1)[1] for tag in tags))
+    if run.tune in metrics:
+        metrics.remove(run.tune)
+        metrics.insert(0, run.tune)
+    return dict(id='history', label='Epoch history', metrics=metrics,
+                experiments=experiments)
 
 
 def card(run: Run) -> Optional[dict[str, Any]]:
-    fit = fits(run)
+    holdout = _holdout(run)
+    training = _prefixed(run, 'train_')
     base = baselines(run)
     tiles = [
-        t for m in tile_metrics(run)
-        if (t := tile(run, fit, m, base)) is not None
+        _tile(run, metric, holdout[metric], training.get(metric),
+              base.get(metric, [])) for metric in tile_metrics(run)
+        if metric in holdout
     ]
-    views = []
-    if tiles:
-        views.extend([
-            {
-                'id':
-                'baselines',
-                'label': ('Against random' if run.model_type == LINK_PREDICTION
-                          else 'Against baselines'),
-                'tiles':
-                tiles
-            },
-            {
-                'id': 'table',
-                'label': 'All metrics',
-                'table': table(run, fit)
-            },
-        ])
+    views = [
+        dict(
+            id='baselines', tiles=tiles,
+            label=('Against random' if run.model_type == LINK_PREDICTION else
+                   'Against baselines')),
+        dict(id='table', label='All metrics', table=_table(run, holdout)),
+    ] if tiles else []
     history = _history(run)
     if history is not None:
         views.append(history)
     if not views:
         return None
-    coverage = run.coverage.line(run.coverage.metrics)
-    if run.coverage.holdout_truncated:
-        coverage = ' · '.join(
-            filter(None, [coverage, run.coverage.holdout_line()]))
-    return {
-        'title': 'Metrics',
-        'views': views,
-        'coverage': coverage if tiles else None,
-    }
+    return dict(title='Metrics', views=views,
+                coverage=run.metrics_coverage() if tiles else None)
+
+
+def header(run: Run) -> dict[str, Any]:
+    """The query and one line about the holdout; either may be missing."""
+    frame = run.holdout
+    parts = []
+    if run.model_type == LINK_PREDICTION:
+        rows = run.splits['test'].get('num_train_rows')
+        if isinstance(rows, int):
+            parts.append(f'{rows:,} {run.entities}')
+    elif frame is not None and run.model_type == FORECASTING:
+        steps = frame['TIMESTAMP'].nunique()
+        word = period(frame['TIMESTAMP'])
+        parts.append(f'{frame["ENTITY"].nunique():,} {run.entities} × {steps} '
+                     f'{word if steps == 1 else word + "s"} = '
+                     f'{len(frame):,} rows')
+    elif frame is not None:
+        parts.append(f'{len(frame):,} {run.entities}')
+    anchor = run.splits['test'].get('anchor_date')
+    if parts and anchor:
+        parts.append(f'anchor {str(anchor)[:10]}')
+    share = positive_share(run)
+    if run.model_type == CLASSIFICATION and share is not None:
+        parts.append(f'{fmt.percent(share)} True')
+    if run.model_type == REGRESSION and frame is not None:
+        zero = float((frame['TARGET'] == 0).mean())
+        if zero >= 0.1:
+            parts.append(f'{fmt.percent(zero)} with actual 0')
+    if run.model_type == LINK_PREDICTION and run.catalog is not None:
+        size, mean_targets, table = run.catalog
+        parts += [
+            f'{fmt.number(mean_targets)} items each',
+            f'catalog {size:,} {table}'
+        ]
+    line = ('Holdout: ' + ' · '.join(parts)) if parts else None
+    if run.full_refit:
+        note = ('Diagnostics and explanations describe the model before full '
+                'refit.')
+        line = f'{line} · {note}' if line else note
+    return dict(query=run.query, holdout=line)

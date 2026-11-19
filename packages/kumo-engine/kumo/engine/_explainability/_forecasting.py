@@ -10,157 +10,99 @@ import numpy as np
 import pandas as pd
 
 from kumo.engine._explainability import _format as fmt
-from kumo.engine._explainability._holdout import equal_count_groups
-from kumo.engine._explainability._run import Run
+from kumo.engine._explainability._run import (
+    FORECASTING,
+    Run,
+    equal_count_groups,
+)
 
 # Forecast step lengths in days and the word for one step.
-_PERIODS = ((1, 'day'), (7, 'week'), (28, 'month'), (29, 'month'),
-            (30, 'month'), (31, 'month'), (365, 'year'), (366, 'year'))
+_PERIODS = {
+    1: 'day',
+    7: 'week',
+    **dict.fromkeys(range(28, 32), 'month'), 365: 'year',
+    366: 'year'
+}
 
 
 def period(steps: pd.Series) -> str:
     """The calendar word for the spacing of the forecast steps."""
-    stamps = pd.to_datetime(steps.drop_duplicates()).sort_values()
-    days = stamps.diff().dropna().dt.days
-    if days.empty:
-        return 'step'
-    typical = int(days.median())
-    for length, word in _PERIODS:
-        if typical == length:
-            return word
-    return 'step'
+    days = pd.to_datetime(
+        steps.drop_duplicates()).sort_values().diff().dropna().dt.days
+    return 'step' if days.empty else _PERIODS.get(int(days.median()), 'step')
 
 
-def _weeks(frame: pd.DataFrame, word: str) -> dict[str, Any]:
-    per = frame.groupby('TIMESTAMP', sort=True).agg(mae=('abs_error', 'mean'),
-                                                    zero=('abs_actual', 'mean'),
-                                                    bias=('error', 'mean'))
-    texts = fmt.numbers(list(per['mae']) + list(per['zero']))
+def _steps(per: pd.DataFrame, first: str, second: str,
+           texts: list[str]) -> list[dict[str, Any]]:
     n = len(per)
-    return {
-        'id':
-        'horizon',
-        'label':
-        f'By horizon {word}',
-        'x':
-        f'forecast {word}',
-        'y':
-        'mean absolute error',
-        'series': ['model', 'predict zero'],
-        'steps': [{
-            'label': fmt.date(str(stamp)),
-            'model': float(row.mae),
-            'model_text': texts[i],
-            'zero': float(row.zero),
-            'zero_text': texts[n + i],
-            'bias_callout': f'bias {fmt.signed(float(row.bias))}',
-        } for i, (stamp, row) in enumerate(per.iterrows())],
-    }
-
-
-def _totals(frame: pd.DataFrame, word: str, entities: str) -> dict[str, Any]:
-    per = frame.groupby('TIMESTAMP',
-                        sort=True).agg(actual=('TARGET', 'sum'),
-                                       forecast=('TARGET_PRED', 'sum'))
-    actual, forecast = float(per['actual'].sum()), float(per['forecast'].sum())
-    callout = None
-    if actual > 0:
-        callout = (f'forecast total {fmt.percent(forecast / actual)} of '
-                   f'actual over {len(per)} {word}s')
-    values = list(per['actual']) + list(per['forecast'])
-    target = frame['TARGET'].to_numpy()
-    if np.allclose(target, np.round(target), rtol=0, atol=1e-3):
-        # A count target totals to whole units; the forecast is shown on the
-        # same footing.
-        totals = [fmt.count(round(v)) for v in values]
-    else:
-        totals = fmt.numbers(values)
-    n = len(per)
-    return {
-        'id':
-        'totals',
-        'label':
-        f'{word.capitalize()}ly totals'
-        if word in ('week', 'month', 'year') else 'Totals by step',
-        'x':
-        f'forecast {word}',
-        'y':
-        f'total over all {entities}',
-        'series': ['actual', 'forecast'],
-        'steps': [{
-            'label': fmt.date(str(stamp)),
-            'actual': float(row.actual),
-            'actual_text': totals[i],
-            'forecast': float(row.forecast),
-            'forecast_text': totals[n + i],
-        } for i, (stamp, row) in enumerate(per.iterrows())],
-        'total_callout':
-        callout,
-    }
-
-
-def _tenths(run: Run, frame: pd.DataFrame) -> Optional[dict[str, Any]]:
-    per = frame.groupby('ENTITY',
-                        sort=True).agg(actual=('TARGET', 'sum'),
-                                       forecast=('TARGET_PRED', 'sum'))
-    total = float(per['actual'].sum())
-    if total <= 0:
-        return None
-    group = equal_count_groups(per['forecast'].to_numpy(dtype=float),
-                               per.index.to_numpy())
-    rows = []
-    for k in np.unique(group):
-        mask = group == k
-        share = float(per['actual'].to_numpy()[mask].sum()) / total
-        rows.append({
-            'label': str(k + 1),
-            'entities': int(mask.sum()),
-            'share': share,
-            'share_text': fmt.percent(share),
-        })
-    top = rows[-1]
-    return {
-        'id':
-        'tenths',
-        'label':
-        'By forecast tenth',
-        'x':
-        'forecast tenth, lowest to highest',
-        'y':
-        'share of actual units',
-        'tenths':
-        rows,
-        'reference':
-        0.1,
-        'reference_callout':
-        'equal share 10%',
-        'top_callout':
-        f'{top["share_text"]} of actual units · '
-        f'{fmt.count(top["entities"])} {run.entities}',
-    }
+    return [{
+        'label': str(stamp)[:10],
+        first: float(row[first]),
+        f'{first}_text': texts[i],
+        second: float(row[second]),
+        f'{second}_text': texts[n + i],
+    } for i, (stamp, row) in enumerate(per.iterrows())]
 
 
 def forecast_card(run: Run) -> Optional[dict[str, Any]]:
-    holdout = run.holdout
-    if holdout is None or len(holdout) == 0:
+    if run.model_type != FORECASTING or run.holdout is None:
         return None
-    frame = holdout.copy()
-    frame['TARGET'] = frame['TARGET'].astype(float)
-    frame['TARGET_PRED'] = frame['TARGET_PRED'].astype(float)
+    frame = run.holdout.astype({'TARGET': float, 'TARGET_PRED': float})
     frame = frame[np.isfinite(frame['TARGET'])
                   & np.isfinite(frame['TARGET_PRED'])]
     if frame.empty:
         return None
-    frame['error'] = frame['TARGET_PRED'] - frame['TARGET']
-    frame['abs_error'] = frame['error'].abs()
-    frame['abs_actual'] = frame['TARGET'].abs()
+    error = frame['TARGET_PRED'] - frame['TARGET']
     word = period(frame['TIMESTAMP'])
-    views = [_weeks(frame, word), _totals(frame, word, run.entities)]
-    tenths = _tenths(run, frame)
-    if tenths is not None:
-        views.append(tenths)
-    return {
-        'title': 'Forecast against actual',
-        'views': views,
-        'coverage': run.coverage.holdout_line(),
-    }
+    by_step = frame.assign(model=error.abs(), zero=frame['TARGET'].abs(),
+                           bias=error).groupby('TIMESTAMP', sort=True)
+    horizon = by_step[['model', 'zero', 'bias']].mean()
+    steps = _steps(horizon, 'model', 'zero',
+                   fmt.numbers([*horizon['model'], *horizon['zero']]))
+    for step, bias in zip(steps, horizon['bias']):
+        step['bias_callout'] = f'bias {fmt.signed(float(bias))}'
+    totals = by_step[['TARGET', 'TARGET_PRED']].sum()
+    values = [*totals['TARGET'], *totals['TARGET_PRED']]
+    target = frame['TARGET'].to_numpy()
+    # A count target totals to whole units; the forecast is shown on the
+    # same footing.
+    texts = ([f'{int(round(v)):,}' for v in values] if np.allclose(
+        target, np.round(target), rtol=0, atol=1e-3) else fmt.numbers(values))
+    actual, forecast = totals['TARGET'].sum(), totals['TARGET_PRED'].sum()
+    views = [
+        dict(id='horizon', label=f'By horizon {word}', x=f'forecast {word}',
+             y='mean absolute error', series=['model',
+                                              'predict zero'], steps=steps),
+        dict(
+            id='totals', x=f'forecast {word}',
+            label=(f'{word.capitalize()}ly totals'
+                   if word in ('week', 'month', 'year') else 'Totals by step'),
+            y=f'total over all {run.entities}', series=['actual', 'forecast'],
+            steps=_steps(totals.set_axis(['actual', 'forecast'], axis=1),
+                         'actual', 'forecast', texts),
+            total_callout=(f'forecast total {fmt.percent(forecast / actual)} '
+                           f'of actual over {len(totals)} {word}s')
+            if actual > 0 else None),
+    ]
+    per = frame.groupby('ENTITY', sort=True)[['TARGET', 'TARGET_PRED']].sum()
+    total = float(per['TARGET'].sum())
+    if total > 0:
+        group = equal_count_groups(per['TARGET_PRED'].to_numpy(dtype=float),
+                                   per.index.to_numpy())
+        rows = []
+        for k in np.unique(group):
+            share = float(per['TARGET'].to_numpy()[group == k].sum()) / total
+            rows.append(
+                dict(label=str(k + 1), share=share,
+                     share_text=fmt.percent(share)))
+        views.append(
+            dict(
+                id='tenths', label='By forecast tenth',
+                x='forecast tenth, lowest to highest',
+                y='share of actual units', tenths=rows, reference=0.1,
+                reference_callout='equal share 10%',
+                top_callout=(f'{rows[-1]["share_text"]} of actual units · '
+                             f'{int((group == group.max()).sum()):,} '
+                             f'{run.entities}')))
+    return dict(title='Forecast against actual', views=views,
+                coverage=run.holdout_coverage())

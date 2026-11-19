@@ -256,9 +256,9 @@ class TrainingResult:
         on disk; a result restored from a bundle alone shows what the bundle
         holds. ``.html()`` returns the same widget as self-contained HTML.
         """
-        from kumo.engine._explainability import for_result
+        from kumo.engine._explainability import ExplainabilityView
 
-        return for_result(self)
+        return ExplainabilityView(self)
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""
