@@ -1226,10 +1226,10 @@ impl GraphIndexReader {
         Self::open_with_extension_subdir(parent_root, &subdir_rel, &namespace)
     }
 
-    /// Generalization of [`open_with_tt`] to an extension at an arbitrary
-    /// relative `subdir` under the parent, or an absolute path. This low-level
-    /// reader does not enforce path placement; callers validate it. External
-    /// extensions allow consumers to keep a shared parent read-only. The
+    /// Generalization of [`open_with_tt`] to a relative or absolute extension
+    /// path. Resolved paths must differ from the parent and, if inside it,
+    /// identify `train_tables/<id>` or `pred_tables/<id>`. External extensions
+    /// allow consumers to keep a shared parent read-only. The
     /// extension's tables are merged under the `<namespace>/<table_name>`
     /// keys and its cross-boundary edges are decoded against the parent's
     /// node types — the same recipe `open_with_tt` uses.
@@ -1238,9 +1238,24 @@ impl GraphIndexReader {
         subdir_rel: &str,
         namespace: &str,
     ) -> Result<Self> {
-        let parent_meta_path = parent_root.join("index_metadata.json");
-        let mut reader = Self::open(&parent_meta_path, parent_root)?;
-        let subdir = parent_root.join(subdir_rel);
+        // All opening paths share this validation, including direct native
+        // callers and legacy relative references that traverse symlinks.
+        let parent = fs::canonicalize(parent_root).context("resolve parent index path")?;
+        let subdir =
+            fs::canonicalize(parent_root.join(subdir_rel)).context("resolve extension index path")?;
+        ensure!(
+            subdir != parent,
+            "extension path must not identify the base index"
+        );
+        if let Ok(relative) = subdir.strip_prefix(&parent) {
+            let parts: Vec<_> = relative.iter().collect();
+            ensure!(
+                parts.len() == 2 && (parts[0] == "train_tables" || parts[0] == "pred_tables"),
+                "an index-local extension must identify train_tables/<id> or pred_tables/<id>"
+            );
+        }
+        let parent_meta_path = parent.join("index_metadata.json");
+        let mut reader = Self::open(&parent_meta_path, &parent)?;
         let ext_meta_path = subdir.join("index_metadata.json");
         if !ext_meta_path.is_file() {
             return Err(anyhow!(
@@ -1972,6 +1987,30 @@ fn load_pk_hash_table(
         shards.push(shard);
     }
     Ok(PkHashTable::new(key_type, shards))
+}
+
+#[cfg(test)]
+mod extension_path_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_base_before_reading_metadata() {
+        let base = tempfile::tempdir().unwrap();
+        for extension in [".", base.path().to_str().unwrap()] {
+            let result = GraphIndexReader::open_with_extension_subdir(base.path(), extension, "task");
+            assert!(result.err().unwrap().to_string().contains("base index"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_reference_cannot_alias_base() {
+        let base = tempfile::tempdir().unwrap();
+        fs::create_dir(base.path().join("train_tables")).unwrap();
+        std::os::unix::fs::symlink(base.path(), base.path().join("train_tables/alias")).unwrap();
+        let result = GraphIndexReader::open_with_tt(base.path(), "alias");
+        assert!(result.err().unwrap().to_string().contains("base index"));
+    }
 }
 
 #[cfg(test)]

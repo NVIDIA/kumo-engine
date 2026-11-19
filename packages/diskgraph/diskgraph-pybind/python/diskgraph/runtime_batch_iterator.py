@@ -118,32 +118,14 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     or an absolute external extension path for a read-only base index. External
     paths require finalized index metadata; the native reader validates it.
     """
-    # Resolve symlinks before collapsing '..', so validation and native opening
-    # both select the directory identified by the original filesystem path.
+    # Preserve filesystem semantics (symlinks before '..') and legacy references.
+    # Placement and finalized-metadata validation belong to the native reader.
     parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
-    abs_parent, abs_stage = str(parent), str(stage)
-    if stage == parent:
-        raise DiskgraphConfigError("stage index_path must identify an extension, not the base")
-    for extension_dir in ("train_tables", "pred_tables"):
-        expected_prefix = os.path.join(abs_parent, extension_dir) + os.sep
-        if not abs_stage.startswith(expected_prefix):
-            continue
-        extension_id = abs_stage[len(expected_prefix):].split(os.sep, 1)[0]
-        if not extension_id:
-            raise DiskgraphConfigError(
-                "could not extract extension id from stage index_path "
-                f"{stage_index_path}"
-            )
-        return f"{extension_dir}/{extension_id}"
     if stage.is_relative_to(parent):
-        raise DiskgraphConfigError(
-            "an index-local stage index_path must live under train_tables/ or pred_tables/"
-        )
-    if not (stage / "index_metadata.json").is_file():
-        raise DiskgraphConfigError(
-            f"external stage index_path has no finalized index_metadata.json: {abs_stage}"
-        )
-    return abs_stage
+        parts = stage.relative_to(parent).parts
+        if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+            return "/".join(parts)
+    return str(stage)
 
 
 def _sampling_plan_json(sampling_plan: Any) -> str:
