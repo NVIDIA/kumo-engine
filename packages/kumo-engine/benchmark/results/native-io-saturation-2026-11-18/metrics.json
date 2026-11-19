@@ -1,0 +1,2825 @@
+{
+  "schema_version": 1,
+  "status": "PASS_LOCAL_AND_ISOLATED_EXTRACTED_RAW_REPLAY",
+  "measured_candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+  "native_build_source": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+  "native_so_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+  "tools_source": "dcef73dae906c9e2d9bd35550b4e04df2cd2a0d2",
+  "counts": {
+    "principal_rows": 70,
+    "observer_pairs": 35,
+    "repetitions_per_configuration": 5,
+    "fio_trials": 80
+  },
+  "configurations": [
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "buffered",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 4294967296,
+        "direct_cache_gib": 2,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "physical_read_iops": {
+        "median": 31943.712691066004,
+        "minimum": 31875.559167784966,
+        "maximum": 32153.883109714046
+      },
+      "mean_dispatched_depth": {
+        "median": 6.671604903343496,
+        "minimum": 6.463551876500559,
+        "maximum": 7.199516889494424
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.8971374138931515,
+        "minimum": 0.8963634111573102,
+        "maximum": 0.8981935186716071
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 64.85939305874895,
+        "minimum": 62.36747029865678,
+        "maximum": 70.71766743682306
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 32.0,
+        "minimum": 29.0,
+        "maximum": 32.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 241.0,
+        "minimum": 215.0,
+        "maximum": 289.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 1047.0,
+        "minimum": 850.0,
+        "maximum": 1112.0
+      },
+      "mean_read_bytes": {
+        "median": 5556.910123422363,
+        "minimum": 5556.420876191222,
+        "maximum": 5557.610792374703
+      },
+      "mean_latency_ns": {
+        "median": 209234.00515529123,
+        "minimum": 202271.35935653222,
+        "maximum": 225153.64445886805
+      },
+      "none_native_read_sqes_per_second": {
+        "median": 214711.38834206294,
+        "minimum": 213514.18118664826,
+        "maximum": 217803.27160839955
+      },
+      "none_training_seconds": {
+        "median": 51.194117298,
+        "minimum": 50.467377826,
+        "maximum": 51.48117066
+      },
+      "queue_native_read_sqes_per_second": {
+        "median": 214695.6426834133,
+        "minimum": 214116.34937486902,
+        "maximum": 216141.64449679066
+      },
+      "queue_training_seconds": {
+        "median": 51.197871846,
+        "minimum": 50.855354717,
+        "maximum": 51.336388053
+      },
+      "training_queue_overhead_percent": {
+        "median": 0.15440390123473424,
+        "minimum": -0.5502959827215381,
+        "maximum": 0.768767682635807
+      },
+      "e2e_queue_overhead_percent": {
+        "median": 4.96385745753678,
+        "minimum": 2.6726628267618846,
+        "maximum": 8.40159295649272
+      }
+    },
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "direct",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 4294967296,
+        "direct_cache_gib": 2,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "physical_read_iops": {
+        "median": 38718.108836913954,
+        "minimum": 38304.31435673872,
+        "maximum": 39843.56919137962
+      },
+      "mean_dispatched_depth": {
+        "median": 10.466886627629084,
+        "minimum": 10.20282784289958,
+        "maximum": 10.672838799799264
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.8507981649484605,
+        "minimum": 0.8496961643553393,
+        "maximum": 0.8547779527290114
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 69.63818709440172,
+        "minimum": 68.34237004919002,
+        "maximum": 73.49324018193622
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 70.0,
+        "minimum": 70.0,
+        "maximum": 72.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 268.0,
+        "minimum": 259.0,
+        "maximum": 280.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 623.0,
+        "minimum": 589.0,
+        "maximum": 694.0
+      },
+      "mean_read_bytes": {
+        "median": 5292.435622685047,
+        "minimum": 5292.416917844567,
+        "maximum": 5292.572818952204
+      },
+      "mean_latency_ns": {
+        "median": 267816.8254427957,
+        "minimum": 263462.0383757329,
+        "maximum": 273195.98497622105
+      },
+      "none_native_read_sqes_per_second": {
+        "median": 39352.970305083865,
+        "minimum": 39157.52535808586,
+        "maximum": 39568.43937518985
+      },
+      "none_training_seconds": {
+        "median": 58.31557268,
+        "minimum": 57.9967276,
+        "maximum": 58.604699327
+      },
+      "queue_native_read_sqes_per_second": {
+        "median": 38714.54988972827,
+        "minimum": 38300.791770175194,
+        "maximum": 39839.9942346437
+      },
+      "queue_training_seconds": {
+        "median": 59.274355676,
+        "minimum": 57.603572593,
+        "maximum": 59.917377525
+      },
+      "training_queue_overhead_percent": {
+        "median": 1.6441285782465176,
+        "minimum": -0.6778917074624746,
+        "maximum": 2.85085151174993
+      },
+      "e2e_queue_overhead_percent": {
+        "median": 3.5447306453528338,
+        "minimum": 3.2766556135114033,
+        "maximum": 11.875846829070191
+      }
+    },
+    {
+      "task": "binary",
+      "regime": "constrained",
+      "backend": "mmap",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 4294967296,
+        "direct_cache_gib": 2,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "physical_read_iops": {
+        "median": 7260.361625122225,
+        "minimum": 7193.821266152452,
+        "maximum": 7618.162375006695
+      },
+      "mean_dispatched_depth": {
+        "median": 1.9162200837978833,
+        "minimum": 1.8787520904747632,
+        "maximum": 1.9513256365458924
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.14680514557186253,
+        "minimum": 0.13945192385793007,
+        "maximum": 0.15456155738833877
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 2.248763098738399,
+        "minimum": 2.222222217233311,
+        "maximum": 2.2787757000319506
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 4.0,
+        "minimum": 4.0,
+        "maximum": 4.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 4.0,
+        "minimum": 4.0,
+        "maximum": 4.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 8.0,
+        "minimum": 6.0,
+        "maximum": 20.0
+      },
+      "mean_read_bytes": {
+        "median": 4102.369841755453,
+        "minimum": 4102.352401685549,
+        "maximum": 4102.372361752894
+      },
+      "mean_latency_ns": {
+        "median": 263859.2051321342,
+        "minimum": 246580.8668077314,
+        "maximum": 271194.95889009116
+      },
+      "none_native_read_sqes_per_second": null,
+      "none_training_seconds": {
+        "median": 331.934099652,
+        "minimum": 321.548107115,
+        "maximum": 342.345914522
+      },
+      "queue_native_read_sqes_per_second": null,
+      "queue_training_seconds": {
+        "median": 335.271426158,
+        "minimum": 320.41320047,
+        "maximum": 338.506438236
+      },
+      "training_queue_overhead_percent": {
+        "median": -0.9553557421795866,
+        "minimum": -3.538554509226921,
+        "maximum": 4.884652835907599
+      },
+      "e2e_queue_overhead_percent": {
+        "median": -0.08129944185456539,
+        "minimum": -2.96393731665906,
+        "maximum": 6.749399952549373
+      }
+    },
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "buffered",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 68719476736,
+        "direct_cache_gib": 16,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "resident_definition": "Filesystem pages prewarmed and checked with mincore; the Direct userspace cache is not prewarmed",
+      "physical_read_iops": {
+        "median": 0.0,
+        "minimum": 0.0,
+        "maximum": 0.0
+      },
+      "mean_dispatched_depth": {
+        "median": 0.0030630504613015654,
+        "minimum": 0.0026196993820421007,
+        "maximum": 0.004277950197702476
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.9993838131505893,
+        "minimum": 0.99919659738863,
+        "maximum": 0.9995556361993237
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 4.970976683827485,
+        "minimum": 4.887308799687271,
+        "maximum": 5.895393319742375
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 0.0,
+        "minimum": 0.0,
+        "maximum": 0.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 8.0,
+        "minimum": 8.0,
+        "maximum": 8.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 8.0,
+        "minimum": 8.0,
+        "maximum": 8.0
+      },
+      "mean_read_bytes": null,
+      "mean_latency_ns": null,
+      "none_native_read_sqes_per_second": {
+        "median": 228378.48573202654,
+        "minimum": 227188.15216280756,
+        "maximum": 230872.29015891574
+      },
+      "none_training_seconds": {
+        "median": 48.130453115,
+        "minimum": 47.610564232,
+        "maximum": 48.382628651
+      },
+      "queue_native_read_sqes_per_second": {
+        "median": 226828.68311355083,
+        "minimum": 226059.3002796619,
+        "maximum": 227542.13589692453
+      },
+      "queue_training_seconds": {
+        "median": 48.459303511,
+        "minimum": 48.307360554,
+        "maximum": 48.624232608
+      },
+      "training_queue_overhead_percent": {
+        "median": 0.49936095606291087,
+        "minimum": 0.013560720840288809,
+        "maximum": 1.782670070583925
+      },
+      "e2e_queue_overhead_percent": {
+        "median": 0.3647268453010888,
+        "minimum": -0.06585318492303704,
+        "maximum": 1.389758761928106
+      }
+    },
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "direct",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 68719476736,
+        "direct_cache_gib": 16,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "resident_definition": "Filesystem pages prewarmed and checked with mincore; the Direct userspace cache is not prewarmed",
+      "physical_read_iops": {
+        "median": 23611.158630037375,
+        "minimum": 23539.622707566115,
+        "maximum": 24119.990662237633
+      },
+      "mean_dispatched_depth": {
+        "median": 5.723160802848502,
+        "minimum": 5.611358995429784,
+        "maximum": 5.752555475918201
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.8880760201662641,
+        "minimum": 0.8858229760551245,
+        "maximum": 0.8888334279541246
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 50.67202164654038,
+        "minimum": 49.89576097974396,
+        "maximum": 51.506705671095965
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 12.0,
+        "minimum": 11.0,
+        "maximum": 12.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 232.0,
+        "minimum": 227.0,
+        "maximum": 236.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 702.0,
+        "minimum": 678.0,
+        "maximum": 779.0
+      },
+      "mean_read_bytes": {
+        "median": 5331.441623493717,
+        "minimum": 5331.419896271023,
+        "maximum": 5331.4507428766065
+      },
+      "mean_latency_ns": {
+        "median": 240768.00603371783,
+        "minimum": 237563.32669826178,
+        "maximum": 243060.803799135
+      },
+      "none_native_read_sqes_per_second": {
+        "median": 23951.518308466937,
+        "minimum": 23693.55318945305,
+        "maximum": 24072.970947458518
+      },
+      "none_training_seconds": {
+        "median": 58.345779253,
+        "minimum": 58.051455429,
+        "maximum": 58.981107174
+      },
+      "queue_native_read_sqes_per_second": {
+        "median": 23611.152910705485,
+        "minimum": 23539.549606935485,
+        "maximum": 24119.88284066048
+      },
+      "queue_training_seconds": {
+        "median": 59.186944631,
+        "minimum": 57.938963022,
+        "maximum": 59.366938762
+      },
+      "training_queue_overhead_percent": {
+        "median": 1.4416901938228088,
+        "minimum": -1.7669118162288333,
+        "maximum": 2.1339096604230834
+      },
+      "e2e_queue_overhead_percent": {
+        "median": 1.373856262020201,
+        "minimum": -1.5001775271858198,
+        "maximum": 2.126278686915173
+      }
+    },
+    {
+      "task": "binary",
+      "regime": "resident",
+      "backend": "mmap",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 68719476736,
+        "direct_cache_gib": 16,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 1280,
+        "batch_size": 256
+      },
+      "resident_definition": "Filesystem pages prewarmed and checked with mincore; the Direct userspace cache is not prewarmed",
+      "physical_read_iops": {
+        "median": 0.0,
+        "minimum": 0.0,
+        "maximum": 0.0
+      },
+      "mean_dispatched_depth": {
+        "median": 0.004639162070708563,
+        "minimum": 0.0037543438642624197,
+        "maximum": 0.005116408785822212
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.9990225525958378,
+        "minimum": 0.9989809716658816,
+        "maximum": 0.999446043708612
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 4.967283430340262,
+        "minimum": 4.552534915255504,
+        "maximum": 6.777328685726352
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 0.0,
+        "minimum": 0.0,
+        "maximum": 0.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 8.0,
+        "minimum": 8.0,
+        "maximum": 8.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 8.0,
+        "minimum": 8.0,
+        "maximum": 8.0
+      },
+      "mean_read_bytes": null,
+      "mean_latency_ns": null,
+      "none_native_read_sqes_per_second": null,
+      "none_training_seconds": {
+        "median": 37.119532173,
+        "minimum": 36.348778544,
+        "maximum": 39.038406985
+      },
+      "queue_native_read_sqes_per_second": null,
+      "queue_training_seconds": {
+        "median": 36.48865711,
+        "minimum": 36.283650147,
+        "maximum": 36.743969267
+      },
+      "training_queue_overhead_percent": {
+        "median": -1.0117662697084917,
+        "minimum": -7.056529840109715,
+        "maximum": 0.3847856725933463
+      },
+      "e2e_queue_overhead_percent": {
+        "median": -1.0749916389890202,
+        "minimum": -6.079829039591688,
+        "maximum": 0.05854539328660202
+      }
+    },
+    {
+      "task": "temporal_link",
+      "regime": "constrained",
+      "backend": "direct",
+      "physical_scope": "target",
+      "depth_operations": "all operation types",
+      "latency_clock": "Read first issue to physical final completion, including requeues",
+      "configured_resources": {
+        "memory_bytes": 4294967296,
+        "direct_cache_gib": 1,
+        "workers": 0,
+        "threads": 4,
+        "torch_threads": 1,
+        "cpus": "5-9,15-19",
+        "io_rings": 8,
+        "io_qd": 256,
+        "io_batch_mult": 1,
+        "steps": 256,
+        "batch_size": 256
+      },
+      "physical_read_iops": {
+        "median": 10593.169407371366,
+        "minimum": 10385.325745046466,
+        "maximum": 10662.229914682395
+      },
+      "mean_dispatched_depth": {
+        "median": 8.669574103384786,
+        "minimum": 8.586717703957898,
+        "maximum": 8.970854884861481
+      },
+      "zero_dispatched_fraction": {
+        "median": 0.9343317557174701,
+        "minimum": 0.9329451755711717,
+        "maximum": 0.9365064217762361
+      },
+      "busy_mean_dispatched_depth": {
+        "median": 133.75488481728271,
+        "minimum": 130.0704919961489,
+        "maximum": 135.49629404576058
+      },
+      "time_weighted_p95_dispatched_depth": {
+        "median": 34.0,
+        "minimum": 32.0,
+        "maximum": 40.0
+      },
+      "busy_time_weighted_p95_dispatched_depth": {
+        "median": 271.0,
+        "minimum": 254.0,
+        "maximum": 274.0
+      },
+      "maximum_observed_dispatched_depth": {
+        "median": 802.0,
+        "minimum": 726.0,
+        "maximum": 845.0
+      },
+      "mean_read_bytes": {
+        "median": 5087.627324633833,
+        "minimum": 5087.255886216449,
+        "maximum": 5087.873155331292
+      },
+      "mean_latency_ns": {
+        "median": 826313.4832742393,
+        "minimum": 807941.9058932258,
+        "maximum": 840792.6919733289
+      },
+      "none_native_read_sqes_per_second": {
+        "median": 10646.929914184753,
+        "minimum": 10553.936725750875,
+        "maximum": 10730.239462433832
+      },
+      "none_training_seconds": {
+        "median": 69.594616098,
+        "minimum": 69.060341346,
+        "maximum": 70.200724076
+      },
+      "queue_native_read_sqes_per_second": {
+        "median": 10590.543635066642,
+        "minimum": 10382.708927982378,
+        "maximum": 10659.588204746675
+      },
+      "queue_training_seconds": {
+        "median": 69.970629038,
+        "minimum": 69.542461281,
+        "maximum": 71.360278434
+      },
+      "training_queue_overhead_percent": {
+        "median": 0.5402902711188373,
+        "minimum": -0.9134538212609455,
+        "maximum": 3.2676205922962165
+      },
+      "e2e_queue_overhead_percent": {
+        "median": 5.455197823714175,
+        "minimum": -1.9614191348595988,
+        "maximum": 8.033795816091938
+      }
+    }
+  ],
+  "profiles": {
+    "cpu": {
+      "training_samples": 6132,
+      "tid_samples": {
+        "430560": 3337,
+        "430749": 72,
+        "430747": 86,
+        "430756": 639,
+        "430755": 1151,
+        "430757": 337,
+        "430751": 92,
+        "430752": 75,
+        "430754": 73,
+        "430750": 71,
+        "430748": 81,
+        "430753": 82,
+        "430758": 14,
+        "430559": 10,
+        "430743": 4,
+        "430744": 1,
+        "430542": 2,
+        "430740": 1,
+        "430745": 4
+      },
+      "getpid_bearing_samples": 707,
+      "getpid_user_leaf_samples": 707,
+      "getpid_kernel_bearing_samples": 575,
+      "getpid_caller_frame_samples": {
+        "ALL_KNOWN_FRAMES": 707
+      },
+      "getpid_immediate_caller_unresolved_samples": 0,
+      "coverage": {
+        "cgroup_cpu_seconds": 63.15104,
+        "estimated_sampled_cpu_seconds": 61.93939393939394,
+        "sampled_to_accounted_ratio": 0.9808135216679557,
+        "throttled_periods": 0,
+        "scope": "All target cgroup tasks; sampling observes running CPU time only",
+        "qualification": "RUNNING_CPU_ONLY",
+        "idle_inference": "Unsupported: absence of samples does not identify idle or blocked time"
+      },
+      "unwind": {
+        "unit": "training_CPU_samples",
+        "total_weight": 6132,
+        "user_usable_weight": 6032,
+        "user_failed_weight": 100,
+        "user_usable_fraction": 0.9836921069797782,
+        "possible_truncated_weight": 0,
+        "possible_truncated_fraction": 0.0,
+        "kernel_usable_weight": 1235
+      },
+      "semantics": "Sample weights; user/kernel intersections overlap. Frame coverage does not prove source caller attribution; generic thread roots and missing/truncated unwinds remain explicit."
+    },
+    "offcpu": {
+      "model_main_tid": 431802,
+      "gate_tid": 431784,
+      "all_thread_totals": {
+        "blocked_sleep_ns": 1827237682737,
+        "runnable_or_preempted_ns": 76428878
+      },
+      "model_main_blocked_seconds": 25.504195572,
+      "model_main_runnable_seconds": 0.012203513,
+      "gate_blocked_seconds": 59.084924050000005,
+      "gate_runnable_seconds": 1.208e-05,
+      "semantics": "Per-thread intervals; gate wrapper and training model main are distinct. Worker seconds overlap and must not be added to model-main wall time.",
+      "published_model_wait_groups": {
+        "feature_latch_blocked_seconds": 20.727347341,
+        "feature_stack_groups": 5,
+        "prepared_batch_finish_context_blocked_seconds": 4.684666685,
+        "finish_context_stack_groups": 5,
+        "group_intersection": 0,
+        "selection": "Actual model-main TID, blocked_sleep only; observed user frames containing accumulate_features or PendingPreparedPageBatch::finish; runnable time excluded. Finish context includes one allocator-futex group.",
+        "scope": "Same-TID disjoint intervals; worker waits are not added."
+      }
+    }
+  },
+  "getpid": {
+    "training_samples": 6132,
+    "sampled_getpid_weight": 707,
+    "kernel_getpid_symbol_samples": 65,
+    "any_kernel_stack_semantics": "profiles.cpu.getpid_kernel_bearing_samples counts any resolved kernel stack, not necessarily a getpid kernel symbol",
+    "immediate_caller_weights": {
+      "core::ptr::drop_in_place<diskgraph_index::page_io::PreparedPages>": 122,
+      "std::sys::backtrace::__rust_begin_short_backtrace": 56,
+      "diskgraph_index::page_io::PendingPreparedPageBatch::finish": 62,
+      "diskgraph_index::page_io::PreparedPages::contiguous_range": 391,
+      "diskgraph_index::page_io::PreparedPages::append_range": 48,
+      "diskgraph_engine::engine::DiskGraphEngine::sample_explicit_type": 18,
+      "diskgraph_engine::engine::DiskGraphEngine::fetch_explicit_feature_batch": 3,
+      "diskgraph_index::page_io::submit_prepared_page_batch": 1,
+      "diskgraph_index::page_io::PreparedPages::copy_range": 4,
+      "pyo3::impl_::trampoline::iternextfunc": 1,
+      "std::thread::local::LocalKey<T>::with": 1
+    },
+    "limits": [
+      "CPU sample weights, not syscall counts or predicted speedups.",
+      "All707 observed getpid caller frames are symbolized; known generic roots and inlining still limit exact source attribution.",
+      "CPU profile54.717158076s and offCPU59.142631036s are separate full-work runs."
+    ]
+  },
+  "fio": {
+    "classification": [
+      {
+        "block_bytes": 4096,
+        "classification": "INCONCLUSIVE_VARIABILITY",
+        "same_nominal_depth_issuer_gain": 2.6272556019026636,
+        "last_scaling_gain": 0.14501130070656965,
+        "last_gain_trial_range_not_ci": [
+          0.13765764439750305,
+          0.15465651102601496
+        ],
+        "five_percent_decision_weak": false,
+        "optimized_issuer_gain": 0.14520423327603615,
+        "single_issuer_limitation_supported": true,
+        "hardware_ceiling_proven": false,
+        "threshold_qualification": "Five-repeat 5% decisions are protocol triggers, not significance tests; inspect all raw variation",
+        "qualification": "A stable path plateau alone cannot separate controller/media limits from kernel-path limits"
+      },
+      {
+        "block_bytes": 8192,
+        "classification": "INCONCLUSIVE_VARIABILITY",
+        "same_nominal_depth_issuer_gain": 0.44717935497876793,
+        "last_scaling_gain": 0.00031846221354148163,
+        "last_gain_trial_range_not_ci": [
+          -0.00024345089799338027,
+          0.0008408930227041811
+        ],
+        "five_percent_decision_weak": false,
+        "optimized_issuer_gain": null,
+        "single_issuer_limitation_supported": true,
+        "hardware_ceiling_proven": false,
+        "threshold_qualification": "Five-repeat 5% decisions are protocol triggers, not significance tests; inspect all raw variation",
+        "qualification": "A stable path plateau alone cannot separate controller/media limits from kernel-path limits"
+      }
+    ],
+    "stable_demonstrated_cells": [
+      {
+        "block_bytes": 4096,
+        "jobs": 1,
+        "depth": 64,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 561406.972868,
+        "min_application_read_iops": 558596.680111,
+        "max_application_read_iops": 564187.75415,
+        "median_read_mib_per_second": 2193.004320545297,
+        "relative_mad": 0.004521730022396592,
+        "max_trial_bandwidth_cv": 0.014203283703661826,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 16869804,
+                "completed_reads": 16869868,
+                "latency_samples": 16869867,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 69098979328
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 16767171,
+                "completed_reads": 16767235,
+                "latency_samples": 16767234,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 68678594560
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 16843332,
+                "completed_reads": 16843396,
+                "latency_samples": 16843395,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 68990550016
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 16926761,
+                "completed_reads": 16926825,
+                "latency_samples": 16926824,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 69332275200
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 16758459,
+                "completed_reads": 16758523,
+                "latency_samples": 16758522,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 68642910208
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.78000700000001
+      },
+      {
+        "block_bytes": 4096,
+        "jobs": 1,
+        "depth": 256,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 564922.571829,
+        "min_application_read_iops": 562553.281557,
+        "max_application_read_iops": 566340.521983,
+        "median_read_mib_per_second": 2206.7621273165123,
+        "relative_mad": 0.002509990261867551,
+        "max_trial_bandwidth_cv": 0.009634554086997838,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 16990782,
+                "completed_reads": 16991038,
+                "latency_samples": 16991037,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 69595291648
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 16885826,
+                "completed_reads": 16886082,
+                "latency_samples": 16886081,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 69165391872
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 16948807,
+                "completed_reads": 16949063,
+                "latency_samples": 16949062,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 69423362048
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 16985691,
+                "completed_reads": 16985947,
+                "latency_samples": 16985946,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 69574438912
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 16877161,
+                "completed_reads": 16877417,
+                "latency_samples": 16877416,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 69129900032
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.80000700000001
+      },
+      {
+        "block_bytes": 4096,
+        "jobs": 4,
+        "depth": 64,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 2049118.563308,
+        "min_application_read_iops": 2045874.696429,
+        "max_application_read_iops": 2058570.318763,
+        "median_read_mib_per_second": 8004.40271736714,
+        "relative_mad": 0.0015830547519726484,
+        "max_trial_bandwidth_cv": 0.09154400133659218,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 15795412,
+                "completed_reads": 15795476,
+                "latency_samples": 15795475,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 64698269696
+              },
+              {
+                "issued_reads": 9267886,
+                "completed_reads": 9267950,
+                "latency_samples": 9267949,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 37961523200
+              },
+              {
+                "issued_reads": 18871581,
+                "completed_reads": 18871645,
+                "latency_samples": 18871644,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 77298257920
+              },
+              {
+                "issued_reads": 17644066,
+                "completed_reads": 17644130,
+                "latency_samples": 17644129,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 72270356480
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 15760418,
+                "completed_reads": 15760482,
+                "latency_samples": 15760481,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 64554934272
+              },
+              {
+                "issued_reads": 9105713,
+                "completed_reads": 9105777,
+                "latency_samples": 9105776,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 37297262592
+              },
+              {
+                "issued_reads": 18787817,
+                "completed_reads": 18787881,
+                "latency_samples": 18787880,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 76955160576
+              },
+              {
+                "issued_reads": 17783320,
+                "completed_reads": 17783384,
+                "latency_samples": 17783383,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 72840740864
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 15719116,
+                "completed_reads": 15719180,
+                "latency_samples": 15719179,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 64385761280
+              },
+              {
+                "issued_reads": 9170798,
+                "completed_reads": 9170862,
+                "latency_samples": 9170861,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 37563850752
+              },
+              {
+                "issued_reads": 18796997,
+                "completed_reads": 18797061,
+                "latency_samples": 18797060,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 76992761856
+              },
+              {
+                "issued_reads": 17696094,
+                "completed_reads": 17696158,
+                "latency_samples": 17696157,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 72483463168
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 15878623,
+                "completed_reads": 15878687,
+                "latency_samples": 15878686,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 65039101952
+              },
+              {
+                "issued_reads": 9167385,
+                "completed_reads": 9167449,
+                "latency_samples": 9167448,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 37549871104
+              },
+              {
+                "issued_reads": 18783700,
+                "completed_reads": 18783764,
+                "latency_samples": 18783763,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 76938297344
+              },
+              {
+                "issued_reads": 17934175,
+                "completed_reads": 17934239,
+                "latency_samples": 17934238,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 73458642944
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 15661087,
+                "completed_reads": 15661151,
+                "latency_samples": 15661150,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 64148074496
+              },
+              {
+                "issued_reads": 9233017,
+                "completed_reads": 9233081,
+                "latency_samples": 9233080,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 37818699776
+              },
+              {
+                "issued_reads": 18703554,
+                "completed_reads": 18703618,
+                "latency_samples": 18703617,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 76610019328
+              },
+              {
+                "issued_reads": 17882950,
+                "completed_reads": 17883014,
+                "latency_samples": 17883013,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 73248825344
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.783348
+      },
+      {
+        "block_bytes": 4096,
+        "jobs": 4,
+        "depth": 256,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 2046972.30277,
+        "min_application_read_iops": 2030720.685288,
+        "max_application_read_iops": 2059026.631558,
+        "median_read_mib_per_second": 7996.118877695564,
+        "relative_mad": 0.003706730454892982,
+        "max_trial_bandwidth_cv": 0.010100812385602963,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 15938758,
+                "completed_reads": 15939014,
+                "latency_samples": 15939013,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 65286201344
+              },
+              {
+                "issued_reads": 9107281,
+                "completed_reads": 9107536,
+                "latency_samples": 9107536,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 37304467456
+              },
+              {
+                "issued_reads": 18802972,
+                "completed_reads": 18803228,
+                "latency_samples": 18803227,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 77018021888
+              },
+              {
+                "issued_reads": 17793949,
+                "completed_reads": 17794205,
+                "latency_samples": 17794204,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 72885063680
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 15856657,
+                "completed_reads": 15856913,
+                "latency_samples": 15856912,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 64949915648
+              },
+              {
+                "issued_reads": 9066842,
+                "completed_reads": 9067098,
+                "latency_samples": 9067097,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 37138833408
+              },
+              {
+                "issued_reads": 18799433,
+                "completed_reads": 18799689,
+                "latency_samples": 18799688,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 77003526144
+              },
+              {
+                "issued_reads": 17665515,
+                "completed_reads": 17665771,
+                "latency_samples": 17665770,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 72358998016
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 15966677,
+                "completed_reads": 15966933,
+                "latency_samples": 15966932,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 65400557568
+              },
+              {
+                "issued_reads": 8984053,
+                "completed_reads": 8984309,
+                "latency_samples": 8984308,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 36799729664
+              },
+              {
+                "issued_reads": 18867558,
+                "completed_reads": 18867814,
+                "latency_samples": 18867813,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 77282566144
+              },
+              {
+                "issued_reads": 17597022,
+                "completed_reads": 17597278,
+                "latency_samples": 17597277,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 72078450688
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 15817957,
+                "completed_reads": 15818213,
+                "latency_samples": 15818212,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 64791400448
+              },
+              {
+                "issued_reads": 9046297,
+                "completed_reads": 9046553,
+                "latency_samples": 9046552,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 37054681088
+              },
+              {
+                "issued_reads": 18544522,
+                "completed_reads": 18544778,
+                "latency_samples": 18544777,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 75959410688
+              },
+              {
+                "issued_reads": 17516906,
+                "completed_reads": 17517162,
+                "latency_samples": 17517161,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 71750295552
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 15981520,
+                "completed_reads": 15981776,
+                "latency_samples": 15981775,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 65461354496
+              },
+              {
+                "issued_reads": 9013198,
+                "completed_reads": 9013454,
+                "latency_samples": 9013453,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 36919107584
+              },
+              {
+                "issued_reads": 18937472,
+                "completed_reads": 18937728,
+                "latency_samples": 18937727,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 77568933888
+              },
+              {
+                "issued_reads": 17842727,
+                "completed_reads": 17842982,
+                "latency_samples": 17842982,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 73084854272
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.820012
+      },
+      {
+        "block_bytes": 4096,
+        "jobs": 4,
+        "depth": 256,
+        "submit_batch": 16,
+        "complete_batch": 32,
+        "median_application_read_iops": 2344201.346531,
+        "min_application_read_iops": 2342735.350977,
+        "max_application_read_iops": 2345145.018832,
+        "median_read_mib_per_second": 9157.164491884145,
+        "relative_mad": 0.0003490392061291483,
+        "max_trial_bandwidth_cv": 0.022862247766031595,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 20089072,
+                "completed_reads": 20089310,
+                "latency_samples": 20089310,
+                "completed_minus_issued": 238,
+                "latency_minus_issued": 238,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 82285813760
+              },
+              {
+                "issued_reads": 11891064,
+                "completed_reads": 11891317,
+                "latency_samples": 11891317,
+                "completed_minus_issued": 253,
+                "latency_minus_issued": 253,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48706834432
+              },
+              {
+                "issued_reads": 16338415,
+                "completed_reads": 16338670,
+                "latency_samples": 16338670,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 66923192320
+              },
+              {
+                "issued_reads": 21968195,
+                "completed_reads": 21968451,
+                "latency_samples": 21968419,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 224,
+                "completed_minus_latency": 32,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 89982775296
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 20066880,
+                "completed_reads": 20067113,
+                "latency_samples": 20067113,
+                "completed_minus_issued": 233,
+                "latency_minus_issued": 233,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 82194894848
+              },
+              {
+                "issued_reads": 11678149,
+                "completed_reads": 11678405,
+                "latency_samples": 11678385,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 236,
+                "completed_minus_latency": 20,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47834746880
+              },
+              {
+                "issued_reads": 16664508,
+                "completed_reads": 16664764,
+                "latency_samples": 16664745,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 237,
+                "completed_minus_latency": 19,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 68258873344
+              },
+              {
+                "issued_reads": 21923536,
+                "completed_reads": 21923774,
+                "latency_samples": 21923774,
+                "completed_minus_issued": 238,
+                "latency_minus_issued": 238,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 89799778304
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 20241973,
+                "completed_reads": 20242229,
+                "latency_samples": 20242197,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 224,
+                "completed_minus_latency": 32,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 82912169984
+              },
+              {
+                "issued_reads": 11882016,
+                "completed_reads": 11882270,
+                "latency_samples": 11882270,
+                "completed_minus_issued": 254,
+                "latency_minus_issued": 254,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48669777920
+              },
+              {
+                "issued_reads": 16236728,
+                "completed_reads": 16236984,
+                "latency_samples": 16236964,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 236,
+                "completed_minus_latency": 20,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 66506686464
+              },
+              {
+                "issued_reads": 22000669,
+                "completed_reads": 22000914,
+                "latency_samples": 22000914,
+                "completed_minus_issued": 245,
+                "latency_minus_issued": 245,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 90115743744
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 20202672,
+                "completed_reads": 20202918,
+                "latency_samples": 20202918,
+                "completed_minus_issued": 246,
+                "latency_minus_issued": 246,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 82751152128
+              },
+              {
+                "issued_reads": 11890016,
+                "completed_reads": 11890259,
+                "latency_samples": 11890259,
+                "completed_minus_issued": 243,
+                "latency_minus_issued": 243,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48702500864
+              },
+              {
+                "issued_reads": 16205959,
+                "completed_reads": 16206215,
+                "latency_samples": 16206200,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 241,
+                "completed_minus_latency": 15,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 66380656640
+              },
+              {
+                "issued_reads": 22036624,
+                "completed_reads": 22036862,
+                "latency_samples": 22036862,
+                "completed_minus_issued": 238,
+                "latency_minus_issued": 238,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 90262986752
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 20102953,
+                "completed_reads": 20103195,
+                "latency_samples": 20103195,
+                "completed_minus_issued": 242,
+                "latency_minus_issued": 242,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 82342686720
+              },
+              {
+                "issued_reads": 11926128,
+                "completed_reads": 11926375,
+                "latency_samples": 11926375,
+                "completed_minus_issued": 247,
+                "latency_minus_issued": 247,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48850432000
+              },
+              {
+                "issued_reads": 16296940,
+                "completed_reads": 16297196,
+                "latency_samples": 16297188,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 248,
+                "completed_minus_latency": 8,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 66753314816
+              },
+              {
+                "issued_reads": 21982503,
+                "completed_reads": 21982759,
+                "latency_samples": 21982727,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 224,
+                "completed_minus_latency": 32,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 90041380864
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.800013
+      },
+      {
+        "block_bytes": 4096,
+        "jobs": 8,
+        "depth": 256,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 2343806.4189049997,
+        "min_application_read_iops": 2342467.38741,
+        "max_application_read_iops": 2344784.861343,
+        "median_read_mib_per_second": 9155.760326993597,
+        "relative_mad": 0.0004119494448057253,
+        "max_trial_bandwidth_cv": 0.0266451913709384,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 11560153,
+                "completed_reads": 11560409,
+                "latency_samples": 11560408,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47351435264
+              },
+              {
+                "issued_reads": 5869410,
+                "completed_reads": 5869665,
+                "latency_samples": 5869665,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24042147840
+              },
+              {
+                "issued_reads": 5874931,
+                "completed_reads": 5875186,
+                "latency_samples": 5875186,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24064761856
+              },
+              {
+                "issued_reads": 5896054,
+                "completed_reads": 5896309,
+                "latency_samples": 5896309,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24151281664
+              },
+              {
+                "issued_reads": 5902007,
+                "completed_reads": 5902262,
+                "latency_samples": 5902262,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24175665152
+              },
+              {
+                "issued_reads": 11853137,
+                "completed_reads": 11853393,
+                "latency_samples": 11853392,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48551497728
+              },
+              {
+                "issued_reads": 11732774,
+                "completed_reads": 11733030,
+                "latency_samples": 11733029,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48058490880
+              },
+              {
+                "issued_reads": 11663677,
+                "completed_reads": 11663933,
+                "latency_samples": 11663932,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47775469568
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 11528897,
+                "completed_reads": 11529153,
+                "latency_samples": 11529152,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47223410688
+              },
+              {
+                "issued_reads": 5871062,
+                "completed_reads": 5871318,
+                "latency_samples": 5871317,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24048918528
+              },
+              {
+                "issued_reads": 5903345,
+                "completed_reads": 5903601,
+                "latency_samples": 5903600,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24181149696
+              },
+              {
+                "issued_reads": 5886995,
+                "completed_reads": 5887251,
+                "latency_samples": 5887250,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24114180096
+              },
+              {
+                "issued_reads": 5922786,
+                "completed_reads": 5923041,
+                "latency_samples": 5923041,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24260775936
+              },
+              {
+                "issued_reads": 11832474,
+                "completed_reads": 11832730,
+                "latency_samples": 11832729,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48466862080
+              },
+              {
+                "issued_reads": 11713665,
+                "completed_reads": 11713921,
+                "latency_samples": 11713920,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47980220416
+              },
+              {
+                "issued_reads": 11663559,
+                "completed_reads": 11663815,
+                "latency_samples": 11663814,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47774986240
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 11555356,
+                "completed_reads": 11555612,
+                "latency_samples": 11555611,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47331786752
+              },
+              {
+                "issued_reads": 5858662,
+                "completed_reads": 5858917,
+                "latency_samples": 5858917,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 23998124032
+              },
+              {
+                "issued_reads": 5888205,
+                "completed_reads": 5888460,
+                "latency_samples": 5888460,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24119132160
+              },
+              {
+                "issued_reads": 5890436,
+                "completed_reads": 5890691,
+                "latency_samples": 5890691,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24128270336
+              },
+              {
+                "issued_reads": 5914640,
+                "completed_reads": 5914895,
+                "latency_samples": 5914895,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24227409920
+              },
+              {
+                "issued_reads": 11831427,
+                "completed_reads": 11831683,
+                "latency_samples": 11831682,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48462573568
+              },
+              {
+                "issued_reads": 11706226,
+                "completed_reads": 11706482,
+                "latency_samples": 11706481,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47949750272
+              },
+              {
+                "issued_reads": 11666880,
+                "completed_reads": 11667136,
+                "latency_samples": 11667135,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47788589056
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 11583694,
+                "completed_reads": 11583950,
+                "latency_samples": 11583949,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47447859200
+              },
+              {
+                "issued_reads": 5856374,
+                "completed_reads": 5856630,
+                "latency_samples": 5856629,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 23988756480
+              },
+              {
+                "issued_reads": 5889170,
+                "completed_reads": 5889425,
+                "latency_samples": 5889425,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24123084800
+              },
+              {
+                "issued_reads": 5922189,
+                "completed_reads": 5922444,
+                "latency_samples": 5922444,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24258330624
+              },
+              {
+                "issued_reads": 5894479,
+                "completed_reads": 5894735,
+                "latency_samples": 5894734,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24144834560
+              },
+              {
+                "issued_reads": 11817086,
+                "completed_reads": 11817342,
+                "latency_samples": 11817341,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48403832832
+              },
+              {
+                "issued_reads": 11714284,
+                "completed_reads": 11714540,
+                "latency_samples": 11714539,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47982755840
+              },
+              {
+                "issued_reads": 11674482,
+                "completed_reads": 11674738,
+                "latency_samples": 11674737,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47819726848
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 11555644,
+                "completed_reads": 11555900,
+                "latency_samples": 11555899,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47332966400
+              },
+              {
+                "issued_reads": 5852238,
+                "completed_reads": 5852493,
+                "latency_samples": 5852493,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 23971811328
+              },
+              {
+                "issued_reads": 5889211,
+                "completed_reads": 5889466,
+                "latency_samples": 5889466,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24123252736
+              },
+              {
+                "issued_reads": 5888794,
+                "completed_reads": 5889050,
+                "latency_samples": 5889049,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24121548800
+              },
+              {
+                "issued_reads": 5908925,
+                "completed_reads": 5909181,
+                "latency_samples": 5909180,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 24204005376
+              },
+              {
+                "issued_reads": 11829236,
+                "completed_reads": 11829492,
+                "latency_samples": 11829491,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 48453599232
+              },
+              {
+                "issued_reads": 11704205,
+                "completed_reads": 11704461,
+                "latency_samples": 11704460,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47941472256
+              },
+              {
+                "issued_reads": 11655923,
+                "completed_reads": 11656179,
+                "latency_samples": 11656178,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 47743709184
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.050095
+      },
+      {
+        "block_bytes": 8192,
+        "jobs": 1,
+        "depth": 64,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 526251.058298,
+        "min_application_read_iops": 518970.067664,
+        "max_application_read_iops": 528017.932138,
+        "median_read_mib_per_second": 4111.353059064698,
+        "relative_mad": 0.0018341892216269667,
+        "max_trial_bandwidth_cv": 0.047013568759531894,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 15759625,
+                "completed_reads": 15759689,
+                "latency_samples": 15759688,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 129103372288
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 15569621,
+                "completed_reads": 15569685,
+                "latency_samples": 15569684,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 127546859520
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 15841594,
+                "completed_reads": 15841658,
+                "latency_samples": 15841657,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 129774862336
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 15798706,
+                "completed_reads": 15798770,
+                "latency_samples": 15798769,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 129423523840
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 15788058,
+                "completed_reads": 15788122,
+                "latency_samples": 15788121,
+                "completed_minus_issued": 64,
+                "latency_minus_issued": 63,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 64,
+                "completed_read_bytes": 129336295424
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.790007
+      },
+      {
+        "block_bytes": 8192,
+        "jobs": 1,
+        "depth": 256,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 526559.748008,
+        "min_application_read_iops": 522648.145062,
+        "max_application_read_iops": 531586.347122,
+        "median_read_mib_per_second": 4113.814695760141,
+        "relative_mad": 0.0074286022826426,
+        "max_trial_bandwidth_cv": 0.03418874280942798,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 15948122,
+                "completed_reads": 15948378,
+                "latency_samples": 15948377,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 130649112576
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 15797319,
+                "completed_reads": 15797575,
+                "latency_samples": 15797574,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 129413734400
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 15751067,
+                "completed_reads": 15751323,
+                "latency_samples": 15751322,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 129034838016
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 15679967,
+                "completed_reads": 15680223,
+                "latency_samples": 15680222,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 128452386816
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 15930855,
+                "completed_reads": 15931111,
+                "latency_samples": 15931110,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 130507661312
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 99.796674
+      },
+      {
+        "block_bytes": 8192,
+        "jobs": 4,
+        "depth": 256,
+        "submit_batch": 1,
+        "complete_batch": 1,
+        "median_application_read_iops": 762269.073093,
+        "min_application_read_iops": 761977.201186,
+        "max_application_read_iops": 762421.538564,
+        "median_read_mib_per_second": 5955.492731976802,
+        "relative_mad": 0.00020001529168881807,
+        "max_trial_bandwidth_cv": 0.013241627084227223,
+        "per_trial_read_counts": [
+          {
+            "repeat": 0,
+            "per_job": [
+              {
+                "issued_reads": 7627666,
+                "completed_reads": 7627921,
+                "latency_samples": 7627921,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62487928832
+              },
+              {
+                "issued_reads": 3806165,
+                "completed_reads": 3806420,
+                "latency_samples": 3806420,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31182192640
+              },
+              {
+                "issued_reads": 3811487,
+                "completed_reads": 3811742,
+                "latency_samples": 3811742,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31225790464
+              },
+              {
+                "issued_reads": 7626715,
+                "completed_reads": 7626971,
+                "latency_samples": 7626970,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62480146432
+              }
+            ]
+          },
+          {
+            "repeat": 1,
+            "per_job": [
+              {
+                "issued_reads": 7626861,
+                "completed_reads": 7627116,
+                "latency_samples": 7627116,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62481334272
+              },
+              {
+                "issued_reads": 3805315,
+                "completed_reads": 3805570,
+                "latency_samples": 3805570,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31175229440
+              },
+              {
+                "issued_reads": 3811746,
+                "completed_reads": 3812001,
+                "latency_samples": 3812001,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31227912192
+              },
+              {
+                "issued_reads": 7621524,
+                "completed_reads": 7621779,
+                "latency_samples": 7621779,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62437613568
+              }
+            ]
+          },
+          {
+            "repeat": 2,
+            "per_job": [
+              {
+                "issued_reads": 7624720,
+                "completed_reads": 7624975,
+                "latency_samples": 7624975,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62463795200
+              },
+              {
+                "issued_reads": 3812410,
+                "completed_reads": 3812666,
+                "latency_samples": 3812665,
+                "completed_minus_issued": 256,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 1,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31233359872
+              },
+              {
+                "issued_reads": 3807113,
+                "completed_reads": 3807368,
+                "latency_samples": 3807368,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31189958656
+              },
+              {
+                "issued_reads": 7617105,
+                "completed_reads": 7617360,
+                "latency_samples": 7617360,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62401413120
+              }
+            ]
+          },
+          {
+            "repeat": 3,
+            "per_job": [
+              {
+                "issued_reads": 7629013,
+                "completed_reads": 7629268,
+                "latency_samples": 7629268,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62498963456
+              },
+              {
+                "issued_reads": 3806978,
+                "completed_reads": 3807233,
+                "latency_samples": 3807233,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31188852736
+              },
+              {
+                "issued_reads": 3812253,
+                "completed_reads": 3812508,
+                "latency_samples": 3812508,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31232065536
+              },
+              {
+                "issued_reads": 7625927,
+                "completed_reads": 7626182,
+                "latency_samples": 7626182,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62473682944
+              }
+            ]
+          },
+          {
+            "repeat": 4,
+            "per_job": [
+              {
+                "issued_reads": 7618337,
+                "completed_reads": 7618592,
+                "latency_samples": 7618592,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62411505664
+              },
+              {
+                "issued_reads": 3811940,
+                "completed_reads": 3812195,
+                "latency_samples": 3812195,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31229501440
+              },
+              {
+                "issued_reads": 3809557,
+                "completed_reads": 3809812,
+                "latency_samples": 3809812,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 31209979904
+              },
+              {
+                "issued_reads": 7630525,
+                "completed_reads": 7630780,
+                "latency_samples": 7630780,
+                "completed_minus_issued": 255,
+                "latency_minus_issued": 255,
+                "completed_minus_latency": 0,
+                "ramp_boundary_bound_reads": 256,
+                "completed_read_bytes": 62511349760
+              }
+            ]
+          }
+        ],
+        "median_max_issuer_cpu_percent": 43.302336000000004
+      }
+    ],
+    "definition": "fio issued/read requests per second, not physical block completions or NVMe commands"
+  },
+  "thermal": {
+    "snapshot_temperature_kelvin_min": 311,
+    "snapshot_temperature_kelvin_max": 333,
+    "initial_to_final_deltas": {
+      "/avail_spare": 0,
+      "/controller_busy_time": 41,
+      "/critical_comp_time": 0,
+      "/critical_warning": 0,
+      "/data_units_read": 25195478,
+      "/data_units_written": 2458,
+      "/endurance_grp_critical_warning_summary": 0,
+      "/host_read_commands": 2587993995,
+      "/host_write_commands": 34114,
+      "/media_errors": 0,
+      "/num_err_log_entries": 0,
+      "/percent_used": 0,
+      "/power_cycles": 0,
+      "/power_on_hours": 1,
+      "/spare_thresh": 0,
+      "/temperature": 21,
+      "/temperature_sensor_1": 15,
+      "/temperature_sensor_2": 21,
+      "/thm_temp1_total_time": 0,
+      "/thm_temp1_trans_count": 0,
+      "/thm_temp2_total_time": 0,
+      "/thm_temp2_trans_count": 0,
+      "/unsafe_shutdowns": 0,
+      "/warning_temp_time": 0
+    },
+    "limitation": "Saved snapshots do not observe the temperature peak between snapshots and do not establish absence of thermal performance effects."
+  },
+  "derivation": {
+    "helper_sha256": "ce438ee4cd6b76e0f09c7d014b2ca3eb2fafdae98c8062d4da33245a0e962e4a",
+    "config_sha256": "7c9b5983f5a279972ac809d62f174e67eb8f51c0b4f8676284b2ca4af4844951",
+    "manifest_sha256": "c0caa463fccf0b9e474240efa0d1af55a733a5bd7f83d9c6f3a3863f9fbcf6d0"
+  },
+  "limits": [
+    "New post-reboot data epoch only; never pool missing historical raw runs or old golden hashes.",
+    "All seven principal configurations retain five none/queue pairs; observer overhead is measured without a numeric pass cutoff or correction factor.",
+    "CPU and offCPU are separate full-work runs; timings cannot be aligned exactly or added as if concurrent.",
+    "CPU sample weights and getpid-bearing stacks are observations, not syscall counts or predicted speedup; unresolved callers remain explicit.",
+    "OffCPU worker intervals overlap; summing worker seconds does not yield main-thread wall time.",
+    "Native completed Read/Readv SQEs are application requests after coalescing; mmap bypasses this counter.",
+    "Physical rates count final block-device completions in kernel phase windows; pure target is a lower attribution bound and possible target an upper bound.",
+    "Block-visible dispatched depth and fio application outstanding requests are different quantities; neither proves NVMe internal queue occupancy.",
+    "fio whole-device counters include foreign traffic and setup/ramp time; fio rates use their separate measured window.",
+    "Per-trial SMART before/after snapshots retain all numeric counter/time deltas; between-snapshot temperature peaks are unobserved.",
+    "Measured read-only filesystem/device-path envelope is demonstrated; absolute SSD maximum and percent of vendor maximum are unproven. No authoritative exact-SKU family mapping.",
+    "V1 known-read qualification failed its target-DATA ownership oracle and remains failed; V2 qualifies target reads/writes, PID-empty flush, and global balanced DATA chains without journal-write causality.",
+    "Training model-main PID comes from actual native fit metadata; wrapper gate PID is labeled separately and never substituted for model-main waits.",
+    "Accepted principal70-v2 only; failed principal70-v1 is retained separately. Final post-payload drain increased10\u219260s; measured phase clocks exclude it.",
+    "Resident means filesystem page residency, not a prewarmed Direct userspace cache. Direct physical reads in this configuration do not demonstrate a defect or a warm-native-cache CPU ceiling."
+  ],
+  "separate_core_local_qualification": {
+    "status": "VALIDATED_EXPECTED_PRODUCTION_BLOCKER_REMAINS",
+    "source_commit": "acaa797a277982c2ac4737a89a9c577eeafdde06",
+    "native_build_commit": "acaa797a277982c2ac4737a89a9c577eeafdde06",
+    "native_sha256": "4437578a151f976fef71c0fb6e8cfc31b7a7894307fd0986c02ef118790af2e8",
+    "local_rust": "1.96.1",
+    "required_ci_rust": "1.99.1",
+    "rust": {
+      "harnesses": 89,
+      "passed": 2191,
+      "ignored": 28,
+      "failed": 0
+    },
+    "strict_native_cases": 10,
+    "actual_backend_empty_node_cases": 3,
+    "python": {
+      "native_runtime": {
+        "tests": 60,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "tasks": {
+        "tests": 8,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "oversized_mmap": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "oversized_buffered": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "oversized_direct": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "parallel_fork": {
+      "fresh_controls_pass": 4,
+      "inherited_timeouts": 4,
+      "timeout_seconds": 15,
+      "children_reaped": 8
+    },
+    "acceptance_proof_sha256": "c05170ba2909679134f6fe360ad9167d193458b044faab66ee2bb01175e3fe05",
+    "scope": "Postdates frozen performance archive; this native binary was not used for the reported performance runs."
+  },
+  "separate_core_ci": {
+    "status": "CLOSED_EXACT_HEAD_KEY_AND_TESTING_CI_PASS_PRODUCTION_BLOCKER_REMAINS",
+    "source_commit": "acaa797a277982c2ac4737a89a9c577eeafdde06",
+    "receipt_sha256": "09e013452130ef627b2906ee87c62d5a1aaddfd8a4899862e40ba85b12b66025",
+    "github_signature": {
+      "verified": true,
+      "reason": "valid",
+      "verified_at": "2026-11-19T02:23:51Z"
+    },
+    "measurement_scope": {
+      "candidate": "0fe02c1bcd0d2c809f56046fe320259df306985a",
+      "native_build": "75ca0e2fd6797827feda61d637b59b75e2d6f678",
+      "native_sha256": "a5949f96723df2684c6cdbd5884bcc25c72129c8a629bfffa49bc36f9552140f",
+      "statement": "Performance measurements remain scoped to frozen published candidate; acaa is a separately built/rebased correctness qualification."
+    },
+    "ci": {
+      "workflow_run": 44444017807,
+      "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807",
+      "actual_rust": "1.99.1",
+      "platform": "x86_64-linux",
+      "workspace": {
+        "passed": 2194,
+        "ignored": 28,
+        "failed": 0
+      },
+      "strict_native": {
+        "passed": 10,
+        "ignored": 0,
+        "failed": 0
+      },
+      "generic_python": {
+        "passed": 931,
+        "skipped": 20,
+        "deselected": 1
+      },
+      "jobs": [
+        {
+          "id": 135291610377,
+          "name": "diskgraph-clippy",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135291610377"
+        },
+        {
+          "id": 135291610534,
+          "name": "diskgraph-rust",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135291610534"
+        },
+        {
+          "id": 135291610785,
+          "name": "diskgraph-macos",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135291610785"
+        },
+        {
+          "id": 135291611094,
+          "name": "diskgraph-wheel / diskgraph-wheel",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135291611094"
+        },
+        {
+          "id": 135293456039,
+          "name": "diskgraph-python",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135293456039"
+        },
+        {
+          "id": 135293456083,
+          "name": "diskgraph-cpu-tasks",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135293456083"
+        },
+        {
+          "id": 135293456171,
+          "name": "packages-engine-1",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135293456171"
+        },
+        {
+          "id": 135293456179,
+          "name": "packages-engine-0",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/NVIDIA/kumo-engine/actions/runs/44444017807/job/135293456179"
+        }
+      ],
+      "raw_logs": [
+        {
+          "path": "$ARTIFACT_ROOT/recovery/core-rebase-2026-11-18/attempt-acaa797a/ci-rust-job-135291610534.log",
+          "sha256": "d3976798d3c2ae052d2b3c7bc8797e9e2992ab2b3189cbc59c9e59835708931c"
+        },
+        {
+          "path": "$ARTIFACT_ROOT/recovery/core-rebase-2026-11-18/attempt-acaa797a/ci-python-job-135293456039.log",
+          "sha256": "0cc0f863ce6546c9004ffe831e8709d7d276dfbb965451e9e1ac64e7e82d393e"
+        },
+        {
+          "path": "$ARTIFACT_ROOT/recovery/core-rebase-2026-11-18/attempt-acaa797a/ci-cpu-job-135293456083.log",
+          "sha256": "3a8ad4133d2f6729827f40300c5370107f755f71fca5a992c984dde77cc4e393"
+        },
+        {
+          "path": "$ARTIFACT_ROOT/recovery/core-rebase-2026-11-18/attempt-acaa797a/ci-macos-job-135291610785.log",
+          "sha256": "b40700af1ad4546fe78cfc16506e1777052cf7788f6ac5a212a9bf48e8fe7817"
+        }
+      ],
+      "workflow_status": "completed",
+      "workflow_conclusion": "success",
+      "workflow_job_counts": {
+        "success": 55,
+        "skipped": 1
+      },
+      "cpu": {
+        "tasks_passed": 8,
+        "task_backend_executions": 24,
+        "strict_python_passed": 15,
+        "skips": 0,
+        "job_id": 135293456083
+      },
+      "macos": {
+        "actual_rust": "1.99.1",
+        "platform": "aarch64-apple-darwin",
+        "optimized_wheel_build_install": "PASS",
+        "mmap_smoke_passed": 11,
+        "job_id": 135291610785
+      }
+    },
+    "scope": "Closed exact-head correctness/platform CI; separate native binary, not a performance measurement or binary-equivalence claim.",
+    "superseded_partial_snapshot_sha256": "c51acf6fe0e3f1ef03f98fedd87b9be1f3e72d98e803ee65badc1cce757ffd7b"
+  },
+  "isolated_replay": {
+    "counts": {
+      "none": 35,
+      "queue": 35,
+      "cpu": 1,
+      "offcpu": 1
+    },
+    "original_path_fallback": false,
+    "proof_sha256": "08cb77d3acc5650fd24f8df1cb5d01691fddc251fbff7d5fa590c2363e51a2af",
+    "result_sha256": "b94c713031f177ead9cbf8637e1b2b85991953d6b0140bbdd8fae2ef3d288688",
+    "negative_lookup_cases": 11,
+    "scope": "Accepted observer raw replay plus all none-row file identities; failed attempts are retained and hash-verified separately, never promoted to successful measurements",
+    "application_rerun": false,
+    "none_rows": "File identity only; no raw observer exists"
+  }
+}

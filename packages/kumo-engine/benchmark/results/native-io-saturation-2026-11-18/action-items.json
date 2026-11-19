@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "scope": "Focused follow-ups from actual candidate measurements; no speculative production fixes included",
+  "items": [
+    {
+      "id": "external-sampler-fork",
+      "priority": "P1",
+      "readiness": "Block inherited external-sampler topology until resolved",
+      "finding": "Four fresh-child controls passed; four inherited external SamplerEngine cases timed out at 15 s (mmap/direct x cold/warm). All eight children were reaped.",
+      "origin": "The external API predates this port; regression introduction is unproven without baseline evidence.",
+      "change": "Construct external SamplerEngine in each worker, or reject inherited access at the public history boundary with a clear error.",
+      "acceptance": [
+        "Reproduce all four actual parallel inherited cases in a finite regression; each must either complete with validated work or reject promptly under the chosen documented contract.",
+        "Retain four fresh-child controls, current serial coverage, seeded-work and prediction parity.",
+        "No inherited PID or thread-pool state may silently bypass the fork guard."
+      ],
+      "evidence": "Distinct final-core qualification proof c05170ba; retained in finalization supplement, separate from performance archive.",
+      "qualification": {
+        "source_and_native_build": "acaa797a277982c2ac4737a89a9c577eeafdde06",
+        "native_sha256": "4437578a151f976fef71c0fb6e8cfc31b7a7894307fd0986c02ef118790af2e8",
+        "proof_sha256": "c05170ba2909679134f6fe360ad9167d193458b044faab66ee2bb01175e3fe05",
+        "parallel_fork": {
+          "fresh_controls_pass": 4,
+          "inherited_timeouts": 4,
+          "timeout_seconds": 15,
+          "children_reaped": 8
+        },
+        "separate_from_measured_native": "75ca0e2f/a5949f96"
+      }
+    },
+    {
+      "id": "process-guard-amortization",
+      "priority": "P2",
+      "readiness": "Measured optimization candidate; no speedup promised",
+      "finding": "707/6132 weighted CPU training samples contain getpid; cached-range access is the largest directly observed caller class. 56 generic-thread-root samples remain source-unattributed.",
+      "change": "Evaluate operation-scoped validation that reduces repeated cached-range guards while preserving ownership checks at access, response, drop and process-state boundaries.",
+      "acceptance": [
+        "Preserve MADV_DONTFORK and actual child-process ownership safety; no unchecked cached or thread-local PID inheritance.",
+        "Pass native ownership/fork tests and current seed/work/prediction oracles.",
+        "Repeat paired full-work CPU/E2E measurements and show where time moved; sample fractions are not a predicted speedup."
+      ],
+      "evidence": "tables/getpid-caller-tids.csv",
+      "source_file": "packages/diskgraph/diskgraph-index/src/page_io.rs",
+      "source_sha256": "9c9b924dec239b494eae3ae5d6c4ea441bb63ac0fb927e9f37afbc825e696c37"
+    },
+    {
+      "id": "decode-and-feeding",
+      "priority": "P2",
+      "readiness": "Causality experiment needed before changing concurrency",
+      "finding": "Cold Direct has 85.08% target zero-dispatched time despite busy mean depth 69.64. CPU leaves include row/header decode and memcpy; model main waits in Rayon feature accumulation and prepared-page finish.",
+      "change": "Separate decode/materialization and batch-feeding costs, then test one bounded concurrency change at a time.",
+      "acceptance": [
+        "Fix data epoch, seed, full training work, predictions, cache/memory/CPU controls.",
+        "Measure model and worker CPU/waits, full-window and busy-window block depth, physical IOPS and fit/first-predict E2E.",
+        "A higher queue alone is not success; require reproducible E2E improvement with unchanged correctness and explicit variability."
+      ],
+      "evidence": [
+        "metrics.json",
+        "tables/physical-training.csv",
+        "tables/model-main-offcpu-waits.csv",
+        "tables/cpu-exclusive-leaves.csv"
+      ]
+    },
+    {
+      "id": "storage-envelope",
+      "priority": "P2",
+      "readiness": "Absolute ceiling unresolved",
+      "finding": "Stable fio cells demonstrate high throughput, but both complete curves classify INCONCLUSIVE_VARIABILITY. Issuer count improves equal nominal-depth performance.",
+      "change": "Repeat variable cells and compare a matched read-size/pattern window before attributing a plateau to controller/media capacity.",
+      "acceptance": [
+        "Retain five repetitions, issuer CPU and both issued/completed fio counts.",
+        "Inspect every SMART thermal duration/transition counter delta and snapshot temperature; between-snapshot peaks remain unobserved.",
+        "Keep fio application IOPS, block completions and NVMe command counts distinct; no percentage of vendor maximum without a valid denominator."
+      ],
+      "evidence": [
+        "tables/fio-cells.csv",
+        "tables/fio-thermal-counters.csv"
+      ]
+    },
+    {
+      "id": "observer-protocol",
+      "priority": "P2",
+      "readiness": "Follow-up measurements must preserve qualification",
+      "finding": "Paired E2E differences range -6.08% to +11.88%; first principal attempt failed final drain amid foreign reads. Fresh 70-run v2 passed after quiet-host discipline and 60 s final drain.",
+      "change": "Use finite quiet capture windows, strict unchanged diagnostics/drain validation and all five none/queue pairs.",
+      "acceptance": [
+        "Report training and fit/first-predict paired differences, including negatives; no after-the-fact overhead cutoff or correction.",
+        "Do not run artifact walks, builds, imports or monitoring scans on the measured host during captures.",
+        "Keep drain outside measured clocks and retain any failed attempt separately."
+      ],
+      "evidence": "tables/paired-observer-overhead.csv"
+    }
+  ]
+}

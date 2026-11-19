@@ -1,0 +1,690 @@
+user_leaf,samples,percent_training_samples
+__GI_getpid,707,11.529680365296803
+syscall,550,8.969341161121983
+diskgraph_rowpack::RowPackDecoder::decode_row_to_builders,514,8.382257012393998
+__memcpy_sve,475,7.746249184605349
+??,354,5.772994129158513
+diskgraph_rowpack::decode_float,238,3.8812785388127855
+diskgraph_index::reader::ShardReader::parse_header,237,3.8649706457925634
+diskgraph_index::page_io::DirectCache::scan,126,2.0547945205479454
+UNRESOLVED,100,1.6307893020221786
+_int_malloc,98,1.5981735159817352
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::eq_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::eq_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::eq_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::eq_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",95,1.5492498369210699
+diskgraph_index::page_io::PreparedPages::contiguous_range,85,1.386170906718852
+diskgraph_index::reader::decode_offset,81,1.3209393346379648
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::where_kernel_impl(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#11}::operator()() const::{lambda(bool, float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::where_kernel_impl(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#11}::operator()() const::{lambda(bool, float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::where_kernel_impl(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#11}::operator()() const::{lambda(bool, float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::where_kernel_impl(at::TensorIterator&)::{lambda()#1}::operator()() const::{lambda()#11}::operator()() const::{lambda(bool, float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",80,1.304631441617743
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::div_true_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float, float)#1}, at::native::(anonymous namespace)::div_true_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",77,1.2557077625570776
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::ne_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::ne_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::ne_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::ne_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda(float, float)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",77,1.2557077625570776
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::DEFAULT::direct_copy_kernel(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#15}::operator()() const::{lambda(float)#1}, at::native::DEFAULT::direct_copy_kernel(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#15}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",58,0.9458577951728636
+"arm_gemm::sve_ffhybrid_fp32bf16fp32_mmla_4x6VL(unsigned int, unsigned int const*, arm_gemm::IndirectInputArg<float>, unsigned long, unsigned long, arm_compute::bfloat16 const*, unsigned long, arm_gemm::IndirectOutputArg<float>, float const*, arm_gemm::Activation, bool)",56,0.91324200913242
+__aarch64_ldadd2_rel,49,0.7990867579908676
+diskgraph_index::page_io::DirectCache::plan_read,48,0.7827788649706457
+__aarch64_swp4_rel,47,0.766470971950424
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::DEFAULT::abs_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}, at::native::DEFAULT::abs_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",35,0.5707762557077626
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(float, float)#1}, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",34,0.5544683626875407
+__aarch64_cas2_acq_rel,31,0.5055446836268754
+_TAIL_CALL_LOAD_GLOBAL_MODULE.llvm.725214118104407848,28,0.45662100456621
+_PyObject_GenericGetAttrWithDict,27,0.44031311154598823
+__aarch64_cas4_acq,26,0.42400521852576645
+"hashbrown::raw::RawTable<T,A>::reserve_rehash",23,0.3750815394651011
+__GI___libc_free,23,0.3750815394651011
+__aarch64_ldadd4_acq_rel,22,0.3587736464448793
+"at::native::(anonymous namespace)::LayerNormKernelImpl(at::Tensor const&, at::Tensor const&, at::Tensor const&, long, long, double, at::Tensor*, at::Tensor*, at::Tensor*)",22,0.3587736464448793
+"arm_gemm::(anonymous namespace)::sve_transpose_interleave_2VL_2x4_fp32bf16(arm_compute::bfloat16*, float const*, unsigned long, unsigned long, unsigned long)",20,0.32615786040443573
+_TAIL_CALL_LOAD_ATTR.llvm.725214118104407848,20,0.32615786040443573
+diskgraph_index::page_io::PreparedPage::valid,20,0.32615786040443573
+unlink_chunk,19,0.30984996738421394
+"void at::native::(anonymous namespace)::searchsorted_cpu_contiguous<long, long>(at::Tensor&, at::Tensor const&, at::Tensor const&, bool const&, at::Tensor const&)",18,0.29354207436399216
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::cpu_index_kernel<float, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#2}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#2} const&, bool)::{lambda(char**, long const*, long)#1}>(at::native::cpu_index_kernel<float, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#2}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#2} const&, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",18,0.29354207436399216
+"at::native::(anonymous namespace)::LayerNormBackwardKernelImplInternal<float, float>(at::Tensor const&, at::Tensor const&, at::Tensor const&, at::Tensor const&, at::Tensor const&, long, long, at::Tensor*, at::Tensor*, at::Tensor*)::{lambda(long, long)#1}::operator()(long, long) const",17,0.27723418134377037
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::(anonymous namespace)::cpu_scatter_gather_base_kernel<true>::operator()<at::native::(anonymous namespace)::TensorAssign>(at::Tensor const&, long, at::Tensor const&, at::Tensor const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, at::native::(anonymous namespace)::TensorAssign&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char**, long const*, long)#1}>(at::native::(anonymous namespace)::cpu_scatter_gather_base_kernel<true>::operator()<at::native::(anonymous namespace)::TensorAssign>(at::Tensor const&, long, at::Tensor const&, at::Tensor const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, at::native::(anonymous namespace)::TensorAssign&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",17,0.27723418134377037
+"arm_gemm::sve_ffinterleaved_bf16fp32_mmla_8x3VL(arm_compute::bfloat16 const*, arm_compute::bfloat16 const*, unsigned long, float*, int, unsigned long, int)",17,0.27723418134377037
+core::hash::BuildHasher::hash_one,17,0.27723418134377037
+diskgraph_engine::engine::DiskGraphEngine::fetch_explicit_feature_batch,16,0.2609262883235486
+__aarch64_cas8_acq_rel,16,0.2609262883235486
+malloc_consolidate,16,0.2609262883235486
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::cpu_index_kernel<float, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#1}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#1} const&, bool)::{lambda(char**, long const*, long)#1}>(at::native::cpu_index_kernel<float, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#1}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda(char*, char*, long)#1} const&, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",16,0.2609262883235486
+_PyObject_Malloc,15,0.2446183953033268
+diskgraph_engine::engine::DiskGraphEngine::sample_explicit_type,15,0.2446183953033268
+__aarch64_ldadd8_relax,15,0.2446183953033268
+diskgraph_index::reader::ShardReader::plan_header_records_reusing,14,0.228310502283105
+_Py_dict_lookup_threadsafe_stackref,14,0.228310502283105
+"alloc::vec::Vec<T,A>::retain",13,0.21200260926288322
+PyDict_GetItemRef,13,0.21200260926288322
+"dnnl::impl::utils::lru_cache_t<dnnl::impl::primitive_hashing::key_t, dnnl::impl::primitive_t, dnnl::impl::primitive_cache_iface_t::result_t, &dnnl::impl::primitive_cache_t::update_key>::add(dnnl::impl::primitive_hashing::key_t const&, std::shared_future<dnnl::impl::primitive_cache_iface_t::result_t> const&)",13,0.21200260926288322
+_PyFunction_Vectorcall,13,0.21200260926288322
+core::ops::function::impls::<impl core::ops::function::FnMut<A> for &F>::call_mut,13,0.21200260926288322
+"hashbrown::rustc_entry::<impl hashbrown::map::HashMap<K,V,S,A>>::rustc_entry",12,0.19569471624266144
+diskgraph_engine::engine::DiskGraphEngine::commit_edges,12,0.19569471624266144
+PyObject_GenericGetAttr,11,0.17938682322243965
+__aarch64_cas8_rel,11,0.17938682322243965
+_TAIL_CALL_LOAD_ATTR_MODULE.llvm.725214118104407848,11,0.17938682322243965
+__GI_sched_yield,11,0.17938682322243965
+tag_new_usable,11,0.17938682322243965
+core::slice::sort::stable::quicksort::quicksort,11,0.17938682322243965
+__memcpy_generic,11,0.17938682322243965
+"at::native::(anonymous namespace)::gather_expanded_index_kernel(at::Tensor const&, at::Tensor const&, at::Tensor const&)",10,0.16307893020221786
+diskgraph_index::reader::ShardReader::record_range,10,0.16307893020221786
+diskgraph_engine::engine::dedup_seeds,10,0.16307893020221786
+__GI___libc_malloc,10,0.16307893020221786
+PyObject_GetOptionalAttr,10,0.16307893020221786
+crossbeam_deque::deque::Stealer<T>::steal,9,0.14677103718199608
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::nonzero_out_cpu(at::Tensor const&, at::Tensor&)::{lambda()#2}::operator()() const::{lambda()#13}::operator()() const::{lambda(long, long)#1}::operator()(long, long) const::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",9,0.14677103718199608
+_TAIL_CALL_CALL_NON_PY_GENERAL.llvm.725214118104407848,9,0.14677103718199608
+_TAIL_CALL_CALL_PY_EXACT_ARGS.llvm.725214118104407848,9,0.14677103718199608
+diskgraph_rowpack::read_varint,9,0.14677103718199608
+_TAIL_CALL_RETURN_VALUE.llvm.725214118104407848,9,0.14677103718199608
+gc_collect_main.llvm.17879926404101540889,9,0.14677103718199608
+_int_free,9,0.14677103718199608
+_TAIL_CALL_LOAD_ATTR_METHOD_WITH_VALUES.llvm.725214118104407848,9,0.14677103718199608
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",9,0.14677103718199608
+_TAIL_CALL_LOAD_CONST_MORTAL.llvm.725214118104407848,9,0.14677103718199608
+<std::sync::mpmc::waker::SyncWaker>::notify,9,0.14677103718199608
+_TAIL_CALL_LOAD_CONST_IMMORTAL.llvm.725214118104407848,9,0.14677103718199608
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::cpu_index_kernel<long, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#1}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#1} const&, bool)::{lambda(char**, long const*, long)#1}>(at::native::cpu_index_kernel<long, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#1}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_kernel(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#1} const&, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",9,0.14677103718199608
+__aarch64_ldadd8_acq_rel,8,0.1304631441617743
+_int_free_create_chunk,8,0.1304631441617743
+PyInit_np_datetime,8,0.1304631441617743
+c10::impl::OperatorEntry::lookup(c10::DispatchKeySet) const,8,0.1304631441617743
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::div_floor_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::div_floor_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::div_floor_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::div_floor_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long, long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",8,0.1304631441617743
+_PyObject_GetMethodStackRef,8,0.1304631441617743
+tcache_put,8,0.1304631441617743
+_TAIL_CALL_CALL_KW_PY.llvm.725214118104407848,8,0.1304631441617743
+std::sync::mpmc::array::Channel<T>::try_send,8,0.1304631441617743
+_PyObject_Free,8,0.1304631441617743
+<diskgraph_index::page_io::CacheLease as core::ops::drop::Drop>::drop,8,0.1304631441617743
+"hashbrown::map::HashMap<K,V,S,A>::insert",7,0.1141552511415525
+diskgraph_index::reader::ShardReader::finish_header_plan_reusing,7,0.1141552511415525
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::bitwise_or_kernel(at::TensorIteratorBase&)::{lambda(bool, bool)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::bitwise_or_kernel(at::TensorIteratorBase&)::{lambda(bool, bool)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::(anonymous namespace)::bitwise_or_kernel(at::TensorIteratorBase&)::{lambda(bool, bool)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::bitwise_or_kernel(at::TensorIteratorBase&)::{lambda(bool, bool)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",7,0.1141552511415525
+diskgraph_index::page_io::page_owner_loop,7,0.1141552511415525
+dict_subscript,6,0.09784735812133072
+_PyObject_Realloc,6,0.09784735812133072
+_dl_tlsdesc_dynamic,6,0.09784735812133072
+crossbeam_epoch::internal::Global::try_advance,6,0.09784735812133072
+core::slice::sort::shared::smallsort::small_sort_general,6,0.09784735812133072
+"std::pair<long*, long*> fbgemm::radix_sort_parallel<long, long>(long*, long*, long*, long*, long, long, bool) [clone ._omp_fn.0]",6,0.09784735812133072
+diskgraph_index::page_io::PreparedPages::append_range,6,0.09784735812133072
+diskgraph_index::page_io::read_pages_on_ring_coalesced,6,0.09784735812133072
+diskgraph_index::page_io::PreparedPages::merge,5,0.08153946510110893
+_TAIL_CALL_COPY_FREE_VARS.llvm.725214118104407848,5,0.08153946510110893
+___pthread_mutex_lock,5,0.08153946510110893
+"std::pair<at::OpMathType<float>::type, at::OpMathType<float>::type> at::native::DEFAULT::RowwiseMomentsImpl<float, 4l>(float const*, long, long)",5,0.08153946510110893
+"torch::FunctionSignature::parse(_object*, _object*, _object*, _object**, std::vector<_object*, std::allocator<_object*> >&, bool)",5,0.08153946510110893
+_TAIL_CALL_LOAD_FAST_BORROW.llvm.725214118104407848,5,0.08153946510110893
+at::TensorIteratorBase::compute_shape(at::TensorIteratorConfig const&),5,0.08153946510110893
+_TAIL_CALL_LOAD_GLOBAL_BUILTIN.llvm.725214118104407848,5,0.08153946510110893
+PyType_GenericAlloc,5,0.08153946510110893
+_TAIL_CALL_BINARY_OP_SUBSCR_DICT.llvm.725214118104407848,5,0.08153946510110893
+_TAIL_CALL_POP_JUMP_IF_FALSE.llvm.725214118104407848,5,0.08153946510110893
+dict_dealloc,5,0.08153946510110893
+__GI_madvise,5,0.08153946510110893
+"at::native::(anonymous namespace)::cat_serial_kernel(at::Tensor const&, std::vector<std::reference_wrapper<at::Tensor const>, std::allocator<std::reference_wrapper<at::Tensor const> > > const&, long)",5,0.08153946510110893
+slot_tp_init,5,0.08153946510110893
+<core::hash::sip::Hasher<S> as core::hash::Hasher>::write,5,0.08153946510110893
+"at::native::DEFAULT::cos_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(char**, long const*, long)#1}::operator()(char**, long const*, long) const [clone .isra.0]",5,0.08153946510110893
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(long, long)#1}, at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<long>, at::vec::DEFAULT::Vectorized<long>)#1}> >(long, char**, long const*, long, long)",5,0.08153946510110893
+diskgraph_index::page_io::pages_for_ranges,5,0.08153946510110893
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::DEFAULT::direct_copy_kernel(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(long)#1}, at::native::DEFAULT::direct_copy_kernel(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#12}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<long>)#1}> >(long, char**, long const*, long, long)",5,0.08153946510110893
+PyDict_Contains,4,0.06523157208088715
+diskgraph_rowpack::decode_int,4,0.06523157208088715
+tcache_get_n,4,0.06523157208088715
+_PyObject_LookupSpecial,4,0.06523157208088715
+at::TensorIteratorBase::mark_outputs(),4,0.06523157208088715
+dictiter_iternextitem,4,0.06523157208088715
+std::_Sp_counted_base<(__gnu_cxx::_Lock_policy)2>::_M_release(),4,0.06523157208088715
+"void at::native::(anonymous namespace)::cpu_scatter_reduce_expanded_index<float, (at::native::ReductionType)3>(at::Tensor const&, at::Tensor const&, at::Tensor const&, bool)",4,0.06523157208088715
+"void dnnl::impl::cpu::(anonymous namespace)::gemm_ithr<float, false, true>(long, long, long, float, float const*, long, float const*, long, float, float*, long, bool, float*)",4,0.06523157208088715
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::(anonymous namespace)::cpu_masked_fill_kernel<long>(at::TensorIterator&, long)::{lambda(char**, long const*, long)#1}>(at::native::(anonymous namespace)::cpu_masked_fill_kernel<long>(at::TensorIterator&, long)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",4,0.06523157208088715
+subtype_dealloc,4,0.06523157208088715
+"std::_Hashtable<dnnl::impl::primitive_hashing::key_t, std::pair<dnnl::impl::primitive_hashing::key_t const, dnnl::impl::utils::lru_cache_t<dnnl::impl::primitive_hashing::key_t, dnnl::impl::primitive_t, dnnl::impl::primitive_cache_iface_t::result_t, &dnnl::impl::primitive_cache_t::update_key>::timed_entry_t>, std::allocator<std::pair<dnnl::impl::primitive_hashing::key_t const, dnnl::impl::utils::lru_cache_t<dnnl::impl::primitive_hashing::key_t, dnnl::impl::primitive_t, dnnl::impl::primitive_cache_iface_t::result_t, &dnnl::impl::primitive_cache_t::update_key>::timed_entry_t> >, std::__detail::_Select1st, std::equal_to<dnnl::impl::primitive_hashing::key_t>, std::hash<dnnl::impl::primitive_hashing::key_t>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<true, false, true> >::find(dnnl::impl::primitive_hashing::key_t const&)",4,0.06523157208088715
+diskgraph_engine::engine::DiskGraphEngine::process_layer,4,0.06523157208088715
+PyObject_GenericSetAttr,4,0.06523157208088715
+_PyEvalFramePushAndInit,4,0.06523157208088715
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::fill_kernel(at::TensorIterator&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda()#1}, at::native::(anonymous namespace)::fill_kernel(at::TensorIterator&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#7}::operator()() const::{lambda()#2}> >(long, char**, long const*, long, long)",4,0.06523157208088715
+core::slice::sort::shared::pivot::median3_rec,4,0.06523157208088715
+_TAIL_CALL_FOR_ITER_LIST.llvm.725214118104407848,4,0.06523157208088715
+checked_request2size,4,0.06523157208088715
+core::ptr::drop_in_place<diskgraph_index::page_io::PreparedPage>,4,0.06523157208088715
+c10::TensorImpl::grad() const,4,0.06523157208088715
+visit_reachable,4,0.06523157208088715
+"arm_compute::cpu::kernels::(anonymous namespace)::transpose_32bit_elements(arm_compute::ITensor const*, arm_compute::ITensor*, arm_compute::Window const&)",3,0.04892367906066536
+dnnl::impl::primitive_hashing::get_md_hash(dnnl_memory_desc const&),3,0.04892367906066536
+"at::native::AdvancedIndex::AdvancedIndex(at::Tensor const&, c10::ArrayRef<at::Tensor>)",3,0.04892367906066536
+"at::native::DEFAULT::sin_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(char**, long const*, long)#1}::operator()(char**, long const*, long) const [clone .isra.0]",3,0.04892367906066536
+diskgraph_index::page_io::PendingPreparedPageBatch::finish,3,0.04892367906066536
+_PyType_LookupRef,3,0.04892367906066536
+_TAIL_CALL_LOAD_ATTR_INSTANCE_VALUE.llvm.725214118104407848,3,0.04892367906066536
+diskgraph_index::page_io::process_state,3,0.04892367906066536
+_Py_type_getattro,3,0.04892367906066536
+PyObject_Vectorcall,3,0.04892367906066536
+PyType_IsSubtype,3,0.04892367906066536
+_TAIL_CALL_LOAD_DEREF.llvm.725214118104407848,3,0.04892367906066536
+dictiter_iternextvalue,3,0.04892367906066536
+_dl_tlsdesc_return,3,0.04892367906066536
+do_richcompare.llvm.13662701339721815364,3,0.04892367906066536
+diskgraph_engine::edge_unpacker::EdgeUnpacker::partition_point,3,0.04892367906066536
+__GI___memcmpeq,3,0.04892367906066536
+<std::thread::thread::Thread>::park,3,0.04892367906066536
+__GI___mmap64,3,0.04892367906066536
+list_dealloc,3,0.04892367906066536
+PyInit_timestamps,3,0.04892367906066536
+PySet_Contains,3,0.04892367906066536
+"c10::isSharedStorageAlias(c10::Storage const&, c10::Storage const&)",3,0.04892367906066536
+at::(anonymous namespace)::CacheEntry::rebuildActiveCallbacks(),3,0.04892367906066536
+_TAIL_CALL_LOAD_ATTR_PROPERTY.llvm.725214118104407848,3,0.04892367906066536
+"std::_Hashtable<void const*, std::pair<void const* const, pybind11::detail::instance*>, std::allocator<std::pair<void const* const, pybind11::detail::instance*> >, std::__detail::_Select1st, std::equal_to<void const*>, std::hash<void const*>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, false> >::equal_range(void const* const&) [clone .isra.0]",3,0.04892367906066536
+<T as alloc::vec::spec_from_elem::SpecFromElem>::from_elem,3,0.04892367906066536
+_Py_dict_lookup,3,0.04892367906066536
+mi_segment_span_allocate,3,0.04892367906066536
+torch::autograd::impl::grad_accumulator(at::Tensor const&),3,0.04892367906066536
+take_gil.llvm.12388988754744291817,3,0.04892367906066536
+dnnl::impl::primitive_desc_t::has_runtime_dims_or_strides() const,2,0.03261578604044357
+_TAIL_CALL_CALL_PY_GENERAL.llvm.725214118104407848,2,0.03261578604044357
+std::_Optional_payload_base<c10::Scalar>::_M_reset() [clone .part.0],2,0.03261578604044357
+"c10::TensorImpl* at::native::_resize_impl_<long>(c10::TensorImpl*, c10::ArrayRef<long>, c10::OptionalArrayRef<long>, bool)",2,0.03261578604044357
+"dnnl::impl::cpu::aarch64::acl_post_ops_t::execute(dnnl::impl::exec_ctx_t const&, void*, void*) const",2,0.03261578604044357
+__GI___pthread_mutex_unlock_usercnt,2,0.03261578604044357
+"__pyx_pw_7pyarrow_8_compute_16FunctionRegistry_5get_function(_object*, _object* const*, long, _object*) [clone .lto_priv.0]",2,0.03261578604044357
+arrow_select::take::take_impl,2,0.03261578604044357
+_int_realloc,2,0.03261578604044357
+INT_subtract,2,0.03261578604044357
+<alloc::string::String as core::clone::Clone>::clone,2,0.03261578604044357
+PyWeakref_NewRef,2,0.03261578604044357
+_TAIL_CALL_LOAD_SPECIAL.llvm.725214118104407848,2,0.03261578604044357
+Sleef_sinf4_u10,2,0.03261578604044357
+"c10::intrusive_ptr<c10::TensorImpl, c10::UndefinedTensorImpl>::retain_()",2,0.03261578604044357
+"torch::autograd::gatherFunctions(torch::autograd::Node*, std::vector<std::shared_ptr<torch::autograd::Node>, std::allocator<std::shared_ptr<torch::autograd::Node> > >&)",2,0.03261578604044357
+object_recursive_isinstance.llvm.13237650572641001772,2,0.03261578604044357
+"void std::__introsort_loop<at::native::CompositeRandomAccessor<float*, long*, at::native::TupleInfoCPU>, long, __gnu_cxx::__ops::_Iter_comp_iter<at::native::(anonymous namespace)::KeyValueCompDesc<float> > >(at::native::CompositeRandomAccessor<float*, long*, at::native::TupleInfoCPU>, at::native::CompositeRandomAccessor<float*, long*, at::native::TupleInfoCPU>, long, __gnu_cxx::__ops::_Iter_comp_iter<at::native::(anonymous namespace)::KeyValueCompDesc<float> >)",2,0.03261578604044357
+visit_decref.llvm.17879926404101540889,2,0.03261578604044357
+lookup_maybe_method,2,0.03261578604044357
+"std::_Hashtable<std::type_index, std::pair<std::type_index const, pybind11::detail::type_info*>, std::allocator<std::pair<std::type_index const, pybind11::detail::type_info*> >, std::__detail::_Select1st, std::equal_to<std::type_index>, std::hash<std::type_index>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_find_before_node(unsigned long, std::type_index const&, unsigned long) const [clone .isra.0]",2,0.03261578604044357
+_TAIL_CALL_STORE_FAST.llvm.725214118104407848,2,0.03261578604044357
+cfunction_call,2,0.03261578604044357
+"at::native::addmm_impl_cpu_(at::Tensor&, at::Tensor const&, at::Tensor, at::Tensor, c10::Scalar const&, c10::Scalar const&)::{lambda()#1}::operator()() const",2,0.03261578604044357
+_TAIL_CALL_CALL_BUILTIN_O.llvm.725214118104407848,2,0.03261578604044357
+core::slice::sort::stable::drift::sort,2,0.03261578604044357
+_TAIL_CALL_LOAD_ATTR_WITH_HINT.llvm.725214118104407848,2,0.03261578604044357
+dnnl::impl::cpu::aarch64::acl_thread_utils::set_acl_threading(),2,0.03261578604044357
+musable,2,0.03261578604044357
+c10::SymInt::has_hint() const,2,0.03261578604044357
+__memset_zva64,2,0.03261578604044357
+___pthread_getspecific,2,0.03261578604044357
+<io_uring::cqueue::Entry as core::clone::Clone>::clone,2,0.03261578604044357
+"__pyx_pw_7pyarrow_8_compute_11call_function(_object*, _object* const*, long, _object*) [clone .lto_priv.0]",2,0.03261578604044357
+"torch::autograd::as_view(at::Tensor const&, at::Tensor const&, bool, bool, std::unique_ptr<torch::autograd::ViewFunc, std::default_delete<torch::autograd::ViewFunc> >, std::function<at::Tensor (at::Tensor const&)>, torch::autograd::CreationMeta, bool)",2,0.03261578604044357
+mi_find_page,2,0.03261578604044357
+"at::_ops::abs_out::call(at::Tensor const&, at::Tensor&)",2,0.03261578604044357
+Sleef_cosf4_u10advsimd,2,0.03261578604044357
+"std::_Sp_counted_ptr_inplace<arrow::ArrayData, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()",2,0.03261578604044357
+"at::_ops::clamp::call(at::Tensor const&, std::optional<c10::Scalar> const&, std::optional<c10::Scalar> const&)",2,0.03261578604044357
+PyUFunc_GenericReduction,2,0.03261578604044357
+sgemv_n_ARMV8SVE,2,0.03261578604044357
+object_issubclass.llvm.13237650572641001772,2,0.03261578604044357
+PyDict_SetItem,2,0.03261578604044357
+vgetargskeywords.llvm.16333330272304536301,2,0.03261578604044357
+"std::vector<int, std::allocator<int> >::_M_fill_insert(__gnu_cxx::__normal_iterator<int*, std::vector<int, std::allocator<int> > >, unsigned long, int const&)",2,0.03261578604044357
+list_extend_dict.llvm.17351582882938884812,2,0.03261578604044357
+at::_ops::_local_scalar_dense::call(at::Tensor const&),2,0.03261578604044357
+diskgraph_index::page_io::DirectReadPlan::finish_ready,2,0.03261578604044357
+dict_get,2,0.03261578604044357
+"torch::autograd::Node::set_next_edges(std::vector<torch::autograd::Edge, std::allocator<torch::autograd::Edge> >&&)",2,0.03261578604044357
+"GetterBase<PropertyGrad>::getter(THPVariable*, void*)",2,0.03261578604044357
+operator new(unsigned long),2,0.03261578604044357
+"<alloc::vec::Vec<T,A> as core::ops::drop::Drop>::drop",2,0.03261578604044357
+unicode_from_format.llvm.15489788241876900469,2,0.03261578604044357
+at::TensorIteratorBase::compute_types(at::TensorIteratorConfig const&),2,0.03261578604044357
+"at::(anonymous namespace)::LocalCallbackManager::rebuild_scope(std::pair<unsigned long, std::vector<at::RecordFunctionCallbacksEntry, std::allocator<at::RecordFunctionCallbacksEntry> > > const&, at::RecordScope) [clone .constprop.0]",2,0.03261578604044357
+"dnnl::impl::eltwise_desc_init(dnnl::impl::eltwise_desc_t*, dnnl_prop_kind_t, dnnl_alg_kind_t, dnnl_memory_desc const*, dnnl_memory_desc const*, dnnl_memory_desc const*, dnnl_memory_desc const*, float, float)",2,0.03261578604044357
+c10::alloc_cpu(unsigned long),2,0.03261578604044357
+__GI_mprotect,2,0.03261578604044357
+diskgraph_core::time::convert_trunc,2,0.03261578604044357
+"arrow::py::(anonymous namespace)::MakeWriter(arrow::py::PandasOptions const&, arrow::py::(anonymous namespace)::PandasWriter::type, arrow::DataType const&, long, int, std::shared_ptr<arrow::py::(anonymous namespace)::PandasWriter>*)",2,0.03261578604044357
+mi_segments_page_find_and_allocate,2,0.03261578604044357
+_mi_page_malloc,2,0.03261578604044357
+std::__detail::_Prime_rehash_policy::_M_next_bkt(unsigned long) const,2,0.03261578604044357
+_TAIL_CALL_BINARY_OP_SUBSCR_GETITEM.llvm.725214118104407848,2,0.03261578604044357
+"c10::intrusive_ptr<c10::intrusive_ptr_target, c10::UndefinedTensorImpl>::reset_not_null_(c10::intrusive_ptr_target*)",2,0.03261578604044357
+"torch::autograd::AutogradMeta::fw_grad(unsigned long, at::TensorBase const&) const",2,0.03261578604044357
+_TAIL_CALL_UNPACK_SEQUENCE_TWO_TUPLE.llvm.725214118104407848,2,0.03261578604044357
+std::sync::mpmc::array::Channel<T>::try_recv,2,0.03261578604044357
+_Py_Dealloc,2,0.03261578604044357
+slot_tp_call,2,0.03261578604044357
+torch::PythonArgs::tensor_slow(int),2,0.03261578604044357
+_TAIL_CALL_CALL_KW_BOUND_METHOD.llvm.725214118104407848,2,0.03261578604044357
+torch::detail::(anonymous namespace)::ConcretePyInterpreterVTable::decref(_object*) const,2,0.03261578604044357
+dnnl::impl::primitive_hashing::get_desc_hash(dnnl::impl::reorder_desc_t const&),2,0.03261578604044357
+"arm_compute::cpu::kernel::CpuGemmAssemblyWrapperKernel<float, float, float>::run_op(arm_compute::ITensorPack&, arm_compute::Window const&, arm_compute::ThreadInfo const&)",2,0.03261578604044357
+torch::autograd::NodeTask::operator=(torch::autograd::NodeTask&&) [clone .isra.0],2,0.03261578604044357
+"at::native::(anonymous namespace)::clamp_scalar_kernel_impl(at::TensorIteratorBase&, c10::Scalar const&, c10::Scalar const&)::{lambda()#1}::operator()() const [clone .isra.0]",2,0.03261578604044357
+_TAIL_CALL_RESUME_CHECK.llvm.725214118104407848,2,0.03261578604044357
+"torch::autograd::THPVariable_setitem(_object*, _object*, _object*)",2,0.03261578604044357
+at::native::Indexer::get(long) [clone .isra.0],2,0.03261578604044357
+PyTuple_Pack,2,0.03261578604044357
+"void ideep::matmul_forward::do_prepare<false>(ideep::matmul_forward_params&, ideep::tensor const&, ideep::tensor const&, ideep::tensor const&, ideep::tensor&, float, float, ideep::attr_t const&, dnnl::memory::data_type, ideep::engine const&) [clone .isra.0]",2,0.03261578604044357
+"arm_compute::ITensorAllocator::init(arm_compute::TensorInfo const&, unsigned long)",2,0.03261578604044357
+_TAIL_CALL_CALL_BUILTIN_FAST.llvm.725214118104407848,2,0.03261578604044357
+_TAIL_CALL_BUILD_LIST.llvm.725214118104407848,2,0.03261578604044357
+PyObject_CallOneArg,2,0.03261578604044357
+at::TensorIteratorBase::build(at::TensorIteratorConfig&),2,0.03261578604044357
+_TAIL_CALL_BUILD_MAP.llvm.725214118104407848,2,0.03261578604044357
+mi_segment_span_free_coalesce,2,0.03261578604044357
+_TAIL_CALL_CALL_BOUND_METHOD_EXACT_ARGS.llvm.725214118104407848,2,0.03261578604044357
+sgemv_t_ARMV8SVE,1,0.016307893020221786
+_TAIL_CALL_CALL_FUNCTION_EX.llvm.725214118104407848,1,0.016307893020221786
+torch::autograd::generated::AddmmBackward0::~AddmmBackward0(),1,0.016307893020221786
+THPUtils_checkScalar(_object*),1,0.016307893020221786
+bytes_decode,1,0.016307893020221786
+hashbrown::raw::RawTableInner::fallible_with_capacity,1,0.016307893020221786
+try_binary_elide,1,0.016307893020221786
+"at::TensorIteratorBase::build_borrowing_binary_float_op(at::TensorBase const&, at::TensorBase const&, at::TensorBase const&)",1,0.016307893020221786
+_TAIL_CALL_STORE_SUBSCR.llvm.725214118104407848,1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor (at::Tensor const&), &at::(anonymous namespace)::(anonymous namespace)::wrapper_CompositeImplicitAutograd__resolve_conj>, at::Tensor, c10::guts::typelist::typelist<at::Tensor const&> >, at::Tensor (at::Tensor const&)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor const&)",1,0.016307893020221786
+_sre_SRE_Pattern_search,1,0.016307893020221786
+_TAIL_CALL_TO_BOOL_BOOL.llvm.725214118104407848,1,0.016307893020221786
+diskgraph_index::reader::ShardReader::plan_headers_sorted_reusing,1,0.016307893020221786
+"__pyx_tp_new_7pyarrow_3lib_Array(_typeobject*, _object*, _object*) [clone .constprop.0]",1,0.016307893020221786
+_mi_heap_malloc_zero_ex,1,0.016307893020221786
+PyArray_SetBaseObject,1,0.016307893020221786
+PyArray_GetPriority,1,0.016307893020221786
+at::RecordFunction::RecordFunction(at::StepCallbacks&&),1,0.016307893020221786
+"__Pyx_AllocateExtensionType(_typeobject*, int) [clone .constprop.0]",1,0.016307893020221786
+"at::_ops::empty_strided::call(c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, std::optional<c10::ScalarType>, std::optional<c10::Layout>, std::optional<c10::Device>, std::optional<bool>)",1,0.016307893020221786
+get_exception_handler.llvm.725214118104407848,1,0.016307893020221786
+__aarch64_ldadd8_rel,1,0.016307893020221786
+"at::_ops::new_ones::call(at::Tensor const&, c10::ArrayRef<c10::SymInt>, std::optional<c10::ScalarType>, std::optional<c10::Layout>, std::optional<c10::Device>, std::optional<bool>)",1,0.016307893020221786
+"dnnl::impl::cpu::aarch64::jit_uni_eltwise_fwd_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::pd_t::create_primitive(std::pair<std::shared_ptr<dnnl::impl::primitive_t>, dnnl::impl::cache_state_t>&, dnnl_engine*, dnnl::impl::cache_blob_t const&, bool) const",1,0.016307893020221786
+dnnl_memory_get_data_handle_v2,1,0.016307893020221786
+"at::_ops::div__Scalar::call(at::Tensor&, c10::Scalar const&)",1,0.016307893020221786
+"at::_ops::floor_divide::call(at::Tensor const&, at::Tensor const&)",1,0.016307893020221786
+"at::namedinference::compute_cat_outnames(std::vector<std::reference_wrapper<at::Tensor const>, std::allocator<std::reference_wrapper<at::Tensor const> > > const&)",1,0.016307893020221786
+PySlice_Unpack,1,0.016307893020221786
+diskgraph_index::page_io::read_pages_on_ring,1,0.016307893020221786
+raw_array_assign_scalar,1,0.016307893020221786
+"arm_gemm::GemmHybridIndirect<arm_gemm::cls_sve_ffhybrid_fp32_mla_6x4VL, float, float, float, arm_gemm::Nothing, false, true>::execute_stateless(arm_gemm::NDCoordinate<6u> const&, arm_gemm::NDCoordinate<6u> const&, int, arm_gemm::GemmArrays<float, float, float>&)",1,0.016307893020221786
+<std::sync::mpmc::waker::SyncWaker>::disconnect,1,0.016307893020221786
+int_index,1,0.016307893020221786
+arrow::(anonymous namespace)::DefaultBackend(),1,0.016307893020221786
+diskgraph_rowpack::decode_value_skip,1,0.016307893020221786
+"std::_Rb_tree<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t, std::pair<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t const, dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::mapped_table_entry_t>, std::_Select1st<std::pair<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t const, dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::mapped_table_entry_t> >, std::less<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t>, std::allocator<std::pair<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t const, dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::mapped_table_entry_t> > >::_M_erase(std::_Rb_tree_node<std::pair<dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::key_t const, dnnl::impl::cpu::aarch64::jit_uni_eltwise_injector_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::mapped_table_entry_t> >*) [clone .isra.0]",1,0.016307893020221786
+prepare_index,1,0.016307893020221786
+_PyFrame_ClearExceptCode,1,0.016307893020221786
+torch::autograd::VariableHooks::is_view(at::TensorBase const&) const,1,0.016307893020221786
+c10::ivalue::ConstantString::~ConstantString(),1,0.016307893020221786
+func_get_defaults,1,0.016307893020221786
+"std::_Sp_counted_deleter<dnnl_memory_desc*, dnnl_status_t (*)(dnnl_memory_desc*), std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()",1,0.016307893020221786
+_TAIL_CALL_BUILD_STRING.llvm.725214118104407848,1,0.016307893020221786
+object_vacall.llvm.11748070234868874569,1,0.016307893020221786
+PyUnicode_Substring,1,0.016307893020221786
+diskgraph_runtime::Order::at,1,0.016307893020221786
+PyNumber_AsSsize_t,1,0.016307893020221786
+"dnnl_memory::dnnl_memory(dnnl_engine*, dnnl_memory_desc const*, std::vector<unsigned int, std::allocator<unsigned int> > const&, std::vector<void*, std::allocator<void*> > const&)",1,0.016307893020221786
+__aarch64_cas4_acq_rel,1,0.016307893020221786
+c10::impl::ExcludeDispatchKeyGuard::ExcludeDispatchKeyGuard(c10::DispatchKeySet),1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::sin_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::sin_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",1,0.016307893020221786
+"std::_Function_handler<bool (arm_gemm::GemmArgs const&), arm_gemm::gemm_fp32_methods::{lambda(arm_gemm::GemmArgs const&)#1}>::_M_invoke(std::_Any_data const&, arm_gemm::GemmArgs const&)",1,0.016307893020221786
+dnnl_primitive::init(),1,0.016307893020221786
+arm_compute::experimental::op::ll::CpuGemmAssemblyDispatch::CpuGemmAssemblyDispatch(),1,0.016307893020221786
+_TAIL_CALL_LOAD_FAST_BORROW_LOAD_FAST_BORROW.llvm.725214118104407848,1,0.016307893020221786
+PyArray_MinCastSafety,1,0.016307893020221786
+"at::detail::empty_generic(c10::ArrayRef<long>, c10::Allocator*, c10::DispatchKeySet, c10::ScalarType, std::optional<c10::MemoryFormat>)",1,0.016307893020221786
+"at::detail::scalar_fill(at::Tensor&, c10::Scalar const&)::{lambda()#1}::operator()() const [clone .isra.0]",1,0.016307893020221786
+c10::FunctionSchema::is_aliasing(c10::SchemaArgument const&) const,1,0.016307893020221786
+"torch::autograd::VariableType::(anonymous namespace)::gelu_backward(c10::DispatchKeySet, at::Tensor const&, at::Tensor const&, std::basic_string_view<char, std::char_traits<char> >)",1,0.016307893020221786
+"c10::SymInt* std::__copy_move<true, false, std::random_access_iterator_tag>::__copy_m<c10::SymInt*, c10::SymInt*>(c10::SymInt*, c10::SymInt*, c10::SymInt*)",1,0.016307893020221786
+torch::jit::toPyObject(c10::IValue) [clone .localalias],1,0.016307893020221786
+"std::_Function_handler<unsigned int (long), Xbyak_aarch64::CodeGenerator::CondBrImm(Xbyak_aarch64::Cond, Xbyak_aarch64::Label const&)::{lambda(long)#1}>::_M_invoke(std::_Any_data const&, long&&)",1,0.016307893020221786
+"<alloc::vec::Vec<T> as alloc::vec::spec_from_iter::SpecFromIter<T,I>>::from_iter",1,0.016307893020221786
+"arm_gemm::sve_ffhybrid_fp32_mla_6x4VL(unsigned int, unsigned int const*, arm_gemm::IndirectInputArg<float>, unsigned long, unsigned long, float const*, unsigned long, arm_gemm::IndirectOutputArg<float>, float const*, arm_gemm::Activation, bool)",1,0.016307893020221786
+PyBytes_AsStringAndSize,1,0.016307893020221786
+list_slice_subscript.llvm.17351582882938884812,1,0.016307893020221786
+alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle,1,0.016307893020221786
+mi_page_free_list_extend.isra.0,1,0.016307893020221786
+PyDict_SetDefaultRef,1,0.016307893020221786
+list_new_prealloc,1,0.016307893020221786
+PyContextVar_Get,1,0.016307893020221786
+"std::__shared_ptr<arrow::ArrayData, (__gnu_cxx::_Lock_policy)2>::operator=(std::__shared_ptr<arrow::ArrayData, (__gnu_cxx::_Lock_policy)2>&&)",1,0.016307893020221786
+"c10::computeDispatchKey(std::optional<c10::ScalarType>, std::optional<c10::Layout>, std::optional<c10::Device>) [clone .isra.0]",1,0.016307893020221786
+gotoblas_corename,1,0.016307893020221786
+at::accelerator::getAccelerator(bool),1,0.016307893020221786
+_TAIL_CALL_MAKE_FUNCTION.llvm.725214118104407848,1,0.016307893020221786
+"<alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter",1,0.016307893020221786
+simd_binary_scalar2_equal_u32,1,0.016307893020221786
+arena_for_chunk,1,0.016307893020221786
+builtin_all,1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor (c10::DispatchKeySet, at::Tensor const&, at::Tensor const&), &torch::autograd::VariableType::(anonymous namespace)::remainder_Tensor>, at::Tensor, c10::guts::typelist::typelist<c10::DispatchKeySet, at::Tensor const&, at::Tensor const&> >, at::Tensor (c10::DispatchKeySet, at::Tensor const&, at::Tensor const&)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor const&, at::Tensor const&)",1,0.016307893020221786
+_int_free_merge_chunk,1,0.016307893020221786
+dictview_dealloc,1,0.016307893020221786
+dnnl::impl::memory_desc_wrapper::is_dense(bool) const,1,0.016307893020221786
+__GI_munmap,1,0.016307893020221786
+c10::TensorImpl::layout() const,1,0.016307893020221786
+core::slice::sort::shared::smallsort::sort8_stable,1,0.016307893020221786
+PySys_Audit,1,0.016307893020221786
+float const* at::TensorBase::const_data_ptr<float>() const,1,0.016307893020221786
+"at::(anonymous namespace)::create_out(c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions const&)",1,0.016307893020221786
+sscal_k_ARMV8SVE,1,0.016307893020221786
+"torch::is_tensor_list_and_append_overloaded(_object*, std::vector<_object*, std::allocator<_object*> >*, unsigned long, bool)",1,0.016307893020221786
+"std::__detail::_Map_base<int, std::pair<int const, dnnl::impl::memory_arg_t>, std::allocator<std::pair<int const, dnnl::impl::memory_arg_t> >, std::__detail::_Select1st, std::equal_to<int>, std::hash<int>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true>, true>::operator[](int const&)",1,0.016307893020221786
+core::ops::function::FnOnce::call_once,1,0.016307893020221786
+"dnnl::impl::get_verbose(dnnl::impl::verbose_t::flag_kind, dnnl::impl::component_t::flag_kind)",1,0.016307893020221786
+pybind11::detail::get_internals(),1,0.016307893020221786
+arrow::compute::CastOptions::CastOptions(bool),1,0.016307893020221786
+at::TensorIteratorBase::fast_set_up(at::TensorIteratorConfig const&),1,0.016307893020221786
+"at::_ops::index_Tensor::redispatch(c10::DispatchKeySet, at::Tensor const&, c10::List<std::optional<at::Tensor> > const&)",1,0.016307893020221786
+dnnl::impl::cpu::aarch64::jit_uni_eltwise_fwd_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::pd_t::init(dnnl_engine*),1,0.016307893020221786
+PyList_New,1,0.016307893020221786
+_int_memalign,1,0.016307893020221786
+c10::TensorImpl::requires_grad() const,1,0.016307893020221786
+_mi_malloc_generic,1,0.016307893020221786
+dnnl_primitive_desc_destroy,1,0.016307893020221786
+"arm_compute::Memory::set_owned_region(std::unique_ptr<arm_compute::IMemoryRegion, std::default_delete<arm_compute::IMemoryRegion> >)",1,0.016307893020221786
+"decltype(auto) std::__do_visit<std::__detail::__variant::__variant_idx_cookie, std::__detail::__variant::_Move_ctor_base<false, arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> >::_Move_ctor_base(std::__detail::__variant::_Move_ctor_base<false, arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> >&&)::{lambda(auto:1&&, auto:2)#1}, std::variant<arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> > >(std::__detail::__variant::_Move_ctor_base<false, arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> >::_Move_ctor_base(std::__detail::__variant::_Move_ctor_base<false, arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> >&&)::{lambda(auto:1&&, auto:2)#1}&&, std::variant<arrow::Datum::Empty, std::shared_ptr<arrow::Scalar>, std::shared_ptr<arrow::ArrayData>, std::shared_ptr<arrow::ChunkedArray>, std::shared_ptr<arrow::RecordBatch>, std::shared_ptr<arrow::Table> >&&)",1,0.016307893020221786
+_TAIL_CALL_RETURN_GENERATOR.llvm.725214118104407848,1,0.016307893020221786
+arraydescr_richcompare,1,0.016307893020221786
+"at::inferExpandGeometry_dimvector(c10::ArrayRef<long>, c10::ArrayRef<long>, c10::ArrayRef<long>)",1,0.016307893020221786
+c10::TensorImpl::incref_pyobject() const,1,0.016307893020221786
+_TAIL_CALL_CONTAINS_OP.llvm.725214118104407848,1,0.016307893020221786
+at::impl::torch_function_mode_enabled(),1,0.016307893020221786
+"std::_Sp_counted_deleter<arm_gemm::GemmCommon<float, float, float>*, std::default_delete<arm_gemm::GemmCommon<float, float, float> >, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()",1,0.016307893020221786
+"at::native::update_result_type_state(at::Tensor const&, at::native::ResultTypeState const&)",1,0.016307893020221786
+at::getStepCallbacks(at::RecordScope),1,0.016307893020221786
+npyiter_fill_axisdata,1,0.016307893020221786
+"c10::operator-(int, c10::SymInt const&)",1,0.016307893020221786
+_TAIL_CALL_CONTAINS_OP_DICT.llvm.725214118104407848,1,0.016307893020221786
+lll_mutex_lock_optimized,1,0.016307893020221786
+"at::(anonymous namespace)::check_inplace(at::Tensor const&, c10::ArrayRef<long>, c10::TensorOptions const&)",1,0.016307893020221786
+"at::native::(anonymous namespace)::add_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const [clone .isra.0]",1,0.016307893020221786
+c10::WarningUtils::get_warning_handler(),1,0.016307893020221786
+"torch::autograd::check_input_variables(char const*, std::vector<at::Tensor, std::allocator<at::Tensor> > const&, int, int, bool)",1,0.016307893020221786
+arrow::compute::GetFunctionRegistry() [clone .localalias] [clone .lto_priv.0],1,0.016307893020221786
+torch::autograd::SavedVariable::unpack(std::shared_ptr<torch::autograd::Node>) const,1,0.016307893020221786
+"torch::autograd::generated::details::mm_mat1_backward(at::Tensor const&, at::Tensor const&, c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, c10::Layout, c10::Scalar const&)",1,0.016307893020221786
+"at::(anonymous namespace)::structured_ufunc_add_CPU_functional::set_output_strided(long, c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions, c10::ArrayRef<at::Dimname>)",1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda()#1}::operator()() const::{lambda()#20}::operator()() const::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda()#1}::operator()() const::{lambda()#20}::operator()() const::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",1,0.016307893020221786
+__GI___libc_write,1,0.016307893020221786
+tcache_next,1,0.016307893020221786
+at::TensorIteratorBase::populate_operands(at::TensorIteratorConfig&),1,0.016307893020221786
+"arm_compute::cpu::(anonymous namespace)::Fallback<float, float, float, arm_gemm::Nothing>::run(arm_compute::ITensorPack&)",1,0.016307893020221786
+at::impl::ThreadLocalPythonObjects::set_state(at::impl::ThreadLocalPythonObjects),1,0.016307893020221786
+tuple_dealloc,1,0.016307893020221786
+fbgemm::is_radix_sort_accelerated_with_openmp(),1,0.016307893020221786
+"std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_dispose()",1,0.016307893020221786
+"torch::autograd::call_tensor_pre_hooks(torch::autograd::Node&, std::vector<at::Tensor, std::allocator<at::Tensor> >)",1,0.016307893020221786
+"at::_ops::nan_to_num_out::call(at::Tensor const&, std::optional<double>, std::optional<double>, std::optional<double>, at::Tensor&)",1,0.016307893020221786
+diskgraph_engine::engine::DiskGraphEngine::sample_runtime_batch::{{closure}},1,0.016307893020221786
+"c10::intrusive_ptr<c10::VariableVersion::VersionCounter, c10::detail::intrusive_target_default_null_type<c10::VariableVersion::VersionCounter> >::reset_not_null_(c10::VariableVersion::VersionCounter*)",1,0.016307893020221786
+PyDict_New,1,0.016307893020221786
+torch::PythonArgs::toBool(int),1,0.016307893020221786
+"at::(anonymous namespace)::structured_bitwise_and_out_functional::set_output_strided(long, c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions, c10::ArrayRef<at::Dimname>)",1,0.016307893020221786
+_TAIL_CALL_CALL_METHOD_DESCRIPTOR_NOARGS.llvm.725214118104407848,1,0.016307893020221786
+<diskgraph_engine::output::RuntimeBatchOutput as diskgraph_engine::output::OutputHandler>::handle_edge,1,0.016307893020221786
+"pybind11::cpp_function::dispatcher(_object*, _object*, _object*)",1,0.016307893020221786
+<arrow_array::array::primitive_array::PrimitiveArray<T> as arrow_array::array::Array>::len,1,0.016307893020221786
+"ideep::eltwise_backward::compute(ideep::tensor const&, ideep::tensor const&, ideep::tensor&, dnnl::algorithm, float, float, ideep::engine const&)",1,0.016307893020221786
+subtype_dict,1,0.016307893020221786
+c10::TensorImpl::empty_tensor_restride(c10::MemoryFormat),1,0.016307893020221786
+npyiter_copy_from_buffers,1,0.016307893020221786
+"torch::autograd::THPVariable_stack(_object*, _object*, _object*)",1,0.016307893020221786
+at::native::(anonymous namespace)::ne_kernel(at::TensorIteratorBase&),1,0.016307893020221786
+alloc::raw_vec::RawVecInner<A>::finish_grow,1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::addcdiv_cpu_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#2}::operator()() const::{lambda()#7}::operator()() const::{lambda(float, float, float)#1}, at::native::(anonymous namespace)::addcdiv_cpu_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#2}::operator()() const::{lambda()#7}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",1,0.016307893020221786
+"std::vector<std::shared_ptr<arrow::Field>, std::allocator<std::shared_ptr<arrow::Field> > >::~vector()",1,0.016307893020221786
+"at::_ops::rsub_Scalar::call(at::Tensor const&, c10::Scalar const&, c10::Scalar const&)",1,0.016307893020221786
+dnnl_primitive_attr::operator==(dnnl_primitive_attr const&) const,1,0.016307893020221786
+set_add_key.llvm.14865704952532498996,1,0.016307893020221786
+arrow_array::record_batch::RecordBatch::try_new_impl,1,0.016307893020221786
+npyiter_check_global_flags.constprop.0,1,0.016307893020221786
+"dnnl_primitive_desc::create_primitive_iface(std::pair<dnnl_primitive*, dnnl::impl::cache_state_t>&, dnnl::impl::cache_blob_t const&) const",1,0.016307893020221786
+"at::_ops::lift_fresh::redispatch(c10::DispatchKeySet, at::Tensor const&)",1,0.016307893020221786
+"at::_ops::eq_Scalar::call(at::Tensor const&, c10::Scalar const&)",1,0.016307893020221786
+dnnl::impl::cpu::aarch64::matmul::acl_matmul_t::pd_t::init(dnnl_engine*),1,0.016307893020221786
+vectorcall_method,1,0.016307893020221786
+"at::empty_strided(c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions)",1,0.016307893020221786
+dnnl::impl::cpu::aarch64::matmul::acl_matmul_t::execute(dnnl::impl::exec_ctx_t const&) const,1,0.016307893020221786
+rayon_core::sleep::Sleep::sleep,1,0.016307893020221786
+"std::_Function_handler<void (void*), cpu_alloc::{lambda(void*)#1}>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",1,0.016307893020221786
+"(anonymous namespace)::matmul_attr_check(dnnl::impl::matmul_desc_t const&, dnnl_engine const*, dnnl_primitive_attr const*)",1,0.016307893020221786
+PyArray_PrepareOneRawArrayIter,1,0.016307893020221786
+"arm_compute::cpu::CpuAuxTensorHandler::CpuAuxTensorHandler(int, arm_compute::TensorInfo&, arm_compute::ITensorPack&, bool, bool, bool) [clone .constprop.0]",1,0.016307893020221786
+insert_split_key.llvm.10857629409973832828,1,0.016307893020221786
+core::ptr::drop_in_place<arrow_schema::datatype::DataType>,1,0.016307893020221786
+array_astype,1,0.016307893020221786
+Py_XDECREF,1,0.016307893020221786
+"std::_Sp_counted_deleter<torch::autograd::generated::SliceBackward0*, void (*)(torch::autograd::Node*), std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()",1,0.016307893020221786
+array_assign_subscript,1,0.016307893020221786
+"Xbyak_aarch64::CodeGenerator::SveFpArithmeticUnpred(unsigned int, Xbyak_aarch64::_ZReg const&, Xbyak_aarch64::_ZReg const&, Xbyak_aarch64::_ZReg const&)",1,0.016307893020221786
+at::TensorIteratorBase::~TensorIteratorBase(),1,0.016307893020221786
+_TAIL_CALL_CALL_LEN.llvm.725214118104407848,1,0.016307893020221786
+arm_compute::TensorInfo::TensorInfo(),1,0.016307893020221786
+Sleef_fmodf4_advsimd,1,0.016307893020221786
+dnnl::impl::cpu::aarch64::tr::jit_uni_reorder_kernel_f32_t::create_kernel(),1,0.016307893020221786
+at::has_internal_overlap(c10::TensorImpl*),1,0.016307893020221786
+"c10::intrusive_ptr<c10::TensorImpl, c10::UndefinedTensorImpl>::reset_not_null_(c10::TensorImpl*)",1,0.016307893020221786
+arm_compute::experimental::op::CpuTranspose::~CpuTranspose(),1,0.016307893020221786
+at::autocast::get_autocast_dtype(c10::DeviceType),1,0.016307893020221786
+core::ptr::drop_in_place<arrow_array::builder::primitive_builder::PrimitiveBuilder<arrow_array::types::Int32Type>>,1,0.016307893020221786
+builtin_callable,1,0.016307893020221786
+OBJECT_setitem,1,0.016307893020221786
+THPVariable_clear(THPVariable*),1,0.016307893020221786
+std::__future_base::_Result_base::_Result_base(),1,0.016307893020221786
+"__pyx_pw_7pyarrow_3lib_5Array_70to_numpy(_object*, _object* const*, long, _object*) [clone .lto_priv.0]",1,0.016307893020221786
+__libc_open64,1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::lerp_scalar_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(float, float)#1}, at::native::(anonymous namespace)::lerp_scalar_kernel(at::TensorIteratorBase&, c10::Scalar const&)::{lambda()#1}::operator()() const::{lambda()#2}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",1,0.016307893020221786
+_PyThreadState_Detach,1,0.016307893020221786
+gen_close,1,0.016307893020221786
+"Xbyak_aarch64::CodeGenerator::fexpa(Xbyak_aarch64::ZRegS const&, Xbyak_aarch64::ZRegS const&)",1,0.016307893020221786
+_TAIL_CALL_LOAD_ATTR_SLOT.llvm.725214118104407848,1,0.016307893020221786
+arm_compute::Scheduler::get(),1,0.016307893020221786
+diskgraph_rowpack::RowPackDecoder::decode_batch_to_arrow,1,0.016307893020221786
+PyInit_hashtable,1,0.016307893020221786
+unicodedata_UCD_east_asian_width_impl,1,0.016307893020221786
+_sre_SRE_Pattern_match,1,0.016307893020221786
+arrow::detail::Fingerprintable::~Fingerprintable() [clone .localalias] [clone .lto_priv.0],1,0.016307893020221786
+at::RecordFunction::currentThreadId(),1,0.016307893020221786
+at::(anonymous namespace)::LocalCallbackManager::setTLS(at::RecordFunctionTLS const&) [clone .constprop.0],1,0.016307893020221786
+arrow_select::take::take_native,1,0.016307893020221786
+"at::_ops::_to_copy::call(at::Tensor const&, std::optional<c10::ScalarType>, std::optional<c10::Layout>, std::optional<c10::Device>, std::optional<bool>, bool, std::optional<c10::MemoryFormat>)",1,0.016307893020221786
+"arrow::internal::Concatenate(std::vector<std::shared_ptr<arrow::Array>, std::allocator<std::shared_ptr<arrow::Array> > > const&, arrow::MemoryPool*, std::shared_ptr<arrow::DataType>*) [clone .localalias]",1,0.016307893020221786
+mi_free,1,0.016307893020221786
+at::TensorBase::strides() const,1,0.016307893020221786
+"torch::autograd::InputMetadata::InputMetadata(c10::TensorOptions const&, std::variant<c10::SmallVector<c10::SymInt, 5u>, at::Tensor>, bool, bool, std::optional<c10::ScalarType>)",1,0.016307893020221786
+_PyObject_Call_Prepend,1,0.016307893020221786
+"at::native::structured_ufunc_add_CPU::impl(at::Tensor const&, at::Tensor const&, c10::Scalar const&, at::Tensor const&)",1,0.016307893020221786
+PyErr_GivenExceptionMatches,1,0.016307893020221786
+Xbyak_aarch64::util::Cpu::has(unsigned long) const,1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::cpu_index_kernel<long, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#3}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#3} const&, bool)::{lambda(char**, long const*, long)#1}>(at::native::cpu_index_kernel<long, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#3}>(at::TensorIteratorBase&, c10::ArrayRef<long>, c10::ArrayRef<long>, at::native::(anonymous namespace)::index_put_kernel(at::TensorIterator&, c10::ArrayRef<long>, c10::ArrayRef<long>, bool)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(char*, char*, long)#3} const&, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",1,0.016307893020221786
+code_richcompare,1,0.016307893020221786
+PyUnicode_RichCompare,1,0.016307893020221786
+_Py_EnterRecursiveCallTstate.llvm.13662701339721815364,1,0.016307893020221786
+PyErr_Occurred,1,0.016307893020221786
+"torch::utils::(anonymous namespace)::typeIdWithDefault(torch::PythonArgs&, long, c10::DispatchKey)",1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::(anonymous namespace)::cascade_sum<false, float>(at::TensorIterator&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",1,0.016307893020221786
+"<alloc::vec::into_iter::IntoIter<T,A> as core::ops::drop::Drop>::drop",1,0.016307893020221786
+partial_dealloc,1,0.016307893020221786
+slot_tp_richcompare,1,0.016307893020221786
+"c10::IValue& std::vector<c10::IValue, std::allocator<c10::IValue> >::emplace_back<at::Tensor const&>(at::Tensor const&) [clone .isra.0]",1,0.016307893020221786
+"torch::autograd::Node::task_should_compute_output(std::initializer_list<std::pair<unsigned long, unsigned long> >) const::{lambda(std::pair<unsigned long, unsigned long>)#1}::operator()(std::pair<unsigned long, unsigned long>) const",1,0.016307893020221786
+"std::_Rb_tree<arm_compute::(anonymous namespace)::TransformParams, std::pair<arm_compute::(anonymous namespace)::TransformParams const, void (*)(arm_compute::bfloat16*, float const*, int, int, int, int, int)>, std::_Select1st<std::pair<arm_compute::(anonymous namespace)::TransformParams const, void (*)(arm_compute::bfloat16*, float const*, int, int, int, int, int)> >, std::less<arm_compute::(anonymous namespace)::TransformParams>, std::allocator<std::pair<arm_compute::(anonymous namespace)::TransformParams const, void (*)(arm_compute::bfloat16*, float const*, int, int, int, int, int)> > >::find(arm_compute::(anonymous namespace)::TransformParams const&) const [clone .constprop.0]",1,0.016307893020221786
+std::process::id,1,0.016307893020221786
+__aarch64_ldclr8_acq_rel,1,0.016307893020221786
+"c10::detail::getMaybeFakeTypePtr_<std::optional<at::Tensor>, false>::call()",1,0.016307893020221786
+_Py_IncRef,1,0.016307893020221786
+INT_copyswap,1,0.016307893020221786
+at::OperandInfo::tensor(c10::MaybeOwned<at::TensorBase>&&),1,0.016307893020221786
+"void const* c10::TensorImpl::data_impl<void const, c10::TensorImpl::data() const::{lambda()#1}>(c10::TensorImpl::data() const::{lambda()#1} const&) const",1,0.016307893020221786
+torch::autograd::AutogradMeta::~AutogradMeta(),1,0.016307893020221786
+"torch::autograd::InputBuffer::add(unsigned long, at::Tensor&&, std::optional<c10::Stream> const&, std::optional<c10::Stream> const&, torch::autograd::Node*)",1,0.016307893020221786
+_TAIL_CALL_STORE_FAST_LOAD_FAST.llvm.725214118104407848,1,0.016307893020221786
+torch::PythonArgs::toInt64Optional(int),1,0.016307893020221786
+"__pyx_getprop_7pyarrow_3lib_6Schema_names(_object*, void*) [clone .lto_priv.0]",1,0.016307893020221786
+_datetime_dtype_metadata_clone,1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::TensorIteratorBase::loop_2d_from_1d<at::native::DEFAULT::cpu_kernel<at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda(long)#1}>(at::TensorIteratorBase&, at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda(long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1}>(at::native::DEFAULT::cpu_kernel<at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda(long)#1}>(at::TensorIteratorBase&, at::native::DEFAULT::copy_kernel(at::TensorIterator&, bool)::{lambda()#1}::operator()() const::{lambda()#16}::operator()() const::{lambda()#1}::operator()() const::{lambda()#13}::operator()() const::{lambda(long)#1}&&, long, bool)::{lambda(char**, long const*, long)#1} const&)::{lambda(char**, long const*, long, long)#1}>(long, char**, long const*, long, long)",1,0.016307893020221786
+dictiter_dealloc,1,0.016307893020221786
+copy_lock_held.llvm.10857629409973832828,1,0.016307893020221786
+<arrow_array::array::primitive_array::PrimitiveArray<T> as arrow_array::array::Array>::data_type,1,0.016307893020221786
+_TAIL_CALL_error.llvm.725214118104407848,1,0.016307893020221786
+dnnl_primitive::~dnnl_primitive(),1,0.016307893020221786
+PyObject_GC_Track,1,0.016307893020221786
+"dnnl_primitive_attr::has_default_values(dnnl_primitive_attr::skip_mask_t, dnnl_data_type_t) const",1,0.016307893020221786
+"at::indexing::impl::applySelect(at::Tensor const&, long, c10::SymInt, long, c10::Device const&, std::optional<c10::ArrayRef<c10::SymInt> > const&) [clone .isra.0]",1,0.016307893020221786
+diskgraph_index::reader::ShardReader::plan_headers_sorted,1,0.016307893020221786
+_mi_page_free,1,0.016307893020221786
+"Xbyak_aarch64::CodeGenerator::fmad(Xbyak_aarch64::ZRegS const&, Xbyak_aarch64::_PReg const&, Xbyak_aarch64::ZRegS const&, Xbyak_aarch64::ZRegS const&)",1,0.016307893020221786
+at::sequence_number::get_and_increment(),1,0.016307893020221786
+"at::_ops::new_empty::call(at::Tensor const&, c10::ArrayRef<c10::SymInt>, std::optional<c10::ScalarType>, std::optional<c10::Layout>, std::optional<c10::Device>, std::optional<bool>)",1,0.016307893020221786
+PyMapping_GetOptionalItem,1,0.016307893020221786
+__GI___pthread_disable_asynccancel,1,0.016307893020221786
+torch::autograd::SavedVariable::operator=(torch::autograd::SavedVariable&&) [clone .isra.0],1,0.016307893020221786
+ga_dealloc,1,0.016307893020221786
+mi_option_get,1,0.016307893020221786
+"at::(anonymous namespace)::structured_sum_out_functional::set_output_strided(long, c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions, c10::ArrayRef<at::Dimname>)",1,0.016307893020221786
+torch::autograd::AutogradMeta::requires_grad() const,1,0.016307893020221786
+mi_arenas_page_alloc_fresh,1,0.016307893020221786
+"pybind11::detail::register_instance(pybind11::detail::instance*, void*, pybind11::detail::type_info const*)",1,0.016307893020221786
+"at::_ops::to_dtype::call(at::Tensor const&, c10::ScalarType, bool, bool, std::optional<c10::MemoryFormat>)",1,0.016307893020221786
+make_dict_from_instance_attributes.llvm.10857629409973832828,1,0.016307893020221786
+"torch::autograd::THPVariable_empty(_object*, _object*, _object*)",1,0.016307893020221786
+"torch::autograd::VariableType::(anonymous namespace)::slice_Tensor(c10::DispatchKeySet, at::Tensor const&, long, std::optional<c10::SymInt>, std::optional<c10::SymInt>, c10::SymInt)",1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor& (c10::DispatchKeySet, at::Tensor&, c10::List<std::optional<at::Tensor> > const&, at::Tensor const&, bool), &torch::autograd::VariableType::(anonymous namespace)::index_put_>, at::Tensor&, c10::guts::typelist::typelist<c10::DispatchKeySet, at::Tensor&, c10::List<std::optional<at::Tensor> > const&, at::Tensor const&, bool> >, at::Tensor& (c10::DispatchKeySet, at::Tensor&, c10::List<std::optional<at::Tensor> > const&, at::Tensor const&, bool)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor&, c10::List<std::optional<at::Tensor> > const&, at::Tensor const&, bool)",1,0.016307893020221786
+unpack_indices,1,0.016307893020221786
+"std::unique_ptr<dnnl::impl::primitive_desc_t::make_unique_pd<dnnl::impl::cpu::aarch64::matmul::brgemm_matmul_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)31>::pd_t, dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&>(dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&)::pd_compat_t, std::default_delete<dnnl::impl::primitive_desc_t::make_unique_pd<dnnl::impl::cpu::aarch64::matmul::brgemm_matmul_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)31>::pd_t, dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&>(dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&)::pd_compat_t> > dnnl::impl::utils::make_unique<dnnl::impl::primitive_desc_t::make_unique_pd<dnnl::impl::cpu::aarch64::matmul::brgemm_matmul_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)31>::pd_t, dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&>(dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&)::pd_compat_t, dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&>(dnnl::impl::op_desc_t const*&, dnnl_primitive_attr const*&, dnnl::impl::matmul_pd_t const*&)",1,0.016307893020221786
+_mi_page_malloc_zero,1,0.016307893020221786
+std::sync::mpmc::array::Channel<T>::send,1,0.016307893020221786
+"torch::utils::tensor_to_numpy(at::Tensor const&, bool)",1,0.016307893020221786
+PyInit_lib,1,0.016307893020221786
+_abc__abc_instancecheck,1,0.016307893020221786
+"dnnl::impl::memory_desc_init_by_tag(dnnl_memory_desc&, int, long const*, dnnl_data_type_t, dnnl_format_tag_t)",1,0.016307893020221786
+list_sort_impl.llvm.17351582882938884812,1,0.016307893020221786
+Xbyak_aarch64::LabelManager::defineClabel(Xbyak_aarch64::Label&),1,0.016307893020221786
+__aarch64_ldadd4_acq,1,0.016307893020221786
+"torch::autograd::VariableType::(anonymous namespace)::checked_cast_variable(at::Tensor const&, char const*, int)",1,0.016307893020221786
+type_call,1,0.016307893020221786
+"c10::Device at::native::out_device<at::Tensor const, at::Tensor, at::Tensor>(at::Tensor const&, at::Tensor&, at::Tensor&)",1,0.016307893020221786
+ossl_engine_table_select,1,0.016307893020221786
+_int_free_maybe_consolidate,1,0.016307893020221786
+std::sync::mpmc::array::Channel<T>::recv,1,0.016307893020221786
+_TAIL_CALL_POP_JUMP_IF_TRUE.llvm.725214118104407848,1,0.016307893020221786
+at::OperandInfo::validate(),1,0.016307893020221786
+at::OperandInfo::exchange_tensor(c10::MaybeOwned<at::TensorBase>&&),1,0.016307893020221786
+at::TensorIteratorBase::TensorIteratorBase(at::TensorIteratorBase const&),1,0.016307893020221786
+"torch::autograd::VariableType::(anonymous namespace)::slice_backward(c10::DispatchKeySet, at::Tensor const&, c10::ArrayRef<c10::SymInt>, long, c10::SymInt, c10::SymInt, c10::SymInt)",1,0.016307893020221786
+arrow::Status::~Status(),1,0.016307893020221786
+PyTraceBack_Here,1,0.016307893020221786
+__pthread_rwlock_rdlock_full64,1,0.016307893020221786
+_TAIL_CALL_COMPARE_OP_STR.llvm.725214118104407848,1,0.016307893020221786
+PyArray_CastingConverter,1,0.016307893020221786
+dictresize.llvm.10857629409973832828,1,0.016307893020221786
+at::functorch::setFuncTorchTLS(std::shared_ptr<at::functorch::FuncTorchTLSBase const> const&),1,0.016307893020221786
+PyUnstable_EnableTryIncRef,1,0.016307893020221786
+npyiter_compute_index_strides,1,0.016307893020221786
+"at::_ops::alias::redispatch(c10::DispatchKeySet, at::Tensor const&)",1,0.016307893020221786
+std::thread::local::LocalKey<T>::with,1,0.016307893020221786
+_io__Buffered_flush,1,0.016307893020221786
+arrow::SimpleRecordBatch::column(int) const,1,0.016307893020221786
+__GI___pthread_self,1,0.016307893020221786
+"bool c10::_compute_non_overlapping_and_dense<long>(c10::ArrayRef<long>, c10::ArrayRef<long>)",1,0.016307893020221786
+"torch::autograd::THPVariable_view(_object*, _object*, _object*)",1,0.016307893020221786
+"torch::autograd::THPVariable_clamp(_object*, _object*, _object*)",1,0.016307893020221786
+_PyUnicode_JoinArray,1,0.016307893020221786
+getset_get,1,0.016307893020221786
+"at::indexing::impl::recordTensorIndex(at::Tensor const&, std::vector<at::Tensor, std::allocator<at::Tensor> >&, long*)",1,0.016307893020221786
+"dnnl::impl::exec_ctx_impl_t::host_ptr(dnnl::impl::memory_storage_t const*, bool) const",1,0.016307893020221786
+"torch::autograd::VariableType::(anonymous namespace)::div_Tensor(c10::DispatchKeySet, at::Tensor const&, at::Tensor const&)",1,0.016307893020221786
+"std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace(unsigned long, unsigned long, char const*, unsigned long) [clone .localalias] [clone .lto_priv.0]",1,0.016307893020221786
+"at::native::layer_norm_cpu(at::Tensor const&, c10::ArrayRef<long>, std::optional<at::Tensor> const&, std::optional<at::Tensor> const&, double)",1,0.016307893020221786
+long_hash,1,0.016307893020221786
+"torch::autograd::THPVariable_size(_object*, _object*, _object*)",1,0.016307893020221786
+set_intersection,1,0.016307893020221786
+dnnl::impl::primitive_hashing::get_attr_hash(dnnl_primitive_attr const&),1,0.016307893020221786
+split.llvm.15489788241876900469,1,0.016307893020221786
+unicodekeys_lookup_unicode.llvm.10857629409973832828,1,0.016307893020221786
+__strlen_asimd,1,0.016307893020221786
+rangeiter_next,1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor (at::Tensor const&, long, std::optional<c10::SymInt>, std::optional<c10::SymInt>, c10::SymInt), &at::(anonymous namespace)::(anonymous namespace)::wrapper_CompositeExplicitAutograd_Tensor_slice>, at::Tensor, c10::guts::typelist::typelist<at::Tensor const&, long, std::optional<c10::SymInt>, std::optional<c10::SymInt>, c10::SymInt> >, at::Tensor (at::Tensor const&, long, std::optional<c10::SymInt>, std::optional<c10::SymInt>, c10::SymInt)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor const&, long, std::optional<c10::SymInt>, std::optional<c10::SymInt>, c10::SymInt)",1,0.016307893020221786
+std::function<at::Tensor (at::Tensor const&)>::function(std::function<at::Tensor (at::Tensor const&)> const&),1,0.016307893020221786
+"std::__cxx11::basic_ostringstream<char, std::char_traits<char>, std::allocator<char> >::basic_ostringstream()",1,0.016307893020221786
+diskgraph_index::page_io::PreparedPages::copy_range,1,0.016307893020221786
+odictiter_iternext,1,0.016307893020221786
+arrow::Schema::~Schema() [clone .localalias] [clone .lto_priv.0],1,0.016307893020221786
+"at::_ops::expand::redispatch(c10::DispatchKeySet, at::Tensor const&, c10::ArrayRef<c10::SymInt>, bool)",1,0.016307893020221786
+"at::native::structured_bitwise_and_out::impl(at::Tensor const&, at::Tensor const&, at::Tensor const&)",1,0.016307893020221786
+diskgraph_engine::state::SamplingState::new,1,0.016307893020221786
+"at::(anonymous namespace)::structured_div_out_functional::set_output_strided(long, c10::ArrayRef<long>, c10::ArrayRef<long>, c10::TensorOptions, c10::ArrayRef<at::Dimname>)",1,0.016307893020221786
+BOOL_setitem,1,0.016307893020221786
+<std::sync::mpmc::Sender<T> as core::ops::drop::Drop>::drop,1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::mul_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#14}::operator()() const::{lambda(float, float)#1}, at::native::(anonymous namespace)::mul_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#14}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",1,0.016307893020221786
+arm_compute::TensorInfo::TensorInfo(arm_compute::ITensorInfo const&),1,0.016307893020221786
+"arm_gemm::GemmHybridIndirect<arm_gemm::cls_sve_ffhybrid_fp32bf16fp32_mmla_4x6VL, float, float, float, arm_gemm::Nothing, false, true>::execute_common(arm_gemm::NDCoordinate<6u> const&, arm_gemm::NDCoordinate<6u> const&, int, arm_gemm::GemmArrays<float, float, float>&) [clone .isra.0]",1,0.016307893020221786
+"at::meta::structured_addcdiv::meta(at::Tensor const&, at::Tensor const&, at::Tensor const&, c10::Scalar const&)",1,0.016307893020221786
+"arrow::compute::detail::(anonymous namespace)::ScalarExecutor::Execute(arrow::compute::ExecBatch const&, arrow::compute::detail::ExecListener*) [clone .lto_priv.0]",1,0.016307893020221786
+_TAIL_CALL_POP_JUMP_IF_NOT_NONE.llvm.725214118104407848,1,0.016307893020221786
+_convert_from_any.part.0,1,0.016307893020221786
+"arrow::Result<std::shared_ptr<arrow::Scalar> > arrow::MakeScalar<bool>(std::shared_ptr<arrow::DataType>, bool&&)",1,0.016307893020221786
+_TAIL_CALL_COMPARE_OP_INT.llvm.725214118104407848,1,0.016307893020221786
+__fmodf,1,0.016307893020221786
+Py_BuildValue,1,0.016307893020221786
+PyErr_CheckSignals,1,0.016307893020221786
+binary_iop,1,0.016307893020221786
+"std::_Sp_counted_ptr_inplace<std::__future_base::_State_baseV2, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()",1,0.016307893020221786
+arrow::compute::InputType::Matches(arrow::DataType const&) const [clone .localalias],1,0.016307893020221786
+arrow::PrimitiveArray::SetData(std::shared_ptr<arrow::ArrayData> const&),1,0.016307893020221786
+"dnnl::impl::memory_desc_wrapper::size(int, bool, bool) const",1,0.016307893020221786
+PyLong_FromLong,1,0.016307893020221786
+"dnnl::impl::primitive_create(dnnl_primitive**, dnnl_primitive_desc const*, dnnl::impl::cache_blob_t const&)",1,0.016307893020221786
+c10::Scalar::toFloat() const,1,0.016307893020221786
+"std::pair<std::__detail::_Node_iterator<std::pair<int const, dnnl::memory>, false, false>, bool> std::_Hashtable<int, std::pair<int const, dnnl::memory>, std::allocator<std::pair<int const, dnnl::memory> >, std::__detail::_Select1st, std::equal_to<int>, std::hash<int>, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_emplace<std::pair<int const, dnnl::memory> >(std::integral_constant<bool, true>, std::pair<int const, dnnl::memory>&&) [clone .isra.0]",1,0.016307893020221786
+"arm_gemm::get_weight_format(arm_gemm::KernelWeightFormat, unsigned long)",1,0.016307893020221786
+_PyObject_GC_New,1,0.016307893020221786
+__aarch64_swp8_acq,1,0.016307893020221786
+__posix_memalign,1,0.016307893020221786
+arrow_data::ffi::release_array,1,0.016307893020221786
+at::TensorIteratorBase::allocate_or_resize_outputs(),1,0.016307893020221786
+"dnnl::impl::cpu::aarch64::jit_uni_reorder_t::omp_driver(char const*, char*, float const*, float const*, int const*, int const*, dnnl::impl::memory_tracking::grantor_t const&) const",1,0.016307893020221786
+c10::impl::ExcludeDispatchKeyGuard::~ExcludeDispatchKeyGuard(),1,0.016307893020221786
+"torch::autograd::autogradNotImplementedFallbackImpl(c10::OperatorHandle const&, c10::DispatchKeySet, std::vector<c10::IValue, std::allocator<c10::IValue> >*)",1,0.016307893020221786
+_TAIL_CALL_STORE_ATTR.llvm.725214118104407848,1,0.016307893020221786
+PyObject_IsInstance,1,0.016307893020221786
+<arrow_schema::datatype::DataType as core::clone::Clone>::clone,1,0.016307893020221786
+dnnl::impl::cpu::aarch64::jit_uni_eltwise_fwd_t<(dnnl::impl::cpu::aarch64::cpu_isa_t)3>::init(dnnl_engine*),1,0.016307893020221786
+long const* at::TensorBase::const_data_ptr<long>() const,1,0.016307893020221786
+Sleef_finz_expf4_u10advsimd,1,0.016307893020221786
+sm_descr_get,1,0.016307893020221786
+method_vectorcall.llvm.16420802526036213401,1,0.016307893020221786
+"__pyx_pw_7pyarrow_3lib_14_PandasAPIShim_21uses_string_dtype(_object*, _object* const*, long, _object*) [clone .lto_priv.0]",1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor (at::Tensor const&, c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, std::optional<c10::SymInt>), &at::(anonymous namespace)::(anonymous namespace)::wrapper_CPU__as_strided>, at::Tensor, c10::guts::typelist::typelist<at::Tensor const&, c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, std::optional<c10::SymInt> > >, at::Tensor (at::Tensor const&, c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, std::optional<c10::SymInt>)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor const&, c10::ArrayRef<c10::SymInt>, c10::ArrayRef<c10::SymInt>, std::optional<c10::SymInt>)",1,0.016307893020221786
+_TAIL_CALL_CALL.llvm.725214118104407848,1,0.016307893020221786
+dict_traverse,1,0.016307893020221786
+"arrow::(anonymous namespace)::ConcatenateImpl::Buffers(unsigned long, int) [clone .lto_priv.0]",1,0.016307893020221786
+__GI___libc_read,1,0.016307893020221786
+std::sync::mpmc::array::Channel<T>::recv::{{closure}},1,0.016307893020221786
+_TAIL_CALL_FOR_ITER.llvm.725214118104407848,1,0.016307893020221786
+"at::Tensor at::detail::make_tensor<c10::TensorImpl, c10::Storage, c10::DispatchKey, caffe2::TypeMeta>(c10::Storage&&, c10::DispatchKey&&, caffe2::TypeMeta&&)",1,0.016307893020221786
+at::TensorIteratorBase::reorder_dimensions(),1,0.016307893020221786
+"at::legacy_cat_wrap_dim(long, std::vector<std::reference_wrapper<at::Tensor const>, std::allocator<std::reference_wrapper<at::Tensor const> > > const&)",1,0.016307893020221786
+_TAIL_CALL_LOAD_ATTR_METHOD_NO_DICT.llvm.725214118104407848,1,0.016307893020221786
+AttributeError_init,1,0.016307893020221786
+at::impl::SavedTensorDefaultHooksTLS::SavedTensorDefaultHooksTLS(at::impl::SavedTensorDefaultHooksTLS const&),1,0.016307893020221786
+object_isinstance.llvm.13237650572641001772,1,0.016307893020221786
+arrow::compute::CastOptions::~CastOptions(),1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor (at::Tensor const&, long), &at::(anonymous namespace)::(anonymous namespace)::wrapper_CompositeExplicitAutograd__unsqueeze>, at::Tensor, c10::guts::typelist::typelist<at::Tensor const&, long> >, at::Tensor (at::Tensor const&, long)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor const&, long)",1,0.016307893020221786
+dnnl_engine_destroy,1,0.016307893020221786
+"pybind11::detail::instance::get_value_and_holder(pybind11::detail::type_info const*, bool)",1,0.016307893020221786
+dict_new_presized,1,0.016307893020221786
+"THPVariable_set_backwards_hooks(THPVariable*, _object*, void*)",1,0.016307893020221786
+"std::_Function_handler<void (void*), void (*)(void*)>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",1,0.016307893020221786
+diskgraph_index::page_io::submit_prepared_page_batch,1,0.016307893020221786
+"c10::impl::wrap_kernel_functor_unboxed_<c10::impl::detail::WrapFunctionIntoFunctor_<c10::CompileTimeFunctionPointer<at::Tensor& (c10::DispatchKeySet, at::Tensor&, long, at::Tensor const&, at::Tensor const&), &torch::autograd::VariableType::(anonymous namespace)::scatter__src>, at::Tensor&, c10::guts::typelist::typelist<c10::DispatchKeySet, at::Tensor&, long, at::Tensor const&, at::Tensor const&> >, at::Tensor& (c10::DispatchKeySet, at::Tensor&, long, at::Tensor const&, at::Tensor const&)>::call(c10::OperatorKernel*, c10::DispatchKeySet, at::Tensor&, long, at::Tensor const&, at::Tensor const&)",1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(float, float)#1}, at::native::(anonymous namespace)::remainder_kernel(at::TensorIteratorBase&)::{lambda()#2}::operator()() const::{lambda()#2}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<float>, at::vec::DEFAULT::Vectorized<float>)#1}> >(long, char**, long const*, long, long)",1,0.016307893020221786
+_Py_slot_tp_getattr_hook,1,0.016307893020221786
+"std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::basic_string<std::allocator<char> >(char const*, std::allocator<char> const&) [clone .constprop.0]",1,0.016307893020221786
+"at::_ops::div__Tensor::call(at::Tensor&, at::Tensor const&)",1,0.016307893020221786
+futex_wake,1,0.016307893020221786
+at::TensorIteratorBase::compute_names(at::TensorIteratorConfig const&),1,0.016307893020221786
+"void c10::function_ref<void (char**, long const*, long, long)>::callback_fn<at::native::DEFAULT::VectorizedLoop2d<at::native::(anonymous namespace)::clamp_min_scalar_kernel_impl(at::TensorIteratorBase&, c10::Scalar)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, at::native::(anonymous namespace)::clamp_min_scalar_kernel_impl(at::TensorIteratorBase&, c10::Scalar)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(at::vec::DEFAULT::Vectorized<long>)#1}> >(long, char**, long const*, long, long)",1,0.016307893020221786
+dnnl::impl::primitive_cache(),1,0.016307893020221786
+Py_IsInitialized,1,0.016307893020221786
+"dnnl::impl::cvt_primitive_args(dnnl::impl::primitive_desc_t const*, int, dnnl_exec_arg_t const*, std::unordered_map<int, dnnl::impl::memory_arg_t, std::hash<int>, std::equal_to<int>, std::allocator<std::pair<int const, dnnl::impl::memory_arg_t> > >&)",1,0.016307893020221786
+"at::native::review_reduce_result(at::Tensor const&, int, std::bitset<64ul>, bool)",1,0.016307893020221786
+PyEval_RestoreThread,1,0.016307893020221786
+"arrow::PoolBuffer::MakeUnique(arrow::MemoryPool*, long)",1,0.016307893020221786
+torch::autograd::generated::BinaryCrossEntropyWithLogitsBackward0::release_variables(),1,0.016307893020221786

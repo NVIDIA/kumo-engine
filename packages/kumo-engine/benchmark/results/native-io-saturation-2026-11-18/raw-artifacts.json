@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "status": "PASS_CLOSED_ARCHIVES_AND_ISOLATED_EXTRACTED_RAW_REPLAY",
+  "bulk_location": "LOCAL_OWNED_ARTIFACT_STORAGE; bulk archives retained outside Git",
+  "local_root_token": "$ARTIFACT_ROOT/archives-v3",
+  "archives": [
+    {
+      "name": "failed-principal-v1.tar.gz",
+      "physical_sha256": "cb2b39a3c4fc9c4d7b2acfa052a73560fcb7ec20ceea1f8250b0997bc6252730",
+      "physical_bytes": 39305021,
+      "payload_bytes": 248699305,
+      "files": 39,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    },
+    {
+      "name": "fio-ceiling.tar.gz",
+      "physical_sha256": "7dbc5ac19c2b0cf725ae3093731d3947a7de730c8d3f149cf1337a6fd7c7a716",
+      "physical_bytes": 55697343,
+      "payload_bytes": 396185213,
+      "files": 92,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    },
+    {
+      "name": "inputs-recipes.tar.gz",
+      "physical_sha256": "95f3b69fa22213d21220d48b1c2bf085218e9e8677dc4094832f13c5c574f052",
+      "physical_bytes": 91318035,
+      "payload_bytes": 188951476,
+      "files": 285,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    },
+    {
+      "name": "principal-v2.tar.gz",
+      "physical_sha256": "1c0714a4cce4b22ba3a1f85f6b8c916bb2f9e90ad510077075c849d02c00a93c",
+      "physical_bytes": 1138993718,
+      "payload_bytes": 7067176249,
+      "files": 760,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    },
+    {
+      "name": "profiles.tar.gz",
+      "physical_sha256": "87c02d7913829bdf8ca115039e2edb9adbccc9d49cc6fc9bcfc6ed235cf3d23d",
+      "physical_bytes": 4335210,
+      "payload_bytes": 28522263,
+      "files": 40,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    },
+    {
+      "name": "finalization-supplement-v2.tar.gz",
+      "physical_sha256": "7e2b51b4cee69b4c2a4c84e9b33252aef28f723e22e76f9ae8bfdae65e0d2e95",
+      "physical_bytes": 174238,
+      "payload_bytes": 1025218,
+      "files": 32,
+      "readback": "EVERY_MEMBER_SIZE_SHA_AND_TYPE_PASS"
+    }
+  ],
+  "exact_packing_argv": "Retained in verified archive catalogs and exact source helpers",
+  "inventory": {
+    "files": 1214,
+    "sha256": "6e8b8cebffbdbf17ab08c3c1348c8940c4ef3b1bf79ccb367afa9144d3d22863",
+    "control_files": 2
+  },
+  "replay_seal_sha256": "33d90a86da5b0451986dfa05fe7dd72a38a768eb674ba7d50b311d00932c3e89",
+  "replay": {
+    "counts": {
+      "none": 35,
+      "queue": 35,
+      "cpu": 1,
+      "offcpu": 1
+    },
+    "original_path_fallback": false,
+    "proof_sha256": "08cb77d3acc5650fd24f8df1cb5d01691fddc251fbff7d5fa590c2363e51a2af",
+    "result_sha256": "b94c713031f177ead9cbf8637e1b2b85991953d6b0140bbdd8fae2ef3d288688",
+    "negative_lookup_cases": 11,
+    "scope": "Accepted observer raw replay plus all none-row file identities; failed attempts are retained and hash-verified separately, never promoted to successful measurements",
+    "application_rerun": false,
+    "none_rows": "File identity only; no raw observer exists"
+  },
+  "finalization_inventory_sha256": "5c34c055118166b679a399263edc9a24c1a7a0ea200a7e9b94f0e86e89aa066c",
+  "excluded_bulk": [
+    "source Parquet",
+    "prepared rows/cache, including exact failed runtime clone",
+    "8GiB fio fixture",
+    "Cargo targets/shared venv"
+  ],
+  "preserved_failures": [
+    "principal70-v1 quiet/drain failure and foreign-I/O diagnosis",
+    "qualification-v1 target-DATA requirement and parent-dirtied fixture",
+    "archive-v2 stopped bulk-allowlist gap; 252-file SHA inventory retained"
+  ],
+  "separate_core_local_proof_sha256": "c05170ba2909679134f6fe360ad9167d193458b044faab66ee2bb01175e3fe05",
+  "checksum_definition": "physical gzip container bytes, independently sha256sum checked; decoded members separately size/SHA/type checked",
+  "replay_contract": "Extracted adapter/control/source copies; full original keyset/hash identity verified before explicit path translation; raw row/record/gate bytes and PID/cgroup/device identities unchanged; no original-path fallback"
+}
