@@ -1,13 +1,14 @@
 {
   "bundle_manifest_sha256": "756537788732b93e1c94f24c386cf253d867adc5220e4689d636c1627a88467b",
-  "workload_sha256": "df440df955a2edcae0f64acc5b5061272afd855006f944afbc0108a0b0eaf3c0",
+  "workload_sha256": "5c479c8c9438f297c23e5f8e0ce00ff95fc406f36bfe765c94723f75dbed0395",
   "wheel_sha256": {
-    "kumo_fm-0.1.0a1-cp311-cp311-linux_x86_64.whl": "c55014ca6868058f9ddbd4efdcc57032eba24e9152dc445e6e4d95e56edc5818"
+    "kumo_fm-0.1.0a1-cp311-cp311-linux_x86_64.whl": "f1146c4f079ca02a667da2a32fe6c62f91ea1f395cbf11fbd93f5ba1ad0a2701",
+    "diskgraph-0.2.0-cp311-abi3-linux_x86_64.whl": "ede0ca14dee5ccc75266afaf55c8ffd90f73a6e6f835448ddeff87655186522e"
   },
   "snapshot_id": "7a69e955e84d54d6b3b2711be57f9bf1569ada00abbae1a658fb31b0cfdaa76e",
-  "engine_revision": "9637e9cc9e2da877959b3c6b9db88c0fc7e35f3f",
+  "engine_revision": "8d9e857f1bc020974787bd139f11444c481a88ba",
   "reference_revision": "b4516394e98929c5b4752745866d5e3138276255",
-  "checkout_dirty": true,
+  "checkout_dirty": false,
   "machine": {
     "platform": "Linux-7.0.0-1010-aws-x86_64-with-glibc2.39",
     "processor": "x86_64",
@@ -32,29 +33,29 @@
       "reference_body_bytes": 3374,
       "draws": [
         {
-          "reference_full_ms": 41.190471,
-          "new_load_ms": 3.740637,
-          "new_encode_ms": 0.731258
+          "reference_full_ms": 41.670437,
+          "new_load_ms": 4.9733,
+          "new_encode_ms": 1.11912
         },
         {
-          "reference_full_ms": 40.420899,
-          "new_load_ms": 3.376303,
-          "new_encode_ms": 0.704164
+          "reference_full_ms": 41.872574,
+          "new_load_ms": 4.580137,
+          "new_encode_ms": 0.921378
         },
         {
-          "reference_full_ms": 40.677103,
-          "new_load_ms": 3.644739,
-          "new_encode_ms": 0.743447
+          "reference_full_ms": 42.33557,
+          "new_load_ms": 4.032561,
+          "new_encode_ms": 0.747666
         },
         {
-          "reference_full_ms": 41.676955,
-          "new_load_ms": 3.449625,
-          "new_encode_ms": 0.73143
+          "reference_full_ms": 42.599067,
+          "new_load_ms": 3.777073,
+          "new_encode_ms": 0.746791
         },
         {
-          "reference_full_ms": 40.691307,
-          "new_load_ms": 3.642878,
-          "new_encode_ms": 0.74569
+          "reference_full_ms": 43.801003,
+          "new_load_ms": 4.112989,
+          "new_encode_ms": 0.699544
         }
       ]
     },
@@ -67,29 +68,29 @@
       "reference_body_bytes": 8859,
       "draws": [
         {
-          "reference_full_ms": 41.208853,
-          "new_load_ms": 3.451474,
-          "new_encode_ms": 0.460802
+          "reference_full_ms": 43.303153,
+          "new_load_ms": 3.446238,
+          "new_encode_ms": 0.464854
         },
         {
-          "reference_full_ms": 39.633872,
-          "new_load_ms": 3.457388,
-          "new_encode_ms": 0.443918
+          "reference_full_ms": 44.005338,
+          "new_load_ms": 3.399719,
+          "new_encode_ms": 0.419488
         },
         {
-          "reference_full_ms": 40.712534,
-          "new_load_ms": 3.589053,
-          "new_encode_ms": 0.422048
+          "reference_full_ms": 45.790362,
+          "new_load_ms": 4.089137,
+          "new_encode_ms": 0.448379
         },
         {
-          "reference_full_ms": 42.041882,
-          "new_load_ms": 3.405239,
-          "new_encode_ms": 0.445812
+          "reference_full_ms": 46.826453,
+          "new_load_ms": 3.618977,
+          "new_encode_ms": 0.45852
         },
         {
-          "reference_full_ms": 40.765063,
-          "new_load_ms": 3.608553,
-          "new_encode_ms": 0.46231
+          "reference_full_ms": 41.087149,
+          "new_load_ms": 3.432366,
+          "new_encode_ms": 0.428766
         }
       ]
     }
@@ -116,7 +117,7 @@
   },
   "eligibility": "supported",
   "exclusion_reasons": [],
-  "index_marker_sha256": "58ff9e961cf4bf9ed58598f4ae8ea483c3a0af5e0a819efdc5679b90eec236d5",
+  "index_marker_sha256": "0ada8dd747a380a67199e9d6138f02178a4f926c2a90ffebea9468fab2d4f087",
   "selected_rows": {
     "context": {
       "interactions": 2,
