@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared native arrays encoding; Python handles the small request envelope."""
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
+
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -21,6 +22,7 @@ def encode_rows(table, max_bytes):
     # Fail explicitly if a source checkout was not built; never silently time
     # the reference encoder when native encoding was requested.
     from ._native_json import encode_rows as native_encode_rows
+
     # Arrow's calendar formatter has implementation-specific behavior outside
     # Python's year 1..9999 range. Preserve that existing behavior (including
     # errors) with its native string kernel for unusual columns, while normal

@@ -59,11 +59,11 @@ class ColumnDigests:
             if pa.types.is_string(field.type):
                 filled = pc.fill_null(array, "")
                 offsets = np.frombuffer(filled.buffers()[1], dtype="<i4")[
-                    filled.offset : filled.offset + len(filled) + 1
+                    filled.offset: filled.offset + len(filled) + 1
                 ]
                 lengths.update(np.diff(offsets).astype("<i8").tobytes())
                 values.update(
-                    memoryview(filled.buffers()[2])[int(offsets[0]) : int(offsets[-1])]
+                    memoryview(filled.buffers()[2])[int(offsets[0]): int(offsets[-1])]
                 )
             else:
                 physical = (

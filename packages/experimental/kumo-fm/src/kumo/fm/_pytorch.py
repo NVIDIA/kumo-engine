@@ -16,10 +16,10 @@ import pyarrow.parquet as pq
 
 from ._assembly import GraphAssembler
 from ._contract import schema_for
+from ._phase import phase
 from ._validation import validate_contract
 from .bundle import TYPES, quote
 from .native_selection import inclusive_second
-from ._phase import phase
 
 
 def compatibility_issues(workload):
@@ -71,14 +71,13 @@ def contract_for(workload):
                            if step["direction"] == "forward" else count, strategy="recent"))
         layers.append(api.GraphLayer(samples=tuple(samples)))
     sample = api.SampleSpec(entity=api.EntitySpec(table=workload.entity),
-                           neighborhoods={"fm": api.NeighborhoodSpec(layers=tuple(layers))})
+                            neighborhoods={"fm": api.NeighborhoodSpec(layers=tuple(layers))})
     fields = {name: api.Fields(fields=tuple(api.Encode(field=column, encoding=api.Raw())
               for column in bundle.tables[name]["columns"])) for name in workload.table_names}
     batch = api.BatchSpec(inputs={"graph": api.Input(source=api.NeighborhoodSource(name="fm"),
-             representation=api.Graph(node_fields=fields), layout=None)},
-             batching=api.Batching(max_samples=workload.budgets["max_instances"]))
+                                                     representation=api.Graph(node_fields=fields), layout=None)},
+                          batching=api.Batching(max_samples=workload.budgets["max_instances"]))
     return api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
-
 
 
 class KumoPytorchBackend:
@@ -113,12 +112,12 @@ class KumoPytorchBackend:
                 for column, spec in table["columns"].items():
                     if spec["dtype"] == "timestamp[us]":
                         fractional = con.execute(f"SELECT count(*) FROM source WHERE "
-                            f"epoch_us({quote(column)}) % 1000000 != 0").fetchall()[0][0]
+                                                 f"epoch_us({quote(column)}) % 1000000 != 0").fetchall()[0][0]
                         if fractional:
                             raise ValueError(f"kumo-pytorch requires whole-second timestamp features: {name}.{column}")
                 if table.get("time_column"):
                     nulls = con.execute(f"SELECT count(*) FROM source WHERE "
-                        f"{quote(table['time_column'])} IS NULL").fetchall()[0][0]
+                                        f"{quote(table['time_column'])} IS NULL").fetchall()[0][0]
                     if nulls:
                         raise ValueError(f"kumo-pytorch would drop NULL-clock source rows: {name}")
         marker = self.index / "fm_snapshot.json"
@@ -203,14 +202,13 @@ class KumoPytorchBackend:
             raise ValueError("Native-multihop root budget exceeded")
         with phase("kumo_pytorch_batches", "retrieval_selection"):
             batches = iter(self._tasks[key].batches(batch_size=len(seeds), shuffle=False,
-                                                  output_format=self.output_format))
+                                                    output_format=self.output_format))
             batch = next(batches)
             if next(batches, None) is not None:
                 raise ValueError("Expected exactly one native anchor batch")
         self.metrics["kumo_pytorch_batches"] += 1
         with phase("kumo_pytorch_graph_adaptation", "graph_assembly"):
             return self._adapt_columnar_batch(workload, seeds, batch)
-
 
     def _adapt_columnar_batch(self, workload, seeds, batch):
         """Consume public Arrow columns; only reorder when anchor order requires it."""
@@ -272,8 +270,7 @@ class KumoPytorchBackend:
             raise ValueError("Native-multihop node-plus-edge budget exceeded")
         self.metrics["native_candidate_rows"] += count
         return self.assembler._adapt(workload, seeds, np.arange(len(seeds), dtype=np.uint64),
-                           nodes, features, edges, directions)
-
+                                     nodes, features, edges, directions)
 
     def close(self):
         self._stack.close()

@@ -5,13 +5,13 @@
 """FM orchestration over an already indexed public PyTorch engine."""
 from __future__ import annotations
 
+import tempfile
+import uuid
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-import tempfile
-import uuid
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -187,7 +187,7 @@ def _selected_graph(schema, sample, features, bundle):
         internal.extend(bundle.relations[r]["foreign_key"] for r in relations
                         if bundle.relations[r]["child"] == name)
         fields[name] = api.Fields(tuple(api.Encode(column, api.Raw())
-                                      for column in dict.fromkeys(internal)))
+                                        for column in dict.fromkeys(internal)))
     return graph_name, fields, tables, relations, projections
 
 
@@ -197,6 +197,7 @@ class SnapshotFMLoader:
     def __init__(self, *, engine, sample, target, task, features, classes=None,
                  batch_size=1024, budgets=None, schema=None):
         from kumo.pytorch import api
+
         from .loader import PreparedRequest
 
         if not isinstance(engine, api.DiskGraphEngine) or not isinstance(sample, api.SampleSpec):
@@ -238,22 +239,22 @@ class SnapshotFMLoader:
             raise ValueError("FM budgets must be positive integers")
         self._batch_size = min(batch_size, default_budgets["max_instances"])
         self.workload = SimpleNamespace(bundle=self._bundle, entity=self._entity,
-            kind=self._kind, target=target_spec, table_names=tables,
-            relation_names=relations, projections=projections, budgets=default_budgets)
+                                        kind=self._kind, target=target_spec, table_names=tables,
+                                        relation_names=relations, projections=projections, budgets=default_budgets)
         self._adapter = SimpleNamespace(bundle=self._bundle,
-            node_types=list(self._bundle.tables), assembler=GraphAssembler(self._bundle),
-            metrics={"native_candidate_rows": 0})
+                                        node_types=list(self._bundle.tables), assembler=GraphAssembler(self._bundle),
+                                        metrics={"native_candidate_rows": 0})
         self._stack = ExitStack()
         self._temporary = tempfile.TemporaryDirectory(prefix="kumo-fm-anchors-")
         pk = self._bundle.tables[self._entity]["primary_key"]
         label_sample = api.SampleSpec(entity=sample.entity,
-            entity_values={pk: api.Field(pk)}, targets={target: sample.targets[target]})
+                                      entity_values={pk: api.Field(pk)}, targets={target: sample.targets[target]})
         label_batch = api.BatchSpec(inputs={"entity": api.Input(
             api.EntitySource(), api.Fields((api.Encode(pk, api.Raw()),)), api.Separate())},
             targets={"label": api.LabelTarget(target, api.Raw())},
             batching=api.Batching(max_samples=self._batch_size))
         graph_sample = api.SampleSpec(entity=sample.entity,
-            neighborhoods={graph_name: sample.neighborhoods[graph_name]})
+                                      neighborhoods={graph_name: sample.neighborhoods[graph_name]})
         graph_batch = api.BatchSpec(inputs={"graph": api.Input(
             api.NeighborhoodSource(graph_name), api.Graph(node_fields=fields), None)},
             batching=api.Batching(max_samples=self._batch_size))
@@ -361,7 +362,7 @@ class SnapshotFMLoader:
                 seen.update(identifiers)
                 chunk = [expected[value] for value in identifiers]
                 local = SimpleNamespace(inputs=batch.inputs,
-                    metadata={"sample_ids": list(range(len(chunk)))})
+                                        metadata={"sample_ids": list(range(len(chunk)))})
                 related = KumoPytorchBackend._adapt_columnar_batch(
                     self._adapter, self.workload, chunk, local)
                 for name, table in related.items():
@@ -375,8 +376,8 @@ class SnapshotFMLoader:
             if len(table):
                 rank = pa.array([order[int(value)] for value in table["instance_id"].to_pylist()])
                 index = pc.sort_indices(pa.table({"rank": rank,
-                    "key": table[self._bundle.tables[name]["primary_key"]]}),
-                    sort_keys=[("rank", "ascending"), ("key", "ascending")])
+                                                  "key": table[self._bundle.tables[name]["primary_key"]]}),
+                                        sort_keys=[("rank", "ascending"), ("key", "ascending")])
                 table = table.take(index)
             result[name] = table
         return result

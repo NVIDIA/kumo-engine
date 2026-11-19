@@ -9,8 +9,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from .bundle import TYPES
 from ._phase import phase
+from .bundle import TYPES
 
 
 def empty_features(columns):

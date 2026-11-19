@@ -4,6 +4,7 @@
 
 """FM schema and task metadata shared by direct and wire output."""
 
+
 def schema_for(workload):
     bundle = workload.bundle
     id_spec = {"dtype": "int64", "stype": "ID", "nullable": False}
@@ -40,7 +41,6 @@ def schema_for(workload):
         relationships.append({"source_table": rel["child"], "source_columns": ["instance_id", col],
                               "target_table": rel["parent"], "target_columns": ["instance_id", parent["primary_key"]]})
     return {"instance_table": instance, "related_tables": related, "relationships": relationships}
-
 
 
 def metadata_for(workload):

@@ -8,10 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from kumo.pytorch import api
 from kumo.fm import Context, Query
-from kumo.fm._snapshot import (SnapshotFMLoader, _rows, _schema_view,
-                               _selected_graph, _target_horizon)
+from kumo.fm._snapshot import (
+    SnapshotFMLoader,
+    _rows,
+    _schema_view,
+    _selected_graph,
+    _target_horizon,
+)
+from kumo.pytorch import api
 
 
 def schema():
@@ -30,7 +35,7 @@ def schema():
 
 def test_population_order_and_repeated_occurrences():
     context = _rows(Context(entities=[7, 8], times=["2025-01-01T00:00:00Z",
-                                                   "2025-02-01T00:00:00Z"]),
+                                                    "2025-02-01T00:00:00Z"]),
                     "context", "int64")
     assert [(row["instance_id"], row["entity_key"]) for row in context] == [
         (0, 7), (1, 8), (2, 7), (3, 8)]
@@ -46,14 +51,14 @@ def test_population_order_and_repeated_occurrences():
 def test_schema_alias_projection_and_target_window():
     bundle = _schema_view(schema())
     assert bundle.relations["alias"] == {"child": "orders", "parent": "users",
-                                          "foreign_key": "user_id"}
+                                         "foreign_key": "user_id"}
     target = api.Aggregate(api.Rows(path=("alias",),
-        time=api.TimeWindow("at", start=0, stop=30)), "count")
+                                    time=api.TimeWindow("at", start=0, stop=30)), "count")
     assert _target_horizon(target) == 30
-    sample = api.SampleSpec(entity=api.EntitySpec("users"),
-        targets={"next": target}, neighborhoods={"history": api.NeighborhoodSpec((
-            api.GraphLayer((api.GraphSample("alias", direction="reverse",
-                                            fanout=2, strategy="recent"),)),))})
+    layer = api.GraphLayer((api.GraphSample(
+        "alias", direction="reverse", fanout=2, strategy="recent"),))
+    sample = api.SampleSpec(entity=api.EntitySpec("users"), targets={"next": target},
+                            neighborhoods={"history": api.NeighborhoodSpec((layer,))})
     name, fields, tables, relations, projections = _selected_graph(
         schema(), sample, {"users": [], "orders": ["amount"]}, bundle)
     assert (name, tables, relations) == ("history", {"users", "orders"}, {"alias"})
@@ -61,11 +66,12 @@ def test_schema_alias_projection_and_target_window():
     assert {item.field for item in fields["orders"].fields} == {
         "order_id", "amount", "at", "user_id"}
     with pytest.raises(ValueError, match="uniformly into timeless"):
-        _selected_graph(schema(), api.SampleSpec(entity=api.EntitySpec("orders"),
-            neighborhoods={"history": api.NeighborhoodSpec((api.GraphLayer((
-                api.GraphSample("alias", direction="forward", fanout=2,
-                                strategy="recent"),)),))}),
-            {"orders": [], "users": []}, bundle)
+        reverse_layer = api.GraphLayer((api.GraphSample(
+            "alias", direction="forward", fanout=2, strategy="recent"),))
+        reverse_sample = api.SampleSpec(
+            entity=api.EntitySpec("orders"),
+            neighborhoods={"history": api.NeighborhoodSpec((reverse_layer,))})
+        _selected_graph(schema(), reverse_sample, {"orders": [], "users": []}, bundle)
 
 
 def test_context_labels_join_by_occurrence_id_across_batches():
@@ -82,8 +88,8 @@ def test_context_labels_join_by_occurrence_id_across_batches():
         def batches(self, **_):
             for identifier, value in self.values:
                 yield SimpleNamespace(metadata={"sample_ids": [identifier]},
-                    targets={"label": {"values": SimpleNamespace(tolist=lambda: [value]),
-                        "valid": SimpleNamespace(tolist=lambda: [True])}})
+                                      targets={"label": {"values": SimpleNamespace(tolist=lambda: [value]),
+                                                         "valid": SimpleNamespace(tolist=lambda: [True])}})
 
     loader = object.__new__(SnapshotFMLoader)
     loader._labels = SimpleNamespace(materialize=lambda _: Task([(22, 3), (11, 9)]))

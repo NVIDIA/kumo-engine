@@ -7,11 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pyarrow as pa
-
 from test_batch import request, workload
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples/local_sdm"))
-from adapter import _compatible_buffers, arrow_to_sdm
+from adapter import _compatible_buffers, arrow_to_sdm  # noqa: E402
 
 
 def test_sdm_bridge_uses_public_arrow_conversion(monkeypatch):

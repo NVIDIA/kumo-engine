@@ -8,9 +8,9 @@ import base64
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from .bundle import TYPES
-from ._phase import phase
 from . import native_json
+from ._phase import phase
+from .bundle import TYPES
 
 
 def encode_arrow_table(table, columns, encoding, budget, *, native_arrays=False):
