@@ -3188,6 +3188,7 @@ where
                                 let view = table.edges_for_node(node)
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))?;
                                 view.node_data()
+                                    .map(|row| row.map(|row| decoder.row_or_null(row)))
                                     .map_err(|e| TTGenError::SystemError(e.to_string()))
                             })
                             .collect::<TTGenResult<Option<Vec<_>>>>()?;

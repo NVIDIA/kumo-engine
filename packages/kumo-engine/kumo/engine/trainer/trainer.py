@@ -977,20 +977,6 @@ def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:
 _F = TypeVar('_F', bound=Callable[..., Any])
 
 
-def _prediction_task_type(training_query: Optional[str], query: str,
-                          graph_config: Any) -> Any:
-    from kumo_core.prediction_options import prediction_query_contract
-    from kumo_core.types import TaskType
-
-    contract = prediction_query_contract(query, graph_config)
-    if training_query is None or prediction_query_contract(
-            training_query, graph_config) != contract:
-        raise ValueError(
-            'Prediction query target/entity contract differs from the trained model'
-        )
-    return TaskType(contract[1])
-
-
 def _requested_artifacts(
     output_config: Optional[PredictionOutputConfig]
 ) -> frozenset[PredictionArtifactType]:
@@ -1000,6 +986,21 @@ def _requested_artifacts(
         PredictionArtifactType(name.upper())
         for name in destinations) or frozenset(
             {PredictionArtifactType.PREDICTIONS})
+
+
+def _reject_pairwise_candidates(artifacts: Mapping[str, str], query: Any,
+                                graph: Any, task_type: Any) -> None:
+    from kumo_core.io.json import load_json
+    from kumo_core.link_candidates import PAIRWISE_CANDIDATES, candidate_query
+    from kumo_core.pquery import to_api_graph
+    from kumo_core.training.config import LinkPredModuleType, TrainerConfig
+
+    if not task_type.is_link_pred or candidate_query(
+            query, to_api_graph(graph), task_type) is None:
+        return
+    config = load_json(artifacts['trainer_config'], TrainerConfig)
+    if config.module_kwargs.module is LinkPredModuleType.ID:
+        raise ValueError(PAIRWISE_CANDIDATES)
 
 
 def _offset_count(compiler_options: Mapping[str, Any],
@@ -1715,6 +1716,7 @@ class Trainer:
         from kumo_core.pquery import normalize_graph, parse_and_validate_query
         from kumo_core.prediction import score_prediction
         from kumo_core.prediction_options import (
+            prediction_task_type,
             resolve_classification_threshold,
             resolve_num_classes_to_return,
         )
@@ -1729,8 +1731,9 @@ class Trainer:
             binary_classification_threshold = (
                 defaults.binary_classification_threshold)
         graph_config = snapshot.graph_config
-        task_type = _prediction_task_type(self._training_query,
-                                          prediction_table.query, graph_config)
+        task_type = TaskType(
+            prediction_task_type(self._training_query, prediction_table.query,
+                                 graph_config))
         threshold = (None if binary_classification_threshold is None
                      and task_type is TaskType.BINARY_CLASSIFICATION else
                      resolve_classification_threshold(
@@ -1741,6 +1744,8 @@ class Trainer:
                          PredictionArtifactType.EMBEDDINGS)
         native_graph = normalize_graph(graph_config)
         parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        _reject_pairwise_candidates(training_result.artifact_paths,
+                                    parsed.query, native_graph, task_type)
         if num_classes_to_return is None and parsed.query.top_k is None:
             num_classes_to_return = defaults.num_classes_to_return
         requested_classes = num_classes_to_return

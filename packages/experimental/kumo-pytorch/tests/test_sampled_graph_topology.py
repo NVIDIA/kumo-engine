@@ -123,6 +123,36 @@ def sampled_plan(tmp_path):
         yield plan, anchors
 
 
+@pytest.mark.parametrize("output_format", ["model", "inspectable"])
+def test_sampled_counts_consumed_by_heterognn(sampled_plan, output_format):
+    HeteroData = pytest.importorskip("torch_geometric.data").HeteroData
+    HeteroGNN = pytest.importorskip("kumo_core.modeling.gnn.hetero").HeteroGNN
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        graph = next(task.batches(split="train", output_format=output_format)).inputs["graph"]
+        data = HeteroData()
+        for table, node in graph["nodes"].items():
+            data[table].x = node["features"]["value"]["values"].float().reshape(-1, 1)
+            data[table].num_sampled_nodes = graph["num_sampled_nodes"][table]
+        for key, edge in graph["edges"].items():
+            # Incoming-message convention: reverse endpoints, keeping native
+            # occurrence order and hop counts without reconstructing topology.
+            edge_type = (edge["destination_type"], key, edge["source_type"])
+            data[edge_type].edge_index = edge["index"].flip(0)
+            data[edge_type].num_sampled_edges = graph["num_sampled_edges"][key]
+        model = HeteroGNN(1, 2, metadata=data.metadata(), norm=None).eval()
+        with torch.no_grad():
+            output = model(
+                data.x_dict,
+                data.edge_index_dict,
+                data.num_sampled_nodes_dict,
+                data.num_sampled_edges_dict,
+            )
+        for table, values in output.items():
+            assert values.shape == (graph["num_sampled_nodes"][table][0], 1)
+            assert torch.isfinite(values).all()
+
+
 @pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_sampled_buffers_match_native_without_reconstruction(
@@ -164,15 +194,18 @@ def test_sampled_buffers_match_native_without_reconstruction(
                 if output_format == "columnar"
                 else graph["num_sampled_nodes"]
             )
+            count_values = tuple if output_format == "columnar" else list
             for table, values in original["num_sampled_nodes_dict"].items():
                 if table in {"people", "events"}:
-                    assert nodes[table] == tuple(values.to_pylist())
+                    assert type(nodes[table]) is count_values
+                    assert nodes[table] == count_values(values.to_pylist())
             physical = plan._source._sampling_plan(plan.contract.sample.neighborhoods["g"])[1]
             assert dict(counts) == {
-                kind["rel"]: tuple(entry["counts"].to_pylist())
+                kind["rel"]: count_values(entry["counts"].to_pylist())
                 for entry in original["num_sampled_edges_dict"]
                 if (kind := entry["edge_type"])["rel"] in physical
             }
+            assert all(type(values) is count_values for values in counts.values())
             selected = {
                 entry["edge_type"]["rel"]: entry
                 for entry in original["edge_index_dict"]
@@ -720,7 +753,7 @@ def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
         ) as task:
             graph = next(task.batches(output_format="model")).inputs["graph"]
     assert graph["nodes"]["people"]["ids"].tolist() == [1, 2, 3, 4]
-    assert graph["num_sampled_nodes"]["people"] == (1, 1, 1, 1, 0)
+    assert graph["num_sampled_nodes"]["people"] == [1, 1, 1, 1, 0]
     edge = next(edge for edge in graph["edges"].values() if edge["index"].numel())
     assert edge["index"].tolist() == [[0, 1, 2, 3], [1, 2, 3, 0]]
     # Adding reverse edges creates a shortcut from root A to D. Recovering BFS

@@ -835,6 +835,15 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
                     next(iter(task.batches((unavailable,), output_format=output_format)))
 
 
+def test_index_warns_about_rows_over_the_node_data_limit(tmp_path: Path) -> None:
+    from kumo.pytorch.materialization import _warn_dropped_rows
+
+    stats = {"dropped_rows_counts": {}, "oversized_rows_counts": {"events": 2}}
+    (tmp_path / "ingest_stats.json").write_text(json.dumps({"stats": stats}))
+    with pytest.warns(UserWarning, match=r"node-data limit \{'events': 2\}"):
+        _warn_dropped_rows(tmp_path)
+
+
 def test_diskgraph_check_refuses_unsupported_work_before_ingestion(tmp_path: Path) -> None:
     schema = _schema()
     dataset = api.Dataset({table.name: api.Parquet("/does/not/exist") for table in schema.tables})

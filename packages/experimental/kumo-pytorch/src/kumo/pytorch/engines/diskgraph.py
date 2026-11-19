@@ -1314,8 +1314,12 @@ class DiskGraphSource:
                     }
                     for key, edge in graph.edges.items()
                 },
-                "num_sampled_nodes": dict(graph.num_sampled_nodes),
-                "num_sampled_edges": dict(graph.num_sampled_edges),
+                "num_sampled_nodes": {
+                    key: list(counts) for key, counts in graph.num_sampled_nodes.items()
+                },
+                "num_sampled_edges": {
+                    key: list(counts) for key, counts in graph.num_sampled_edges.items()
+                },
             }
         previous = getattr(self, "_runtime_batch", None)
         self._runtime_batch = selected
@@ -1875,11 +1879,7 @@ class DiskGraphSource:
         if isinstance(field, EventTimeDelta):
             boundaries = offsets.to_numpy(zero_copy_only=False)
             owners = self._pa.array(
-                [
-                    anchor
-                    for anchor in range(len(boundaries) - 1)
-                    for _ in range(int(boundaries[anchor + 1] - boundaries[anchor]))
-                ],
+                np.repeat(np.arange(len(boundaries) - 1), np.diff(boundaries).astype(np.int64)),
                 type=self._pa.int64(),
             )
             event_cutoffs = self._pc.take(self._pa.array(cutoffs), owners)
@@ -2665,7 +2665,12 @@ def _first_occurrences(pairs: np.ndarray) -> np.ndarray:
 
     if pairs.shape[1] < 2:
         return pairs
-    _, first = np.unique(pairs, axis=1, return_index=True)
+    lowest, source_max, width = int(pairs.min()), int(pairs[0].max()), int(pairs[1].max()) + 1
+    if lowest >= 0 and (source_max + 1) * width < 2**63:
+        source, destination = pairs.astype(np.int64, copy=False)
+        _, first = np.unique(source * width + destination, return_index=True)
+    else:
+        _, first = np.unique(pairs, axis=1, return_index=True)
     if first.size == pairs.shape[1]:
         return pairs
     return np.ascontiguousarray(pairs[:, np.sort(first)])

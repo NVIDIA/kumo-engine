@@ -234,6 +234,8 @@ class Task:
         An empty stage shard pads from
         an anchor the rank owns in another selected split; only a rank owning
         no selected anchors borrows marked padding from another rank.
+        Relations-inspectable contracts using Python fallback (for example,
+        those with targets) retain their existing scheduling instead.
 
         Order is a pure function of ``seed``, ``epoch``, ``shuffle``, ``rank``
         and ``world_size``; ranks are disjoint before padding. A token budget

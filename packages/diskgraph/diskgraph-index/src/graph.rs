@@ -1566,7 +1566,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_msgpack(raw)?;
+        let out = decoder.decode_msgpack(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 
@@ -1587,7 +1587,7 @@ impl TableReader {
             .node_data_decoder
             .as_ref()
             .ok_or_else(|| anyhow!("node data ctx missing for {}", self.node_type))?;
-        let out = decoder.decode_json(raw)?;
+        let out = decoder.decode_json(decoder.row_or_null(raw))?;
         Ok(Some(out))
     }
 
@@ -1600,6 +1600,20 @@ impl TableReader {
     }
 
     pub fn node_id_from_pk(&self, key: &Key) -> Result<Option<u64>> {
+        let Some(node_id) = self.pk_candidate(key)? else {
+            return Ok(None);
+        };
+        if let Some(validated) = self.validate_pk_at_node(node_id, key)? {
+            if validated {
+                return Ok(Some(node_id));
+            }
+            return Ok(None);
+        }
+        Ok(Some(node_id))
+    }
+
+    /// The node the pkmap assigns `key`, before checking that node stores it.
+    fn pk_candidate(&self, key: &Key) -> Result<Option<u64>> {
         let pk_map = match &self.pk_map {
             Some(map) => map,
             None => return Ok(None),
@@ -1620,14 +1634,35 @@ impl TableReader {
             .get(shard_idx)
             .map(|range| range.min_id)
             .unwrap_or(0);
-        let node_id = min_id.saturating_add(local as u64);
-        if let Some(validated) = self.validate_pk_at_node(node_id, key)? {
-            if validated {
-                return Ok(Some(node_id));
-            }
-            return Ok(None);
-        }
-        Ok(Some(node_id))
+        Ok(Some(min_id.saturating_add(local as u64)))
+    }
+
+    /// Whether `node_id`, whose rowpack is `row`, is the canonical row of
+    /// its primary key: `node_id_from_pk` of the key stored in `row` returns
+    /// `node_id`. Reads the key from `row` instead of fetching the node again.
+    pub fn is_canonical_row(
+        &self,
+        node_id: u64,
+        row: &[u8],
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> Result<bool> {
+        let missing = || anyhow!("table {} has no primary-key index", self.node_type);
+        let pk = self.primary_key_map.as_ref().ok_or_else(missing)?;
+        let key_type = self.pk_map.as_ref().ok_or_else(missing)?.key_type();
+        let decoder = self
+            .node_data_decoder
+            .as_ref()
+            .ok_or_else(|| anyhow!("table {} has no rowpack decoder", self.node_type))?;
+        let col_idx = crate::layout::pk_column_index(pk, decoder).ok_or_else(missing)?;
+        let column = &decoder.context().columns[col_idx];
+        let node = || format!("{} node {node_id}", self.node_type);
+        let value = decoder
+            .decode_column_value(decoder.row_or_null(row), col_idx, scratch)
+            .with_context(node)?;
+        let key =
+            crate::layout::pk_key_from_value(pk, key_type, &value, column).with_context(node)?;
+        Ok(self.pk_candidate(&key)? == Some(node_id)
+            && crate::layout::pk_value_matches(&key, &value, column) != Some(false))
     }
 
     /// Check whether `node_id` is the canonical (first-occurrence) node for its
@@ -1814,6 +1849,7 @@ impl TableReader {
             Some(d) => d,
             None => return Ok(true),
         };
+        let raw = decoder.row_or_null(raw);
 
         let clock = decoder.clock();
         // Check create_time_col <= create_ref_ts

@@ -478,10 +478,13 @@ unless `deduplicate_edges=True`. Sampling direction and hop provenance are not
 part of that graph.
 
 Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
-message-passing topology. It requires a DiskGraph AnchorTable and fixed-size
-batching. Refit may select several splits; each stage shuffles and batches
+message-passing topology. The current implementation supports DiskGraph
+AnchorTables with fixed-size batching. Topology describes the output layout;
+native iteration is the currently supported delivery path, rather than an
+intrinsic requirement of sampled graphs. During native iteration, refit may
+select several splits; each stage shuffles and batches
 independently, without joining partial tails across splits. Drop-last applies
-per stage in either topology, including dropping a whole split smaller than
+per stage in either topology on this native path, including dropping a whole split smaller than
 one batch. Use `drop_last=False` to retain partial tails.
 Ranks pad from their own selected anchors when possible; a rank owning no
 anchors in any selected stage may borrow only explicitly marked padding.
@@ -503,18 +506,23 @@ adapter constructs `(edge["source_type"], key, edge["destination_type"])`
 per edge type, passing edge tensors through unchanged. The graph also exposes
 `num_sampled_nodes` (per table, including seed count then successive hops) and
 `num_sampled_edges` (using the same physical string keys, per sampling hop). These counts
-refer to the returned native ordering. Nodes retain IDs, example ownership and
+refer to the returned native ordering and are lists, compatible with the
+count-padding operations in Kumo's HeteroGNN. Nodes retain IDs, example ownership and
 the declared field encodings. Each node occurrence belongs to one anchor;
 shared global nodes are not merged across anchors. Edges are in native traversal orientation; a
 consumer using PyG's incoming-message convention may transpose endpoints and
 rename the corresponding reverse relation without recomputing topology.
 
-Columnar sampled graphs expose the same counts on `ColumnarGraph`, preserving
-Arrow edge buffers. `deduplicate_edges=True` is refused in sampled topology:
+Columnar sampled graphs expose the same counts as tuples on `ColumnarGraph`,
+preserving Arrow edge buffers. `deduplicate_edges=True` is refused in sampled topology:
 coalescing would invalidate its hop accounting. Requests built in Python,
 length-aware graph batching and the in-memory engine do not implement this
 topology; they refuse it instead of silently reconstructing it. Existing
 relation graphs and saved default contracts keep their behavior and identity.
+The row-based `ServingAssembler.assemble` also does not implement sampled
+topology. Relations-inspectable contracts that still use Python fallback
+(for example, those with targets) retain their existing batching behavior;
+the stage-local scheduling guarantees above apply to native iteration.
 
 Sampling hops are not shortest-path distances in the final relationship graph.
 For example, traversing `A -> B -> C -> D -> A` discovers D on hop three.
