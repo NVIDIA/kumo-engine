@@ -414,6 +414,8 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
         stage = parent / "train_tables" / ("base-alias-" + entrypoint)
         stage.symlink_to(parent, target_is_directory=True)
     match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
+    if kind == "missing":
+        match = "extension `stage`"
     with pytest.raises(diskgraph.DiskgraphSystemError, match=match):
         if entrypoint == "native":
             from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
