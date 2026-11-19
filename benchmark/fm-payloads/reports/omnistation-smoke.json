@@ -2,11 +2,11 @@
   "bundle_manifest_sha256": "756537788732b93e1c94f24c386cf253d867adc5220e4689d636c1627a88467b",
   "workload_sha256": "5c479c8c9438f297c23e5f8e0ce00ff95fc406f36bfe765c94723f75dbed0395",
   "wheel_sha256": {
-    "kumo_fm-0.1.0a1-cp311-cp311-linux_x86_64.whl": "71ccf8a984f5383738d41bfcf0cbd00613afd6059142fbbc4ab83c26df35750f",
+    "kumo_fm-0.1.0a1-cp311-cp311-linux_x86_64.whl": "92cd45fb8691db74c86ab53f382a2880231008f2db02ba1de4ae77a259479eb6",
     "diskgraph-0.2.0-cp311-abi3-linux_x86_64.whl": "ede0ca14dee5ccc75266afaf55c8ffd90f73a6e6f835448ddeff87655186522e"
   },
   "snapshot_id": "7a69e955e84d54d6b3b2711be57f9bf1569ada00abbae1a658fb31b0cfdaa76e",
-  "engine_revision": "51a6347bc27a3f80eb92d18d3bc37b41702a7a95",
+  "engine_revision": "539e9a4f1cb7ae7cfa254ea2eac90629a07a032b",
   "reference_revision": "b4516394e98929c5b4752745866d5e3138276255",
   "checkout_dirty": false,
   "machine": {
@@ -33,29 +33,29 @@
       "reference_body_bytes": 3374,
       "draws": [
         {
-          "reference_full_ms": 40.174507,
-          "new_load_ms": 3.496997,
-          "new_encode_ms": 0.718417
+          "reference_full_ms": 41.671234,
+          "new_load_ms": 3.360692,
+          "new_encode_ms": 0.694896
         },
         {
-          "reference_full_ms": 40.663971,
-          "new_load_ms": 3.771849,
-          "new_encode_ms": 0.737373
+          "reference_full_ms": 39.565126,
+          "new_load_ms": 3.484977,
+          "new_encode_ms": 0.713286
         },
         {
-          "reference_full_ms": 41.900469,
-          "new_load_ms": 3.465119,
-          "new_encode_ms": 0.745808
+          "reference_full_ms": 40.508425,
+          "new_load_ms": 3.447152,
+          "new_encode_ms": 0.710074
         },
         {
-          "reference_full_ms": 41.228331,
-          "new_load_ms": 3.540971,
-          "new_encode_ms": 0.720256
+          "reference_full_ms": 40.103816,
+          "new_load_ms": 3.452723,
+          "new_encode_ms": 0.979746
         },
         {
-          "reference_full_ms": 41.340062,
-          "new_load_ms": 3.618949,
-          "new_encode_ms": 0.71508
+          "reference_full_ms": 40.199899,
+          "new_load_ms": 3.533769,
+          "new_encode_ms": 0.698663
         }
       ]
     },
@@ -68,29 +68,29 @@
       "reference_body_bytes": 8859,
       "draws": [
         {
-          "reference_full_ms": 39.87662,
-          "new_load_ms": 3.790806,
-          "new_encode_ms": 0.439622
+          "reference_full_ms": 40.14074,
+          "new_load_ms": 3.622619,
+          "new_encode_ms": 0.465381
         },
         {
-          "reference_full_ms": 39.513152,
-          "new_load_ms": 3.548801,
-          "new_encode_ms": 0.447506
+          "reference_full_ms": 41.85428,
+          "new_load_ms": 3.477252,
+          "new_encode_ms": 0.424267
         },
         {
-          "reference_full_ms": 40.953171,
-          "new_load_ms": 3.881504,
-          "new_encode_ms": 0.428711
+          "reference_full_ms": 40.112547,
+          "new_load_ms": 3.372056,
+          "new_encode_ms": 0.444124
         },
         {
-          "reference_full_ms": 40.516572,
-          "new_load_ms": 3.458438,
-          "new_encode_ms": 0.424711
+          "reference_full_ms": 41.194207,
+          "new_load_ms": 3.428842,
+          "new_encode_ms": 0.422983
         },
         {
-          "reference_full_ms": 40.77798,
-          "new_load_ms": 3.446517,
-          "new_encode_ms": 0.476014
+          "reference_full_ms": 40.038979,
+          "new_load_ms": 3.915465,
+          "new_encode_ms": 0.420586
         }
       ]
     }
