@@ -274,6 +274,12 @@ def load(result: 'TrainingResult') -> Run:
         history = result.metric_history
     except (OSError, ValueError):
         history = None
+    trial = result.explanations.trial_root
+    if history is None and trial is not None:
+        # The retained run's search progress, beside the selected trial.
+        history = read_json(
+            posixpath.join(posixpath.dirname(trial),
+                           'auto_train_progress.json'))
     manifest = result.manifest
     fit_mode = None if manifest is None else manifest.fit_mode
     full_refit = (fit_mode == 'refit_full' if fit_mode else mapping(

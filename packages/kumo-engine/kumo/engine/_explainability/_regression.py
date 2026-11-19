@@ -94,6 +94,16 @@ def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
                            'heatmap.json'), TargetPredictionHeatMap)
     except (OSError, ValueError):
         heatmap = None
+    if heatmap is not None:
+        # Bounds that cannot be sized on a finite grid fall back to the
+        # holdout instead of failing the widget.
+        low = min(heatmap.label_bin_start, heatmap.prediction_bin_start)
+        sizes = [heatmap.label_bin_end - low, heatmap.prediction_bin_end - low]
+        if not (heatmap.cell_width > 0 and min(sizes) >= 0
+                and sum(heatmap.counts) > 0 and np.isfinite([
+                    *sizes, heatmap.cell_width, *np.ravel(heatmap.cells)
+                ]).all()):
+            heatmap = None
     coverage = None
     if heatmap is None:
         # Match the producer's 10,000-row limit; keep reopened views stable.

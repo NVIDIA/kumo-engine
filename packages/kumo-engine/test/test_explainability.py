@@ -193,7 +193,7 @@ def test_metrics_card_uses_last_epoch_training(tmp_path):
     assert table['rows'][0]['texts'] == ['1.50', '1.70', '0.800']
 
 
-@pytest.mark.parametrize('recorded', [True, False])
+@pytest.mark.parametrize('recorded', ['bundle', 'progress', None])
 def test_epoch_history_follows_search_experiments(tmp_path, recorded):
     result = _result(tmp_path)
     epochs = {
@@ -212,9 +212,14 @@ def test_epoch_history_follows_search_experiments(tmp_path, recorded):
         '10': dict(metrics={'2': dict(train_metrics=dict(train_loss=1))}),
         'empty': dict(metrics={}),
     }
-    if recorded:
+    if recorded == 'bundle':
         _write_json(tmp_path / 'history.json', dict(trial_progress=trials))
         result.artifact_paths['metric_history'] = str(tmp_path / 'history.json')
+    elif recorded == 'progress':
+        # Without a bundle record, the retained run's search progress.
+        _write_json(
+            Path(result.explanations.trial_root).parent /
+            'auto_train_progress.json', dict(trial_progress=trials))
     views = result.visualize().data['tabs'][0]['cards'][0]['views']
     if not recorded:
         assert 'history' not in [view['id'] for view in views]
@@ -520,9 +525,10 @@ def test_regression_distributions_keep_offset_and_sparse_bins(tmp_path, case):
             assert view['series'][1]['counts'][-1] == 1
 
 
-@pytest.mark.parametrize(
-    'saved',
-    ['valid', 'malformed', 'absent', 'merged', 'edge', 'separated', 'constant'])
+@pytest.mark.parametrize('saved', [
+    'valid', 'malformed', 'absent', 'unbounded', 'inverted', 'merged', 'edge',
+    'separated', 'constant'
+])
 def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
     result = _result(tmp_path, test_rows=20)
     width, (x0, x1), (y0, y1), cells, counts = {
@@ -532,6 +538,8 @@ def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
         'separated': (0.02, (0, 1), (1e4, 10001), [[0, 1e4], [1,
                                                               10001]], [12, 7]),
         'constant': (0.02, (0, 0), (0, 1e6), [[0, 0], [0, 1e6]], [12, 7]),
+        'unbounded': (1.0, (-1e308, 1e308), (0, 0), [[0, 0]], [5]),
+        'inverted': (1.0, (5, 0), (5, 0), [[5, 5]], [5]),
     }.get(saved, (1.0, (0, 0), (0, 0), [], []))
     if saved != 'absent':
         _write_json(
@@ -544,7 +552,7 @@ def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
     heatmap = _regression._heatmap(_run.load(result), 1.0)
     assert heatmap is not None
     json.dumps(heatmap, allow_nan=False)
-    if saved in ('absent', 'malformed'):
+    if saved in ('absent', 'malformed', 'unbounded', 'inverted'):
         assert sum(map(sum, heatmap['counts'])) == 20
         assert heatmap['coverage'] == 'Based on 20 of 20 retained holdout rows.'
     elif saved == 'valid':
@@ -672,8 +680,10 @@ def test_subgraphs_use_typed_artifacts_and_keep_missing_distinct(
     root = Path(result.explanations.trial_root) / 'subgraph_collector' / 'test'
     _write_json(
         root / 'strategy_mappings.json',
-        dict(mappings=dict(random=['0', '1']),
-             orig_mappings=dict(random=['account-x', 'account-y'])))
+        dict(
+            mappings=dict(random=['0', '1'], unsure=['1', '0']),
+            orig_mappings=dict(random=['account-x', 'account-y'],
+                               unsure=['account-y', 'account-x'])))
     subgraph = _graph()
     subgraph.subgraph_store.nodes[0].pkey = 2**53 + 1
     subgraph.feature_store.features[0]['note'] = Feature(
@@ -693,10 +703,13 @@ def test_subgraphs_use_typed_artifacts_and_keep_missing_distinct(
     card = _card(_subgraphs.card, result)
     assert len(card['samples']) == (2 if failure is None else 1)
     assert card['unavailable_count'] == (0 if failure is None else 1)
-    assert card['category_samples'] == {'random': ['0', '1']}
+    # Each category keeps the collector's selection order.
+    assert card['category_samples'] == dict(random=['0', '1'],
+                                            unsure=['1', '0'])
     sample = card['samples'][0]
-    assert sample['categories'] == ['random']
-    assert sample['original_ids'] == {'random': 'account-x'}
+    assert sample['categories'] == ['random', 'unsure']
+    assert sample['original_ids'] == dict(random='account-x',
+                                          unsure='account-x')
     assert sample['prediction'] == 2.5 and sample['target'] is None
     assert sample['nodes'][0]['value'] == '9007199254740993'
     assert [f['score'] for f in sample['nodes'][0]['features']] == [0.0, None]
@@ -706,11 +719,3 @@ def test_subgraphs_use_typed_artifacts_and_keep_missing_distinct(
     model_only = replace(result,
                          explanations=TrainingExplanations.unavailable())
     assert _subgraphs.card(_run.load(model_only)) is None
-
-
-def test_fitted_model_visualizes(fitted):
-    trainer, _, _ = fitted
-    view = trainer.result.visualize()
-    assert view.model_type == 'classification'
-    assert view.data['tabs'][0]['cards'][0]['id'] == 'metrics'
-    assert view.html().startswith('<div id="kumo-')

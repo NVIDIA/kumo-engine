@@ -89,12 +89,14 @@ def card(run: Run) -> Optional[dict[str, Any]]:
         references = run.explanations.samples()
     except (OSError, ValueError):
         return None
-    outputs = posixpath.join(str(run.explanations.trial_root),
-                             'subgraph_collector', 'test', 'output')
-    samples, categories = [], {}
+    collector = posixpath.join(str(run.explanations.trial_root),
+                               'subgraph_collector', 'test')
+    # Each category keeps the collector's selection order.
+    categories = mapping(
+        mapping(read_json(posixpath.join(
+            collector, 'strategy_mappings.json'))).get('mappings'))
+    samples = []
     for reference in references:
-        for category in reference.categories:
-            categories.setdefault(category, []).append(reference.artifact_id)
         try:
             sample = reference.available and _sample(
                 run.explanations.sample(reference.artifact_id), run.task_type)
@@ -103,7 +105,8 @@ def card(run: Run) -> Optional[dict[str, Any]]:
         if sample:
             output = mapping(
                 read_json(
-                    posixpath.join(outputs, reference.artifact_id + '.json')))
+                    posixpath.join(collector, 'output',
+                                   reference.artifact_id + '.json')))
             samples.append(
                 dict(id=reference.artifact_id,
                      original_ids=reference.original_ids, **sample,

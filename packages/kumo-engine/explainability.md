@@ -11,7 +11,7 @@ Display `training_result.visualize()` to inspect training Evaluation and Explana
 Under **Evaluation**, choose **Metrics → Epoch history** to compare training and validation scores across the experiments that preceded model selection.
 The tuning metric opens first when recorded. Select another metric or toggle individual experiments to compare their curves on the same scale.
 Each point represents a recorded epoch. Missing scores leave gaps, and epochs from the later refit are excluded.
-The widget reads the per-epoch record that `TrainingResult.metric_history` returns. The view appears when it contains training or validation series.
+The widget reads `metric-history.json` from the published bundle or `auto_train_progress.json` from the retained run. The view appears when either source contains training or validation series.
 
 Use **Export PDF** to print every chart view on the currently open page, including All metrics, Epoch history and Against baselines where available, then choose **Save as PDF** in the browser dialog.
 The export preserves the selected explanation and chart controls.
