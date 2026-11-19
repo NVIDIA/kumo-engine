@@ -340,9 +340,10 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
                   if ENTITY_TIME_FORMAT and not re.search(r'%[-_0^#.:+\d]|%f', ENTITY_TIME_FORMAT)
                   else None)
   source_format = ENTITY_FORMAT
-  if ENTITY_FORMAT == 'csv' and ENTITY_TIME and ARROW_FORMAT:   # text for the format; '' is null
+  if ENTITY_FORMAT == 'csv' and ENTITY_TIME and ARROW_FORMAT:   # text, parsed with the format below
       source_format = ds.CsvFileFormat(convert_options=pyarrow.csv.ConvertOptions(
-          column_types={ENTITY_TIME: pa.string()}, strings_can_be_null=True))
+          column_types={ENTITY_TIME: pa.string()}))
+  NULL_TOKENS = pa.array(pyarrow.csv.ConvertOptions().null_values)   # '', 'NA', 'null', ...
   scanner = ds.dataset(source_path, format=source_format,
                        filesystem=source_fs).scanner(columns=list(keep))
 
@@ -353,10 +354,21 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
                       for f in scanner.projected_schema])
 
   def to_column(col, field):     # text in the entity's format reads as the graph reads it
-      if (field.name == 'TIMESTAMP' and ARROW_FORMAT
+      if not (field.name == 'TIMESTAMP' and ARROW_FORMAT
               and (pa.types.is_string(col.type) or pa.types.is_large_string(col.type))):
-          return pc.strptime(col, format=ARROW_FORMAT, unit=field.type.unit)  # raises on a misfit
-      return pc.cast(col, field.type)
+          return pc.cast(col, field.type)
+      unit = field.type.unit
+      col = pc.if_else(pc.is_in(col, value_set=NULL_TOKENS), pa.scalar(None, col.type), col)
+      if '%z' not in ARROW_FORMAT:
+          return pc.strptime(col, format=ARROW_FORMAT, unit=unit)        # raises on a misfit
+      # As the graph does, a value without an offset is read by the format without %z.
+      out = pc.coalesce(
+          pc.strptime(col, format=ARROW_FORMAT, unit=unit, error_is_null=True),
+          pc.strptime(col, format=ARROW_FORMAT.replace('%z', ''), unit=unit, error_is_null=True))
+      misfit = pc.and_(pc.is_valid(col), pc.is_null(out))
+      if pc.any(misfit).as_py():
+          raise pa.ArrowInvalid(f'{pc.filter(col, misfit)[0]} does not fit {ARROW_FORMAT}')
+      return out
 
   pop_fs, pop_dir = arrow_fs(POPULATION_PATH)
   if isinstance(pop_fs, pyarrow.fs.LocalFileSystem):
@@ -384,12 +396,14 @@ system; the destination may be in another system (`adapter.md` §4) and plays no
   is the `timestamp_format` the entity `Table` declares on its time column
   (`kumoai-reference/references/graph_construction.md`, *A time column must be a real date*), else
   `None`: a CSV reads `03/15/2024` as text, and a plain cast parses only ISO-8601. The format is
-  Kumo's (chrono) syntax. When Arrow can parse it too, a CSV time column is read as text, with an
-  empty cell as null, and parsed with the format, because ISO-looking text such as `2024-01-02`
-  under `%Y-%d-%m` means what the format says, as it does in the graph. Arrow cannot parse
+  Kumo's (chrono) syntax. When Arrow can parse it too, a CSV time column is read as text and
+  parsed with the format, because ISO-looking text such as `2024-01-02` under `%Y-%d-%m` means
+  what the format says, as it does in the graph; a cell the CSV reader takes as null (empty,
+  `NA`, `null`) stays null, and no other column changes. Arrow cannot parse
   chrono's own directives (`%.f`, `%-m`, `%:z`); with one of those the column is read and cast as
   without a format, which keeps the type the reader inferred: nanoseconds, or a UTC offset as a
-  time zone. If the parse or the cast fails, report the format and the failing value rather than
+  time zone. Under `%z`, a value without an offset is read without it, as the graph reads it.
+  If the parse or the cast fails, report the format and the failing value rather than
   guessing another format. The population is
   written as Parquet either way. `POPULATION_PATH` is the confirmed path, ending in `/`, in the
   source's file system or bucket, and `POPULATION_CONFIRMED` the same path as Node 1d confirmed
