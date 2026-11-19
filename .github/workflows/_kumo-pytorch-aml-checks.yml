@@ -36,10 +36,10 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
-      - name: Install test-only Polars for required CPU coverage
+      - name: Install the Streaming 25B anchor-preparation dependency
         run: |
           python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Install test-only Polars for required CPU coverage" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+            --title "$KUMO_CI_LABEL / Install the Streaming 25B anchor-preparation dependency" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           uv pip install polars==2.1.0
           KUMO_CI_COMMAND
       - name: Check shared dataset/model consumers on tiny Kumo batches

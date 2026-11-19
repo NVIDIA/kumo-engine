@@ -28,7 +28,6 @@ The forward returns these representations; the MLM head (heads.py) consumes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -42,7 +41,7 @@ from .layers import Encoder, _segment_boundaries
 
 @dataclass
 class ModelConfig:
-    """pragmatiq model dimensions (size table)."""
+    """Explicit pragmatiq model dimensions."""
 
     vocab_size: int
     dim: int = 192
@@ -53,37 +52,6 @@ class ModelConfig:
     dropout: float = 0.1
     rope_base: float = 10_000.0  # GUESS: RoPE base for the time axis
     max_position: int = 64
-    # PRAGMA+Nemotron variant: name of a built-in frozen text encoder (e.g.
-    # "nemotron"/"hash"). None ⇒ the default BPE path with no text branch. Must match
-    # the tokenizer's text_value_mode="embed" build; text_encoder_dim is that encoder's
-    # output width (the MSE reconstruction target dimension).
-    text_encoder: str | None = None
-    text_encoder_dim: int = 64
-
-    @classmethod
-    def preset(cls, name: str, vocab_size: int, overrides: dict[str, Any] | None = None) -> ModelConfig:
-        """A named size: ``nano`` (~1M, CPU/CI), ``small`` (10M), ``medium`` (100M), ``large`` (1B).
-
-        ``nano`` is not in the paper; it exists so the gates and ``quickstart``
-        run end-to-end on a CPU in minutes (the nano config targets CPU/CI).
-
-        ``overrides`` lets callers tune any architecture field on top of the size
-        table — notably ``rope_base`` and ``dropout`` (the paper-silent knobs the
-        SPEC says to expose in config). Unknown keys and ``vocab_size`` are ignored.
-        """
-        table = {
-            "nano": dict(dim=64, n_heads=2, depth_profile=1, depth_event=2, depth_history=1),
-            "small": dict(dim=192, n_heads=3, depth_profile=1, depth_event=5, depth_history=2),
-            "medium": dict(dim=512, n_heads=8, depth_profile=3, depth_event=16, depth_history=6),
-            "large": dict(dim=1024, n_heads=16, depth_profile=9, depth_event=45, depth_history=18),
-        }
-        if name not in table:
-            raise ValueError(f"unknown size {name!r}; choose from {sorted(table)}")
-        params: dict[str, Any] = dict(table[name])
-        for k, v in (overrides or {}).items():
-            if k in cls.__dataclass_fields__ and k != "vocab_size":
-                params[k] = v
-        return cls(vocab_size=vocab_size, **params)
 
 
 def assemble_segments(
@@ -161,10 +129,6 @@ class PragmaOutput:
     user_repr: torch.Tensor  # z_h[USR]  [n_users, d] user embeddings
     event_of_token: torch.Tensor  # [T]
     user_of_event: torch.Tensor  # [E]
-    # Nemotron variant: frozen text-embedding targets and their token positions
-    # (the MSE reconstruction targets); None on the BPE path.
-    text_vecs: torch.Tensor | None = None  # [n_text, text_encoder_dim]
-    text_token_idx: torch.Tensor | None = None  # [n_text] -> index into [T]
 
 
 class PragmaModel(nn.Module):
@@ -182,20 +146,6 @@ class PragmaModel(nn.Module):
                                        use_rope=True, rope_base=config.rope_base)
         self.history_encoder = Encoder(d, config.depth_history, config.n_heads, config.dropout,
                                        use_rope=True, rope_base=config.rope_base)
-        # PRAGMA+Nemotron variant: a frozen text encoder (not a parameter — never saved
-        # or trained) plus a learned projection of its vectors into the model width.
-        # text_proj is the only trainable piece of the text input path.
-        self.text_encoder: Any | None = None
-        self.text_proj: nn.Module | None = None
-        if config.text_encoder:
-            from .text_encoder import build_text_encoder
-
-            self.text_encoder = build_text_encoder(config.text_encoder, dim=config.text_encoder_dim)
-            # The frozen encoder's own width is authoritative (Nemotron's hidden size is
-            # fixed by the pre-trained model); record it so the checkpoint and the MSE
-            # target dimension stay consistent regardless of the configured hint.
-            config.text_encoder_dim = int(self.text_encoder.dim)
-            self.text_proj = nn.Linear(config.text_encoder_dim, d)
         self.apply(self._init_weights)
 
     @staticmethod
@@ -211,37 +161,10 @@ class PragmaModel(nn.Module):
         return self.embed.weight
 
     # ------------------------------------------------------------------ encoders
-    @torch.no_grad()
-    def _encode_text(self, texts: list[str]) -> torch.Tensor:
-        """Frozen text encoder on the batch's text strings → ``[n_text, text_dim]``."""
-        assert self.text_encoder is not None
-        return self.text_encoder.encode(texts).float()
-
-    def _text_input(self, batch: PackedBatch, x_tok: torch.Tensor
-                    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        """Add the projected frozen text embedding to fed text tokens.
-
-        Returns ``(x_tok, text_vecs, text_token_idx)``: the frozen vectors are the MSE
-        reconstruction targets; ``feed_text`` gates which text tokens see their value
-        (masked ones are hidden, so the model must reconstruct them).
-        """
-        if self.text_encoder is None or self.text_proj is None or not batch.is_text.numel():
-            return x_tok, None, None
-        text_token_idx = batch.is_text.bool().nonzero(as_tuple=False).squeeze(1)
-        if not text_token_idx.numel():
-            return x_tok, None, None
-        text_vecs = self._encode_text(batch.text_values).to(x_tok.device)  # [n_text, td]
-        proj = self.text_proj(text_vecs).to(x_tok.dtype)  # [n_text, d]
-        feed = batch.feed_text.bool()[text_token_idx]
-        if bool(feed.any()):
-            x_tok = x_tok.index_add(0, text_token_idx[feed], proj[feed])
-        return x_tok, text_vecs, text_token_idx
-
     def _encode_events(
         self, batch: PackedBatch
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         x_tok = self.embed(batch.key_ids, batch.value_ids, batch.positions)  # [T, d]
-        x_tok, text_vecs, text_token_idx = self._text_input(batch, x_tok)
         seg_lengths = (batch.cu_seqlens_event[1:] - batch.cu_seqlens_event[:-1]).long()
         evt_marker = self.embed.embed(torch.full((seg_lengths.numel(),), EVT, device=x_tok.device))
         x, cu, prefix_idx, token_dst, _ = assemble_segments(seg_lengths, evt_marker, x_tok)
@@ -249,7 +172,7 @@ class PragmaModel(nn.Module):
         z_tok = h[token_dst]  # ẑ_e  [T, d]
         evt_vec = h[prefix_idx]  # [E, d]
         z_e = evt_vec + self.calendar(batch.event_hour, batch.event_dow, batch.event_dom)
-        return z_tok, z_e, text_vecs, text_token_idx
+        return z_tok, z_e
 
     def _encode_profile(self, batch: PackedBatch) -> torch.Tensor:
         x_prof = self.embed(batch.prof_key_ids, batch.prof_value_ids, batch.prof_positions)  # [P, d]
@@ -292,13 +215,12 @@ class PragmaModel(nn.Module):
             _segment_boundaries(offsets, total, None)
             if offsets.numel() != segments + 1:
                 raise ValueError("packed boundaries must contain one segment per event, item, or user")
-        z_tok, z_e, text_vecs, text_token_idx = self._encode_events(batch)
+        z_tok, z_e = self._encode_events(batch)
         z_a = self._encode_profile(batch)
         z_h_usr, z_h_event = self._encode_history(batch, z_a, z_e)
         return PragmaOutput(
             token_repr=z_tok, event_repr=z_e, history_event_repr=z_h_event,
             user_repr=z_h_usr, event_of_token=batch.event_of_token, user_of_event=batch.user_of_event,
-            text_vecs=text_vecs, text_token_idx=text_token_idx,
         )
 
     def embed_users(self, batch: PackedBatch) -> torch.Tensor:

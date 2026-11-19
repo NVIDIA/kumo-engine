@@ -387,29 +387,6 @@ jobs:
           assert not list(report.iter('skipped')), 'Required CUDA tests skipped on the GPU runner'
           PY
           KUMO_CI_COMMAND
-      - name: Install test-only GPU reference dependencies
-        if: ${{ !cancelled() }}
-        id: gpu-reference-setup
-        run: |
-          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Install test-only GPU reference dependencies" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
-          KUMO_CI_COMMAND
-      - name: Validate isolated GPU loader timing and fitted-state reuse
-        if: ${{ !cancelled() && steps.gpu-reference-setup.outcome == 'success' }}
-        env:
-          KUMO_GPU_REFERENCE_REQUIRED: '1'
-        run: |
-          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Validate isolated GPU loader timing and fitted-state reuse" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          sudo --preserve-env=KUMO_GPU_REFERENCE_REQUIRED -- "$(command -v python)" \
-            -m test.kumo_pytorch.benchmarking.cgroup_run \
-            --uid "$(id -u)" --gid "$(id -g)" --timeout 300 -- \
-            "$(command -v python)" -m pytest -q \
-            -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch --required-coverage=gpu \
-            test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py \
-            --junitxml="$RUNNER_TEMP/gpu-checks/reference-tests.xml"
-          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -583,7 +560,6 @@ jobs:
       MKL_NUM_THREADS: '1'
       OPENBLAS_NUM_THREADS: '1'
       RAYON_NUM_THREADS: '1'
-      POLARS_MAX_THREADS: '1'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -695,7 +671,6 @@ jobs:
       AML_CASE: ${{ matrix.case }}
       DATASET: ${{ matrix.dataset }}
       AML_MODE: ${{ matrix.mode }}
-      POLARS_MAX_THREADS: '4'
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -738,27 +713,6 @@ jobs:
           python -m test.kumo_pytorch.nightly benchmark-config \
             --case "$AML_CASE" --mode "$AML_MODE" --data-dir "$RUNNER_TEMP/aml-data" \
             --output "$RUNNER_TEMP/aml-case.json"
-          KUMO_CI_COMMAND
-      - name: Install test-only Polars reference
-        if: matrix.mode == 'timing-polars'
-        run: |
-          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Install test-only Polars reference" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          uv pip install polars==2.1.0
-          KUMO_CI_COMMAND
-      - name: Install test-only GPU reference dependencies
-        if: matrix.mode == 'timing-gpu'
-        run: |
-          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Install test-only GPU reference dependencies" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
-          KUMO_CI_COMMAND
-      - name: Validate Polars timing adapters on tiny sources
-        if: matrix.mode == 'timing-polars'
-        run: |
-          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
-            --title "$KUMO_CI_LABEL / Validate Polars timing adapters on tiny sources" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
-          python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py --junitxml="$RUNNER_TEMP/polars-tests.xml"
           KUMO_CI_COMMAND
       - name: Run the complete campaign with all repetitions
         run: |

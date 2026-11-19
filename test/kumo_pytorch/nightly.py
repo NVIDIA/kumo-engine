@@ -26,8 +26,6 @@ MODES = (
     "training",
     "index",
     "timing-diskgraph",
-    "timing-polars",
-    "timing-gpu",
     "length-planning",
 )
 
@@ -117,8 +115,6 @@ def campaign_matrix(campaign, *, on_demand=False):
             "benchmark-training",
             "index",
             "timing-diskgraph",
-            "timing-polars",
-            "timing-gpu",
             "length-planning",
         ),
     }[campaign]
@@ -205,13 +201,12 @@ def benchmark_config(case, mode, data_dir):
         workload=selection["selector"]["workload_id"],
         cache_mode="cold-warm",
     )
-    if mode.startswith("timing-"):
-        backend = mode.removeprefix("timing-")
+    if mode == "timing-diskgraph":
         config.update(
-            backend=backend,
+            backend="diskgraph",
             training=False,
             cache_mode="uncontrolled",
-            device="cuda:0" if backend == "gpu" else "cpu",
+            device="cpu",
         )
     if mode == "length-planning":
         config.update(
@@ -733,6 +728,20 @@ def run_case(
         report.update(status="passed", stage="complete")
     except Exception as error:  # noqa: BLE001 - persist execution failures in the case report
         report.update(case_failure(error, allow_refusal=report["stage"] == "prepare"))
+        if report.get("outcome") == "refused":
+            report["splits"] = {
+                split: {
+                    "status": "not_executed",
+                    "expected": count,
+                    "delivered": 0,
+                    "batches": 0,
+                }
+                for split, count in population["counts"].items()
+            }
+        else:
+            for split in report.get("splits", {}).values():
+                if split["status"] == "running":
+                    split["status"] = "failed"
     write_report(directory, report)
     return report
 
@@ -909,12 +918,26 @@ def main(argv=None):
         choices=("training", "smoke", "full", "lifecycle", "histories"),
         required=True,
     )
-    run.add_argument("--data-dir", type=Path, required=True)
-    run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--anchors-per-split", type=int)
-    run.add_argument("--batch-size", type=int, default=4)
-    run.add_argument("--threads", type=int, default=1)
-    run.add_argument("--seed", type=int, default=17)
+    group = commands.add_parser(
+        "group", help="Grouped HI Small source and lifecycle probes"
+    )
+    group.add_argument(
+        "--mode", "--campaign",
+        dest="mode",
+        choices=("all", "smoke", "correctness", "lifecycle", "histories"),
+        default="all",
+    )
+    group.add_argument("--prepared-dir", type=Path)
+    group.add_argument("--steps", type=int, default=1)
+    for command in (run, group):
+        command.add_argument("--data-dir", type=Path, required=True)
+        command.add_argument("--output", type=Path, required=True)
+        command.add_argument(
+            "--anchors-per-split", type=int, default=4 if command is group else None
+        )
+        command.add_argument("--batch-size", type=int, default=4)
+        command.add_argument("--threads", type=int, default=1)
+        command.add_argument("--seed", type=int, default=0 if command is group else 17)
     config = commands.add_parser("benchmark-config")
     config.add_argument("--case", required=True)
     config.add_argument("--mode", choices=MODES, required=True)
@@ -940,16 +963,23 @@ def main(argv=None):
                     f"{group}={json.dumps(rows)}\n" for group, rows in selected.items()
                 )
         return 0
-    if args.command == "run":
-        binding = load_bindings().get(args.binding)
-        if binding is None or args.mode not in binding["campaigns"]:
-            parser.error("Binding does not declare the requested campaign")
+    if args.command in {"run", "group"}:
+        if args.command == "run":
+            binding = load_bindings().get(args.binding)
+            if binding is None or args.mode not in binding["campaigns"]:
+                parser.error("Binding does not declare the requested campaign")
         if (
             args.batch_size < 1
             or args.threads < 1
             or (args.anchors_per_split is not None and args.anchors_per_split < 1)
         ):
             parser.error("Batch size, threads and anchor limit must be positive")
+        if args.command == "group":
+            if args.steps < 1:
+                parser.error("Steps must be positive")
+            from .run_aml import run_group
+
+            return run_group(args)
         if args.mode == "full" and args.anchors_per_split is not None:
             parser.error("Full-population runs cannot have an anchor limit")
         return run_binding(args)

@@ -311,10 +311,11 @@ def worker_step(name):
     ],
 )
 def test_hi_small_checks_use_their_own_matrix_with_original_commands(
-    tmp_path, group, mode, step, module, artifact
+    tmp_path, monkeypatch, group, mode, step, module, artifact
 ):
     import textwrap
     from test.kumo_pytorch.bindings import selected_bindings
+    from types import SimpleNamespace
 
     plan = nightly.execution_plan()
     rows = plan[group]["include"]
@@ -393,16 +394,25 @@ def test_hi_small_checks_use_their_own_matrix_with_original_commands(
         },
     )
     args = json.loads(log.read_text().splitlines()[-1])
-    assert args[:2] == ["-m", module]
+    assert args[:3] == ["-m", "test.kumo_pytorch.nightly", "group"]
     assert args[args.index("--anchors-per-split") + 1] == "4"
     assert args[args.index("--threads") + 1] == "1"
     if mode == "lifecycle":
         assert args[args.index("--batch-size") + 1] == "2"
         assert args[args.index("--steps") + 1] == "1"
-    if module.endswith("run_aml"):
-        assert args[args.index("--campaign") + 1] == (
-            "correctness" if mode == "smoke" else "lifecycle"
-        )
+    assert args[args.index("--mode") + 1] == mode
+    calls = []
+    monkeypatch.setitem(
+        sys.modules,
+        "test.kumo_pytorch.run_aml",
+        SimpleNamespace(run_group=lambda args: calls.append(args) or 23),
+    )
+    assert nightly.main(args[2:]) == 23
+    assert len(calls) == 1 and calls[0].mode == mode
+    assert calls[0].anchors_per_split == 4 and calls[0].threads == 1
+    assert calls[0].steps == 1 and calls[0].seed == 0
+    if mode != "histories":
+        assert calls[0].batch_size == 2
 
 
 @pytest.mark.parametrize(

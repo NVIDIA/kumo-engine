@@ -4,54 +4,30 @@
 
 """Pinned AML inputs and bounded, unchanged anchor selections."""
 
-import json
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from .data import load_manifest, safe_path, verify_file
-
 SPLITS = ("train", "valid", "test")
 SECOND = 1_000_000_000
 
 
 def verify_inputs(data_dir, variant="hi-small"):
-    """Verify complete downloaded files before selecting any source or anchor."""
-    entry = load_manifest()["datasets"][variant]
-    files = {item["key"]: item for item in entry["files"]}
-    for key, item in files.items():
-        verify_file(safe_path(Path(data_dir), key), item)
-    for version in ("v1", "v2"):
-        prefix = f"anchors/aml-data/v8/{variant}/account-daily/{version}"
-        manifest = json.loads(
-            safe_path(Path(data_dir), f"{prefix}/manifest.json").read_text()
-        )
-        identity = manifest["definition"]
-        expected = dict(
-            dataset_id=f"aml-data/{variant}",
-            dataset_version="v8",
-            task_id="account-daily",
-            anchor_version=version,
-        )
-        if any(identity[name] != value for name, value in expected.items()):
-            raise ValueError("Anchor manifest identity differs from the selection")
-        item = files[f"{prefix}/anchors.parquet"]
-        if manifest["files"] != [
-            {
-                "path": "anchors.parquet",
-                "bytes": item["bytes"],
-                "sha256": item["sha256"],
-            }
-        ]:
-            raise ValueError("Anchor payload differs from the pinned manifest")
-        if (
-            pq.ParquetFile(safe_path(Path(data_dir), item["key"])).metadata.num_rows
-            != manifest["statistics"]["rows"]
-        ):
-            raise ValueError("Anchor row count differs from its manifest")
-    return files
+    """Use the shared binding verifier for all pinned source and anchor files."""
+    from .bindings import load_bindings
+    from .data import load_manifest, verify_dataset
+
+    versions = load_manifest()["datasets"][variant].get("anchor_versions", ())
+    if not {"v1", "v2"}.issubset(versions):
+        raise ValueError("AML probes require both v1 and v2 anchor manifests")
+    binding = next(
+        b
+        for b in load_bindings().values()
+        if b["selector"]["dataset_id"] == f"aml-data/{variant}"
+    )
+    return verify_dataset(data_dir, binding)
 
 
 def select_anchors(path, *, split_columns, limit, graph=False):

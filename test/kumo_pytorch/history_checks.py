@@ -8,20 +8,16 @@ These are additional correctness probes, not new model workload definitions.
 Declared preflight refusals pass separately from successful execution.
 """
 
-import argparse
-import json
-import traceback
+import sys
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
 import kumo.pytorch.api as r
 
-from .aml_inputs import load_selections, verify_inputs
 from .aml_source import aml_data_schema
 from .anchor_tables import write_probe_anchors
 from .involvement import source_reference
-from .run_aml import positive, prepare
 
 
 def history_contract(*, filtered, schema=None):
@@ -199,7 +195,6 @@ def run_binding(dataset, binding, projection, mapping, directory, *, threads):
     """Reuse source-history probes with a binding's projection and source mapping."""
     from .data import schema_for
     from .population_anchors import projected_rows
-    from .refusals import case_failure
 
     groups = {
         split: [
@@ -222,6 +217,20 @@ def run_binding(dataset, binding, projection, mapping, directory, *, threads):
         variant=mapping["variant"],
         include_labels=False,
     )
+    return run_cases(
+        dataset,
+        identities,
+        groups,
+        reference,
+        directory,
+        threads=threads,
+        schema=schema_for(dataset, binding),
+    )
+
+
+def run_cases(dataset, identities, groups, reference, directory, *, threads, schema=None):
+    from .refusals import case_failure
+
     cases = []
     for filtered in (False, True):
         name = "filters-and-windows" if filtered else "windows"
@@ -235,7 +244,7 @@ def run_binding(dataset, binding, projection, mapping, directory, *, threads):
                 directory=directory / name,
                 filtered=filtered,
                 threads=threads,
-                schema=schema_for(dataset, binding),
+                schema=schema,
             )
         except Exception as error:
             result = case_failure(error)
@@ -248,61 +257,7 @@ def run_binding(dataset, binding, projection, mapping, directory, *, threads):
     }
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--anchors-per-split", type=positive, default=4)
-    parser.add_argument("--threads", type=positive, default=1)
-    args = parser.parse_args(argv)
-    args.output.mkdir(parents=True, exist_ok=False)
-    report = {
-        "status": "failed",
-        "scope": "bounded AML multi-component history correctness",
-        "anchors_per_split": args.anchors_per_split,
-        "cases": [],
-    }
-    try:
-        files = verify_inputs(args.data_dir)
-        selections = load_selections(args.data_dir, limit=args.anchors_per_split)
-        dataset, identities, _, _ = prepare(
-            args.data_dir, args.output / "prepared", selections, files
-        )
-        groups = selections["v1"]["forecast_split"]
-        reference = source_reference(
-            args.data_dir / "datasets/aml-data/v8/hi-small/transactions.parquet",
-            [row["entity_id"] for rows in groups.values() for row in rows],
-            include_values=True,
-        )
-        report["inputs"] = list(files.values())
-        report["anchors"] = groups
-        for filtered in (False, True):
-            name = "filters-and-windows" if filtered else "windows"
-            try:
-                result = check_histories(
-                    dataset,
-                    identities,
-                    groups,
-                    reference,
-                    directory=args.output / name,
-                    filtered=filtered,
-                    threads=args.threads,
-                )
-            except Exception as error:  # noqa: BLE001 - retain every case outcome
-                from .refusals import case_failure
-
-                result = case_failure(error)
-            report["cases"].append({"name": name, **result})
-        report["status"] = (
-            "passed"
-            if all(c["status"] == "passed" for c in report["cases"])
-            else "failed"
-        )
-    except Exception as error:  # noqa: BLE001 - preparation failures must produce a failing report
-        report.update(error=str(error), traceback=traceback.format_exc())
-    (args.output / "report.json").write_text(
-        json.dumps(report, indent=2, allow_nan=False) + "\n"
-    )
+def write_summary(directory, report):
     lines = [
         "### AML multi-source history checks",
         "",
@@ -327,9 +282,16 @@ def main(argv=None):
             )
     if "error" in report:
         lines.extend(["```text", report["error"], "```"])
-    (args.output / "report.md").write_text("\n".join(lines) + "\n")
-    print(f"{report['status']}: {args.output / 'report.md'}")
-    return 0 if report["status"] == "passed" else 1
+    (directory / "report.md").write_text("\n".join(lines) + "\n")
+    print(f"{report['status']}: {directory / 'report.md'}")
+
+
+def main(argv=None):
+    from .nightly import main as nightly_main
+
+    return nightly_main(
+        ["group", "--mode", "histories", *(sys.argv[1:] if argv is None else argv)]
+    )
 
 
 if __name__ == "__main__":

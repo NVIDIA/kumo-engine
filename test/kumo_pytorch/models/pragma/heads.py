@@ -17,12 +17,9 @@ Heads are instantiated directly by the benchmark runner.
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from .pragmatiq import PragmaOutput
-
-LABEL_SMOOTHING = 0.1
 
 
 class MLMHead(nn.Module):
@@ -32,16 +29,11 @@ class MLMHead(nn.Module):
     z_h(USR)] ∈ R^{3d}``, projects ``3d → d``, and reads out logits through the
     **tied** token-embedding weights. Trained with cross-entropy and label
     smoothing 0.1.
-
-    In the PRAGMA+Nemotron variant (``text_dim > 0``) a parallel ``Linear(3d →
-    text_dim)`` reconstructs masked text tokens' frozen embeddings (trained with MSE),
-    sharing the same 3d context but a separate read-out from the tied vocab logits.
     """
 
-    def __init__(self, dim: int, text_dim: int = 0) -> None:
+    def __init__(self, dim: int) -> None:
         super().__init__()
         self.proj = nn.Linear(3 * dim, dim)
-        self.text_out = nn.Linear(3 * dim, text_dim) if text_dim else None
 
     def _context(self, out: PragmaOutput, token_idx: torch.Tensor | None) -> torch.Tensor:
         """The ``[ẑ_e, z_h(event), z_h(USR)] ∈ R^{3d}`` context per selected token.
@@ -64,38 +56,6 @@ class MLMHead(nn.Module):
         """Logits ``[M, vocab]`` for the selected (default: all) tokens."""
         h = self.proj(self._context(out, token_idx))
         return h @ embedding_weight.t()  # tied logits
-
-    def reconstruct_text(self, out: PragmaOutput, token_idx: torch.Tensor) -> torch.Tensor:
-        """Predicted frozen text embeddings ``[M, text_dim]`` for masked text tokens."""
-        if self.text_out is None:
-            raise RuntimeError("MLMHead has no text head; build it with text_dim > 0")
-        return self.text_out(self._context(out, token_idx))
-
-
-def mlm_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """Cross-entropy with label smoothing 0.1; ``targets`` use -100 to ignore.
-
-    Returns a graph-connected zero when nothing contributes (empty batch or every
-    target ignored), so an all-ignored batch yields a well-defined 0 gradient
-    rather than CE's 0/0 NaN.
-    """
-    if targets.numel() == 0 or int((targets != -100).sum()) == 0:
-        return logits.sum() * 0.0
-    return F.cross_entropy(logits, targets, ignore_index=-100, label_smoothing=LABEL_SMOOTHING)
-
-
-def text_mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """MSE reconstruction loss for masked text embeddings (Nemotron variant).
-
-    Returns a graph-connected zero when no text token is masked this step, so a batch
-    with no text target yields a well-defined 0 gradient rather than ``mse_loss``'s NaN
-    on an empty input.
-    """
-    if pred.numel() == 0:
-        return pred.sum() * 0.0
-    # fp32 reduction so the term is stable under bf16-mixed and never trips a
-    # pred/target dtype mismatch (the frozen target is fp32; pred may be bf16).
-    return F.mse_loss(pred.float(), target.float())
 
 
 class ClassificationHead(nn.Module):

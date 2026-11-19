@@ -18,7 +18,6 @@ OPERATIONS = (
     "source.read",
     "source.convert",
     "index.build",
-    "reference.load",
     "index.reopen",
     "materialization",
     "anchors.prepare",
@@ -41,15 +40,11 @@ OPERATIONS = (
     "python.labels",
     "python.masks",
     "python.assemble",
-    "reference.fit",
-    "reference.plan",
-    "reference.batch",
 )
 EPOCH_OPERATIONS = frozenset(
     name
     for name in OPERATIONS
-    if name.startswith(("native.", "python."))
-    or name in {"batch_production", "reference.plan", "reference.batch"}
+    if name.startswith(("native.", "python.")) or name == "batch_production"
 )
 METRICS = {
     f"{name}.elapsed_ns": Metric("ns", "epoch" if name in EPOCH_OPERATIONS else "run")
@@ -145,7 +140,7 @@ CONDITIONS = (
     "independent_repeated_runs",
 )
 
-# Loader comparisons have an explicit, smaller measurement scope. The full PDF
+# Loader timing has an explicit, smaller measurement scope. The full PDF
 # inventory remains the default for nightly model/training campaigns.
 TIMING_METRICS = {
     name: METRICS[name]
@@ -158,7 +153,6 @@ TIMING_METRICS = {
                 "source.convert",
                 "index.build",
                 "index.reopen",
-                "reference.load",
                 "anchors.prepare",
                 "task.setup",
                 "materialization",
@@ -168,9 +162,6 @@ TIMING_METRICS = {
                 "statistics.fit",
                 "bpe.fit",
                 "state.load",
-                "reference.fit",
-                "reference.plan",
-                "reference.batch",
                 "batch_production",
             )
         ),

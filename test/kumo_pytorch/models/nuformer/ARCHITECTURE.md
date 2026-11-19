@@ -18,6 +18,6 @@ For zero-width histories, the encoder uses an internal masked position, while
 `forward_kumo` returns zero-width logits and hidden states to match emitted inputs.
 For account involvement, the wrapper adds a binary classification head.
 
-The named tiny/small/large presets are preserved, but the AML prototype selects
-smaller explicit dimensions. See [the model guide](../README.md) for source
-provenance, usage and validation limits.
+The shared model factory selects explicit dimensions. Unused named-size presets
+and the standalone target-shifting loss helper are omitted. See
+[the model guide](../README.md) for source provenance, usage and validation limits.

@@ -36,14 +36,15 @@ def test_required_coverage(tmp_path, fault, profile):
     elif fault == "extra":
         body += "def test_unreviewed():\n    pass\n"
     (tests / "test_cpu.py").write_text("import pytest\n" + body)
-    (tests / "test_gpu.py").write_text(
-        "def test_gpu():\n    raise AssertionError('owned by GPU job')\n"
+    other_profile = "cpu" if profile == "difficult" else "difficult"
+    (tests / "test_delegated.py").write_text(
+        "def test_delegated():\n    raise AssertionError('owned by another job')\n"
     )
     (tmp_path / "required-tests.json").write_text(
         json.dumps(
             {
                 profile: [f"{directory}/test_cpu.py::test_required"],
-                "gpu": [f"{directory}/test_gpu.py::test_gpu"],
+                other_profile: [f"{directory}/test_delegated.py::test_delegated"],
             }
         )
     )

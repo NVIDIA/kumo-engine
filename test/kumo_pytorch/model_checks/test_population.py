@@ -4,10 +4,13 @@
 
 """Full populations retain every anchor, including tails and invalid targets."""
 
-import json
 from dataclasses import replace
-from test.kumo_pytorch import population
-from test.kumo_pytorch.population_anchors import project_population
+from test.kumo_pytorch import nightly, population
+from test.kumo_pytorch.bindings import binding_for
+from test.kumo_pytorch.population_anchors import (
+    project_binding,
+    project_population,
+)
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -86,18 +89,23 @@ def test_full_projection_reads_tail_beyond_smoke_and_rejects_duplicate_ids(tmp_p
         )
 
 
-def source_anchors(selections, selection, tmp_path):
+def source_anchors(selections, selection, tmp_path, *, repeats=3):
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"
     groups = selections[selection["selector"]["anchor_version"]][
         "split" if native else "forecast_split"
     ]
     rows = [
-        dict(row, sample_id=f"{row['sample_id']}-{i}")
+        dict(row, sample_id=f"{row['sample_id']}-{i}" if repeats > 1 else row["sample_id"])
         for group in groups.values()
         for row in group
-        for i in range(3)
+        for i in range(repeats)
     ]
     table = pa.Table.from_pylist(rows)
+    table = table.set_column(
+        table.schema.get_field_index("involvement"),
+        "involvement",
+        table["involvement"].cast(pa.int32()),
+    )
     for clock in ("as_of_time", "graph_as_of_time"):
         table = table.set_column(
             table.schema.get_field_index(clock),
@@ -109,8 +117,20 @@ def source_anchors(selections, selection, tmp_path):
     return path
 
 
+def projected_case(mapped, selection, family, directory, *, limit=None, repeats=3):
+    """Project fixture anchors; execution belongs to the shared nightly runner."""
+    directory.mkdir(parents=True)
+    dataset, identities, selections = mapped
+    binding = binding_for(selection, family)
+    source = source_anchors(selections, selection, directory, repeats=repeats)
+    anchors, manifest = project_binding(
+        source, directory / "anchors.parquet", identities, binding, limit=limit
+    )
+    return dataset, anchors, manifest, binding
+
+
 def test_preflight_refusal_does_not_claim_population(mapped, tmp_path, monkeypatch):
-    original = population.build_contract
+    original = nightly.contract_for
 
     def filtered(*args, **kwargs):
         contract = original(*args, **kwargs)
@@ -120,21 +140,19 @@ def test_preflight_refusal_does_not_claim_population(mapped, tmp_path, monkeypat
         )
         return replace(contract, sample=replace(contract.sample, entity=entity))
 
-    monkeypatch.setattr(population, "build_contract", filtered)
-    dataset, identities, selections = mapped
+    monkeypatch.setattr(nightly, "contract_for", filtered)
     selection, family = CASES[0]
-    result = population.run_case(
-        dataset,
-        identities,
-        source_anchors(selections, selection, tmp_path),
-        selection,
-        family,
-        directory=tmp_path / "refused-population",
+    directory = tmp_path / "refused-population"
+    result = nightly.run_case(
+        *projected_case(mapped, selection, family, directory),
+        directory,
         capacity=5,
         mode="full",
+        mapping={"scope": {"kind": "full_source"}},
     )
     assert result["status"] == "passed" and result["outcome"] == "refused"
     assert result["full_population_verified"] is False
+    assert set(result["splits"]) == {"train", "valid", "test"}
     assert all(
         s["delivered"] == 0 and s["status"] == "not_executed"
         for s in result["splits"].values()
@@ -148,18 +166,15 @@ def test_preflight_refusal_does_not_claim_population(mapped, tmp_path, monkeypat
 )
 @pytest.mark.parametrize("mode", ["smoke", "full"])
 def test_raw_aml_population_completion(mapped, selection, family, mode, tmp_path):
-    dataset, identities, selections = mapped
-    path = source_anchors(selections, selection, tmp_path)
-    result = population.run_case(
-        dataset,
-        identities,
-        path,
-        selection,
-        family,
-        directory=tmp_path / "case",
+    directory = tmp_path / "case"
+    result = nightly.run_case(
+        *projected_case(
+            mapped, selection, family, directory, limit=1 if mode == "smoke" else None
+        ),
+        directory,
         capacity=5,
         mode=mode,
-        smoke_anchors=1,
+        mapping={"scope": {"kind": "full_source"}},
         batch_size=2,
     )
     assert result["status"] == "passed", result.get("traceback", result)
@@ -169,7 +184,7 @@ def test_raw_aml_population_completion(mapped, selection, family, mode, tmp_path
         return
     assert result["full_population_verified"] == (mode == "full")
     native = selection["selector"]["workload_id"] != "account-involvement-next24h"
-    groups = selections[selection["selector"]["anchor_version"]][
+    groups = mapped[2][selection["selector"]["anchor_version"]][
         "split" if native else "forecast_split"
     ]
     for name, split in result["splits"].items():
@@ -259,11 +274,14 @@ def test_delivery_corruption_is_a_failure(damage):
 
 def test_full_mode_rejects_smoke_limits(tmp_path):
     with pytest.raises(SystemExit) as error:
-        population.main(
+        nightly.main(
             [
+                "run",
+                "--binding",
+                "E01",
                 "--mode",
                 "full",
-                "--smoke-anchors",
+                "--anchors-per-split",
                 "1",
                 "--data-dir",
                 str(tmp_path),
@@ -280,29 +298,25 @@ def test_full_population_rejects_a_dropped_tail(mapped, tmp_path, monkeypatch):
 
     from kumo.pytorch.api import Task
 
-    dataset, identities, selections = mapped
     selection, family = next(
         (s, f)
         for s, f in CASES
         if f == "nuformer"
         and s["selector"]["workload_id"] == "account-involvement-next24h"
     )
-    path = source_anchors(selections, selection, tmp_path)
     original = Task.batches
 
     def truncated(self, *args, **kwargs):
         return islice(original(self, *args, **kwargs), 1)
 
     monkeypatch.setattr(Task, "batches", truncated)
-    result = population.run_case(
-        dataset,
-        identities,
-        path,
-        selection,
-        family,
-        directory=tmp_path / "dropped-tail",
+    directory = tmp_path / "dropped-tail"
+    result = nightly.run_case(
+        *projected_case(mapped, selection, family, directory),
+        directory,
         capacity=5,
         mode="full",
+        mapping={"scope": {"kind": "full_source"}},
         batch_size=2,
     )
     assert result["status"] == "failed"
@@ -314,20 +328,30 @@ def test_full_population_rejects_a_dropped_tail(mapped, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["smoke", "full"])
-def test_legacy_population_does_not_select_li_benchmarks(tmp_path, monkeypatch, mode):
-    def stop(_):
-        raise ValueError("fixture stops before source acquisition")
+def test_population_cli_selects_the_requested_binding(tmp_path, monkeypatch, mode):
+    calls = []
 
-    monkeypatch.setattr(population, "verify_inputs", stop)
-    output = tmp_path / "out"
+    def run(args):
+        calls.append(args)
+        return 1  # A failed worker must remain a failed command.
+
+    monkeypatch.setattr(nightly, "run_binding", run)
     assert (
-        population.main(
-            ["--mode", mode, "--data-dir", str(tmp_path), "--output", str(output)]
+        nightly.main(
+            [
+                "run",
+                "--binding",
+                "E01",
+                "--mode",
+                mode,
+                "--data-dir",
+                str(tmp_path),
+                "--output",
+                str(tmp_path / "out"),
+            ]
         )
         == 1
     )
-    report = json.loads((output / "report.json").read_text())
-    assert len(report["cases"]) == 5
-    assert all(
-        row["selector"]["dataset_id"] == "aml-data/hi-small" for row in report["cases"]
-    )
+    assert len(calls) == 1
+    assert calls[0].binding == "E01" and calls[0].mode == mode
+    assert calls[0].anchors_per_split is None

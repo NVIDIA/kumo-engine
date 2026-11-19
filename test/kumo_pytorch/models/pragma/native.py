@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native Kumo input consumption around the unchanged PRAGMA neural core."""
+"""Native Kumo input consumption around the reviewed PRAGMA token model."""
 
 import hashlib
 import inspect
@@ -14,7 +14,7 @@ from . import _kumo
 from .batch import PackedBatch
 from .pragmatiq import ModelConfig, PragmaModel, PragmaOutput
 
-REFERENCE_SHA256 = "95f0ed59fd3d512b3c37bd65a9f50cf8ac72b4170779561c63042b567504754a"
+REFERENCE_SHA256 = "1300110a6c704484c3b3108ac1dcc4ca68f1f390f0d4edfc89350e41bf1cae10"
 UNAVAILABLE_TIMESTAMP = torch.iinfo(torch.int64).min
 
 
@@ -29,7 +29,7 @@ def _check_reference():
 class NativePragmaModel(PragmaModel):
     """Consume one native Kumo batch using fitted field-token vocabulary IDs.
 
-    The inherited packed interface and all parameter names remain unchanged.
+    The inherited packed token interface and parameter names remain unchanged.
     Packing, reserved-ID remapping and timing features are model operations in
     ``forward_kumo``. Kumo owns fitting, masking, sampling and event ordering.
     """

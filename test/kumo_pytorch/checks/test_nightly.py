@@ -77,7 +77,7 @@ def test_plan_has_every_binding_and_no_native_import_requirement():
 
 
 @pytest.mark.parametrize("mode", nightly.MODES)
-def test_benchmark_shards_preserve_limits_and_reference_scope(mode, tmp_path):
+def test_benchmark_shards_preserve_limits_and_training_scope(mode, tmp_path):
     template = json.loads((nightly.ROOT / "workloads/aml-benchmark.json").read_text())
     for row in nightly.matrix()["include"]:
         case = row["case"]

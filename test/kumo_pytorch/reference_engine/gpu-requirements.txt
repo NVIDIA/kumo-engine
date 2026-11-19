@@ -1,5 +1,0 @@
-# Test-only CUDA dependencies from Arena f8ffd61b gpu-backend/pyproject.toml.
-cudf-cu13==26.10.2
-rmm-cu13==26.10.0
-pylibcugraph-cu13==26.10.0
-cupy-cuda13x==14.2.0

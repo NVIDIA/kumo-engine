@@ -4,13 +4,13 @@
 
 """Packed tensor inputs for PRAGMA; construction and encoding belong to the caller.
 
-The packed input contract and tensor-transfer helpers are retained from the
-original model. Attention processes each segment with native PyTorch.
+The packed token contract and tensor-transfer helpers are retained from the
+original model; unused frozen-text embedding fields are omitted. Attention processes each segment with native PyTorch.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -53,14 +53,6 @@ class PackedBatch:
     # bookkeeping
     user_ids: list[str]
     n_events_per_user: torch.Tensor  # int64[n_users]
-    # Nemotron variant (text_value_mode="embed"): is_text marks event tokens whose
-    # value is a frozen text embedding; text_values holds those tokens' raw strings
-    # in token order (len == is_text.sum()); feed_text gates which text tokens supply
-    # their embedding to the input (all of them at inference; the masker hides masked
-    # ones during pretraining). All empty/false in BPE mode — the model ignores them.
-    is_text: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.bool))
-    feed_text: torch.Tensor = field(default_factory=lambda: torch.zeros(0, dtype=torch.bool))
-    text_values: list[str] = field(default_factory=list)
     # Optional legacy length metadata, INCLUDING the [EVT]/[USR] prefix.
     # No padding plan depends on these values. If supplied, attention validates
     # that they cover the actual lengths; leaving them None is recommended.

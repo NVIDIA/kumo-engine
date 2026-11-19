@@ -80,7 +80,7 @@ def test_isolated_worker_uses_target_identity_after_sudo(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", "/root")
     monkeypatch.setenv("USER", "root")
     monkeypatch.setenv("LOGNAME", "root")
-    monkeypatch.setenv("POLARS_MAX_THREADS", "4")
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
     environment = worker_environment(os.getuid(), tmp_path)
     # Check what a real child (and its cache libraries) sees, not only the mapping.
     result = subprocess.run(
@@ -90,8 +90,8 @@ def test_isolated_worker_uses_target_identity_after_sudo(monkeypatch, tmp_path):
             (
                 "import json, os; from pathlib import Path; "
                 "print(json.dumps([str(Path.home()), os.environ['USER'], "
-                "os.environ['LOGNAME'], os.path.expanduser('~/.cupy'), "
-                "os.environ['POLARS_MAX_THREADS'], os.environ['KUMO_BENCHMARK_CGROUP']]))"
+                "os.environ['LOGNAME'], os.path.expanduser('~/.cache'), "
+                "os.environ['OMP_NUM_THREADS'], os.environ['KUMO_BENCHMARK_CGROUP']]))"
             ),
         ],
         env=environment,
@@ -103,7 +103,7 @@ def test_isolated_worker_uses_target_identity_after_sudo(monkeypatch, tmp_path):
         user.pw_dir,
         user.pw_name,
         user.pw_name,
-        user.pw_dir + "/.cupy",
+        user.pw_dir + "/.cache",
         "4",
         str(tmp_path),
     ]

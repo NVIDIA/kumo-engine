@@ -2,61 +2,25 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Real-AML, 100-update CPU training acceptance for all five model/task bindings."""
+"""Shared 100-update CPU training acceptance; real-data runs use nightly run."""
 
-import argparse
 import csv
-import hashlib
-import importlib.metadata
-import subprocess
 import traceback
 from contextlib import contextmanager
-from pathlib import Path
-from test.kumo_pytorch.bindings import selections as catalog_selections
 
 import torch
 
-import kumo.pytorch.api as r
-
-from .aml_inputs import load_selections, requests_for, verify_inputs
-from .aml_source import aml_data_schema
-from .anchor_tables import write_probe_anchors
 from .bindings import binding_for
 from .bindings import selection as binding_selection
 from .bindings import sequence_capacity, task_definition
-from .contracts import build_contract
-from .data import ROOT
 from .involvement import verify_batch
 from .lifecycle import input_digest
 from .masked_values import verify_loss as verify_masked_loss
 from .models import build_model
 from .next_token import verify_loss as verify_next_loss
-from .population import PDF_CASES, verify_batch_for, write_report
-from .run_aml import positive, prepare
+from .population import verify_batch_for, write_report
 
 STEPS = 100
-CASES = {
-    ("account-involvement-next24h", "graphsage"),
-    ("account-involvement-next24h", "nuformer"),
-    ("account-involvement-next24h", "combined"),
-    ("masked-value-pretrain", "pragma"),
-    ("next-token-pretrain", "nuformer"),
-}
-
-
-def training_cases(selections):
-    cases = [
-        (selection, family)
-        for selection in selections
-        for family in selection["models"]
-    ]
-    identities = [
-        (selection["selector"]["workload_id"], family) for selection, family in cases
-    ]
-    assert len(identities) == len(CASES) and set(identities) == CASES, (
-        "Training acceptance requires each of the five AML model/workload combinations exactly once"
-    )
-    return cases
 
 
 @contextmanager
@@ -477,215 +441,7 @@ def train_task(
     assert task.fitted_state.fingerprint == frozen
 
 
-def run_case(
-    dataset,
-    identities,
-    selections,
-    selection,
-    family,
-    *,
-    directory,
-    capacity,
-    seed=17,
-    batch_size=4,
-):
-    directory.mkdir(parents=True, exist_ok=False)
-    workload = selection["selector"]["workload_id"]
-    report = {
-        "status": "running",
-        "case_id": f"{workload}-{family}",
-        "pdf_case": PDF_CASES.get((workload, family)),
-        "family": family,
-        "selector": selection["selector"],
-        "device": "cpu",
-        "threads": 1,
-        "seed": seed,
-        "steps_per_repetition": STEPS,
-        "repetitions": [],
-        "batch_size": batch_size,
-        "model_dim": 16,
-        "history_capacity": capacity,
-        "optimizer": {"name": "AdamW", "lr": 1e-3, "weight_decay": 0},
-    }
-    write_report(directory, report)
-    try:
-        assert (workload, family) in CASES, "Unselected training combination"
-        graph = family in {"graphsage", "combined"}
-        native = workload != "account-involvement-next24h"
-        groups = selections[selection["selector"]["anchor_version"]][
-            selection["anchor_binding"]["split_column"]
-        ]
-        rows = groups["train"]
-        requests = requests_for(
-            rows, identities, split="train", graph=graph, native=native
-        )
-        report["training_anchors"] = rows
-        report["encoder_cutoff_seconds"] = (
-            max(row["as_of_time"] // 10**9 for row in rows) - 1
-        )
-        contract = build_contract(
-            aml_data_schema(), family, native=native, max_events=capacity
-        )
-        (directory / "contract.json").write_text(contract.to_json())
-        anchors = write_probe_anchors(requests, directory / "anchors.parquet")
-        with (
-            r.prepare(
-                contract,
-                dataset,
-                r.DiskGraphEngine(index=directory / "index", num_threads=1),
-            ) as plan,
-            plan.materialize(
-                anchors,
-                fit_split="train",
-                encoder_cutoff=report["encoder_cutoff_seconds"],
-            ) as task,
-        ):
-            report["fitted_state_sha256"] = task.fitted_state.fingerprint
-            for repeat in range(2):
-                report["repetitions"].append(
-                    train_repetition(
-                        task,
-                        requests,
-                        selection,
-                        family,
-                        directory=directory / f"repeat-{repeat}",
-                        capacity=capacity,
-                        seed=seed,
-                        batch_size=batch_size,
-                    )
-                )
-                write_report(directory, report)
-        report["reproducible"] = compare_repetitions(*report["repetitions"])
-        report["status"] = (
-            "passed"
-            if report["reproducible"]
-            and all(x["status"] == "passed" for x in report["repetitions"])
-            else "failed"
-        )
-    except Exception as error:  # noqa: BLE001 - retain refused versus executed outcomes
-        from .refusals import case_failure
-
-        report.update(
-            case_failure(error, allow_refusal="fitted_state_sha256" not in report)
-        )
-    write_report(directory, report)
-    return report
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--anchors-per-split", type=positive, default=32)
-    parser.add_argument("--batch-size", type=positive, default=4)
-    args = parser.parse_args(argv)
-    args.output.mkdir(parents=True, exist_ok=False)
-    report = {
-        "status": "running",
-        "scope": "100 CPU updates, repeated twice, on bounded real AML training anchors; not full-population training",
-        "cases": [],
-        "config": {
-            k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
-        },
-    }
-    try:
-        report["revision"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip()
-        report["dirty_checkout"] = bool(
-            subprocess.check_output(
-                ["git", "status", "--porcelain"], cwd=ROOT, text=True
-            ).strip()
-        )
-        report["versions"] = {
-            p: importlib.metadata.version(p) for p in ("torch", "pyarrow", "diskgraph")
-        }
-        report["test_source_sha256"] = {
-            str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in [
-                Path(__file__),
-                ROOT / "contracts.py",
-                ROOT / "involvement.py",
-                ROOT / "masked_values.py",
-                ROOT / "next_token.py",
-                ROOT / "workloads/bindings.json",
-            ]
-            + sorted((ROOT / "models").rglob("*.py"))
-        }
-        write_report(args.output, report)
-        cases = training_cases(catalog_selections())
-        files = verify_inputs(args.data_dir)
-        report["inputs"] = list(files.values())
-        selections = load_selections(args.data_dir, limit=args.anchors_per_split)
-        dataset, identities, _, capacity = prepare(
-            args.data_dir, args.output / "prepared", selections, files
-        )
-        for selection, family in cases:
-            report["cases"].append(
-                run_case(
-                    dataset,
-                    identities,
-                    selections,
-                    selection,
-                    family,
-                    directory=args.output
-                    / f"{selection['selector']['workload_id']}-{family}",
-                    capacity=capacity,
-                    batch_size=args.batch_size,
-                )
-            )
-            write_report(args.output, report)
-        report["status"] = (
-            "passed"
-            if all(c["status"] == "passed" for c in report["cases"])
-            else "failed"
-        )
-    except Exception as error:  # noqa: BLE001 - retain preparation errors in the CI artifact
-        report.update(
-            status="failed", error=str(error), traceback=traceback.format_exc()
-        )
-    write_report(args.output, report)
-    lines = [
-        "### Real-AML CPU training acceptance",
-        "",
-        f"Status: **{report['status']}**",
-        "",
-        "| Case | Status | Reproducible | Updates per repeat | Initial / final probe loss |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    if "revision" in report:
-        lines.insert(
-            4,
-            f"Revision: `{report['revision']}`; dirty checkout: `{report['dirty_checkout']}`.\n",
-        )
-    for case in report["cases"]:
-        repeats = case["repetitions"]
-        lines.append(
-            f"| {case['case_id']} | {case['status']} ({case.get('outcome', 'executed')}) | {case.get('reproducible', 'not measured')} | {[x['completed_updates'] for x in repeats]} | {[(x.get('initial_loss'), x.get('final_loss')) for x in repeats]} |"
-        )
-        for repeat, result in enumerate(repeats):
-            failed = [
-                n
-                for n, p in result["parameters"].items()
-                if not p.get("updated", False) or not p["nonzero_gradient_steps"]
-            ]
-            if failed and result["completed_updates"] == STEPS:
-                lines.extend(
-                    [
-                        "",
-                        f"{case['case_id']} repeat {repeat}: unchanged/no-gradient parameters: "
-                        + ", ".join(failed),
-                    ]
-                )
-        for result in (case, *repeats):
-            if "error" in result:
-                lines.extend(["", "```text", result["error"], "```"])
-    if "error" in report:
-        lines.extend(["", "```text", report["error"], "```"])
-    (args.output / "report.md").write_text("\n".join(lines) + "\n")
-    print(f"{report['status']}: {args.output / 'report.md'}")
-    return 0 if report["status"] == "passed" else 1
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "Use: python -m test.kumo_pytorch.nightly run --binding ID --mode training ..."
+    )

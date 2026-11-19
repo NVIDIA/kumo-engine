@@ -1,9 +1,9 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 671 CPU cases,
-five CUDA reference cases and 82 separate difficult-behavior cases. The CPU job installs Polars and exercises both the
-generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
-delegated to the dedicated GPU job, not accepted as skips on CPU.
+CI uses the reviewed node IDs in `../required-tests.json`: 665 CPU cases and
+82 separate difficult-behavior cases. The Polars and GPU reference backends and
+their 11 required cases have been removed. The separate GPU job retains native
+CUDA package regressions and GPU collector validation, with skips rejected.
 
 The LI Medium increments add 43 CPU checks for native target delivery, train-only
 fitting, masks, invalid source/binding rejection, stored-target heads, strict
@@ -11,7 +11,7 @@ training replay and source-to-runner execution. They use tiny fixtures; real
 LI Medium campaign execution remains pending in the
 [binding expansion plan](binding-coverage.md).
 
-`--required-coverage=cpu`, `--required-coverage=gpu` or
+`--required-coverage=cpu` or
 `--required-coverage=difficult` requires the corresponding inventory. The last
 profile belongs to the required [Difficult Behavior group](difficult-behavior.md).
 Missing/deleted cases, unexpected additions, collection-time skips,
@@ -98,7 +98,8 @@ Collection alone does not establish execution acceptance.
 Per the user's 2026-11-17 instruction, 87 InMemory variants were removed from
 the standalone inventory. The cutoff-alignment and fresh-process benchmark-state
 checks now use DiskGraph instead of InMemory, retaining their assertions.
-Polars/GPU timing-reference cases are unchanged. The user's later instruction
+Polars/GPU timing-reference cases were subsequently removed at the user's request.
+The user's later instruction
 also migrates inherited package tests and runnable examples to DiskGraph while
 retaining their required behavior assertions.
 
@@ -216,12 +217,11 @@ its assertions, and dependency errors remain failures. The exception ends when
 the serving call returns or raises and also applies in doc/notebook subprocesses.
 The migration is implemented, with independent expected answers and no new
 skip/xfail/native-gap exemptions. Package acceptance is still failing on native
-support and correctness gaps. See the [validation record](../PLAN.md#native-correctness-migration)
-for broad runs, focused corrections and environment limits. Neither full nightly
+support and correctness gaps. See the [remaining acceptance work](../PLAN.md#remaining-acceptance-work);
+historical validation records remain in Git history. Neither full nightly
 acceptance nor a runtime improvement has been established for this revision.
 
-The [scoped AnchorTable follow-up](../PLAN.md#scoped-anchortable-follow-up)
-covers #353's AML checks and added/extended package tests. The benchmark's
+The [native AnchorTable scope](../PLAN.md#agreed-scope) covers #353's AML checks and added/extended package tests. The benchmark's
 required fault cases include a missing native history plan; first-epoch length
 planning and second-epoch cache reuse remain enforced. This follow-up does not
 claim repository-wide removal of request-based loading. Native package failures

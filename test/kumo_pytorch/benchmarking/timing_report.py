@@ -103,7 +103,6 @@ def timing_summary(cases, output):
                 ("Source verification ms", "source.read.elapsed_ns", 1e6),
                 ("Source conversion ms", "source.convert.elapsed_ns", 1e6),
                 ("Index build ms", "index.build.elapsed_ns", 1e6),
-                ("Reference load ms", "reference.load.elapsed_ns", 1e6),
                 ("Index reopen ms", "index.reopen.elapsed_ns", 1e6),
                 ("Materialization ms", "materialization.elapsed_ns", 1e6),
                 ("State load ms", "state.load.elapsed_ns", 1e6),

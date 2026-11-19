@@ -86,8 +86,7 @@ class TaskModel(nn.Module):
 
         A zero-weight batch returns zero loss; the caller must skip its optimizer
         update (including weight decay).
-        For next-token training, Kumo already shifted the targets; do not shift
-        again through nuFormer's standalone next_token_loss helper.
+        For next-token training, the loss uses Kumo's already-shifted targets.
         """
         target_name = {
             "binary": "label",

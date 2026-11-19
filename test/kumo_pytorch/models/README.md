@@ -65,7 +65,8 @@ builders. Historical Arena validation is not evidence for this port.
 GraphSAGE retains [RelBench provenance](graphsage/UPSTREAM.json) and
 [license](graphsage/LICENSE.relbench). PRAGMA retains its licenses and notices;
 see [its source record](pragma/REFERENCE.md). nuFormer and combined retain
-Arena's implementations with the local adaptations described above. Optional PRAGMA text encoders are not used by AML.
+Arena's implementations with the local adaptations described above. Unused
+PRAGMA frozen-text encoders are omitted; S01 retains its BPE token path.
 
 Stored target heads in `stored_targets.py` share these backbones for binary,
 categorical and numerical objectives, including multiple independently valid

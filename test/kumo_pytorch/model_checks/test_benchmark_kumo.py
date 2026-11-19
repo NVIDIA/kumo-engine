@@ -107,7 +107,6 @@ def test_native_state_comparison_in_fresh_processes(tmp_path):
     (
         ("diskgraph", False),
         ("diskgraph", True),
-        ("polars", False),
     ),
 )
 def test_unrelated_dataset_and_model(tmp_path, backend, training):
@@ -146,15 +145,7 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
                 path = workdir / "products.parquet"
                 pq.write_table(pa.Table.from_pylist(rows), path)
             dataset = r.Dataset({"products": r.Parquet(str(path))})
-            if backend == "polars":
-                pytest.importorskip("polars")
-                from test.kumo_pytorch.reference_engine.polars import (
-                    PolarsEngine,
-                )
-
-                engine = PolarsEngine()
-            else:
-                engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
+            engine = r.DiskGraphEngine(index=workdir / "index", num_threads=1)
             recorder.measure("converted.bytes", path.stat().st_size)
             anchors = product_anchors(workdir, "product", 5)
             return KumoInputs(
@@ -163,7 +154,6 @@ def test_unrelated_dataset_and_model(tmp_path, backend, training):
                 engine,
                 anchors,
                 materialize_options={"fit_split": "train"},
-                reference=backend == "polars",
                 batch_options={
                     "batch_size": 3,
                     "split": "train",

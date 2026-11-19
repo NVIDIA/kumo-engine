@@ -34,10 +34,7 @@ independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or
 | L04 | LI Medium / account-daily | account-involvement-next24h | PRAGMA | Unmasked supervised fixture coverage retained; real-data campaigns disabled by user (L01 only) |
 | S01 | Synthetic / weekly-account | account-masked-value-pretrain | PRAGMA | One BPE contract with required source checks and shared campaigns; real-data CI pending |
 | S02 | Synthetic / weekly-customer | customer-next-token-pretrain | nuFormer | Native customer-history correctness, training, delivery and lifecycle registered; real-data CI pending |
-| S03 | Synthetic / weekly-account | aml_graph_user_last30d | GraphSAGE | Port event-membership graph and retrospective binary target |
 | S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Required positive-LTV task with richer/grouped aggregates and four shared campaigns; real-data CI pending |
-| M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
-| M02 | MBD / transaction-forecast | next-transaction-amount-currency | PRAGMA | Port mixed targets and independent validity |
 | M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Packed composite history and auxiliary labels in four shared campaigns; real-data CI pending |
 | M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Stored and generated count checks in four shared campaigns; real-data CI pending |
 
@@ -146,8 +143,8 @@ increment. These figures describe the preceding fixture increment, not real-data
    missing tests and retain real-data, full-population and profiling evidence.
 
 Code, models and assets remain test-owned, with no Arena runtime dependency.
-DiskGraph answers use independent expectations; Polars/GPU references remain
-timing-only. Accepted refusals, successful execution and defects remain distinct.
+DiskGraph answers use independent expectations. Benchmarking uses DiskGraph;
+the Polars/GPU reference backends have been removed. Accepted refusals, successful execution and defects remain distinct.
 This expansion does not authorize package runtime changes.
 
 ## Data and access
@@ -207,7 +204,7 @@ Declared early refusals are labelled separately from executed campaigns.
 
 HI Small's five bindings additionally retain fitting-memory checks (three
 repetitions each), but no longer enable model profiling, index-reuse timing or
-DiskGraph/Polars/GPU loader timings. L01 retains its four benchmark campaigns.
+DiskGraph loader timings. L01 retains its four benchmark campaigns.
 The combined summary therefore requires 47 reports: 38 dataset campaigns,
 four L01 benchmarks and five combined HI Small fitting-memory reports.
 
@@ -260,7 +257,7 @@ Only AML LI Medium / Combined is expanded in this increment. Its catalog enables
 
 - Detailed training profiling with stage timers, counters, memory and GPU metrics.
 - Index construction followed by two reopens, and fresh versus reused fitted state.
-- DiskGraph loader timing; no LI Polars or GPU reference comparison.
+- DiskGraph loader timing.
 - A separate native length-planning and second-epoch cache probe. The ordinary
   combined benchmark preserves native graph/history iteration with fixed batches.
 - Fresh-process inference, frozen-input finetuning with the original amount/currency
@@ -327,7 +324,7 @@ These results do not replace a real-data Linux/GPU nightly run.
 
 The first Synthetic row in *dataset-model-feature-coverage 3.pdf* uses the registered
 `customer-next-token-pretrain` binding, weekly-customer v1 anchors and dataset v1.
-Its binding ID ends in `ca3566e`. S01/PRAGMA and S04/Combined are described below. S03 is not selected by this PDF.
+Its binding ID ends in `ca3566e`. S01/PRAGMA and S04/Combined are described below.
 
 The existing catalog, downloader, native anchor projector, nuFormer model,
 training checks, lifecycle checks and categorized workflow matrices are reused.
@@ -589,7 +586,7 @@ benchmarks and 15 HI Small fitting repetitions.
 
 | Owner | Checks |
 | --- | --- |
-| HI Small Correctness / smoke | Original-source labels; input membership, masks, targets and loss oracles (`run_aml --campaign correctness`) |
+| HI Small Correctness / smoke | Original-source labels; input membership, masks, targets and loss oracles (`nightly group --mode smoke`) |
 | HI Small Correctness / histories | Independent windows, filters, ordering and limit sweeps |
 | H&M Correctness | Future-row cutoffs, generator labels, sampling-tie eligibility and empty histories (`tests/e2e/test_correctness.py`) |
 | H&M Training/evaluation | Baseline identity, AUROC bands/seed spread, score distribution and active/dormant ranking (`tests/e2e/test_training.py`) |

@@ -1,6 +1,7 @@
-# Real-AML CPU training acceptance
+# CPU training acceptance
 
-Training acceptance covers all five AML HI-small v8 model/workload combinations.
+The shared runner applies the same training criteria to every enabled binding.
+HI Small retains all five original model/workload combinations:
 This extends criterion 8's original Fusion/a001 and PRAGMA/a017 requirement at
 the user's request. Every combination has the same acceptance rules.
 
@@ -23,7 +24,7 @@ controlled fixture learning and task-correctness tests keep their current owners
 From the repository root with the test environment and verified downloads:
 
 ```sh
-python -m test.kumo_pytorch.training_acceptance \
+python -m test.kumo_pytorch.nightly run --binding E02 --mode training \
   --data-dir test/kumo_pytorch/.data \
   --output test/kumo_pytorch/.runs/training-acceptance \
   --anchors-per-split 32 --batch-size 4
@@ -68,59 +69,33 @@ An explicit declared preflight refusal passes under the
 with no training measurements. Once preparation succeeds, missing support,
 unused parameters, nonfinite values, insufficient loss decrease and
 nondeterminism are ordinary failures. A completed but failing first repeat
-does not suppress the second repeat or the other workloads. The runner rejects
-a missing, duplicated or substituted model/workload combination.
+does not suppress the second repeat or the other workloads. The shared results gate rejects
+missing reports, substituted binding identities and incomplete training evidence.
 
 ## CI and reports
 
-`PyTorch nightly real AML CPU training acceptance` runs on `ubuntu-24.04` using
-the existing CPU setup, DiskGraph wheel and Engine AWS test role. It runs on
-schedule/manual dispatch independently of the GPU benchmark queue. Its five
-workload/model runs each perform two 100-update repeats: 1,000 updates total.
-Fixture coverage also runs
-in the existing PR/nightly AML model-check job.
+The **Training** matrix in **PyTorch — Full Suite** uses the catalog's execution
+settings and the shared `nightly run` command. All models train on CPU, including
+bindings assigned to RTX runners for storage. HI Small's five combinations each
+perform two 100-update repeats (1,000 updates total). Fixture learning remains
+separate from real-data acceptance.
 
-The job summary records the tested revision. Download
-`kumo-pytorch-aml-training-acceptance` for the aggregate and per-case JSON,
-contracts, per-repeat parameter reports and `loss-curve.csv` series. Each repeat
-records parameter shapes, gradient/nonzero-gradient counts, update status and
-maximum absolute change. Reports include source identities, selected anchors,
-configuration, dependency versions, test/model source hashes and dirty-checkout status. Partial progress
-is saved every 10 updates and remains running/failed, never accepted. Source
-payloads, prepared views and indexes are excluded from the artifact.
-Case directories and report IDs use `<workload_id>-<model_family>`, distinguishing
-nuFormer's two tasks. PDF IDs remain optional provenance rather than case identity.
+Each `kumo-pytorch-dataset-training-<binding>` artifact contains reports, contracts,
+per-repeat parameter evidence and `loss-curve.csv`. The combined
+`kumo-pytorch-campaign-results` report validates required binding outcomes.
+Reports retain revision, dirty-checkout status, source/anchor identities,
+versions, seeds, losses and per-parameter gradient/update results. Partial
+progress remains running/failed. Source payloads and prepared indexes are excluded.
 
-## Local evidence
+## Model scope and validation
 
-Expanded five-case fixture validation: **22 passed, zero failed, zero skipped**.
-All five combinations pass on generated and raw-AML-format fixtures, including
-two deterministic 100-update repeats, loss decrease and updates to every
-trainable tensor. The checks exposed eight unused final-layer non-root tensors
-in standalone GraphSAGE. Its test-model architecture now omits those branches,
-as Fusion already did. Exact-output regressions compare root embeddings and
-predictions against the original full graph module for both models. The
-acceptance gates remain unchanged, with no parameter freezes or exclusions.
-Old standalone GraphSAGE checkpoints must be regenerated.
+Test-owned GraphSAGE/Fusion models omit final non-root branches that cannot
+contribute to root prediction. Exact-output regression checks compare root
+embeddings/predictions with the original full graph module. This is architecture
+cleanup, not a parameter exemption; every remaining trainable tensor must update.
+Older checkpoints containing removed branches must be regenerated.
 
-An additional 41 focused model, learning, finetuning, checkpoint-resume and AML
-benchmark checks pass with no failures or skips. Local runs use the current
-Python sources with the existing compatible native extension; CI must rebuild
-and validate the branch's native revision.
-
-This is not real HI-small acceptance. All five cases still need the nightly CPU
-job. The original evidence below covers the earlier two-model version.
-
-After integrating the upstream decimal fix and adapting Fusion to use an
-encoder-only GraphSAGE, all 30 focused training, controlled-learning, finetuning
-and checkpoint-resume checks pass with no skips. Both generated and raw-AML-format
-training fixtures retain the original 100-update, every-trainable-parameter,
-loss-decrease and repeatability requirements. Fault injection still rejects
-unused parameters and missing optimizer updates.
-
-Fusion omits the unused standalone graph prediction head and final non-root
-updates. Earlier graph layers remain active. A regression verifies exactly equal
-graph embeddings and predictions against the full graph module with matching
-weights. Old Fusion checkpoints contain the removed parameters and must be
-regenerated. These are local fixture results; real HI-small training must be
-rerun on CI before claiming acceptance of the changed model.
+Fault-injection fixtures require failures for unused parameters, missing updates,
+nonfinite computation and inadequate loss reduction. Real-data acceptance still
+requires passing reports from the intended package revision. Historical local
+counts remain in Git history rather than being treated as current results.

@@ -214,12 +214,12 @@ def test_missing_metric_in_later_epoch_fails_coverage(tmp_path):
     assert [case["status"] for case in item["cases"]] == ["measured", "missing"]
 
 
-def test_reference_fitting_belongs_to_setup_not_every_epoch(tmp_path):
+def test_fitting_belongs_to_setup_not_every_epoch(tmp_path):
     def build(config, directory):
         workload = tabular(config, directory)
 
         def prepare(recorder):
-            with recorder.span("reference.fit"):
+            with recorder.span("input.fit"):
                 pass
 
         workload.prepare = prepare
@@ -227,7 +227,7 @@ def test_reference_fitting_belongs_to_setup_not_every_epoch(tmp_path):
 
     run(build, {}, tmp_path / "run", repetitions=1, epochs=2)
     item = json.loads((tmp_path / "run/coverage.json").read_text())["metrics"][
-        "reference.fit.elapsed_ns"
+        "input.fit.elapsed_ns"
     ]
     assert item["status"] == "complete"
     assert len(item["cases"]) == 1

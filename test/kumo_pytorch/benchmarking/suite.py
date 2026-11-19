@@ -4,13 +4,12 @@
 
 """Run a declared collection of dataset/model-independent benchmark campaigns."""
 
-import argparse
-import json
 import re
 import traceback
 from pathlib import Path
 
 from .campaign import run_campaign
+from .cli import main as run_cli
 from .reporting import write_json
 
 
@@ -81,47 +80,7 @@ def run_suite(cases, output, **options):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument("--index-lifecycle", action="store_true")
-    parser.add_argument("--worker-timeout", type=float, default=3600)
-    parser.add_argument("--isolate-memory", action="store_true")
-    parser.add_argument("--gpu-interval", type=float, default=0.1)
-    parser.add_argument(
-        "--memory-method",
-        choices=("kernel", "sampled"),
-        default="kernel",
-        help="Kernel high-water peaks or explicitly labelled sampled cgroup maxima",
-    )
-    parser.add_argument(
-        "--memory-interval",
-        type=float,
-        default=0.01,
-        help="Seconds between sampled host-memory reads",
-    )
-    parser.add_argument(
-        "--measurement-profile", choices=("full", "timing"), default="full"
-    )
-    args = parser.parse_args(argv)
-    result = run_suite(
-        json.loads(args.config.read_text()),
-        args.output,
-        repetitions=args.repetitions,
-        epochs=args.epochs,
-        timeout=args.worker_timeout,
-        isolate_memory=args.isolate_memory,
-        gpu_interval=args.gpu_interval,
-        memory_method=args.memory_method,
-        memory_interval=args.memory_interval,
-        measurement_profile=args.measurement_profile,
-        compare_fitting=not args.index_lifecycle,
-        index_lifecycle=args.index_lifecycle,
-    )
-    print(f"{result['status']}: {args.output / 'report.md'}")
-    return {"complete": 0, "failed": 1, "incomplete": 2}[result["status"]]
+    return run_cli(run_suite, argv, scope="suite", description=__doc__)
 
 
 if __name__ == "__main__":

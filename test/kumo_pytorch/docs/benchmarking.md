@@ -67,7 +67,7 @@ success or failure. Prepare and materialize timers remain enclosing calls;
 internal/native phases have separate scoped instrumentation described below.
 
 The native [integration cases](../model_checks/test_benchmark_kumo.py) demonstrate
-a non-AML product dataset and linear model on DiskGraph and the Polars timing reference, with
+a non-AML product dataset and linear model on DiskGraph, with
 two epochs and a partial last batch. They are tiny interface tests, not data-scale
 or model-performance evidence.
 
@@ -203,8 +203,8 @@ calibrated for large runs.
 
 Every selected AML operation now has a collector or an explicit contract-based
 applicability declaration. Missing collectors or failed readings still fail
-coverage. Equivalent reference-engine performance comparison remains deferred,
-as requested; a DiskGraph report does not claim reference-engine acceptance.
+coverage. Benchmarking uses DiskGraph only. The Polars and GPU reference
+backends and their comparison metrics were removed at the user's request.
 See the [complete checklist](../PLAN.md#complete-metric-checklist).
 
 ## Internal observations
@@ -351,7 +351,7 @@ validated sampled parent/child allocations on Linux 6.8 and all three sequence
 campaigns. Every sequence worker covered 73/73 metric obligations. The target
 interval was 10 ms; actual gaps reached 320.18 ms and are retained in reports.
 This is measured sampled coverage, not an exact high-water guarantee. See the
-[results](../PLAN.md#gpu-and-sampled-memory-validation).
+[measurement acceptance rules](../PLAN.md#measurement-acceptance).
 
 ## GPU collection and nightly runner
 
@@ -428,95 +428,35 @@ The Actions summary links to the artifact workflow: download
 and worker reports. Artifacts contain JSON/JSONL, Markdown and logs, excluding
 source/index payloads and persisted fitting artifacts. No result is uploaded to
 S3. PR and nightly select the same CUDA jobs; direct PR runner admission is still unresolved. A candidate workflow must be published to an internal branch
-before GitHub can execute it. The [collective CI review](../PLAN.md#collective-ci-review)
-records actual execution, expected decimal failures and remaining measurements.
+before GitHub can execute it. The [roadmap](../PLAN.md#remaining-acceptance-work) tracks remaining acceptance.
+Historical decimal failures do not describe the current integrated package.
 
-## Polars loader timing comparison
+## DiskGraph loader timing
 
-The test-only [Polars engine](../reference_engine/README.md) uses the same Kumo
-contracts, prepared source tables and selected anchors as DiskGraph. These
-CPU loader-only comparisons remain available to explicit benchmark runs;
-HI Small's nightly timing campaigns are disabled, and L01 enables DiskGraph only. Graph and
-combined keep v2 anchors. Batch size, thread count and source/anchor selection are
-shared; sampled graphs and individual batches need not be identical. No numerical
-parity or model-quality assertion is made across engines.
+Select `backend: "diskgraph"`, `training: false`, `device: "cpu"` and
+`cache_mode: "uncontrolled"` for loader-only timing. L01 enables this campaign;
+HI Small's timing campaigns remain disabled. Polars and GPU reference backends,
+their adapters and their dedicated metric requirements have been removed.
+CUDA model training and GPU memory/utilization collection remain enabled.
 
-Set `backend` to `polars` or `diskgraph`, `training` to `false`, `device` to `cpu`
-and `cache_mode` to `uncontrolled` in the AML adapter config. Polars does not
-accept a DiskGraph `index_dir`. Start workers with `POLARS_MAX_THREADS` matching
-`threads`; the nightly installs `polars==2.1.0` as a test-only dependency.
-
-The generic `--measurement-profile timing` option selects loader timings and
-sample counts/rates from the metric catalog. It rejects model training and disables memory/GPU utilization collectors.
-CUDA loader comparisons synchronize each batch delivery. The default `full` profile and its
-73-metric obligations remain unchanged. Each timing campaign still requires
-independent repetitions, complete first/later epochs, explicit post-warmup
-windows and fresh/reused fitted-state evidence. Cache-control experiments are
-outside this comparison: neither a new interpreter nor resident Polars tables
-establish a cold-cache claim.
-
-`reference.load` times the actual engine `open` call. `reference.fit` encloses
-materialization, `reference.plan` creates the batch iterator and
-`reference.batch` encloses its requests. These overlap their enclosing ingestion,
-materialization and batch-production timers and must not be added. DiskGraph
-index construction/reopen and Polars resident-table loading are reported in
-separate columns, with unsupported breakdowns visible in worker reports.
+`--measurement-profile timing` selects loader timings and sample counts/rates
+from the metric catalog. It rejects model training and disables memory/GPU
+utilization collectors. The default `full` profile retains all DiskGraph and
+training measurements. Both profiles require independent repetitions, complete
+first/later epochs, explicit post-warmup windows and fresh/reused fitted-state
+evidence. Timing-only runs do not claim controlled cold/warm caches.
 
 ```sh
-POLARS_MAX_THREADS=4 python -m test.kumo_pytorch.benchmarking.suite \
-  --config /path/to/paired-loader-cases.json --output /path/to/new-timings \
+python -m test.kumo_pytorch.benchmarking.suite \
+  --config /path/to/loader-cases.json --output /path/to/new-timings \
   --measurement-profile timing --repetitions 3 --epochs 2
 ```
 
-Cases retain the standard `name`, `adapter`, `config` schema. Each backend gets
-its own case and fresh process/state artifacts. Backends use separate hosts in
-the same runner group;
-results include runtime/dependency pins, source identities and actual emitted
-counts. Source read/conversion and preparation are timed anew in each worker.
-
-The Actions job summary and `kumo-pytorch-aml-benchmarks` artifact include
-the root `report.md`, which puts loader campaigns side by side. `timings.json`
+The root `report.md` presents loader campaigns side by side. `timings.json`
 retains individual values, medians and ranges, separated by fresh/reused fitting
 and epoch. Only workers that completed execution contribute to summary values;
-failed runs keep their errors and partial observations in linked reports and
-still fail the suite. The existing DiskGraph decimal failures remain failures.
-
-## GPU loader timing reference
-
-The [copied GPU backend](../reference_engine/gpu/README.md) adds a third timing
-point alongside DiskGraph and Polars. Its source is Arena main revision
-`f8ffd61bbe280d0cd515a6387387e9502f5d911d`. It runs entirely from the testing suite;
-there is no external Arena import or additional installed Kumo package.
-
-For the AML adapter select `backend: "gpu"`, `device: "cuda:0"`,
-`training: false` and `cache_mode: "uncontrolled"`, using the same sources,
-anchors, input contract, batch size and seed as the CPU controls. The previous
-HI Small nightly compared all five input configurations across three backends;
-those timing campaigns are now disabled. The adapter and its fixture checks
-remain available. The test-only CUDA library pins live in
-[gpu-requirements.txt](../reference_engine/gpu-requirements.txt).
-
-GPU preparation replaces Kumo's `prepare(contract, dataset, engine)` call. The
-generic adapter accepts `KumoInputs.prepare_plan(contract, dataset)` and an
-optional `observe(observers)` callback for this alternate implementation.
-It preserves the standard task/materialization/artifact lifecycle and owns no
-model. A per-worker split directory permits the backend's normal routing for
-datasets larger than the device; the adapter never truncates histories to fit.
-
-`reference.load` includes context initialization, contract checking, routing,
-loading and backend index construction. GPU input/target fitting and categorical/
-numerical fitting have explicit timers; numerical statistics retain their
-existing host path. Device synchronization completes GPU operations inside
-these timers. Batch planning, delivery and end-to-end windows also synchronize;
-latency therefore does not measure only asynchronous kernel submission.
-
-The timing tables label output locations. DiskGraph and Polars deliver CPU
-tensors; this reference delivers GPU tensors. No model transfer or training is
-added to equalize those locations, and no batch-equality or model-quality claim
-is made. All three backends retain their actual emitted counts and runtime
-identities. GPU memory/utilization profiling remains outside this timing-only
-comparison, while existing CUDA training campaigns keep their full metric scope.
-
+failed runs retain errors and partial observations in linked reports and still
+fail the suite. Source/index payloads are excluded from artifacts.
 
 ## One index build and two reopens
 

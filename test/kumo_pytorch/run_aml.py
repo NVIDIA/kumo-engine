@@ -4,10 +4,10 @@
 
 """Run the five AML prototype cases against pinned, downloaded HI-small data."""
 
-import argparse
 import hashlib
 import json
 import platform
+import sys
 import time
 import traceback
 from collections import Counter
@@ -23,8 +23,7 @@ from .aml_inputs import SPLITS, load_selections, requests_for, verify_inputs
 from .aml_source import (
     account_identity_map,
     aml_data_schema,
-    prepare_aml_sources,
-    prepared_dataset,
+    normalize_sources,
 )
 from .anchor_tables import write_probe_anchors
 from .checkpoint_resume import check_resume
@@ -52,31 +51,12 @@ def prepare(data_dir, destination, selections, files):
             for row in rows
         }
     )
-    source = "datasets/aml-data/v8/hi-small/transactions.parquet"
-    binding = "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet"
-    checksums = {
-        "transactions": files[source]["sha256"],
-        "accounts_binding": files[binding]["sha256"],
-    }
-    if not destination.exists():
-        manifest = prepare_aml_sources(
-            data_dir / source,
-            data_dir / binding,
-            destination,
-            "hi-small",
-            expected_checksums=checksums,
-            root_entity_ids=roots,
-        )
-    else:
-        manifest = json.loads((destination / "manifest.json").read_text())
-        if manifest["scope"]["complete_history_root_entity_ids"] != roots or any(
-            manifest["sources"][key]["sha256"] != value
-            for key, value in checksums.items()
-        ):
-            raise ValueError(
-                "Existing prepared view has different sources or roots; choose a new --prepared-dir"
-            )
-    dataset = prepared_dataset(destination)  # Check every mapped output on reuse.
+    from .bindings import dataset_definition, load_bindings
+
+    definition = dataset_definition(load_bindings()["E01"])
+    dataset, manifest = normalize_sources(
+        data_dir, destination, definition, files, roots
+    )
     identities = account_identity_map(destination)
     counts = Counter()
     for batch in pq.ParquetFile(destination / "account_events.parquet").iter_batches(
@@ -333,40 +313,23 @@ def run_case(
     return report
 
 
-def positive(value):
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be positive")
-    return number
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, default=ROOT / ".data")
-    parser.add_argument(
-        "--prepared-dir", type=Path, default=ROOT / ".data/prepared/hi-small-probe"
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="new run directory; never overwritten",
-    )
-    parser.add_argument("--anchors-per-split", type=positive, default=4)
-    parser.add_argument("--batch-size", type=positive, default=4)
-    parser.add_argument("--steps", type=positive, default=1)
-    parser.add_argument("--threads", type=positive, default=1)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "--campaign", choices=("all", "correctness", "lifecycle"), default="all"
-    )
-    args = parser.parse_args(argv)
+def run_group(args):
+    """Execute grouped source probes without changing their assertion owners."""
+    args.campaign = {"smoke": "correctness"}.get(args.mode, args.mode)
+    if args.prepared_dir is None:
+        args.prepared_dir = (
+            args.output / "prepared"
+            if args.mode == "histories"
+            else ROOT / ".data/prepared/hi-small-probe"
+        )
     args.output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(args.threads)
     started = time.perf_counter()
     report = {
         "status": "running",
-        "scope": "bounded real AML HI-small prototype; not a full epoch",
+        "scope": "bounded AML multi-component history correctness"
+        if args.mode == "histories"
+        else "bounded real AML HI-small prototype; not a full epoch",
         "complete_epoch": False,
         "config": {
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -379,12 +342,14 @@ def main(argv=None):
         },
         "cases": [],
     }
+    if args.mode == "histories":
+        report["anchors_per_split"] = args.anchors_per_split
     try:
         print("Verifying downloaded HI-small files and selecting anchors", flush=True)
         files = verify_inputs(args.data_dir)
         selections = load_selections(args.data_dir, limit=args.anchors_per_split)
         reference = expected_labels = None
-        if args.campaign != "lifecycle":
+        if args.campaign not in {"lifecycle", "histories"}:
             print(
                 "Reading independent AML task references from source transactions",
                 flush=True,
@@ -438,45 +403,66 @@ def main(argv=None):
             f"Prepared {mapping['tables']['transactions']['rows']} transactions; history bound {capacity} events",
             flush=True,
         )
-        workloads = catalog_selections()
-        for selection in workloads:
-            for family in selection["models"]:
-                name = f"{selection['selector']['workload_id']}-{family}"
-                directory = args.output / name
-                directory.mkdir()
-                print(f"Running {name}", flush=True)
-                case_start = time.perf_counter()
-                try:
-                    result = run_case(
-                        dataset,
-                        identities,
-                        selections,
-                        selection,
-                        family,
-                        directory=directory,
-                        capacity=capacity,
-                        batch_size=args.batch_size,
-                        steps=args.steps,
-                        threads=args.threads,
-                        seed=args.seed,
-                        expected_labels=expected_labels,
-                        input_reference=reference,
-                        campaign=args.campaign,
-                    )
-                except Exception as error:
-                    from .refusals import case_failure
+        if args.mode == "histories":
+            from .history_checks import run_cases
 
-                    result = case_failure(error, allow_refusal=False)
-                result.update(name=name, seconds=time.perf_counter() - case_start)
-                report["cases"].append(result)
-                (directory / "result.json").write_text(
-                    json.dumps(result, indent=2, allow_nan=False) + "\n"
-                )
-                print(
-                    f"{name}: {result['status']} ({result.get('outcome', 'executed')})"
-                    + (f" — {result['error']}" if "error" in result else ""),
-                    flush=True,
-                )
+            groups = selections["v1"]["forecast_split"]
+            reference = source_reference(
+                args.data_dir / "datasets/aml-data/v8/hi-small/transactions.parquet",
+                [row["entity_id"] for rows in groups.values() for row in rows],
+                include_values=True,
+            )
+            report.update(
+                anchors=groups,
+                **run_cases(
+                    dataset,
+                    identities,
+                    groups,
+                    reference,
+                    args.output,
+                    threads=args.threads,
+                ),
+            )
+        else:
+            workloads = catalog_selections()
+            for selection in workloads:
+                for family in selection["models"]:
+                    name = f"{selection['selector']['workload_id']}-{family}"
+                    directory = args.output / name
+                    directory.mkdir()
+                    print(f"Running {name}", flush=True)
+                    case_start = time.perf_counter()
+                    try:
+                        result = run_case(
+                            dataset,
+                            identities,
+                            selections,
+                            selection,
+                            family,
+                            directory=directory,
+                            capacity=capacity,
+                            batch_size=args.batch_size,
+                            steps=args.steps,
+                            threads=args.threads,
+                            seed=args.seed,
+                            expected_labels=expected_labels,
+                            input_reference=reference,
+                            campaign=args.campaign,
+                        )
+                    except Exception as error:
+                        from .refusals import case_failure
+
+                        result = case_failure(error, allow_refusal=False)
+                    result.update(name=name, seconds=time.perf_counter() - case_start)
+                    report["cases"].append(result)
+                    (directory / "result.json").write_text(
+                        json.dumps(result, indent=2, allow_nan=False) + "\n"
+                    )
+                    print(
+                        f"{name}: {result['status']} ({result.get('outcome', 'executed')})"
+                        + (f" — {result['error']}" if "error" in result else ""),
+                        flush=True,
+                    )
         report["status"] = (
             "passed"
             if all(case["status"] == "passed" for case in report["cases"])
@@ -492,7 +478,22 @@ def main(argv=None):
         (args.output / "report.json").write_text(
             json.dumps(report, indent=2, allow_nan=False) + "\n"
         )
+    if args.mode == "histories":
+        from .history_checks import write_summary
+
+        write_summary(args.output, report)
     return 0 if report["status"] == "passed" else 1
+
+
+def main(argv=None):
+    from .nightly import main as nightly_main
+
+    return nightly_main(
+        [
+            "group", "--data-dir", str(ROOT / ".data"),
+            *(sys.argv[1:] if argv is None else argv),
+        ]
+    )
 
 
 if __name__ == "__main__":

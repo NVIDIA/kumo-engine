@@ -13,7 +13,7 @@ import pytest
 def pytest_addoption(parser):
     parser.addoption(
         "--required-coverage",
-        choices=("cpu", "gpu", "difficult"),
+        choices=("cpu", "difficult"),
         help="Require the reviewed test cases; reject missing cases, skips and xfails",
     )
 

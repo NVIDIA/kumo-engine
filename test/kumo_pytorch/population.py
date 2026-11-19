@@ -2,53 +2,24 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Full-population AML loader acceptance, independent of training and timing runs."""
+"""Shared population assertions; all campaigns use nightly run."""
 
-import argparse
 import hashlib
-import importlib.metadata
 import json
-import subprocess
 import time
-import traceback
-from collections import Counter
 from itertools import islice
-from pathlib import Path
 
-import pyarrow.parquet as pq
 import torch
 
-import kumo.pytorch.api as r
-
-from .aml_inputs import SPLITS, verify_inputs
-from .aml_source import (
-    account_identity_map,
-    aml_data_schema,
-    prepare_aml_sources,
-    prepared_dataset,
-)
-from .bindings import binding_for, graph_layout
+from .aml_inputs import SPLITS
+from .bindings import graph_layout
 from .bindings import profile as binding_profile
-from .bindings import selected_bindings
-from .bindings import selection as binding_selection
 from .bindings import task_definition
-from .contracts import GRAPH_TIMESTAMP_FIELD, build_contract
-from .data import ROOT
+from .contracts import GRAPH_TIMESTAMP_FIELD
 from .diagnostics import mismatch
-from .population_anchors import (
-    add_identity,
-    project_population,
-    projected_rows,
-)
-from .run_aml import positive
+from .population_anchors import add_identity, projected_rows
 from .stage_timing import StageTiming
 from .targets import verify_stored_batch, verify_target_fitting
-
-PDF_CASES = {
-    ("account-involvement-next24h", "combined"): "a001",
-    ("masked-value-pretrain", "pragma"): "a017",
-    ("next-token-pretrain", "nuformer"): "a018",
-}
 
 
 def write_report(directory, report):
@@ -310,265 +281,7 @@ def check_population(
     return splits
 
 
-def run_case(
-    dataset,
-    identities,
-    anchor_path,
-    selection,
-    family,
-    *,
-    directory,
-    capacity,
-    mode,
-    smoke_anchors=4,
-    batch_size=4,
-    threads=1,
-):
-    if mode not in {"smoke", "full"}:
-        raise ValueError("Population mode must be smoke or full")
-    directory.mkdir(parents=True, exist_ok=False)
-    native = selection["selector"]["workload_id"] != "account-involvement-next24h"
-    graph = family in {"graphsage", "combined"}
-    report = {
-        "status": "running",
-        "mode": mode,
-        "family": family,
-        "selector": selection["selector"],
-        "full_population_verified": False,
-        "pdf_case": PDF_CASES.get((selection["selector"]["workload_id"], family)),
-        "splits": {},
-        "stage": "project_anchors",
-        "history_capacity": capacity,
-        "model_training_steps": 0,
-        "batch_size": batch_size,
-        "threads": threads,
-        "seed": 0,
-        "smoke_anchors": smoke_anchors if mode == "smoke" else None,
-    }
-    write_report(directory, report)
-    try:
-        projection = directory / "anchors.parquet"
-        anchors, manifest = project_population(
-            anchor_path,
-            projection,
-            identities,
-            graph=graph,
-            native=native,
-            limit=None if mode == "full" else smoke_anchors,
-        )
-        report["population"] = manifest
-        report["splits"] = {
-            s: {
-                "status": "pending",
-                "expected": manifest["counts"][s],
-                "delivered": 0,
-                "batches": 0,
-                "eligible_targets": 0,
-            }
-            for s in SPLITS
-        }
-        contract = build_contract(
-            aml_data_schema(), family, native=native, max_events=capacity
-        )
-        (directory / "contract.json").write_text(contract.to_json())
-        report["stage"] = "prepare_and_fit"
-        write_report(directory, report)
-        with (
-            r.prepare(
-                contract,
-                dataset,
-                r.DiskGraphEngine(index=directory / "index", num_threads=threads),
-            ) as plan,
-            plan.materialize(
-                anchors,
-                fit_split="train",
-                encoder_cutoff=manifest["encoder_cutoff_seconds"],
-            ) as task,
-        ):
-            check_population(
-                task,
-                binding_for(selection, family),
-                projection,
-                manifest,
-                directory,
-                report,
-                batch_size=batch_size,
-            )
-            # Preserve the established single-output report shape for this CLI.
-            for split in report["splits"].values():
-                split["eligible_targets"] = sum(split["eligible_targets"].values())
-
-        report.update(
-            status="passed", stage="complete", full_population_verified=mode == "full"
-        )
-    except Exception as error:  # noqa: BLE001 - persist failed acceptance without hiding it
-        from .refusals import case_failure
-
-        outcome = case_failure(
-            error, allow_refusal=report["stage"] == "prepare_and_fit"
-        )
-        for split in report["splits"].values():
-            if outcome.get("outcome") == "refused":
-                split["status"] = "not_executed"
-            elif split["status"] == "running":
-                split["status"] = "failed"
-        report.update(outcome)
-        if outcome.get("outcome") == "refused":
-            report["stage"] = "refused"
-    write_report(directory, report)
-    return report
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--mode", choices=("smoke", "full"), required=True)
-    parser.add_argument("--smoke-anchors", type=positive)
-    parser.add_argument("--batch-size", type=positive, default=4)
-    parser.add_argument("--threads", type=positive, default=1)
-    parser.add_argument(
-        "--case",
-        help="Run one HI-small binding; omitted runs all five HI-small bindings",
-    )
-    args = parser.parse_args(argv)
-    cases = [
-        (binding_selection(b), b["representation"])
-        for b in selected_bindings(dataset="aml-data/hi-small", campaign=args.mode)
-    ]
-    if args.case:
-        cases = [(s, f) for s, f in cases if s["case_name"] == args.case]
-        if not cases:
-            parser.error(
-                "Unknown HI-small population case; use nightly run for other bindings"
-            )
-    if args.mode == "full" and args.smoke_anchors is not None:
-        parser.error("--smoke-anchors cannot limit a full-population run")
-    args.output.mkdir(parents=True, exist_ok=False)
-    torch.set_num_threads(args.threads)
-    report = {
-        "status": "running",
-        "mode": args.mode,
-        "stage": "verify_inputs",
-        "full_population_verified": False,
-        "cases": [
-            {"selector": s["selector"], "family": f, "status": "pending"}
-            for s, f in cases
-        ],
-        "scope": "delivery, stored targets, native target masks, metadata and fitted-state stability; no model training",
-        "versions": {
-            p: importlib.metadata.version(p) for p in ("torch", "pyarrow", "diskgraph")
-        },
-    }
-    try:
-        report["revision"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip()
-        report["dirty_checkout"] = bool(
-            subprocess.check_output(
-                ["git", "status", "--porcelain"], cwd=ROOT, text=True
-            ).strip()
-        )
-        write_report(args.output, report)
-        files = verify_inputs(args.data_dir)
-        report["inputs"] = list(files.values())
-        report["stage"] = "prepare_sources"
-        write_report(args.output, report)
-        tx = "datasets/aml-data/v8/hi-small/transactions.parquet"
-        binding = "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet"
-        prepared = args.output / "prepared"
-        # Full source histories are retained in both modes; only smoke anchors are bounded.
-        report["mapping"] = prepare_aml_sources(
-            args.data_dir / tx,
-            args.data_dir / binding,
-            prepared,
-            "hi-small",
-            expected_checksums={
-                "transactions": files[tx]["sha256"],
-                "accounts_binding": files[binding]["sha256"],
-            },
-        )
-        dataset, identities = prepared_dataset(prepared), account_identity_map(prepared)
-        counts = Counter()
-        for batch in pq.ParquetFile(prepared / "account_events.parquet").iter_batches(
-            columns=["account_id"]
-        ):
-            counts.update(batch.column(0).to_pylist())
-        capacity = max(counts.values())
-        del counts
-        for i, (selection, family) in enumerate(cases):
-            name = f"{selection['selector']['workload_id']}-{family}"
-            version = selection["selector"]["anchor_version"]
-            print(f"{args.mode}: {name}", flush=True)
-            report["stage"] = name
-            write_report(args.output, report)
-            report["cases"][i] = run_case(
-                dataset,
-                identities,
-                args.data_dir
-                / f"anchors/aml-data/v8/hi-small/account-daily/{version}/anchors.parquet",
-                selection,
-                family,
-                directory=args.output / name,
-                capacity=capacity,
-                mode=args.mode,
-                smoke_anchors=args.smoke_anchors or 4,
-                batch_size=args.batch_size,
-                threads=args.threads,
-            )
-            write_report(args.output, report)
-        report["status"] = (
-            "passed"
-            if all(c["status"] == "passed" for c in report["cases"])
-            else "failed"
-        )
-        report["full_population_verified"] = (
-            report["status"] == "passed"
-            and args.mode == "full"
-            and all(
-                case.get("full_population_verified", False) for case in report["cases"]
-            )
-        )
-        report["stage"] = "complete"
-    except Exception as error:  # noqa: BLE001 - retain preparation failures as failures
-        report.update(
-            status="failed", error=str(error), traceback=traceback.format_exc()
-        )
-    write_report(args.output, report)
-    lines = [
-        "### AML population acceptance",
-        "",
-        f"Mode: **{args.mode}**; status: **{report['status']}**",
-        "",
-        "| Workload / model | Status | Stage | Delivered / expected |",
-        "| --- | --- | --- | --- |",
-    ]
-    for case in report["cases"]:
-        splits = case.get("splits", {}).values()
-        delivered, expected = (
-            sum(s["delivered"] for s in splits),
-            sum(s["expected"] for s in splits),
-        )
-        lines.append(
-            f"| {case['selector']['workload_id']} / {case['family']} | {case['status']} ({case.get('outcome', 'executed')}) | {case.get('stage', 'not started')} | {delivered} / {expected} |"
-        )
-    for case in report["cases"]:
-        if "error" in case:
-            lines.extend(
-                [
-                    "",
-                    f"**{case['family']} / {case['selector']['workload_id']}**",
-                    "```text",
-                    case["error"],
-                    "```",
-                ]
-            )
-    if "error" in report:
-        lines.extend(["", "```text", report["error"], "```"])
-    (args.output / "report.md").write_text("\n".join(lines) + "\n")
-    print(f"{report['status']}: {args.output / 'report.md'}")
-    return 0 if report["status"] == "passed" else 1
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "Use: python -m test.kumo_pytorch.nightly run --binding ID --mode smoke|full ..."
+    )

@@ -9,9 +9,10 @@ from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
+from test.kumo_pytorch import nightly
 from test.kumo_pytorch import training_acceptance as acceptance
-from test.kumo_pytorch.bindings import selections as catalog_selections
 from test.kumo_pytorch.models import StepResult
+from test.kumo_pytorch.population_anchors import projected_rows
 from types import SimpleNamespace
 
 import pytest
@@ -22,13 +23,14 @@ import kumo.pytorch.api as r
 
 from .fixtures import build_fixture
 from .test_aml import CASES, fit_case
+from .test_population import projected_case
 from .test_run_aml import mapped  # noqa: F401 - pytest fixture
 
 CASE_IDS = [f"{s['selector']['workload_id']}-{f}" for s, f in CASES]
 
 
 def test_preflight_refusal_does_not_claim_training(mapped, tmp_path, monkeypatch):
-    original = acceptance.build_contract
+    original = nightly.contract_for
 
     def filtered(*args, **kwargs):
         contract = original(*args, **kwargs)
@@ -38,14 +40,20 @@ def test_preflight_refusal_does_not_claim_training(mapped, tmp_path, monkeypatch
         )
         return replace(contract, sample=replace(contract.sample, entity=entity))
 
-    monkeypatch.setattr(acceptance, "build_contract", filtered)
+    monkeypatch.setattr(nightly, "contract_for", filtered)
     selection, family = CASES[0]
-    result = acceptance.run_case(
-        *mapped, selection, family, directory=tmp_path / "refused-training", capacity=5
+    directory = tmp_path / "refused-training"
+    result = nightly.run_case(
+        *projected_case(mapped, selection, family, directory, repeats=1),
+        directory,
+        mode="training",
+        capacity=5,
+        mapping={"scope": {"kind": "full_source"}},
     )
     assert result["status"] == "passed" and result["outcome"] == "refused"
     assert result["refusal"]["issues"][0]["code"] == "DG-ROW-FILTER"
-    assert result["repetitions"] == [] and "reproducible" not in result
+    assert not result.get("repeats") and "reproducible" not in result
+    assert result["stage"] == "prepare" and "fitted_state_sha256" not in result
 
 
 @pytest.fixture(params=CASES, ids=CASE_IDS)
@@ -92,13 +100,15 @@ def test_original_models_meet_training_acceptance(fitted, tmp_path):
 
 @pytest.mark.parametrize("selection,family", CASES, ids=CASE_IDS)
 def test_raw_aml_training_acceptance(mapped, selection, family, tmp_path):
-    result = acceptance.run_case(
-        *mapped,
-        selection,
-        family,
-        directory=tmp_path / "training-acceptance",
+    directory = tmp_path / "training-acceptance"
+    result = nightly.run_case(
+        *projected_case(mapped, selection, family, directory, repeats=1),
+        directory,
+        mode="training",
         capacity=5,
         batch_size=1,
+        seed=17,
+        mapping={"scope": {"kind": "full_source"}},
     )
     # The raw fixture deliberately gives forecast and pretraining different
     # anchors. Classification must not silently switch to the pretraining split.
@@ -109,14 +119,23 @@ def test_raw_aml_training_acceptance(mapped, selection, family, tmp_path):
     expected_ids = (
         {"pretrain-train", "pretrain-train-2"} if pretraining else {"train", "train-2"}
     )
-    assert {a["sample_id"] for a in result["training_anchors"]} == expected_ids
+    assert {
+        a["sample_id"] for a in projected_rows(directory / "anchors.parquet", "train")
+    } == expected_ids
     assert result["status"] == "passed", result
     if result.get("outcome") == "refused":
-        assert not result["repetitions"]
+        assert not result.get("repeats")
         return
     assert result["reproducible"] and all(
-        x["completed_updates"] == 100 for x in result["repetitions"]
+        x["completed_updates"] == 100 for x in result["repeats"]
     )
+    for repeat in result["repeats"]:
+        assert {
+            sample
+            for step in repeat["curve"] + repeat["zero_target_batches"]
+            for sample in step["sample_ids"]
+        } == expected_ids
+    assert set(result["evaluation"]) == {"valid", "test"}
 
 
 class LinearConsumer(torch.nn.Module):
@@ -229,48 +248,55 @@ def test_acceptance_detects_broken_training(tmp_path, monkeypatch, fault):
             assert "Nonfinite" in result["error"]
 
 
-def test_cli_keeps_failed_case_and_runs_all_five(tmp_path, monkeypatch):
-    monkeypatch.setattr(acceptance, "verify_inputs", lambda _: {})
-    monkeypatch.setattr(acceptance, "load_selections", lambda *a, **kw: {})
-    monkeypatch.setattr(acceptance, "prepare", lambda *a: (None, None, {}, 1))
-    calls = []
+def test_shared_summary_keeps_failed_case_and_all_five(tmp_path, monkeypatch):
+    from test.kumo_pytorch.bindings import selected_bindings
+    from test.kumo_pytorch.checks.test_binding_results import report
 
-    def run(*args, **kwargs):
-        selection, family = args[3:5]
-        workload = selection["selector"]["workload_id"]
-        calls.append((workload, family))
-        return {
-            "case_id": f"{workload}-{family}",
-            "family": family,
-            "status": "failed" if family == "combined" else "passed",
-            "repetitions": [],
-        }
-
-    monkeypatch.setattr(acceptance, "run_case", run)
-    output = tmp_path / "campaign"
-    assert acceptance.main(["--data-dir", str(tmp_path), "--output", str(output)]) == 1
-    report = json.loads((output / "report.json").read_text())
-    assert len(calls) == 5 and set(calls) == acceptance.CASES
-    assert report["status"] == "failed"
-    assert [case["status"] for case in report["cases"]].count("failed") == 1
-    assert len({case["case_id"] for case in report["cases"]}) == 5
-    summary = (output / "report.md").read_text()
-    assert all(case["case_id"] in summary for case in report["cases"])
+    selected = selected_bindings(dataset="aml-data/hi-small")
+    monkeypatch.setattr(nightly, "selected_bindings", lambda: selected)
+    for binding in selected:
+        for mode in ("smoke", "training", "full"):
+            case = report(binding["ref"], mode)
+            if mode == "training" and binding["representation"] == "combined":
+                case.update(status="failed", error="fixture training failure")
+            directory = tmp_path / mode / binding["ref"]
+            directory.mkdir(parents=True)
+            (directory / "report.json").write_text(json.dumps(case))
+    result = nightly.summarize_bindings(tmp_path, "fixture-revision")
+    assert result["status"] == "failed"
+    training = [row for row in result["cases"] if row["mode"] == "training"]
+    assert len(training) == 5
+    assert {row["ref"] for row in training} == {"E01", "E02", "E03", "E04", "E05"}
+    failures = [row for row in training if row["status"] == "failed"]
+    assert len(failures) == 1 and failures[0]["error"] == "fixture training failure"
 
 
 @pytest.mark.parametrize("fault", ["missing", "duplicate", "unknown"])
-def test_training_matrix_cannot_drop_or_substitute_a_case(fault):
-    # Start from the actual catalog, whose selection can name several models.
-    selections = catalog_selections()
-    assert len(acceptance.training_cases(selections)) == 5
+def test_training_summary_cannot_drop_or_substitute_a_case(tmp_path, monkeypatch, fault):
+    from test.kumo_pytorch.bindings import selected_bindings
+    from test.kumo_pytorch.checks.test_binding_results import report
+
+    selected = selected_bindings(dataset="aml-data/hi-small")
+    for binding in selected:
+        binding["campaigns"] = ["training"]
+        directory = tmp_path / "training" / binding["ref"]
+        directory.mkdir(parents=True)
+        (directory / "report.json").write_text(json.dumps(report(binding["ref"], "training")))
+    monkeypatch.setattr(nightly, "selected_bindings", lambda: selected)
+    baseline = nightly.summarize_bindings(tmp_path, "fixture-revision")
+    assert baseline["status"] == "passed" and len(baseline["cases"]) == 5
+    path = tmp_path / "training/E01/report.json"
     if fault == "missing":
-        selections.pop()
-    elif fault == "duplicate":
-        selections.append(deepcopy(selections[0]))
+        path.unlink()
     else:
-        selections[-1]["models"] = ["unknown"]
-    with pytest.raises(AssertionError, match="exactly once"):
-        acceptance.training_cases(selections)
+        substituted = report("E02", "training")
+        if fault == "unknown":
+            substituted["ref"] = "unknown"
+        path.write_text(json.dumps(substituted))
+    result = nightly.summarize_bindings(tmp_path, "fixture-revision")
+    assert result["status"] == "failed" and len(result["cases"]) == 5
+    failures = [row for row in result["cases"] if row["status"] == "failed"]
+    assert len(failures) == 1 and failures[0]["ref"] == "E01"
 
 
 @pytest.mark.parametrize(

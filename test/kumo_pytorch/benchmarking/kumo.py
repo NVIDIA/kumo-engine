@@ -6,8 +6,8 @@
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
-from contextlib import ExitStack, nullcontext
+from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -38,9 +38,6 @@ class KumoInputs:
     fitting_anchors: Any
     materialize_options: Mapping[str, Any] = field(default_factory=dict)
     batch_options: Mapping[str, Any] = field(default_factory=dict)
-    reference: bool = False
-    prepare_plan: Callable[[Any, Any], Any] | None = None
-    observe: Callable[[Any], None] | None = None
 
 
 def kumo_workload(
@@ -56,7 +53,7 @@ def kumo_workload(
     save_fitted_state=None,
     probe_reopen=False,
 ):
-    """Build a Workload using any Kumo contract/dataset/backend and model.
+    """Build a native DiskGraph Workload using any Kumo contract/dataset and model.
 
     ``inputs(recorder) -> KumoInputs`` prepares sources/anchors and records actual
     input preparation. ``fitting_anchors`` is an AnchorTable owned by the task;
@@ -96,32 +93,18 @@ def kumo_workload(
             with recorder.span("anchors.prepare"):
                 anchors_identity = anchor_identity(selected.fitting_anchors)
             state["inputs"] = selected
-            if selected.observe is not None:
-                selected.observe(observers)
-            plan_factory = selected.prepare_plan or (
-                lambda contract, dataset: prepare_task(
-                    contract, dataset, selected.engine
-                )
-            )
-            if selected.reference and selected.prepare_plan is None:
-                observers.patch(
-                    selected.engine, "open", observers.timed("reference.load")
-                )
             with recorder.span("task.setup"):
                 plan = stack.enter_context(
-                    plan_factory(selected.contract, selected.dataset)
+                    prepare_task(selected.contract, selected.dataset, selected.engine)
                 )
         observers.attach_source(getattr(plan, "_source", None))
         if probe_reopen:
             plan.close()
             plan = stack.enter_context(
-                plan_factory(selected.contract, selected.dataset)
+                prepare_task(selected.contract, selected.dataset, selected.engine)
             )
             observers.attach_source(getattr(plan, "_source", None))
-        with (
-            recorder.span("materialization"),
-            recorder.span("reference.fit") if selected.reference else nullcontext(),
-        ):
+        with recorder.span("materialization"):
             options = dict(selected.materialize_options)
             loaded = options.get("fitted")
             if load_fitted_state is not None:
@@ -134,8 +117,6 @@ def kumo_workload(
             task = stack.enter_context(
                 plan.materialize(selected.fitting_anchors, **options)
             )
-            if selected.prepare_plan is not None:
-                synchronize()
             if (
                 loaded is not None
                 and loaded.has_targets
@@ -162,7 +143,6 @@ def kumo_workload(
             saved_to=str(save_fitted_state) if save_fitted_state is not None else None,
         )
         state["task"] = task
-        state["recorder"] = recorder
         state["observers"] = observers
         observers.attach_source(
             getattr(getattr(task, "_assembler", None), "_source", None)
@@ -176,43 +156,17 @@ def kumo_workload(
         from kumo.pytorch.api import EventSource
 
         selected = state["inputs"]
-        recorder = state["recorder"]
         options = {"output_format": "model", **selected.batch_options}
         policy = selected.contract.batch.batching
-        observation = (
-            nullcontext()
-            if selected.reference
-            else state["observers"].native_epoch(
-                epoch,
-                length_planning=policy.max_tokens is not None
-                or policy.bucket_by_length,
-                history=any(
-                    isinstance(value.source, EventSource)
-                    for value in selected.contract.batch.inputs.values()
-                ),
-            )
-        )
-        with observation:
-            yield from iterate(epoch, selected, recorder, options)
-
-    def iterate(epoch, selected, recorder, options):
-        with recorder.span("reference.plan") if selected.reference else nullcontext():
-            iterator = iter(state["task"].batches(epoch=epoch, **options))
-            if selected.prepare_plan is not None:
-                synchronize()
-        while True:
-            with (
-                recorder.span("reference.batch")
-                if selected.reference
-                else nullcontext()
-            ):
-                try:
-                    batch = next(iterator)
-                    if selected.prepare_plan is not None:
-                        synchronize()
-                except StopIteration:
-                    return
-            yield batch
+        with state["observers"].native_epoch(
+            epoch,
+            length_planning=policy.max_tokens is not None or policy.bucket_by_length,
+            history=any(
+                isinstance(value.source, EventSource)
+                for value in selected.contract.batch.inputs.values()
+            ),
+        ):
+            yield from state["task"].batches(epoch=epoch, **options)
 
     def step(batch, recorder):
         return state["step"](batch, recorder)
@@ -392,23 +346,12 @@ def factory(config, workdir):
     seed = config.get("seed", 0)
     training = config.get("training", True)
     backend = config.get("backend", "diskgraph")
-    if backend not in {"diskgraph", "polars", "gpu"}:
-        raise ValueError("backend must be diskgraph, polars or gpu")
-    reference = backend != "diskgraph"
+    if backend != "diskgraph":
+        raise ValueError("backend must be diskgraph")
     if type(training) is not bool:
         raise ValueError("training must be boolean")
-    if reference and (
-        training or cache_mode != "uncontrolled" or "index_dir" in config
-    ):
-        raise ValueError(
-            "Reference backends support loader timing only with uncontrolled caches and no DiskGraph index"
-        )
-    if backend == "gpu" and not device.startswith("cuda"):
-        raise ValueError("The GPU reference requires a runner-provided CUDA device")
-    if not training and backend != "gpu" and device != "cpu":
-        raise ValueError(
-            "DiskGraph and Polars loader-only execution requires device=cpu"
-        )
+    if not training and device != "cpu":
+        raise ValueError("DiskGraph loader-only execution requires device=cpu")
     data_dir = Path(config["data_dir"]).resolve()
     previous_threads = torch.get_num_threads()
     state = {}
@@ -416,27 +359,6 @@ def factory(config, workdir):
     inapplicable = {
         "bpe.fit.elapsed_ns": "Selected contract uses categorical/bucket encoders without BPE",
     }
-    if reference:
-        inapplicable.update(
-            {
-                name: "Reference preparation has no DiskGraph index or Rust sampling/retrieval operations"
-                for name in (
-                    "index.build.elapsed_ns",
-                    "index.reopen.elapsed_ns",
-                    "index.bytes",
-                    "native.sample.elapsed_ns",
-                    "native.retrieve.elapsed_ns",
-                    "native.aggregate.elapsed_ns",
-                )
-            }
-        )
-    else:
-        inapplicable.update(
-            {
-                f"reference.{stage}.elapsed_ns": "DiskGraph execution; reference comparison is a separate experiment"
-                for stage in ("load", "fit", "plan", "batch")
-            }
-        )
     if family == "graphsage":
         inapplicable.update(
             {
@@ -492,11 +414,7 @@ def factory(config, workdir):
         )
     index_action = config.get("index_action")
     if index_action is not None:
-        if (
-            reference
-            or index_action not in {"build", "reopen"}
-            or not config.get("index_dir")
-        ):
+        if index_action not in {"build", "reopen"} or not config.get("index_dir"):
             raise ValueError(
                 "Index actions require DiskGraph and an explicit index_dir"
             )
@@ -586,24 +504,11 @@ def factory(config, workdir):
             history_capacity=capacity,
             data_scope="complete train pass over bounded physical-row selection; full selected-root histories",
         )
-        prepare_plan = observe = None
-        if backend == "gpu":
-            from .gpu_reference import bind
-
-            engine = None
-            prepare_plan, observe = bind(
-                recorder, split_dir=workdir / "gpu-split", device=device
-            )
-        elif backend == "polars":
-            from ..reference_engine.polars import PolarsEngine
-
-            engine = PolarsEngine(num_threads=config["threads"])
-        else:
-            engine = r.DiskGraphEngine(
-                index=Path(config.get("index_dir", workdir / "index")),
-                ingest="never" if index_action == "reopen" else "if_missing",
-                num_threads=config["threads"],
-            )
+        engine = r.DiskGraphEngine(
+            index=Path(config.get("index_dir", workdir / "index")),
+            ingest="never" if index_action == "reopen" else "if_missing",
+            num_threads=config["threads"],
+        )
         contract = contract_for(
             schema_for(dataset, binding), binding, max_events=capacity
         )
@@ -634,9 +539,6 @@ def factory(config, workdir):
                 "seed": seed,
                 "output_format": "model",
             },
-            reference=reference,
-            prepare_plan=prepare_plan,
-            observe=observe,
         )
 
     result = kumo_workload(
@@ -646,7 +548,7 @@ def factory(config, workdir):
             "workload": workload,
             "model": family if training else None,
             "backend": backend,
-            "output_device": device if backend == "gpu" else "cpu",
+            "output_device": "cpu",
             "input_family": family,
             "anchor_version": selection["selector"]["anchor_version"],
             "anchors_per_split": config["anchors_per_split"],
@@ -673,7 +575,7 @@ def factory(config, workdir):
         else (lambda: None),
         device=device,
         inapplicable=inapplicable,
-        probe_reopen=not reference and index_action is None,
+        probe_reopen=index_action is None,
         load_fitted_state=config.get("load_fitted_state"),
         save_fitted_state=config.get("save_fitted_state"),
     )
