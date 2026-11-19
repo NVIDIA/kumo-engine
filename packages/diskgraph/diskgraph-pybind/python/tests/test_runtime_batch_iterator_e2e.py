@@ -25,6 +25,7 @@ from __future__ import annotations
 import inspect
 import json
 import pathlib
+import shutil
 import struct
 from typing import Any
 
@@ -325,6 +326,127 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
             batch,
             batch_size=3,
             n_users=seed_table_fixture["n_users"],
+        )
+
+
+def test_external_extension_runs_without_an_index_local_copy(seed_table_fixture, tmp_path):
+    parent = tmp_path / "parent"
+    shutil.copytree(seed_table_fixture["parent_root"], parent)
+    external = tmp_path / "consumer" / seed_table_fixture["tt_id"]
+    external.parent.mkdir()
+    shutil.move(str(parent / "train_tables" / seed_table_fixture["tt_id"]), external)
+    before = {str(p.relative_to(parent)): p.read_bytes()
+              for p in parent.rglob("*") if p.is_file()}
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(parent)
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    batches = list(iterator)
+    assert len(batches) == 2
+    for batch in batches:
+        _assert_runtime_batch_dict_contract(batch, 3, seed_table_fixture["n_users"])
+    assert {str(p.relative_to(parent)): p.read_bytes()
+            for p in parent.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("directory", ["train_tables", "pred_tables"])
+def test_extension_reference_preserves_legacy_layout(tmp_path, directory):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = tmp_path / "base"
+    assert _extension_ref_from_stage_path(
+        str(parent), str(parent / directory / "task")
+    ) == f"{directory}/task"
+
+
+@pytest.mark.parametrize("path_input", ["stage", "parent"])
+def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, path_input):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    runs = tmp_path / "runs"
+    (runs / "run-1").mkdir(parents=True)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    alias = consumer / "current"
+    alias.symlink_to(runs / "run-1", target_is_directory=True)
+    if path_input == "stage":
+        # Both locations pass the metadata-presence gate; lexical collapse
+        # would silently select consumer/task instead of runs/task.
+        for task in (runs / "task", consumer / "task"):
+            task.mkdir()
+            (task / "index_metadata.json").write_text("{}")
+        parent = tmp_path / "base"
+        stage = alias / ".." / "task"
+        expected = str((runs / "task").resolve())
+    else:
+        parent = alias / ".." / "base"
+        stage = runs / "base" / "train_tables" / "task"
+        stage.mkdir(parents=True)
+        (stage / "index_metadata.json").write_text("{}")
+        expected = "train_tables/task"
+    assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
+
+
+@pytest.mark.parametrize("entrypoint", ["native", "manifest"])
+@pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local",
+                                 "legacy_alias"])
+def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind, entrypoint):
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
+    stage = tmp_path / "stage"
+    if kind == "empty":
+        stage.mkdir()
+    elif kind == "base":
+        stage = parent
+    elif kind == "base_alias":
+        stage.symlink_to(parent, target_is_directory=True)
+    elif kind == "index_local":
+        stage = parent / "arbitrary-directory"
+        stage.mkdir(exist_ok=True)
+        (stage / "index_metadata.json").write_text("{}")
+    elif kind == "legacy_alias":
+        stage = parent / "train_tables" / ("base-alias-" + entrypoint)
+        stage.symlink_to(parent, target_is_directory=True)
+    match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
+    if kind == "missing":
+        match = "extension `stage`"
+    with pytest.raises(diskgraph.DiskgraphSystemError, match=match):
+        if entrypoint == "native":
+            from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+            ref = str(stage.relative_to(parent)) if kind == "legacy_alias" else str(stage)
+            NativeRuntimeIndex(str(parent), ref, 17, 1)
+        else:
+            manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+            manifest["stages"]["train"]["index_path"] = str(stage)
+            path = tmp_path / "manifest.json"
+            path.write_text(json.dumps(manifest))
+            make_runtime_batch_iterator(
+                str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+                num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+                batch_size=3, drop_last=False, num_threads=1,
+            )
+
+
+def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
+    external = tmp_path / "not-an-index"
+    external.mkdir()
+    (external / "index_metadata.json").write_text("{}")
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["index_path"] = str(external)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphSystemError, match="extension"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False, num_threads=1,
         )
 
 

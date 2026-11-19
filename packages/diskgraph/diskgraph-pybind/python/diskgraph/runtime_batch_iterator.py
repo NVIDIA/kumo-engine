@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
@@ -113,26 +114,18 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     """Recover the seed-table extension reference from a stage ``index_path``.
 
     The stage path itself is the source of truth: return a relative
-    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent.
+    ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
+    or an absolute external extension path for a read-only base index. External
+    paths require finalized index metadata; the native reader validates it.
     """
-    abs_parent = os.path.abspath(parent_root.rstrip("/"))
-    abs_stage = os.path.abspath(stage_index_path.rstrip("/"))
-    for extension_dir in ("train_tables", "pred_tables"):
-        expected_prefix = os.path.join(abs_parent, extension_dir) + os.sep
-        if not abs_stage.startswith(expected_prefix):
-            continue
-        extension_id = abs_stage[len(expected_prefix):].split(os.sep, 1)[0]
-        if not extension_id:
-            raise DiskgraphConfigError(
-                "could not extract extension id from stage index_path "
-                f"{stage_index_path}"
-            )
-        return f"{extension_dir}/{extension_id}"
-    raise DiskgraphConfigError(
-        "stage index_path must live under <graph_index_path>/train_tables/ "
-        "or <graph_index_path>/pred_tables/: "
-        f"parent={abs_parent}, stage={abs_stage}"
-    )
+    # Preserve filesystem semantics (symlinks before '..') and legacy references.
+    # Placement and finalized-metadata validation belong to the native reader.
+    parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
+    if stage.is_relative_to(parent):
+        parts = stage.relative_to(parent).parts
+        if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+            return "/".join(parts)
+    return str(stage)
 
 
 def _sampling_plan_json(sampling_plan: Any) -> str:
@@ -458,5 +451,4 @@ class RuntimeIndex:
             projections,
         )
         return iterator, iterator.num_samples()
-
 
