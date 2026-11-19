@@ -1164,6 +1164,7 @@
     },
     {
       "ref": "T01",
+      "on_demand": true,
       "binding_id": "suite:T01:session-count-v1",
       "selector": {
         "dataset_id": "streaming/25B",

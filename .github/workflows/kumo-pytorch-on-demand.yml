@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch — On-Demand Bindings
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      campaign:
+        description: Streaming 25B / T01 GraphSAGE campaign
+        type: choice
+        default: all
+        options:
+          - all
+          - smoke
+          - training
+          - lifecycle
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Setup / On-Demand Campaign Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    env:
+      CAMPAIGN: ${{ inputs.campaign }}
+      KUMO_CI_LABEL: On-demand campaign plan
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - id: plan
+        name: Select manual bindings from the shared catalog
+        run: |
+          python3 test/kumo_pytorch/ci_reporting.py run \
+            --title "$KUMO_CI_LABEL" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python3 -m test.kumo_pytorch.nightly matrix --on-demand --campaign "$CAMPAIGN" \
+            > "$RUNNER_TEMP/on-demand-plan.json"
+          echo "matrix=$(cat "$RUNNER_TEMP/on-demand-plan.json")" >> "$GITHUB_OUTPUT"
+          KUMO_CI_COMMAND
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-pytorch-on-demand-plan
+          path: ${{ runner.temp }}/on-demand-plan.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: On-demand campaign plan
+          artifact: kumo-pytorch-diagnostics-on-demand-plan
+          status: ${{ job.status }}
+
+  diskgraph-wheel:
+    name: Setup / DiskGraph Build
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+    with:
+      readable-output: true
+
+  campaigns:
+    name: ${{ matrix.label }} / ${{ matrix.mode }}
+    needs: [diskgraph-wheel, plan]
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/_kumo-pytorch-binding.yml
+    with:
+      binding: ${{ matrix.binding }}
+      label: ${{ matrix.label }}
+      dataset: ${{ matrix.dataset }}
+      mode: ${{ matrix.mode }}
+      batch_size: ${{ matrix.batch_size }}
+      threads: ${{ matrix.threads }}
+      runner: ${{ matrix.runner }}
+      min_free_gib: ${{ matrix.min_free_gib }}
+      diskgraph-wheel-artifact: diskgraph-wheel

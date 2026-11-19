@@ -566,11 +566,12 @@ def test_streaming_inventory_and_shared_binding():
     assert len(definition["tables"]) == 7 and not definition.get("prepare")
     assert definition["anchor_generation"]["cohort_size"] == 10000
     assert binding["representation"] == "graphsage"
+    assert binding["on_demand"] is True
     assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
     rows = [
         row
         for mode in ("population", "training", "lifecycle")
-        for row in campaign_matrix(mode)["include"]
+        for row in campaign_matrix(mode, on_demand=True)["include"]
         if row["binding"] == "T01"
     ]
     assert len(rows) == 4 and all(row["dataset"] == "streaming-25b" for row in rows)

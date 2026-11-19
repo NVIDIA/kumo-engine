@@ -104,8 +104,11 @@ def campaign_resources(execution):
     }
 
 
-def campaign_matrix(campaign):
+def campaign_matrix(campaign, *, on_demand=False):
     modes = {
+        "all": ("smoke", "histories", "training", "lifecycle", "full"),
+        "smoke": ("smoke",),
+        "full": ("full",),
         "training": ("training",),
         "population": ("smoke", "full"),
         "lifecycle": ("lifecycle",),
@@ -129,7 +132,7 @@ def campaign_matrix(campaign):
                 "label": binding_label(b),
                 **campaign_resources(b["execution"]),
             }
-            for b in selected_bindings()
+            for b in selected_bindings(on_demand=on_demand)
             for mode in modes
             if mode in b["campaigns"]
         ]
@@ -885,7 +888,19 @@ def main(argv=None):
     matrix_parser = commands.add_parser("matrix")
     matrix_parser.add_argument(
         "--campaign",
-        choices=("training", "population", "lifecycle", "histories", "benchmark"),
+        choices=(
+            "all",
+            "smoke",
+            "full",
+            "training",
+            "population",
+            "lifecycle",
+            "histories",
+            "benchmark",
+        ),
+    )
+    matrix_parser.add_argument(
+        "--on-demand", action="store_true", help="Select only manual bindings"
     )
     run = commands.add_parser("run")
     run.add_argument("--binding", required=True)
@@ -939,7 +954,15 @@ def main(argv=None):
             parser.error("Full-population runs cannot have an anchor limit")
         return run_binding(args)
     if args.command == "matrix":
-        print(json.dumps(campaign_matrix(args.campaign) if args.campaign else matrix()))
+        if args.on_demand and not args.campaign:
+            parser.error("--on-demand requires --campaign")
+        print(
+            json.dumps(
+                campaign_matrix(args.campaign, on_demand=args.on_demand)
+                if args.campaign
+                else matrix()
+            )
+        )
     elif args.command == "benchmark-config":
         args.output.write_text(
             json.dumps(benchmark_config(args.case, args.mode, args.data_dir))

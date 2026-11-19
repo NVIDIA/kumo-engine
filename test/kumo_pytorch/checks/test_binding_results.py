@@ -225,7 +225,7 @@ def test_li_summary_rejects_incomplete_or_wrong_evidence(tmp_path, fault):
         path.write_text(json.dumps(data))
     result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
     assert result["status"] == "failed"
-    assert len(result["cases"]) == 44
+    assert len(result["cases"]) == 40
     assert sum(row["status"] == "failed" for row in result["cases"]) == 1
 
 
@@ -283,7 +283,7 @@ def test_li_summary_cli_needs_no_installed_package_and_writes_failures(tmp_path)
         check=False,
     )
     assert result.returncode == 1, result.stderr
-    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 53
+    assert len(json.loads((tmp_path / "report.json").read_text())["shards"]) == 49
     assert (tmp_path / "report.md").is_file()
 
 
@@ -305,7 +305,7 @@ def test_li_policy_grants_only_additional_pinned_objects():
     assert all("*" not in resource for resource in new["Resource"])
 
 
-def test_jobs_cover_all_bindings_and_retain_reports():
+def test_jobs_cover_automatic_bindings_and_retain_reports():
     workflow = (ROOT.parents[1] / ".github/workflows/kumo-pytorch-t2b.yml").read_text()
     job = (ROOT.parents[1] / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     planned = (
@@ -314,8 +314,8 @@ def test_jobs_cover_all_bindings_and_retain_reports():
         + binding_results.campaign_matrix("lifecycle")["include"]
         + binding_results.campaign_matrix("histories")["include"]
     )
-    assert len(planned) == 44
-    assert len({(r["binding"], r["mode"]) for r in planned}) == 44
+    assert len(planned) == 40
+    assert len({(r["binding"], r["mode"]) for r in planned}) == 40
     assert {r["dataset"] for r in planned} == {
         "hi-small",
         "li-medium",
@@ -324,7 +324,6 @@ def test_jobs_cover_all_bindings_and_retain_reports():
         "synthetic-medium-ltv",
         "mbd-transaction-forecast",
         "mbd-transaction-category",
-        "streaming-25b",
     }
     for group in ("correctness", "training", "lifecycle", "population"):
         assert f"matrix: ${{{{ fromJSON(needs.plan.outputs.{group}) }}}}" in workflow
@@ -343,6 +342,20 @@ def test_jobs_cover_all_bindings_and_retain_reports():
     assert "pattern: kumo-pytorch-dataset-*" in workflow
     assert "python3 -m test.kumo_pytorch.nightly summary" in workflow
     assert "aml-li-medium:" not in workflow
+
+
+def test_default_summary_does_not_require_manual_t01_reports(tmp_path):
+    reports(tmp_path)
+    result = binding_results.summarize_bindings(tmp_path, "fixture-revision")
+    assert result["status"] == "passed"
+    assert len(result["cases"]) == 40
+    assert all(row["ref"] != "T01" for row in result["cases"])
+    # Manual-only status must not relax the remaining nightly evidence gate.
+    (tmp_path / "training/L01/report.json").unlink()
+    assert (
+        binding_results.summarize_bindings(tmp_path, "fixture-revision")["status"]
+        == "failed"
+    )
 
 
 @pytest.mark.parametrize(

@@ -129,8 +129,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 44 binding campaigns into correctness (13),
-training (12), lifecycle (7) and full population (12). The Lifecycle matrix also
+The default planner partitions 40 binding campaigns into correctness (12),
+training (11), lifecycle (6) and full population (11). The Lifecycle matrix also
 contains one grouped HI Small entry, preserving its original five model/workload
 checks. HI Small's source/target oracles and history sweeps run in separate
 Correctness matrix entries; the source/target pass makes no optimizer updates.
@@ -145,6 +145,23 @@ coverage guard. The default unsharded local conformance command is unchanged.
 ```sh
 python -m test.kumo_pytorch.nightly plan --seed-start 240 --output /tmp/suite-plan.json
 ```
+
+Streaming 25B / T01 GraphSAGE is **on demand only**. Its four real-data campaigns
+are excluded from the full-suite plan and required-results gate, including
+manual full-suite runs. Fixture and acquisition checks remain in the shared tests.
+In Actions, run **PyTorch — On-Demand Bindings** and select `all`, `smoke`
+(correctness), `training`, `lifecycle` or `full` (population). This workflow reuses
+the catalog, DiskGraph build, binding worker and per-job reports/artifacts.
+The existing runner and storage preflight still apply.
+
+```sh
+gh workflow run kumo-pytorch-on-demand.yml --ref YOUR_BRANCH -f campaign=all
+python -m test.kumo_pytorch.nightly matrix --on-demand --campaign all
+```
+
+The catalog's `on_demand: true` flag selects manual bindings; other bindings
+remain in the default suite. Direct `nightly run --binding T01 ...` commands
+remain available.
 
 `kumo-pytorch-campaign-results/report.md` groups results by dataset and binding,
 then links individual experiments. Refused capabilities remain distinguished

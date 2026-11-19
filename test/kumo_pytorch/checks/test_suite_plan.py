@@ -41,7 +41,8 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 44
+    assert len(grouped) == len(expected) == 40
+    assert all(r["binding"] != "T01" for r in grouped)
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -79,13 +80,64 @@ def test_all_triggers_resolve_identical_plan_without_native_imports(tmp_path):
     assert all(plan == plans[0] for plan in plans)
 
 
+@pytest.mark.parametrize("campaign", ("all", "smoke", "training", "lifecycle", "full"))
+def test_manual_plan_retains_only_requested_t01_campaigns(campaign):
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "test.kumo_pytorch.nightly",
+            "matrix",
+            "--on-demand",
+            "--campaign",
+            campaign,
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rows = json.loads(result.stdout)["include"]
+    expected = (
+        {"smoke", "training", "lifecycle", "full"} if campaign == "all" else {campaign}
+    )
+    assert {(r["binding"], r["mode"]) for r in rows} == {
+        ("T01", mode) for mode in expected
+    }
+    assert len(rows) == len(expected)
+    assert all(r["dataset"] == "streaming-25b" for r in rows)
+
+
+def test_manual_workflow_publishes_the_shared_matrix(tmp_path):
+    import textwrap
+
+    workflow = (ROOT / ".github/workflows/kumo-pytorch-on-demand.yml").read_text()
+    command = workflow.split("        run: |\n", 1)[1].split("      - uses:", 1)[0]
+    output = tmp_path / "github-output"
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", textwrap.dedent(command)],
+        cwd=ROOT,
+        env={**os.environ, "CAMPAIGN": "all", "GITHUB_OUTPUT": str(output)},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    key, matrix = output.read_text().strip().split("=", 1)
+    assert key == "matrix"
+    assert json.loads(matrix) == nightly.campaign_matrix("all", on_demand=True)
+    assert json.loads((tmp_path / "on-demand-plan.json").read_text()) == json.loads(
+        matrix
+    )
+
+
 def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
     plan = nightly.execution_plan()
     campaigns = [
         r
         for name in ("correctness", "training", "lifecycle", "population")
         for r in plan[name]["include"]
-    ]
+    ] + nightly.campaign_matrix("all", on_demand=True)["include"]
     large = [
         r
         for r in campaigns
@@ -121,7 +173,7 @@ def test_campaign_resource_errors_fail_during_planning():
         nightly.campaign_resources({"min_free_gib": -1})
 
 
-def test_full_suite_is_the_only_external_entry_point():
+def test_full_suite_is_automatic_and_manual_bindings_have_a_separate_entry_point():
     workflows = ROOT / ".github/workflows"
     suite = (workflows / "kumo-pytorch-t2b.yml").read_text()
     assert "name: PyTorch — Full Suite" in suite and "name: kumo-pytorch-gate" in suite
@@ -134,12 +186,30 @@ def test_full_suite_is_the_only_external_entry_point():
     assert "--required-coverage=difficult" in difficult
     assert "continue-on-error" not in difficult
     assert "  diskgraph-wheel:" not in difficult
-    assert "diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}" in difficult
-    caller = suite.split("  difficult-behavior:\n", 1)[1].split("\n  conformance:", 1)[0]
+    assert (
+        "diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}" in difficult
+    )
+    caller = suite.split("  difficult-behavior:\n", 1)[1].split("\n  conformance:", 1)[
+        0
+    ]
     assert "needs: diskgraph-wheel" in caller
     assert "uses: ./.github/workflows/kumo-pytorch-difficult-behavior.yml" in caller
     assert "diskgraph-wheel-artifact: diskgraph-wheel" in caller
     for path in workflows.glob("*kumo-pytorch*.yml"):
+        if path.name == "kumo-pytorch-on-demand.yml":
+            text = path.read_text()
+            assert "  workflow_dispatch:" in text
+            assert all(
+                f"  {event}:" not in text
+                for event in ("push", "pull_request", "schedule", "workflow_call")
+            )
+            assert "matrix --on-demand --campaign" in text
+            assert "uses: ./.github/workflows/_kumo-pytorch-binding.yml" in text
+            assert "fail-fast: false" in text
+            assert "continue-on-error" not in text
+            assert "diskgraph-wheel-artifact: diskgraph-wheel" in text
+            assert "kumo-pytorch-on-demand.yml" not in suite
+            continue
         if path.name != "kumo-pytorch-t2b.yml":
             text = path.read_text()
             assert "  workflow_call:" in text

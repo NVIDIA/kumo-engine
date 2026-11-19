@@ -31,11 +31,13 @@ def load_bindings():
     return result
 
 
-def selected_bindings(*, dataset=None, campaign=None):
+def selected_bindings(*, dataset=None, campaign=None, on_demand=False):
+    """Select either the default suite or the explicitly requested manual suite."""
     return [
         binding
         for binding in load_bindings().values()
         if binding["campaigns"]
+        and binding.get("on_demand", False) == on_demand
         and (dataset is None or binding["selector"]["dataset_id"] == dataset)
         and (campaign is None or campaign in binding["campaigns"])
     ]
