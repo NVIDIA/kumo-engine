@@ -6,6 +6,7 @@ const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { createHash } = require('node:crypto');
 const graph = require('../snowflake_notebook/graph_ui.cjs');
+const explanations = require('../snowflake_notebook/explanation_ui.cjs');
 const { safeSnapshot, frontendFailure, VerificationError, verificationMessage } = require('./assertions.cjs');
 
 function requireThat(value, message) {
@@ -27,11 +28,11 @@ async function jupyter(page) {
   const deadline = Date.now() + 120000;
   do {
     for (const frame of page.frames()) {
-      if (await frame.locator('.jp-FileBrowser').isVisible().catch(() => false)) return frame;
+      if (await frame.locator('.jp-SideBar.jp-mod-left').isVisible().catch(() => false)) return frame;
     }
     await page.waitForTimeout(250);
   } while (Date.now() < deadline);
-  throw new VerificationError('The dedicated Studio JupyterLab file browser did not open');
+  throw new VerificationError('The dedicated Studio JupyterLab interface did not open');
 }
 
 async function handleKernelDialogs(page, frame, mark) {
@@ -42,7 +43,22 @@ async function handleKernelDialogs(page, frame, mark) {
   }, { times: 20, noWaitAfter: true });
 }
 
+async function showFileBrowser(frame) {
+  const browser = frame.locator('.jp-FileBrowser');
+  const deadline = Date.now() + 60000;
+  while (!await browser.isVisible() && Date.now() < deadline) {
+    await frame.getByRole('tab', { name: /^File Browser(?:\s|$)/ }).click();
+    try {
+      await browser.waitFor({ state: 'visible', timeout: 3000 });
+    } catch (error) {
+      if (error.name !== 'TimeoutError') throw error;
+    }
+  }
+  requireThat(await browser.isVisible(), 'Studio file browser did not become visible');
+}
+
 async function openNotebook(frame, filename, mark) {
+  await showFileBrowser(frame);
   mark('native-file-visible');
   const item = frame.locator('.jp-FileBrowser').getByText(filename, { exact: true });
   await item.waitFor({ state: 'visible' });
@@ -83,6 +99,31 @@ async function verifyReceipt(panel, expected) {
   requireThat(isDeepStrictEqual(actual, expected), 'Native notebook execution receipt differs from the producer');
   return { attempt: actual.attempt, execution_id: actual.execution_id,
     source_commit: actual.source_commit, wheel_sha256: actual.wheel_sha256 };
+}
+
+async function sidebar(frame, side, visible) {
+  const area = frame.locator(`#jp-${side.toLowerCase()}-stack`);
+  if (await area.isVisible() === visible) return;
+  await frame.getByRole('menuitem', { name: /^View$/ }).click();
+  await frame.locator('.lm-Menu:visible').getByText('Appearance', { exact: true }).hover();
+  await frame.locator('.lm-Menu:visible').getByText(`Show ${side} Sidebar`, {
+    exact: true,
+  }).click();
+  await area.waitFor({ state: visible ? 'visible' : 'hidden' });
+}
+
+async function checkExplanations(page, frame, panel, receipt, output, label, allowed) {
+  const left = await frame.locator('#jp-left-stack').isVisible();
+  const right = await frame.locator('#jp-right-stack').isVisible();
+  try {
+    await sidebar(frame, 'Left', false);
+    await sidebar(frame, 'Right', false);
+    return { ...await explanations.check(page, receipt, output, label, allowed, { root: panel }),
+      notebook_layout: 'sidebars-collapsed' };
+  } finally {
+    await sidebar(frame, 'Left', left);
+    await sidebar(frame, 'Right', right);
+  }
 }
 
 async function writeSaveProbe(page, frame, panel, saveProbe, mark) {
@@ -153,6 +194,7 @@ async function main(input) {
     requireThat(safePage(page.url(), input.space_url), 'Studio did not reach its clean authenticated test-domain URL');
     authenticated = true;
     await handleKernelDialogs(page, frame, mark);
+    await showFileBrowser(frame);
     mark('upload-retained-notebook');
     const content = fs.readFileSync(input.notebook);
     requireThat(createHash('sha256').update(content).digest('hex') === input.notebook_sha256,
@@ -173,6 +215,15 @@ async function main(input) {
     report.initial_receipt = await verifyReceipt(panel, input.receipt);
     mark('native-graph-controls');
     if (input.graph) report.initial = await graph.check(page, input.graph, output, 'studio-initial', true, true, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
+    if (input.graph) {
+      report.initial_graph = 'passed';
+      mark('native-explanation-controls');
+      report.initial_explanations = await explanations.record(report,
+        () => checkExplanations(page, frame, panel, input.graph, output, 'studio-initial',
+          async () => authenticated && safePage(page.url(), input.space_url)),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)),
+        'initial_explanations');
+    }
     const saveProbe = `KUMO_SAVE_PROBE=${input.receipt.attempt}-${input.invocation}`;
     requireThat(!content.toString().includes(saveProbe), 'Save probe already exists in the upload');
     await writeSaveProbe(page, frame, panel, saveProbe, mark);
@@ -197,6 +248,15 @@ async function main(input) {
     report.save_probe = 'passed';
     report.reopened_receipt = await verifyReceipt(panel, input.receipt);
     if (input.graph) report.reopened = await graph.checkSaved(page, input.graph, output, async () => authenticated && safePage(page.url(), input.space_url), { root: panel, frame });
+    if (input.graph) {
+      report.reopened_graph = 'passed';
+      mark('native-explanation-reopened');
+      report.reopened_explanations = await explanations.record(report,
+        () => checkExplanations(page, frame, panel, input.graph, output, 'studio-reopened',
+          async () => authenticated && safePage(page.url(), input.space_url)),
+        () => fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify(report, null, 2)),
+        'reopened_explanations');
+    }
     requireThat(errors.length === 0, 'Native Studio browser emitted an uncaught frontend error');
     report.uploaded_notebook = filename;
     report.uploaded_sha256 = input.notebook_sha256;
@@ -204,7 +264,7 @@ async function main(input) {
   } catch (error) {
     report.error = verificationMessage(error);
     if (authenticated && page && safePage(page.url(), input.space_url)) {
-      if (/^(native-(file|kernel|restored|notebook|dismiss|graph)|trust-)/.test(report.stage)) {
+      if (/^(native-(file|kernel|restored|notebook|dismiss|graph|explanation)|trust-)/.test(report.stage)) {
         report.diagnostic_detail = safeSnapshot(String(error.message), [input.url]).slice(0, 1500);
       }
       await graph.captureElement(page, output, 'failed',

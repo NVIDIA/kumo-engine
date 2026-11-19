@@ -450,9 +450,11 @@ fn table_rows(
             .edges_for_node(node_id)
             .map_err(|error| error.to_string())?;
         rows.push(
-            view.node_data()
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            decoder.row_or_null(
+                view.node_data()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("node {node_id} has no rowpack data"))?,
+            ),
         );
     }
     decoder
@@ -2344,14 +2346,19 @@ fn execute_prepared_parallel(
     plan: &QueryPlan,
     pool: &rayon::ThreadPool,
 ) -> Result<QueryResult, String> {
-    if roots.len() != cutoffs.len() || roots.len() < 64 || pool.current_num_threads() == 1 {
+    let anchors_per_chunk = if plan.aggregates.is_empty() && !plan.sequences.is_empty() {
+        8
+    } else {
+        64
+    };
+    if roots.len() != cutoffs.len() || roots.len() < anchors_per_chunk || pool.current_num_threads() == 1 {
         if roots.len() != cutoffs.len() {
             return Err("root IDs and cutoffs must have equal length".into());
         }
         return execute_query(reader, root_type, roots, cutoffs, plan);
     }
     let started = Instant::now();
-    let chunks = roots.len().div_ceil(64).min(pool.current_num_threads() * 2);
+    let chunks = roots.len().div_ceil(anchors_per_chunk).min(pool.current_num_threads() * 2);
     let size = roots.len().div_ceil(chunks);
     let results = pool.install(|| {
         roots
@@ -2879,5 +2886,65 @@ mod tests {
             reduce(RowsView::Owned(&tied), "mode", Some("value"), 0, None).unwrap(),
             ScalarValue::String(value) if value == "a"
         ));
+    }
+
+    #[test]
+    fn table_rows_reads_a_row_without_node_data_as_null() {
+        // Its FK value alone is over the node-data limit, so ingest stores it
+        // without node data. It is random because rowpack LZ4-compresses long
+        // strings.
+        let mut state = 1u64;
+        let parent: String = (0..65 << 20)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                char::from(b'a' + (state % 26) as u8)
+            })
+            .collect();
+        let batch = RecordBatch::try_from_iter([
+            (
+                "note_id",
+                Arc::new(StringArray::from(vec!["n1"])) as ArrayRef,
+            ),
+            ("parent", Arc::new(StringArray::from(vec![parent]))),
+        ])
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.parquet");
+        let file = std::fs::File::create(&notes).unwrap();
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let config = dir.path().join("config.json");
+        let config_json = serde_json::json!({
+            "dataset_name": "notes",
+            "tables": [{
+                "name": "Notes",
+                "source": {"type": "parquet", "paths": [notes]},
+                "primary_key": "note_id",
+                "columns": [
+                    {"name": "note_id", "ingested_dtype": "string"},
+                    {"name": "parent", "ingested_dtype": "string"}
+                ],
+                "fkeys": [{"src_column": "parent", "dst_table": "Notes"}]
+            }]
+        });
+        std::fs::write(&config, config_json.to_string()).unwrap();
+        let output = dir.path().join("index");
+        diskgraph_ingest::ingest_with_stats(
+            &config,
+            output.to_str().unwrap(),
+            diskgraph_ingest::io::Dest::Local,
+            diskgraph_ingest::IngestOptions::default(),
+        )
+        .unwrap();
+        let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output).unwrap();
+
+        let table = reader.table("Notes").unwrap();
+        let rows = table_rows(&table, &[0], &[0, 1]).unwrap();
+        assert!(rows.columns().iter().all(|column| column.is_null(0)));
+        let value = crate::ttgen_traversal::read_column_value_nullable(&table, 0, 1);
+        assert_eq!(value, Some(None));
     }
 }

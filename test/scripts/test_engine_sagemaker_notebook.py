@@ -76,6 +76,19 @@ def test_collect_binds_saved_output_to_executed_receipt(modules, execution,
                                           Key='test/outputs/result.json')
 
 
+def test_graph_evidence_requires_explanation_inventory(modules, execution,
+                                                       tmp_path):
+    execution.spec['scenario'] = 'graph'
+    s3 = Mock()
+    s3.get_object.return_value = {'Body': io.BytesIO(execution.content)}
+    report = modules.evidence.collect(
+        s3, 'test-bucket', execution.executed, execution.submitted,
+        execution.spec, tmp_path)
+    with pytest.raises(ValueError, match='Missing explanation artifacts'):
+        modules.evidence.validate_explanations(
+            report, execution.spec, tmp_path, execution.record)
+
+
 @pytest.mark.parametrize('change', [
     'source', 'unexecuted', 'cell-error', 'duplicate', 'attempt', 'unsafe-file'
 ])
@@ -566,6 +579,7 @@ def test_partial_or_invalid_lifecycle_cannot_qualify_ui(modules,
 
 @pytest.mark.parametrize('dirty', [
     'sagemaker_notebook/browser.cjs', 'snowflake_notebook/graph_ui.cjs',
+    'snowflake_notebook/explanation_ui.cjs',
     'snowflake_notebook/browser/package-lock.json',
     'snowflake_notebook/verification.cjs', 'platform_candidate.py'
 ])
@@ -578,6 +592,7 @@ def test_dirty_browser_sources_cannot_reuse_committed_provenance(
         'sagemaker_notebook/run.py', 'sagemaker_notebook/browser.cjs',
         'sagemaker_notebook/requirements.txt', 'pr172/inputs.json',
         'snowflake_notebook/graph_ui.cjs',
+        'snowflake_notebook/explanation_ui.cjs',
         'snowflake_notebook/verification.cjs', 'platform_candidate.py',
         'snowflake_notebook/browser/package.json',
         'snowflake_notebook/browser/package-lock.json'
@@ -639,6 +654,19 @@ def retained_execution(modules, tmp_path):
                                            wheel_sha256=spec['wheel_sha256']),
         environment=dict(sha256=spec['wheel_sha256']),
         graph=dict(status='passed'), phases=phases, required_gaps={})
+    module_spec = importlib.util.spec_from_file_location(
+        'explanation_inventory', HERE.parent / 'snowflake_notebook/explanation.py')
+    inventory = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(inventory)
+    contents = {name: b'unit-test retained export' for name in inventory.FILES}
+    explanation = dict(status='passed', plots={
+        kind: dict(sha256={suffix: modules.evidence.digest(
+            contents[f'explanation-{kind}.{suffix}'])
+                           for suffix in ('png', 'svg', 'pdf')})
+        for kind in inventory.PLOTS})
+    report['graph']['explanations'] = explanation
+    contents['explanation-result.json'] = json.dumps(explanation).encode()
+    contents['graph-result.json'] = json.dumps(report['graph']).encode()
     (source / 'outputs').mkdir()
     content = json.dumps(report).encode()
     (source / 'outputs/result.json').write_bytes(content)
@@ -649,7 +677,10 @@ def retained_execution(modules, tmp_path):
             'execution_id'
         ]
     }
-    record['files'] = {'result.json': modules.evidence.digest(content)}
+    for name, raw in contents.items():
+        (source / 'outputs' / name).write_bytes(raw)
+    record['files'] = {name: modules.evidence.digest(raw)
+                       for name, raw in dict(contents, **{'result.json': content}).items()}
     submitted = dict(
         cells=[dict(cell_type='code', source=['print("retained")'])])
     executed = copy.deepcopy(submitted)
@@ -1070,11 +1101,12 @@ def test_cleanup_times_out_without_deleting_active_pipeline(modules, tmp_path, m
 
 
 @pytest.mark.parametrize('dispatch',
-                         ['main', 'egu/sagemaker-platform-validation'])
+                         ['main', 'egu/snowflake-explanation-local',
+                          'egu/sagemaker-platform-validation'])
 @pytest.mark.parametrize('prevent_self_review', [False, True])
 @pytest.mark.parametrize(
     'invalid',
-    [None, 'admin-bypass', 'reviewers', 'branches', 'wildcard', 'tag', 'count'])
+    [None, 'admin-bypass', 'reviewers', 'branches', 'trial', 'wildcard', 'tag', 'count'])
 def test_sagemaker_environment_requires_main_and_independent_approval(
         modules, monkeypatch, prevent_self_review, invalid, dispatch):
     import urllib.request
@@ -1090,6 +1122,10 @@ def test_sagemaker_environment_requires_main_and_independent_approval(
         environment['can_admins_bypass'] = True
     if invalid == 'reviewers':
         rule['reviewers'] = []
+    if invalid == 'trial':
+        policies['branch_policies'].append(
+            dict(type='branch', name='egu/snowflake-explanation-local'))
+        policies['total_count'] = 2
     if invalid in {'branches', 'wildcard'}:
         policies['branch_policies'].append(
             dict(
@@ -1420,6 +1456,39 @@ def test_browser_diagnostics_publish_checks_without_runtime_data(
     assert secret not in json.dumps(result)
 
 
+@pytest.mark.parametrize('mutation', [
+    None, 'secret', 'extra', 'nan', 'negative', 'infinite', 'boolean',
+    'unknown-plot',
+])
+def test_browser_diagnostics_allow_only_bounded_plot_dimensions(
+        modules, tmp_path, mutation):
+    studio = tmp_path / 'studio'
+    studio.mkdir()
+    geometry = dict(width=320.5, height=80, naturalWidth=2400,
+                    naturalHeight=600, aspect=4)
+    plot = 'cohort-layout'
+    if mutation == 'secret':
+        geometry['width'] = 'https://private.example/?token=secret'
+    elif mutation == 'extra':
+        geometry['url'] = 'https://private.example/?token=secret'
+    elif mutation == 'nan':
+        geometry['width'] = float('nan')
+    elif mutation == 'infinite':
+        geometry['width'] = float('inf')
+    elif mutation == 'negative':
+        geometry['width'] = -1
+    elif mutation == 'boolean':
+        geometry['width'] = True
+    elif mutation == 'unknown-plot':
+        plot = 'private-run-name'
+    message = ('Explanation image is distorted or too small: ' + plot +
+               ' ' + json.dumps(geometry))
+    (studio / 'result.json').write_text(json.dumps(dict(error=message)))
+    result = modules.run.browser_diagnostics(tmp_path)
+    assert result == dict(studio=(dict(explanation_geometry=dict(
+        plot=plot, **geometry)) if mutation is None else {}))
+
+
 def test_browser_diagnostics_preserve_progress_without_result(
         modules, tmp_path):
     studio = tmp_path / 'studio'
@@ -1706,3 +1775,95 @@ def test_staging_interrupts_a_read_that_continuously_progresses(
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.parametrize('path', ['execution', 'replay'])
+@pytest.mark.parametrize('change', ['missing', 'hash', 'stored-report'])
+def test_explanation_evidence_matches_for_execution_and_replay(
+        modules, retained_execution, monkeypatch, tmp_path, path, change):
+    e = retained_execution
+    executed_path = e.source / 'executed.ipynb'
+    executed = json.loads(executed_path.read_text())
+    record = json.loads(executed['cells'][0]['outputs'][0]['text'].split('=', 1)[1])
+    if change == 'missing':
+        del record['files']['explanation-gradient.pdf']
+    elif change == 'hash':
+        e.report['graph']['explanations']['plots']['gradient']['sha256']['pdf'] = 'f' * 64
+        for name, data in [('graph-result.json', e.report['graph']),
+                           ('result.json', e.report)]:
+            raw = json.dumps(data).encode()
+            (e.source / 'outputs' / name).write_bytes(raw)
+            record['files'][name] = modules.evidence.digest(raw)
+    else:
+        raw = b'{}'
+        (e.source / 'outputs/explanation-result.json').write_bytes(raw)
+        record['files']['explanation-result.json'] = modules.evidence.digest(raw)
+    executed['cells'][0]['outputs'][0]['text'] = (
+        modules.evidence.MARKER + json.dumps(record) + '\n')
+    executed_path.write_text(json.dumps(executed))
+    browser = Mock(side_effect=AssertionError('Unvalidated evidence reached browser'))
+    monkeypatch.setattr(modules.run, 'verify_browser', browser)
+    monkeypatch.setattr(modules.run, 'Client', Mock(
+        side_effect=AssertionError('Unvalidated replay reached AWS')))
+    output = tmp_path / 'checked'
+    output.mkdir()
+    error = {'missing': 'Missing explanation artifacts',
+             'hash': 'differs from its verified plot',
+             'stored-report': 'receipt differs from graph result'}[change]
+    with pytest.raises(ValueError, match=error):
+        if path == 'execution':
+            submitted = json.loads((e.source / e.spec['notebook_name']).read_text())
+            s3 = Mock()
+            s3.get_object.side_effect = lambda **kw: dict(Body=io.BytesIO(
+                (e.source / 'outputs' / kw['Key'].rsplit('/', 1)[1]).read_bytes()))
+            report = modules.evidence.collect(
+                s3, e.spec['bucket'], executed, submitted, e.spec, output)
+            modules.run.verdict(report, e.spec, e.job, e.pipeline)
+            modules.evidence.validate_explanations(report, e.spec, output, record)
+        else:
+            modules.run.verify_existing(SimpleNamespace(
+                ui_run=e.source, producer_commit=e.spec['source_commit']), output)
+    browser.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'failure',
+    ['install-check', 'graph-fixture', 'explanation-fit', 'budget-alarm'])
+def test_failed_execution_reaches_verdict_without_explanation_artifacts(
+        modules, execution, tmp_path, failure):
+    e = execution
+    e.spec.update(scenario='graph', region='us-west-2', account='926922431314',
+                  pipeline_name='kumo-test-notebook-123456abcdef')
+    e.report.update(status='failed', error=failure)
+    raw = json.dumps(e.report).encode()
+    e.record['files']['result.json'] = modules.evidence.digest(raw)
+    e.executed['cells'][0]['outputs'][0]['text'] = (
+        modules.evidence.MARKER + json.dumps(e.record) + '\n')
+    s3 = Mock()
+    s3.get_object.return_value = dict(Body=io.BytesIO(raw))
+    report = modules.evidence.collect(
+        s3, 'test', e.executed, e.submitted, e.spec, tmp_path)
+    assert report['error'] == failure
+    pipeline = dict(PipelineExecutionStatus='Succeeded', PipelineArn=(
+        'arn:aws:sagemaker:us-west-2:926922431314:pipeline/' + e.spec['pipeline_name']))
+    with pytest.raises(ValueError, match='successful installed-product runtime') as error:
+        modules.run.verdict(report, e.spec, {}, pipeline)
+    assert error.traceback[-1].name == 'verdict'
+
+
+def test_native_explanation_diagnostics_retain_graph_status_and_safe_message(
+        modules, tmp_path):
+    studio = tmp_path / 'studio'
+    studio.mkdir()
+    value = dict(status='failed', stage='native-explanation-controls',
+                 initial_graph='passed', initial_explanations=dict(
+                     status='failed', error='PRIVATE'),
+                 error='Missing distinct explicit-class multilabel cohort verification')
+    path = studio / 'result.json'
+    path.write_text(json.dumps(value))
+    assert modules.run.browser_diagnostics(tmp_path)['studio'] == dict(
+        status='failed', stage=value['stage'], initial_graph='passed',
+        initial_explanations='failed', error=value['error'])
+    value['error'] += ' PRIVATE'
+    path.write_text(json.dumps(value))
+    assert 'PRIVATE' not in json.dumps(modules.run.browser_diagnostics(tmp_path))

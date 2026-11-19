@@ -468,7 +468,7 @@ fn calculate_expected_node_count(
         dropped += get_table_duplicates(table_name, stats);
     }
 
-    // 3. Null timestamps or oversized rows (from dropped_rows_counts)
+    // 3. Rows dropped at encode, e.g. null timestamps (from dropped_rows_counts)
     if let Some(&c) = stats.dropped_rows_counts.get(table_name) {
         dropped += c;
     }

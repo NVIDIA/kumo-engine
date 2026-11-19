@@ -87,3 +87,25 @@ def collect(s3, bucket, executed, submitted, spec, directory):
         raise ValueError('Stored report differs from executed source/payload')
     save(Path(directory) / 'receipt.json', record)
     return report
+
+
+def validate_explanations(report, spec, directory, record):
+    """Validate successful graph evidence identically for execution and UI replay."""
+    directory = Path(directory)
+    destination = directory / 'outputs'
+    if spec.get('scenario') in ('graph', 'all'):
+        import sys
+        sys.path.append(str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
+        from explanation import FILES, validate_exports
+        if not set(FILES) <= set(record['files']):
+            raise ValueError(
+                'Missing explanation artifacts in executed notebook evidence')
+        graph = json.loads((destination / 'graph-result.json').read_text())
+        if graph != report.get('graph'):
+            raise ValueError('Stored graph differs from notebook report')
+        validate_exports(graph.get('explanations', {}), record['files'])
+        if json.loads(
+            (destination /
+             'explanation-result.json').read_text()) != graph['explanations']:
+            raise ValueError(
+                'Stored explanation receipt differs from graph result')

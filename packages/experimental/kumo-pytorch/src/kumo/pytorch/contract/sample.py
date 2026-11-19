@@ -701,8 +701,9 @@ class GraphSample:
         without replacement, ignoring the real-time anchor even on timed tables.
         Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 
-    Emitted edges keep the relation's left-to-right orientation whatever the
-    traversal direction, self-relations included.
+    Relations-topology edges keep the declared left-to-right orientation whatever
+    the traversal direction, self-relations included. Sampled topology retains
+    the native traversal direction instead.
     :param time_column: overrides the destination table's declared clock.
     """
 
@@ -736,8 +737,12 @@ class GraphLayer:
 class NeighborhoodSpec:
     """Rows belonging to one sampled neighborhood around the entity.
 
-    Layers expand in order from the entity. A row or edge reached more than once
-    appears once per sample. Node attributes are chosen in ``BatchSpec`` through
+    Layers expand in order from the entity. Relations topology emits one node
+    per sample/row and deduplicates edge pairs in model and inspectable output.
+    Columnar relations output can retain repeated pairs unless
+    ``deduplicate_edges=True``. ``Graph(topology="sampled")`` retains native
+    directed edge occurrences, discovery order and hop counts.
+    Node attributes are chosen in ``BatchSpec`` through
     a ``Graph`` representation, not here.
     """
 
