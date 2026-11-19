@@ -73,13 +73,11 @@ function tickText(v, step) {
   return (v < 0 && Number(text.replace(/,/g, '')) !== 0 ? '−' : '') + text;
 }
 
-function pct(v, digits) { return (100 * v).toFixed(digits === undefined ? 0 : digits) + '%'; }
-
+/* Rendered text width, estimated where the text is not laid out. */
 function measure(node) {
   let width = 0;
-  try { width = node.getComputedTextLength(); } catch (error) { width = 0; }
-  if (!(width > 0)) width = node.textContent.length * 6.6;
-  return width;
+  try { width = node.getComputedTextLength(); } catch (error) { /* not laid out */ }
+  return width > 0 ? width : node.textContent.length * 6.6;
 }
 
 function T(parent, x, y, text, cls, anchor, extra) {

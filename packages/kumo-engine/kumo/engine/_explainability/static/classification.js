@@ -229,7 +229,7 @@ KX.cards.cutoff = (parent, card, ctx) => {
       stopButtons.splice(0).forEach(b => b.remove());
       const items = [{index: card.default, extra: null}];
       if (cls.preset !== card.default) {
-        items.push({index: cls.preset, extra: pct(cutoffAt(card, cls, cls.preset).flagged, 1) + ' flagged'});
+        items.push({index: cls.preset, extra: share(cutoffAt(card, cls, cls.preset).flagged) + ' flagged'});
       }
       for (const item of items) {
         const b = H('button', 'kx-chipbtn', stops, card.grid_text[item.index]);
