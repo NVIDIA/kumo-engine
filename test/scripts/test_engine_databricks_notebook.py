@@ -189,6 +189,14 @@ def test_failed_parent_cannot_reuse_old_success(modules):
         runner.successful_task(run)
 
 
+def test_shared_explanation_import_keeps_databricks_cleanup_resolvable(modules, monkeypatch):
+    monkeypatch.delitem(sys.modules, 'cleanup', raising=False)
+    cleanup = importlib.import_module('cleanup')
+    assert Path(cleanup.__file__).resolve().parent == DIRECTORY
+    assert hasattr(cleanup, 'AttemptResources')
+    monkeypatch.delitem(sys.modules, 'cleanup', raising=False)
+
+
 @pytest.fixture
 def evidence(modules, tmp_path):
     _, runner = modules
@@ -204,6 +212,19 @@ def evidence(modules, tmp_path):
                   source_commit=spec['source_commit'], payload=spec['assets'],
                   runtime=dict(notebook_path=spec['notebook_path']))
     files = {name: name.encode() for name in runner.FILES}
+    from explanation import PLOTS
+    report['explanations'] = dict(
+        status='passed', plots={
+            kind:
+            dict(
+                sha256={
+                    suffix: runner.digest(files[f'explanation-{kind}.{suffix}'])
+                    for suffix in ('png', 'svg', 'pdf')
+                })
+            for kind in PLOTS
+        })
+    files['explanation-result.json'] = json.dumps(
+        report['explanations']).encode()
     files['graph-result.json'] = json.dumps(report).encode()
     receipt = dict(status='passed', attempt=spec['attempt'],
                    execution_id=report['execution_id'], output=spec['output'],
@@ -241,6 +262,31 @@ def collect_fake(evidence):
 def test_export_receipt_binds_downloaded_report_to_execution(evidence):
     report = collect_fake(evidence)
     assert report['execution_id'] == 'd' * 12
+
+
+@pytest.mark.parametrize('change',
+                         ['missing-plot', 'wrong-plot-hash', 'swapped-report'])
+def test_explanation_evidence_cannot_be_substituted_with_a_valid_file_receipt(
+        evidence, change):
+    runner, _, files, commands, _, _ = evidence
+    report = json.loads(files['graph-result.json'])
+    if change == 'missing-plot':
+        del report['explanations']['plots']['cohort-multilabel-1']
+    elif change == 'wrong-plot-hash':
+        report['explanations']['plots']['cohort-regression']['sha256'][
+            'svg'] = '0' * 64
+    else:
+        files['explanation-result.json'] = b'{"status":"failed"}'
+    files['graph-result.json'] = json.dumps(report).encode()
+    result = commands[-1]['results']['data'][0]
+    receipt = json.loads(result['data'].split('=', 1)[1])
+    receipt['files'] = {
+        name: runner.digest(content)
+        for name, content in files.items()
+    }
+    result['data'] = 'KUMO_DATABRICKS_GRAPH_RECEIPT=' + json.dumps(receipt)
+    with pytest.raises(ValueError, match='explanation|Explanation'):
+        collect_fake(evidence)
 
 
 def test_exported_code_cannot_be_substituted(evidence):
@@ -671,9 +717,10 @@ def test_recovery_steps_always_run_before_publication():
             if step.get('name') == 'Prepare public aggregate results')
 
 
-@pytest.mark.parametrize(
-    'dirty',
-    ['kernel.py', 'verify_export.cjs', 'graph_ui.cjs', 'verification.cjs'])
+@pytest.mark.parametrize('dirty', [
+    'kernel.py', 'verify_export.cjs', 'graph_ui.cjs', 'verification.cjs',
+    'explanation.py', 'explanation_ui.cjs'
+])
 def test_graph_provenance_rejects_dirty_kernel(modules, monkeypatch, dirty):
     _, runner = modules
 
