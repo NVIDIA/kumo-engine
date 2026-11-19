@@ -86,11 +86,11 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     if run.model_type == FORECASTING:
         return None
     try:
-        artifacts = run.explanations._cohort_artifacts('samples')
-        references = artifacts.samples()
+        explanations = run.explanations
+        references = explanations.samples()
+        collector = explanations._collector_root()
     except (OSError, ValueError):
         return None
-    collector = artifacts.collector_root
     # Each category keeps the collector's selection order.
     listed = {reference.artifact_id for reference in references}
     categories = {
@@ -104,7 +104,7 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     for reference in references:
         try:
             sample = reference.available and _sample(
-                artifacts.sample(reference.artifact_id), run.task_type)
+                explanations.sample(reference.artifact_id), run.task_type)
         except (OSError, ValueError):
             sample = None
         if sample:

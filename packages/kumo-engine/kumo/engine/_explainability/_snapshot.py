@@ -33,9 +33,9 @@ class Snapshot:
                          else [] if batch and key == 'query' else [value]):
                 if line:
                     self._line(line)
+        shown = ('explanation', ) if batch else ('evaluation', 'training')
         cards = [
-            card for tab in data['tabs']
-            if tab['id'] in ('evaluation', 'training', 'explanation')
+            card for tab in data['tabs'] if tab['id'] in shown
             for card in tab['cards']
         ]
         if not cards:

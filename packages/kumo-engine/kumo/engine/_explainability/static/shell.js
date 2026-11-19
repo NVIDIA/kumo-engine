@@ -325,8 +325,8 @@ function mount(host, data, signal, onDispose) {
       panels[next].button.focus();
     }, {signal});
   });
-  /* One tab needs no tab strip. */
-  if (panels.length === 1) {
+  /* A batch's single tab needs no tab strip; training keeps its tabs. */
+  if (panels.length === 1 && data.kind === 'prediction') {
     tabs.remove();
     panels[0].panel.setAttribute('role', 'region');
     panels[0].panel.setAttribute('aria-label', panels[0].tab.label);

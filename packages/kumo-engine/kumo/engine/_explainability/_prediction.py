@@ -37,41 +37,40 @@ def _task(source: PredictionExplanations, kind: str) -> Optional[str]:
     try:
         if kind == 'cohorts':
             return source.column_analysis().task_type.value
-        for reference in source.samples():
+        references = source.samples()
+    except (OSError, ValueError):
+        return None
+    for reference in references:
+        try:
             store = reference.available and source.sample(
                 reference.artifact_id).subgraph_store
-            if store:
-                return store.task_type.value
-    except (OSError, ValueError):
-        pass
+        except (OSError, ValueError):
+            continue  # an unreadable graph leaves the others usable
+        if store:
+            return store.task_type.value
     return None
 
 
 def build(explanations: PredictionExplanations,
           prediction: Optional[PredictionManifest],
           run_id: Optional[str]) -> dict[str, Any]:
-    """Every number and text the batch widget draws."""
+    """The batch widget's payload."""
+    # Live metadata may hold nulls in typed fields; only a valid manifest of
+    # this batch is displayed.
+    if prediction is not None and run_id not in (None, prediction.id):
+        prediction = None
+    expected = run_id or getattr(prediction, 'id', None)
     try:
-        # Live metadata may hold nulls in typed fields; only a valid record
-        # of this batch is used.
         prediction = TypeAdapter(PredictionManifest).validate_python(
             asdict(prediction)) if prediction else None
     except (TypeError, ValueError):
         prediction = None
-    if prediction and run_id not in (None, prediction.id):
-        prediction = None
-    expected = (run_id, None, None) if prediction is None else (
-        prediction.id, prediction.parents.model.id,
-        prediction.parents.snapshot.id)
     notices, root = [], explanations.run_root
     try:
         record = read_record(root) if root else None
     except (OSError, ValueError):
         record = None
-    if record and any(
-            known not in (None, value)
-            for known, value in zip(expected, (record.run_id, record.model_id,
-                                               record.snapshot_id))):
+    if record and expected not in (None, record.run_id):
         notices.append(
             'Retained explanations do not match this prediction batch.')
         record = None
@@ -85,10 +84,9 @@ def build(explanations: PredictionExplanations,
     task = next(
         filter(None, (_task(source, kind) for kind in ('cohorts', 'samples')
                       if availability[kind].available)), None)
-    provenance = record.result.provenance if record and record.result else None
     run = Run(task or '', _TASKS.get(task, 'prediction'), None, {}, {}, {},
               None, False, False, None, source, batch=True,
-              cohort_rows=provenance and provenance.processed_cohort_rows)
+              cohort_rows=source.coverage.cohort_rows_processed)
     cards = []
     for card_id, kind, label, make, empty in _CARDS:
         state = availability[kind]
@@ -100,8 +98,7 @@ def build(explanations: PredictionExplanations,
                 state.reason, 'Retained artifacts are unavailable.'))
             notices.append(f'{label}: {reason}')
     header: dict[str, Any] = dict(query='Batch prediction explanations')
-    prediction = prediction or (record.prediction if record else None)
-    identity = [('Batch', expected[0])]
+    identity = [('Batch', expected)]
     if prediction is not None:
         table, model = prediction.prediction_table, prediction.parents.model
         rows = table.scored_rows if table.scored_rows is not None else table.rows

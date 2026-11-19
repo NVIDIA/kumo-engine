@@ -30,6 +30,18 @@ from kumo.engine import (
     PredictionExplanations,
     Trainer,
 )
+from kumo.engine._explainability._prediction import (
+    PredictionExplainabilityView,
+)
+from kumo.engine._manifest import (
+    ModelManifest,
+    PredictionManifest,
+    PredictionParents,
+    PredictionTableRecord,
+    RunScoring,
+    SnapshotManifest,
+    SnapshotParents,
+)
 from kumo.engine.explain import _prediction as lifecycle
 from kumo.engine.explain._prediction_manifest import (
     PredictionExplanationManifest,
@@ -178,6 +190,7 @@ def test_prediction_run_and_export_absence(tmp_path):
     PredictionExplanationResult(ProducerOutcome('failed', 'cohort failed'),
                                 ProducerOutcome('failed', 'collector failed')),
     replace(_complete(), samples=ProducerOutcome('failed', 'collector failed')),
+    replace(_complete(), cohorts=ProducerOutcome('failed', 'cohort failed')),
 ])
 def test_retained_producer_status_matches_live(tmp_path, outcomes):
     _cohorts(f'{tmp_path}/xai')
@@ -187,6 +200,11 @@ def test_retained_producer_status_matches_live(tmp_path, outcomes):
                                            result=outcomes)
     reopened = PredictionExplanations.load(tmp_path)
     assert reopened.availability == live.availability
+    for view in (live.visualize(), reopened.visualize()):
+        ids = _ids(view)
+        assert ids[0] == 'status'
+        assert ('groups' in ids) == (outcomes.cohorts.status == 'complete')
+        assert ('subgraphs' in ids) == (outcomes.samples.status == 'complete')
     if outcomes.cohorts.status == 'complete':
         assert reopened.column_analysis().cohorts
     else:
@@ -419,20 +437,26 @@ def _ids(view):
     return [card['id'] for card in view.data['tabs'][0]['cards']]
 
 
+def _live(run_id='recorded-run'):
+    return PredictionManifest(
+        id=run_id, location=f's3://root/predictions/{run_id}',
+        parents=PredictionParents(
+            model=ModelManifest(id='m', location='s3://root/models/m'),
+            snapshot=SnapshotManifest(id='g@d', parents=SnapshotParents(
+                source_tables={}))),
+        prediction_table=PredictionTableRecord(
+            query_sha256='q', source='pql', anchors=[], rows=2),
+        scoring=RunScoring(
+            binary_classification_threshold=None, threshold_source='none',
+            num_classes_to_return=None, count_source='none', num_workers=None),
+        outputs=[], status='succeeded', timings=None, stats=None)
+
+
 @pytest.mark.parametrize('task', [
     TaskType.BINARY_CLASSIFICATION, TaskType.REGRESSION,
     TaskType.MULTICLASS_CLASSIFICATION, TaskType.MULTILABEL_CLASSIFICATION
 ])
-@pytest.mark.parametrize('null_field', [
-    None, ('prediction_table', ), ('parents', ), ('parents', 'model'),
-    ('parents', 'snapshot')
-])
-def test_prediction_widget_shows_cohorts_and_subgraphs(tmp_path, task,
-                                                       null_field):
-    from kumo_core.train.artifact_manifest import PredictionArtifactType
-
-    from kumo.engine.trainer.trainer import PredictionResult
-
+def test_prediction_widget_shows_cohorts_and_subgraphs(tmp_path, task):
     cohort = _cohorts(f'{tmp_path}/xai')
     cohort.task_type = task
     labeled = task in (TaskType.MULTICLASS_CLASSIFICATION,
@@ -442,25 +466,16 @@ def test_prediction_widget_shows_cohorts_and_subgraphs(tmp_path, task,
     save_json(cohort,
               f'{tmp_path}/xai/column_analysis/pred/column_analysis.json')
     _samples(f'{tmp_path}/xai', task)
-    record = _record(tmp_path, result=_complete())
+    _record(tmp_path, result=_complete())
     xai = PredictionExplanations.load(tmp_path)
-    selection = SimpleNamespace(job_id=record.run_id,
-                                pointer_path=str(tmp_path / 'current.json'))
-    result = PredictionResult(selection, PredictionArtifactType.PREDICTIONS,
-                              explanations=xai)
-    # Live metadata with a null typed field falls back to the saved record.
-    metadata = record.prediction.to_dict()
-    if null_field:
-        parent = metadata if len(null_field) == 1 else metadata[null_field[0]]
-        parent[null_field[-1]] = None
-    result._manifest_path.write_text(json.dumps(metadata))
-    view = result.visualize()
+    view = PredictionExplainabilityView(xai, _live(), 'recorded-run')
     data = view.data
     assert data['kind'] == 'prediction' and len(data['tabs']) == 1
     assert data['header']['summary'] == '2 prediction rows'
-    assert dict(
-        data['header']['identity'])['Prediction type'] == (task.value.replace(
-            '_', ' ').capitalize())
+    identity = dict(data['header']['identity'])
+    assert identity['Prediction type'] == task.value.replace(
+        '_', ' ').capitalize()
+    assert identity['Batch'] == 'recorded-run' and 'Architecture' not in identity
     assert _ids(view) == ['groups', 'subgraphs']
     groups, graphs = data['tabs'][0]['cards']
     col = groups['columns'][groups['default']]
@@ -470,21 +485,15 @@ def test_prediction_widget_shows_cohorts_and_subgraphs(tmp_path, task,
     assert graphs['samples'][0]['nodes'][0]['value'] == 'current-user'
     json.dumps(data, allow_nan=False)
     svg = view._repr_svg_()
-    assert '<title>Batch explanations</title>' in svg and 'Batch: retained-run' in svg
+    assert '<title>Batch explanations</title>' in svg
+    assert 'Batch: recorded-run' in svg and 'Architecture' not in svg
     assert 'young' in svg and 'average actual' not in svg and 'current-user' not in svg
     assert 'To activate the widget, rerun this cell.' in view._snapshot.plain()
     assert 'kumo-explainability' in view.html()
-    assert xai.visualize().data == data
-    if null_field == ('prediction_table', ):
-        # A retained record of another model under this batch ID.
-        other = replace(record.prediction, parents=replace(
-            record.prediction.parents, model=stub('model', 'other-model')))
-        write_record(str(tmp_path), record.model_copy(update={
-            'model_id': 'other-model', 'prediction': other}))
-        view = result.visualize()
-        assert _ids(view) == ['status']
-        assert view.data['tabs'][0]['cards'][0]['messages'][0] == (
-            'Retained explanations do not match this prediction batch.')
+    assert xai.visualize().data['tabs'] == data['tabs']
+    # A live manifest of another batch is not shown under this run.
+    other = PredictionExplainabilityView(xai, _live('other'), 'recorded-run')
+    assert 'Model ID' not in dict(other.data['header']['identity'])
 
 
 @pytest.mark.parametrize(
@@ -507,13 +516,6 @@ def test_prediction_widget_respects_producer_status(tmp_path, state, attached):
                                  orig_mappings={'first': ['x', 'y']}),
                   str(collector / 'strategy_mappings.json'))
         (collector / 'subgraph_json/3.json').write_text('not json')
-        result = replace(
-            result, samples=replace(
-                result.samples, artifacts=(
-                    *result.samples.artifacts,
-                    'subgraph_collector/pred/subgraph_json/3.json')),
-            provenance=replace(result.provenance, selected_stage_ids=(0, 1),
-                               collector_ids=('3', '7')))
     _record(tmp_path, enabled=state != 'disabled',
             result=None if state == 'disabled' else result)
     path = tmp_path / 'xai/column_analysis/pred/column_analysis.json'
