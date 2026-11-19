@@ -75,14 +75,6 @@ def bin_width(run: Run) -> Optional[float]:
     return None
 
 
-def _edges(width: float, kept: int, folded: bool, start: int = 0) -> list[str]:
-    edges = fmt.numbers([(start + i) * width for i in range(kept + 1)])
-    labels = [f'{edges[i]} to {edges[i + 1]}' for i in range(kept)]
-    if folded:
-        labels.append(f'≥ {edges[kept]}')
-    return labels
-
-
 def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
     from kumo_core.io.json import load_json
     from kumo_core.train.output import EvalOutput, TargetPredictionHeatMap
@@ -95,11 +87,12 @@ def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
     except (OSError, ValueError):
         heatmap = None
     if heatmap is not None:
-        # Bounds that cannot be sized on a finite grid fall back to the
-        # holdout instead of failing the widget.
+        # Bounds that cannot be sized on a finite grid, or cells without one
+        # count each, fall back to the holdout instead of failing the widget.
         low = min(heatmap.label_bin_start, heatmap.prediction_bin_start)
         sizes = [heatmap.label_bin_end - low, heatmap.prediction_bin_end - low]
         if not (heatmap.cell_width > 0 and min(sizes) >= 0
+                and len(heatmap.cells) == len(heatmap.counts)
                 and sum(heatmap.counts) > 0 and np.isfinite([
                     *sizes, heatmap.cell_width, *np.ravel(heatmap.cells)
                 ]).all()):
@@ -198,12 +191,8 @@ def _distributions(run: Run, actual: np.ndarray, pred: np.ndarray,
         dense = np.zeros((2, bin_count), dtype=int)
         dense[:, indices] = [a_counts, p_counts]
         a_counts, p_counts = dense
-        labels = _edges(width, kept, folded, start)
     else:
-        sparse = {'indices': indices.tolist(), 'bin_count': bin_count}
-        labels = [_edges(width, 1, False, start + int(i))[0] for i in indices]
-        if folded:
-            labels[-1] = f'≥ {fmt.number((start + kept) * width)}'
+        sparse = {'indices': indices.tolist()}
     series = []
     for name, values, counts, word in (('actual', actual, a_counts, 'actual'),
                                        ('predicted', pred, p_counts,
@@ -213,8 +202,8 @@ def _distributions(run: Run, actual: np.ndarray, pred: np.ndarray,
             dict(name=name, counts=counts.tolist(), stats=stats,
                  max_callout=f'highest {word} {stats["items"][-1]["text"]}'))
     return dict(id='distributions', label='Distributions', x=run.target()
-                or 'value', y=run.entities, bins=labels, **sparse,
-                start=start * width, width=width, series=series)
+                or 'value', y=run.entities, bin_count=bin_count, folded=folded,
+                **sparse, start=start * width, width=width, series=series)
 
 
 def predicted_card(run: Run) -> Optional[dict[str, Any]]:

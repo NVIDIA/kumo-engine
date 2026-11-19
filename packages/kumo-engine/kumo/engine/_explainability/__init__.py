@@ -4,13 +4,16 @@
 """Post-training explainability widget for one trained model.
 
 The data side reads the Kumo files a training run leaves on disk and computes
-every number; the front end in ``static/`` only draws them. Open it with
-``TrainingResult.visualize()``.
+the chart values; the front end in ``static/`` draws them and derives the
+cutoff statistics from the transported counts. Open it with
+``TrainingResult.visualize()``, or ``open_run`` for a retained run.
 """
 
 import json
+import posixpath
 from functools import cache, cached_property
 from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kumo.engine import _widget
@@ -27,6 +30,8 @@ from kumo.engine._explainability._run import (
     LINK_PREDICTION,
     Run,
     load,
+    mapping,
+    read_json,
 )
 from kumo.engine._explainability._snapshot import Snapshot
 
@@ -46,7 +51,7 @@ TABS = (('evaluation',
 
 
 def build(run: Run) -> dict[str, Any]:
-    """Every number and text the widget draws for one run."""
+    """The cards and header of one run, as the front end reads them."""
     tabs = []
     for tab_id, spec in TABS:
         cards = [
@@ -104,7 +109,7 @@ class ExplainabilityView:
 
     @cached_property
     def data(self) -> dict[str, Any]:
-        """Every number and text the widget draws."""
+        """The payload the front end draws."""
         return build(load(self._result))
 
     @property
@@ -159,3 +164,34 @@ class ExplainabilityView:
 
     def __repr__(self) -> str:
         return f'<ExplainabilityView {self._result.bundle_dir}>'
+
+
+def open_run(run_root: str) -> ExplainabilityView:
+    """The widget of a retained run whose bundle is ``<run>/published-model``.
+
+    A bundle on object storage is copied to scratch first, as
+    ``Trainer.load_from_connector`` does.
+    """
+    from kumo_core.io import filesystem
+
+    from kumo.engine.explain import TrainingExplanations
+    from kumo.engine.trainer._spec import read_bundle_artifact_paths
+    from kumo.engine.trainer.trainer import (
+        TrainingResult,
+        _fetch_dir,
+        _listed_holdout,
+    )
+
+    explanations = TrainingExplanations.load(run_root)
+    bundle = posixpath.join(str(explanations.run_root), 'published-model')
+    if not filesystem.is_local(bundle):
+        local = _fetch_dir('fetched-run-')
+        filesystem.copy(bundle, str(local))
+        bundle = str(local)
+    paths, bundle_id = read_bundle_artifact_paths(Path(bundle))
+    holdout, truncated = _listed_holdout(Path(bundle))
+    return ExplainabilityView(
+        TrainingResult(
+            mapping(read_json(posixpath.join(bundle, 'metrics.json'))), paths,
+            Path(bundle), holdout_path=holdout, holdout_truncated=truncated,
+            bundle_id=bundle_id, explanations=explanations))

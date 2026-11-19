@@ -23,6 +23,7 @@ from kumoapi.typing import Stype
 from test_explanation_artifacts import _gradient, _graph
 from test_explanation_artifacts import _run as _retained_run
 
+from kumo.engine import _explainability
 from kumo.engine._explainability import _classification, _columns, _forecasting
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability import _metrics, _regression, _run, _subgraphs
@@ -262,8 +263,13 @@ def test_bundle_alone_keeps_published_holdout(tmp_path, truncated, full_refit):
             if full_refit else 'Published model', span=1)
     ]
     assert _columns.importance(_run.load(result)) is None
-    # Holdout scores come from the whole test split, not the retained copy.
+    # Holdout scores come from the whole test split, not the retained copy;
+    # the baselines come from the retained copy.
     assert card['coverage'] is None
+    assert card['views'][1].get('coverage') is None
+    assert (card['views'][0]['coverage'] == 'Baselines: based on a truncated '
+            'retained holdout; full coverage is unavailable.'
+            if truncated else card['views'][0]['coverage'] is None)
     svg = result.visualize()._repr_svg_()
     assert ('truncated retained holdout' in svg) == truncated
     assert ('before full refit' in svg) == bool(full_refit)
@@ -500,24 +506,23 @@ def test_regression_distributions_keep_offset_and_sparse_bins(tmp_path, case):
     view = _regression._distributions(_run.load(_result(tmp_path)), actual,
                                       pred, 1.0 if case == 'even' else 0.02)
     assert [sum(s['counts']) for s in view['series']] == [len(actual)] * 2
+    folded = case == 'folded'
+    assert 'bins' not in view and view['folded'] == folded
     if case == 'even':
-        assert view['bins'][0] == '0.0 to 1.0' and len(view['bins']) == 40
+        assert view['start'] == 0.0 and view['bin_count'] == 40
     elif case == 'near':
-        assert view['start'] == 10000.0 and len(view['bins']) == 51
+        assert view['start'] == 10000.0 and view['bin_count'] == 51
         assert 'indices' not in view
     else:
-        folded = case == 'folded'
         assert view['bin_count'] == 500001 + folded
         assert view['indices'] == [0, 50, 500000] + ([500001] if folded else [])
-        assert len(view['bins']) == 3 + folded
         if folded:
-            assert view['bins'][-1].startswith('≥ ')
             assert view['series'][1]['counts'][-1] == 1
 
 
 @pytest.mark.parametrize('saved', [
-    'valid', 'malformed', 'absent', 'unbounded', 'inverted', 'merged', 'edge',
-    'separated', 'constant'
+    'valid', 'malformed', 'absent', 'unbounded', 'inverted', 'unpaired',
+    'merged', 'edge', 'separated', 'constant'
 ])
 def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
     result = _result(tmp_path, test_rows=20)
@@ -530,6 +535,7 @@ def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
         'constant': (0.02, (0, 0), (0, 1e6), [[0, 0], [0, 1e6]], [12, 7]),
         'unbounded': (1.0, (-1e308, 1e308), (0, 0), [[0, 0]], [5]),
         'inverted': (1.0, (5, 0), (5, 0), [[5, 5]], [5]),
+        'unpaired': (1.0, (0, 1), (0, 1), [[0, 0]], [5, 5]),
     }.get(saved, (1.0, (0, 0), (0, 0), [], []))
     if saved != 'absent':
         _write_json(
@@ -542,7 +548,7 @@ def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
     heatmap = _regression._heatmap(_run.load(result), 1.0)
     assert heatmap is not None
     json.dumps(heatmap, allow_nan=False)
-    if saved in ('absent', 'malformed', 'unbounded', 'inverted'):
+    if saved in ('absent', 'malformed', 'unbounded', 'inverted', 'unpaired'):
         assert sum(map(sum, heatmap['counts'])) == 20
         assert heatmap['coverage'] == 'Based on 20 of 20 retained holdout rows.'
     elif saved == 'valid':
@@ -661,6 +667,31 @@ def test_training_result_visualize_opens_its_run(tmp_path, source):
         assert 'truncated' in cards['predicted']['coverage']
     if source == 'remote':
         assert cards['metrics']['views'][-1]['id'] == 'history'
+
+
+@pytest.mark.parametrize('remote', [False, True])
+def test_open_run_reads_a_retained_run_with_its_bundle(tmp_path, remote):
+    result = _result(tmp_path)
+    bundle = result.bundle_dir
+    history = {'0': dict(metrics={'1': dict(train_metrics=dict(train_mae=1))})}
+    _write_json(bundle / 'metric-history.json', dict(trial_progress=history))
+    _write_json(bundle / 'metrics.json', result.metrics)
+    for role, path in result.artifact_paths.items():
+        add_bundle_file(bundle, role, str(Path(path).relative_to(bundle)))
+    for role, name in (('metric_history', 'metric-history.json'),
+                       ('metrics', 'metrics.json')):
+        add_bundle_file(bundle, role, name)
+    run = result.explanations.run_root
+    if remote:
+        # The whole retained run, bundle included, on object storage.
+        run = f'memory://{tmp_path}/run'
+        filesystem.copy(result.explanations.run_root, run)
+        shutil.rmtree(result.explanations.run_root)
+    data = _explainability.open_run(run).data
+    cards = {c['id']: c for tab in data['tabs'] for c in tab['cards']}
+    assert data['header']['holdout'].startswith('Holdout: 30 users')
+    assert {'predicted', 'importance'} <= set(cards)
+    assert cards['metrics']['views'][-1]['id'] == 'history'
 
 
 @pytest.mark.parametrize('failure', [None, 'missing', 'dangling', 'malformed'])

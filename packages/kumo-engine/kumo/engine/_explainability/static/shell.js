@@ -136,7 +136,7 @@ KX.cards.metrics = (parent, card, ctx) => {
     } else {
       if (view.tiles) tilesView(body, view, ctx);
       else tableView(body, view);
-      if (card.coverage) H('p', 'kx-coverage', body, card.coverage);
+      for (const note of [view.coverage, card.coverage]) if (note) H('p', 'kx-coverage', body, note);
     }
   });
 };

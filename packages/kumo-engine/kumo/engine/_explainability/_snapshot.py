@@ -49,8 +49,9 @@ class Snapshot:
                 self._heatmap(view)
             elif card['id'] in ('scores', 'predicted', 'forecast'):
                 self._comparison(view)
-            if card.get('coverage'):
-                self._line(card['coverage'])
+            for note in (view.get('coverage'), card.get('coverage')):
+                if note:
+                    self._line(note)
 
     def _label(self, text: str, x: int, y: int, size: int = 14,
                anchor: str = 'start', bold: bool = False) -> None:
@@ -155,8 +156,6 @@ class Snapshot:
         self._line(f'Densest cell: {view["densest_callout"]}, '
                    f'{view["x"]} {view["columns"][peak_col]}, '
                    f'{view["y"]} {view["rows"][peak_row]}')
-        if view.get('coverage'):
-            self._line(view['coverage'])
 
     def _comparison(self, view: dict[str, Any]) -> None:
         rows = view.get('tenths', view.get('steps', []))

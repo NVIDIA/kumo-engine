@@ -109,9 +109,8 @@ function distributionsView(body, view, ctx) {
   const colors = [ROLE.actual, ROLE.model];
   legend(body, view.series.map((s, k) => ({label: s.name, color: colors[k]})));
   chartHost(body, (host, width) => {
-    const n = view.bin_count ?? view.bins.length, start = view.start ?? 0;
+    const n = view.bin_count, start = view.start;
     const index = i => view.indices?.[i] ?? i;
-    const last = view.bins.at(-1);
     const step = Math.max(1, Math.ceil(n / Math.max(1, Math.floor((width - 70) / 60))));
     const edge = index => tickText(start + index * view.width, Math.min(0.1, view.width));
     const maxCount = view.series.reduce((max, s) => s.counts.reduce((m, count) => Math.max(m, count), max), 0);
@@ -122,8 +121,7 @@ function distributionsView(body, view, ctx) {
     const c = curves(host, width, {height: 290, extraRight: 44, xDomain: [0, n], yDomain: [0, log(10 ** top) * 1.04],
       yTicks, lines: [], yTitle: view.y + ' (log scale)', xTitle: view.x, label: 'Distributions',
       xTicks: Array.from({length: Math.ceil(n / step)}, (_, i) => i * step),
-      xFmt: v => (v < n - (/^(>=|\u2265)/.test(last) ? 2 : 0)
-        ? edge(v) : ''),
+      xFmt: v => (v < n - (view.folded ? 2 : 0) ? edge(v) : ''),
       yFmt: v => (v ? Math.round(10 ** v - 1).toLocaleString('en-US') : '')});
     const {x, y, g, space, notes} = c;
     const yc = v => y(log(v));
@@ -138,7 +136,7 @@ function distributionsView(body, view, ctx) {
       space.add(bx, yc(count), barW, yc(0) - yc(count));
       marks.push({x: bx + barW / 2, y: yc(count), text: count.toLocaleString('en-US')});
     }));
-    if (last.startsWith('>=') || last.startsWith('\u2265')) {
+    if (view.folded) {
       T(g, x(n - 1), c.y1 + 17, '\u2265 ' + edge(n - 1), 'kx-t-axis', 'start', {dx: -8});
     }
     view.series.forEach((s, k) => {

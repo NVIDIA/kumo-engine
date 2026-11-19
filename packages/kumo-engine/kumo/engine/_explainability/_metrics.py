@@ -231,16 +231,23 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     holdout = _holdout(run)
     training = _prefixed(run, 'train_')
     base = baselines(run)
+    shown = [metric for metric in tile_metrics(run) if metric in holdout]
     tiles = [
         _tile(run, metric, holdout[metric], training.get(metric),
-              base.get(metric, [])) for metric in tile_metrics(run)
-        if metric in holdout
+              base.get(metric, [])) for metric in shown
     ]
+    # Chance and random baselines need no rows; the rest come from the
+    # retained holdout, which may hold fewer rows than the scored split.
+    line = run.holdout_coverage() if any(
+        name not in ('chance', 'random') for metric in shown
+        for name, _ in base.get(metric, [])) else None
+    if line:
+        line = 'Baselines: ' + line[0].lower() + line[1:]
     views = [
         dict(
             id='baselines', tiles=tiles,
             label=('Against random' if run.model_type == LINK_PREDICTION else
-                   'Against baselines')),
+                   'Against baselines'), coverage=line),
         dict(id='table', label='All metrics', table=_table(run, holdout)),
     ] if tiles else []
     history = _history(run)

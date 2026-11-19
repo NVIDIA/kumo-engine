@@ -156,7 +156,7 @@ async function alter(filename, change) {
         await plots(popup, '.kx-heatmap svg'); await popup.close();
         await alter(saved, payload => {
           const view = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'predicted').views.find(v => v.id === 'distributions');
-          Object.assign(view, {start: 10000, width: 0.02, bins: ['10000', '20001'], indices: [0, 500050], bin_count: 500051});
+          Object.assign(view, {start: 10000, width: 0.02, folded: false, indices: [0, 500050], bin_count: 500051});
           view.series.forEach(series => { series.counts = [12, 24]; series.stats.values.max = 20001; });
         });
         await reopened.goto(pathToFileURL(saved).href);

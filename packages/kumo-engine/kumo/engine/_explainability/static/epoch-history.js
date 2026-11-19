@@ -38,9 +38,10 @@ function epochHistoryView(body, view, ctx, state) {
         }
       }
     }
-    // Keep the chart's tick step representable for very large scores.
+    // Keep the chart's tick step representable for very large or small scores.
     const magnitude = Math.max(Math.abs(low), Math.abs(high));
-    exponent = Number.isFinite(magnitude) && magnitude >= 1e12 ? Math.floor(Math.log10(magnitude)) : 0;
+    exponent = Number.isFinite(magnitude) && (magnitude >= 1e12 || (magnitude > 0 && magnitude < 1e-3))
+      ? Math.floor(Math.log10(magnitude)) : 0;
     unit = 10 ** exponent;
     // Up to 0.02 of padding, less for a metric whose values span less.
     const pad = Math.min(0.02, (high - low) / unit / 10 || Math.abs(high / unit) / 10 || 0.02);
@@ -53,7 +54,7 @@ function epochHistoryView(body, view, ctx, state) {
     const heading = H('h4', null, pane);
     return chartHost(pane, (host, width) => {
       const splitName = split === 'train' ? 'Training' : 'Validation';
-      heading.textContent = splitName + ' ' + metric.toUpperCase() + (exponent ? ' (×10^' + exponent + ')' : '');
+      heading.textContent = splitName + ' ' + metric.toUpperCase() + (exponent ? ' (×10^' + String(exponent).replace('-', '\u2212') + ')' : '');
       const lines = [];
       const epochs = new Set();
       for (const experiment of experiments) {
