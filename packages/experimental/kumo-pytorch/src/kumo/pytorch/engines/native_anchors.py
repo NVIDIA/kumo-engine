@@ -931,11 +931,18 @@ class NativeAnchors:
                         key: runtime["history_merges"][str(i)] for i, key in enumerate(merge_keys)
                     },
                 )
-                yield _surface_padding(
+                batch = _surface_padding(
                     # For graphs, model=True selects typed source buffers; Raw
                     # fields keep the same Arrow representation as inspection.
-                    assembler._collate(values, epoch=epoch, seed=seed, model=True)
+                    assembler._collate(
+                        values,
+                        epoch=epoch,
+                        seed=seed,
+                        model=True,
+                        encoding_model=output_format == "model",
+                    )
                 )
+            yield batch
 
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
@@ -1074,17 +1081,11 @@ class NativeAnchors:
             not self._can_batch_inspectable_graph(assembler)
             or policy.max_tokens is not None
             or policy.bucket_by_length
-            or len(self._selection(selection)) > 1
-            and not all(
-                getattr(prepared.spec.representation, "topology", None) == "sampled"
-                for prepared in assembler._prepared_inputs.values()
-            )
             or assembler._source is not self._source
         ):
             raise ValueError(
                 "columnar output requires one graph-only input, fixed-size batching, "
-                "one selected split for relations topology, and no targets, "
-                "entity filters or availability"
+                "and no targets, entity filters or availability"
             )
         for prepared in assembler._prepared_inputs.values():
             for fields in prepared.spec.representation.node_fields.values():
@@ -1234,25 +1235,14 @@ class NativeAnchors:
                 }
         stages = self._selection(selection)
         # Preserve mixed-stage ordering and validation outside graph-only contracts.
-        inspectable_graph = (
-            output_format == "inspectable"
-            and len(stages) == 1
-            and self._can_batch_inspectable_graph(assembler)
+        inspectable_graph = output_format == "inspectable" and self._can_batch_inspectable_graph(
+            assembler
         )
         if (
             (output_format in {"model", "columnar"} or inspectable_graph or sampled)
             and (fixed or output_format == "model" and world_size == 1 and not neighborhoods)
             and assembler._source is self._source
         ):
-            effective_drop = policy.drop_last if drop_last is None else drop_last
-            if sampled and len(stages) > 1 and effective_drop:
-                for stage in stages:
-                    if 0 < -(-stage["count"] // world_size) < size:
-                        raise ValueError(
-                            "drop_last=True leaves no complete native batch "
-                            f"in split {stage['split']!r}; "
-                            "use a smaller batch size or drop_last=False"
-                        )
             first_owned = None
 
             def padding_anchor():

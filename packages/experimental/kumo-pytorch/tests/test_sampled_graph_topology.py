@@ -13,6 +13,7 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.test_native_anchor_handoff import native_task as native_task
 
 
 @pytest.fixture
@@ -168,28 +169,54 @@ def test_sampled_buffers_match_native_without_reconstruction(
                     assert nodes[table] == tuple(values.to_pylist())
             physical = plan._source._sampling_plan(plan.contract.sample.neighborhoods["g"])[1]
             assert dict(counts) == {
-                (kind["src"], kind["rel"], kind["dst"]): tuple(entry["counts"].to_pylist())
+                kind["rel"]: tuple(entry["counts"].to_pylist())
                 for entry in original["num_sampled_edges_dict"]
                 if (kind := entry["edge_type"])["rel"] in physical
             }
-            for entry in original["edge_index_dict"]:
-                kind = entry["edge_type"]
-                key = kind["src"], kind["rel"], kind["dst"]
-                if key not in edges:
-                    continue
+            selected = {
+                entry["edge_type"]["rel"]: entry
+                for entry in original["edge_index_dict"]
+                if entry["edge_type"]["rel"] in physical
+            }
+            kinds = {
+                entry["edge_type"]["rel"]: entry["edge_type"]
+                for entry in (*original["edge_index_dict"], *original["num_sampled_edges_dict"])
+                if entry["edge_type"]["rel"] in physical
+            }
+            assert edges.keys() == kinds.keys()
+            for key, kind in kinds.items():
+                assert isinstance(key, str)
                 edge = edges[key]
+                entry = selected.get(key)
+                left = [] if entry is None else entry["src"].to_pylist()
+                right = [] if entry is None else entry["dst"].to_pylist()
                 if output_format == "columnar":
-                    assert edge.index["source"].to_pylist() == entry["src"].to_pylist()
-                    assert edge.index["destination"].to_pylist() == entry["dst"].to_pylist()
+                    assert edge.index["source"].to_pylist() == left
+                    assert edge.index["destination"].to_pylist() == right
+                    metadata = vars(edge)
                 else:
-                    assert edge["index"].tolist() == [
-                        entry["src"].to_pylist(),
-                        entry["dst"].to_pylist(),
-                    ]
-                assert sum(counts[key]) == len(entry["src"])
+                    assert edge["index"].tolist() == [left, right]
+                    metadata = edge
+                assert (metadata["source_type"], key, metadata["destination_type"]) == (
+                    kind["src"],
+                    key,
+                    kind["dst"],
+                )
+                logical = physical[key]
+                assert metadata["relation"] == logical
+                assert metadata["direction"] == (
+                    "forward"
+                    if key == plan._source._relation_mapping[logical]["forward"]
+                    else "reverse"
+                )
+                assert sum(counts[key]) == len(left)
             # Both directions survive as separate native relation keys.
-            assert any(key[0] == "people" and key[2] == "events" for key in edges)
-            assert any(key[0] == "events" and key[2] == "people" for key in edges)
+            assert any(
+                kind["src"] == "people" and kind["dst"] == "events" for kind in kinds.values()
+            )
+            assert any(
+                kind["src"] == "events" and kind["dst"] == "people" for kind in kinds.values()
+            )
             if output_format != "columnar":
                 assert graph["nodes"]["people"]["batch"].dtype == torch.long
 
@@ -321,8 +348,12 @@ def test_sampled_self_relation_keeps_both_native_directions(sampled_plan, monkey
             batch = next(task.batches(split="train", output_format="model"))
             graph = batch.inputs["graph"]
             assert len(graph["edges"]) == 2
-            assert all(key[0] == key[2] == "people" for key in graph["edges"])
-            assert len({key[1] for key in graph["edges"]}) == 2
+            assert all(isinstance(key, str) for key in graph["edges"])
+            assert all(
+                edge["source_type"] == edge["destination_type"] == "people"
+                for edge in graph["edges"].values()
+            )
+            assert {edge["direction"] for edge in graph["edges"].values()} == {"forward", "reverse"}
             for key, edge in graph["edges"].items():
                 assert sum(graph["num_sampled_edges"][key]) == edge["index"].shape[1]
 
@@ -400,12 +431,28 @@ def test_sampled_reuses_relation_field_encodings(sampled_plan, encoding):
 
 @pytest.mark.parametrize("output_format", ["model", "inspectable"])
 @pytest.mark.parametrize("cutoff", [-1, 0, 1])
-def test_sampled_enforces_entity_availability(sampled_plan, tmp_path, output_format, cutoff):
+@pytest.mark.parametrize(
+    "topology,requests", [("sampled", False), ("relations", False), ("relations", True)]
+)
+def test_sampled_enforces_entity_availability(
+    sampled_plan, tmp_path, output_format, cutoff, topology, requests
+):
     plan, _ = sampled_plan
     contract = replace(
         plan.contract,
         sample=replace(
             plan.contract.sample, entity=api.EntitySpec("people", available_from="created")
+        ),
+        batch=replace(
+            plan.contract.batch,
+            inputs={
+                "graph": replace(
+                    plan.contract.batch.inputs["graph"],
+                    representation=replace(
+                        plan.contract.batch.inputs["graph"].representation, topology=topology
+                    ),
+                )
+            },
         ),
     )
     path = tmp_path / "availability.parquet"
@@ -416,11 +463,14 @@ def test_sampled_enforces_entity_availability(sampled_plan, tmp_path, output_for
     anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
     with api.prepare(contract, plan.dataset, plan.engine) as bound:
         with bound.materialize(anchors) as task:
+            arguments = {}
+            if requests:
+                arguments["requests"] = task._anchors.fetch(api.ALL_ANCHORS, [0])
             if cutoff <= 0:
                 with pytest.raises(ValueError, match="did not exist"):
-                    next(task.batches(output_format=output_format))
+                    next(task.batches(output_format=output_format, **arguments))
             else:
-                assert next(task.batches(output_format=output_format)).inputs["graph"]
+                assert next(task.batches(output_format=output_format, **arguments)).inputs["graph"]
 
 
 def _refit_anchors(tmp_path, counts):
@@ -537,19 +587,84 @@ def test_sampled_refit_drop_last_is_stage_local(sampled_plan, tmp_path, output_f
 
 
 @pytest.mark.parametrize("output_format", ["model", "inspectable", "columnar"])
-def test_sampled_refit_refuses_completely_dropped_stage(
-    sampled_plan, tmp_path, monkeypatch, output_format
+@pytest.mark.parametrize("counts", [(1, 2), (3, 3)])
+@pytest.mark.parametrize("world_size", [1, 2, 4])
+@pytest.mark.parametrize("drop_last", [False, True])
+def test_topologies_share_native_refit_schedule(
+    sampled_plan, tmp_path, monkeypatch, output_format, counts, world_size, drop_last
 ):
     plan, _ = sampled_plan
-    anchors, _ = _refit_anchors(tmp_path, (1, 2))
-    with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
+    anchors, splits = _refit_anchors(tmp_path, counts)
+    schedules = []
+    for topology in ("relations", "sampled"):
+        graph = plan.contract.batch.inputs["graph"]
+        contract = replace(
+            plan.contract,
+            batch=replace(
+                plan.contract.batch,
+                inputs={
+                    "graph": replace(
+                        graph, representation=replace(graph.representation, topology=topology)
+                    )
+                },
+            ),
+        )
+        with api.prepare(contract, plan.dataset, plan.engine) as bound:
+            with bound.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
 
-        def forbidden(*args, **kwargs):
-            pytest.fail("empty-stage admission should happen before native iteration")
+                def forbidden(*args, **kwargs):
+                    pytest.fail("native graph batches reconstructed anchor requests")
 
-        monkeypatch.setattr(task._anchors, "_iter", forbidden)
-        with pytest.raises(ValueError, match="no complete native batch in split"):
-            list(task.batches(output_format=output_format, batch_size=2, drop_last=True))
+                monkeypatch.setattr(task._anchors, "_requests", forbidden)
+                ranks = []
+                for rank in range(world_size):
+                    batches = list(
+                        task.batches(
+                            output_format=output_format,
+                            batch_size=2,
+                            shuffle=True,
+                            seed=7,
+                            epoch=1,
+                            rank=rank,
+                            world_size=world_size,
+                            drop_last=drop_last,
+                        )
+                    )
+                    ranks.append(
+                        [
+                            (
+                                b.metadata["sample_ids"],
+                                b.metadata["splits"],
+                                b.metadata["is_padding"].tolist(),
+                                b.metadata["request_metadata"],
+                            )
+                            for b in batches
+                        ]
+                    )
+                    if drop_last:
+                        assert len(batches) == sum(
+                            ((n + world_size - 1) // world_size) // 2 for n in counts
+                        )
+                    else:
+                        owned, padded = set(), []
+                        for batch in batches:
+                            for sid, pad, meta in zip(
+                                batch.metadata["sample_ids"],
+                                batch.metadata["is_padding"].tolist(),
+                                batch.metadata["request_metadata"],
+                                strict=True,
+                            ):
+                                original = int(sid.split("#padding")[0]) if pad else sid
+                                assert meta["split"] == splits[original]
+                                if pad:
+                                    padded.append(original)
+                                else:
+                                    owned.add(original)
+                        if owned:
+                            assert set(padded) <= owned
+                assert len({len(rank) for rank in ranks}) == 1
+                schedules.append(ranks)
+    assert schedules[0] == schedules[1]
 
 
 def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
@@ -618,3 +733,119 @@ def test_sampled_hops_preserve_discovery_in_a_cycle(tmp_path):
             if left in frontier:
                 distances.setdefault(right, hop + 1)
     assert distances[3] == 1
+
+
+@pytest.mark.parametrize("topology", ["relations", "sampled"])
+def test_native_graph_inspectable_keeps_raw_string_inputs_and_targets(
+    native_task, tmp_path, topology
+):
+    original, _, anchors = native_task
+    inputs = dict(original.contract.batch.inputs)
+    graph = inputs["graph"]
+    inputs["graph"] = replace(
+        graph, representation=replace(graph.representation, topology=topology)
+    )
+    inputs["entity"] = api.Input(
+        api.EntitySource(), api.Fields((api.Encode("raw_id", api.Raw()),)), api.Separate()
+    )
+    contract = replace(
+        original.contract,
+        sample=replace(
+            original.contract.sample,
+            entity_values={"raw_id": api.Field("id")},
+            targets={"label": api.ExternalTarget(api.DType("string"))},
+        ),
+        batch=replace(original.contract.batch, inputs=inputs),
+    )
+    rows = pq.read_table(anchors.source.path)
+    rows = rows.set_column(
+        rows.schema.get_field_index("label"),
+        "label",
+        pa.array([f"label{i}" for i in range(len(rows))]),
+    )
+    path = tmp_path / "string-labels.parquet"
+    pq.write_table(rows, path)
+    anchors = replace(anchors, source=api.Parquet(str(path)))
+    with api.prepare(
+        contract,
+        original.dataset,
+        api.DiskGraphEngine(index=tmp_path / f"raw-{topology}", num_threads=1),
+    ) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            batches = list(task.batches(split="train", output_format="inspectable"))
+            assert [
+                x for b in batches for x in b.inputs["entity"]["raw_id"]["values"].to_pylist()
+            ] == ["u1", "u1", "u2", "u1"]
+            assert [x for b in batches for x in b.targets["label"]["values"].to_pylist()] == [
+                "label0",
+                "label1",
+                "label3",
+                "label5",
+            ]
+            with pytest.raises(ValueError, match="Raw string"):
+                next(task.batches(split="train", output_format="model"))
+
+
+@pytest.mark.parametrize("topology", ["relations", "sampled"])
+@pytest.mark.parametrize("output_format", ["model", "inspectable"])
+def test_native_graph_iterators_restore_runtime_before_yield(sampled_plan, topology, output_format):
+    original, anchors = sampled_plan
+    graph = original.contract.batch.inputs["graph"]
+    contract = replace(
+        original.contract,
+        batch=replace(
+            original.contract.batch,
+            inputs={
+                "graph": replace(
+                    graph, representation=replace(graph.representation, topology=topology)
+                )
+            },
+        ),
+    )
+    with api.prepare(contract, original.dataset, original.engine) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            source = task._assembler._source
+            first = task.batches(split="train", output_format=output_format)
+            second = task.batches(split="train", output_format=output_format)
+            next(first)
+            assert getattr(source, "_runtime_batch", None) is None
+            next(second)
+            assert getattr(source, "_runtime_batch", None) is None
+            list(first)
+            list(second)
+            assert getattr(source, "_runtime_batch", None) is None
+
+
+def test_sampled_count_only_edge_type_has_empty_buffer(sampled_plan, monkeypatch):
+    plan, anchors = sampled_plan
+    with plan.materialize(anchors, fit_split="train") as task:
+        source = task._assembler._source
+        original = source.columnar_graph_batch
+        removed = []
+
+        def count_only(sample, spec, runtime, **kwargs):
+            graph = dict(runtime["graphs"]["main"])
+            _, selected = source._sampling_plan(sample.neighborhoods[spec.source])
+            entry = next(
+                item
+                for item in graph["num_sampled_edges_dict"]
+                if item["edge_type"]["rel"] in selected
+            )
+            physical = entry["edge_type"]["rel"]
+            removed.append(physical)
+            graph["num_sampled_edges_dict"] = [
+                {**item, "counts": pa.array([0] * len(item["counts"]), type=item["counts"].type)}
+                if item["edge_type"]["rel"] == physical
+                else item
+                for item in graph["num_sampled_edges_dict"]
+            ]
+            graph["edge_index_dict"] = [
+                item for item in graph["edge_index_dict"] if item["edge_type"]["rel"] != physical
+            ]
+            return original(sample, spec, {**runtime, "graphs": {"main": graph}}, **kwargs)
+
+        monkeypatch.setattr(source, "columnar_graph_batch", count_only)
+        graph = next(task.batches(output_format="columnar")).inputs["graph"]
+        assert removed[0] in graph.edges
+        assert graph.edges[removed[0]].index.num_rows == 0
+        assert sum(graph.num_sampled_edges[removed[0]]) == 0

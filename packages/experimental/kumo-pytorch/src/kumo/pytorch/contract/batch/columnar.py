@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 import pyarrow as pa
 
@@ -48,11 +49,16 @@ class ColumnarEdges:
     entity IDs repeat. Chunk order is not traversal provenance. Sampled
     topology instead preserves native direction/order and exposes hop counts
     on ColumnarGraph; deduplication is refused for that topology.
+    Sampled edges also carry the declared logical ``relation`` and traversal
+    ``direction``. Those optional fields remain unset for relations output,
+    whose logical identity is already the mapping key and orientation is normalized.
     """
 
     source_type: str
     destination_type: str
     index: pa.Table
+    relation: str | None = None
+    direction: Literal["forward", "reverse"] | None = None
 
 
 @dataclass(frozen=True)
@@ -60,9 +66,12 @@ class ColumnarGraph:
     """CPU Arrow graph buffers emitted by ``Task.batches(output_format="columnar")``.
 
     ``nodes`` uses table names. With relations topology, ``edges`` uses declared
-    relation names. Sampled topology instead uses native directed
-    ``(source_type, relation, destination_type)`` keys, retaining edge order and
-    per-hop counts without reorienting or deduplicating edges. Counts align with
+    relation names. Sampled topology uses native physical relation-name strings,
+    retaining edge order and per-hop counts without reorienting or deduplicating
+    edges. Its edge values expose the logical ``relation`` and traversal
+    ``direction``, alongside endpoint types. A model adapter can construct
+    ``(edge.source_type, key, edge.destination_type)`` without changing arrays.
+    Counts use the same string keys as edges and align with
     the native node and edge ordering, not a newly computed shortest-path order.
     The first ``Batch.batch_size`` rows of ``nodes[root_type]`` are the roots,
     in batch order, including repeated entities at distinct prediction times.
@@ -77,6 +86,6 @@ class ColumnarGraph:
 
     root_type: str
     nodes: Mapping[str, ColumnarNodes]
-    edges: Mapping[str | tuple[str, str, str], ColumnarEdges]
+    edges: Mapping[str, ColumnarEdges]
     num_sampled_nodes: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
-    num_sampled_edges: Mapping[tuple[str, str, str], tuple[int, ...]] = field(default_factory=dict)
+    num_sampled_edges: Mapping[str, tuple[int, ...]] = field(default_factory=dict)

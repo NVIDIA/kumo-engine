@@ -463,11 +463,10 @@ allocate. All buffers remain valid after iteration and task closure, and
 `Batch.to(...)` keeps them as CPU Arrow values.
 
 The default relations format supports one graph-only input, explicit Raw encodings,
-fixed sample counts, and a selection contained in one split. It refuses
+fixed sample counts, and selections across split stages. It refuses
 request-backed tasks, non-DiskGraph engines, other sample values, targets,
-entity filters, and availability checks before iteration. Select a single
-split explicitly when anchors span several splits. Shuffle, rank sharding,
-padding, drop-last, and iterator resume retain their existing behavior.
+entity filters, and availability checks before iteration. Shuffle, rank sharding,
+padding, drop-last, and iterator resume use the native stage-local behavior below.
 Existing sampling limits, including timeless destinations, still apply.
 
 ## Sampled graphs and logical relationships
@@ -482,21 +481,28 @@ Use `Graph(node_fields=..., topology="sampled")` for a GNN consuming sampled
 message-passing topology. It requires a DiskGraph AnchorTable and fixed-size
 batching. Refit may select several splits; each stage shuffles and batches
 independently, without joining partial tails across splits. Drop-last applies
-per stage. If it would remove a selected nonempty stage completely, the pass
-raises before iteration; use a smaller batch or `drop_last=False`.
+per stage in either topology, including dropping a whole split smaller than
+one batch. Use `drop_last=False` to retain partial tails.
 Ranks pad from their own selected anchors when possible; a rank owning no
 anchors in any selected stage may borrow only explicitly marked padding.
-Entity availability uses the same strict-before-cutoff check as other outputs.
+Model and inspectable output validate explicit `EntitySpec.available_from`
+using the same strict-before-cutoff check as the request path. Columnar output
+continues to refuse availability declarations before iteration.
 Each input keeps its neighborhood's native node order, directed edge
 occurrences and edge order. It does not deduplicate, symmetrize, reorder by
 shortest-path distance or rebuild a graph in Python. Multiple neighborhoods
 share the native anchor scheduler but retain their own topology and counts.
 
 Model/inspectable graph dictionaries retain `nodes` and `edges`. Sampled
-`edges` uses native `(source_type, relation, destination_type)` tuple keys,
-rather than logical relation names. The graph also exposes
+`edges` keeps string keys: relations topology uses logical relation names,
+while sampled topology uses unique native physical relation names. Sampled edge
+values also expose `relation` (the declared logical name), `direction`
+(`forward` or `reverse`), `source_type` and `destination_type`. Custom models
+can use logical names and direction without parsing internal keys. A Kumo GNN
+adapter constructs `(edge["source_type"], key, edge["destination_type"])`
+per edge type, passing edge tensors through unchanged. The graph also exposes
 `num_sampled_nodes` (per table, including seed count then successive hops) and
-`num_sampled_edges` (per directed edge type and sampling hop). These counts
+`num_sampled_edges` (using the same physical string keys, per sampling hop). These counts
 refer to the returned native ordering. Nodes retain IDs, example ownership and
 the declared field encodings. Each node occurrence belongs to one anchor;
 shared global nodes are not merged across anchors. Edges are in native traversal orientation; a

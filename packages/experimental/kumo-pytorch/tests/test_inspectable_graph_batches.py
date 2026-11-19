@@ -239,7 +239,7 @@ def test_inspectable_graph_uses_native_buffers_with_exact_parity(
         list(task.batches(output_format="model"))
 
 
-@pytest.mark.parametrize("graph_task", ["mixed", "availability"], indirect=True)
+@pytest.mark.parametrize("graph_task", ["availability"], indirect=True)
 def test_other_inspectable_contracts_keep_existing_path(graph_task, monkeypatch):
     task = graph_task
     with monkeypatch.context() as patch:

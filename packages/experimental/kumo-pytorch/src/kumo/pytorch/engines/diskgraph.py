@@ -1309,6 +1309,8 @@ class DiskGraphSource:
                         ),
                         "source_type": edge.source_type,
                         "destination_type": edge.destination_type,
+                        "relation": edge.relation,
+                        "direction": edge.direction,
                     }
                     for key, edge in graph.edges.items()
                 },
@@ -1381,37 +1383,42 @@ class DiskGraphSource:
             if deduplicate_edges:
                 raise ValueError("sampled graph topology preserves edge occurrences")
 
-            def key(entry):
-                edge = entry["edge_type"]
-                return edge["src"], edge["rel"], edge["dst"]
-
             counts = {
-                key(entry): tuple(entry["counts"].to_pylist())
+                entry["edge_type"]["rel"]: tuple(entry["counts"].to_pylist())
                 for entry in graph["num_sampled_edges_dict"]
                 if entry["edge_type"]["rel"] in physical_relations
             }
-            edges = {
-                key(entry): ColumnarEdges(
-                    entry["edge_type"]["src"],
-                    entry["edge_type"]["dst"],
-                    pa.table({"source": entry["src"], "destination": entry["dst"]}),
+            edge_types = {
+                entry["edge_type"]["rel"]: entry["edge_type"]
+                for entry in (*graph["edge_index_dict"], *graph["num_sampled_edges_dict"])
+                if entry["edge_type"]["rel"] in physical_relations
+            }
+            buffers = {
+                entry["edge_type"]["rel"]: pa.table(
+                    {"source": entry["src"], "destination": entry["dst"]}
                 )
                 for entry in graph["edge_index_dict"]
                 if entry["edge_type"]["rel"] in physical_relations
             }
-            for edge in counts:
-                edges.setdefault(
-                    edge,
-                    ColumnarEdges(
-                        edge[0],
-                        edge[2],
-                        pa.table(
-                            {
-                                "source": pa.array([], type=pa.uint64()),
-                                "destination": pa.array([], type=pa.uint64()),
-                            }
-                        ),
-                    ),
+            edges = {}
+            for physical, kind in edge_types.items():
+                logical = physical_relations[physical]
+                index = buffers.get(physical)
+                if index is None:
+                    index = pa.table(
+                        {
+                            "source": pa.array([], type=pa.uint64()),
+                            "destination": pa.array([], type=pa.uint64()),
+                        }
+                    )
+                edges[physical] = ColumnarEdges(
+                    kind["src"],
+                    kind["dst"],
+                    index,
+                    logical,
+                    "forward"
+                    if physical == self._relation_mapping[logical]["forward"]
+                    else "reverse",
                 )
             return ColumnarGraph(
                 sample.entity.table,
