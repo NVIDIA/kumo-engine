@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Connector → snapshot → retained FM Arrow batch → local SDM prediction.
 
 Run from this directory after installing the matching engine/native wheels and

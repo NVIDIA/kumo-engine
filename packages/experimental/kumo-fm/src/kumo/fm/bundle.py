@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Validated Parquet bundle metadata, shared by every backend.
 
 Full validation uses streaming file hashes and spillable DuckDB constraints;
