@@ -214,10 +214,21 @@ refusal](#choosing-an-engine-and-early-refusal).
 ### Anchor tables
 
 An anchor is one example to build: an entity ID, a prediction time, and
-optionally a split, labels, candidates and tracing metadata. A few
-`SampleRequest`s are enough for a quick check. For real work, you write the
-anchors as a table and bind it with an `AnchorTable`. On the DiskGraph engine,
-the anchor table is a Parquet file:
+optionally a split, labels, candidates and tracing metadata. For production
+training, evaluation, offline scoring, and benchmarks, materialize a Parquet
+`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`
+without an explicit request argument. This selects native model iteration for
+eligible contracts. Benchmarks of that iterator should verify the execution
+route because some contracts still use Python assembly.
+
+Use Python `SampleRequest` objects for tests, debugging, or small sets of
+requests supplied at runtime. `task.batches(requests=...)` uses explicit
+request batching, even on a task materialized from an `AnchorTable`. A task
+materialized from a Python request sequence also stays request-backed when
+you call `task.batches(split=...)`. DiskGraph can still sample the data for
+these requests, but these calls bypass native AnchorTable batch iteration.
+
+This example shows how to bind a Parquet anchor table and select its splits:
 
 <!-- test: diskgraph -->
 ```python
@@ -277,11 +288,10 @@ sample IDs; repeated entity/time pairs remain separate examples. Native order
 may differ from the in-memory engine, and padding remains explicitly marked.
 Closing the task removes its temporary seed extension, not the base graph.
 
-Sequence tasks consume the same native anchor batches and resolved root IDs,
-then call the existing temporal-query loader. They keep their temporal plan,
-event selection, typed encoders and tensor layouts; there is no second native
-anchor reader or a GNN-specific anchor contract. Native history parallelism,
-history capping/decoding and cross-component event merging are separate work.
+For eligible sequence contracts, the native model iterator reads histories and
+merges event components before returning the batch to the existing encoders
+and tensor layouts. Eligible length-aware contracts also plan batches and
+reuse per-anchor lengths across epochs.
 
 A selection spanning multiple split stages uses native stage batches. Each stage
 is shuffled independently; batches never mix split stages. The output covers the

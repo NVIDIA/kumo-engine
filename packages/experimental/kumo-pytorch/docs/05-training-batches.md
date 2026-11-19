@@ -3,6 +3,11 @@
 This page turns a contract into training batches: labels, fitting on the
 training split, layouts, previews, deterministic order and rank sharding.
 
+For training, evaluation, and benchmarks on DiskGraph, start with
+[the Parquet AnchorTable example](#training-on-the-diskgraph-engine). The
+in-memory examples below use a few Python requests to make the results easy
+to inspect.
+
 ## A contract with a label
 
 We'll use five users and their purchases. The label, which kumo-pytorch
@@ -179,7 +184,8 @@ print(len(result.samples), "samples;", tuple(result.batch.inputs))
 
 ## Deterministic order, epochs and ranks
 
-`task.batches` takes `split` (or explicit `requests`), `batch_size`, `shuffle`,
+`task.batches` selects the task's materialized anchors with `split` and takes
+`batch_size`, `shuffle`,
 `seed`, `epoch`, `rank` and `world_size`. The same arguments give the same
 batches for the same engine, split selection and index, so a run can be resumed or
 reproduced. Native DiskGraph ordering can differ from the in-memory engine;
