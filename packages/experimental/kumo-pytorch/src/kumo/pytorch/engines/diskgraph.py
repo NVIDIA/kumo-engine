@@ -2557,7 +2557,12 @@ def _first_occurrences(pairs: np.ndarray) -> np.ndarray:
 
     if pairs.shape[1] < 2:
         return pairs
-    _, first = np.unique(pairs, axis=1, return_index=True)
+    lowest, source_max, width = int(pairs.min()), int(pairs[0].max()), int(pairs[1].max()) + 1
+    if lowest >= 0 and (source_max + 1) * width < 2**63:
+        source, destination = pairs.astype(np.int64, copy=False)
+        _, first = np.unique(source * width + destination, return_index=True)
+    else:
+        _, first = np.unique(pairs, axis=1, return_index=True)
     if first.size == pairs.shape[1]:
         return pairs
     return np.ascontiguousarray(pairs[:, np.sort(first)])
