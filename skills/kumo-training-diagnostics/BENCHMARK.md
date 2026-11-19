@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 81.6% — baseline ran, but no comparable score was available; uplift unavailable | 87.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 81.8% — baseline ran, but no comparable score was available; uplift unavailable | 87.5% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 80.0% → 100.0% (+20.0 points) |
-| Correctness | 40.0% → 80.0% (+40.0 points) | 36.0% → 88.0% (+52.0 points) |
-| Discoverability | 85.0% — baseline ran, but no comparable score was available; uplift unavailable | 90.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 40.7% → 48.5% (+7.8 points) | 50.2% → 63.2% (+13.0 points) |
-| Efficiency | 94.4% — baseline ran, but no comparable score was available; uplift unavailable | 96.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Correctness | 44.0% → 80.0% (+36.0 points) | 28.0% → 84.0% (+56.0 points) |
+| Discoverability | 85.0% — baseline ran, but no comparable score was available; uplift unavailable | 92.5% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 38.2% → 48.5% (+10.3 points) | 48.2% → 65.2% (+17.0 points) |
+| Efficiency | 95.3% — baseline ran, but no comparable score was available; uplift unavailable | 95.9% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 98.4% → 97.2% (-1.2 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 98.2% → 96.9% (-1.3 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 90.8% → 92.0% (+1.2 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 92.9% → 91.9% (-1.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,19 +80,19 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 640,415 | 537,025 | +103,390 | +19.25% | skill 5/5; base 5/5 |
-| claude-code | kdiag-01 | 197,077 | 107,167 | +89,910 | +83.90% | skill 1/1; base 1/1 |
-| claude-code | kdiag-02 | 155,096 | 107,338 | +47,758 | +44.49% | skill 1/1; base 1/1 |
-| claude-code | kdiag-03 | 72,991 | 106,956 | -33,965 | -31.76% | skill 1/1; base 1/1 |
-| claude-code | kdiag-04 | 107,809 | 144,238 | -36,429 | -25.26% | skill 1/1; base 1/1 |
-| claude-code | kdiag-05 | 107,442 | 71,326 | +36,116 | +50.64% | skill 1/1; base 1/1 |
-| codex | All cases | 273,653 | 222,237 | +51,416 | +23.14% | skill 5/5; base 5/5 |
-| codex | kdiag-01 | 61,253 | 27,099 | +34,154 | +126.03% | skill 1/1; base 1/1 |
-| codex | kdiag-02 | 79,572 | 48,830 | +30,742 | +62.96% | skill 1/1; base 1/1 |
-| codex | kdiag-03 | 27,911 | 55,282 | -27,371 | -49.51% | skill 1/1; base 1/1 |
-| codex | kdiag-04 | 59,760 | 45,959 | +13,801 | +30.03% | skill 1/1; base 1/1 |
-| codex | kdiag-05 | 45,157 | 45,067 | +90 | +0.20% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 914,068 | 759,262 | +154,806 | +20.39% | skill 10/10; base 10/10 |
+| claude-code | All cases | 669,231 | 719,075 | -49,844 | -6.93% | skill 5/5; base 5/5 |
+| claude-code | kdiag-01 | 115,117 | 142,507 | -27,390 | -19.22% | skill 1/1; base 1/1 |
+| claude-code | kdiag-02 | 155,275 | 143,273 | +12,002 | +8.38% | skill 1/1; base 1/1 |
+| claude-code | kdiag-03 | 145,921 | 144,279 | +1,642 | +1.14% | skill 1/1; base 1/1 |
+| claude-code | kdiag-04 | 145,269 | 107,380 | +37,889 | +35.28% | skill 1/1; base 1/1 |
+| claude-code | kdiag-05 | 107,649 | 181,636 | -73,987 | -40.73% | skill 1/1; base 1/1 |
+| codex | All cases | 292,095 | 183,581 | +108,514 | +59.11% | skill 5/5; base 5/5 |
+| codex | kdiag-01 | 61,235 | 41,122 | +20,113 | +48.91% | skill 1/1; base 1/1 |
+| codex | kdiag-02 | 61,682 | 40,838 | +20,844 | +51.04% | skill 1/1; base 1/1 |
+| codex | kdiag-03 | 61,576 | 42,577 | +18,999 | +44.62% | skill 1/1; base 1/1 |
+| codex | kdiag-04 | 62,122 | 41,207 | +20,915 | +50.76% | skill 1/1; base 1/1 |
+| codex | kdiag-05 | 45,480 | 17,837 | +27,643 | +154.98% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 961,326 | 902,656 | +58,670 | +6.50% | skill 10/10; base 10/10 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 

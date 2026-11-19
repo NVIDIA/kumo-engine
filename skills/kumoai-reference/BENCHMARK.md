@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 94.2% — baseline ran, but no comparable score was available; uplift unavailable | 93.7% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 100.0% → 100.0% (±0.0 points) | 90.0% → 100.0% (+10.0 points) |
-| Correctness | 68.0% → 100.0% (+32.0 points) | 84.0% → 100.0% (+16.0 points) |
-| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 50.2% → 82.9% (+32.7 points) | 60.0% → 89.3% (+29.3 points) |
-| Efficiency | 88.3% — baseline ran, but no comparable score was available; uplift unavailable | 84.3% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 90.1% — baseline ran, but no comparable score was available; uplift unavailable | 86.3% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 80.0% (-20.0 points) | 100.0% → 80.0% (-20.0 points) |
+| Correctness | 68.0% → 100.0% (+32.0 points) | 80.0% → 100.0% (+20.0 points) |
+| Discoverability | 96.3% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 52.2% → 84.0% (+31.8 points) | 60.2% → 71.6% (+11.4 points) |
+| Efficiency | 90.1% — baseline ran, but no comparable score was available; uplift unavailable | 85.2% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 95.4% → 88.4% (-7.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 97.2% → 88.9% (-8.3 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 78.9% → 86.7% (+7.8 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 80.3% → 87.0% (+6.7 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,19 +80,19 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 1,436,485 | 1,128,611 | +307,874 | +27.28% | skill 5/5; base 5/5 |
-| claude-code | kref-01 | 121,632 | 35,554 | +86,078 | +242.10% | skill 1/1; base 1/1 |
-| claude-code | kref-02 | 534,256 | 188,249 | +346,007 | +183.80% | skill 1/1; base 1/1 |
-| claude-code | kref-03 | 265,314 | 314,517 | -49,203 | -15.64% | skill 1/1; base 1/1 |
-| claude-code | kref-04 | 365,817 | 110,088 | +255,729 | +232.30% | skill 1/1; base 1/1 |
-| claude-code | kref-05 | 149,466 | 480,203 | -330,737 | -68.87% | skill 1/1; base 1/1 |
-| codex | All cases | 756,110 | 575,543 | +180,567 | +31.37% | skill 5/5; base 5/5 |
-| codex | kref-01 | 69,061 | 38,017 | +31,044 | +81.66% | skill 1/1; base 1/1 |
-| codex | kref-02 | 219,983 | 134,324 | +85,659 | +63.77% | skill 1/1; base 1/1 |
-| codex | kref-03 | 97,023 | 127,096 | -30,073 | -23.66% | skill 1/1; base 1/1 |
-| codex | kref-04 | 119,192 | 48,860 | +70,332 | +143.95% | skill 1/1; base 1/1 |
-| codex | kref-05 | 250,851 | 227,246 | +23,605 | +10.39% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 2,192,595 | 1,704,154 | +488,441 | +28.66% | skill 10/10; base 10/10 |
+| claude-code | All cases | 1,422,067 | 516,770 | +905,297 | +175.18% | skill 5/5; base 5/5 |
+| claude-code | kref-01 | 121,639 | 35,714 | +85,925 | +240.59% | skill 1/1; base 1/1 |
+| claude-code | kref-02 | 511,856 | 149,172 | +362,684 | +243.13% | skill 1/1; base 1/1 |
+| claude-code | kref-03 | 210,623 | 146,408 | +64,215 | +43.86% | skill 1/1; base 1/1 |
+| claude-code | kref-04 | 312,657 | 38,324 | +274,333 | +715.83% | skill 1/1; base 1/1 |
+| claude-code | kref-05 | 265,292 | 147,152 | +118,140 | +80.28% | skill 1/1; base 1/1 |
+| codex | All cases | 683,131 | 650,550 | +32,581 | +5.01% | skill 5/5; base 5/5 |
+| codex | kref-01 | 50,294 | 44,401 | +5,893 | +13.27% | skill 1/1; base 1/1 |
+| codex | kref-02 | 166,708 | 347,313 | -180,605 | -52.00% | skill 1/1; base 1/1 |
+| codex | kref-03 | 123,388 | 92,347 | +31,041 | +33.61% | skill 1/1; base 1/1 |
+| codex | kref-04 | 119,304 | 47,349 | +71,955 | +151.97% | skill 1/1; base 1/1 |
+| codex | kref-05 | 223,437 | 119,140 | +104,297 | +87.54% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 2,105,198 | 1,167,320 | +937,878 | +80.34% | skill 10/10; base 10/10 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 

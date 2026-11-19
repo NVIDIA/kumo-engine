@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 92.5% — baseline ran, but no comparable score was available; uplift unavailable | 87.7% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 92.5% — baseline ran, but no comparable score was available; uplift unavailable | 89.0% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 43.3% → 100.0% (+56.7 points) | 40.0% → 93.3% (+53.3 points) |
+| Correctness | 46.7% → 100.0% (+53.3 points) | 56.7% → 90.0% (+33.3 points) |
 | Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 25.0% → 64.6% (+39.6 points) | 22.9% → 56.3% (+33.4 points) |
-| Efficiency | 97.9% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 25.0% → 64.6% (+39.6 points) | 41.7% → 66.0% (+24.3 points) |
+| Efficiency | 98.0% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 98.1% → 95.7% (-2.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 98.3% → 95.9% (-2.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 90.6% → 91.6% (+1.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 90.5% → 91.7% (+1.2 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,21 +80,21 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 886,610 | 896,669 | -10,059 | -1.12% | skill 6/6; base 6/6 |
-| claude-code | kexpl-01 | 116,441 | 142,323 | -25,882 | -18.19% | skill 1/1; base 1/1 |
-| claude-code | kexpl-02 | 158,908 | 144,073 | +14,835 | +10.30% | skill 1/1; base 1/1 |
-| claude-code | kexpl-03 | 116,786 | 143,330 | -26,544 | -18.52% | skill 1/1; base 1/1 |
-| claude-code | kexpl-04 | 159,748 | 143,054 | +16,694 | +11.67% | skill 1/1; base 1/1 |
-| claude-code | kexpl-05 | 226,319 | 178,371 | +47,948 | +26.88% | skill 1/1; base 1/1 |
-| claude-code | kexpl-06 | 108,408 | 145,518 | -37,110 | -25.50% | skill 1/1; base 1/1 |
-| codex | All cases | 416,838 | 286,190 | +130,648 | +45.65% | skill 6/6; base 6/6 |
-| codex | kexpl-01 | 81,433 | 43,854 | +37,579 | +85.69% | skill 1/1; base 1/1 |
-| codex | kexpl-02 | 83,133 | 41,340 | +41,793 | +101.10% | skill 1/1; base 1/1 |
-| codex | kexpl-03 | 84,670 | 56,514 | +28,156 | +49.82% | skill 1/1; base 1/1 |
-| codex | kexpl-04 | 81,171 | 62,562 | +18,609 | +29.74% | skill 1/1; base 1/1 |
-| codex | kexpl-05 | 45,285 | 41,057 | +4,228 | +10.30% | skill 1/1; base 1/1 |
-| codex | kexpl-06 | 41,146 | 40,863 | +283 | +0.69% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 1,303,448 | 1,182,859 | +120,589 | +10.19% | skill 12/12; base 12/12 |
+| claude-code | All cases | 849,436 | 751,324 | +98,112 | +13.06% | skill 6/6; base 6/6 |
+| claude-code | kexpl-01 | 158,300 | 142,249 | +16,051 | +11.28% | skill 1/1; base 1/1 |
+| claude-code | kexpl-02 | 159,108 | 107,825 | +51,283 | +47.56% | skill 1/1; base 1/1 |
+| claude-code | kexpl-03 | 116,513 | 180,575 | -64,062 | -35.48% | skill 1/1; base 1/1 |
+| claude-code | kexpl-04 | 159,810 | 107,520 | +52,290 | +48.63% | skill 1/1; base 1/1 |
+| claude-code | kexpl-05 | 147,869 | 141,899 | +5,970 | +4.21% | skill 1/1; base 1/1 |
+| claude-code | kexpl-06 | 107,836 | 71,256 | +36,580 | +51.34% | skill 1/1; base 1/1 |
+| codex | All cases | 414,153 | 287,331 | +126,822 | +44.14% | skill 6/6; base 6/6 |
+| codex | kexpl-01 | 80,597 | 57,938 | +22,659 | +39.11% | skill 1/1; base 1/1 |
+| codex | kexpl-02 | 80,794 | 40,999 | +39,795 | +97.06% | skill 1/1; base 1/1 |
+| codex | kexpl-03 | 84,804 | 52,955 | +31,849 | +60.14% | skill 1/1; base 1/1 |
+| codex | kexpl-04 | 81,383 | 53,824 | +27,559 | +51.20% | skill 1/1; base 1/1 |
+| codex | kexpl-05 | 45,317 | 41,108 | +4,209 | +10.24% | skill 1/1; base 1/1 |
+| codex | kexpl-06 | 41,258 | 40,507 | +751 | +1.85% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 1,263,589 | 1,038,655 | +224,934 | +21.66% | skill 12/12; base 12/12 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 
