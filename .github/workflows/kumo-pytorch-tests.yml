@@ -76,7 +76,11 @@ jobs:
                   shutil.rmtree(target)
                   shutil.copytree(proposed / 'packages/experimental/kumo-pytorch' / name, target)
           runtime = ['packages/experimental/kumo-pytorch/src', 'packages/diskgraph']
-          subprocess.run(['git', 'diff', '--exit-code', '3fde15c7f9a9652f40ed77b2704479e9ce868f4b', '--', *runtime], check=True)
+          pinned_trees = {'packages/experimental/kumo-pytorch/src': '5625d42b56b3f32fdf6d1cf1dcd81351e36314b2', 'packages/diskgraph': '98684e7583a0c2adb2333fcc2fb70875b11dbba4'}
+          for path, tree in pinned_trees.items():
+              actual = subprocess.check_output(['git', 'rev-parse', 'HEAD:' + path], text=True).strip()
+              assert actual == tree, (path, actual, tree)
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', *runtime], check=True)
           if os.environ['LANE'] == 'original':
               subprocess.run(['git', 'diff', '--exit-code', '--', 'packages/experimental/kumo-pytorch/tests', 'packages/experimental/kumo-pytorch/conformance'], check=True)
           import kumo.pytorch
