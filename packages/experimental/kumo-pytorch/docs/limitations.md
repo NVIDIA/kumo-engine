@@ -45,7 +45,7 @@ contract and its fitted state) that you trained with.
 
 DiskGraph supports direct entity fields, historical event fields, typed scalar
 calculations, supported aggregates and aggregate comparisons, nested grouping,
-generated scalar and row labels, and recent graph neighborhoods with node
+generated scalar and row labels, and recent or uniform graph neighborhoods with node
 fields. It can also build model-ready tensors directly
 (`output_format="model"`).
 
@@ -71,9 +71,7 @@ both `check` and `prepare` before any data is read; the others are refused while
 | `DG-DATED-ENTITY-VALUES` | The DiskGraph engine doesn't support `SampleSpec.dated_entity_values` yet. | `check()` | Declare an event input (`EventSpec`) over the same `Rows` instead. |
 | `DG-CURRENT-EVENTS` | The DiskGraph engine doesn't support `SampleSpec.current_events` yet. | `check()` | Read the event through an ordinary historical event input. |
 | `DG-CANDIDATE-SETS` | Candidate sets, in `SampleSpec.candidate_sets` or as candidate columns of an anchor table, are refused. | `check()` | Build the candidates' features with a second contract whose entity is the candidate table, anchored at the same times, and pair them in your own code. |
-| `DG-UNIFORM-GRAPH` | Uniform graph sampling isn't supported yet: DiskGraph's native uniform mode doesn't yet keep each example to rows at or before its own prediction time. | `check()` | Use `strategy="recent"`. |
 | `DG-GRAPH-CLOCK-OVERRIDE` | The DiskGraph engine doesn't support a graph traversal `time_column` other than the destination table's clock yet. | `check()` | Use the destination table's declared clock. |
-| `DG-STATIC-TIMED-TRAVERSAL` | A graph traversal into a table with a clock can't be `temporal="static"`. | `check()` | Use `temporal="inherit"`. |
 | `DG-REDUCTION-OPERAND` | Reductions over decimal or bytes columns are refused; direct decimal field reads are supported. | `check()` | Cast decimals to float64 or integer units, and bytes to a string or integer key, before writing the Parquet files. |
 | `DG-COLUMN-RENAME` | `Parquet(columns=...)` renames in a table binding are refused; physical column names must match the declared ones. Anchor tables accept renames. | `prepare()` | Rename the columns in the Parquet files to the declared names. |
 | `DG-INT64-CLOCK` | A column declared as a timestamp must be stored as a Parquet timestamp; an int64 column of epoch values is refused. | `prepare()` | Write the column as a Parquet timestamp in the declared unit. |
@@ -131,16 +129,20 @@ or infinity; encoders that require finite observations reject them.
   internal identity for a keyless table.
 - Calendar calculations use UTC. `EventTimeDelta` is anchor minus event time,
   in its declared unit; it is not relative to the latest event.
-- Graph sampling needs a time column both to filter neighbors by time
-  (`temporal="inherit"`) and to keep the most recent ones (`strategy="recent"`),
-  even for a `temporal="static"` traversal.
-- On the DiskGraph engine, a graph traversal can't reach a table without a
-  clock (`NON_TEMPORAL`). Such a traversal must be `temporal="static"`, and the
-  only strategy that doesn't need a clock, `strategy="uniform"`, is refused
-  (`DG-UNIFORM-GRAPH`). A clockless table can still be a neighborhood's root
-  entity. If you want to reach a dimension table such as products, give it a
-  clock, for example the time each row was first listed.
-- Which of several equally timed graph neighbors a fanout keeps is unspecified,
+- Graph sampling defaults to `recent` for a destination with a declared clock,
+  otherwise `uniform`. Recent requires a declared clock and keeps neighbors at
+  or before the original anchor at every hop. Uniform samples without
+  replacement and deliberately ignores real anchor dates, including on timed
+  destinations.
+- `DiskGraphEngine(random_seed=0)` fixes native uniform sampling by default;
+  `None` permits fresh randomness. This seed is separate from batch shuffling.
+  Seeded selections repeat across epochs for the same index and plan. Index
+  rebuilds, physical IDs or adjacency changes can change the selected rows.
+  Native and in-memory/serving uniform draws need not choose the same rows.
+- The graph `temporal` argument has been removed from `GraphSample` and
+  `build.Hop`. Existing serialized graph contracts containing it must be
+  recreated with the new strategy rules; it is rejected rather than ignored.
+- Which of several equally timed recent graph neighbors a fanout keeps is unspecified,
   but the behavior guarantees require the choice not to depend on row order,
   how the tables are split into files, or how the index is sharded. The
   DiskGraph engine doesn't meet that yet: its choice depends on how the index

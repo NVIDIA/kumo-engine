@@ -469,8 +469,8 @@ computed, so the rows only a label would read are never read. In the example,
 the data runs to day 40. A training task anchored at day 34 would read the
 purchases of the following 7 days to compute its label; the inference task
 never reads them. You can score anchors whose future hasn't happened yet, and
-rows dated after the cutoff can't change a score, except that on the DiskGraph
-engine they can change which tied neighbor a graph sample keeps (see [scoring
+rows dated after the cutoff can affect a graph score only through explicit
+uniform sampling or DiskGraph's choice among equally recent neighbors (see [scoring
 offline on the DiskGraph engine](#scoring-offline-on-the-diskgraph-engine)). Anchors need no labels;
 labels an anchor table supplies are ignored.
 
@@ -658,8 +658,11 @@ print(len(batch.metadata["sample_ids"]))
 ```
 
 All requests go into one batch unless you pass `batch_size`, or a token budget
-in the contract splits them. If the contract samples a graph with a seed, pass
-the same `seed` you used for batch scoring.
+in the contract splits them. The serving `seed` controls the in-memory sampler.
+Native DiskGraph uniform sampling uses the engine sampling seed and physical
+index identities, so its
+selected neighbors can differ from serving even with equal seeds. Recent
+sampling retains the existing offline/serving guarantees.
 
 Served batches use the inspectable output format. If you train on
 `output_format="model"` batches, your model takes them unchanged: both formats
