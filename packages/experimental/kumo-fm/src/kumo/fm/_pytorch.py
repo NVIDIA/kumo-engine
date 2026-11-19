@@ -243,10 +243,13 @@ class KumoPytorchBackend:
                 [table[c].combine_chunks() for c in table.column_names], schema=table.schema)]
         for rel_id, (name, edge) in enumerate(graph.edges.items()):
             rel = self.bundle.relations[name]
-            if (edge.source_type, edge.destination_type) != (rel["child"], rel["parent"]):
+            orientation = (edge.source_type, edge.destination_type)
+            if orientation not in ((rel["child"], rel["parent"]),
+                                   (rel["parent"], rel["child"])):
                 raise ValueError("kumo-pytorch relation orientation differs from the schema")
+            native_types = orientation
             columns = []
-            for column, table_name in (("source", rel["child"]), ("destination", rel["parent"])):
+            for column, table_name in zip(("source", "destination"), native_types, strict=True):
                 values = edge.index[column]
                 if table_name in inverse:
                     indices = values.to_numpy(zero_copy_only=False)
@@ -254,6 +257,8 @@ class KumoPytorchBackend:
                         raise ValueError("kumo-pytorch edge endpoint is out of bounds")
                     values = pa.chunked_array([pa.array(inverse[table_name][indices], pa.uint64())])
                 columns.append(values.cast(pa.uint64()))
+            if orientation != (rel["child"], rel["parent"]):
+                columns.reverse()
             index = pa.Table.from_arrays(columns, names=["id_a", "id_b"])
             directions[rel_id] = name, 'forward', rel["child"], rel["parent"]
             edges[rel_id] = index.to_batches() or [pa.RecordBatch.from_arrays(

@@ -63,3 +63,16 @@ jobs:
           cd "$RUNNER_TEMP/stage"
           ../fresh/bin/python -I -c 'import kumo.fm, kumo.pytorch, diskgraph; print(kumo.fm.__file__)'
           ../fresh/bin/python -m pytest -q tests
+      - name: Build matching connector and engine wheels
+        run: |
+          for package in kumo-api kumo-pql kumo-settings kumo-core kumo-engine; do
+            uv build --wheel --package "$package" --out-dir "$RUNNER_TEMP/engine-wheels"
+          done
+      - name: Test connector snapshot to FM from installed wheels
+        working-directory: ${{ runner.temp }}/stage
+        run: |
+          uv pip install --python ../fresh/bin/python --torch-backend cpu \
+            ../engine-wheels/*.whl
+          uv pip check --python ../fresh/bin/python
+          ../fresh/bin/python -I -c 'import kumo.engine, kumo.fm, kumo.pytorch, diskgraph'
+          ../fresh/bin/python -m pytest -q tests/test_connector_snapshot.py

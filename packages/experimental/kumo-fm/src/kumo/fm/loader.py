@@ -43,12 +43,7 @@ class PreparedRequest:
     def load(self):
         if self._closed or self._loader._closed:
             raise RuntimeError("Prepared request or loader is closed")
-        workload = self._loader.workload
-        ready = {
-            split: (seeds, self._loader._backend.extract(workload, seeds))
-            for split, seeds in self._splits.items()
-        }
-        return PayloadBatch(workload, ready)
+        return self._loader._load(self._splits)
 
 
 class FMLoader:
@@ -101,6 +96,25 @@ class FMLoader:
             raise ValueError("Request needs at least one split")
         return PreparedRequest(self, splits)
 
+    def _load(self, splits):
+        ready = {split: (seeds, self._backend.extract(self.workload, seeds))
+                 for split, seeds in splits.items()}
+        return PayloadBatch(self.workload, ready)
 
-def prepare(dataset, spec, *, index, threads=2, verify_files=True):
+
+def prepare(dataset=None, spec=None, *, index=None, threads=2, verify_files=True,
+            engine=None, sample=None, target=None, task=None, features=None,
+            classes=None, batch_size=1024, budgets=None, schema=None):
+    """Open a frozen bundle, or prepare FM over an adopted snapshot engine."""
+    if engine is not None:
+        from ._snapshot import SnapshotFMLoader
+        if dataset is not None or spec is not None or index is not None:
+            raise ValueError("Snapshot and bundle inputs cannot be mixed")
+        return SnapshotFMLoader(engine=engine, sample=sample, target=target,
+            task=task, features=features, classes=classes, batch_size=batch_size,
+            budgets=budgets, schema=schema)
+    if schema is not None:
+        raise ValueError("schema is only valid with an adopted engine")
+    if dataset is None or spec is None or index is None:
+        raise ValueError("Bundle preparation needs dataset, spec, and index")
     return FMLoader(dataset, spec, index=index, threads=threads, verify_files=verify_files)
