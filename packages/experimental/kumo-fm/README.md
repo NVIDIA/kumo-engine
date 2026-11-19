@@ -1,5 +1,42 @@
 # Kumo FM payload loader
 
+The primary workflow starts with a graph built through `kumo.engine` connectors.
+Adopt its snapshot with `api.DiskGraphEngine.from_snapshot(snapshot,
+work_dir=...)`, declare a public PyTorch `SampleSpec` with one
+`NeighborhoodSpec` and a bounded future `Aggregate` or `Compare` target, then
+call `fm.prepare(engine=..., sample=..., target=..., task=..., features=...)`.
+See the runnable
+[`connector_to_prediction.py`](examples/local_sdm/connector_to_prediction.py).
+FM derives table and relation metadata from `engine.schema`; it creates
+context/query anchors, computes context labels in a separate public PyTorch
+plan, samples one columnar graph plan over the same index, and aligns both by
+occurrence ID. The base index remains unchanged. Columnar graph output does not
+currently fuse computed labels into the graph batch.
+For an advanced public relation alias or table projection, pass
+`schema=api.DataSchema(...)`; PyTorch checks it against the adopted index.
+
+`fm.Context(entities=..., times=...)` produces entities × times, with time as
+the outer axis. `fm.Query(entities=..., at=...)` uses one query time. Either
+accepts ordered `pairs=[(entity, time), ...]`; a third element supplies an
+explicit int64 occurrence ID. Repeated pairs remain separate. Without explicit
+IDs each split uses zero-based positions. Context's future label window must be
+fully observable before the earliest query time. Query targets never enter the
+request. `loader.materialize(context=..., query=...).load()` and the shortcut
+`loader.load(context=..., query=...)` return the same `PayloadBatch` type as
+the frozen-bundle path. `batch.tables(split)` and both `batch.encode(...)`
+methods reuse its retained Arrow tables without sampling again.
+
+The snapshot path currently accepts a single public neighborhood, bounded
+`recent` fanouts, supported scalar FM wire types and `Aggregate(Rows(...,
+time=TimeWindow(start=0, stop=positive)))` or `Compare` over that aggregate.
+Multiple `GraphLayer`s in that neighborhood are passed to one native sampling
+operation. Classification requires an explicit two-entry raw-label-to-name
+`classes` map; regression accepts a numeric aggregate. Unsupported types,
+timeless destinations and uniform sampling fail explicitly. Native labels and
+graphs remain separate materializations over the adopted snapshot.
+
+## Frozen bundle compatibility
+
 Experimental `kumo-fm` builds the existing Kumo Relational HTTP request from
 public `kumo.pytorch` columnar graph batches backed by DiskGraph. Sampling and
 FM assembly happen once per `PreparedRequest.load()`. The returned

@@ -1,5 +1,22 @@
 # Optional local SDM example
 
+`connector_to_prediction.py` is the primary connector-to-model example. Run it
+from this directory after installing matching `kumo-engine`, DiskGraph,
+`kumo-pytorch` and `kumo-fm` wheels from one engine revision, plus the pinned
+SDM checkout in `requirements.lock`. `kumo.engine.datasets.shop()` supplies
+the reproducible 1,000-user shop Parquet sample; the script writes producer and
+consumer state under `scratch/connector-to-prediction/` here. The public
+`KumoRelational` classifier downloads its pretrained checkpoint on first use;
+set `HF_HOME` to a writable model-cache directory. A CUDA device is used when
+available, otherwise CPU. The example's 30-day future label window ends well
+before the November query cutoff. Its one sampling hop is independent of the
+model's two-hop setting. No SDM package is imported by `kumo.fm` itself.
+
+```bash
+cd packages/experimental/kumo-fm/examples/local_sdm
+python connector_to_prediction.py
+```
+
 This example keeps SDM and its Arrow compatibility handling beside the
 notebook. Install matching DiskGraph, `kumo-pytorch`, and `kumo-fm` wheels
 from one engine revision, then the pinned SDM environment in
