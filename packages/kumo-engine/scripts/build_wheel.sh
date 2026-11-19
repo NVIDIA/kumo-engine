@@ -35,10 +35,13 @@
 #                      directory with a pyproject.toml or setup.py, EXCEPT
 #                      kumo-sdk: it ships the hosted `kumoai_studio` SDK,
 #                      and this wheel is the local-only closure.
+#     kumo-pytorch     packages/experimental/kumo-pytorch -- `kumo.pytorch`,
+#                      the only bundled package from packages/experimental/
 #     diskgraph        packages/diskgraph -- native abi3 extension plus the
 #                      standalone `ingest` binary
 #
-# kumo-api, kumo-pql, kumo-core and every provider are always bundled.
+# kumo-api, kumo-pql, kumo-core, kumo-pytorch and every provider are always
+# bundled.
 # kumo-glove-6b-50d stays a PyPI dependency of the `text` extra.
 #
 # Everything else (torch, torch-geometric, pytorch-frame, pytorch-lightning,
@@ -250,7 +253,8 @@ KUMO_REPO_DIRTY=""
 if [ -n "$(git -C "${KUMO_REPO}" status --porcelain -- packages 2>/dev/null)" ]; then
     KUMO_REPO_DIRTY="+local changes"
 fi
-for pkg_dir in "${KUMO_REPO}"/packages/*/; do
+for pkg_dir in "${KUMO_REPO}"/packages/*/ \
+        "${KUMO_REPO}/packages/experimental/kumo-pytorch/"; do
     pkg_name="$(basename "${pkg_dir}")"
     # packages/experimental/ holds packages that aren't released yet.
     case "${pkg_name}" in kumo-sdk|diskgraph|experimental) continue ;; esac
@@ -259,7 +263,7 @@ for pkg_dir in "${KUMO_REPO}"/packages/*/; do
     log "building ${pkg_name} from ${pkg_dir}"
     "${PYTHON}" -m pip wheel --no-deps -q -w "${WHEELS}" "${pkg_dir}"
     record "${dist_glob}" kumo-first-party \
-        "${KUMO_REPO}/packages/${pkg_name} @ ${KUMO_REPO_HEAD}${KUMO_REPO_DIRTY}"
+        "${pkg_dir%/} @ ${KUMO_REPO_HEAD}${KUMO_REPO_DIRTY}"
 done
 # --------------------------------------------------------------------------
 # 2) DiskGraph, from packages/diskgraph. The wheel is abi3, so one build

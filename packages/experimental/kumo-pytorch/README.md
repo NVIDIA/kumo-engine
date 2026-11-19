@@ -1,10 +1,6 @@
 # kumo-pytorch
 
-kumo-pytorch is an experimental PyTorch library for building model inputs from
-relational tables, for both training and inference. Expect the API to change
-between releases, and see [limitations](docs/limitations.md) for what isn't
-supported yet. Please report problems and questions as
-[kumo-engine issues](https://github.com/NVIDIA/kumo-engine/issues).
+kumo-pytorch is an experimental PyTorch library for building model inputs from relational tables, for both training and inference. Expect the API to change between releases, without deprecation warnings, and see [limitations](docs/limitations.md) for what isn't supported yet. Please report problems and questions as [kumo-engine issues](https://github.com/NVIDIA/kumo-engine/issues).
 
 kumo-pytorch prepares the data for PyTorch models that learn from relational
 data: the users, accounts, transactions and products tables a business keeps in
@@ -83,25 +79,13 @@ another process.
 
 ## Install
 
-kumo-pytorch isn't on PyPI. You build it, together with the DiskGraph engine it
-depends on, from a checkout of
-[NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine). You'll need Python
-3.11 or newer, [uv](https://docs.astral.sh/uv/), a Rust toolchain and C/C++
-build tools:
+kumo-pytorch ships inside the [kumo-engine](https://pypi.org/project/kumo-engine/) package, together with the DiskGraph engine it runs on, and is imported as `kumo.pytorch`. Install it with the `pytorch` extra:
 
 ```bash
-git clone https://github.com/NVIDIA/kumo-engine.git
-cd kumo-engine
-uv build --wheel --out-dir dist packages/diskgraph
-uv build --wheel --package kumo-pytorch --out-dir dist
-uv venv --python 3.12 .venv-kumo-pytorch
-uv pip install --python .venv-kumo-pytorch/bin/python --torch-backend cpu \
-    dist/diskgraph-*.whl dist/kumo_pytorch-*.whl
+pip install "kumo-engine[pytorch]"
 ```
 
-Use `--torch-backend cu130` for the CUDA 13.0 build of PyTorch. The
-[installation](docs/installation.md) page covers pip, the notebook
-dependencies, and running the tests.
+See kumo-engine's [installation requirements](https://github.com/NVIDIA/kumo-engine/tree/main/packages/kumo-engine#installation) for the supported Python versions, platforms and hardware.
 
 ## Quick start
 
@@ -251,3 +235,18 @@ anchors](docs/04-engines-and-data.md#anchor-tables).
 - The [behavior guarantees](conformance/README.md) are the rules the DiskGraph
   engine is tested against, each backed by tested examples. Where it doesn't
   meet one yet, the [limitations](docs/limitations.md) page says so.
+
+## Development
+
+To work on kumo-pytorch itself, use the [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) workspace the way its CI does. You'll need [uv](https://docs.astral.sh/uv/getting-started/installation/), a Rust toolchain and C/C++ build tools; [rustup](https://rustup.rs/) picks the Rust version from `packages/diskgraph/rust-toolchain.toml`. From the root of a checkout, install the CPU build of PyTorch, then kumo-pytorch with its `dev` and `examples` extras, which builds DiskGraph from `packages/diskgraph`:
+
+```bash
+uv sync --locked --extra cpu
+uv sync --locked --inexact --no-install-package torch --package kumo-pytorch --extra dev --extra examples
+uv pip install jupyter
+source .venv/bin/activate
+cd packages/experimental/kumo-pytorch
+python -m pytest -q
+```
+
+Tests that need DiskGraph skip if it can't be imported, and tests that need a GPU skip without one. Pass `--require-imports` to make a skip caused by a missing dependency fail instead. `python -m conformance --engine all` checks the [behavior guarantees](conformance/README.md) on both engines, `python -m pytest -m notebook` runs the example notebooks, and [e2e/README.md](e2e/README.md) explains the opt-in end-to-end runs.

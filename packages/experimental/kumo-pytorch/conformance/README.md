@@ -188,7 +188,7 @@ refusals continue to require unreadable source rows, nonexistent Parquet paths,
 an engine-open trap, and the requested path/reason plus a suggestion.
 
 From `packages/experimental/kumo-pytorch`, with the kumo-engine environment
-described in [installation](../docs/installation.md#run-the-tests-and-notebooks-from-a-checkout)
+described in [development](../README.md#development)
 active:
 
 ```bash

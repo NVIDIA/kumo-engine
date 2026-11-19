@@ -1,8 +1,8 @@
 # Releasing kumo-engine
 
 `kumo-engine` is published as one wheel that bundles `kumo-api`, `kumo-pql`,
-`kumo-core`, DiskGraph and every provider package (`kumo-snowflake`,
-`kumo-databricks`, ...).
+`kumo-core`, `kumo-pytorch`, DiskGraph and every provider package
+(`kumo-snowflake`, `kumo-databricks`, ...).
 Provider *code* ships in every install; their third-party dependencies come
 with the matching extra:
 
@@ -20,7 +20,8 @@ Provider code must be imported at the point of use, never at module top level,
 so a bare install can still `import kumo.engine`
 (`packages/kumo-engine/test/test_optional_imports.py` enforces this).
 
-`kumo-api`, `kumo-pql`, `kumo-core` and every provider are always bundled.
+`kumo-api`, `kumo-pql`, `kumo-core`, `kumo-pytorch` and every provider are
+always bundled.
 Kumo-owned source uses Apache-2.0; bundled third-party source and native
 components retain their obligations in `THIRD-PARTY.txt`.
 `kumo-glove-6b-50d` stays a separate PyPI dependency through the `text` extra;
@@ -28,6 +29,8 @@ components retain their obligations in `THIRD-PARTY.txt`.
 uses by default to encode text columns; without it, a text column cannot be
 encoded and the error asks for `pip install "kumo-engine[text]"`.
 `torch-geometric>=2.8.1,<3` is also resolved separately at install time.
+
+`kumo-pytorch` (`kumo.pytorch`, experimental) is the only bundled package from `packages/experimental/`. Like a provider, its code ships in every install, and the `pytorch` extra adds the dependencies only it needs.
 
 Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
 `faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
