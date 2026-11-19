@@ -107,12 +107,7 @@ function note(parent, space, text, candidates, cls, optional) {
   const node = T(parent, 0, 0, '', cls || 'kx-t-note');
   const spans = lines.map((line, i) => S('tspan', {x: 0, dy: i ? 15 : 0, text: line,
     class: i ? 'kx-t-sub' : null}, node));
-  let w = 0;
-  for (const span of spans) {
-    let sw = 0;
-    try { sw = span.getComputedTextLength(); } catch (error) { sw = 0; }
-    w = Math.max(w, sw > 0 ? sw : span.textContent.length * 6.6);
-  }
+  const w = Math.max(...spans.map(measure));
   const h = 14 + 15 * (lines.length - 1);
   const box = c => {
     const left = c.anchor === 'end' ? c.x - w : c.anchor === 'middle' ? c.x - w / 2 : c.x;
@@ -161,9 +156,10 @@ function twoLines(text) {
   return i < 0 ? text : text.slice(0, i) + '\n' + text.slice(i + 3);
 }
 
+/* Pattern ids carry the widget id: url(#id) resolves page-wide. */
 let hatchCount = 0;
 function hatch(svg, color) {
-  const id = 'kx-hatch-' + (++hatchCount);
+  const id = widgetId + '-hatch-' + (++hatchCount);
   const defs = S('defs', {}, svg);
   const pattern = S('pattern', {id, width: 6, height: 6, patternUnits: 'userSpaceOnUse',
     patternTransform: 'rotate(45)'}, defs);
@@ -176,26 +172,48 @@ function fill(svg, series) {
   return series.hatch ? hatch(svg, series.color) : series.color;
 }
 
+/* A legend swatch: a line (dashed, or with a marker dot), a dot or a
+   rounded square. */
+function swatch(parent, item) {
+  const line = item.kind === 'line' || item.kind === 'dash';
+  const w = item.w || (line ? 22 : 12), h = item.h || 12;
+  const svg = S('svg', {width: w, height: h, 'aria-hidden': 'true'}, parent);
+  if (line) {
+    S('path', {d: `M1 ${h / 2}H${w - 1}`, style: {stroke: item.color, strokeWidth: item.width || 2.2,
+      strokeDasharray: item.dash || (item.kind === 'dash' ? '4 3' : null), fill: 'none'}}, svg);
+    if (item.marker) S('circle', {cx: 11, cy: 6, r: 3.2, style: {fill: item.color}}, svg);
+  } else if (item.kind === 'dot') {
+    S('circle', {cx: 6, cy: 6, r: 4.5, style: {fill: item.color}}, svg);
+  } else {
+    S('rect', {width: w, height: h, rx: item.rx || 2.5, style: {fill: item.hatch ? hatch(svg, item.color) : item.color,
+      opacity: item.opacity || null}}, svg);
+  }
+  return svg;
+}
+
 /* A legend row above the chart (HTML, so it wraps). */
 function legend(parent, items) {
   const row = H('div', 'kx-legend', parent);
   for (const item of items) {
     const span = H('span', null, row);
-    const svg = S('svg', {width: item.kind === 'line' || item.kind === 'dash' ? 22 : 12,
-      height: 12, 'aria-hidden': 'true'}, span);
-    if (item.kind === 'line' || item.kind === 'dash') {
-      S('path', {d: 'M1 6H21', style: {stroke: item.color, strokeWidth: item.width || 2.2,
-        strokeDasharray: item.kind === 'dash' ? '4 3' : null, fill: 'none'}}, svg);
-      if (item.marker) S('circle', {cx: 11, cy: 6, r: 3.2, style: {fill: item.color}}, svg);
-    } else if (item.kind === 'dot') {
-      S('circle', {cx: 6, cy: 6, r: 4.5, style: {fill: item.color}}, svg);
-    } else {
-      S('rect', {width: 12, height: 12, rx: 2.5, style: {fill: item.hatch ? hatch(svg, item.color) : item.color,
-        opacity: item.opacity || null}}, svg);
-    }
+    swatch(span, item);
     H('span', null, span, item.label);
   }
   return row;
+}
+
+/* A checkbox before its label text, with an optional mark between. */
+function checkbox(parent, text, checked, mark) {
+  const label = H('label', null, parent), box = H('input', null, label);
+  box.type = 'checkbox';
+  box.checked = checked;
+  if (mark) mark(label);
+  H('span', null, label, text);
+  return box;
+}
+
+function mix(color, percent, base) {
+  return `color-mix(in srgb, ${color} ${percent.toFixed(1)}%, ${base || COLOR.bg})`;
 }
 
 /* Chart host: draws at the current width and again whenever it changes. */
@@ -561,161 +579,9 @@ function marker(g, px, py) {
   S('circle', {cx: px, cy: py, r: 5.2, style: {fill: COLOR.green}}, g);
 }
 
-Object.assign(KX, {S, H, T, COLOR, ROLE, scale, ticks, tickText, pct, measure, Space,
-  note, twoLines, hatch, legend, chartHost, svgRoot, yGrid, xGrid, yTitle, columns, rowsChart,
-  curves, marker, leader, endLabels});
-
-/* Select-only combobox shared by metric and subgraph controls. */
-function subgraphPicker(parent, labelText, kind, ctx) {
-  const field = H('div', 'kx-sg-field kx-sg-' + kind, parent);
-  const id = ctx.host.id + '-sg-' + kind;
-  const label = H('label', null, field, labelText);
-  const button = H('button', 'kx-sg-trigger', field);
-  label.id = id + '-label';
-  label.htmlFor = button.id = id;
-  button.type = 'button';
-  button.setAttribute('role', 'combobox');
-  button.setAttribute('aria-haspopup', 'listbox');
-  button.setAttribute('aria-expanded', 'false');
-  button.setAttribute('aria-controls', id + '-options');
-  button.setAttribute('aria-labelledby', label.id);
-  const value = H('span', 'kx-sg-value', button);
-  const chevron = S('svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true' }, button);
-  S('path', { d: 'm4 6 4 4 4-4' }, chevron);
-  const list = H('ul', 'kx-sg-menu', field);
-  list.id = id + '-options';
-  list.hidden = true;
-  list.setAttribute('role', 'listbox');
-  list.setAttribute('aria-labelledby', label.id);
-  const select = H('select', null, field);
-  select.hidden = true;
-  const options = { signal: ctx.signal };
-  let active = -1,
-    prefix = '',
-    lastTyped = 0;
-
-  function sync() {
-    value.textContent = select.selectedOptions[0]?.textContent || '';
-    button.title = value.textContent;
-    button.disabled = !select.length;
-  }
-  function move(index) {
-    const row = list.children[index];
-    if (!row) return;
-    list.children[active]?.removeAttribute('data-active');
-    active = index;
-    row.dataset.active = 'true';
-    button.setAttribute('aria-activedescendant', row.id);
-    if (row.offsetTop < list.scrollTop) list.scrollTop = row.offsetTop;
-    else if (row.offsetTop + row.offsetHeight > list.scrollTop + list.clientHeight)
-      list.scrollTop = row.offsetTop + row.offsetHeight - list.clientHeight;
-  }
-  function open() {
-    list.replaceChildren();
-    for (const option of select.options) {
-      const row = H('li', 'kx-sg-option', list, option.textContent);
-      row.id = id + '-option-' + option.index;
-      row.dataset.index = option.index;
-      row.setAttribute('role', 'option');
-      row.setAttribute('aria-selected', String(option.selected));
-      row.setAttribute('data-lavish-action', 'true');
-    }
-    list.hidden = false;
-    button.setAttribute('aria-expanded', 'true');
-    move(select.selectedIndex);
-    list.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }
-  function close() {
-    list.hidden = true;
-    prefix = '';
-    active = -1;
-    button.setAttribute('aria-expanded', 'false');
-    button.removeAttribute('aria-activedescendant');
-  }
-  function choose(index) {
-    select.selectedIndex = index;
-    close();
-    button.focus({ preventScroll: true });
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-  button.addEventListener('click', () => (list.hidden ? open() : close()), options);
-  list.addEventListener('mousedown', (event) => event.preventDefault(), options);
-  list.addEventListener(
-    'click',
-    (event) => {
-      const row = event.target.closest('[role=option]');
-      if (row) choose(Number(row.dataset.index));
-    },
-    options,
-  );
-  button.addEventListener('blur', close, options);
-  // A pen/touch press on an unfocusable element need not blur the trigger.
-  field.ownerDocument.addEventListener(
-    'pointerdown',
-    (event) => {
-      if (!list.hidden && !event.composedPath().includes(field)) close();
-    },
-    { capture: true, signal: ctx.signal },
-  );
-  button.addEventListener(
-    'keydown',
-    (event) => {
-      if (event.metaKey || event.ctrlKey) return;
-      const key = event.key;
-      if (key === 'Tab') {
-        close();
-        return;
-      }
-      if (key === 'Escape') {
-        if (!list.hidden) {
-          event.preventDefault();
-          event.stopPropagation();
-          close();
-        }
-        return;
-      }
-      if (key === 'Enter' || key === ' ') {
-        event.preventDefault();
-        if (list.hidden) open();
-        else choose(active);
-        return;
-      }
-      const moves = {
-        Home: 0,
-        End: select.length - 1,
-        ArrowDown: active + 1,
-        ArrowUp: active - 1,
-        PageDown: active + 8,
-        PageUp: active - 8,
-      };
-      if (Object.hasOwn(moves, key)) {
-        event.preventDefault();
-        const wasClosed = list.hidden;
-        if (wasClosed) open();
-        if (!wasClosed || key === 'Home' || key === 'End')
-          move(Math.max(0, Math.min(select.length - 1, moves[key])));
-      } else if (key.length === 1 && !event.altKey) {
-        event.preventDefault();
-        if (list.hidden) open();
-        const now = Date.now();
-        prefix = (now - lastTyped < 700 ? prefix : '') + key.toLowerCase();
-        lastTyped = now;
-        const items = Array.from(select.options);
-        let start = active;
-        if (/^(.)\1+$/.test(prefix)) {
-          prefix = prefix[0];
-          start++;
-        }
-        for (let n = 0; n < items.length; n++) {
-          const index = (start + n) % items.length;
-          if (items[index].text.toLowerCase().startsWith(prefix)) {
-            move(index);
-            break;
-          }
-        }
-      }
-    },
-    options,
-  );
-  return { select, sync };
+/* A labelled native select. */
+function picker(parent, text, kind) {
+  const field = H('label', 'kx-sg-field kx-sg-' + kind, parent);
+  H('span', null, field, text);
+  return H('select', null, field);
 }

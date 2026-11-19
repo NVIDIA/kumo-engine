@@ -39,7 +39,7 @@ function heatmapView(host, width, view) {
     const cx = x0 + c * cell, cy = y1 - (r + 1) * cellH;
     const level = count ? 12 + 78 * Math.log1p(count) / Math.log1p(max) : 0;
     const densest = r === dr && c === dc;
-    const color = densest ? COLOR.green : count ? mixColor(COLOR.hold, level) : COLOR.soft;
+    const color = densest ? COLOR.green : count ? mix(COLOR.hold, level, COLOR.panel) : COLOR.soft;
     const rect = S('rect', {x: cx + 1, y: cy + 1, width: cell - 2, height: cellH - 2, rx: 3, style: {fill: color,
       opacity: count ? 1 : 0.5}}, g);
     S('title', {text: `${view.x}: ${view.columns[c]}, ${view.y}: ${view.rows[r]}, count: ${count}`}, rect);
@@ -114,10 +114,6 @@ function heatmapView(host, width, view) {
     {x: (sx + ex) / 2 + 10, y: (sy + ey) / 2 + 4}], 'kx-t-note-plain');
 }
 
-function mixColor(color, percent) {
-  return `color-mix(in srgb, ${color} ${percent.toFixed(1)}%, var(--kx-panel))`;
-}
-
 function distributionsView(body, view, ctx) {
   const colors = [ROLE.actual, ROLE.model];
   legend(body, view.series.map((s, k) => ({label: s.name, color: colors[k]})));
@@ -186,16 +182,14 @@ function distributionsView(body, view, ctx) {
   for (const item of view.series[0].stats.items) H('span', 'kx-sh', stats, item.label);
   view.series.forEach((s, k) => {
     const label = H('span', 'kx-sl', stats);
-    const sw = S('svg', {width: 10, height: 10, 'aria-hidden': 'true'}, label);
-    S('rect', {width: 10, height: 10, rx: 2, style: {fill: colors[k]}}, sw);
+    swatch(label, {w: 10, h: 10, rx: 2, color: colors[k]});
     H('span', null, label, s.name);
     for (const item of s.stats.items) H('span', null, stats, item.text);
   });
 }
 
 KX.cards.predicted = (parent, card, ctx) => {
-  let hideTails = false;
-  const frame = cardFrame(parent, card, ctx, card.views, (body, view) => {
+  cardFrame(parent, card, ctx, card.views, (body, view, ui) => {
     if (view.id === 'tenths') {
       legend(body, [{label: view.series[0], color: ROLE.model}, {label: view.series[1], color: ROLE.actual},
         {label: 'all ' + ENTITIES, kind: 'dash', color: COLOR.ink, width: 1.4}]);
@@ -219,7 +213,7 @@ KX.cards.predicted = (parent, card, ctx) => {
       const label = H('label', 'kx-heatmap-toggle', body);
       const hideOutliers = H('input', null, label);
       hideOutliers.type = 'checkbox';
-      hideOutliers.checked = hideTails;
+      hideOutliers.checked = !!ui.hideTails;
       label.append(document.createTextNode('Hide outliers'));
       const chart = chartHost(body, (host, width) => {
         const selected = hideOutliers.checked ? {...view, ...view.trimmed} : view;
@@ -227,7 +221,7 @@ KX.cards.predicted = (parent, card, ctx) => {
       }, ctx);
       chart.classList.add('kx-heatmap');
       hideOutliers.addEventListener('change', () => {
-        hideTails = hideOutliers.checked;
+        ui.hideTails = hideOutliers.checked;
         chart.redraw();
       }, {signal: ctx.signal});
       if (view.coverage) H('p', 'kx-coverage', body, view.coverage);
@@ -235,7 +229,4 @@ KX.cards.predicted = (parent, card, ctx) => {
       distributionsView(body, view, ctx);
     }
   });
-  frame.root.exportRegressionState = () => ({hideTails});
-  frame.root.restoreRegressionState = value => { hideTails = !!value.hideTails; frame.show(frame.current()); };
-  return frame;
 };

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 /* Feature-local exports reuse the live SVGs and the same widget initializer. */
-function widgetExports(root, {host, data, signal, onDispose, saved, css, source, render}) {
+function widgetExports(root, {host, data, signal, onDispose, css, source, render}) {
   const head = root.querySelector('.kx-head') || root;
   const title = head.querySelector('.kx-query');
   const headline = H('div', 'kx-headline', head);
@@ -27,56 +27,8 @@ function widgetExports(root, {host, data, signal, onDispose, saved, css, source,
   root.addEventListener('click', event => { if (!actions.contains(event.target)) status.replaceChildren(); }, {signal});
   const urls = new Set();
   onDispose(() => { for (const url of urls) URL.revokeObjectURL(url); });
-  const tabs = () => [...root.querySelectorAll(':scope > .kx-tabs > button')];
-  const activeTab = () => tabs().findIndex(b => b.getAttribute('aria-selected') === 'true');
-  const cardNodes = () => [...root.querySelectorAll('[data-card]')];
-  const controls = card => [...card.querySelectorAll('select, input')];
-  const switches = card => [...card.querySelectorAll('button[aria-pressed]')];
-  function capture() {
-    return {tab: activeTab(), column: root.exportColumnState(), cards: cardNodes().map(card => ({
-      id: card.dataset.card,
-      pressed: switches(card).filter(b => b.getAttribute('aria-pressed') === 'true')
-        .map(b => ({view: b.dataset.view, text: b.textContent})),
-      controls: controls(card).map(el => ({value: el.value, checked: el.checked})),
-      graph: card.exportGraphState?.(),
-      importance: card.exportImportanceState?.(),
-      regression: card.exportRegressionState?.(),
-      history: card.exportHistoryState?.(),
-    }))};
-  }
-  function restore(state) {
-    if (!state) return;
-    // Build visited tabs before restoring their lazily mounted cards.
-    for (const button of tabs()) button.click();
-    root.restoreColumnState(state.column);
-    for (const entry of state.cards || []) {
-      const card = cardNodes().find(c => c.dataset.card === entry.id);
-      if (!card) continue;
-      for (const pick of entry.pressed) {
-        const button = switches(card).find(b => pick.view ? b.dataset.view === pick.view : b.textContent === pick.text);
-        if (button?.getAttribute('aria-pressed') !== 'true') button?.click();
-      }
-      entry.controls.forEach((value, index) => {
-        // Selecting a column/category may rebuild the following controls.
-        const el = controls(card)[index];
-        if (!el) return;
-        if (el.type === 'checkbox') {
-          if (el.checked === value.checked) return;
-          el.checked = value.checked;
-        } else {
-          if (el.value === value.value) return;
-          el.value = value.value;
-        }
-        el.dispatchEvent(new Event(el.type === 'range' ? 'input' : 'change', {bubbles: true}));
-      });
-      if (entry.graph) card.restoreGraphState?.(entry.graph);
-      if (entry.importance) card.restoreImportanceState?.(entry.importance);
-      if (entry.regression) card.restoreRegressionState?.(entry.regression);
-      if (entry.history) card.restoreHistoryState?.(entry.history);
-    }
-    tabs()[Math.max(0, state.tab)]?.click();
-  }
-  restore(saved);
+  // The UI state, copied so an export or print copy never shares it.
+  const capture = () => JSON.parse(JSON.stringify(root.state.values));
   function documentBase(title, print = false) {
     const doc = document.implementation.createHTMLDocument(title);
     const charset = doc.createElement('meta');
@@ -169,12 +121,12 @@ function widgetExports(root, {host, data, signal, onDispose, saved, css, source,
   }
   pdf.addEventListener('click', () => {
     try {
-      const name = data.tabs[Math.max(0, activeTab())]?.label || 'Explanations';
+      const name = data.tabs[root.state.values.tab]?.label || 'Explanations';
       const doc = documentBase('Kumo · ' + name, true);
       const wrapper = doc.createElement('div'); wrapper.className = host.className;
       const copy = printCopy();
       copy.querySelector('.kx-exports')?.remove();
-      copy.querySelectorAll('.kx-panel[hidden], .kx-sg-menu, .kx-tooltip').forEach(el => el.remove());
+      copy.querySelectorAll('.kx-panel[hidden]').forEach(el => el.remove());
       copy.querySelectorAll('.kx-tab[aria-selected="false"]').forEach(el => el.remove());
       // SVGs keep their measured coordinate system but fit the printed page.
       copy.querySelectorAll('.kx-chart svg').forEach(svg => {
@@ -188,7 +140,7 @@ function widgetExports(root, {host, data, signal, onDispose, saved, css, source,
         '*{animation:none!important;transition:none!important;print-color-adjust:exact;-webkit-print-color-adjust:exact}' +
         '.kx{container-type:normal}.kx-chart,.kx-sg-canvas,.kx-sg-detail{break-inside:avoid}.kx-card-top{break-after:avoid}.kx-table-wrap{overflow:visible;max-height:none}' +
         '.kx-sg-main{display:block}.kx-sg-detail{margin-top:12px;max-height:none;overflow:visible}' +
-        '.kx-sg-canvas{max-height:none!important}.kx-sg-svg{max-height:480px!important}' +
+        '.kx-sg-canvas{max-height:none!important}' +
         '.kx-sg-filters{display:none}.kx-print-action{margin:0 0 16px;font:16px system-ui}' +
         '@media print{.kx-print-action{display:none}body{margin:0}}';
       doc.head.append(style);

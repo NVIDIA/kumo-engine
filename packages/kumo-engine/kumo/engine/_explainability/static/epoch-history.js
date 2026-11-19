@@ -6,10 +6,9 @@
    training and validation plots. The published model's refit is a later run. */
 function epochHistoryView(body, view, ctx, state) {
   const controls = H('div', 'kx-sg-controls kx-history-controls', body);
-  const picker = subgraphPicker(controls, 'Metric', 'history-metric', ctx);
-  for (const metric of view.metrics) H('option', null, picker.select, metric.toUpperCase()).value = metric;
-  if (view.metrics.includes(state.metric)) picker.select.value = state.metric;
-  picker.sync();
+  const select = picker(controls, 'Metric', 'history-metric');
+  for (const metric of view.metrics) H('option', null, select, metric.toUpperCase()).value = metric;
+  if (view.metrics.includes(state.metric)) select.value = state.metric;
   H('span', 'kx-coverage', controls, 'Training experiments before model selection');
   const plots = H('div', 'kx-history-plots', body);
   const legend = H('div', 'kx-history-legend', body);
@@ -17,36 +16,18 @@ function epochHistoryView(body, view, ctx, state) {
   legend.setAttribute('aria-label', 'Visible experiments');
   const colors = [COLOR.deep, COLOR.train, COLOR.val, COLOR.hold];
   const dashes = ['', '6 3', '2 3'];
-  const experiments = view.experiments.map((series, i) => ({
-    series, label: 'Experiment ' + (i + 1), color: colors[i % colors.length],
-    dash: dashes[Math.floor(i / colors.length) % dashes.length],
-  }));
-
-  function checkbox(label) {
-    const box = H('input', null, label);
-    box.type = 'checkbox';
-    box.checked = true;
-    return box;
-  }
-  const allLabel = H('label', null, legend);
-  const all = checkbox(allLabel);
-  H('span', null, allLabel, 'Select all');
-  for (const [i, experiment] of experiments.entries()) {
-    const label = H('label', null, legend);
-    experiment.box = checkbox(label);
-    experiment.box.checked = state.experiments?.[i] ?? true;
-    const swatch = S('svg', {width: 19, height: 9, 'aria-hidden': true}, label);
-    S('path', {d: 'M1 4.5H18', style: {stroke: experiment.color,
-      strokeWidth: 2, strokeDasharray: experiment.dash}}, swatch);
-    H('span', null, label, experiment.label);
-  }
-
-  all.checked = experiments.every(e => e.box.checked);
-  all.indeterminate = !all.checked && experiments.some(e => e.box.checked);
+  const all = checkbox(legend, 'Select all', true);
+  const experiments = view.experiments.map((series, i) => {
+    const color = colors[i % colors.length], dash = dashes[Math.floor(i / colors.length) % dashes.length];
+    const label = 'Experiment ' + (i + 1);
+    const box = checkbox(legend, label, state.experiments?.[i] ?? true,
+      parent => swatch(parent, {kind: 'line', w: 19, h: 9, width: 2, color, dash}));
+    return {series, label, color, dash, box};
+  });
 
   let metric, yDomain, exponent, unit;
   function setMetric() {
-    metric = state.metric = picker.select.value;
+    metric = state.metric = select.value;
     let low = Infinity, high = -Infinity;
     for (const {series} of experiments) {
       for (const split of ['train', 'val']) {
@@ -61,7 +42,9 @@ function epochHistoryView(body, view, ctx, state) {
     const magnitude = Math.max(Math.abs(low), Math.abs(high));
     exponent = Number.isFinite(magnitude) && magnitude >= 1e12 ? Math.floor(Math.log10(magnitude)) : 0;
     unit = 10 ** exponent;
-    yDomain = [low / unit - 0.02, high / unit + 0.02];
+    // Up to 0.02 of padding, less for a metric whose values span less.
+    const pad = Math.min(0.02, (high - low) / unit / 10 || Math.abs(high / unit) / 10 || 0.02);
+    yDomain = [low / unit - pad, high / unit + pad];
   }
   setMetric();
 
@@ -103,16 +86,20 @@ function epochHistoryView(body, view, ctx, state) {
         label: heading.textContent + ' by epoch', reserveSpace: false});
     }, ctx);
   });
-  function redraw() {
-    state.experiments = experiments.map(e => e.box.checked);
+  function sync() {
     const count = experiments.filter(e => e.box.checked).length;
     all.checked = count === experiments.length;
     all.indeterminate = count > 0 && !all.checked;
+  }
+  function redraw() {
+    state.experiments = experiments.map(e => e.box.checked);
+    sync();
     charts.forEach(chart => chart.redraw());
   }
+  sync();
   all.addEventListener('change', () => {
     for (const experiment of experiments) experiment.box.checked = all.checked;
   }, {signal: ctx.signal});
   legend.addEventListener('change', redraw, {signal: ctx.signal});
-  picker.select.addEventListener('change', () => { setMetric(); redraw(); }, {signal: ctx.signal});
+  select.addEventListener('change', () => { setMetric(); redraw(); }, {signal: ctx.signal});
 }
