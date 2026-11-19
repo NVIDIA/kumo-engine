@@ -394,13 +394,11 @@ def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, pa
     assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
 
 
-@pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local"])
-def test_extension_reference_refuses_non_extension_paths(tmp_path, kind):
-    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
-
-    parent = tmp_path / "base"
-    parent.mkdir()
-    (parent / "index_metadata.json").write_text("{}")
+@pytest.mark.parametrize("entrypoint", ["native", "manifest"])
+@pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local",
+                                 "legacy_alias"])
+def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind, entrypoint):
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
     stage = tmp_path / "stage"
     if kind == "empty":
         stage.mkdir()
@@ -410,10 +408,28 @@ def test_extension_reference_refuses_non_extension_paths(tmp_path, kind):
         stage.symlink_to(parent, target_is_directory=True)
     elif kind == "index_local":
         stage = parent / "arbitrary-directory"
-        stage.mkdir()
+        stage.mkdir(exist_ok=True)
         (stage / "index_metadata.json").write_text("{}")
-    with pytest.raises(diskgraph.DiskgraphConfigError):
-        _extension_ref_from_stage_path(str(parent), str(stage))
+    elif kind == "legacy_alias":
+        stage = parent / "train_tables" / ("base-alias-" + entrypoint)
+        stage.symlink_to(parent, target_is_directory=True)
+    match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
+    with pytest.raises(diskgraph.DiskgraphSystemError, match=match):
+        if entrypoint == "native":
+            from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+            ref = str(stage.relative_to(parent)) if kind == "legacy_alias" else str(stage)
+            NativeRuntimeIndex(str(parent), ref, 17, 1)
+        else:
+            manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+            manifest["stages"]["train"]["index_path"] = str(stage)
+            path = tmp_path / "manifest.json"
+            path.write_text(json.dumps(manifest))
+            make_runtime_batch_iterator(
+                str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+                num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+                batch_size=3, drop_last=False, num_threads=1,
+            )
 
 
 def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
