@@ -158,6 +158,14 @@ Client examples require an existing endpoint; they do not provision one.
 | [Classify Otto Group products](tabular/retail/sdk-code-examples/local_structured_data_models_otto_group_product_classification_challenge.py) | Local | Model workflow |
 | [Predict Mercari listing prices from product metadata and text](tabular/retail/sdk-code-examples/local_structured_data_models_mercari_price_suggestion_challenge.py) | Local | Model workflow |
 
+### Telecommunications
+
+#### Notebooks
+
+| Example | Deployment | Scope |
+| --- | --- | --- |
+| [Predict telco customer churn with direct KumoTabular](tabular/telco/notebooks/local_structured_data_models_telco_churn.ipynb) | Local | Synthetic binary classification |
+
 ## Time series
 
 ### Cross-industry

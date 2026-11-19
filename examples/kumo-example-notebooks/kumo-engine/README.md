@@ -157,6 +157,14 @@ The synthetic industry notebooks below generate their own related tables and use
 | --- | --- | --- |
 | [Forecast monthly sunspot counts from the public SILSO series](science/sdk-code-examples/local_kumo_engine_sunspot_forecasting.py) | Local | Model workflow |
 
+## Telecommunications
+
+### Notebooks
+
+| Example | Deployment | Scope |
+| --- | --- | --- |
+| [Predict telco customer churn in the next 30 days](telco/notebooks/local_kumo_engine_synthetic_telco_churn.ipynb) | Local | Synthetic temporal binary classification |
+
 Commented previews preserve demonstrations of features unavailable in the supported package API.
 Their commented demonstrations are not runnable.
 Example-specific companion directories hold shared data preparation, helpers and assets; use them through their owning examples.
