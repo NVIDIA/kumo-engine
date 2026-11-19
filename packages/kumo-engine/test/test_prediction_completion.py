@@ -59,7 +59,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
             task_type='binary_classification', stage_counts={'predict': 8}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **kw: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *_: None)
     monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n, accelerator=None:
                         (None, ) * n)
@@ -70,7 +70,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
         lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)])
     loads = []
 
-    def load(*args, **kwargs):
+    def load(task, *args, **kwargs):
         loads.append(kwargs)
         loss = BinaryCrossEntropyLoss(TaskType.BINARY_CLASSIFICATION,
                                       threshold=kwargs['binary_threshold'])
@@ -110,7 +110,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
                 stats[kind] = writer.stats
             options['artifact_stats_collector'].add_partition(worker, stats)
 
-        return SimpleNamespace(predict=predict)
+        return SimpleNamespace(task=task, predict=predict)
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     return trainer, table, loads, snapshot
