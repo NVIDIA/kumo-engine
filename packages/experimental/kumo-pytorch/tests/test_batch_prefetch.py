@@ -143,6 +143,78 @@ def test_abandoned_iterator_stops_its_producer():
             assert not finalizer.alive
             assert not thread.is_alive()
             assert not task._prefetch_iterators
+            assert not task._prefetch_producers
+
+
+@pytest.mark.parametrize("owner", ["task", "plan"])
+def test_owner_close_waits_for_abandoned_iterator_cleanup(monkeypatch, owner):
+    plan = api.prepare(_contract(), DATASET, api.InMemoryEngine())
+    task = plan.materialize(_table(), fit_split="train")
+    preparing, release, finished, finalizing = (threading.Event() for _ in range(4))
+    produce = task._anchor_batches
+
+    def blocked_produce(*args, **kwargs):
+        producer = produce(*args, **kwargs)
+        try:
+            yield next(producer)
+            preparing.set()
+            assert release.wait(5), "producer was not released"
+        finally:
+            producer.close()
+            finished.set()
+
+    monkeypatch.setattr(task, "_anchor_batches", blocked_produce)
+    iterator = task.batches(batch_size=1, prefetch_batches=1)
+    next(iterator)
+    thread = iterator._iterator._thread
+    join = thread.join
+    finalizer = iterator._finalizer
+    reference = weakref.ref(iterator)
+    holder = [iterator]
+    del iterator
+    dropper = threading.Thread(target=lambda: holder.pop())
+
+    def observed_join():
+        if threading.current_thread() is threading.main_thread():
+            # Owner shutdown must find the producer even after its wrapper dies.
+            assert finalizing.is_set()
+            release.set()
+        else:
+            finalizing.set()
+        join(timeout=3)
+        assert not thread.is_alive()
+
+    source = plan._source
+    resource = task._anchors if owner == "task" else source
+    close_resource = resource.close
+
+    def checked_close():
+        assert finished.is_set(), "resource closed before producer cleanup"
+        assert not thread.is_alive()
+        close_resource()
+
+    monkeypatch.setattr(thread, "join", observed_join)
+    monkeypatch.setattr(resource, "close", checked_close)
+    try:
+        assert preparing.wait(3)
+        dropper.start()
+        assert finalizing.wait(3)
+        assert reference() is None
+        assert not list(task._prefetch_iterators)
+        (task if owner == "task" else plan).close()
+        dropper.join(timeout=3)
+        assert not dropper.is_alive()
+        assert not finalizer.alive
+        assert not task._prefetch_producers
+    finally:
+        release.set()
+        if dropper.ident is not None:
+            dropper.join(timeout=3)
+        join(timeout=3)
+        task.close()
+        # Plan.close clears its source before calling close, even if it raises.
+        source.close()
+        plan.close()
 
 
 @pytest.mark.parametrize("inference", [False, True])
@@ -383,6 +455,7 @@ def test_interrupted_close_waits_for_producer_before_releasing_resources(monkeyp
                 assert plan._source is source
                 assert list(iterator) == []
                 assert iterator._finalizer.alive
+                assert task._prefetch_producers == {iterator._iterator}
 
         def release_and_join():
             release.set()
@@ -395,6 +468,7 @@ def test_interrupted_close_waits_for_producer_before_releasing_resources(monkeyp
             assert finished.is_set()
             assert not thread.is_alive()
         assert not iterator._finalizer.alive
+        assert not task._prefetch_producers
         task.close()
         plan.close()
         assert events[0] == "producer"

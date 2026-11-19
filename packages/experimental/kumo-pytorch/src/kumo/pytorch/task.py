@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 import torch
 
+from kumo.pytorch._prefetch import PrefetchIterator
 from kumo.pytorch.anchors import (
     ALL_ANCHORS,
     PADDING_KEY,
@@ -73,6 +74,7 @@ class TaskBatches(Iterator[Batch]):
         if type(prefetch_batches) is not int or prefetch_batches < 0:
             raise ValueError("prefetch_batches must be a nonnegative integer")
         self._prefetch_batches = prefetch_batches
+        self._prefetch_producers: set[PrefetchIterator] | None = None
         self._closed = False
         self._close_complete = False
         self._finalizer = None
@@ -85,10 +87,11 @@ class TaskBatches(Iterator[Batch]):
             raise StopIteration
         if self._iterator is None:
             if self._prefetch_batches:
-                from kumo.pytorch._prefetch import PrefetchIterator
-
                 self._iterator = PrefetchIterator(
-                    self._produce, capacity=self._prefetch_batches, skip=self._skip
+                    self._produce,
+                    capacity=self._prefetch_batches,
+                    skip=self._skip,
+                    registry=self._prefetch_producers,
                 )
                 self._finalizer = weakref.finalize(self, self._iterator.close)
             else:
@@ -184,6 +187,8 @@ class Task:
         self._assembler = assembler
         self._anchors = anchors
         self._prefetch_iterators: weakref.WeakSet[TaskBatches] = weakref.WeakSet()
+        # A wrapper can disappear while its finalizer is still joining the producer.
+        self._prefetch_producers: set[PrefetchIterator] = set()
         serialized = assembler.fitted_state
         manifest = assembler.manifest
         self.fitted_state = FittedState(
@@ -388,6 +393,7 @@ class Task:
             prefetch_batches=prefetch_batches,
         )
         if prefetch_batches:
+            batches._prefetch_producers = self._prefetch_producers
             self._prefetch_iterators.add(batches)
         return batches
 
@@ -502,6 +508,8 @@ class Task:
     def _close_prefetch(self) -> None:
         for batches in list(self._prefetch_iterators):
             batches.close()
+        for producer in self._prefetch_producers.copy():
+            producer.close()
 
     def __enter__(self) -> Task:
         return self

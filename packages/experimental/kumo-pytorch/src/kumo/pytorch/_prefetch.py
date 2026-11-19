@@ -16,7 +16,15 @@ T = TypeVar("T")
 
 
 class PrefetchIterator(Iterator[T]):
-    def __init__(self, produce: Callable[[], Iterator[T]], *, capacity: int, skip: int):
+    def __init__(
+        self,
+        produce: Callable[[], Iterator[T]],
+        *,
+        capacity: int,
+        skip: int,
+        registry: set[PrefetchIterator] | None = None,
+    ):
+        self._registry = registry
         self._ready: deque[T] = deque()
         self._condition = threading.Condition()
         self._stopped = False
@@ -70,6 +78,8 @@ class PrefetchIterator(Iterator[T]):
             target=context.run, args=(run,), name="kumo-batch-prefetch", daemon=True
         )
         self._thread.start()
+        if registry is not None:
+            registry.add(self)
 
     def __next__(self) -> T:
         with self._condition:
@@ -97,3 +107,5 @@ class PrefetchIterator(Iterator[T]):
         with self._condition:
             self._ready.clear()
             self._error = None
+            if self._done and self._registry is not None:
+                self._registry.discard(self)
