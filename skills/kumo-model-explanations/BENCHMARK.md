@@ -10,7 +10,7 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 - Skill: `kumo-model-explanations`
 - Validation status: `passed`
-- Evaluation date: 2026-11-18
+- Evaluation date: 2026-11-19
 - Evaluator version: `1.6.10`
 - Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`), Codex (`openai/openai/gpt-6.1-sol`)
 - Tasks: 6 evaluation tasks (5 positive, 1 negative)
@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 92.5% — baseline ran, but no comparable score was available; uplift unavailable | 88.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 92.5% — baseline ran, but no comparable score was available; uplift unavailable | 87.7% — baseline ran, but no comparable score was available; uplift unavailable |
 | Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 40.0% → 100.0% (+60.0 points) | 56.7% → 93.3% (+36.6 points) |
+| Correctness | 43.3% → 100.0% (+56.7 points) | 40.0% → 93.3% (+53.3 points) |
 | Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 27.8% → 64.6% (+36.8 points) | 50.0% → 59.7% (+9.7 points) |
-| Efficiency | 97.8% — baseline ran, but no comparable score was available; uplift unavailable | 95.9% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 25.0% → 64.6% (+39.6 points) | 22.9% → 56.3% (+33.4 points) |
+| Efficiency | 97.9% — baseline ran, but no comparable score was available; uplift unavailable | 93.8% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 98.2% → 95.6% (-2.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 98.1% → 95.7% (-2.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 89.8% → 91.9% (+2.1 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 90.6% → 91.6% (+1.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,21 +80,21 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 966,880 | 823,367 | +143,513 | +17.43% | skill 6/6; base 6/6 |
-| claude-code | kexpl-01 | 159,703 | 142,288 | +17,415 | +12.24% | skill 1/1; base 1/1 |
-| claude-code | kexpl-02 | 158,941 | 107,859 | +51,082 | +47.36% | skill 1/1; base 1/1 |
-| claude-code | kexpl-03 | 116,594 | 142,990 | -26,396 | -18.46% | skill 1/1; base 1/1 |
-| claude-code | kexpl-04 | 160,267 | 144,212 | +16,055 | +11.13% | skill 1/1; base 1/1 |
-| claude-code | kexpl-05 | 226,120 | 178,315 | +47,805 | +26.81% | skill 1/1; base 1/1 |
-| claude-code | kexpl-06 | 145,255 | 107,703 | +37,552 | +34.87% | skill 1/1; base 1/1 |
-| codex | All cases | 411,790 | 298,681 | +113,109 | +37.87% | skill 6/6; base 6/6 |
-| codex | kexpl-01 | 81,391 | 66,405 | +14,986 | +22.57% | skill 1/1; base 1/1 |
-| codex | kexpl-02 | 81,040 | 41,166 | +39,874 | +96.86% | skill 1/1; base 1/1 |
-| codex | kexpl-03 | 81,498 | 53,873 | +27,625 | +51.28% | skill 1/1; base 1/1 |
-| codex | kexpl-04 | 81,678 | 54,065 | +27,613 | +51.07% | skill 1/1; base 1/1 |
-| codex | kexpl-05 | 45,305 | 42,610 | +2,695 | +6.32% | skill 1/1; base 1/1 |
-| codex | kexpl-06 | 40,878 | 40,562 | +316 | +0.78% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 1,378,670 | 1,122,048 | +256,622 | +22.87% | skill 12/12; base 12/12 |
+| claude-code | All cases | 886,610 | 896,669 | -10,059 | -1.12% | skill 6/6; base 6/6 |
+| claude-code | kexpl-01 | 116,441 | 142,323 | -25,882 | -18.19% | skill 1/1; base 1/1 |
+| claude-code | kexpl-02 | 158,908 | 144,073 | +14,835 | +10.30% | skill 1/1; base 1/1 |
+| claude-code | kexpl-03 | 116,786 | 143,330 | -26,544 | -18.52% | skill 1/1; base 1/1 |
+| claude-code | kexpl-04 | 159,748 | 143,054 | +16,694 | +11.67% | skill 1/1; base 1/1 |
+| claude-code | kexpl-05 | 226,319 | 178,371 | +47,948 | +26.88% | skill 1/1; base 1/1 |
+| claude-code | kexpl-06 | 108,408 | 145,518 | -37,110 | -25.50% | skill 1/1; base 1/1 |
+| codex | All cases | 416,838 | 286,190 | +130,648 | +45.65% | skill 6/6; base 6/6 |
+| codex | kexpl-01 | 81,433 | 43,854 | +37,579 | +85.69% | skill 1/1; base 1/1 |
+| codex | kexpl-02 | 83,133 | 41,340 | +41,793 | +101.10% | skill 1/1; base 1/1 |
+| codex | kexpl-03 | 84,670 | 56,514 | +28,156 | +49.82% | skill 1/1; base 1/1 |
+| codex | kexpl-04 | 81,171 | 62,562 | +18,609 | +29.74% | skill 1/1; base 1/1 |
+| codex | kexpl-05 | 45,285 | 41,057 | +4,228 | +10.30% | skill 1/1; base 1/1 |
+| codex | kexpl-06 | 41,146 | 40,863 | +283 | +0.69% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 1,303,448 | 1,182,859 | +120,589 | +10.19% | skill 12/12; base 12/12 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 

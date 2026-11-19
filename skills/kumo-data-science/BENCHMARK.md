@@ -10,7 +10,7 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 - Skill: `kumo-data-science`
 - Validation status: `passed`
-- Evaluation date: 2026-11-18
+- Evaluation date: 2026-11-19
 - Evaluator version: `1.6.10`
 - Agents: Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`), Codex (`openai/openai/gpt-6.1-sol`)
 - Tasks: 8 evaluation tasks (7 positive, 1 negative)
@@ -50,12 +50,12 @@ The three-tier evaluation checks whether the skill:
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 98.4% — baseline ran, but no comparable score was available; uplift unavailable | 95.5% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 100.0% → 100.0% (±0.0 points) | 100.0% → 100.0% (±0.0 points) |
-| Correctness | 57.5% → 100.0% (+42.5 points) | 50.0% → 97.5% (+47.5 points) |
-| Discoverability | 99.3% — baseline ran, but no comparable score was available; uplift unavailable | 92.9% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 41.4% → 97.9% (+56.5 points) | 36.2% → 93.8% (+57.6 points) |
-| Efficiency | 94.5% — baseline ran, but no comparable score was available; uplift unavailable | 93.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 97.6% — baseline ran, but no comparable score was available; uplift unavailable | 95.8% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 93.8% → 100.0% (+6.2 points) |
+| Correctness | 47.5% → 100.0% (+52.5 points) | 45.0% → 100.0% (+55.0 points) |
+| Discoverability | 98.6% — baseline ran, but no comparable score was available; uplift unavailable | 91.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 34.7% → 93.8% (+59.1 points) | 36.0% → 92.2% (+56.2 points) |
+| Efficiency | 95.9% — baseline ran, but no comparable score was available; uplift unavailable | 95.3% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -70,9 +70,9 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 97.0% → 92.6% (-4.4 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 96.9% → 91.8% (-5.1 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 80.4% → 90.3% (+9.9 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 79.9% → 90.5% (+10.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ## Token Usage
 
@@ -80,25 +80,25 @@ Actual Tier 3 execution usage is reported for every observed agent/case pair and
 
 | Agent | Dataset case | With skill | Without skill | Delta | Change | Coverage |
 |---|---|---:|---:|---:|---:|---|
-| claude-code | All cases | 1,456,211 | 933,207 | +523,004 | +56.04% | skill 8/8; base 8/8 |
-| claude-code | kds-01 | 225,387 | 107,911 | +117,476 | +108.86% | skill 1/1; base 1/1 |
-| claude-code | kds-02 | 183,714 | 201,375 | -17,661 | -8.77% | skill 1/1; base 1/1 |
-| claude-code | kds-03 | 229,800 | 158,004 | +71,796 | +45.44% | skill 1/1; base 1/1 |
-| claude-code | kds-04 | 222,519 | 108,540 | +113,979 | +105.01% | skill 1/1; base 1/1 |
-| claude-code | kds-05 | 217,354 | 107,133 | +110,221 | +102.88% | skill 1/1; base 1/1 |
-| claude-code | kds-06 | 169,879 | 107,398 | +62,481 | +58.18% | skill 1/1; base 1/1 |
-| claude-code | kds-07 | 171,634 | 107,252 | +64,382 | +60.03% | skill 1/1; base 1/1 |
-| claude-code | kds-08 | 35,924 | 35,594 | +330 | +0.93% | skill 1/1; base 1/1 |
-| codex | All cases | 601,311 | 2,529,905 | -1,928,594 | -76.23% | skill 8/8; base 8/8 |
-| codex | kds-01 | 70,062 | 45,543 | +24,519 | +53.84% | skill 1/1; base 1/1 |
-| codex | kds-02 | 96,604 | 1,481,282 | -1,384,678 | -93.48% | skill 1/1; base 1/1 |
-| codex | kds-03 | 122,113 | 819,648 | -697,535 | -85.10% | skill 1/1; base 1/1 |
-| codex | kds-04 | 94,265 | 41,384 | +52,881 | +127.78% | skill 1/1; base 1/1 |
-| codex | kds-05 | 71,914 | 30,254 | +41,660 | +137.70% | skill 1/1; base 1/1 |
-| codex | kds-06 | 83,337 | 41,036 | +42,301 | +103.08% | skill 1/1; base 1/1 |
-| codex | kds-07 | 49,343 | 57,280 | -7,937 | -13.86% | skill 1/1; base 1/1 |
-| codex | kds-08 | 13,673 | 13,478 | +195 | +1.45% | skill 1/1; base 1/1 |
-| ALL AGENTS | Dataset aggregate | 2,057,522 | 3,463,112 | -1,405,590 | -40.59% | skill 16/16; base 16/16 |
+| claude-code | All cases | 1,532,548 | 1,046,711 | +485,837 | +46.42% | skill 8/8; base 8/8 |
+| claude-code | kds-01 | 179,990 | 142,821 | +37,169 | +26.02% | skill 1/1; base 1/1 |
+| claude-code | kds-02 | 242,679 | 161,366 | +81,313 | +50.39% | skill 1/1; base 1/1 |
+| claude-code | kds-03 | 236,518 | 276,359 | -39,841 | -14.42% | skill 1/1; base 1/1 |
+| claude-code | kds-04 | 267,189 | 144,990 | +122,199 | +84.28% | skill 1/1; base 1/1 |
+| claude-code | kds-05 | 170,568 | 70,704 | +99,864 | +141.24% | skill 1/1; base 1/1 |
+| claude-code | kds-06 | 217,878 | 107,637 | +110,241 | +102.42% | skill 1/1; base 1/1 |
+| claude-code | kds-07 | 181,830 | 107,195 | +74,635 | +69.63% | skill 1/1; base 1/1 |
+| claude-code | kds-08 | 35,896 | 35,639 | +257 | +0.72% | skill 1/1; base 1/1 |
+| codex | All cases | 572,619 | 2,940,672 | -2,368,053 | -80.53% | skill 8/8; base 8/8 |
+| codex | kds-01 | 69,610 | 49,453 | +20,157 | +40.76% | skill 1/1; base 1/1 |
+| codex | kds-02 | 97,805 | 1,448,814 | -1,351,009 | -93.25% | skill 1/1; base 1/1 |
+| codex | kds-03 | 96,860 | 1,286,574 | -1,189,714 | -92.47% | skill 1/1; base 1/1 |
+| codex | kds-04 | 93,764 | 13,570 | +80,194 | +590.97% | skill 1/1; base 1/1 |
+| codex | kds-05 | 84,347 | 30,117 | +54,230 | +180.06% | skill 1/1; base 1/1 |
+| codex | kds-06 | 66,995 | 41,092 | +25,903 | +63.04% | skill 1/1; base 1/1 |
+| codex | kds-07 | 49,516 | 57,606 | -8,090 | -14.04% | skill 1/1; base 1/1 |
+| codex | kds-08 | 13,722 | 13,446 | +276 | +2.05% | skill 1/1; base 1/1 |
+| ALL AGENTS | Dataset aggregate | 2,105,167 | 3,987,383 | -1,882,216 | -47.20% | skill 16/16; base 16/16 |
 
 Prompt tokens include cached reads, so total tokens are `prompt + completion` (cached is not added twice). The Efficiency score uses `(prompt - cached) + completion`. Change is `100 * (with - without) / without`; negative means fewer tokens. N/A comparisons include their reason in the coverage column; coverage is never estimated.
 
@@ -118,6 +118,10 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across SKILL.md and accept/preflight.md:
   "### Node 1c — Preflight & graph gate" in SKILL.md (lines 178-194)
   vs "## 5. Column availability" in accept/preflight.md (lines 157-171) (`SKILL.md:178`)
+- **HIGH** DUPLICATE/duplicate: Duplicate content found across accept/intake_contract.md and validate/examples/good_request.md:
+  "## Canonical good example (`train`)" in accept/intake_contract.md (lines 137-148)
+  vs "## Input" in validate/examples/good_request.md (lines 3-12)
+  vs "## Node 1a — Required fields: PASS" in validate/examples/good_request.md (lines 13-19) (`accept/intake_contract.md:137`)
 - **HIGH** DUPLICATE/duplicate: Duplicate content found across validate/atomic_question_check.md and validate/examples/bad_request.md:
   "### Fail 1 — Multiple targets bundled" in validate/atomic_question_check.md (lines 42-50)
   vs "## 6. Bundled goals → REJECT" in validate/examples/bad_request.md (lines 64-68) (`validate/atomic_question_check.md:42`)
@@ -125,10 +129,6 @@ Prompt tokens include cached reads, so total tokens are `prompt + completion` (c
   "## Node 1a — fields" in accept/batch_inference.md (lines 7-29)
   vs "### `batch_inference` — required fields (ask if missing)" in accept/batch_inference.md (lines 30-42)
   vs "### `batch_inference` — resolved, defaulted, or inferred (never ask)" in accept/batch_inference.md (lines 43-54) (`accept/batch_inference.md:7`)
-- **HIGH** DUPLICATE/duplicate: Duplicate content found across accept/intake_contract.md and validate/examples/good_request.md:
-  "## Canonical good example (`train`)" in accept/intake_contract.md (lines 137-148)
-  vs "## Input" in validate/examples/good_request.md (lines 3-12)
-  vs "## Node 1a — Required fields: PASS" in validate/examples/good_request.md (lines 13-19) (`accept/intake_contract.md:137`)
 - **MEDIUM** QUALITY/quality_correctness: SKILL_SPEC recommended field missing: 'metadata.author' (`skills/kumo-data-science/SKILL.md`)
 - 25 additional finding(s) are available in the full evaluation artifacts.
 

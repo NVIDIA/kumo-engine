@@ -9,14 +9,14 @@ NVIDIA <br>
 ### License/Terms of Use: <br>
 Apache 2.0 <br>
 ## Use Case: <br>
-Developers and data scientists use this skill, normally through the kumo-data-science skill, so a coding agent writes Kumo graph definitions, predictive queries, and training and prediction code that match the shipped Kumo SDK. <br>
+Developers and data scientists use this skill, after a request passes kumo-data-science intake checks, to generate Kumo table/graph definitions, PQL predictive queries, and version-matched Kumo SDK training and prediction code for the local in-process Kumo runtime. <br>
 
 ### Deployment Geography for Use: <br>
 Global <br>
 
 ## Requirements / Dependencies: <br>
-**Requires API Key or External Credential:** [Optional] <br>
-**Credential Type(s):** [Cloud Credentials, OAuth Token, Other [Snowflake connections.toml entry or key pair]] <br>
+**Requires API Key or External Credential:** [Yes] <br>
+**Credential Type(s):** [Cloud Credentials, Other [Snowflake runtime token, connections.toml entry, or key pair from a secret store]] <br>
 
 Do not include secrets in prompts/logs/output; use least-privilege credentials; rotate keys as appropriate. <br>
 
@@ -25,21 +25,20 @@ Risk: Review before execution as proposals could introduce incorrect or misleadi
 Mitigation: Review and scan skill before deployment. <br>
 
 ## Reference(s): <br>
-- [references/graph_construction.md](references/graph_construction.md) <br>
-- [references/pql_writing.md](references/pql_writing.md) <br>
-- [references/kumo_finetuning_sdk.md](references/kumo_finetuning_sdk.md) <br>
-- [references/task_journeys.md](references/task_journeys.md) <br>
-- [references/outputs.md](references/outputs.md) <br>
-- [references/troubleshooting_signals.md](references/troubleshooting_signals.md) <br>
+- [Graph construction](references/graph_construction.md) <br>
+- [PQL writing](references/pql_writing.md) <br>
+- [Kumo SDK code generation reference](references/kumo_finetuning_sdk.md) <br>
+- [Task journeys](references/task_journeys.md) <br>
+- [Predictions, embeddings and destinations](references/outputs.md) <br>
+- [Troubleshooting signals](references/troubleshooting_signals.md) <br>
 - [NVIDIA/kumo-engine#134 (graph visualization)](https://github.com/NVIDIA/kumo-engine/pull/134) <br>
-- [NVIDIA/kumo-engine](https://github.com/NVIDIA/kumo-engine) <br>
 
 
 ## Skill Output: <br>
-**Output Type(s):** [Code, Analysis] <br>
-**Output Format:** [Markdown with inline Python and PQL code blocks] <br>
+**Output Type(s):** [Code, Configuration instructions] <br>
+**Output Format:** [Markdown with inline Python code blocks and PQL statements] <br>
 **Output Parameters:** [1D] <br>
-**Other Properties Related to Output:** [Generates code only; does not run jobs, interpret metrics, or repair runtime errors.] <br>
+**Other Properties Related to Output:** [Generated code uses only SDK signatures documented in the skill references; it does not run jobs or interpret results.] <br>
 
 ## Evaluation Agents Used: <br>
 - Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`) <br>
@@ -48,24 +47,24 @@ Mitigation: Review and scan skill before deployment. <br>
 
 
 ## Evaluation Tasks: <br>
-5 evaluation tasks (4 positive, 1 negative), 1 attempt per task, each in its own isolated sandbox pod (`k8s-sandbox` environment; evaluator version `1.6.10`; evaluated 2026-11-18). Each task was also attempted without the skill as a baseline. <br>
+5 evaluation tasks (4 positive, 1 negative), 1 attempt per task, each in an isolated `k8s-sandbox` pod; each task also run without the skill as a baseline. Evaluated 2026-11-19 with evaluator version `1.6.10`. <br>
 
 ## Evaluation Metrics Used: <br>
 Reported benchmark dimensions: <br>
 - Security: Is it safe to use? Scored from `security` (100%). <br>
 - Correctness: Is the answer correct? Scored from `accuracy` (100%). <br>
 - Discoverability: Was the right skill loaded when needed? Scored from `skill_execution` (100%). <br>
-- Effectiveness: Did the skill help complete the task? Scored from `goal_accuracy` (50%) + `behavior_check` (50%). <br>
-- Efficiency: Did it avoid wasted tool calls and token usage? Scored from `skill_efficiency` (50%) + `token_efficiency` (50%). <br>
+- Effectiveness: Did the skill help complete the task? `goal_accuracy` (50%) + `behavior_check` (50%). <br>
+- Efficiency: Did it avoid wasted tool calls and token usage? `skill_efficiency` (50%) + `token_efficiency` (50%). <br>
 
 Underlying evaluation signals used in this run: <br>
-- `security`: Security: unsafe operations, secret leakage, and unauthorized access. <br>
-- `skill_execution`: Skill Execution: whether the expected skill was selected, decoys were avoided, and the workflow executed. <br>
-- `skill_efficiency`: Tool Productivity: tool-call productivity (legacy wire id; routing is scored under Discoverability). <br>
-- `accuracy`: Accuracy: final-answer correctness against the reference answer. <br>
-- `goal_accuracy`: Goal Accuracy: whether the user's goal was achieved. <br>
-- `behavior_check`: Behavior Check: whether the expected workflow behavior was followed. <br>
-- `token_efficiency`: Token Efficiency: actual uncached prompt plus completion usage (50% of Efficiency). <br>
+- `security`: Unsafe operations, secret leakage, and unauthorized access. <br>
+- `skill_execution`: Whether the expected skill was selected, decoys were avoided, and the workflow executed. <br>
+- `skill_efficiency`: Tool-call productivity (legacy wire id; routing is scored under Discoverability). <br>
+- `accuracy`: Final-answer correctness against the reference answer. <br>
+- `goal_accuracy`: Whether the user's goal was achieved. <br>
+- `behavior_check`: Whether the expected workflow behavior was followed. <br>
+- `token_efficiency`: Actual uncached prompt plus completion usage (50% of Efficiency). <br>
 
 
 
@@ -80,12 +79,12 @@ Recommended for publication based on the completed evaluation evidence in this r
 
 | Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
 |---|---:|---:|
-| Overall | 93.2% — baseline ran, but no comparable score was available; uplift unavailable | 87.0% — baseline ran, but no comparable score was available; uplift unavailable |
-| Security | 100.0% → 100.0% (±0.0 points) | 90.0% → 80.0% (-10.0 points) |
-| Correctness | 68.0% → 100.0% (+32.0 points) | 84.0% → 96.0% (+12.0 points) |
-| Discoverability | 98.8% — baseline ran, but no comparable score was available; uplift unavailable | 88.8% — baseline ran, but no comparable score was available; uplift unavailable |
-| Effectiveness | 50.5% → 78.0% (+27.5 points) | 58.0% → 84.7% (+26.7 points) |
-| Efficiency | 89.3% — baseline ran, but no comparable score was available; uplift unavailable | 85.4% — baseline ran, but no comparable score was available; uplift unavailable |
+| Overall | 94.2% — baseline ran, but no comparable score was available; uplift unavailable | 93.7% — baseline ran, but no comparable score was available; uplift unavailable |
+| Security | 100.0% → 100.0% (±0.0 points) | 90.0% → 100.0% (+10.0 points) |
+| Correctness | 68.0% → 100.0% (+32.0 points) | 84.0% → 100.0% (+16.0 points) |
+| Discoverability | 100.0% — baseline ran, but no comparable score was available; uplift unavailable | 95.0% — baseline ran, but no comparable score was available; uplift unavailable |
+| Effectiveness | 50.2% → 82.9% (+32.7 points) | 60.0% → 89.3% (+29.3 points) |
+| Efficiency | 88.3% — baseline ran, but no comparable score was available; uplift unavailable | 84.3% — baseline ran, but no comparable score was available; uplift unavailable |
 
 **How to read this table:** baseline is the same task attempted without the target skill. Scores are rounded to one decimal; threshold-adjacent values use additional precision so their displayed band matches the verdict. Uplift is derived from those displayed scores and shown in percentage points.
 
@@ -93,16 +92,16 @@ Example: `47.0% → 92.0% (+45.0 points)` means the skill-assisted run scored 92
 
 A partial dimension was calculated from only the available configured signals; review the detailed report before relying on it.
 
-#### Comparison details
+### Comparison details
 
 Shared-source comparisons use the same signals and weights on both conditions. They do not replace the full dimension scores above or change the publication verdict.
 
 | Agent | Dimension | Basis | Baseline → With skill (uplift) | Explanation |
 | --- | --- | --- | --- | --- |
 | claude-code | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| claude-code | Efficiency | Token-only comparison | 94.3% → 87.8% (-6.5 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| claude-code | Efficiency | Token-only comparison | 95.4% → 88.4% (-7.0 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 | codex | Discoverability | Dimension comparison | N/A | Discoverability is not applicable to the no-skill baseline; there is no installed skill to discover. |
-| codex | Efficiency | Token-only comparison | 77.4% → 87.0% (+9.6 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
+| codex | Efficiency | Token-only comparison | 78.9% → 86.7% (+7.8 points) | Only Token Efficiency is comparable; the full dimension scores use different evaluator sources. |
 
 ### Tier Status
 
@@ -113,7 +112,7 @@ Shared-source comparisons use the same signals and weights on both conditions. T
 | Tier 3 | Live agent evaluation | **PASS** | 2 agent(s); 5 task(s) |
 
 ## Skill Version(s): <br>
-0.1.0 (source: pyproject.toml; git SHA 8aaa6cb3, committed 2026-11-18) <br>
+0.1.0 (source: pyproject.toml); git SHA bfbf737f, committed 2026-11-18 <br>
 
 ## Ethical Considerations: <br>
 NVIDIA believes Trustworthy AI is a shared responsibility and we have established policies and practices to enable development for a wide array of AI applications. When downloaded or used in accordance with our terms of service, developers should work with their internal team to ensure this skill meets requirements for the relevant industry and use case and addresses unforeseen product misuse. <br>
