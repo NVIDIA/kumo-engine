@@ -26,6 +26,7 @@ from kumo_core.utils.nofile import ensure_nofile
 from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
 from kumoapi.jobs import WriteMode
+from kumoapi.model_plan import TrainingTableGenerationPlan
 from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
@@ -121,6 +122,7 @@ __all__ = [
     "PredictionManifest",
     "PredictiveQuery",
     "TrainingTable",
+    "TrainingTableGenerationPlan",
     "PredictionTable",
     "Trainer",
     "TrainingResult",

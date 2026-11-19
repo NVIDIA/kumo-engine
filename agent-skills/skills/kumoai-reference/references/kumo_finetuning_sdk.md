@@ -59,7 +59,7 @@ Top-level names, complete (Source: shipped package (`kumo.engine.__all__`)):
 configure  Connector  SnowflakeConnector  S3Connector  GCSConnector  BigQueryConnector
 DatabricksConnector  FileConnector  SourceTable  SQLSourceTable  Identity  SnowflakeIdentity
 S3Identity  GCSIdentity  BigQueryIdentity  DatabricksIdentity  Column  Table  Edge  Graph  GraphSnapshot
-PredictiveQuery  TrainingTable  PredictionTable  Trainer  TrainingResult  PredictionResult
+PredictiveQuery  TrainingTable  TrainingTableGenerationPlan  PredictionTable  Trainer  TrainingResult  PredictionResult
 ModelOutputConfig  PredictionOutputConfig  TrainingTableOutputConfig  ModelRegistryLocation
 EmbeddingModelStore  GloVeVectors  TokenEmbeddingModel  __version__
 ```
