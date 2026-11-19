@@ -573,6 +573,8 @@ class _Reads:
             following: list[_Route] = []
             origin = f"neighborhoods.{name} hop {depth}"
             for traversal in layer.samples:
+                if traversal.strategy is None:
+                    raise ValueError("resolve GraphSample.strategy before deriving serving rows")
                 relation = self.relations[traversal.relation]
                 start = (
                     relation.left_table

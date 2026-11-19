@@ -1537,7 +1537,7 @@ class DiskGraphSource:
         runtime = getattr(self, "_runtime_batch", None)
         if (
             runtime is not None
-            and runtime["_anchor_neighborhood"] == source
+            and (source in runtime["graphs"] or runtime["_anchor_neighborhood"] == source)
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
@@ -2127,6 +2127,8 @@ class DiskGraphSource:
         for layer in neighborhood.layers:
             fanouts = {}
             for traversal in layer.samples:
+                if traversal.strategy is None:
+                    raise ValueError("resolve GraphSample.strategy before compiling the plan")
                 relation = self._relations[traversal.relation]
                 target_table = (
                     relation.right_table

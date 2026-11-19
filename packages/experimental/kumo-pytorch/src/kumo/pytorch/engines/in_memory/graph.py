@@ -218,6 +218,8 @@ class InMemoryGraphSampler:
         seed: int,
         epoch: int,
     ) -> tuple[str, list[dict[str, Any]]]:
+        if traversal.strategy is None:
+            raise ValueError("resolve GraphSample.strategy before sampling neighbors")
         relation = self._relations[traversal.relation]
         if traversal.direction == "forward":
             expected, source_key = relation.left_table, relation.left_key

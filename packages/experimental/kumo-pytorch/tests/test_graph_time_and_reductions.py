@@ -141,6 +141,24 @@ class TestGraphSampling:
         assert traversal.strategy == "uniform"
         assert _sampled_event_ids(_neighborhood(), SCHEMA_NO_CLOCK) == {1, 2, 3}
 
+    def test_in_memory_rejects_unresolved_strategy(self):
+        sampler = InMemoryGraphSampler(SCHEMA, ROWS)
+        with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
+            sampler._collect(
+                "users",
+                _neighborhood(),
+                (GraphRoot(sample_id="s1", entity_id=1, cutoff=CUTOFF),),
+                seed=0,
+                epoch=0,
+            )
+
+    def test_serving_reads_reject_unresolved_strategy(self):
+        from kumo.pytorch.serving_rows import _BatchNames, _collect
+
+        contract = _contract(_neighborhood())
+        with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
+            _collect(contract, contract.sample, _BatchNames(contract.sample, contract.batch))
+
     @pytest.mark.parametrize("schema, expected", ((SCHEMA, "recent"), (SCHEMA_NO_CLOCK, "uniform")))
     def test_default_uses_the_traversal_destination_in_reverse(self, schema, expected):
         schema = DataSchema(

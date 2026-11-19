@@ -136,7 +136,24 @@ def test_native_strategy_semantics(graph_data, tmp_path, clock, strategy):
 
 
 @pytest.mark.parametrize("names", [("graph",), ("graph", "other")])
-def test_seed_replays_direct_native_and_named_neighborhoods(graph_data, tmp_path, names):
+def test_seed_replays_direct_native_and_named_neighborhoods(
+    graph_data, tmp_path, monkeypatch, names
+):
+    import diskgraph
+
+    sampler_engine, runtime_index = diskgraph.SamplerEngine, diskgraph.RuntimeIndex
+    sampler_seeds, runtime_seeds = [], []
+
+    def sampler(*args, **kwargs):
+        sampler_seeds.append(kwargs["random_seed"])
+        return sampler_engine(*args, **kwargs)
+
+    def runtime(*args, **kwargs):
+        runtime_seeds.append(kwargs["rnd_seed"])
+        return runtime_index(*args, **kwargs)
+
+    monkeypatch.setattr(diskgraph, "SamplerEngine", sampler)
+    monkeypatch.setattr(diskgraph, "RuntimeIndex", runtime)
     schema, dataset, anchors, requests = graph_data
     spec = contract(schema, "uniform", names=names)
     answers = []
@@ -156,8 +173,40 @@ def test_seed_replays_direct_native_and_named_neighborhoods(graph_data, tmp_path
             if len(names) == 1:
                 assert expected == selections(task, output_format="columnar", batch_size=2)
             answers.append(expected)
+        assert sampler_seeds and all(value == seed for value in sampler_seeds)
+        assert runtime_seeds == [seed]
+        sampler_seeds.clear()
+        runtime_seeds.clear()
     assert answers[0] == answers[1]
-    assert answers[0] != answers[2]
+
+
+def test_diskgraph_rejects_unresolved_strategy(graph_data, tmp_path):
+    schema, dataset, _anchors, _requests = graph_data
+    spec = contract(schema)
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=tmp_path / "index")) as plan:
+        with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
+            plan._source._sampling_plan(spec.sample.neighborhoods["graph"])
+
+
+@pytest.mark.parametrize("names", [("graph",), ("a", "b"), ("a", "b", "c")])
+def test_inspectable_reuses_every_prefetched_neighborhood(graph_data, tmp_path, monkeypatch, names):
+    schema, dataset, anchors, requests = graph_data
+    with (
+        api.prepare(
+            contract(schema, "uniform", names=names),
+            dataset,
+            api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+        ) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        expected = selections(task, requests)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("prefetched graph fell back to standalone sampling")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(task._assembler._source, "_root_ids", forbidden)
+            assert selections(task, output_format="inspectable") == expected
 
 
 @pytest.mark.parametrize("fanout", [40, 100])
