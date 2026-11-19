@@ -583,5 +583,7 @@ function marker(g, px, py) {
 function picker(parent, text, kind) {
   const field = H('label', 'kx-sg-field kx-sg-' + kind, parent);
   H('span', null, field, text);
-  return H('select', null, field);
+  const select = H('select', null, field);
+  S('path', {d: 'm4 6 4 4 4-4'}, S('svg', {viewBox: '0 0 16 16', 'aria-hidden': 'true'}, field));
+  return select;
 }

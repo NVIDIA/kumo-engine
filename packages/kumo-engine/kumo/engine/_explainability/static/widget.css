@@ -158,14 +158,14 @@ margin-top:10px;font-size:12px;align-items:baseline}
 .kx-sg-field select {display:block;width:100%;min-height:38px;margin:0;padding:8px 36px 8px 10px;border:0;border-radius:6px;
   background:var(--kx-bg);color:var(--kx-ink);font:600 13px/1.4 var(--kx-font);cursor:pointer;appearance:none;text-overflow:ellipsis}
 .kx-sg-field select:hover {background:var(--kx-soft)}
-.kx-sg-field::after {content:'';position:absolute;right:10px;bottom:11px;width:16px;height:16px;pointer-events:none;background:var(--kx-muted);
-  mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+.kx-sg-field svg {position:absolute;right:10px;bottom:11px;width:16px;height:16px;pointer-events:none;stroke:var(--kx-muted);
+  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;fill:none}
 .kx-sg-pager {display:flex;align-items:center;gap:6px;min-height:38px}
 .kx-sg-pager button {border:0;border-radius:4px;background:transparent;padding:7px 12px;cursor:pointer;font-size:13px}
 .kx-sg-pager button:hover:not(:disabled){background:var(--kx-soft)}
 .kx-sg-pager button:disabled {opacity:.35;cursor:default}
 @container(max-width:500px) {.kx-sg-field {width:100%}}
-@media(pointer:coarse) {.kx-sg-field select {min-height:44px}.kx-sg-field::after {bottom:14px}}
+@media(pointer:coarse) {.kx-sg-field select {min-height:44px}.kx-sg-field svg {bottom:14px}}
 .kx-sg-outcome{display:flex;flex-wrap:wrap;gap:10px 28px;padding:12px 0 15px;font-size:13px}
 .kx-sg-outcome span{color:var(--kx-muted)}
 .kx-sg-outcome strong{display:block;color:var(--kx-ink);font-size:18px;font-weight:600;margin-top:2px}
