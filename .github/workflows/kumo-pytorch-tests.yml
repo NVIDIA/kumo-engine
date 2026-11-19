@@ -2,7 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: PyTorch — Original vs Expanded DiskGraph Tests
+name: PyTorch — Original vs Expanded Tests
+run-name: Comparison / Original + Expanded / main 44030297
 
 # One-off comparison branch, not a change to PR #353 or the production workflows.
 on:  # yamllint disable-line rule:truthy
@@ -24,7 +25,7 @@ jobs:
       matrix:
         include:
           - lane: original
-            label: Original / DiskGraph-only baseline
+            label: Original / Unmodified upstream suite
           - lane: package
             label: Expanded / Package checks
           - lane: fixtures
@@ -40,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
+          ref: 44030297e7afe0d5ae5bfe7907d715c81d1cd42b
           persist-credentials: false
       - name: Fetch the pinned proposed tests
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -54,7 +56,8 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Install shared test-only dependency
+      - name: Install expanded test-only dependency
+        if: matrix.lane != 'original'
         run: uv pip install polars==2.1.0
       - name: Prepare tests without replacing package code
         env:
@@ -71,10 +74,11 @@ jobs:
               shutil.copy2(proposed / 'test/kumo_pytorch/ci_reporting.py', suite)
           else:
               shutil.copytree(proposed / 'test/kumo_pytorch', suite, dirs_exist_ok=True)
-              for name in ('tests', 'conformance'):
+              for name in ('tests', 'conformance', 'docs', 'examples'):
                   target = root / 'packages/experimental/kumo-pytorch' / name
                   shutil.rmtree(target)
                   shutil.copytree(proposed / 'packages/experimental/kumo-pytorch' / name, target)
+              shutil.copy2(proposed / 'packages/experimental/kumo-pytorch/README.md', root / 'packages/experimental/kumo-pytorch/README.md')
           runtime = ['packages/experimental/kumo-pytorch/src', 'packages/diskgraph']
           pinned_trees = {'packages/experimental/kumo-pytorch/src': '5625d42b56b3f32fdf6d1cf1dcd81351e36314b2', 'packages/diskgraph': '98684e7583a0c2adb2333fcc2fb70875b11dbba4'}
           for path, tree in pinned_trees.items():
@@ -87,21 +91,49 @@ jobs:
           expected = root / 'packages/experimental/kumo-pytorch/src'
           assert Path(kumo.pytorch.__file__).is_relative_to(expected), kumo.pytorch.__file__
           evidence = {
-              'package_and_diskgraph_revision': '3fde15c7f9a9652f40ed77b2704479e9ce868f4b',
+              'package_and_diskgraph_revision': '44030297e7afe0d5ae5bfe7907d715c81d1cd42b',
               'expanded_tests_revision': '5b1c9f2c1f97c59ff612034f6ff6f683b2e238bf',
               'lane': os.environ['LANE'], 'package_import': kumo.pytorch.__file__,
               'runtime_unchanged': True,
           }
           Path(os.environ['RUNNER_TEMP'], 'comparison-revision.json').write_text(json.dumps(evidence, indent=2))
           PYCODE
-          echo "BASELINE_SELECTION=$RUNNER_TEMP/baseline-selection.json" >> "$GITHUB_ENV"
           echo "PYTHONPATH=$GITHUB_WORKSPACE:$GITHUB_WORKSPACE/packages/experimental/kumo-pytorch:$GITHUB_WORKSPACE/packages/experimental/kumo-pytorch/src" >> "$GITHUB_ENV"
-      - name: Run original DiskGraph tests unchanged
+      - name: Original golden cases unchanged
         if: matrix.lane == 'original'
+        working-directory: packages/experimental/kumo-pytorch
+        env:
+          PYTEST_ADDOPTS: --junitxml=${{ runner.temp }}/original-goldens.xml
+          KUMO_CI_REPORTS: $RUNNER_TEMP/original-goldens.xml
         run: |
-          python3 test/kumo_pytorch/ci_reporting.py run --title "$KUMO_CI_LABEL" -- \
-            python .github/scripts/pytorch-original-baseline.py --tb=long \
-            --junitxml="$RUNNER_TEMP/comparison.xml"
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title "Original / Golden cases" -- \
+            python -m conformance --engine in_memory
+      - name: Original test suite unchanged
+        if: matrix.lane == 'original'
+        working-directory: packages/experimental/kumo-pytorch
+        env:
+          PYTEST_ADDOPTS: --junitxml=${{ runner.temp }}/comparison.xml
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title "Original / Package tests" -- \
+            python -m pytest -q
+      - name: Original style checks unchanged
+        if: matrix.lane == 'original'
+        working-directory: packages/experimental/kumo-pytorch
+        env:
+          KUMO_CI_REPORTS: ''
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title "Original / Style" -- bash -e -o pipefail <<'STYLE'
+          uvx ruff@0.17.3 check .
+          uvx ruff@0.17.3 format --check .
+          STYLE
+      - name: Original package build unchanged
+        if: matrix.lane == 'original'
+        working-directory: packages/experimental/kumo-pytorch
+        env:
+          KUMO_CI_REPORTS: ''
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title "Original / Package build" -- \
+            uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
       - name: Run expanded package checks on latest main
         if: matrix.lane == 'package'
         working-directory: packages/experimental/kumo-pytorch
@@ -126,15 +158,30 @@ jobs:
             python -m pytest -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
             "test/kumo_pytorch/$tests" --required-coverage="$profile" -q --tb=long \
             --junitxml="$RUNNER_TEMP/comparison.xml"
+      - name: Record group status
+        if: ${{ always() }}
+        env:
+          LANE: ${{ matrix.lane }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          Path(os.environ['RUNNER_TEMP'], 'group-status.json').write_text(json.dumps({
+              'lane': os.environ['LANE'], 'status': os.environ['OUTCOME'],
+              'job_url': f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+          }))
+          PYCODE
       - name: Retain comparison evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
-          name: comparison-${{ matrix.lane }}
+          name: comparison-results-${{ matrix.lane }}
           path: |
             ${{ runner.temp }}/comparison.xml
             ${{ runner.temp }}/comparison-revision.json
-            ${{ runner.temp }}/baseline-selection.json
+            ${{ runner.temp }}/original-goldens.xml
+            ${{ runner.temp }}/group-status.json
             ${{ runner.temp }}/pytorch-ci-logs
           retention-days: 14
       - name: Publish readable results
@@ -144,3 +191,31 @@ jobs:
           title: ${{ matrix.label }}
           artifact: comparison-diagnostics-${{ matrix.lane }}
           status: ${{ job.status }}
+
+  summary:
+    name: Comparison / All results
+    needs: [diskgraph-wheel, compare]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          pattern: comparison-results-*
+          path: ${{ runner.temp }}/comparison-results
+      - name: Summarize every group
+        if: ${{ always() }}
+        env:
+          GROUP_RESULT: ${{ needs.compare.result }}
+          BUILD_RESULT: ${{ needs.diskgraph-wheel.result }}
+        run: python3 .github/scripts/pytorch-comparison-summary.py "$RUNNER_TEMP/comparison-results"
+      - name: Retain combined report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: comparison-summary
+          path: ${{ runner.temp }}/comparison-results/report.md
+          retention-days: 14
