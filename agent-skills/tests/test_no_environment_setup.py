@@ -7,14 +7,17 @@ This holds even when a sentence is a prohibition. An earlier version told the ag
 package-file path, and the agent asked the user for one anyway: the placeholder existed only inside
 the rule that forbade it. So the words are checked by absence, in every file under `skills/`,
 including the host files about Snowflake ML Jobs, where Kumo reaches the job through host-supplied
-values (`KUMO_JOB_RUNTIME`, `KUMO_JOB_REQUIREMENTS`) that the skill only names.
+values (`KUMO_JOB_RUNTIME`, `KUMO_JOB_REQUIREMENTS`) that the skill only names. The catalog's skill
+cards and evals under `nvskills/` are published beside the skills, so they are checked too.
 """
 import re
 from pathlib import Path
 
 import pytest
 
-SKILLS = Path(__file__).resolve().parents[1] / 'skills'
+ROOT = Path(__file__).resolve().parents[1]
+SKILLS = ROOT / 'skills'
+CATALOG = ROOT / 'nvskills'
 
 # `pip` as a word or as the `pip_` prefix of a submission keyword; `.zip` / `.whl` as extensions,
 # so `zipfile.ZipFile` in the retention script does not count.
@@ -22,16 +25,17 @@ SETUP_WORDS = re.compile(r'install|\bpip(?:\b|_)|wheel|\.whl\b|\.zip\b', re.IGNO
 
 
 def skill_files() -> list[Path]:
-    return sorted(p for p in SKILLS.rglob('*')
+    return sorted(p for root in (SKILLS, CATALOG) for p in root.rglob('*')
                   if p.is_file() and '__pycache__' not in p.parts)
 
 
 def test_files_are_found() -> None:
     names = {p.name for p in skill_files()}
-    assert {'SKILL.md', 'adapter.md', 'ml_job.md', 'retain_artifacts.py'} <= names
+    assert {'SKILL.md', 'adapter.md', 'ml_job.md', 'retain_artifacts.py',
+            'skill-card.md', 'evals.json'} <= names
 
 
-@pytest.mark.parametrize('path', skill_files(), ids=lambda p: str(p.relative_to(SKILLS)))
+@pytest.mark.parametrize('path', skill_files(), ids=lambda p: str(p.relative_to(ROOT)))
 def test_no_setup_words(path: Path) -> None:
     hits = [f'{n}: {line.strip()}' for n, line in enumerate(path.read_text().splitlines(), 1)
             if SETUP_WORDS.search(line)]
