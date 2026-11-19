@@ -162,6 +162,7 @@ from kumo.engine.trainer.output_config import (
 )
 
 if TYPE_CHECKING:
+    from kumo.engine._explainability import ExplainabilityView
     from kumo.engine._monitoring import DriftReport, EvaluationResult
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,19 @@ class TrainingResult:
         manifest = self.manifest
         return self._tracking or (None if manifest is None else
                                   manifest.tracking)
+
+    def visualize(self) -> 'ExplainabilityView':
+        """The model's evaluation and explanation widget.
+
+        Displayed in a notebook cell, it shows how the model scores on the
+        holdout against simple baselines and the last-epoch training score, and
+        which input columns it relies on. It reads the files this fit left
+        on disk; a result restored from a bundle alone shows what the bundle
+        holds. ``.html()`` returns the same widget as self-contained HTML.
+        """
+        from kumo.engine._explainability import for_result
+
+        return for_result(self)
 
     def predict(self, *args: Any, **kwargs: Any) -> 'PredictionResult':
         """Score with this model, as :meth:`Trainer.predict`."""

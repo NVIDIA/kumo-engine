@@ -5,6 +5,26 @@ It does not retrain a model. Batch prediction can separately generate diagnostic
 for its current inputs with `Trainer.predict(..., explanations=True)`, described
 below. Explanation generation can fail without invalidating training or prediction.
 
+## Notebook widgets
+
+Display `training_result.visualize()` to inspect training Evaluation and Explanation views.
+Under **Evaluation**, choose **Metrics → Epoch history** to compare training and validation scores across the experiments that preceded model selection.
+The tuning metric opens first when recorded. Select another metric or toggle individual experiments to compare their curves on the same scale.
+Each point represents a recorded epoch. Missing scores leave gaps, and epochs from the later refit are excluded.
+The widget reads `metric-history.json` from the published bundle or `auto_train_progress.json` from the retained run. The view appears when either source contains training or validation series.
+
+Use **Export PDF** to print every chart view on the currently open page, including All metrics, Epoch history and Against baselines where available, then choose **Save as PDF** in the browser dialog.
+The export preserves the selected explanation and chart controls.
+The other tab is excluded.
+If the notebook blocks pop-ups, open the downloaded print page to save it as PDF.
+**Export HTML** downloads the complete interactive widget with its current chart and customer selections, including the saved data needed to explore other records offline.
+Neither export requires a running kernel after saving.
+
+Call `.html()` on the returned view for self-contained HTML, or `.as_widget()` to request the optional anywidget transport explicitly.
+The saved notebook snapshot includes the model summary, metrics and default Evaluation charts, followed by “To activate the widget, rerun this cell.”
+Individual subgraphs are omitted from that static snapshot.
+Opening the widget only reads retained artifacts; it never starts training or prediction.
+
 ## Access the selected training run
 
 Capture the result returned by your existing training call:
@@ -127,7 +147,7 @@ aggregated nodes. A reference can exist for a missing graph; check `available`.
 identifiers organized by sampling category; they are not interchangeable with
 collector IDs. Without those mappings, arbitrary original-key lookup is not
 available. These bounded samples are training context, not explanations for
-every entity. The API does not render interactive graphs.
+every entity. The notebook widget renders these saved graphs interactively.
 
 ## Availability and validation
 
