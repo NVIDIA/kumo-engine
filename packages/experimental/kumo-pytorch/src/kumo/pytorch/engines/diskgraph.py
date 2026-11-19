@@ -32,7 +32,13 @@ from kumo.pytorch.column_stats import (
     token_lengths_file,
 )
 from kumo.pytorch.contract.batch import EntitySource, EventSource, Input
-from kumo.pytorch.contract.dtypes import DType, _arrow_scalar_value, _arrow_values, arrow_float64
+from kumo.pytorch.contract.dtypes import (
+    DType,
+    _arrow_scalar_value,
+    _arrow_values,
+    _strip_utc_timezone,
+    arrow_float64,
+)
 from kumo.pytorch.contract.sample import (
     Aggregate,
     BuiltSample,
@@ -546,10 +552,8 @@ class DiskGraphSource:
             "nanoseconds": "ns",
         }.get(self._clock)
         if self._pa.types.is_integer(values.type):
-            values = self._pc.cast(
-                self._pc.cast(values, self._pa.int64()), self._pa.timestamp("s", tz="UTC")
-            )
-        values = self._pc.floor_temporal(values, unit=self._clock[:-1])
+            values = self._pc.cast(self._pc.cast(values, self._pa.int64()), self._pa.timestamp("s"))
+        values = self._pc.floor_temporal(_strip_utc_timezone(values), unit=self._clock[:-1])
         if unit is not None:
             aligned = self._pc.cast(values, self._pa.timestamp(unit, tz="UTC"), safe=True)
             return self._pc.cast(aligned, self._pa.int64())
@@ -1941,7 +1945,7 @@ class DiskGraphSource:
             unit = {"s": "second", "ms": "millisecond", "us": "microsecond", "ns": "nanosecond"}[
                 dtype.unit
             ]
-            values = self._pc.ceil_temporal(values, unit=unit)
+            values = self._pc.ceil_temporal(_strip_utc_timezone(values), unit=unit)
         return self._pc.cast(values, dtype.to_arrow(), safe=True)
 
     def _entity_arrays(
@@ -2001,7 +2005,7 @@ class DiskGraphSource:
             )
         if isinstance(operation, CalendarPart):
             function = {"weekday": "day_of_week"}.get(operation.part, operation.part)
-            result = getattr(self._pc, function)(operands[0])
+            result = getattr(self._pc, function)(_strip_utc_timezone(operands[0]))
         elif isinstance(operation, MapValues):
             fallback = operation.fallback if operation.unknown == "fallback" else None
             result = self._pa.repeat(
