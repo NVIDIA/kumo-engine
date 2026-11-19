@@ -48,7 +48,7 @@ class Snapshot:
             elif view['id'] == 'heatmap':
                 self._heatmap(view)
             elif card['id'] in ('scores', 'predicted', 'forecast'):
-                self._comparison(card['id'], view)
+                self._comparison(view)
             if card.get('coverage'):
                 self._line(card['coverage'])
 
@@ -68,9 +68,8 @@ class Snapshot:
         self._y += 23
         self._label('Metric', 16, self._y, bold=True)
         self._label('Holdout', 249, self._y, anchor='end', bold=True)
-        scope = 'Training · last epoch' if any(
-            t.get('training_scope') for t in tiles) else 'Training'
-        self._label(scope, 432, self._y, anchor='end', bold=True)
+        self._label('Training · last epoch', 432, self._y, anchor='end',
+                    bold=True)
         for tile in tiles:
             names = _wrap(tile['name'], 22)
             self._y += 23
@@ -80,15 +79,14 @@ class Snapshot:
                         anchor='end')
             for name in names[1:]:
                 self._line(name)
-            if tile.get('baselines'):
-                self._line(' · '.join(b['text'] for b in tile['baselines']),
-                           size=13)
+            if tile['baselines']:
+                self._line(' · '.join(tile['baselines']), size=13)
 
     def _matrix(self, card: dict[str, Any]) -> None:
-        cls = card['classes'][0]
-        point = cls['cutoffs'][card['default']]
-        self._line(
-            f'Confusion matrix at cutoff {card["grid_text"][card["default"]]}')
+        cls, cutoff = card['classes'][0], card['grid_text'][card['default']]
+        counts = cls['counts'][card['default']]
+        n = sum(counts)
+        self._line(f'Confusion matrix at cutoff {cutoff}')
         self._y += 23
         for j, column in enumerate(cls['matrix_columns']):
             self._label(column, 235 + j * 134, self._y, anchor='middle',
@@ -102,10 +100,12 @@ class Snapshot:
                     f'width="124" height="28" rx="4" '
                     f'fill="{THEME["row_highlight" if j == 0 else "surface"]}"/>'
                 )
-                self._label(point['cells'][i + 2 * j], 235 + j * 134, self._y,
-                            anchor='middle')
+                count = counts[i + 2 * j]
+                self._label(f'{count:,} · {fmt.percent(count / n)}',
+                            235 + j * 134, self._y, anchor='middle')
         self._y += 8
-        self._line(point['matrix_callout'])
+        self._line(f'{fmt.percent((counts[0] + counts[1]) / n)} flagged at '
+                   f'cutoff {cutoff}')
 
     def _heatmap(self, view: dict[str, Any]) -> None:
         self._line(view['label'], bold=True)
@@ -158,17 +158,12 @@ class Snapshot:
         if view.get('coverage'):
             self._line(view['coverage'])
 
-    def _comparison(self, card: str, view: dict[str, Any]) -> None:
-        keys = {
-            'scores': ('score', 'observed'),
-            'predicted': ('predicted', 'actual'),
-            'forecast': ('model', 'zero')
-        }[card]
+    def _comparison(self, view: dict[str, Any]) -> None:
         rows = view.get('tenths', view.get('steps', []))
         self._line(view['label'] + ' · ' + view['y'])
         values = [
-            v for row in rows for key in keys
-            if isinstance(v := row[key], (int, float)) and math.isfinite(v)
+            v for row in rows for v in row['values']
+            if isinstance(v, (int, float)) and math.isfinite(v)
         ]
         low, high = min([0, *values]), max([0, *values])
         colors = (THEME['accent'], THEME['edge'])
@@ -183,15 +178,14 @@ class Snapshot:
         for row in rows:
             self._y += 34
             self._label(row['label'], 16, self._y)
-            for i, key in enumerate(keys):
+            for i, (value, text) in enumerate(zip(row['values'], row['texts'])):
                 y = self._y - 14 + i * 14
-                value = row[key]
                 if isinstance(value, (int, float)) and math.isfinite(value):
                     end = zero + value * scale
                     self._marks.append(
                         f'<rect x="{min(end, zero):.2f}" y="{y}" width="{abs(end-zero):.2f}" '
                         f'height="8" fill="{colors[i]}"/>')
-                self._label(row[key + '_text'], 430, y + 8, 13, 'end')
+                self._label(text, 430, y + 8, 13, 'end')
             self._marks.append(f'<path d="M{zero:.2f} {self._y - 14}v22" '
                                f'stroke="{THEME["edge"]}"/>')
         if view.get('reference_callout'):

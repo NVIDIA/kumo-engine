@@ -172,8 +172,8 @@ function fill(svg, series) {
   return series.hatch ? hatch(svg, series.color) : series.color;
 }
 
-/* A legend swatch: a line (dashed, or with a marker dot), a dot or a
-   rounded square. */
+/* A legend swatch: a line (dashed, or with a marker dot) or a rounded
+   square. */
 function swatch(parent, item) {
   const line = item.kind === 'line' || item.kind === 'dash';
   const w = item.w || (line ? 22 : 12), h = item.h || 12;
@@ -182,8 +182,6 @@ function swatch(parent, item) {
     S('path', {d: `M1 ${h / 2}H${w - 1}`, style: {stroke: item.color, strokeWidth: item.width || 2.2,
       strokeDasharray: item.dash || (item.kind === 'dash' ? '4 3' : null), fill: 'none'}}, svg);
     if (item.marker) S('circle', {cx: 11, cy: 6, r: 3.2, style: {fill: item.color}}, svg);
-  } else if (item.kind === 'dot') {
-    S('circle', {cx: 6, cy: 6, r: 4.5, style: {fill: item.color}}, svg);
   } else {
     S('rect', {width: w, height: h, rx: item.rx || 2.5, style: {fill: item.hatch ? hatch(svg, item.color) : item.color,
       opacity: item.opacity || null}}, svg);
@@ -418,18 +416,30 @@ function columns(host, width, opts) {
   return svg;
 }
 
-/* On a chart of tenths only the lowest and highest tenth carry their values;
-   the gap callout carries the tenth it names and gridlines the rest. */
-function endLabels(view, i) {
-  return (i === 0 || i === view.tenths.length - 1) && i !== view.highlight;
+/* Tenths of a score, prediction or forecast: two series against their
+   overall average, where only the lowest and highest tenth carry values and
+   the callout carries the tenth it names; or one share per tenth against an
+   equal share, the highest tenth highlighted. */
+function tenthsView(body, view, title, ctx) {
+  const pair = view.tenths[0].values.length > 1, last = view.tenths.length - 1;
+  if (pair) legend(body, [{label: view.series[0], color: ROLE.model}, {label: view.series[1], color: ROLE.actual},
+    {label: 'all ' + ENTITIES, kind: 'dash', color: COLOR.ink, width: 1.4}]);
+  return chartHost(body, (host, width) => columns(host, width, {
+    categories: view.tenths.map((t, i) => ({...t,
+      texts: pair && (i % last || i === view.highlight) ? [] : t.texts})),
+    series: pair ? [{color: ROLE.model}, {color: ROLE.actual}] : [{color: ROLE.actual}],
+    highlight: view.highlight, highlightBand: pair, highlightBar: pair ? null : 0,
+    ref: {value: view.reference, text: view.reference_callout}, notes: [{index: view.highlight, text: view.callout}],
+    tickFmt: pair ? null : v => Math.round(v * 100) + '%',
+    yTitle: view.y, xTitle: view.x, height: 300, label: title}), ctx);
 }
 
 /* Horizontal bars with labels on the left. rows: [{label, sub, values,
    texts, color, hatch, highlight, note, key}]; series as in columns. */
 function rowsChart(host, width, opts) {
   const rows = opts.rows, m = opts.series ? opts.series.length : 1;
-  const barH = opts.barH || (m > 1 ? 9 : 16), gap = m > 1 ? 2 : 0;
-  const rowH = opts.rowH || Math.max(m * barH + (m - 1) * gap + 12, opts.rows.some(r => r.sub) ? 36 : 26);
+  const barH = m > 1 ? 9 : 16, gap = m > 1 ? 2 : 0;
+  const rowH = Math.max(m * barH + (m - 1) * gap + 12, rows.some(r => r.sub) ? 36 : 26);
   const svg = svgRoot(host, width, 10, opts.label);
   const probe = T(svg, 0, 0, '', 'kx-t-axis', null, {style: {fontWeight: 700}});
   let labelW = 0;
@@ -447,7 +457,7 @@ function rowsChart(host, width, opts) {
     const t = ticks(lo, hi, Math.max(3, Math.floor((width - labelW) / 90)));
     tk = {values: t.values.filter(v => v >= lo - 1e-9 && v <= hi + 1e-9), lo, hi, step: t.step};
   }
-  const top = (opts.top || 6) + (opts.axisTitleTop ? 18 : 0);
+  const top = opts.top || 6;
   const left = labelW + 18 + (opts.marker ? 14 : 0);
   const right = opts.right || 140;
   const x0 = left, x1 = Math.max(left + 60, width - right);
@@ -458,7 +468,7 @@ function rowsChart(host, width, opts) {
   const g = S('g', {}, svg);
   const space = new Space(0, width, 0, height);
   const yEnd = top + rows.length * rowH;
-  if (tk) xGrid(g, x, tk, top - 4, yEnd + 2, opts.tickFmt);
+  if (tk) xGrid(g, x, tk, top - 4, yEnd + 2);
   const fills = (opts.series || []).map(s => fill(svg, s));
   rows.forEach((r, i) => {
     const ry = top + i * rowH;
@@ -505,17 +515,11 @@ function rowsChart(host, width, opts) {
     });
     if (r.note) T(holder, endX + 10, mid + 4, r.note, 'kx-t-note-plain');
   });
-  if (opts.refX !== undefined) {
-    const px = x(opts.refX.value);
-    S('path', {d: `M${px} ${top - 6}V${yEnd + 2}`, style: {stroke: COLOR.ink, strokeWidth: 1.4,
-      strokeDasharray: '5 4'}}, g);
-    if (opts.refX.text) T(g, px, top - 10, opts.refX.text, 'kx-t-note-plain', 'middle');
-  }
   if (opts.xTitle) T(g, (x0 + x1) / 2, height - 4, opts.xTitle, 'kx-t-axis', 'middle');
   return {svg, x, rowY: i => top + i * rowH, rowH, x0, x1, space, g};
 }
 
-/* Line chart on numeric axes: lines [{points, color, width, dash, area}],
+/* Line chart on numeric axes: lines [{points, color, width, dash}],
    marker {x, y}, notes placed by the caller through the returned space. */
 function curves(host, width, opts) {
   const height = opts.height || 300;
@@ -537,8 +541,6 @@ function curves(host, width, opts) {
   const space = new Space(x0, x1 + (opts.extraRight || 0), 2, y1);
   for (const line of opts.lines) {
     const d = line.points.map((p, i) => (i ? 'L' : 'M') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join('');
-    if (line.area) S('path', {d: d + `L${x(line.points[line.points.length - 1][0])} ${y1}L${x(line.points[0][0])} ${y1}Z`,
-      style: {fill: line.area, opacity: 0.5}}, g);
     S('path', {d, style: {fill: 'none', stroke: line.color, strokeWidth: line.width || 2.2,
       strokeDasharray: line.dash || null, strokeLinejoin: 'round', strokeLinecap: 'round'}}, g);
     /* Every segment is reserved along its whole length, so no callout or

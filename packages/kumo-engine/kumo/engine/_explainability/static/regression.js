@@ -11,14 +11,13 @@ function heatmapView(host, width, view) {
   const format = value => value.toLocaleString('en-US', {maximumFractionDigits: decimals}).replace('-', '−');
   const longest = edges => Math.max(...edges.map(value => format(value).length)) * 7;
   const left = Math.max(48, longest(yEdges) + 31), right = Math.max(12, longest(xEdges) / 2 + 4);
-  const probe = T(svgRoot(host, 10, 10), 0, 0, view.densest_callout || '', 'kx-t-note');
-  const calloutW = view.densest ? measure(probe) : 0;
+  const calloutW = measure(T(svgRoot(host, 10, 10), 0, 0, view.densest_callout, 'kx-t-note'));
   host.replaceChildren();
   /* The densest cell's callout sits right at that cell: under the axis when
      the cell is on the bottom row, over the grid when it is on the top row,
      and otherwise in a lane right of the grid, joined by a short leader. */
-  const [dr0] = view.densest || [-1];
-  const place = !view.densest ? null : dr0 === 0 ? 'below' : dr0 === ny - 1 ? 'above' : 'side';
+  const [dr, dc] = view.densest;
+  const place = dr === 0 ? 'below' : dr === ny - 1 ? 'above' : 'side';
   const laneW = calloutW + 34;
   const side = place === 'side' && (width - left - right - laneW) / nx >= 44;
   const cell = Math.max(4, Math.min(64, (width - left - right - (side ? laneW : 0)) / nx));
@@ -31,7 +30,6 @@ function heatmapView(host, width, view) {
   const g = S('g', {}, svg);
   const x0 = left, y1 = top + cellH * ny;
   const max = Math.max(...view.counts.flat());
-  const [dr, dc] = view.densest || [-1, -1];
   const space = new Space(x0, svgW - 2, 2, y1);
   const labels = [];
   for (let r = 0; r < ny; r++) for (let c = 0; c < nx; c++) {
@@ -79,36 +77,29 @@ function heatmapView(host, width, view) {
     T(g, lx, ly, text, null, 'middle', attrs);
   }
   const notes = S('g', {}, svg);
-  if (dr >= 0) {
-    /* The callout is joined to the green cell by a leader that runs along
-       the gutter above the cell's row, clear of every count. */
-    const gy = y1 - (dr + 1) * cellH;
-    const sx = x0 + (dc + 1) * cell - 1;
-    const lx = x0 + dc * cell + cell / 2;
-    const fits = lx - 2 + calloutW <= svgW - 2;
-    if (place === 'below' || place === 'above') {
-      const ty = place === 'below' ? y1 + 40 : top - 12;
-      const from = place === 'below' ? y1 : gy;
-      const to = place === 'below' ? ty - 12 : ty + 4;
-      S('path', {d: `M${lx} ${from}V${to}`, class: 'kx-leader'}, notes);
-      T(notes, fits ? lx - 2 : lx + 2, ty, view.densest_callout, 'kx-t-note', fits ? 'start' : 'end');
-    } else if (side) {
-      const tx = x0 + plotW + 12;
-      S('path', {d: `M${sx} ${gy}H${tx - 4}`, class: 'kx-leader'}, notes);
-      T(notes, tx, gy + 4, view.densest_callout, 'kx-t-note');
-    } else {
-      const tx = Math.min(svgW - 4, Math.max(lx + calloutW / 2, calloutW + 3)), ty = top - 12;
-      S('path', {d: `M${sx} ${gy}V${ty + 4}H${tx - calloutW / 2}`, class: 'kx-leader'}, notes);
-      T(notes, tx, ty, view.densest_callout, 'kx-t-note', 'end');
-    }
+  /* The callout is joined to the green cell by a leader that runs along
+     the gutter above the cell's row, clear of every count. */
+  const gy = y1 - (dr + 1) * cellH;
+  const rx = x0 + (dc + 1) * cell - 1;
+  const lx = x0 + dc * cell + cell / 2;
+  const fits = lx - 2 + calloutW <= svgW - 2;
+  if (place === 'below' || place === 'above') {
+    const ty = place === 'below' ? y1 + 40 : top - 12;
+    const from = place === 'below' ? y1 : gy;
+    const to = place === 'below' ? ty - 12 : ty + 4;
+    S('path', {d: `M${lx} ${from}V${to}`, class: 'kx-leader'}, notes);
+    T(notes, fits ? lx - 2 : lx + 2, ty, view.densest_callout, 'kx-t-note', fits ? 'start' : 'end');
+  } else if (side) {
+    const tx = x0 + plotW + 12;
+    S('path', {d: `M${rx} ${gy}H${tx - 4}`, class: 'kx-leader'}, notes);
+    T(notes, tx, gy + 4, view.densest_callout, 'kx-t-note');
+  } else {
+    const tx = Math.min(svgW - 4, Math.max(lx + calloutW / 2, calloutW + 3)), ty = top - 12;
+    S('path', {d: `M${rx} ${gy}V${ty + 4}H${tx - calloutW / 2}`, class: 'kx-leader'}, notes);
+    T(notes, tx, ty, view.densest_callout, 'kx-t-note', 'end');
   }
-  if (dr >= 0) {
-    const label = notes.querySelector('text');
-    if (label) {
-      const box = label.getBBox();
-      space.add(box.x - 3, box.y - 3, box.width + 6, box.height + 6);
-    }
-  }
+  const box = notes.lastChild.getBBox();
+  space.add(box.x - 3, box.y - 3, box.width + 6, box.height + 6);
   if (lo <= hi) note(notes, space, view.diagonal, [{x: ex + 6, y: ey + 14},
     {x: ex - 6, y: ey - 6, anchor: 'end'}, {x: ex + 6, y: ey - 6},
     {x: (sx + ex) / 2 + 10, y: (sy + ey) / 2 + 4}], 'kx-t-note-plain');
@@ -151,8 +142,7 @@ function distributionsView(body, view, ctx) {
       T(g, x(n - 1), c.y1 + 17, '\u2265 ' + edge(n - 1), 'kx-t-axis', 'start', {dx: -8});
     }
     view.series.forEach((s, k) => {
-      const max = s.stats && s.stats.values ? s.stats.values.max : null;
-      if (max === null || max === undefined) return;
+      const max = s.stats.values.max;
       const i = Math.max(0, Math.min(n - 1, Math.floor(max / view.width) - Math.round(start / view.width)));
       const bx = x(i) + (bw - inner) / 2 + k * (barW + gap) + barW / 2;
       const yy = yc(s.counts[view.indices ? view.indices.indexOf(i) : i] ?? 0);
@@ -190,21 +180,10 @@ function distributionsView(body, view, ctx) {
 
 KX.cards.predicted = (parent, card, ctx) => {
   cardFrame(parent, card, ctx, card.views, (body, view, ui) => {
-    if (view.id === 'tenths') {
-      legend(body, [{label: view.series[0], color: ROLE.model}, {label: view.series[1], color: ROLE.actual},
-        {label: 'all ' + ENTITIES, kind: 'dash', color: COLOR.ink, width: 1.4}]);
+    if (view.id === 'tenths') tenthsView(body, view, card.title, ctx);
+    else if (view.id === 'bands') {
       chartHost(body, (host, width) => columns(host, width, {
-        categories: view.tenths.map((t, i) => ({label: t.label, values: [t.predicted, t.actual],
-          texts: endLabels(view, i) ? [t.predicted_text, t.actual_text] : []})),
-        series: [{color: ROLE.model}, {color: ROLE.actual}],
-        highlight: view.highlight, highlightBand: true,
-        ref: {value: view.reference, text: view.reference_callout},
-        notes: [{index: view.highlight, text: view.gap_callout}],
-        yTitle: view.y, xTitle: view.x, height: 300, label: card.title}), ctx);
-    } else if (view.id === 'bands') {
-      chartHost(body, (host, width) => columns(host, width, {
-        categories: view.bands.map(b => ({label: b.label, sub: b.error_share_text,
-          values: [b.median], texts: [b.median_text]})),
+        categories: view.bands,
         series: [{color: ROLE.actual}], highlight: view.highlight, highlightBar: 0,
         notes: [{index: view.highlight, text: view.share_callout}],
         yTitle: view.y, xTitle: view.x + ' \u00b7 share of squared error', height: 300,

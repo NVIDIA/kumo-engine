@@ -4,8 +4,8 @@
 """Binary classification cards: Classification cutoff and Scores against
 outcomes, both from the published model's holdout predictions.
 
-The cutoff card carries every count and text for the 101 grid cutoffs of
-both positive classes, so the front end only selects what the slider names.
+The cutoff card carries the confusion counts at the 101 grid cutoffs of both
+positive classes; the front end derives each cutoff's rates and texts.
 """
 
 import math
@@ -21,52 +21,12 @@ DEFAULT_CUTOFF = 50
 SCORE_BIN = 0.02
 
 
-def _ratio(numerator: int, denominator: int, empty: float = 1.0) -> float:
-    return numerator / denominator if denominator else empty
-
-
-def _text(value: float) -> str:
-    """A rate in ``[0, 1]`` to three significant figures, zero included."""
-    return '0.00' if value == 0 else fmt.number(value)
-
-
 def counts(scores: np.ndarray, positive: np.ndarray) -> list[list[int]]:
     """``[tp, fp, fn, tn]`` at each grid cutoff, counting ``score > t``."""
     hits, misses = np.sort(scores[positive]), np.sort(scores[~positive])
     tp = len(hits) - np.searchsorted(hits, GRID, side='right')
     fp = len(misses) - np.searchsorted(misses, GRID, side='right')
     return np.stack([tp, fp, len(hits) - tp, len(misses) - fp], axis=1).tolist()
-
-
-def _at(row: list[int], n: int, positive: bool,
-        cutoff: float) -> dict[str, Any]:
-    tp, fp, fn, tn = row
-    precision = _ratio(tp, tp + fp)
-    recall = _ratio(tp, tp + fn, empty=0.0)
-    flagged = (tp + fp) / n
-    fpr = _ratio(fp, fp + tn)
-    strip = (('precision', _text(precision)), ('recall', _text(recall)),
-             ('accuracy', _text(_ratio(tp + tn,
-                                       n))), ('flagged', fmt.percent(flagged)),
-             ('F1', _text(_ratio(2 * tp, 2 * tp + fp + fn, empty=0.0))))
-    t = f'{cutoff:.2f}'
-    return dict(
-        counts=row,
-        cells=[f'{c:,} · {fmt.percent(c / n)}' for c in row],
-        strip=[dict(label=label, text=text) for label, text in strip],
-        flagged=flagged,
-        precision=precision,
-        recall=recall,
-        fpr=fpr,
-        matrix_callout=f'{fmt.percent(flagged)} flagged at cutoff {t}',
-        roc_callout=f'cutoff {t} · TPR {_text(recall)} · FPR {_text(fpr)}',
-        pr_callout=(f'cutoff {t} · precision {_text(precision)} · recall '
-                    f'{_text(recall)}'),
-        gain_callout=(f'{fmt.percent(flagged)} flagged · '
-                      f'{fmt.percent(recall)} of {positive} captured'),
-        # The score histogram's axis is True_PROB, so its cutoff line is
-        # labelled with the value on that axis.
-        line_callout=f'cutoff {cutoff if positive else 1 - cutoff:.2f}')
 
 
 def _curves(scores: np.ndarray, positive: np.ndarray) -> dict[str, float]:
@@ -101,21 +61,8 @@ def _class(run: Run, positive: bool, auroc: Optional[float]) -> dict[str, Any]:
         rows = [[tn, fn, fp, tp] for tp, fp, fn, tn in reversed(rows)]
     curves = _curves(holdout[f'{name}_PROB'].to_numpy(dtype=float), hits)
     auroc = curves.get('auroc') if auroc is None else auroc
-    cutoffs = [_at(row, len(target), positive, t) for row, t in zip(rows, GRID)]
-    # UI curves use the same threshold records as the cutoff readout.
-    lines = {
-        key: [[round(point[x], 2), round(point[y], 2)] for point in cutoffs]
-        for key, x, y in (('roc', 'fpr', 'recall'),
-                          ('pr', 'recall', 'precision'), ('gain', 'flagged',
-                                                          'recall'))
-    }
     return dict(
-        name=name,
-        share=share,
-        cutoffs=cutoffs,
-        **lines,
-        # The grid cutoff whose flagged share is closest to the class share.
-        preset=int(np.argmin([abs(c['flagged'] - share) for c in cutoffs])),
+        name=name, share=share, counts=rows,
         auroc_callout=None if auroc is None else f'AUROC {fmt.number(auroc)}',
         ap_callout=None
         if 'ap' not in curves else f'AP {fmt.number(curves["ap"])}',
@@ -177,7 +124,7 @@ def scores_card(run: Run) -> Optional[dict[str, Any]]:
     target = run.holdout['TARGET'].astype(bool).to_numpy()
     scores = run.holdout['True_PROB'].to_numpy(dtype=float)
     by_tenth = tenths(run, run.holdout['ENTITY'].to_numpy(), scores,
-                      target.astype(float), ('score', 'observed'))
+                      target.astype(float), 'observed')
     by_tenth.update(label='By score tenth', x='score tenth, lowest to highest',
                     y='share True',
                     series=['average score', 'observed share True'])

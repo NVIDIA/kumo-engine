@@ -139,11 +139,10 @@ def _tile(run: Run, metric: str, holdout: float, training: Optional[float],
         holdout_label=('holdout · before full refit'
                        if run.full_refit else 'holdout'),
         training_text=None if training is None else fmt.number(training),
-        training_scope=('Last training epoch; predictions use the selected '
-                        'checkpoint.'), gap_text=None if training is None else
-        f'holdout minus training: {fmt.signed(holdout - training)}', baselines=[
-            dict(text=f'{name} {fmt.number(value)}') for name, value in items
-        ], callout=callout)
+        gap_text=None if training is None else
+        f'holdout minus training: {fmt.signed(holdout - training)}',
+        baselines=[f'{name} {fmt.number(value)}'
+                   for name, value in items], callout=callout)
 
 
 def _detail(split: dict[str, Any], *dates: str) -> Optional[str]:

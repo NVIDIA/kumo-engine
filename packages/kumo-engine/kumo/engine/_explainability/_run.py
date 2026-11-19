@@ -331,10 +331,10 @@ def equal_count_groups(values: np.ndarray, entities: np.ndarray,
 
 
 def tenths(run: Run, entities: np.ndarray, first: np.ndarray,
-           second: np.ndarray, keys: tuple[str, str]) -> dict[str, Any]:
+           second: np.ndarray, word: str) -> dict[str, Any]:
     """Mean of both series in each tenth of ``first``, and the widest gap.
 
-    ``keys`` name the two series in the payload and the gap callout.
+    ``word`` names the second series in the gap callout.
     """
     group = equal_count_groups(first, entities)
     occupied = np.unique(group)
@@ -343,15 +343,12 @@ def tenths(run: Run, entities: np.ndarray, first: np.ndarray,
     reference = float(second.mean())
     texts = numbers([v for pair in means for v in pair] + [reference])
     worst = int(np.argmax([abs(a - b) for a, b in means]))
-    rows = [{
-        'label': str(k + 1),
-        keys[0]: a,
-        f'{keys[0]}_text': texts[2 * i],
-        keys[1]: b,
-        f'{keys[1]}_text': texts[2 * i + 1],
-    } for i, (k, (a, b)) in enumerate(zip(occupied, means))]
+    rows = [
+        dict(label=str(k + 1), values=list(pair), texts=texts[2 * i:2 * i + 2])
+        for i, (k, pair) in enumerate(zip(occupied, means))
+    ]
     return dict(
         id='tenths', tenths=rows, reference=reference, highlight=worst,
         reference_callout=f'all {run.entities}: {texts[-1]}',
-        gap_callout=(f'tenth {occupied[worst] + 1}: predicted '
-                     f'{texts[2 * worst]} · {keys[1]} {texts[2 * worst + 1]}'))
+        callout=(f'tenth {occupied[worst] + 1}: predicted '
+                 f'{texts[2 * worst]} · {word} {texts[2 * worst + 1]}'))

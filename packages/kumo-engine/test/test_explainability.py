@@ -430,9 +430,9 @@ def test_cards_per_model_type(tmp_path, task, cards):
 def test_tenths_only_include_observed_groups(tmp_path):
     view = _run.tenths(_run.load(_result(tmp_path)), np.arange(3),
                        np.array([0.1, 0.5, 0.9]), np.array([0, 1, 1]),
-                       ('score', 'observed'))
+                       'observed')
     assert [r['label'] for r in view['tenths']] == ['1', '4', '7']
-    assert view['gap_callout'] == 'tenth 4: predicted 0.500 · observed 1.00'
+    assert view['callout'] == 'tenth 4: predicted 0.500 · observed 1.00'
     assert view['reference_callout'] == 'all users: 0.667'
 
 
@@ -457,28 +457,18 @@ def test_cutoff_card_counts_scores_above_the_cutoff(tmp_path):
                 [True, True, False, True, False, False]))
     true, false = card['classes']
     # 0.5 is not flagged at cutoff 0.50: TP 2, FP 1, FN 1, TN 2.
-    assert true['cutoffs'][50]['counts'] == [2, 1, 1, 2]
-    assert true['cutoffs'][50]['matrix_callout'] == (
-        '50.0% flagged at cutoff 0.50')
+    assert true['counts'][50] == [2, 1, 1, 2]
     # The UI swaps the original confusion counts, including threshold ties.
-    assert false['cutoffs'][50]['counts'] == [2, 1, 1, 2]
-    assert [i['text'] for i in true['cutoffs'][100]['strip']
-            ] == ['1.00', '0.00', '0.500', '0.0%', '0.00']
-    # The score histogram's axis is True_PROB.
-    assert true['cutoffs'][57]['line_callout'] == 'cutoff 0.57'
-    assert false['cutoffs'][57]['line_callout'] == 'cutoff 0.43'
-    # Three of six are flagged from 0.50 to 0.59; the lowest such cutoff wins.
-    assert true['preset'] == 50
+    assert false['counts'][50] == [2, 1, 1, 2]
+    assert true['counts'][100] == [0, 0, 3, 3]
 
 
 @pytest.mark.parametrize('outcome', [True, False])
 def test_cutoff_card_retains_single_outcome_diagnostics(tmp_path, outcome):
     result = _binary(tmp_path, [0.9, 0.8, 0.7], [outcome] * 3)
     cutoff = _card(_classification.cutoff_card, result)
-    point = cutoff['classes'][0]['cutoffs'][50]
-    assert point['counts'] == ([3, 0, 0, 0] if outcome else [0, 3, 0, 0])
-    assert point['fpr'] == 1.0
-    assert point['recall'] == (1.0 if outcome else 0.0)
+    assert cutoff['classes'][0]['counts'][50] == ([3, 0, 0, 0]
+                                                  if outcome else [0, 3, 0, 0])
     json.dumps([cutoff, _card(_classification.scores_card, result)],
                allow_nan=False)
 
@@ -714,7 +704,6 @@ def test_subgraphs_use_typed_artifacts_and_keep_missing_distinct(
     assert sample['nodes'][0]['value'] == '9007199254740993'
     assert [f['score'] for f in sample['nodes'][0]['features']] == [0.0, None]
     assert sample['nodes'][0]['features'][1]['value'][1] == {'missing': None}
-    assert card['entity_label'] == 'users'
     json.dumps(card, allow_nan=False)
     model_only = replace(result,
                          explanations=TrainingExplanations.unavailable())

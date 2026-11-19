@@ -32,16 +32,14 @@ def period(steps: pd.Series) -> str:
     return 'step' if days.empty else _PERIODS.get(int(days.median()), 'step')
 
 
-def _steps(per: pd.DataFrame, first: str, second: str,
-           texts: list[str]) -> list[dict[str, Any]]:
+def _steps(per: pd.DataFrame, texts: list[str]) -> list[dict[str, Any]]:
+    """One step per row of the two columns of ``per``, labelled by date."""
     n = len(per)
-    return [{
-        'label': str(stamp)[:10],
-        first: float(row[first]),
-        f'{first}_text': texts[i],
-        second: float(row[second]),
-        f'{second}_text': texts[n + i],
-    } for i, (stamp, row) in enumerate(per.iterrows())]
+    return [
+        dict(label=str(stamp)[:10], values=[float(a), float(b)],
+             texts=[texts[i], texts[n + i]])
+        for i, (stamp, (a, b)) in enumerate(per.iterrows())
+    ]
 
 
 def forecast_card(run: Run) -> Optional[dict[str, Any]]:
@@ -57,10 +55,10 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
     by_step = frame.assign(model=error.abs(), zero=frame['TARGET'].abs(),
                            bias=error).groupby('TIMESTAMP', sort=True)
     horizon = by_step[['model', 'zero', 'bias']].mean()
-    steps = _steps(horizon, 'model', 'zero',
+    steps = _steps(horizon[['model', 'zero']],
                    fmt.numbers([*horizon['model'], *horizon['zero']]))
     for step, bias in zip(steps, horizon['bias']):
-        step['bias_callout'] = f'bias {fmt.signed(float(bias))}'
+        step['sub'] = f'bias {fmt.signed(float(bias))}'
     totals = by_step[['TARGET', 'TARGET_PRED']].sum()
     values = [*totals['TARGET'], *totals['TARGET_PRED']]
     target = frame['TARGET'].to_numpy()
@@ -78,8 +76,7 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
             label=(f'{word.capitalize()}ly totals'
                    if word in ('week', 'month', 'year') else 'Totals by step'),
             y=f'total over all {run.entities}', series=['actual', 'forecast'],
-            steps=_steps(totals.set_axis(['actual', 'forecast'], axis=1),
-                         'actual', 'forecast', texts),
+            steps=_steps(totals, texts),
             total_callout=(f'forecast total {fmt.percent(forecast / actual)} '
                            f'of actual over {len(totals)} {word}s')
             if actual > 0 else None),
@@ -93,16 +90,16 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
         for k in np.unique(group):
             share = float(per['TARGET'].to_numpy()[group == k].sum()) / total
             rows.append(
-                dict(label=str(k + 1), share=share,
-                     share_text=fmt.percent(share)))
+                dict(label=str(k + 1), values=[share],
+                     texts=[fmt.percent(share)]))
         views.append(
             dict(
                 id='tenths', label='By forecast tenth',
                 x='forecast tenth, lowest to highest',
                 y='share of actual units', tenths=rows, reference=0.1,
-                reference_callout='equal share 10%',
-                top_callout=(f'{rows[-1]["share_text"]} of actual units · '
-                             f'{int((group == group.max()).sum()):,} '
-                             f'{run.entities}')))
+                reference_callout='equal share 10%', highlight=len(rows) - 1,
+                callout=(f'{rows[-1]["texts"][0]} of actual units · '
+                         f'{int((group == group.max()).sum()):,} '
+                         f'{run.entities}')))
     return dict(title='Forecast against actual', views=views,
                 coverage=run.holdout_coverage())

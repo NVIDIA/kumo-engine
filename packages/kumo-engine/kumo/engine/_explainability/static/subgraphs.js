@@ -92,7 +92,7 @@ function classOutcome(parent, title, values, signal) {
 }
 
 KX.cards.subgraphs = (panel, payload, ctx) => {
-  const options = {signal: ctx.signal}, entity = payload.entity_label || 'Entity';
+  const options = {signal: ctx.signal}, entity = ENTITIES === 'rows' ? 'Entity' : ENTITIES;
   /* The selection, pinned record and filters, kept across exports. */
   const ui = ctx.state.ui(payload.id, {});
   const card = H('section', 'kx-card kx-sg', panel);
@@ -271,18 +271,18 @@ KX.cards.subgraphs = (panel, payload, ctx) => {
       classOutcome(outcome, 'Predictions', sample.prediction, nodeOptions.signal);
       classOutcome(outcome, 'Ground truth', sample.target, nodeOptions.signal);
     } else if (ctx.data.model_type === 'classification') {
-      outcomeValue(payload.prediction_label || 'Predicted probability',
+      outcomeValue('Predicted probability of True',
         typeof sample.prediction === 'number' ? (sample.prediction * 100).toFixed(1) + '%' : fmt(sample.prediction));
-      outcomeValue(payload.target_label || 'Observed outcome', payload.class_labels?.[sample.target] ?? fmt(sample.target));
+      outcomeValue('Observed outcome', ['False', 'True'][sample.target] ?? fmt(sample.target));
     } else if (ctx.data.model_type === 'regression') {
-      outcomeValue(payload.prediction_label || 'Predicted value', fmt(sample.prediction));
-      outcomeValue(payload.target_label || 'Observed value', fmt(sample.target));
+      outcomeValue('Predicted value', fmt(sample.prediction));
+      outcomeValue('Observed value', fmt(sample.target));
       outcomeValue('Prediction − observed', typeof sample.prediction === 'number' && typeof sample.target === 'number'
         ? fmt(sample.prediction - sample.target) : 'Not recorded');
     } else {
       const pred = sample.prediction, actual = sample.target;
-      outcomeValue(payload.prediction_label || 'Recommended records', fmt(pred?.length));
-      outcomeValue(payload.target_label || 'Observed records', fmt(actual?.length));
+      outcomeValue('Recommended records', fmt(pred?.length));
+      outcomeValue('Observed records', fmt(actual?.length));
       const targets = Array.isArray(actual) ? new Set(actual.map(String)) : null;
       outcomeValue('Matches in recommendations', fmt(targets && Array.isArray(pred) ? pred.filter(x => targets.has(String(x))).length : null));
     }

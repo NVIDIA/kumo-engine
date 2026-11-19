@@ -11,7 +11,6 @@ from kumoapi.explain.subgraph import AggregatedNodes, Subgraph
 
 from kumo.engine._explainability._run import (
     FORECASTING,
-    LINK_PREDICTION,
     Run,
     mapping,
     read_json,
@@ -115,18 +114,8 @@ def card(run: Run) -> Optional[dict[str, Any]]:
                      categories=list(reference.categories) or ['saved']))
     if not samples:
         return None
-    binary = run.task_type == 'binary_classification'
-    ranking = run.model_type == LINK_PREDICTION
     return _json_value(
-        dict(
-            title='Example subgraph', samples=samples, task_type=run.task_type,
-            categories=list(categories) or ['saved'],
-            category_samples=categories,
-            entity_label=run.entities if run.entities != 'rows' else 'Entity',
-            prediction_label=('Recommended records'
-                              if ranking else 'Predicted probability of True'
-                              if binary else 'Predicted value'),
-            target_label=('Observed records' if ranking else
-                          'Observed outcome' if binary else 'Observed value'),
-            class_labels=['False', 'True'] if binary else None,
-            unavailable_count=len(references) - len(samples)))
+        dict(title='Example subgraph', samples=samples, task_type=run.task_type,
+             categories=list(categories) or ['saved'],
+             category_samples=categories,
+             unavailable_count=len(references) - len(samples)))

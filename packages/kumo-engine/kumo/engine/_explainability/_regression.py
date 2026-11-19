@@ -56,8 +56,8 @@ def _bands(run: Run, actual: np.ndarray, pred: np.ndarray,
         shares.append(float(squared[mask].sum()) / total if total else 0.0)
         median = float(np.median(error[mask]))
         rows.append(
-            dict(label=label, median=median, median_text=fmt.signed(median),
-                 error_share_text=fmt.percent(shares[-1])))
+            dict(label=label, sub=fmt.percent(shares[-1]), values=[median],
+                 texts=[fmt.signed(median)]))
     worst = int(np.argmax(shares))
     return dict(id='bands', label='By actual value', x='actual value',
                 y='median of predicted minus actual', bands=rows,
@@ -231,8 +231,7 @@ def predicted_card(run: Run) -> Optional[dict[str, Any]]:
         actual, pred = actual[keep], pred[keep]
         if len(actual):
             entities = holdout['ENTITY'].to_numpy()[keep]
-            by_tenth = tenths(run, entities, pred, actual,
-                              ('predicted', 'actual'))
+            by_tenth = tenths(run, entities, pred, actual, 'actual')
             by_tenth.update(label='By predicted tenth',
                             x='predicted tenth, lowest to highest',
                             y='average ' + (run.target(short=True) or 'value'),

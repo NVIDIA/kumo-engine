@@ -7,8 +7,8 @@
 // this checkout, then fails on a browser error, invalid plot geometry, a
 // setting the HTML export or the print copy loses, or a missing printed view.
 //
-// Needs the retained classification, forecasting and regression runs the
-// answer-key tests use (KUMO_EXPLAINABILITY_RUNS), a Python environment that
+// Needs retained classification, forecasting and regression fits under
+// KUMO_EXPLAINABILITY_RUNS/<task>, a Python environment that
 // imports this checkout (PYTHON, default python3), and Playwright with its
 // browsers, from NODE_PATH or the locked package next to this file:
 //   npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
@@ -26,9 +26,13 @@ assert.ok(runs, 'Set KUMO_EXPLAINABILITY_RUNS to the retained runs (<task>/scrat
 function widget(task, dir) {
   const file = path.join(dir, task + '.html');
   execFileSync(process.env.PYTHON || 'python3', ['-c', `import glob, sys
-from kumo.engine._explainability import open_run
+from dataclasses import replace
+from kumo.engine import Trainer
+from kumo.engine.explain import TrainingExplanations
 run, = glob.glob(sys.argv[1] + '/scratch/trainers/*/runs/*-fit-*')
-open(sys.argv[2], 'w', encoding='utf-8').write('<!doctype html><meta charset="utf-8">' + open_run(run).html())`,
+result = Trainer.load(run + '/published-model', accelerator='cpu').result
+view = replace(result, explanations=TrainingExplanations.load(run)).visualize()
+open(sys.argv[2], 'w', encoding='utf-8').write('<!doctype html><meta charset="utf-8">' + view.html())`,
   path.join(runs, task), file], {cwd: path.join(__dirname, '..'), stdio: 'inherit'});
   return pathToFileURL(file).href;
 }
@@ -127,7 +131,7 @@ async function alter(filename, change) {
         await page.goto(forecast); await save(page, saved);
         for (const values of [[-10, -5], [-10, 5]]) {
           await alter(saved, payload => { const totals = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'forecast').views.find(v => v.id === 'totals');
-            totals.steps.forEach(step => { step.actual = values[0]; step.forecast = values[1]; }); payload.saved = null; });
+            totals.steps.forEach(step => { step.values = values; }); payload.saved = null; });
           await reopened.goto(pathToFileURL(saved).href);
           await reopened.locator('[data-card="forecast"] button[data-view="totals"]').click();
           await plots(reopened, '[data-card="forecast"] .kx-chart svg');

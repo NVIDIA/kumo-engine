@@ -4,6 +4,52 @@
  */
 /* Classification: the cutoff card and Scores against outcomes. */
 
+/* Python's formats of a nonnegative double, which round its exact value
+   half to even: `fixed` to some decimals, `rate` to three significant figures
+   and `share` as a one-decimal percentage. */
+function scaled(v, places) {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, v);
+  const bits = view.getBigUint64(0), exp = Number(bits >> 52n);
+  const shift = BigInt(Math.max(exp, 1) - 1075);
+  let num = ((bits & (1n << 52n) - 1n) | (exp ? 1n << 52n : 0n)) * 10n ** BigInt(places), den = 1n;
+  if (shift < 0) den <<= -shift; else num <<= shift;
+  const q = num / den, twice = 2n * (num - q * den);
+  return q + (twice > den || twice === den && q % 2n ? 1n : 0n);
+}
+function fixed(v, places) {
+  const text = String(scaled(v, places)).padStart(places + 1, '0');
+  return places ? text.slice(0, -places) + '.' + text.slice(-places) : text;
+}
+function rate(v) {
+  if (!v) return '0.00';
+  const places = 2 - Math.floor(Math.log10(v));
+  return fixed(v, scaled(v, places) >= 1000n ? places - 1 : places);
+}
+const share = v => fixed(100 * v, 1) + '%';
+
+/* Rates and texts at grid cutoff i of a class, from its [tp, fp, fn, tn]. */
+function cutoffAt(card, cls, i) {
+  const counts = cls.counts[i], [tp, fp, fn, tn] = counts, n = tp + fp + fn + tn, t = card.grid_text[i];
+  const at = {counts, flagged: (tp + fp) / n, precision: tp + fp ? tp / (tp + fp) : 1,
+    recall: tp + fn ? tp / (tp + fn) : 0, fpr: fp + tn ? fp / (fp + tn) : 1};
+  return Object.assign(at, {
+    cells: counts.map(c => c.toLocaleString('en-US') + ' \u00b7 ' + share(c / n)),
+    strip: [['precision', rate(at.precision)], ['recall', rate(at.recall)], ['accuracy', rate((tp + tn) / n)],
+      ['flagged', share(at.flagged)], ['F1', rate(2 * tp / (2 * tp + fp + fn || 1))]],
+    matrix_callout: share(at.flagged) + ' flagged at cutoff ' + t,
+    roc_callout: `cutoff ${t} \u00b7 TPR ${rate(at.recall)} \u00b7 FPR ${rate(at.fpr)}`,
+    pr_callout: `cutoff ${t} \u00b7 precision ${rate(at.precision)} \u00b7 recall ${rate(at.recall)}`,
+    gain_callout: `${share(at.flagged)} flagged \u00b7 ${share(at.recall)} of ${cls.name} captured`,
+    /* The score histogram's axis is True_PROB, so the cutoff line names the
+       value on that axis. */
+    line_callout: 'cutoff ' + card.grid_text[cls.name === card.classes[0].name ? i : card.grid.length - 1 - i]});
+}
+
+/* The class's curve through every grid cutoff, at two decimals. */
+const curvePoints = (card, cls, x, y) => cls.counts.map((_, i) => cutoffAt(card, cls, i))
+  .map(at => [Number(fixed(at[x], 2)), Number(fixed(at[y], 2))]);
+
 function matrixView(host, width, cls, at) {
   /* counts are [tp, fp, fn, tn]; rows are actual positive / negative,
      columns predicted positive / negative. */
@@ -140,8 +186,15 @@ function refNotes(c, kind, cls, view) {
 
 
 KX.cards.cutoff = (parent, card, ctx) => {
-  const cut = {};
-  for (const c of card.classes) cut[c.name] = card.default;
+  const cut = {}, byName = {};
+  for (const c of card.classes) {
+    cut[c.name] = card.default;
+    const flagged = c.counts.map(([tp, fp, fn, tn]) => (tp + fp) / (tp + fp + fn + tn));
+    const gaps = flagged.map(f => Math.abs(f - c.share));
+    /* The preset stop flags the share closest to the class's own share. */
+    byName[c.name] = {...c, roc: curvePoints(card, c, 'fpr', 'recall'), pr: curvePoints(card, c, 'recall', 'precision'),
+      gain: curvePoints(card, c, 'flagged', 'recall'), preset: gaps.indexOf(Math.min(...gaps))};
+  }
   const state = ctx.state.ui('cutoff', {cls: card.classes[0].name, cut});
   let refresh = () => {};
   const controls = root => {
@@ -154,11 +207,8 @@ KX.cards.cutoff = (parent, card, ctx) => {
     input.id = ctx.host.id + '-cutoff';
     label.htmlFor = input.id;
     const tickBox = H('div', 'kx-ticks', range);
-    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
-      const i = card.grid.findIndex(v => Math.abs(v - t) < 1e-9);
-      if (i < 0) continue;
-      const span = H('span', i === card.default ? 'kx-default' : null, tickBox, card.grid_text[i]);
-      span.style.left = (100 * i / (card.grid.length - 1)) + '%';
+    for (const i of [0, 25, 50, 75, 100]) {
+      H('span', i === card.default ? 'kx-default' : null, tickBox, card.grid_text[i]).style.left = i + '%';
     }
     const value = H('span', 'kx-cut', row);
     const ctl = H('div', 'kx-ctl-row', box);
@@ -178,8 +228,8 @@ KX.cards.cutoff = (parent, card, ctx) => {
     const renderStops = cls => {
       stopButtons.splice(0).forEach(b => b.remove());
       const items = [{index: card.default, extra: null}];
-      if (cls.preset !== null && cls.preset !== undefined && cls.preset !== card.default) {
-        items.push({index: cls.preset, extra: pct(cls.cutoffs[cls.preset].flagged, 1) + ' flagged'});
+      if (cls.preset !== card.default) {
+        items.push({index: cls.preset, extra: pct(cutoffAt(card, cls, cls.preset).flagged, 1) + ' flagged'});
       }
       for (const item of items) {
         const b = H('button', 'kx-chipbtn', stops, card.grid_text[item.index]);
@@ -191,9 +241,7 @@ KX.cards.cutoff = (parent, card, ctx) => {
       }
     };
     const update = () => {
-      const cls = card.classes.find(c => c.name === state.cls);
-      const index = state.cut[state.cls];
-      const at = cls.cutoffs[index];
+      const cls = byName[state.cls], index = state.cut[state.cls], at = cutoffAt(card, cls, index);
       input.value = String(index);
       input.setAttribute('aria-valuetext', card.grid_text[index]);
       range.style.setProperty('--kx-fill', `calc(9px + (100% - 18px) * ${index / (card.grid.length - 1)})`);
@@ -202,9 +250,8 @@ KX.cards.cutoff = (parent, card, ctx) => {
       renderStops(cls);
       stopButtons.forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.index) === index)));
       strip.replaceChildren();
-      for (const item of at.strip) {
-        const span = H('span', null, strip, item.label.charAt(0).toUpperCase() + item.label.slice(1));
-        H('b', null, span, item.text);
+      for (const [label, text] of at.strip) {
+        H('b', null, H('span', null, strip, label.charAt(0).toUpperCase() + label.slice(1)), text);
       }
       ctx.state.set('cutoff', state);
       refresh();
@@ -217,8 +264,7 @@ KX.cards.cutoff = (parent, card, ctx) => {
   let box;
   const frame = cardFrame(parent, card, ctx, card.views, (body, view) => {
     const draw = (host, width) => {
-      const cls = card.classes.find(c => c.name === state.cls);
-      const at = cls.cutoffs[state.cut[state.cls]];
+      const cls = byName[state.cls], at = cutoffAt(card, cls, state.cut[state.cls]);
       if (view.id === 'matrix') matrixView(host, width, cls, at);
       else curveView(host, width, view.id, cls, at, view);
     };
@@ -233,19 +279,8 @@ KX.cards.scores = (parent, card, ctx) => {
   let chart = null;
   ctx.state.on('cutoff', () => { if (chart && chart.isConnected && chart.dataset.view === 'outcome') chart.redraw(); });
   return cardFrame(parent, card, ctx, card.views, (body, view) => {
-    if (view.id === 'tenths') {
-      legend(body, [{label: view.series[0], color: ROLE.model}, {label: view.series[1], color: ROLE.actual},
-        {label: 'all ' + ENTITIES, kind: 'dash', color: COLOR.ink, width: 1.4}]);
-      chart = chartHost(body, (host, width) => columns(host, width, {
-        categories: view.tenths.map((t, i) => ({label: t.label, values: [t.score, t.observed],
-          texts: endLabels(view, i) ? [t.score_text, t.observed_text] : []})),
-        series: [{color: ROLE.model}, {color: ROLE.actual}],
-        highlight: view.highlight, highlightBand: true,
-        ref: {value: view.reference, text: view.reference_callout},
-        notes: [{index: view.highlight, text: view.gap_callout}],
-        yTitle: view.y, xTitle: view.x, height: 300, label: card.title,
-      }), ctx);
-    } else {
+    if (view.id === 'tenths') chart = tenthsView(body, view, card.title, ctx);
+    else {
       const [pos, neg] = view.series;
       legend(body, [{label: pos.name, color: ROLE.actual}, {label: neg.name, color: ROLE.other},
         {label: 'cutoff', kind: 'line', color: COLOR.green, width: 2.5}]);
@@ -261,7 +296,7 @@ function histogramView(host, width, view, ctx) {
   const totals = edges.slice(1).map((e, i) => series.reduce((a, s) => a + s.counts[i], 0));
   const maxCount = Math.max(...totals);
   const state = ctx.state.get('cutoff'), cutoff = ctx.cards.cutoff;
-  const at = state && cutoff ? cutoff.classes.find(cl => cl.name === state.cls).cutoffs[state.cut[state.cls]] : null;
+  const at = state && cutoff ? cutoffAt(cutoff, cutoff.classes.find(cl => cl.name === state.cls), state.cut[state.cls]) : null;
   let pos = null;
   if (at) {
     const t = cutoff.grid[state.cut[state.cls]];
@@ -314,16 +349,11 @@ function histogramView(host, width, view, ctx) {
     note(notes, space, text, [{x: px + 6, y: c.y0 + 10}, {x: px - 6, y: c.y0 + 10, anchor: 'end'},
       {x: px + 6, y: c.y0 + 40}, {x: px - 6, y: c.y0 + 40, anchor: 'end'}]);
   }
-  const i = view.tallest;
-  if (i !== null && i !== undefined) {
-    const cx = (x(edges[i]) + x(edges[i + 1])) / 2;
-    const ty = y(totals[i]) - 8;
-    const bl = x(edges[i]) - 6, br = x(edges[i + 1]) + 6, by = y(totals[i]) + 12;
-    /* Count on the first line, the score range on the second. */
-    const text = view.tallest_callout.replace(/ (score \d)/, '\n$1');
-    note(notes, space, text, [{x: bl, y: by, anchor: 'end'}, {x: br, y: by},
-      {x: bl, y: by + 18, anchor: 'end'}, {x: br, y: by + 18}, {x: cx, y: ty, anchor: 'middle'}]);
-  }
+  const i = view.tallest, bl = x(edges[i]) - 6, br = x(edges[i + 1]) + 6, by = y(totals[i]) + 12;
+  /* Count on the first line, the score range on the second. */
+  note(notes, space, view.tallest_callout.replace(/ (score \d)/, '\n$1'), [{x: bl, y: by, anchor: 'end'},
+    {x: br, y: by}, {x: bl, y: by + 18, anchor: 'end'}, {x: br, y: by + 18},
+    {x: (bl + br) / 2, y: by - 20, anchor: 'middle'}]);
   series.forEach((s, k) => {
     if (typeof s.median !== 'number') return;
     const mx = x(s.median);

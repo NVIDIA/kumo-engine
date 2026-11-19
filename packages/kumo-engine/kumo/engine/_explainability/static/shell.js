@@ -68,20 +68,20 @@ function tilesView(body, view, ctx) {
     const vals = H('div', 'kx-tile-vals', box);
     const hold = H('div', 'kx-tile-val', vals);
     const hr = H('div', 'kx-tile-row', hold);
-    H('span', 'kx-split h', hr, tile.holdout_label || 'holdout');
+    H('span', 'kx-split h', hr, tile.holdout_label);
     H('span', 'kx-big', hr, tile.holdout_text);
     if (tile.callout) H('span', 'kx-note', hold, tile.callout);
     if (tile.training_text) {
       const tr = H('div', 'kx-tile-val', vals);
       const trr = H('div', 'kx-tile-row', tr);
-      const training = H('span', 'kx-split t', trr, tile.training_scope ? 'training · last epoch' : 'training');
-      if (tile.training_scope) training.title = tile.training_scope;
+      H('span', 'kx-split t', trr, 'training · last epoch').title =
+        'Last training epoch; predictions use the selected checkpoint.';
       H('span', 'kx-mid', trr, tile.training_text);
       if (tile.gap_text) H('span', 'kx-note-plain', tr, tile.gap_text);
     }
     if (tile.baselines.length) {
       const base = H('div', 'kx-tile-base', box);
-      for (const b of tile.baselines) H('span', null, base, b.text);
+      for (const text of tile.baselines) H('span', null, base, text);
     }
   }
 }
@@ -243,9 +243,8 @@ KX.cards.groups = (parent, card, ctx) => {
     legend(body, [{label: 'average actual', color: ROLE.actual},
       {label: 'average predicted', color: ROLE.model}]);
     const chart = chartHost(body, (host, width) => {
-      const unit = (col.groups[0].share_text || '').replace(/^[^ ]+ /, '');
       const rows = col.groups.map((grp, i) => ({
-        label: grp.label, sub: grp.share_text.split(' ')[0] + ' ' + unit,
+        label: grp.label, sub: grp.share_text,
         values: [grp.actual, grp.predicted],
         /* The gap callout carries this group's two values, so its bars
            are not labelled a second time. */
