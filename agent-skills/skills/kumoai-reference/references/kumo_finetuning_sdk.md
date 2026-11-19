@@ -119,27 +119,26 @@ The connector is built in one step, as the host's `runtime.md` says; everything 
 same for every connector. §3-§3.3 cover `SnowflakeConnector`; §3.4 covers every other connector.
 §3.2 (reading the catalog) applies to all of them.
 
-`SnowflakeConnector` is built by a **factory**, which constructs the connector and its identity
-together from the environment. No password, key, or API credential literal belongs in a cell.
-Priority: the runtime token (`from_spcs_env`), then a `connections.toml` entry
-(`from_connection_toml`), then a key pair read from Snowflake secrets (§3.1).
+In a notebook or ML Job, share the runtime's Snowpark session with `from_session()`. It reads the session's warehouse and role; database and schema default to the session's context and may be overridden for table access. No password, key, or API credential literal belongs in a cell.
 
 ```python
-connector = kumo.SnowflakeConnector.from_spcs_env(
-    warehouse=WAREHOUSE, database=SOURCE_DATABASE, schema_name=SOURCE_SCHEMA,
+connector = kumo.SnowflakeConnector.from_session(
+    database=SOURCE_DATABASE, schema_name=SOURCE_SCHEMA,
 )
 ```
 
-Source: shipped package (`kumo.engine.connector.snowflake`) — both factories are classmethods,
-all arguments keyword-only:
+Source: shipped package (`kumo.engine.connector.snowflake`). Factory signatures:
 
 ```
+from_session(session=None, *, database=None, schema_name=None)
 from_spcs_env(*, warehouse=None, database=None, schema_name=None, role=None)
 from_connection_toml(*, connection_name=None, warehouse=None, database=None,
                      schema_name=None, role=None)
 ```
 
-Choose on the environment, in that order:
+For a separate session with an identity, use the mounted runtime token (`from_spcs_env`), a `connections.toml` entry (`from_connection_toml`), or a key pair read from Snowflake secrets (§3.1). `from_spcs_env` uses the user's default role unless `role=` is passed. Portable execution, including Ray workers, requires `identity=`; pickling a `from_session` connector drops its session and another process resolves its own active session.
+
+Choose the separate-session credentials from the environment:
 
 ```python
 import os
@@ -167,8 +166,7 @@ else:
 entry is absent; any other `ValueError` (a missing warehouse, a malformed entry) is re-raised
 rather than hidden by the fallback. Source: shipped package (`kumo_snowflake.config`)
 
-- **Always pass `warehouse`, `database`, `schema_name` explicitly.** They default to `None`, and
-  the environment's values are not necessarily the ones the user wants.
+- For identity factories, pass `warehouse`, `database`, `schema_name` explicitly when selecting a target; their environment defaults may point elsewhere. `from_session` takes its warehouse and role from the session.
 - **Write a lower-case or mixed-case name with its double quotes, inside the string.** `database`
   and `schema_name` are read as declared Snowflake identifiers: an unquoted name is folded to upper
   case, so `schema_name='my_schema'` looks up `MY_SCHEMA`, and on a lower-case schema the
@@ -177,7 +175,7 @@ rather than hidden by the fallback. Source: shipped package (`kumo_snowflake.con
   that is not all upper case.
   Source: shipped package (`kumo_core.sources.sql.resolve_snowflake_identifier`)
 - `SPCS_TOKEN_PATH` is imported from `kumo_snowflake.spcs`; never hardcode it.
-- `connector.identity` is a `SnowflakeIdentity`; `connector.id` and `identity.slug` are printable.
+- `connector.identity` is `None` for `from_session` and a `SnowflakeIdentity` for the identity factories; `connector.id` is printable.
 
 ### 3.1 The direct constructor
 
@@ -193,8 +191,7 @@ SnowflakeIdentity(*, account, username=None, password=None, private_key=None,
                   private_key_passphrase=None, host=None, token_path=None)
 ```
 
-Prefer the factories. Build an identity by hand only when the user cannot use either factory, and
-read every secret from `snowflake.snowpark.secrets` — never a literal.
+Prefer the factories. With `identity=None`, the connector shares the carried or active Snowpark session; see `from_session`. A named identity that cannot be resolved raises an error. Build an identity by hand only when the user cannot use the identity factories, and read every secret from `snowflake.snowpark.secrets` — never a literal.
 
 ### 3.2 Reading the catalog
 
@@ -227,30 +224,28 @@ case-insensitively: `c.name.lower() != 'end_date'.lower()`.
 Source: shipped package (`kumo.engine.connector.snowflake`, `.base`, `.source_table`;
 `kumo_snowflake.identity` for the lookup order)
 
-### 3.3 The Snowpark session: take it once, first
+### 3.3 Sharing the Snowpark session
 
 Only where the host's `runtime.md` provides an active Snowpark session. A host without one
 follows its `runtime.md` for SQL and read-back instead, and this section and the `session`
 calls in §7.1 and §9.1 do not apply.
 
-Kumo's Snowflake connector opens its own Snowpark session. Once Kumo has read or written
-Snowflake, the process holds two sessions, and a later `get_active_session()` raises
-`SnowparkSessionException: (1409): More than one active session is detected`.
-
 ```python
 from snowflake.snowpark.context import get_active_session
 
-session = get_active_session()   # first code cell, before any connector
+session = get_active_session()
+connector = kumo.SnowflakeConnector.from_session(session)
 ```
 
-- Call `get_active_session()` **once**, in the first code cell, before building any connector.
-  Reuse that `session` for every later Snowflake call: the write-back check (§9.1) and any
-  population table (§7.1).
-- Never call `get_active_session()` again later in the notebook, and never open another session
-  with `Session.builder`.
+Kumo shares this session without changing its context, closing it, or reconnecting it. `get_active_session()` remains usable when this is the only session. If several sessions are active, including ones Kumo opened for `from_spcs_env()` connectors, pass yours to `from_session(session)`; a session Kumo opened can't be shared.
 
-Source: shipped package (`kumo_snowflake.session`, which opens its session with
-`Session.builder.configs(...).create()`)
+The connector's warehouse and optional role must match the shared session on each use. Database and schema may differ for table access. SQL sources (`connector.sql(...)`) require the session's current database and schema to match the connector: call `session.use_database(...)` and `session.use_schema(...)`, or use `from_session()` without database or schema overrides.
+
+Don't change the session's warehouse, role, database or schema while a Kumo call is running.
+
+Kumo's DDL commits an open transaction on the shared session. A lapsed shared-session token is the notebook runtime's responsibility; Kumo propagates the error.
+
+Source: shipped package (`kumo_snowflake.session`, `kumo_snowflake.sink`, `kumo_snowflake.artifacts`)
 
 ### 3.4 Every other connector
 
@@ -480,8 +475,8 @@ session.sql(                                  # the session from §3.3
     f'CREATE OR REPLACE TABLE {POP_DATABASE}.{POP_SCHEMA}.{POP_TABLE} AS '
     f'SELECT {q(ENTITY_KEY)} AS ENTITY1 FROM {SOURCE_DATABASE}.{SOURCE_SCHEMA}.{q(ENTITY_TABLE)}'
 ).collect()
-population_connector = kumo.SnowflakeConnector.from_spcs_env(   # or from_connection_toml, §3
-    warehouse=WAREHOUSE, database=POP_DATABASE, schema_name=POP_SCHEMA,
+population_connector = kumo.SnowflakeConnector.from_session(
+    session, database=POP_DATABASE, schema_name=POP_SCHEMA,
 )
 prediction_table = kumo.PredictionTable.from_source_table(
     population_connector[POP_TABLE], pq=pquery, snapshot=snapshot,
@@ -559,8 +554,8 @@ Source: shipped package (`kumo.engine.trainer.trainer`)
 ```python
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 
-output_connector = kumo.SnowflakeConnector.from_spcs_env(
-    warehouse=WAREHOUSE, database=OUTPUT_DATABASE, schema_name=OUTPUT_SCHEMA,
+output_connector = kumo.SnowflakeConnector.from_session(
+    session, database=OUTPUT_DATABASE, schema_name=OUTPUT_SCHEMA,
 )
 output_config = kumo.PredictionOutputConfig(
     connector=output_connector,
@@ -641,10 +636,7 @@ the table does not exist yet, since the first APPEND creates it — so the check
 this run added. The delta holds only while nothing else writes to the table
 (`kumoai-reference/references/outputs.md`).
 
-Scope the output connector to the destination database and schema; `table_name` is a bare name.
-Always read the table back — it is the only proof the write-back worked. `session` is the one
-taken in the first cell (§3.3); calling `get_active_session()` here, after Kumo has written,
-raises.
+Scope the output connector to the destination database and schema; `table_name` is a bare name. Always read the table back — it is the proof the write-back worked. Use the shared Snowpark `session` (§3.3).
 
 Source: shipped package (`kumo.engine.trainer`)
 
@@ -691,10 +683,10 @@ OUTPUT_DATABASE, OUTPUT_SCHEMA, OUTPUT_TABLE = '<db>', '<schema>', '<table>'  # 
 
 session = get_active_session()   # §3.3: only where the host provides the session
 
-# 1. Scratch directory, then connect (inside SPCS; elsewhere use the §3 order). No credentials in the notebook.
+# 1. Scratch directory, then share the notebook session. No credentials in the notebook.
 kumo.configure(scratch_dir=Path('/tmp/kumo-run') / 'scratch')
-connector = kumo.SnowflakeConnector.from_spcs_env(
-    warehouse='WH_S', database='SYNTHETIC_DATASETS', schema_name='"my_schema"',
+connector = kumo.SnowflakeConnector.from_session(
+    session, database='SYNTHETIC_DATASETS', schema_name='"my_schema"',
 )
 assert connector.table_names(), 'Connector reached no tables.'
 
@@ -748,8 +740,8 @@ training_result = trainer.fit(training_table, snapshot=snapshot)
 print(training_result.metrics)
 
 # 7. Predict and write back — snapshot= is required here too.
-output_connector = kumo.SnowflakeConnector.from_spcs_env(
-    warehouse='WH_S', database=OUTPUT_DATABASE, schema_name=OUTPUT_SCHEMA,
+output_connector = kumo.SnowflakeConnector.from_session(
+    session, database=OUTPUT_DATABASE, schema_name=OUTPUT_SCHEMA,
 )
 prediction_result = trainer.predict(
     prediction_table,
@@ -784,7 +776,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 |---|---|
 | `kumo.set_backend(...)`, `kumo.LocalBackend(...)`, `kumo.get_backend()` | nothing — there is no backend |
 | `kumo.Storage(...)`, `kumo.FilesystemArtifactLocation(...)` | `kumo.configure(scratch_dir=...)` (§2.1) |
-| `kumo.create_identity(CreateIdentityArgs(...))`, `kumo.test_identity_credentials(...)` | `SnowflakeConnector.from_spcs_env()`, else `from_connection_toml()`, else `SnowflakeIdentity` from secrets (§3) |
+| `kumo.create_identity(CreateIdentityArgs(...))`, `kumo.test_identity_credentials(...)` | `SnowflakeConnector.from_session()` in a notebook or ML Job; identity factories for a separate session (§3) |
 | `SnowflakeConnector(name=..., account=..., credentials={...})` | keyword-only ctor, no `name`/`account` (§3.1) |
 | `kumo.Table(source_table=..., primary_key=...)` | `Table.from_source_table(...)` (§4) |
 | `table['COL'].stype = kumo.Stype.ID` | `.with_column('COL', stype=Stype.ID)` (§4) |
@@ -849,14 +841,11 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] The connect step is the host `runtime.md`'s, with no credential literal (§3, §3.4).
-- [ ] Snowflake: the factory the host's `runtime.md` names (§3), with explicit `warehouse`,
-      `database`, `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded.
+- [ ] Snowflake notebooks and ML Jobs use `from_session()`; separate-session credentials use the identity factory the host's `runtime.md` names, with explicit `warehouse`, `database`, `schema_name`; `SPCS_TOKEN_PATH` imported, never hardcoded (§3).
 - [ ] Snowflake: lower-case or mixed-case `database` / `schema_name` passed with their double
       quotes (§3).
 - [ ] Table and column names in the catalog's exact spelling (§3.2).
-- [ ] Snowflake, on a host that provides a Snowpark session: `session = get_active_session()`
-      once, in the first code cell; never again, no `Session.builder` (§3.3). Elsewhere, the
-      host `runtime.md`'s connection for SQL and read-back.
+- [ ] Snowflake, on a host that provides a Snowpark session: share it; pass it explicitly if several sessions are active (§3.3). Elsewhere, the host `runtime.md`'s connection for SQL and read-back.
 - [ ] `connector.table_names()` asserted before building tables.
 - [ ] Every foreign key corrected with `.with_column(col, stype=Stype.ID)`.
 - [ ] `with_column(...)` results assigned or chained — it returns a new Table.

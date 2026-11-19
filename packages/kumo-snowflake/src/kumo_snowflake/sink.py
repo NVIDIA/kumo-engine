@@ -126,9 +126,12 @@ class _SnowflakeTables(SnowflakeModelRegistryMixin, _SnowflakeSessions):
         selected = [str(path) for path in selected_local_parquet_files(files)]
 
         def export(*, retry: bool = False) -> None:
-            session_context = (_owned_session(self._principal(connector),
-                                              connector)
-                               if retry else self._session(connector))
+            if retry:
+                principal = self._principal(connector)
+                assert principal is not None
+                session_context = _owned_session(principal, connector)
+            else:
+                session_context = self._session(connector)
             with session_context as session:
                 _require_snowpark(session)
                 target = _LocalArtifactConnection(session, connector,
@@ -141,7 +144,8 @@ class _SnowflakeTables(SnowflakeModelRegistryMixin, _SnowflakeSessions):
             export()
         except Exception as error:
             if (write_mode != WriteMode.OVERWRITE
-                    or not is_lapsed_credential(error)):
+                    or not is_lapsed_credential(error)
+                    or self._principal(connector, optional=True) is None):
                 raise
             # The artifact producer has already finished.  Reconnect from the
             # refreshed mounted token and repeat only this idempotent

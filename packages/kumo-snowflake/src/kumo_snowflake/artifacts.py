@@ -36,12 +36,12 @@ from kumo_core.sources.principals import IdentityRef
 from kumo_core.sources.principals import store as identity_store
 from kumo_snowflake.session import (
     SnowflakeSession,
-    _quoted_literal,
     _require_snowpark,
     _rows,
     _sessions,
     resolved,
 )
+from kumo_snowflake.sql import quote_literal
 from kumoapi.plugin import IngestResult, SnapshotStore, _Handle
 
 _Item = TypeVar('_Item')
@@ -220,23 +220,19 @@ class _StageFiles:
         stage_name = resolved(match.group('name'))
         database_name = resolved(database_sql)
         schema_name = resolved(schema_sql)
-        self._session.sql(
+        rows = self._session.sql(
             f'SHOW STAGES IN SCHEMA {database_sql}.{schema_sql}').collect()
-        # SHOW output grows over time, so project stable named columns instead
-        # of relying on their positional indexes in Snowflake's row shape.
-        rows = _rows(
-            self._session,
-            'SELECT "name", "database_name", "schema_name", "type" '
-            'FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))')
+        # Read named SHOW columns directly; concurrent queries share a session.
         matches = [
-            row for row in rows if len(row) == 4 and str(row[0]) == stage_name
-            and str(row[1]) == database_name and str(row[2]) == schema_name
+            row for row in rows if str(row['name']) == stage_name
+            and str(row['database_name']) == database_name
+            and str(row['schema_name']) == schema_name
         ]
         if not matches:
             raise ValueError(
                 f'Snowflake stage {match.group("stage")!r} does not exist or '
                 'is not visible to the registered session role.')
-        stage_type = str(matches[0][3]).upper()
+        stage_type = str(matches[0]['type']).upper()
         if 'INTERNAL' not in stage_type:
             raise ValueError(
                 f'Snowflake stage {match.group("stage")!r} is {stage_type!r}; '
@@ -471,8 +467,7 @@ class _StageFiles:
             chunk = relatives[start:start + _COPY_FILES_LIMIT]
             if not chunk:
                 continue
-            names = ', '.join("'" + _quoted_literal(name) + "'"
-                              for name in chunk)
+            names = ', '.join(quote_literal(name) for name in chunk)
             _rows(
                 self._session,
                 f'COPY FILES INTO {_stage_join(target, directory=True)} '
@@ -497,6 +492,9 @@ class StageArtifactLocation:
             :func:`kumoai_studio.create_identity`. Its role needs the stage
             privileges below.
         parallel: Concurrent file transfers, from 1 through 99.
+
+    This location requires an identity and opens its own cached session. Engine
+    MLOps stage roots use the connector's session through ``sink.filesystem``.
 
     The local working artifact directory is derived from ``Storage.scratch``;
     callers never pass a stage URI to DiskGraph, pandas, Torch, or

@@ -46,10 +46,24 @@ class SnowflakeConnector(Connector):
         warehouse: Snowflake virtual warehouse used for queries.
         database: Snowflake database containing the target schema.
         schema_name: Schema within `database`.
-        identity: A `SnowflakeIdentity`, passed directly. `None` defers to
-            `kumo_snowflake`'s own ambient-session resolution.
-        role: Optional Snowflake role to activate for this target.
+        identity: A `SnowflakeIdentity`, passed directly. `None` shares the
+            carried or active Snowpark session; see `from_session`. Shared
+            sessions must match the warehouse and optional role.
+        role: Role to activate on an identity-owned session, or require on
+            a shared session.
     """
+    _snowpark_session: Optional[Any] = None
+    _snowpark_session_hint = (
+        'Use SnowflakeConnector.from_session(session) to select a session, '
+        'activate a Snowpark session, or pass identity= '
+        '(from_connection_toml() or from_spcs_env() can create one).')
+    _snowpark_mismatch_hint = (
+        "Use SnowflakeConnector.from_session() to take the session's warehouse "
+        'and role.')
+    _snowpark_sql_hint = (
+        'or use SnowflakeConnector.from_session() without database or '
+        'schema overrides')
+
     def __init__(
         self,
         *,
@@ -124,6 +138,62 @@ class SnowflakeConnector(Connector):
     def __repr__(self) -> str:
         return (f"{self.__class__.__name__}(database={self.database!r}, "
                 f"schema_name={self.schema_name!r})")
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        state.pop('_snowpark_session', None)
+        return state
+
+    @classmethod
+    def from_session(
+        cls,
+        session: Any = None,
+        *,
+        database: Optional[str] = None,
+        schema_name: Optional[str] = None,
+    ) -> Self:
+        r"""Share the given or active Snowpark session without changing it.
+
+        Warehouse and role come from the session. Database and schema default
+        to its context and may be overridden for table access. SQL sources
+        require the session's current database and schema to match the target.
+        Kumo never closes or reconnects this session. Its DDL commits any open
+        transaction. Don't change the session's context during a Kumo call.
+
+        This connector is process-local: pickling drops the carried session,
+        so another process resolves its own active session. Remote or portable
+        execution, including Ray workers, needs a connector with identity=.
+
+        Args:
+            session: Snowpark session to share. `None` uses the process's
+                active session.
+            database: Overrides the session's current database for table access.
+            schema_name: Overrides the session's current schema for table access.
+
+        Raises:
+            ValueError: If no single active shared session is available when
+                `session` is unset, or the session and overrides leave the
+                warehouse, database or schema unset, or the session is owned
+                by Kumo.
+        """
+        sessions = import_provider('kumo_snowflake.session', 'snowflake')
+        if session is None:
+            session = sessions._active_session(
+                hint=cls._snowpark_session_hint)
+        sessions._require_shared_session(session)
+        warehouse = sessions._session_identifier(session.get_current_warehouse())
+        database = (database if database is not None else
+                    sessions._session_identifier(session.get_current_database()))
+        schema_name = (schema_name if schema_name is not None else
+                       sessions._session_identifier(session.get_current_schema()))
+        if not warehouse or not database or not schema_name:
+            raise ValueError('from_session() requires a warehouse, database '
+                             'and schema in the session or target overrides.')
+        connector = cls(warehouse=warehouse, database=database,
+                        schema_name=schema_name,
+                        role=sessions._session_identifier(session.get_current_role()))
+        connector._snowpark_session = session
+        return connector
 
     @classmethod
     def from_connection_toml(
@@ -210,7 +280,9 @@ class SnowflakeConnector(Connector):
         `warehouse`/`database`/`schema_name` default to the
         `SNOWFLAKE_WAREHOUSE`/`SNOWFLAKE_DATABASE`/`SNOWFLAKE_SCHEMA`
         environment variables SPCS exports; pass any of them explicitly to
-        override.
+        override. The session uses the user's default role unless `role=` is
+        passed. Notebooks and ML Jobs that hold a Snowpark session should use
+        `from_session()` to share it.
 
         Args:
             warehouse: overrides `SNOWFLAKE_WAREHOUSE`. Required when unset,

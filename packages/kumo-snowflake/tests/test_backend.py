@@ -24,7 +24,7 @@ def test_zero_row_read_is_an_empty_source(rows, tmp_path, monkeypatch):
     for name in ("_declared", "_reader"):
         monkeypatch.setattr(backend, name, lambda *args, **kwargs: {})
     monkeypatch.setattr(backend, "_session",
-                        lambda connector: nullcontext(None))
+                        lambda connector, **kwargs: nullcontext(None))
     connector = SimpleNamespace(id="c")
 
     def prepare():

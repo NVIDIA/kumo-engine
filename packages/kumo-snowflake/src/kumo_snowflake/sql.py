@@ -30,6 +30,12 @@ def quote_identifier(name: str) -> str:
     return sql.quote_identifier(name, quote=QUOTE)
 
 
+def quote_literal(value: str) -> str:
+    """Quote a Snowflake string, preserving backslashes and apostrophes."""
+    escaped = value.replace('\\', '\\\\').replace("'", "''")
+    return f"'{escaped}'"
+
+
 def qualified_name(*parts: str) -> str:
     return sql.qualified_name(*parts, quote=quote_identifier)
 
