@@ -4,20 +4,27 @@
  */
 /* The widget shell and the cards every model type shares. */
 
-/* A tiny shared state with listeners: the cutoff card publishes the current
-   cutoff, Column importance publishes the column Column groups shows. */
-function store(signal) {
-  const values = {}, listeners = {};
+/* The widget's UI state, with listeners: the cutoff card publishes the
+   current cutoff, Column importance the column Column groups shows, and each
+   card keeps its own choices under its id. HTML export serializes the values
+   and the exported widget starts from them. */
+function store(signal, saved) {
+  const values = {...saved}, listeners = {};
   return {
+    values,
     get: key => values[key],
+    /* A card's state object, filled with defaults where nothing is saved. */
+    ui: (key, defaults) => Object.assign(values[key] ??= {}, {...defaults, ...values[key]}),
     set(key, value) { values[key] = value; for (const fn of listeners[key] || []) fn(value); },
     on(key, fn) { (listeners[key] = listeners[key] || []).push(fn);
       signal.addEventListener('abort', () => { listeners[key] = []; }); },
   };
 }
 
-/* A card: title, optional switch buttons, a body redrawn per view. */
+/* A card: title, optional switch buttons, a body redrawn per view.
+   renderView(body, view, ui) gets the card's state object. */
 function cardFrame(parent, card, ctx, views, renderView, extraTop) {
+  const ui = ctx.state.ui(card.id, {});
   const root = H('section', 'kx-card', parent);
   root.dataset.card = card.id;
   const top = H('div', 'kx-card-top', root);
@@ -25,14 +32,14 @@ function cardFrame(parent, card, ctx, views, renderView, extraTop) {
   if (extraTop) extraTop(root);
   const switchParent = extraTop ? H('div', 'kx-switch-row', root) : top;
   const body = H('div', 'kx-card-body', root);
-  let current = views && views.length ? views[0].id : null;
+  if (!views?.some(v => v.id === ui.view)) ui.view = views?.[0]?.id ?? null;
   const show = id => {
-    current = id;
+    ui.view = id;
     for (const button of root.querySelectorAll('.kx-switch button')) {
       button.setAttribute('aria-pressed', String(button.dataset.view === id));
     }
     body.replaceChildren();
-    renderView(body, views ? views.find(v => v.id === id) : null);
+    renderView(body, views ? views.find(v => v.id === id) : null, ui);
   };
   if (views && views.length > 1) {
     const sw = H('div', 'kx-switch', switchParent);
@@ -45,16 +52,12 @@ function cardFrame(parent, card, ctx, views, renderView, extraTop) {
       button.addEventListener('click', () => show(view.id), {signal: ctx.signal});
     }
   }
-  show(current);
+  show(ui.view);
   if (card.coverage) H('p', 'kx-coverage', root, card.coverage);
-  return {root, body, show, current: () => current};
+  return {root, body, show};
 }
 
 /* ------------------------------------------------------------- Metrics */
-
-function splitChip(parent, kind, text) {
-  return H('span', 'kx-split ' + kind, parent, text);
-}
 
 function tilesView(body, view, ctx) {
   const grid = H('div', 'kx-tiles', body);
@@ -65,13 +68,13 @@ function tilesView(body, view, ctx) {
     const vals = H('div', 'kx-tile-vals', box);
     const hold = H('div', 'kx-tile-val', vals);
     const hr = H('div', 'kx-tile-row', hold);
-    splitChip(hr, 'h', tile.holdout_label || 'holdout');
+    H('span', 'kx-split h', hr, tile.holdout_label || 'holdout');
     H('span', 'kx-big', hr, tile.holdout_text);
     if (tile.callout) H('span', 'kx-note', hold, tile.callout);
     if (tile.training_text) {
       const tr = H('div', 'kx-tile-val', vals);
       const trr = H('div', 'kx-tile-row', tr);
-      const training = splitChip(trr, 't', tile.training_scope ? 'training · last epoch' : 'training');
+      const training = H('span', 'kx-split t', trr, tile.training_scope ? 'training · last epoch' : 'training');
       if (tile.training_scope) training.title = tile.training_scope;
       H('span', 'kx-mid', trr, tile.training_text);
       if (tile.gap_text) H('span', 'kx-note-plain', tr, tile.gap_text);
@@ -122,24 +125,20 @@ function tableView(body, view) {
 
 KX.cards.metrics = (parent, card, ctx) => {
   let historyEvents;
-  const history = {};
   ctx.onDispose(() => historyEvents?.abort());
-  const frame = cardFrame(parent, {...card, coverage: null}, ctx, card.views, (body, view) => {
+  cardFrame(parent, {...card, coverage: null}, ctx, card.views, (body, view, ui) => {
     historyEvents?.abort();
     if (view.id === 'history') {
       historyEvents = new AbortController();
       const signal = historyEvents.signal;
       epochHistoryView(body, view, {...ctx, signal,
-        onDispose: cleanup => signal.addEventListener('abort', cleanup, {once: true})}, history);
+        onDispose: cleanup => signal.addEventListener('abort', cleanup, {once: true})}, ui);
     } else {
       if (view.tiles) tilesView(body, view, ctx);
       else tableView(body, view);
       if (card.coverage) H('p', 'kx-coverage', body, card.coverage);
     }
   });
-  frame.root.exportHistoryState = () => ({...history});
-  frame.root.restoreHistoryState = value => { Object.assign(history, value); frame.show(frame.current()); };
-  return frame;
 };
 
 /* ---------------------------------------------------- Column importance */
@@ -156,11 +155,11 @@ function tableColor(tables, name) {
 }
 
 KX.cards.importance = (parent, card, ctx) => {
-  const linked = ctx.hasGroups;
-  const expanded = {};
+  const linked = !!ctx.cards.groups;
+  const expanded = ctx.state.ui(card.id, {expanded: {}}).expanded;
   let chart = null;
   ctx.state.on('column', () => { if (chart && chart.isConnected) chart.redraw(); });
-  const frame = cardFrame(parent, card, ctx, card.views, (body, view) => {
+  cardFrame(parent, card, ctx, card.views, (body, view) => {
     const order = (card.views.find(v => v.legend) || view).tables.map(t => t.table);
     legend(body, view.legend
       ? view.tables.map(t => Object.assign({label: t.text}, tableColor(order, t.table)))
@@ -171,7 +170,7 @@ KX.cards.importance = (parent, card, ctx) => {
       const open = expanded[view.id];
       const shown = open ? view.bars : view.bars.slice(0, view.top);
       const pick = ctx.state.get('column');
-      const selected = pick ? pick.key : ctx.defaultColumn;
+      const selected = pick ? pick.key : ctx.cards.groups?.default;
       const rows = shown.map((bar, i) => Object.assign({
         label: bar.label, values: [bar.share],
         texts: [i === 0 && view.top_callout ? view.top_callout : bar.text],
@@ -194,9 +193,6 @@ KX.cards.importance = (parent, card, ctx) => {
         right: 150, signal: ctx.signal, label: card.title});
     }, ctx);
   });
-  frame.root.exportImportanceState = () => ({...expanded});
-  frame.root.restoreImportanceState = value => { Object.assign(expanded, value); chart?.redraw(); };
-  return frame;
 };
 
 /* ------------------------------------------------------- Column groups */
@@ -204,6 +200,7 @@ KX.cards.importance = (parent, card, ctx) => {
 KX.cards.groups = (parent, card, ctx) => {
   let columnEvents;
   ctx.onDispose(() => columnEvents?.abort());
+  const ui = ctx.state.ui(card.id, {cls: 0});
   const frame = cardFrame(parent, card, ctx, null, body => {
     columnEvents?.abort();
     columnEvents = new AbortController();
@@ -212,22 +209,19 @@ KX.cards.groups = (parent, card, ctx) => {
     const pick = ctx.state.get('column');
     const key = pick ? pick.key : card.default;
     const breakdown = key ? card.columns[key] : null;
-    let col = breakdown?.by_class ? breakdown.by_class[0] : breakdown;
+    let col = breakdown?.by_class ? breakdown.by_class[ui.cls] || breakdown.by_class[0] : breakdown;
     if (!col) {
       if (pick) H('p', 'kx-colhead', body, pick.label);
       H('p', 'kx-empty', body, 'No group breakdown written for this column');
       return;
     }
     if (card.selectable) {
-      const controls = H('div', 'kx-sg-controls', body);
-      const picker = subgraphPicker(controls, 'Column', 'cohort-column', columnCtx);
+      const select = picker(H('div', 'kx-sg-controls', body), 'Column', 'cohort-column');
       for (const [id, view] of Object.entries(card.columns)) {
-        const option = H('option', null, picker.select, (view.by_class?.[0] || view).header.split(' · ').slice(0, 2).join(' · '));
-        option.value = id;
+        H('option', null, select, (view.by_class?.[0] || view).header.split(' · ').slice(0, 2).join(' · ')).value = id;
       }
-      picker.select.value = key;
-      picker.sync();
-      picker.select.addEventListener('change', () => ctx.state.set('column', {key: picker.select.value}), {signal: columnCtx.signal});
+      select.value = key;
+      select.addEventListener('change', () => ctx.state.set('column', {key: select.value}), {signal: columnCtx.signal});
     }
     const head = H('p', 'kx-colhead', body);
     function labelColumn() {
@@ -237,13 +231,11 @@ KX.cards.groups = (parent, card, ctx) => {
     }
     labelColumn();
     if (breakdown.by_class?.length > 1) {
-      const controls = H('div', 'kx-sg-controls', body);
-      const picker = subgraphPicker(controls, 'Class label', 'group-class', columnCtx);
-      for (const view of breakdown.by_class) H('option', null, picker.select, view.label);
-      picker.sync();
-      picker.select.addEventListener('change', () => {
-        col = breakdown.by_class[picker.select.selectedIndex];
-        picker.sync();
+      const select = picker(H('div', 'kx-sg-controls', body), 'Class label', 'group-class');
+      for (const view of breakdown.by_class) H('option', null, select, view.label);
+      select.selectedIndex = breakdown.by_class.indexOf(col);
+      select.addEventListener('change', () => {
+        col = breakdown.by_class[ui.cls = select.selectedIndex];
         labelColumn();
         chart.redraw();
       }, {signal: columnCtx.signal});
@@ -302,6 +294,7 @@ KX.cards.groups = (parent, card, ctx) => {
     }, columnCtx);
   });
   ctx.state.on('column', () => {
+    ui.cls = 0;
     frame.show(null);
     if (frame.root.scrollIntoView) frame.root.scrollIntoView({block: 'nearest', behavior: 'smooth'});
   });
@@ -310,12 +303,14 @@ KX.cards.groups = (parent, card, ctx) => {
 
 /* ------------------------------------------------------------- Shell */
 
+/* `saved` is the UI state the initializer was given (see _render.py): a
+   restored export or the copy being printed. */
 function mount(host, data, signal, onDispose) {
   const root = H('div', 'kx', host);
   root.dataset.kind = data.kind || 'training';
-  const ctx = {signal, onDispose, state: store(signal), data, host};
-  root.exportColumnState = () => ctx.state.get('column');
-  root.restoreColumnState = value => { if (value) ctx.state.set('column', value); };
+  const cards = Object.fromEntries(data.tabs.flatMap(t => t.cards).map(c => [c.id, c]));
+  const ctx = {signal, onDispose, state: store(signal, saved), data, host, cards};
+  root.state = ctx.state;
   ENTITIES = data.entities || 'rows';
   if (data.header) {
     const head = H('div', 'kx-head', root);
@@ -325,9 +320,6 @@ function mount(host, data, signal, onDispose) {
     }
   }
 
-  const groups = data.tabs.flatMap(t => t.cards).find(c => c.id === 'groups');
-  ctx.hasGroups = !!groups;
-  ctx.defaultColumn = groups ? groups.default : null;
   const tabs = H('div', 'kx-tabs', root);
   tabs.setAttribute('role', 'tablist');
   const panels = [];
@@ -344,6 +336,7 @@ function mount(host, data, signal, onDispose) {
     panels.push({tab, button, panel, built: false});
   });
   const select = index => {
+    ctx.state.values.tab = index;
     panels.forEach((p, i) => {
       const on = i === index;
       p.button.setAttribute('aria-selected', String(on));
@@ -369,7 +362,7 @@ function mount(host, data, signal, onDispose) {
       panels[next].button.focus();
     }, {signal});
   });
-  select(0);
+  select(panels[ctx.state.values.tab] ? ctx.state.values.tab : 0);
   return root;
 }
 

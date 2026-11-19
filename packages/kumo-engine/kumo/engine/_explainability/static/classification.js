@@ -4,16 +4,6 @@
  */
 /* Classification: the cutoff card and Scores against outcomes. */
 
-function cutoffState(card) {
-  const cut = {};
-  for (const c of card.classes) cut[c.name] = card.default;
-  return {cls: card.classes[0].name, cut};
-}
-
-function mix(color, percent, base) {
-  return `color-mix(in srgb, ${color} ${percent.toFixed(1)}%, ${base || COLOR.bg})`;
-}
-
 function matrixView(host, width, cls, at) {
   /* counts are [tp, fp, fn, tn]; rows are actual positive / negative,
      columns predicted positive / negative. */
@@ -150,9 +140,9 @@ function refNotes(c, kind, cls, view) {
 
 
 KX.cards.cutoff = (parent, card, ctx) => {
-  const state = cutoffState(card);
-  ctx.state.set('cutoff', {cls: state.cls, index: state.cut[state.cls], card});
-  const views = card.views;
+  const cut = {};
+  for (const c of card.classes) cut[c.name] = card.default;
+  const state = ctx.state.ui('cutoff', {cls: card.classes[0].name, cut});
   let refresh = () => {};
   const controls = root => {
     const box = H('div', 'kx-controls', root);
@@ -216,7 +206,7 @@ KX.cards.cutoff = (parent, card, ctx) => {
         const span = H('span', null, strip, item.label.charAt(0).toUpperCase() + item.label.slice(1));
         H('b', null, span, item.text);
       }
-      ctx.state.set('cutoff', {cls: state.cls, index, card});
+      ctx.state.set('cutoff', state);
       refresh();
     };
     input.addEventListener('input', () => { state.cut[state.cls] = Number(input.value); update(); },
@@ -225,7 +215,7 @@ KX.cards.cutoff = (parent, card, ctx) => {
     return box;
   };
   let box;
-  const frame = cardFrame(parent, card, ctx, views, (body, view) => {
+  const frame = cardFrame(parent, card, ctx, card.views, (body, view) => {
     const draw = (host, width) => {
       const cls = card.classes.find(c => c.name === state.cls);
       const at = cls.cutoffs[state.cut[state.cls]];
@@ -270,11 +260,12 @@ function histogramView(host, width, view, ctx) {
   const series = view.series;
   const totals = edges.slice(1).map((e, i) => series.reduce((a, s) => a + s.counts[i], 0));
   const maxCount = Math.max(...totals);
-  const state = ctx.state.get('cutoff');
+  const state = ctx.state.get('cutoff'), cutoff = ctx.cards.cutoff;
+  const at = state && cutoff ? cutoff.classes.find(cl => cl.name === state.cls).cutoffs[state.cut[state.cls]] : null;
   let pos = null;
-  if (state) {
-    const t = state.card.grid[state.index];
-    pos = state.cls === state.card.classes[0].name ? t : 1 - t;
+  if (at) {
+    const t = cutoff.grid[state.cut[state.cls]];
+    pos = state.cls === cutoff.classes[0].name ? t : 1 - t;
   }
   const lo = Math.min(edges[0], pos === null ? edges[0] : pos);
   const hi = Math.max(edges[edges.length - 1], pos === null ? 0 : pos);
@@ -300,7 +291,10 @@ function histogramView(host, width, view, ctx) {
   });
   /* Each class's median: a thin line in its colour on a halo of the panel,
      labelled at its top. */
-  const binOf = v => Math.max(0, Math.min(totals.length - 1, edges.findIndex(e => e > v) - 1));
+  const binOf = v => {
+    const i = edges.findIndex(e => e > v);
+    return i < 0 ? totals.length - 1 : Math.max(0, i - 1);
+  };
   const under = Math.max(0, ...series.filter(s => typeof s.median === 'number').map(s => totals[binOf(s.median)]));
   const medianTop = Math.min(c.y0 + 34, y(under) - 16);
   series.forEach((s, k) => {
@@ -311,8 +305,8 @@ function histogramView(host, width, view, ctx) {
       strokeDasharray: '4 3'}}, g);
     space.add(mx - 2, medianTop, 4, c.y1 - medianTop);
   });
-  if (state) {
-    const text = state.card.classes.find(cl => cl.name === state.cls).cutoffs[state.index].line_callout;
+  if (at) {
+    const text = at.line_callout;
     const px = x(pos);
     S('path', {d: `M${px} ${c.y0 - 4}V${c.y1}`, style: {stroke: COLOR.panel, strokeWidth: 5.5}}, g);
     S('path', {d: `M${px} ${c.y0 - 4}V${c.y1}`, style: {stroke: COLOR.green, strokeWidth: 2.5}}, g);
