@@ -868,11 +868,28 @@ def test_a_fit_card_links_its_report_page():
     link = (f'#/experiments/{run.info.experiment_id}/runs/{run.info.run_id}'
             f'/artifacts/{REPORT_FILE}?workflowType=machine_learning')
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        *FIT_HEAD[:5], f'**[Open the interactive training report]({link})**',
-        '', *FIT_HEAD[5:], *MAE, 'Full lineage: `_provenance.json`.', *TAIL
+        f'{FIT_HEAD[0]} · **[Open the interactive training report]({link})**',
+        *FIT_HEAD[1:], *MAE, 'Full lineage: `_provenance.json`.', *TAIL
     ]))
     assert mlflow.artifacts.load_text(
         f'{run.info.artifact_uri}/{REPORT_FILE}') == '<!doctype html>'
+
+
+def test_a_refreshed_fit_card_keeps_its_report_link():
+    from kumo.engine.integrations.mlflow import MlflowTracking
+
+    tracker = MlflowTracking('e', log_system_metrics=False)
+    run = _fit_with_a_report(tracker)
+    client = mlflow.MlflowClient()
+    client.log_metric(run.info.run_id, 'test/mae', 0.2)
+
+    tracker._update_card(run.info.run_id)
+
+    card = client.get_run(run.info.run_id).data.tags['mlflow.note.content']
+    before = run.data.tags['mlflow.note.content'].split('\n')
+    assert card.split('\n')[0] == before[0].replace('holdout mae 0.25',
+                                                    'holdout mae 0.2')
+    assert card.split('\n')[1:-1] == before[1:-1]
 
 
 def test_a_databricks_fit_card_names_its_report_file(monkeypatch):
@@ -883,8 +900,8 @@ def test_a_databricks_fit_card_names_its_report_file(monkeypatch):
     run = _fit_with_a_report(MlflowTracking('e', log_system_metrics=False))
 
     assert run.data.tags['mlflow.note.content'] == _sealed('\n'.join([
-        *FIT_HEAD[:5], 'Interactive training report: '
-        f"`{REPORT_FILE}` in this run's artifacts.", '', *FIT_HEAD[5:], *MAE,
+        f'{FIT_HEAD[0]} · Interactive training report: '
+        f"`{REPORT_FILE}` in this run's artifacts.", *FIT_HEAD[1:], *MAE,
         'Full lineage: `_provenance.json`.', *TAIL
     ]))
 

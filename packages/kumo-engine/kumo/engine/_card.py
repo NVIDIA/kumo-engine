@@ -20,6 +20,10 @@ HEADLINE_CHARS = 140
 #: A fit run's ``result.visualize()`` report, as a standalone page.
 REPORT_FILE = 'training-report.html'
 REPORT_LEAD = '**[Open the interactive training report]('
+# Joins a fit's report pointer to its heading. MLflow shows a long
+# Description collapsed, and only its first lines take clicks.
+REPORT_SEP = ' · '
+_REPORT_STARTS = (REPORT_LEAD, 'Interactive training report: ')
 NOTES_LINE = ("*kumo rewrites everything above this line; editing it stops "
               "kumo's updates.*")
 TAIL = ('', NOTES_LINE, '', '---')
@@ -66,11 +70,13 @@ def run_card(tags: Mapping[str, str], params: Mapping[str, str],
              fit_run: Optional[str] = None, link: Optional[str] = None,
              blocks: Sequence[str] = (), report: Optional[str] = None) -> Card:
     r"""``report`` is a fit's pointer to its training report, as
-    :func:`report_line` writes it."""
+    :func:`report_line` writes it; it ends the heading line."""
     kind = tags.get('kumo.kind', '')
+    top = heading(kind, metrics, tags)
+    if kind == 'fit' and report:
+        top[0] += REPORT_SEP + report
     return Card(
-        heading(kind, metrics, tags),
-        intro(kind, tags, params, query, fit_run, link, report),
+        top, intro(kind, tags, params, query, fit_run, link),
         [*holdout(kind, model_metrics, tags), *lineage(kind, tags, summaries)],
         blocks)
 
@@ -79,29 +85,33 @@ def report_line(link: Optional[str]) -> str:
     r"""Where a fit's training report is: a link where the tracker's UI
     opens it, else its file name."""
     if link is None:
-        return (f'Interactive training report: `{REPORT_FILE}` in this '
+        return (f'{_REPORT_STARTS[1]}`{REPORT_FILE}` in this '
                 "run's artifacts.")
     return f'{REPORT_LEAD}{link})**'
 
 
+def _report_suffix(line: str) -> str:
+    r"""The report pointer that ends a heading ``line``, or ''."""
+    at = max(line.rfind(REPORT_SEP + start) for start in _REPORT_STARTS)
+    return line[at:] if at >= 0 else ''
+
+
 def refreshed(card: str, metrics: Mapping[str, float],
               tags: Mapping[str, str], params: Mapping[str, str]) -> str:
-    r"""``card`` with its heading and a fit's line redone."""
+    r"""``card`` with its heading and a fit's line redone, keeping the
+    report pointer at the end of the heading."""
     kind = tags.get('kumo.kind', '')
     lines = card.split('\n')
+    suffix = _report_suffix(lines[0])
     lines[:2] = heading(kind, metrics, tags)
+    lines[0] += suffix
     if kind == 'fit' and len(lines) > 3:
         lines[3] = fit_line(tags, params)
     return '\n'.join(lines)
 
 
 def shortened(card: str, files: Sequence[str]) -> str:
-    r"""``card`` cut to its heading, fit line and report link."""
-    lines = card.split('\n')
-    kept = [line for line in lines[4:] if line.startswith(REPORT_LEAD)][:1]
-    return '\n'.join(
-        [*lines[:4], *(['', *kept] if kept else []), '',
-         files_line(files)])
+    return '\n'.join([*card.split('\n')[:4], '', files_line(files)])
 
 
 def heading(kind: str, metrics: Mapping[str, float],
@@ -148,12 +158,11 @@ def heading(kind: str, metrics: Mapping[str, float],
 
 def intro(kind: str, tags: Mapping[str, str], params: Mapping[str, str],
           query: Optional[str], fit_run: Optional[str] = None,
-          link: Optional[str] = None, report: Optional[str] = None) -> str:
-    r"""The sentence under the heading, and a fit's report and ``query``."""
+          link: Optional[str] = None) -> str:
+    r"""The sentence under the heading, and a fit's ``query``."""
     if kind != 'fit':
         return model_line(tags, fit_run, link)
-    return fit_line(tags, params) + ''.join(f'\n\n{part}'
-                                            for part in (report, query) if part)
+    return fit_line(tags, params) + (f'\n\n{query}' if query else '')
 
 
 def fit_line(tags: Mapping[str, str], params: Mapping[str, str]) -> str:

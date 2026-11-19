@@ -266,7 +266,7 @@ def test_the_lineage_ends_a_fit_at_its_model_and_starts_a_prediction_there():
 LINK = '#/experiments/1/runs/r/artifacts/training-report.html'
 
 
-def test_a_fit_card_links_its_report_and_is_otherwise_unchanged():
+def test_a_fit_card_heading_links_its_report_and_is_otherwise_unchanged():
     tags = {
         **MODEL, 'kumo.kind': 'fit',
         'kumo.tune_metric': 'auroc',
@@ -281,15 +281,25 @@ def test_a_fit_card_links_its_report_and_is_otherwise_unchanged():
 
     assert report == f'**[Open the interactive training report]({LINK})**'
     lines = plain.split('\n')
-    assert card.split('\n') == [*lines[:5], report, '', *lines[5:]]
-    assert _card.shortened(card, []).split('\n') == [
-        *lines[:4], '', report, '', 'Full lineage: `_provenance.json`.'
-    ]
-    assert _card.shortened(plain, []) == '\n'.join(
-        [*lines[:4], '', 'Full lineage: `_provenance.json`.'])
-    assert _card.refreshed(card, {
-        'test/auroc': 0.9
-    }, tags, {}).split('\n')[5] == report
+    # On the heading line, the only part of a collapsed MLflow description
+    # that takes clicks.
+    headed = [f'{lines[0]} · {report}', *lines[1:]]
+    assert card.split('\n') == headed
+    assert _card.shortened(card, []) == '\n'.join(
+        [*headed[:4], '', 'Full lineage: `_provenance.json`.'])
+    stale = card.split('\n')
+    stale[3] = 'Fit of an older model.'
+
+    def refreshed(text):
+        return _card.refreshed(text, {'test/auroc': 0.9}, tags, {}).split('\n')
+
+    expected = [f'holdout auroc 0.9 · {report}', *headed[1:]]
+    assert refreshed('\n'.join(stale)) == expected
+    assert refreshed(plain)[0] == 'holdout auroc 0.9'
+    pointer = _card.report_line(None)
+    named = _card.run_card(tags, {}, holdout, holdout, QUERY, splits,
+                           report=pointer).text([])
+    assert refreshed(named)[0] == f'holdout auroc 0.9 · {pointer}'
 
 
 def test_a_report_without_a_link_names_its_file():
