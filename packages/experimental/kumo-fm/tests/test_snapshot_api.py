@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Snapshot input validation before any native graph is sampled."""
 from datetime import datetime, timezone
 from types import SimpleNamespace

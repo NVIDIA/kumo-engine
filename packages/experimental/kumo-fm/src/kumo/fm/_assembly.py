@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Validate and assemble selected columnar graph occurrences into FM tables."""
 from collections import defaultdict
 

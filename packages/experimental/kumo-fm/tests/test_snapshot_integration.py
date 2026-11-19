@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Integrated multi-layer FM sampling over a reusable native index."""
 from datetime import datetime, timezone
 

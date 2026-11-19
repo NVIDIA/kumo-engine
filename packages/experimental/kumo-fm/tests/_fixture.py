@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tiny whole-second contract bundles, not a bulk generator.
 
 Timestamp values have one-second granularity. Parquet and FM serialization

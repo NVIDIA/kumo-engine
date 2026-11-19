@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """FM payload assembly through public Kumo PyTorch columnar batches."""
 from .batch import PayloadBatch
 from .loader import FMLoader, PreparedRequest, prepare
