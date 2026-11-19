@@ -9,6 +9,7 @@ be reported, including from outside the checkout in installed-wheel tests.
 """
 
 import argparse
+import ast
 import collections
 import glob
 import html
@@ -21,11 +22,13 @@ import subprocess
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 
 BAD = {"failed", "failure", "error", "incomplete", "missing", "pending"}
 LIMIT = 12
 NO_REASON = "See the detailed report for this check."
+REPOSITORY = Path(__file__).resolve().parents[2]
 
 
 def brief(value, limit=320):
@@ -36,6 +39,142 @@ def brief(value, limit=320):
 
 def cell(value):
     return html.escape(brief(value)).replace("|", "&#124;")
+
+
+@lru_cache(maxsize=128)
+def source_descriptions(path):
+    """Read test explanations without importing tests or their dependencies."""
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError, UnicodeError):
+        return {}
+    descriptions = {}
+
+    def visit(body, prefix=()):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                visit(node.body, (*prefix, node.name))
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                doc = ast.get_docstring(node) or ""
+                paragraphs = re.split(r"\n\s*\n", doc.strip())
+                description = {"title": brief(paragraphs[0])} if doc else {}
+                for paragraph in paragraphs[1:]:
+                    key, separator, value = paragraph.partition(":")
+                    if separator and key in {"Expected", "Evidence"}:
+                        description[key.lower()] = brief(value)
+                descriptions[(*prefix, node.name)] = description
+
+    visit(tree.body)
+    return descriptions
+
+
+def test_description(classname, name):
+    """JUnit retains the exact ID; presentation uses the same checkout's docs."""
+    function, _, variant = name.partition("[")
+    parts = classname.split(".")
+    description = {}
+    if all(part.isidentifier() for part in (*parts, function)):
+        for root in (
+            REPOSITORY,
+            REPOSITORY / "test/kumo_pytorch",
+            REPOSITORY / "packages/experimental/kumo-pytorch",
+        ):
+            for end in range(len(parts), 0, -1):
+                path = root.joinpath(*parts[:end]).with_suffix(".py")
+                if path.is_file():
+                    description = source_descriptions(path).get(
+                        (*parts[end:], function), {}
+                    )
+                    break
+            if description:
+                break
+    title = description.get("title") or re.sub(r"^test_", "", function).replace(
+        "_", " "
+    )
+    return {
+        **description,
+        "title": title[:1].upper() + title[1:],
+        "variant": brief(variant.removesuffix("]")),
+    }
+
+
+def observation(message):
+    """Explain only what the diagnostic establishes, without guessing a cause."""
+    if "CONTRACT AMBIGUITY" in message:
+        label = re.search(r"CONTRACT AMBIGUITY [A-Z][0-9]+", message)
+        if label and " Observed " in message:
+            return brief(f"{label[0]}: {message.rsplit(' Observed ', 1)[1]}")
+        return brief(message.removeprefix("AssertionError: "))
+    if "Differing items:" in message:
+        differences = message.split("Differing items:", 1)[1]
+        keys = sorted(set(re.findall(r"['\"](\w+)['\"]:\s*['\"]sha256:", differences)))
+        if keys:
+            return f"Fingerprint mismatch in {', '.join(keys)}. The compared identities differ."
+        message = "Compared mappings differ: " + differences
+    split = re.search(
+        r"metadata\.splits\[(\d+)\].*?assert (.+?) == (.+?)(?:\n|$)", message, re.S
+    )
+    if split:
+        left, right = split[2].strip(), split[3].strip()
+        return brief(
+            f"Split metadata differs at position {split[1]}: "
+            f"{'missing' if left == 'None' else left} versus {'missing' if right == 'None' else right}."
+        )
+    mismatch = re.search(r"At index (\d+) diff: ([^\n]+) != ([^\n]+)", message)
+    if mismatch:
+        return brief(
+            f"Values differ at position {mismatch[1]}: {mismatch[2]} versus {mismatch[3]}."
+        )
+    explanations = (
+        (
+            "this state was saved for a different task",
+            "Iterator restore was rejected because the saved task identity differs.",
+        ),
+        (
+            "one sample exceeds Batching.max_tokens",
+            "Batch planning rejected a sample as larger than the token budget.",
+        ),
+        (
+            "Overflow when unpacking long long",
+            "Integer conversion overflowed the runtime's signed integer range.",
+        ),
+    )
+    error_text = message
+    exception = re.match(r"^([\w.]+(?:Error|Invalid|Exception)): (.*)", message, re.S)
+    if exception and exception[1] != "AssertionError":
+        error_text = exception[2]
+    for detail, explanation in explanations:
+        if error_text.startswith(detail):
+            return explanation
+    if error_text.startswith("Integer value ") and (
+        "not in range: -9007199254740992 to 9007199254740992" in error_text
+    ):
+        return "An integer-to-float conversion exceeded the supported safe range."
+    if error_text.startswith("unsupported operand type(s) for ** or pow(): 'NoneType'"):
+        return "A calculation attempted exponentiation on a missing value (None) and raised an error."
+    if error_text.startswith("post-fit text token lengths missing for "):
+        field = error_text.split("post-fit text token lengths missing for ", 1)[
+            1
+        ].partition("\n")[0]
+        resource = f" for {field}" if field else " (field not reported)"
+        return brief(
+            f"Native batch planning could not find token-length metadata{resource}."
+        )
+    # Keep useful values but omit opaque hashes and pytest's formatting advice.
+    message = re.sub(r"sha256:[0-9a-f]+", "[fingerprint]", message)
+    message = "\n".join(
+        line
+        for line in message.splitlines()
+        if not line.strip().startswith(("Omitting ", "Use -v"))
+    )
+    return brief(message)
+
+
+def check_title(row):
+    title = row.get("title") or row["check"].replace("_", " ")
+    if row.get("variant"):
+        title += f" [{row['variant']}]"
+    return brief(title)
 
 
 def reason(row):
@@ -145,11 +284,15 @@ def read_report(path):
                 if detail is not None:
                     text = (detail.text or "").strip().splitlines()
                     message = detail.get("message") or (text[-1] if text else status)
+                description = test_description(
+                    case.get("classname", ""), case.get("name", "")
+                )
                 rows.append(
                     {
+                        **description,
                         "check": f"{case.get('classname', '')}::{case.get('name', '')}",
                         "status": status,
-                        "reason": brief(message),
+                        "reason": observation(message),
                     }
                 )
         return rows, dict(counts)
@@ -212,7 +355,12 @@ def console(result):
     # Specific nested failures precede the enclosing campaign's generic error.
     failures.sort(key=lambda r: r["check"].count(" / "), reverse=True)
     for row in failures[:5]:
-        print(f"- {brief(row['check'])}: {row['reason']}", flush=True)
+        print(f"- {check_title(row)}", flush=True)
+        if row.get("expected"):
+            print(f"  Expected: {row['expected']}", flush=True)
+        print(f"  Observed: {row['reason']}", flush=True)
+        if row.get("evidence"):
+            print(f"  Evidence: {row['evidence']}", flush=True)
     if len(failures) > 5:
         print(
             f"- {len(failures) - 5} more reported failures; see the job summary and artifact.",
@@ -222,7 +370,7 @@ def console(result):
         print(brief(note), flush=True)
     if result["exit_code"]:
         message = (
-            failures[0]["reason"]
+            f"{check_title(failures[0])}: {failures[0]['reason']}"
             if failures
             else "Command failed; see the detailed log."
         )
@@ -347,18 +495,29 @@ def summary(root, title, artifact_url, job_status):
             "",
             "### What failed",
             "",
-            "| Step / check | Reason |",
-            "| --- | --- |",
+            "| What was tested | Expected | Observed |",
+            "| --- | --- | --- |",
         ]
         for record, check in failures[:LIMIT]:
             lines.append(
-                f"| {cell(record['title'])} / {cell(check['check'])} | {cell(check['reason'])} |"
+                f"| {cell(record['title'])} / {cell(check_title(check))} | {cell(check.get('expected', '—'))} | {cell(check['reason'])} |"
             )
         if len(failures) > LIMIT:
             lines += [
                 "",
                 f"Showing {LIMIT} of {len(failures)} reported failures. All details are retained in the artifact.",
             ]
+        lines += [
+            "",
+            "<details>",
+            "<summary>Exact test IDs and documentation</summary>",
+            "",
+        ]
+        for record, check in failures[:LIMIT]:
+            lines.append(f"- {cell(record['title'])}: {html.escape(check['check'])}")
+            if check.get("evidence"):
+                lines.append(f"  Evidence: {cell(check['evidence'])}")
+        lines += ["", "</details>"]
     outcomes = [(r, c) for r in records for c in r["checks"] if c["status"] not in BAD]
     if outcomes:
         lines += [

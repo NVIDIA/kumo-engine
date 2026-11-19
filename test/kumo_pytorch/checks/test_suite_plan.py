@@ -121,7 +121,7 @@ def test_campaign_resource_errors_fail_during_planning():
         nightly.campaign_resources({"min_free_gib": -1})
 
 
-def test_only_full_suite_has_external_triggers():
+def test_full_suite_and_difficult_behavior_are_the_external_entry_points():
     workflows = ROOT / ".github/workflows"
     suite = (workflows / "kumo-pytorch-t2b.yml").read_text()
     assert "name: PyTorch — Full Suite" in suite and "name: kumo-pytorch-gate" in suite
@@ -129,8 +129,18 @@ def test_only_full_suite_has_external_triggers():
         assert f"  {event}" in suite
     assert "github.event_name == 'schedule'" not in suite
     assert not (workflows / "kumo-pytorch-gate.yml").exists()
+    difficult = (workflows / "kumo-pytorch-difficult-behavior.yml").read_text()
+    assert "name: Difficult Behavior" in difficult
+    for event in ("pull_request:", "schedule:", "workflow_dispatch:"):
+        assert f"  {event}" in difficult
+    assert "--required-coverage=difficult" in difficult
+    assert "continue-on-error" not in difficult
+    assert "needs: diskgraph-wheel" in difficult
     for path in workflows.glob("*kumo-pytorch*.yml"):
-        if path.name != "kumo-pytorch-t2b.yml":
+        if path.name not in {
+            "kumo-pytorch-t2b.yml",
+            "kumo-pytorch-difficult-behavior.yml",
+        }:
             text = path.read_text()
             assert "  workflow_call:" in text
             assert all(

@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Difficult Behavior
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - 'test/kumo_pytorch/**'
+      - 'packages/experimental/kumo-pytorch/**'
+      - 'packages/diskgraph/**'
+      - '.github/workflows/kumo-pytorch-difficult-behavior.yml'
+      - '.github/workflows/_diskgraph-wheel.yml'
+      - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
+      - '.github/actions/rust-toolchain/**'
+      - '.github/actions/apt-install/**'
+      - 'scripts/diskgraph'
+      - 'setup.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  diskgraph-wheel:
+    name: Setup / DiskGraph Build
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+    with:
+      readable-output: true
+
+  difficult-behavior:
+    name: Difficult Behavior / Feature Interactions
+    needs: diskgraph-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      KUMO_CI_LABEL: Difficult Behavior
+      KUMO_CI_REPORTS: $RUNNER_TEMP/difficult-behavior.xml
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+      - name: Check difficult feature interactions
+        run: |
+          python3 test/kumo_pytorch/ci_reporting.py run \
+            --title "Difficult Behavior / Feature Interactions" -- \
+            python -m pytest -c test/kumo_pytorch/pytest.ini \
+            --confcutdir=test/kumo_pytorch test/kumo_pytorch/difficult_behavior \
+            --required-coverage=difficult -q --tb=long \
+            --basetemp="$RUNNER_TEMP/difficult-behavior-cases" \
+            --junitxml="$RUNNER_TEMP/difficult-behavior.xml"
+      - name: Retain reproducible cases and test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: difficult-behavior-cases
+          path: |
+            ${{ runner.temp }}/difficult-behavior-cases/**/case.json
+            ${{ runner.temp }}/difficult-behavior.xml
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Difficult Behavior
+          artifact: kumo-pytorch-diagnostics-difficult-behavior
+          status: ${{ job.status }}

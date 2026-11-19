@@ -27,8 +27,17 @@ for every required group. Package, example and H&M workflows are reusable worker
 they no longer launch overlapping runs independently. Unrelated PRs retain an
 explicit changed-file exemption; relevant PRs run the full suite.
 
+**Difficult Behavior** is a separate workflow for small, adversarial feature
+combinations with independent expected answers. Its [feature map and run guide](docs/difficult-behavior.md)
+describe the additional cases and existing coverage owners. It reuses setup,
+refusal enforcement and reporting, without adding another dataset campaign.
+
 Actions logs show step status, elapsed time, test totals and concise failure
-reasons. Long steps emit a progress line every 30 seconds. Each job summary links
+explanations. Failed tests show their purpose, authored expected outcome when
+available, parameter variant and observed mismatch. Fingerprint and split
+comparisons are explained without dumping hashes. Exact test IDs and documentation
+references remain in a collapsed summary section; complete assertions remain in
+JUnit and log artifacts. Long steps emit a progress line every 30 seconds. Each job summary links
 to its `kumo-pytorch-diagnostics-*` artifact containing full stdout/stderr,
 tracebacks and copied JSON/JUnit reports; original campaign artifacts remain.
 Summaries show up to 12 failure details, with the remaining count stated.
@@ -36,6 +45,12 @@ Skipped tests and accepted capability refusals are reported separately. Reportin
 preserves command exit codes and does not change coverage or acceptance rules.
 Third-party action failures (for example checkout or runner setup) retain their
 own Actions logs; a job that never starts cannot publish a summary.
+
+To describe a test, use its docstring's first paragraph as the plain-language
+title, followed by separate `Expected:` and optional `Evidence:` paragraphs.
+The reporter reads these from this run's source without importing tests or
+requiring their dependencies. Undescribed tests use a readable function name;
+the reporter does not invent an expected outcome or infer a root cause.
 
 Direct PR access to the RTX runner remains an **open infrastructure prerequisite**.
 The documented runner currently rejects `pull_request` jobs. The user chose to

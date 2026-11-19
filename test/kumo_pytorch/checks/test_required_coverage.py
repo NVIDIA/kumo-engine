@@ -16,11 +16,13 @@ import pytest
 @pytest.mark.parametrize(
     "fault", [None, "missing", "skip", "xfail", "deselect", "import", "extra"]
 )
-def test_required_coverage(tmp_path, fault):
+@pytest.mark.parametrize("profile", ["cpu", "difficult"])
+def test_required_coverage(tmp_path, fault, profile):
     root = Path(__file__).parents[1]
     (tmp_path / "conftest.py").write_text((root / "conftest.py").read_text())
     (tmp_path / "pytest.ini").write_text("[pytest]\n")
-    tests = tmp_path / "model_checks"
+    directory = "difficult_behavior" if profile == "difficult" else "model_checks"
+    tests = tmp_path / directory
     tests.mkdir()
     body = "def test_required():\n    assert True\n"
     if fault == "missing":
@@ -40,8 +42,8 @@ def test_required_coverage(tmp_path, fault):
     (tmp_path / "required-tests.json").write_text(
         json.dumps(
             {
-                "cpu": ["model_checks/test_cpu.py::test_required"],
-                "gpu": ["model_checks/test_gpu.py::test_gpu"],
+                profile: [f"{directory}/test_cpu.py::test_required"],
+                "gpu": [f"{directory}/test_gpu.py::test_gpu"],
             }
         )
     )
@@ -54,7 +56,7 @@ def test_required_coverage(tmp_path, fault):
             str(tmp_path / "pytest.ini"),
             "--confcutdir",
             str(tmp_path),
-            "--required-coverage=cpu",
+            f"--required-coverage={profile}",
             str(tests),
             "-q",
             *(["-k", "no_matching_test"] if fault == "deselect" else []),

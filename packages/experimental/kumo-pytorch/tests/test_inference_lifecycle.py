@@ -187,6 +187,11 @@ def _fresh_process(
 def test_a_fresh_process_rebuilds_the_same_batches(
     tmp_path: Path, contract_name: str, engine_name: str
 ) -> None:
+    """Reloading an artifact in a new process preserves identity and batches.
+
+    Expected: Reloading the same data and saved state preserves task fingerprints,
+    fitted encodings, training batches and inference batches.
+    """
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset(engine_name, _fixture_rows(), tmp_path)
     fingerprints, fitted, training = _train(contract, dataset, engine, tmp_path / "artifact")
@@ -485,6 +490,11 @@ def test_diskgraph_model_output_inference_matches_inspectable(tmp_path: Path) ->
 def test_inference_preserves_batches_after_index_rebuild(
     tmp_path: Path, contract_name: str, output_format: str
 ) -> None:
+    """Rebuilding the index preserves inference results and metadata.
+
+    Expected: The rebuilt index emits the same samples, input values and batch
+    metadata, including meaningful split labels, as the original index.
+    """
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")

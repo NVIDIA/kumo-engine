@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in CI enforcement of the reviewed dataset/model test inventory and execution."""
+"""Opt-in CI enforcement of the reviewed test inventory and execution."""
 
 import json
 from pathlib import Path
@@ -13,8 +13,8 @@ import pytest
 def pytest_addoption(parser):
     parser.addoption(
         "--required-coverage",
-        choices=("cpu", "gpu"),
-        help="Require the reviewed dataset/model cases; reject missing cases, skips and xfails",
+        choices=("cpu", "gpu", "difficult"),
+        help="Require the reviewed test cases; reject missing cases, skips and xfails",
     )
 
 
@@ -36,26 +36,36 @@ class RequiredCoverage:
     def __init__(self, profile, manifest):
         self.profile = profile
         self.expected = set(manifest[profile])
-        self.other = set(manifest["gpu" if profile == "cpu" else "cpu"])
+        self.other = {
+            node
+            for owner, nodes in manifest.items()
+            if owner != profile
+            for node in nodes
+        }
+        self.prefix = (
+            "difficult_behavior/" if profile == "difficult" else "model_checks/"
+        )
         if (
             not self.expected
             or self.expected & self.other
             or len(self.expected) != len(manifest[profile])
         ):
             raise pytest.UsageError(
-                "Required dataset/model inventory must be nonempty, unique and have disjoint owners"
+                "Required test inventory must be nonempty, unique and have disjoint owners"
             )
         self.collected = set()
         self.calls = set()
         self.problems = []
 
-    @staticmethod
-    def identity(nodeid):
-        return "model_checks/" + nodeid.split("model_checks/", 1)[-1]
+    def identity(self, nodeid):
+        for prefix in ("model_checks/", "difficult_behavior/"):
+            if prefix in nodeid:
+                return prefix + nodeid.split(prefix, 1)[-1]
+        return self.prefix + nodeid
 
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self, config, items):
-        # Explicit ownership: GPU reference cases run in their dedicated CI job.
+        # Other profiles execute in their own jobs.
         delegated = [item for item in items if self.identity(item.nodeid) in self.other]
         if delegated:
             config.hook.pytest_deselected(items=delegated)
@@ -67,7 +77,7 @@ class RequiredCoverage:
         extra = self.collected - self.expected
         if missing or extra:
             raise pytest.UsageError(
-                f"Required dataset/model {self.profile} inventory differs: "
+                f"Required test {self.profile} inventory differs: "
                 f"missing={sorted(missing)}, unreviewed={sorted(extra)}"
             )
 
@@ -92,7 +102,7 @@ class RequiredCoverage:
         if self.problems:
             reporter = session.config.pluginmanager.getplugin("terminalreporter")
             if reporter:
-                reporter.write_sep("!", "Required dataset/model coverage failed")
+                reporter.write_sep("!", "Required test coverage failed")
                 for problem in self.problems:
                     reporter.write_line(problem)
             session.exitstatus = pytest.ExitCode.TESTS_FAILED

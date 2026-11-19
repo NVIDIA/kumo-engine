@@ -621,6 +621,11 @@ class TestResume:
 
 class TestIdentity:
     def test_a_task_carries_its_fingerprints_and_output_schema(self) -> None:
+        """Repeated materialization preserves task identity.
+
+        Expected: Identical inputs produce identical fingerprints; changing the
+        anchors changes their fingerprint. The output schema describes the inputs.
+        """
         with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             again = plan.materialize(_table(), fit_split="train")

@@ -127,9 +127,8 @@ def test_nested_lifecycle_reason_replaces_opaque_failure_and_keeps_evidence(tmp_
         ],
     )
     assert result.returncode == 7
-    assert (
-        "mid_epoch_resume: this state was saved for a different task" in result.stdout
-    )
+    assert "mid epoch resume" in result.stdout
+    assert "Observed: this state was saved for a different task" in result.stdout
     assert len(result.stdout) < 2000
     assert (
         "PRIVATE_DETAILS" not in result.stdout and "FULL_TRACEBACK" not in result.stdout
@@ -154,6 +153,152 @@ def test_junit_counts_failures_errors_and_skips_without_dumping_tracebacks(tmp_p
         "missing input",
         "unsupported",
     }
+
+
+def test_failure_summary_explains_fingerprints_and_keeps_raw_evidence(tmp_path):
+    raw = (
+        "AssertionError: assert identities equal\nOmitting 6 identical items, use -vv to show\n"
+        "Differing items: {'anchors': 'sha256:aaaa'} != {'anchors': 'sha256:bbbb'}"
+    )
+    xml = (
+        '<testsuites><testsuite><testcase classname="tests.test_anchor_tables.TestIdentity" '
+        'name="test_a_task_carries_its_fingerprints_and_output_schema">'
+        f'<failure message="{raw.replace(chr(10), "&#10;")}">COMPLETE TRACEBACK</failure>'
+        "</testcase></testsuite></testsuites>"
+    )
+    result = execute(
+        tmp_path,
+        [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path('report.xml').write_text({xml!r}); raise SystemExit(1)",
+        ],
+    )
+    assert result.returncode == 1
+    assert "Repeated materialization preserves task identity" in result.stdout
+    assert "Expected: Identical inputs produce identical fingerprints" in result.stdout
+    assert "Observed: Fingerprint mismatch in anchors" in result.stdout
+    for opaque in ("sha256:", "Omitting", "test_a_task_carries", "COMPLETE TRACEBACK"):
+        assert opaque not in result.stdout
+    retained = next((tmp_path / "pytorch-ci-logs").glob("*/001-report.xml"))
+    assert retained.read_text() == xml
+    markdown = reporting.summary(
+        tmp_path / "pytorch-ci-logs", "Package tests", "", "failure"
+    )
+    assert "| What was tested | Expected | Observed |" in markdown
+    assert "<summary>Exact test IDs and documentation</summary>" in markdown
+    assert "test_a_task_carries_its_fingerprints_and_output_schema" in markdown
+    assert "sha256:" not in markdown
+
+
+def test_split_mismatch_explains_missing_metadata_and_keeps_variant(tmp_path):
+    path = tmp_path / "report.xml"
+    path.write_text("""<testsuites><testsuite>
+      <testcase classname="tests.test_inference_lifecycle" name="test_inference_preserves_batches_after_index_rebuild[pragma-inspectable]">
+        <failure message="AssertionError: metadata.splits[0]&#10;assert None == 'train'"/>
+      </testcase>
+    </testsuite></testsuites>""")
+    rows, counts = reporting.read_report(path)
+    assert counts == {"failed": 1}
+    assert (
+        rows[0]["title"]
+        == "Rebuilding the index preserves inference results and metadata."
+    )
+    assert rows[0]["variant"] == "pragma-inspectable"
+    assert "meaningful split labels" in rows[0]["expected"]
+    assert (
+        rows[0]["reason"]
+        == "Split metadata differs at position 0: missing versus 'train'."
+    )
+
+
+def test_descriptions_are_read_without_importing_tests_and_fallback_is_honest(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(reporting, "REPOSITORY", tmp_path)
+    (tmp_path / "example.py").write_text('''raise RuntimeError("MUST NOT IMPORT")
+class TestCases:
+    async def test_example(self):
+        """Readable purpose.
+
+        Expected: The saved values remain unchanged.
+
+        Evidence: docs/contract.md#reload
+        """
+''')
+    detail = reporting.test_description("example.TestCases", "test_example[variant]")
+    assert detail == {
+        "title": "Readable purpose.",
+        "expected": "The saved values remain unchanged.",
+        "evidence": "docs/contract.md#reload",
+        "variant": "variant",
+    }
+    fallback = reporting.test_description(
+        "missing_module", "test_handles_empty_input[packed]"
+    )
+    assert fallback == {"title": "Handles empty input", "variant": "packed"}
+    assert "expected" not in fallback
+    # Missing source never changes a failure into a reporting error.
+    assert reporting.source_descriptions(tmp_path / "missing.py") == {}
+
+
+def test_observations_do_not_invent_identity_failures_or_hide_ambiguity():
+    unrelated = "RuntimeError: connection refused"
+    assert reporting.observation(unrelated) == unrelated
+    non_hash = "AssertionError: Differing items: {'count': 3} != {'count': 4}"
+    assert (
+        reporting.observation(non_hash)
+        == "Compared mappings differ: {'count': 3} != {'count': 4}"
+    )
+    ambiguous = (
+        "AssertionError: CONTRACT AMBIGUITY A01: two readings; see docs/contract.md."
+    )
+    assert reporting.observation(ambiguous).startswith("CONTRACT AMBIGUITY A01")
+    long_ambiguity = (
+        "AssertionError: CONTRACT AMBIGUITY A01: "
+        + "explanation " * 50
+        + "Observed ValueError: event token metadata does not match stored fields"
+    )
+    assert reporting.observation(long_ambiguity) == (
+        "CONTRACT AMBIGUITY A01: ValueError: event token metadata does not match stored fields"
+    )
+    for diagnostic in (
+        "ArrowInvalid: Integer value 128 not in range: -128 to 127",
+        "AssertionError: metadata.sample_ids[0]\nassert 'wrong' == 'user-1'",
+        "AssertionError: Regex pattern did not match: this state was saved for a different task",
+    ):
+        assert reporting.observation(diagnostic) == reporting.brief(diagnostic)
+
+
+def test_mapping_difference_is_retained_after_pytest_omission_advice():
+    diagnostic = (
+        "assert {'field_0': 0, ...} == {'field_0': 0, ...}\n"
+        "  Omitting 99 identical items, use -vv to show\n"
+        "  Differing items:\n"
+        "  {'field_99': 99} != {'field_99': -1}\n"
+        "  Use -v to get more diff"
+    )
+    assert reporting.observation(diagnostic) == (
+        "Compared mappings differ: {'field_99': 99} != {'field_99': -1}"
+    )
+
+
+def test_empty_field_diagnostic_preserves_command_exit_and_report(tmp_path):
+    xml = """<testsuites><testsuite><testcase name="test_missing_lengths">
+      <failure message="ValueError: post-fit text token lengths missing for "/>
+    </testcase></testsuite></testsuites>"""
+    result = execute(
+        tmp_path,
+        [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path('report.xml').write_text({xml!r}); raise SystemExit(7)",
+        ],
+    )
+    assert result.returncode == 7
+    assert "token-length metadata (field not reported)" in result.stdout
+    saved = next((tmp_path / "pytorch-ci-logs").glob("*/step.json"))
+    assert json.loads(saved.read_text())["exit_code"] == 7
 
 
 def test_junit_refusal_is_separate_and_cannot_hide_failed_or_skipped_case(tmp_path):

@@ -1,7 +1,7 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 659 CPU cases and
-five CUDA reference cases. The CPU job installs Polars and exercises both the
+CI uses the reviewed node IDs in `../required-tests.json`: 671 CPU cases,
+five CUDA reference cases and 82 separate difficult-behavior cases. The CPU job installs Polars and exercises both the
 generic adapter case and the AML-specific Polars cases. CUDA cases are explicitly
 delegated to the dedicated GPU job, not accepted as skips on CPU.
 
@@ -11,8 +11,9 @@ training replay and source-to-runner execution. They use tiny fixtures; real
 LI Medium campaign execution remains pending in the
 [binding expansion plan](binding-coverage.md).
 
-`--required-coverage=cpu` or `--required-coverage=gpu` requires the corresponding
-inventory. Missing/deleted cases, unexpected additions, collection-time skips,
+`--required-coverage=cpu`, `--required-coverage=gpu` or
+`--required-coverage=difficult` requires the corresponding inventory. The last
+profile belongs to the separate [Difficult Behavior workflow](difficult-behavior.md). Missing/deleted cases, unexpected additions, collection-time skips,
 missing imports, deselection of required cases, runtime skips and xfails fail
 execution. A required case must execute or verify a declared preflight refusal
 as described below. Other setup failures remain failures. Expected output
@@ -87,8 +88,8 @@ python -m pytest -c test/kumo_pytorch/pytest.ini \
 ```
 
 Review the collected IDs against `required-tests.json` and update the inventory
-in the same change as the tests. Keep IDs starting with `model_checks/`, sorted
-within each owner. Never remove a required case merely to pass enforcement.
+in the same change as the tests. Keep IDs starting with `model_checks/` (or `difficult_behavior/` for that
+profile), sorted within each owner. Never remove a required case merely to pass enforcement.
 Collection alone does not establish execution acceptance.
 
 ## DiskGraph-only scope
