@@ -62,8 +62,8 @@ pub use crate::progress::{
     ProgressKind, ProgressPhase, TableIndexTotals,
 };
 pub use crate::scratch::{
-    estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, pk_map_task_estimate,
-    reserve_map, EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
+    estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
+    EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
 pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
@@ -2688,7 +2688,7 @@ struct IngestContext {
     pk_map_threads: Option<usize>,
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
-    /// Sum of per-shard `pk_map_task_estimate` requests across the pk_map
+    /// Sum of per-shard `estimate_pk_map_bytes` requests across the pk_map
     /// phase. Compared against observed peak RSS at end of the phase to
     /// validate that the budget estimate matches reality.
     pk_map_estimate_sum: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -9413,8 +9413,7 @@ impl IngestContext {
                         } else {
                             0
                         };
-                        let estimate =
-                            pk_map_task_estimate(union_rows, reserve_rows, key_type, avg_var_bytes);
+                        let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
                         // Track this task's estimate so we can compare the
                         // sum-of-estimates vs the actual peak RSS at end of pk_map.
                         estimate_sum.fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
@@ -9435,11 +9434,9 @@ impl IngestContext {
                                 // `panic!` (rc=134), which the runner would treat as
                                 // OOM-class and retry with halved threads to exhaustion.
                                 // With cgroup-aware shard sizing this should be rare.
-                                let row_estimate =
-                                    estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
-                                if row_estimate > budget_total {
+                                if estimate > budget_total {
                                     anyhow::bail!(
-                                        "single-shard PK-map estimate {row_estimate} B exceeds \
+                                        "single-shard PK-map estimate {estimate} B exceeds \
                                          memory budget {budget_total} B; increase num_shards \
                                          (re-run infer or raise num_shards) — halving threads \
                                          cannot reduce a single shard"
@@ -9447,7 +9444,7 @@ impl IngestContext {
                                 }
                                 // Normal case (fits): keep the existing per-shard acquire
                                 // semantics, which block until the budget frees up.
-                                Some(budget.acquire(estimate.min(budget_total))?)
+                                Some(budget.acquire(estimate)?)
                             }
                         } else {
                             None
