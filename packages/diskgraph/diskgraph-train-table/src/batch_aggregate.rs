@@ -534,6 +534,7 @@ type RelationColumns = (Vec<u64>, Vec<u64>, Option<usize>);
 /// With an exact clock and no sentinel keys, also returns the in-window edge
 /// count, and `recent` keeps only the newest or oldest edges holding `limit` (distinct)
 /// destinations, plus their boundary timestamp's tie run for the existing sort.
+/// A distinct walk returns each destination once and counts at most `limit` of them.
 fn relation_columns(
     table: &TableReader,
     relation_name: &str,
@@ -571,14 +572,18 @@ fn relation_columns(
         .filter(|(clock, ..)| clock.is_exact() && ranges[0].is_empty() && ranges[2].is_empty())
         .map(|_| ranges[1].len());
     let mut walked = None;
+    let mut seen = None;
+    let mut distinct_count = None;
     if let (Some((limit, order, distinct)), Some((clock, ..)), Some(count)) =
         (recent, window, in_window)
     {
         let interior = ranges[1].clone();
         let take = if distinct {
-            let read = distinct_prefix(segment, interior.clone(), limit, order, edges_visited);
-            let take = read.0.len();
-            walked = Some((order, read));
+            let (take, firsts, keys, set) =
+                distinct_prefix(segment, interior.clone(), limit, order, edges_visited);
+            walked = Some((order, (firsts, keys)));
+            distinct_count = Some(set.len());
+            seen = Some(set);
             take
         } else {
             limit.min(count)
@@ -612,9 +617,21 @@ fn relation_columns(
             if count == 0 {
                 break;
             }
-            destinations.extend_from_slice(&destination_buffer[..count]);
-            if include_sort_keys {
-                sort_keys.extend_from_slice(&sort_key_buffer[..count]);
+            if let Some(seen) = seen.as_mut() {
+                let batch = destination_buffer[..count]
+                    .iter()
+                    .zip(&sort_key_buffer[..count]);
+                for (&destination, &key) in batch {
+                    if seen.insert(destination) {
+                        destinations.push(destination);
+                        sort_keys.push(key);
+                    }
+                }
+            } else {
+                destinations.extend_from_slice(&destination_buffer[..count]);
+                if include_sort_keys {
+                    sort_keys.extend_from_slice(&sort_key_buffer[..count]);
+                }
             }
             *edges_visited = edges_visited.saturating_add(count as u64);
         }
@@ -633,25 +650,28 @@ fn relation_columns(
         }
         (destinations, sort_keys) = front;
     }
-    Ok((destinations, sort_keys, in_window))
+    Ok((destinations, sort_keys, distinct_count.or(in_window)))
 }
 
-/// Edges from the newest (descending) or oldest (ascending) end of `range` up to
-/// the one completing `limit` distinct destinations, or all of them, in index order.
+/// Walks from the newest (descending) or oldest (ascending) end of `range` up to
+/// the edge completing `limit` distinct destinations, or all of them. Returns the
+/// edges walked, each destination's first occurrence in index order, and the seen
+/// set. Every edge to one destination shares its timestamp on this exact path, so
+/// repeats cannot change the selection.
 fn distinct_prefix(
     segment: &RelationSegment<'_>,
     range: std::ops::Range<usize>,
     limit: usize,
     order: SequenceOrder,
     edges_visited: &mut u64,
-) -> (Vec<u64>, Vec<u64>) {
-    let mut seen = HashSet::<u64>::new();
+) -> (usize, Vec<u64>, Vec<u64>, HashSet<u64>) {
+    let mut seen = HashSet::<u64>::with_capacity(limit.min(range.len()));
     let mut destinations = Vec::new();
     let mut sort_keys = Vec::new();
     let mut destination_buffer = [0u64; 256];
     let mut sort_key_buffer = [0u64; 256];
-    while seen.len() < limit && destinations.len() < range.len() {
-        let walked = destinations.len();
+    let mut walked = 0;
+    while seen.len() < limit && walked < range.len() {
         let take = (limit - seen.len()).min(range.len() - walked).min(256);
         let batch = match order {
             SequenceOrder::Descending => range.start + walked..range.start + walked + take,
@@ -667,16 +687,20 @@ fn distinct_prefix(
             batch_destinations.reverse();
             batch_keys.reverse();
         }
-        seen.extend(batch_destinations.iter());
-        destinations.extend_from_slice(batch_destinations);
-        sort_keys.extend_from_slice(batch_keys);
+        for (&destination, &key) in batch_destinations.iter().zip(batch_keys.iter()) {
+            if seen.insert(destination) {
+                destinations.push(destination);
+                sort_keys.push(key);
+            }
+        }
+        walked += take;
         *edges_visited = edges_visited.saturating_add(take as u64);
     }
     if order == SequenceOrder::Ascending {
         destinations.reverse();
         sort_keys.reverse();
     }
-    (destinations, sort_keys)
+    (walked, destinations, sort_keys, seen)
 }
 
 /// The `take` newest (descending) or oldest (ascending) positions of a
@@ -1540,6 +1564,7 @@ fn count_frame(
     let recent = match (hops.len(), plan.distinct, limit) {
         // Limit 0 unpacks nothing: the exact window's size is the count.
         (1, false, _) => Some((0, SequenceOrder::Descending, false)),
+        // Distinct frames count the walk's distinct destinations, capped at the limit.
         (1, true, Some(limit)) => Some((limit, SequenceOrder::Descending, true)),
         _ => None,
     };
@@ -1573,8 +1598,7 @@ fn count_frame(
                     recent,
                     &mut stats.edges_visited,
                 )?;
-                counted[anchor] =
-                    in_window.filter(|_| recent.is_some_and(|(.., distinct)| !distinct));
+                counted[anchor] = in_window.filter(|_| recent.is_some());
                 next.extend(destinations.into_iter().zip(sort_keys));
             }
             frontier = next;

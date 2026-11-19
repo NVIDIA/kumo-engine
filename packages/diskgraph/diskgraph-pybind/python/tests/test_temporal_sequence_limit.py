@@ -465,73 +465,72 @@ PARALLEL_ITEM_TIMES = [0, 1, 2, 3, 4, 5, 5, 6, 7, 8]  # Items 5 and 6 tie.
 
 @pytest.fixture(scope="module")
 def parallel_edge_graph(tmp_path_factory):
-    """Users reach items through purchases that repeat (user, item) pairs."""
+    """Users reach items through edge tables that repeat (user, item) pairs."""
     root = tmp_path_factory.mktemp("parallel_edges")
+    t0 = 1_700_000_000
     # User 1 buys item i (i % 3 + 1) times; user 2 buys two items five times each.
     purchases = [(1, item) for item in range(10) for _ in range(item % 3 + 1)]
     purchases += [(2, item) for item in (8, 9) for _ in range(5)]
-    pq.write_table(pa.table({"id": [1, 2, 3]}), root / "users.parquet")
-    times = [1_700_000_000 + t for t in PARALLEL_ITEM_TIMES]
-    pq.write_table(
-        pa.table(
-            {"id": list(range(10)), "time": pa.array(times, type=pa.timestamp("s"))}
+    # Views carry their own times, so parallel edges to one item differ in time.
+    views = [(1, item, t0 + time) for item in range(10) for time in (item, 9 - item)]
+    # Ratings keep the item's time but weight parallel edges differently.
+    ratings = [(1, item, float((item + k) % 4)) for item in range(10) for k in (0, 1)]
+    times = pa.array([t0 + t for t in PARALLEL_ITEM_TIMES], type=pa.timestamp("s"))
+    tables = {
+        "users": pa.table({"id": [1, 2, 3]}),
+        "items": pa.table({"id": list(range(10)), "time": times}),
+        "purchases": pa.table(
+            {"user_id": [u for u, _ in purchases], "item_id": [i for _, i in purchases]}
         ),
-        root / "items.parquet",
-    )
-    pq.write_table(
-        pa.table(
+        "views": pa.table(
             {
-                "user_id": [user for user, _ in purchases],
-                "item_id": [item for _, item in purchases],
+                "user_id": [u for u, _, _ in views],
+                "item_id": [i for _, i, _ in views],
+                "at": pa.array([t for *_, t in views], type=pa.timestamp("s")),
             }
         ),
-        root / "purchases.parquet",
-    )
-    source = {"type": "parquet"}
-    config = {
-        "dataset_name": "parallel_edges",
-        "num_shards": 1,
-        "tables": [
+        "ratings": pa.table(
             {
-                "name": "users",
-                "primary_key": "id",
-                "columns": [{"name": "id", "ingested_dtype": "int64"}],
-                "source": {**source, "paths": [str(root / "users.parquet")]},
-            },
-            {
-                "name": "items",
-                "primary_key": "id",
-                "columns": [
-                    {"name": "id", "ingested_dtype": "int64"},
-                    {"name": "time", "ingested_dtype": "timestamp"},
-                ],
-                "source": {**source, "paths": [str(root / "items.parquet")]},
-            },
-            {
-                "name": "purchases",
-                "columns": [
-                    {"name": "user_id", "ingested_dtype": "int64"},
-                    {"name": "item_id", "ingested_dtype": "int64"},
-                ],
-                "edge_table": {
-                    "src_fk": {"edge_column": "user_id", "ref_table": "users"},
-                    "dst_fk": {"edge_column": "item_id", "ref_table": "items"},
-                    "forward": {
-                        "time": {"table": "items", "column": "time", "unit": "s"}
-                    },
-                },
-                "source": {**source, "paths": [str(root / "purchases.parquet")]},
-            },
-        ],
+                "user_id": [u for u, _, _ in ratings],
+                "item_id": [i for _, i, _ in ratings],
+                "score": [s for *_, s in ratings],
+            }
+        ),
     }
+    item_time = {"time": {"table": "items", "column": "time", "unit": "s"}}
+    weight = {"table": "ratings", "expr": "score", "dtype": "float32"}
+    forward = {
+        "purchases": item_time,
+        "views": {"time": {"table": "views", "column": "at", "unit": "s"}},
+        "ratings": {**item_time, "weight": weight},
+    }
+    dtypes = {"timestamp[s]": "timestamp", "double": "float64"}
+    config = {"dataset_name": "parallel_edges", "num_shards": 1, "tables": []}
+    for name, table in tables.items():
+        pq.write_table(table, root / f"{name}.parquet")
+        spec = {
+            "name": name,
+            "columns": [
+                {"name": f.name, "ingested_dtype": dtypes.get(str(f.type), "int64")}
+                for f in table.schema
+            ],
+            "source": {"type": "parquet", "paths": [str(root / f"{name}.parquet")]},
+        }
+        if name in forward:
+            spec["edge_table"] = {
+                "src_fk": {"edge_column": "user_id", "ref_table": "users"},
+                "dst_fk": {"edge_column": "item_id", "ref_table": "items"},
+                "forward": forward[name],
+            }
+        else:
+            spec["primary_key"] = "id"
+        config["tables"].append(spec)
     diskgraph.ingest(json.dumps(config), str(root / "index"), col_stats=False)
     engine = diskgraph.SamplerEngine(str(root / "index"))
-    relation = next(
-        r["name"]
-        for r in json.loads(engine.get_type_mapping())["edge_relations"]
-        if r["src_type"] == "users" and r["dst_type"] == "items"
-    )
-    return engine, relation
+    names = {r["name"] for r in json.loads(engine.get_type_mapping())["edge_relations"]}
+    relations = {name: f"edge_{name}_src_to_dst" for name in forward}
+    assert set(relations.values()) <= names
+    return engine, relations
 
 
 def parallel_plan(relation, *, limit, order, distinct, lower=None):
@@ -564,7 +563,8 @@ def parallel_plan(relation, *, limit, order, distinct, lower=None):
 @pytest.mark.parametrize("order", ["ascending", "descending"])
 @pytest.mark.parametrize("distinct", [True, False])
 def test_parallel_edges_match_full_frame(parallel_edge_graph, order, distinct):
-    engine, relation = parallel_edge_graph
+    engine, relations = parallel_edge_graph
+    relation = relations["purchases"]
     ids = engine.lookup_node_ids("users", pa.array([1, 2, 3, 1]))
     roots = {"users": ids}
     cutoffs = {"users": [1_700_000_008, 1_700_000_008, 1_700_000_008, 1_700_000_005]}
@@ -605,12 +605,46 @@ def test_parallel_edges_match_full_frame(parallel_edge_graph, order, distinct):
 def test_parallel_edges_are_read_once(
     parallel_edge_graph, order, limit, distinct, edges
 ):
-    engine, relation = parallel_edge_graph
+    engine, relations = parallel_edge_graph
+    relation = relations["purchases"]
     plan = parallel_plan(relation, limit=limit, order=order, distinct=distinct)
     roots = {"users": engine.lookup_node_ids("users", pa.array([1]))}
     cutoffs = {"users": [1_700_000_008]}
     result = engine.query_temporal(roots, cutoffs, json.dumps(plan))
     assert result["stats"]["edges_visited"] == edges
+
+
+@pytest.mark.parametrize("table,seeks", [("views", False), ("ratings", True)])
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+def test_parallel_edges_with_edge_times_or_weights(
+    parallel_edge_graph, table, seeks, order
+):
+    # Edge-table times are not the destination clock, so they never seek; item
+    # times with edge weights do, though their parallel sort keys differ.
+    engine, relations = parallel_edge_graph
+    roots = {"users": engine.lookup_node_ids("users", pa.array([1, 3, 1]))}
+    cutoffs = {"users": [1_700_000_008, 1_700_000_008, 1_700_000_005]}
+    for limit in range(1, 12):
+        plan = parallel_plan(relations[table], limit=limit, order=order, distinct=True)
+        reference = copy.deepcopy(plan)
+        reference["aggregates"] = [{"name": "all", "frame": "f", "operation": "count"}]
+        actual = engine.query_temporal(roots, cutoffs, json.dumps(plan))
+        expected = engine.query_temporal(roots, cutoffs, json.dumps(reference))
+        a, b = actual["sequences"][0], expected["sequences"][0]
+        for key in ("offsets", "timestamps", "node_ids"):
+            assert a[key] == b[key], limit
+        assert a["batch"].equals(b["batch"])
+        lengths = engine.query_temporal_lengths(roots, cutoffs, json.dumps(plan))
+        assert (
+            lengths["sequences"][0]["lengths"].to_pylist()
+            == np.diff(a["offsets"]).tolist()
+        )
+        if limit == 2:
+            visited = (
+                actual["stats"]["edges_visited"],
+                expected["stats"]["edges_visited"],
+            )
+            assert (visited[0] < visited[1]) == seeks
 
 
 @pytest.fixture(
