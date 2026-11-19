@@ -17,15 +17,16 @@ cd packages/experimental/kumo-fm/examples/local_sdm
 python connector_to_prediction.py
 ```
 
-This example keeps SDM and its Arrow compatibility handling beside the
-notebook. Install matching DiskGraph, `kumo-pytorch`, and `kumo-fm` wheels
+The separate `walkthrough.ipynb` uses the included frozen bundle fixture and
+keeps SDM and its Arrow compatibility handling beside the notebook. Install
+matching DiskGraph, `kumo-pytorch`, and `kumo-fm` wheels
 from one engine revision, then the pinned SDM environment in
 `requirements.lock`. The model may download the
 `nvidia/Kumo-Relational` v1.0.1 checkpoint; the prior validation used
 snapshot `2bd603d3d8f25f67a7aaa8579908595e20567e22`.
 
-The example includes `fixture/bundle/` and `fixture/workload.json`. Run the
-notebook from this directory to use them by default. Set `FM_SDM_FIXTURE` to
+The notebook includes `fixture/bundle/` and `fixture/workload.json`. Run it
+from this directory to use them by default. Set `FM_SDM_FIXTURE` to
 another directory containing `bundle/` and `workload.json` to use your own
 eligible `native_multihop` workload. Set `FM_SDM_BUNDLE` when its bundle has
 another path. The notebook opens or creates `fm-index/` in the fixture directory, samples one
