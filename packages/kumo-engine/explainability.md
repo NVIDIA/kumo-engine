@@ -46,6 +46,7 @@ Use `training_result.visualize().save("training-report.html")` to save a portabl
 `.page(title)` returns that standalone HTML page as a string; `.save(path, title)` writes it to a file.
 Open the saved report in a browser without a running notebook kernel.
 Snowflake notebooks use the anywidget transport supplied by the runtime, with the same `visualize()` call.
+With MLOps on, every tracked fit logs this page as `training-report.html` in its run's artifacts.
 The saved notebook snapshot includes the model summary, metrics, default Evaluation charts, the epoch-history summary and the Training Table, followed by “To activate the widget, rerun this cell.”
 Individual subgraphs are omitted from that static snapshot.
 Opening the widget only reads retained artifacts; it never starts training or prediction.
