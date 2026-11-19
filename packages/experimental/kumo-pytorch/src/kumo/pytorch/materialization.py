@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kumo.pytorch.column_stats import StatRequest, stats_request
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
@@ -255,8 +256,12 @@ def _compile_diskgraph_config(
                 ) from error
             missing = sorted(set(table.columns) - set(physical.names))
             if missing:
+                suggestion = _column_name_suggestion(missing, physical.names)
                 raise ValueError(
                     f"Parquet table {table.name!r} in {path!r} is missing columns {missing}"
+                    + (f", {suggestion}" if suggestion else "")
+                    + (" " if suggestion and suggestion.endswith("?") else ". ")
+                    + "Use the stored names in the contract, or rename the stored columns."
                 )
             source_types[table.name][path] = {}
             for name, declared in table.columns.items():
