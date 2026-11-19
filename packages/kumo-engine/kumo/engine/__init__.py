@@ -23,6 +23,7 @@ from kumo_core.embedding_models import (
     TokenEmbeddingModel,
 )
 from kumo_core.utils.nofile import ensure_nofile
+from kumo_core.utils.torch_build import check_torch_build
 from kumoapi.encoder import TextEmbedding
 from kumoapi.graph import Edge
 from kumoapi.jobs import WriteMode
@@ -30,6 +31,7 @@ from kumoapi.plugin import ModelRegistryLocation
 from kumoapi.table import Column
 
 from kumo.engine import _quiet  # noqa: F401
+from kumo.engine._environment import check_environment
 from kumo.engine._manifest import (
     ModelManifest,
     PredictionManifest,
@@ -83,6 +85,7 @@ __all__ = [
     "ADLSConnector",
     "ADLSIdentity",
     "__version__",
+    "check_environment",
     "configure",
     "install_skills",
     "EvaluationResult",
@@ -158,5 +161,8 @@ def _warn_if_skill_stale() -> None:
 
 
 ensure_nofile()
+# An Intel XPU or AMD ROCm build of PyTorch cannot run Kumo, and a package
+# index carrying every variant hands pip the XPU one by default.
+check_torch_build()
 # A local install of the agent skill from another build is out of date.
 _warn_if_skill_stale()
