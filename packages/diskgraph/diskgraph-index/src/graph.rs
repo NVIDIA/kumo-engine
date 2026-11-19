@@ -1241,8 +1241,8 @@ impl GraphIndexReader {
         // All opening paths share this validation, including direct native
         // callers and legacy relative references that traverse symlinks.
         let parent = fs::canonicalize(parent_root).context("resolve parent index path")?;
-        let subdir =
-            fs::canonicalize(parent_root.join(subdir_rel)).context("resolve extension index path")?;
+        let subdir = fs::canonicalize(parent_root.join(subdir_rel))
+            .with_context(|| format!("resolve extension `{namespace}` index path: {subdir_rel}"))?;
         ensure!(
             subdir != parent,
             "extension path must not identify the base index"
