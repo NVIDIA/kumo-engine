@@ -54,6 +54,8 @@ def build_contract(schema, family, *, native=False, max_events, profile=None):
         native=native,
         inclusive=graph,
         encodings=profile.get("encodings"),
+        sequence_options=profile.get("sequence"),
+        auxiliary=profile.get("auxiliary"),
     )
     if not graph:
         return seq
@@ -135,6 +137,8 @@ def sequence(
     targets=None,
     inclusive=False,
     encodings=None,
+    sequence_options=None,
+    auxiliary=None,
 ):
     pragma = representation == "pragma"
     if field_state is not None:
@@ -166,6 +170,11 @@ def sequence(
         name: f"[{name.upper()}]"
         for name in ("pad", "unknown", "mask", "entity", "event")
     }
+    auxiliary = auxiliary or {}
+    withheld = set(auxiliary.get("aligned", {}).get("fields", ()))
+    threshold = auxiliary.get("aligned", {}).get("threshold")
+    if threshold:
+        withheld.add(threshold["field"])
     encodes = tuple(
         r.Encode(
             name,
@@ -173,6 +182,7 @@ def sequence(
             "history",
         )
         for name, kind in kinds.items()
+        if name not in withheld
     )
     if pragma:
         history = r.Fields(
@@ -233,18 +243,64 @@ def sequence(
                 )
             ),
         )
+        composite = (sequence_options or {}).get("row") == "composite"
         history = r.Fields(
-            ordered,
-            row=r.Tokens(missing="error"),
-            history=r.Flatten(
+            tuple(replace(e, id_space=None) for e in ordered) if composite else ordered,
+            row=r.Composite(id_space="history")
+            if composite
+            else r.Tokens(missing="error"),
+            history=r.Grouped()
+            if composite
+            else r.Flatten(
                 (len(ordered) + 1) * max_events - 1,
                 keep="first",
                 prefer_event_boundary=True,
-                separator="separator",
+                separator=None if composite else "separator",
             ),
         )
-        inputs = {"history": r.Input(source, history, r.Padded())}
+        inputs = {
+            "history": r.Input(
+                source,
+                history,
+                r.Packed()
+                if (sequence_options or {}).get("layout") == "packed"
+                else r.Padded(),
+            )
+        }
         native_targets = {"next_token": r.NextTokenTarget("history")}
+    auxiliary_targets = {}
+    if auxiliary:
+        if pragma or native:
+            raise ValueError("Auxiliary checks require a supervised sequence contract")
+        aligned = auxiliary["aligned"]
+        # One grouped composite selection owns the packed history and labels.
+        # Every input exposes only permitted fields.
+        inputs["events"] = r.Input(
+            r.EventsOf("history"),
+            r.Fields(tuple(replace(e, id_space=None) for e in ordered)),
+            r.Packed(),
+        )
+        auxiliary_targets["aligned"] = r.AlignedEventTarget(
+            "events",
+            tuple(r.Encode(name, r.Vocabulary()) for name in aligned["fields"]),
+            (
+                r.ThresholdEventLabel(
+                    threshold["name"],
+                    threshold["field"],
+                    r.DType("string"),
+                    r.Vocabulary(),
+                    threshold=threshold["threshold"],
+                ),
+            ),
+        )
+        match_field = auxiliary["matching"]["field"]
+        sample = replace(sample, entity_values={match_field: r.Field(match_field)})
+        inputs["identity"] = r.Input(
+            r.EntitySource(), r.Fields((r.Encode(match_field, r.Raw()),)), r.Separate()
+        )
+        auxiliary_targets["matching"] = r.MatchingGroupTarget(
+            "identity", (match_field,)
+        )
     return r.DataLoaderSpec(
         schema,
         sample,
@@ -252,7 +308,10 @@ def sequence(
             inputs,
             native_targets
             if native
-            else (targets or {"label": r.LabelTarget("label", r.Raw())}),
+            else {
+                **(targets or {"label": r.LabelTarget("label", r.Raw())}),
+                **auxiliary_targets,
+            },
             id_spaces={"history": r.IdSpace(roles)},
             field_names={"fields": r.FieldNames()} if pragma else {},
             batching=r.Batching(max_samples=32),
@@ -471,7 +530,12 @@ def binding_contract(schema, binding, *, max_events):
         ),
         batch=replace(
             contract.batch,
-            targets={name: r.LabelTarget(name, r.Raw()) for name in generated}
+            targets={
+                name: target
+                for name, target in contract.batch.targets.items()
+                if name != "label"
+            }
+            | {name: r.LabelTarget(name, r.Raw()) for name in generated}
             | {
                 name: r.LabelTarget(
                     name, r.Vocabulary() if rule["kind"] == "category" else r.Raw()

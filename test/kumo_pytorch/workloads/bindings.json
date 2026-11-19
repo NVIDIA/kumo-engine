@@ -936,7 +936,7 @@
     },
     {
       "ref": "M03",
-      "binding_id": "kumo-binding-13fb18707441aaa64085ce5bb9a27889bd752ab012ae6221f8217bffe29575f5",
+      "binding_id": "suite:M03:auxiliary-labels-v1",
       "selector": {
         "anchor_version": "v1",
         "dataset_id": "mbd",
@@ -944,7 +944,7 @@
         "population": "transaction-forecast",
         "workload_id": "next-transaction-category"
       },
-      "input_variant": "trx",
+      "input_variant": "trx-composite",
       "representation": "nuformer",
       "split_column": "split",
       "targets": {
@@ -977,8 +977,92 @@
           }
         }
       },
-      "campaigns": [],
-      "pending": "Dataset sources, contracts and execution are not yet ported."
+      "campaigns": [
+        "smoke",
+        "training",
+        "full",
+        "lifecycle"
+      ],
+      "base_binding_id": "kumo-binding-13fb18707441aaa64085ce5bb9a27889bd752ab012ae6221f8217bffe29575f5",
+      "inputs": "client-transaction-composite",
+      "anchors": "monthly-forecast-sequence",
+      "task": "next-transaction-category",
+      "source_view": "category",
+      "execution": {
+        "batch_size": 4,
+        "threads": 1,
+        "runner": "rtxpro6000",
+        "min_free_gib": 128
+      },
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.forecast_features:category_features",
+        "modes": [
+          "smoke",
+          "training"
+        ],
+        "features": [
+          "F01",
+          "F02",
+          "F03",
+          "F07",
+          "F08",
+          "F10",
+          "F11",
+          "F14",
+          "F16"
+        ],
+        "assertions": {
+          "identity_cutoff": {
+            "features": [
+              "F01",
+              "F02"
+            ],
+            "description": "Original client and split membership, prediction clock and strict history cutoff.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "history_values": {
+            "features": [
+              "F02",
+              "F03",
+              "F07",
+              "F08",
+              "F10",
+              "F11"
+            ],
+            "description": "Original eligible events, independently encoded composite IDs, chronological groups and packed offsets.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "stored_targets": {
+            "features": [
+              "F14"
+            ],
+            "description": "Original earliest future event, independently valid type/subtype labels and train-only encoders.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "aligned_targets": {
+            "features": [
+              "F16"
+            ],
+            "description": "Withheld historical type/subtype fields and fixed-threshold amount labels follow exactly the retained events.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "matching_groups": {
+            "features": [
+              "F16"
+            ],
+            "description": "Stable group IDs distinguish raw client identities and agree across repeats.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "input_allowlist": {
+            "features": [
+              "F02",
+              "F16"
+            ],
+            "description": "All emitted input declarations exclude auxiliary target source fields and forecast labels.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          }
+        }
+      }
     },
     {
       "ref": "M04",
@@ -1515,7 +1599,15 @@
           "transactions",
           "root_id"
         ]
-      ]
+      ],
+      "views": {
+        "category": {
+          "inventory": "mbd-transaction-category",
+          "source_options": {
+            "event_identity_order": "timestamp"
+          }
+        }
+      }
     }
   },
   "semantics": {
@@ -2050,6 +2142,35 @@
           "clock": "event_time",
           "window_seconds": 2592000
         }
+      }
+    },
+    "next-transaction-category": {
+      "kind": "stored",
+      "targets": {
+        "event_type": {
+          "column": "next_event_type",
+          "dtype": "BIGINT",
+          "kind": "category",
+          "validity_columns": [
+            "next_event_type_valid"
+          ]
+        },
+        "event_subtype": {
+          "column": "next_event_subtype",
+          "dtype": "BIGINT",
+          "kind": "category",
+          "validity_columns": [
+            "next_event_subtype_valid"
+          ]
+        }
+      },
+      "auxiliary_checks": [
+        "aligned",
+        "matching"
+      ],
+      "forecast": {
+        "family": "transactions",
+        "window_seconds": 2592000
       }
     }
   },
@@ -3462,6 +3583,102 @@
         },
         "reverse_hop": false
       }
+    },
+    "client-transaction-composite": {
+      "variant": "trx-composite",
+      "root_table": "roots",
+      "root_type": "client",
+      "families": [
+        [
+          "transactions",
+          [
+            "client_transactions"
+          ],
+          "event_time",
+          [
+            [
+              "amount",
+              "amount",
+              "numerical"
+            ],
+            [
+              "currency",
+              "currency",
+              "categorical"
+            ],
+            [
+              "event_type",
+              "event_type",
+              "categorical"
+            ],
+            [
+              "event_subtype",
+              "event_subtype",
+              "categorical"
+            ],
+            [
+              "src_type11",
+              "src_type11",
+              "categorical"
+            ],
+            [
+              "src_type12",
+              "src_type12",
+              "categorical"
+            ],
+            [
+              "dst_type11",
+              "dst_type11",
+              "categorical"
+            ],
+            [
+              "dst_type12",
+              "dst_type12",
+              "categorical"
+            ],
+            [
+              "src_type21",
+              "src_type21",
+              "categorical"
+            ],
+            [
+              "src_type22",
+              "src_type22",
+              "categorical"
+            ],
+            [
+              "src_type31",
+              "src_type31",
+              "categorical"
+            ],
+            [
+              "src_type32",
+              "src_type32",
+              "categorical"
+            ]
+          ]
+        ]
+      ],
+      "sequence": {
+        "row": "composite",
+        "layout": "packed"
+      },
+      "auxiliary": {
+        "aligned": {
+          "fields": [
+            "event_type",
+            "event_subtype"
+          ],
+          "threshold": {
+            "name": "positive_amount",
+            "field": "amount",
+            "threshold": 0.0
+          }
+        },
+        "matching": {
+          "field": "root_id"
+        }
+      }
     }
   },
   "anchor_profiles": {
@@ -3525,6 +3742,14 @@
       "execution_time": "graph_as_of_time",
       "execution_offset_seconds": -1,
       "version": "v2"
+    },
+    "monthly-forecast-sequence": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "version": "v1"
     }
   }
 }

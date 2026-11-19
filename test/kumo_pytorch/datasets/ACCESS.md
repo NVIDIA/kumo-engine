@@ -60,3 +60,9 @@ objects. No listing or writes are granted. The downloader verifies 1,008 pinned
 objects; fold -1 and other modalities are excluded. The policy was reread and
 the approved addition matched; all six existing statements were preserved.
 Effective CI-role downloads remain to be verified by the M04 run.
+
+M03 adds two exact GetObject resources: the transaction-forecast v1 anchor Parquet
+and manifest. This separately authorized addition was applied on 2026-11-18 and
+verified by rereading the policy, preserving all seven prior statements. Its
+1,008-object inventory shares 1,006 source/manifest objects with M04. Effective
+CI-role downloads remain unverified locally; no full dataset was downloaded.

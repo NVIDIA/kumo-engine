@@ -284,6 +284,9 @@ def build_model(task, selection, family, *, dim=16, max_seq_len=2048, seed=0):
                 rules,
                 widths,
                 dim,
-                check_targets=task_spec.get("generated_checks", ()),
+                check_targets=(
+                    *task_spec.get("generated_checks", ()),
+                    *task_spec.get("auxiliary_checks", ()),
+                ),
             )
         return TaskModel(backbone, family, "binary" if scalar_binary else kind, dim)

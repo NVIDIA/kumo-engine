@@ -145,6 +145,37 @@ class NuFormerModel(nn.Module):
         history = _mapping(_mapping(batch.inputs, "batch.inputs")[input_name], input_name)
         ids = _kumo_tensor(history["value_ids"], f"{input_name}.ids", torch.int64, cpu=cpu)
         valid = _kumo_tensor(history["valid"], f"{input_name}.valid", torch.bool, cpu=cpu)
+        if ids.ndim == 1:
+            offsets = _kumo_tensor(
+                history["offsets"], f"{input_name}.offsets", torch.int64, cpu=cpu
+            )
+            if valid.shape != ids.shape or offsets.ndim != 1 or len(offsets) < 2:
+                raise ValueError(
+                    "packed history requires flat IDs/validity and sample offsets"
+                )
+            bounds = offsets.tolist()
+            if (
+                bounds[0] != 0
+                or bounds[-1] != ids.numel()
+                or any(a > b for a, b in zip(bounds, bounds[1:]))
+            ):
+                raise ValueError(
+                    "packed offsets must partition the complete token buffer"
+                )
+            # Attention padding is internal to the model; the native batch and
+            # its packed ownership remain unchanged.
+            from torch.nn.utils.rnn import pad_sequence
+
+            ids = pad_sequence(
+                [ids[a:b] for a, b in zip(bounds, bounds[1:])],
+                batch_first=True,
+                padding_value=self.config.pad_token_id,
+            )
+            valid = pad_sequence(
+                [valid[a:b] for a, b in zip(bounds, bounds[1:])],
+                batch_first=True,
+                padding_value=False,
+            )
         if ids.ndim != 2 or ids.shape[0] < 1 or valid.shape != ids.shape:
             raise ValueError("history IDs and validity require matching nonempty-batch [B,L] shapes")
         if ids.device != valid.device:
@@ -220,6 +251,16 @@ class NuFormerModel(nn.Module):
     def forward_kumo(self, batch, *, input_name="history", validate_inputs=True) -> NuFormerOutput:
         """Predict from a native batch; Kumo's already-shifted targets stay external."""
         encoding = self.encode_kumo(batch, input_name=input_name, validate_inputs=validate_inputs)
+        if batch.inputs[input_name]["value_ids"].ndim == 1:
+            offsets = batch.inputs[input_name]["offsets"].tolist()
+            hidden = torch.cat(
+                [
+                    encoding.hidden_states[i, : b - a]
+                    for i, (a, b) in enumerate(zip(offsets, offsets[1:]))
+                ],
+                dim=0,
+            )
+            return NuFormerOutput(self.lm_head(hidden), hidden, encoding.user_repr)
         # The internal empty-history pad is not an emitted token or target.
         width = batch.inputs[input_name]["value_ids"].shape[1]
         hidden = encoding.hidden_states[:, :width]

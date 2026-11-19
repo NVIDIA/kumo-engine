@@ -37,6 +37,17 @@ def numeric_category(value):
     return str(int(value)) if int(value) == value else repr(value)
 
 
+def chronological_keys(stamp, rows):
+    """Order signed nanoseconds then physical row without sorting the dataset."""
+    dtype = pa.decimal128(20, 0)
+    positive = pc.add(pc.cast(stamp, dtype), pa.scalar(2**63, type=dtype))
+    return pc.binary_join_element_wise(
+        pc.utf8_lpad(pc.cast(positive, pa.string()), 20, "0"),
+        pc.utf8_lpad(pc.cast(rows, pa.string()), 20, "0"),
+        ":",
+    )
+
+
 def prepare_sources(data_dir, output, definition, files, roots):
     from kumo.pytorch.api import Dataset, Parquet
 
@@ -72,9 +83,10 @@ def prepare_sources(data_dir, output, definition, files, roots):
     )
     spans = {}
     for family, spec in options["events"].items():
+        chronological = options.get("event_identity_order") == "timestamp"
         schema = pa.schema(
             [
-                ("event_id", pa.int64()),
+                ("event_id", pa.string() if chronological else pa.int64()),
                 ("root_id", pa.int64()),
                 ("event_time", pa.timestamp("ms")),
                 ("event_time_seconds", pa.int64()),
@@ -137,7 +149,13 @@ def prepare_sources(data_dir, output, definition, files, roots):
                         quotient, pc.cast(pc.less(remainder, 0), pa.int64())
                     )
                     values = {
-                        "event_id": data["__id"],
+                        # Fixed-width keys retain exact time order under native
+                        # same-second key ordering without a global sort/rank.
+                        # Physical row ordinals keep duplicates distinct and
+                        # make bounded and full source identities identical.
+                        "event_id": chronological_keys(stamp, data["__id"])
+                        if chronological
+                        else data["__id"],
                         "root_id": data["__root"],
                         "event_time": pc.cast(
                             pc.multiply(seconds, 1000), pa.timestamp("ms")

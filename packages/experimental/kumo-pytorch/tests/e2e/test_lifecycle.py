@@ -27,7 +27,6 @@ from e2e.flows.common import (  # noqa: E402
     read_predictions,
     serving_requests,
 )
-
 from kumo.pytorch.api import (  # noqa: E402
     Artifact,
     Batch,

@@ -12,7 +12,7 @@ Its Engine audit revision `9432cddf` is historical provenance; execution must
 test the PR's actual revision. [bindings.json](../workloads/bindings.json) pins
 the 16 PDF bindings plus E05, the existing supervised HI Small nuFormer case.
 It retains selectors, representations, split columns, target meanings and source
-catalog hashes. E05 and extended contracts such as S01/S04/M04 have suite identities, not new Arena
+catalog hashes. E05 and extended contracts such as S01/S04/M03/M04 have suite identities, not new Arena
 registrations. Extended contracts retain their original `base_binding_id` as
 provenance. Registration is not execution coverage.
 
@@ -38,7 +38,7 @@ independent: AML v8, Synthetic/MBD v1. Original input variants are `default`, or
 | S04 | Synthetic / ltv_positive_6m | ltv_positive_6m | Combined | Required positive-LTV task with richer/grouped aggregates and four shared campaigns; real-data CI pending |
 | M01 | MBD / product-uptake | uptake-joint | Combined | Port four independently valid binary targets |
 | M02 | MBD / transaction-forecast | next-transaction-amount-currency | PRAGMA | Port mixed targets and independent validity |
-| M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Port event type/subtype targets including auxiliary target checks |
+| M03 | MBD / transaction-forecast | next-transaction-category | nuFormer | Packed composite history and auxiliary labels in four shared campaigns; real-data CI pending |
 | M04 | MBD / transaction-forecast | future-trx-count | GraphSAGE | Stored and generated count checks in four shared campaigns; real-data CI pending |
 
 ## Feature additions within each selected binding
@@ -555,7 +555,7 @@ Local native fixtures pass correctness, complete delivery and both 100-update
 training repetitions. Reload/inference and fresh-process finetuning pass;
 mid-epoch resume exposes the existing package task-identity error (`this state
 was saved for a different task`). That required lifecycle test remains failing.
-Real-data CI acceptance is pending. M03 remains inactive for the next increment.
+Real-data CI acceptance is pending. M03 is added in the subsequent increment below.
 
 Validation: `model_checks/test_count_forecast.py` has 29 passes and the one
 required lifecycle failure above. All 348 harness checks pass. Regression checks
@@ -582,7 +582,7 @@ targets and losses without optimizer updates. Lifecycle performs one setup updat
 before persistence, inference, finetuning and exact resume. The existing `all`
 CLI mode remains available locally, but CI explicitly selects each owner.
 Each grouped job has a 45-minute timeout, its own reports and independent failure
-status. There are 36 per-binding campaigns plus three grouped entries, four L01
+status. There are 40 per-binding campaigns plus three grouped entries, four L01
 benchmarks and 15 HI Small fitting repetitions.
 
 ### Lifecycle ownership after extraction
@@ -619,3 +619,76 @@ both tiers collect 48 campaign cases, and all 626 required CPU cases collect
 assertions are preserved and each shared fixture is registered once. Workflow,
 Python and documentation checks pass. Full H&M training and real-data CI were
 not rerun locally.
+
+
+## M03 / MBD / nuFormer
+
+One binding, `suite:M03:auxiliary-labels-v1`, extends the registered transaction
+category forecast (base ID ending `29575f5`). The objective remains two independently
+valid categorical labels from the earliest transaction in `[T,T+30 days)`.
+Ties for the forecast label use original nanosecond time, sorted source file and
+physical row, as specified by the anchor builder. Historical inputs use the native
+whole-second cutoff strictly before T. Stable, fixed-width timestamp/physical-row
+keys preserve original nanosecond chronology without a global sort or rank. Only
+exactly equal original timestamps permit joint input/label permutations.
+
+| Required assertion | Features | Independent answer |
+| --- | --- | --- |
+| `identity_cutoff` | F01, F02 | Original client membership, split and prediction clock |
+| `history_values` | F02, F03, F07, F08, F10, F11 | Raw historical rows; saved scalar encoders and composite tuples; chronological groups, values, multiplicity and packed boundaries |
+| `stored_targets` | F14 | Original earliest future row, separate type/subtype validity, exact integer-to-category projection and train-only vocabularies |
+| `aligned_targets` | F16 | Withheld historical type/subtype labels and `amount > 0` labels on precisely the retained events; target encoders fit only training histories |
+| `matching_groups` | F16 | Raw client identity groups fit on training anchors; repeated clients share IDs; unseen groups use invalid -1 |
+| `input_allowlist` | F02, F16 | All input declarations and buffers exclude type, subtype, amount and forecast label fields |
+
+The shared sequence builder emits one composite token per event in packed
+buffers. An `EventsOf` companion supplies permitted scalar columns for the
+aligned-label checks; it follows the same grouped event selection. Amount, type
+and subtype are withheld from every input, including composite components.
+Calendar values, age and the other declared transaction categories form the
+composites. Auxiliary labels and matching IDs are checked but never added to the
+forecast loss. The existing stored-target head sums per-output cross-entropy,
+excluding each output's invalid labels and padding independently.
+
+The shared native anchor projection preserves every selected anchor. It converts
+BIGINT categories to exact decimal strings and applies explicit boolean validity
+columns independently. M03 reuses M04's source converter, original-row reader,
+nuFormer, stored-target heads, lifecycle, training and reporting. An optional
+source-profile setting selects chronological string keys for M03; M04 keeps its
+physical integer identities. Keys remain identical in bounded/full preparation.
+Only nuFormer's
+test-owned consumer gains packed input support, with internal attention padding.
+There are no new dataset runners, workflows or package runtime changes.
+
+The v1 inventory contains 1,008 pinned objects and shares 1,006 source/manifest
+objects with M04. The two additional exact anchor objects total 963,739,896 bytes.
+The separately approved GetObject grant was applied and verified, preserving all
+existing statements. M03 uses the existing RTX worker and 128 GiB storage
+preflight; training stays on CPU. Its four campaigns are required through the
+same matrices and reports. No timing benchmark is enabled for M03.
+
+Local native fixtures pass correctness, full delivery and both 100-update training
+repetitions. Reload/inference and fresh-process finetuning pass. The required
+mid-epoch resume check exposes the existing package error, `this state was saved
+for a different task`; it remains a failure. Real-data CI acceptance and measured
+resource use remain pending. Boundary and mutation tests cover independently
+missing labels, empty histories, unknown categories, equal-time joint record
+permutations, threshold boundaries, packed ownership, target leakage and corrupt
+labels. Tests use expected source answers without an InMemory reference engine.
+
+Validation for this increment: 32 M03 cases pass and its required mid-epoch resume
+case fails as described above. The combined M03/M04 native check has 61 passes and
+two instances of that same package failure. All 365 harness checks pass. Broader
+existing-binding regressions have 122 passes and the existing M04/L01 resume
+failures; these counts overlap. All 659 required CPU cases collect exactly, with
+five GPU cases delegated. Import ordering, scoped formatting, Flake8, changed-file
+license headers, repository documentation and whitespace checks pass. Existing
+nuFormer source formatting is preserved outside the additions.
+
+Independent review corrected a chronology issue before completion: distinct
+nanosecond timestamps may not be treated as ties after the execution clock is
+floored. Required tests now distinguish exact ties from distinct same-second
+times, verify stable bounded/full keys and cover signed clock boundaries. The
+review also tightened empty-history and isolated invalid-offset fixtures. No
+remaining actionable review findings. Input-value checks apply saved encoder
+state; they do not independently establish every input fitting algorithm.

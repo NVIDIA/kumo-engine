@@ -19,6 +19,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.fixture(autouse=True)
+def reporting_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(ROOT))
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("KUMO_CI_LABEL", "Workflow command check")
+    monkeypatch.setenv("KUMO_CI_REPORTS", "")
+
+
 def test_full_plan_partitions_existing_binding_campaigns_without_loss():
     plan = nightly.execution_plan(240)
     grouped = [
@@ -33,7 +41,7 @@ def test_full_plan_partitions_existing_binding_campaigns_without_loss():
         for r in nightly.campaign_matrix(name)["include"]
     ]
     identity = lambda r: (r["binding"], r["mode"])
-    assert len(grouped) == len(expected) == 36
+    assert len(grouped) == len(expected) == 40
     assert sorted(map(identity, grouped)) == sorted(map(identity, expected))
     assert len(set(map(identity, grouped))) == len(grouped)
     assert len(plan["fitting"]["include"]) == 15
@@ -78,7 +86,9 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
         for name in ("correctness", "training", "lifecycle", "population")
         for r in plan[name]["include"]
     ]
-    large = [r for r in campaigns if r["binding"] in {"S01", "S02", "S04", "M04"}]
+    large = [
+        r for r in campaigns if r["binding"] in {"S01", "S02", "S04", "M03", "M04"}
+    ]
     assert {r["mode"] for r in large} == {"smoke", "training", "lifecycle", "full"}
     for row in large:
         assert json.loads(row["runner"]) == {
@@ -89,7 +99,7 @@ def test_large_binding_uses_shared_worker_and_checks_storage_before_download():
     assert all(
         json.loads(r["runner"]) == "ubuntu-24.04"
         for r in campaigns
-        if r["binding"] not in {"S01", "S02", "S04", "M04"}
+        if r["binding"] not in {"S01", "S02", "S04", "M03", "M04"}
     )
     workflow = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     assert "runs-on: ${{ fromJSON(inputs.runner) }}" in workflow
@@ -274,9 +284,8 @@ def test_hi_small_checks_use_their_own_matrix_with_original_commands(
     assert f"inputs.mode == '{mode}'" in artifact_step
     assert "always() && inputs.executor == 'aml-prototype'" in artifact_step
     if mode == "histories":
-        assert "inputs.mode == 'histories'" in worker_step(
-            "Show real AML HI Small history results"
-        )
+        assert "$RUNNER_TEMP/aml-histories/report.json" in worker
+        assert "uses: ./.github/actions/kumo-pytorch-results" in worker
     log = tmp_path / "commands.jsonl"
     fake = tmp_path / "python"
     fake.write_text(
@@ -391,9 +400,9 @@ def test_hm_checks_select_one_owner_and_reuse_saved_runs(tmp_path, campaign):
     import textwrap
 
     worker = (ROOT / ".github/workflows/kumo-pytorch-t2a.yml").read_text()
-    check = re.search(
-        r"      - name: Check the runs\n(.*?)(?=      - name:)", worker, re.S
-    )[1]
+    check = re.search(r"      - name: Check the runs\n(.*?)(?=      - )", worker, re.S)[
+        1
+    ]
     assert "KUMO_PYTORCH_E2E_REUSE_ONLY: '1'" in check
     command = textwrap.dedent(check.split("        run: |\n", 1)[1])
     fake = tmp_path / "python"
@@ -401,7 +410,7 @@ def test_hm_checks_select_one_owner_and_reuse_saved_runs(tmp_path, campaign):
         f"#!{sys.executable}\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n"
     )
     fake.chmod(0o755)
-    result = subprocess.run(
+    subprocess.run(
         ["bash", "-e", "-c", command],
         check=True,
         capture_output=True,
@@ -414,7 +423,8 @@ def test_hm_checks_select_one_owner_and_reuse_saved_runs(tmp_path, campaign):
             "RUNNER_TEMP": str(tmp_path),
         },
     )
-    args = json.loads(result.stdout)
+    log = next((tmp_path / "pytorch-ci-logs").glob("*/console.log"))
+    args = json.loads(log.read_text())
     assert [arg for arg in args if arg.startswith("tests/")] == [
         f"tests/e2e/test_{campaign}.py"
     ]
@@ -425,5 +435,5 @@ def test_hm_checks_select_one_owner_and_reuse_saved_runs(tmp_path, campaign):
     assert "needs: [diskgraph-wheel, hm-runs]" in checks
     assert "fail-fast: false" in checks
     assert f"campaign: {campaign}" in checks
-    assert "name: ${{ matrix.group.label }} / H&M ${{ matrix.dataset.scale }}" in checks
+    assert "name: ${{ matrix.group.label }}" in checks
     assert "inputs.campaign }}-predictions-and-metrics" in worker

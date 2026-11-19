@@ -27,6 +27,16 @@ for every required group. Package, example and H&M workflows are reusable worker
 they no longer launch overlapping runs independently. Unrelated PRs retain an
 explicit changed-file exemption; relevant PRs run the full suite.
 
+Actions logs show step status, elapsed time, test totals and concise failure
+reasons. Long steps emit a progress line every 30 seconds. Each job summary links
+to its `kumo-pytorch-diagnostics-*` artifact containing full stdout/stderr,
+tracebacks and copied JSON/JUnit reports; original campaign artifacts remain.
+Summaries show up to 12 failure details, with the remaining count stated.
+Skipped tests and accepted capability refusals are reported separately. Reporting
+preserves command exit codes and does not change coverage or acceptance rules.
+Third-party action failures (for example checkout or runner setup) retain their
+own Actions logs; a job that never starts cannot publish a summary.
+
 Direct PR access to the RTX runner remains an **open infrastructure prerequisite**.
 The documented runner currently rejects `pull_request` jobs. The user chose to
 keep that trigger and resolve access separately. GPU checks stay required; a
@@ -102,8 +112,8 @@ existing preparation, projection, model heads and execution functions; add a
 specialized component only for a new capability. A new binding normally needs
 no workflow or separate dataset runner.
 
-The planner partitions the 36 binding campaigns into correctness (11),
-training (10), lifecycle (5) and full population (10). The Lifecycle matrix also
+The planner partitions the 40 binding campaigns into correctness (12),
+training (11), lifecycle (6) and full population (11). The Lifecycle matrix also
 contains one grouped HI Small entry, preserving its original five model/workload
 checks. HI Small's source/target oracles and history sweeps run in separate
 Correctness matrix entries; the source/target pass makes no optimizer updates.

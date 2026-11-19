@@ -35,6 +35,11 @@ def source_target_rows(binding, path, projected):
         "split": anchor["split"],
         **{name: rule["column"] for name, rule in rules.items()},
         **{
+            flag: flag
+            for rule in rules.values()
+            for flag in rule.get("validity_columns", ())
+        },
+        **{
             rule["threshold"]["column"]: rule["threshold"]["column"]
             for rule in rules.values()
             if "threshold" in rule
@@ -74,6 +79,12 @@ def verify_target_projection(binding, projected, original):
         )
     for name, rule in target_rules(binding).items():
         value = original[name]
+        if rule.get("validity_columns"):
+            flags = [original[c] for c in rule["validity_columns"]]
+            assert all(type(flag) is bool for flag in flags), (
+                "Target validity must be boolean"
+            )
+            value = value if all(flags) else None
         if "threshold" in rule:
             source = original[rule["threshold"]["column"]]
             assert source is not None and isfinite(source), (
@@ -84,6 +95,13 @@ def verify_target_projection(binding, projected, original):
             ), (
                 f"{original['sample_id']}: {name} disagrees with original threshold source {source!r}"
             )
+        if (
+            value is not None
+            and rule["kind"] == "category"
+            and rule["dtype"] == "BIGINT"
+        ):
+            assert type(value) is int
+            value = str(value)
         expected = (
             value
             if value is None or rule["kind"] == "category"
@@ -159,6 +177,12 @@ def generated_checks(workload):
     return checks
 
 
+def auxiliary_checks(workload):
+    from .bindings import task_definition
+
+    return tuple(task_definition(workload).get("auxiliary_checks", ()))
+
+
 def target_value(value, rule):
     """Validate source meaning before the documented float32 projection."""
     if value is None:
@@ -170,6 +194,10 @@ def target_value(value, rule):
     if kind == "count" and (type(value) is not int or value < 0):
         raise ValueError(f"{column} must be a nonnegative integer count")
     if kind == "category":
+        if rule.get("dtype") == "BIGINT":
+            if type(value) is not int:
+                raise ValueError(f"{column} must be an integer category or null")
+            return str(value)
         if not isinstance(value, str):
             raise ValueError(f"{column} must be a string or null")
         return value
@@ -213,7 +241,7 @@ def verify_target_fitting(workload, rows, state):
                 values[row[name]] += 1
     assert count > 0 and set(state["targets"]) == set(rules) | set(
         generated_checks(workload)
-    )
+    ) | set(auxiliary_checks(workload))
     for name in generated_checks(workload):
         encoder = fitted_target_encoder(state, name)
         assert encoder["kind"] == "raw" and encoder["dtype"]["name"] == "int64"
@@ -237,7 +265,9 @@ def verify_stored_batch(workload, batch, rows, state):
     import torch
 
     rules = target_rules(workload)
-    assert set(batch.targets) == set(rules) | set(generated_checks(workload))
+    assert set(batch.targets) == set(rules) | set(generated_checks(workload)) | set(
+        auxiliary_checks(workload)
+    )
     for name, check in generated_checks(workload).items():
         target = batch.targets[name]
         assert target["values"].dtype == torch.int64

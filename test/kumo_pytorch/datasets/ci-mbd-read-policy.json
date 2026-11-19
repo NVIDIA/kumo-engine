@@ -23,6 +23,18 @@
         "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v2/anchors.parquet",
         "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v2/manifest.json"
       ]
+    },
+    {
+      "Sid": "AllowEngineCIMBDCategoryAnchorsRead",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v1/anchors.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v1/manifest.json"
+      ]
     }
   ]
 }

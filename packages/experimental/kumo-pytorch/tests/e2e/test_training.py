@@ -19,7 +19,6 @@ pytest.importorskip("torch_geometric")
 
 from e2e.datasets.hm import HMDataset, fingerprint_mismatches  # noqa: E402
 from e2e.flows.common import oracle_auroc  # noqa: E402
-
 from tests.e2e.hm_support import (  # noqa: E402
     REPOSITORY,
     Report,

@@ -11,6 +11,7 @@ These models belong to the repository testing suite, outside the installed
 | masked-value-pretrain | PRAGMA | nested field history, calendar, elapsed time | Masked-value cross-entropy, smoothing 0.1 |
 | ltv_positive_6m (S04) | combined | seven event node types, token history, 35 counts and numerical aggregate additions | Binary cross-entropy |
 | future-trx-count (M04) | GraphSAGE | client transaction graph | Smooth L1 on stored 30-day counts; generated count is checked separately |
+| next-transaction-category (M03) | nuFormer | packed composite transaction history | Independently normalized type/subtype cross-entropy; auxiliary labels are check-only |
 | next-token-pretrain | nuFormer | token history | Next-token cross-entropy |
 
 [model factory](__init__.py) builds a consumer from a fitted Kumo task and an entry in
@@ -70,3 +71,8 @@ Stored target heads in `stored_targets.py` share these backbones for binary,
 categorical and numerical objectives, including multiple independently valid
 outputs. Input tables, graph features and aggregate names come from the selected
 profile; the factory does not choose behavior from a dataset name.
+
+For packed histories, nuFormer validates sample offsets and builds attention padding
+inside the model, leaving the native batch unchanged. Forecast heads consume only
+history representations; auxiliary aligned labels and matching IDs do not enter
+the model inputs or its loss. No model parameter names or checkpoint shapes change.

@@ -21,7 +21,6 @@ from tests.e2e.tiers import TIERS, Tier
 
 if TYPE_CHECKING:
     from e2e.datasets.hm import HMDataset
-
     from kumo.pytorch.api import Batch
     from tests.e2e.hm_support import FutureScores, Report, Run
 
@@ -94,7 +93,6 @@ def flow(request: pytest.FixtureRequest) -> str:
 @pytest.fixture(scope="session")
 def future_scores(runs: dict[str, list[Run]], hm: HMDataset, root: Path) -> FutureScores:
     from e2e.flows.common import read_predictions
-
     from tests.e2e.hm_support import _dataset_at
 
     scores: FutureScores = {}
@@ -125,8 +123,8 @@ def reference(runs: dict[str, list[Run]], hm: HMDataset) -> dict[str, dict[int, 
     purchases only through their customer; a missing row would fail the checks)."""
     import pyarrow as pa
     import pyarrow.compute as pc
-    from e2e.flows.common import CustomerRows, serving_requests
 
+    from e2e.flows.common import CustomerRows, serving_requests
     from kumo.pytorch.api import Artifact, Dataset, InMemoryRows
     from tests.e2e.hm_support import _reference_batches
 

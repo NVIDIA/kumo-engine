@@ -220,3 +220,98 @@ def count_features(binding, projection, mapping, state, *, mode):
         },
         {row["sample_id"]: row["split"] for row in rows},
     )
+
+
+def category_features(binding, projection, mapping, state, *, mode):
+    """Forecast labels and packed auxiliary checks share original event answers."""
+    from .bindings import task_definition
+    from .sequence_labels import (
+        check_allowlist,
+        history_checker,
+        matching_checker,
+    )
+
+    rows = [
+        row
+        for split in ("train", "valid", "test")
+        for row in projected_rows(projection, split)
+    ]
+    anchors = {r["sample_id"]: r for r in rows}
+    originals = source_target_rows(binding, mapping["anchor_source"]["path"], rows)
+    events, spans = source_reference(binding, mapping, anchors)
+    spec = task_definition(binding)
+    forecast = spec["forecast"]
+    rules = spec["targets"]
+    for row in rows:
+        original = originals[row["anchor_row_position"]]
+        verify_target_projection(binding, row, original)
+        start = original["prediction_time_ns"]
+        stop = start + forecast["window_seconds"] * 10**9
+        lo, hi = spans[forecast["family"]]
+        assert lo is not None and lo <= start and stop <= hi, (
+            "Forecast window lacks recorded-span coverage"
+        )
+        assert row["as_of_time"] == start // 10**9, (
+            "Sequence execution clock differs from prediction time"
+        )
+        first = min(
+            (
+                e
+                for e in events[row["entity_id"]]
+                if e["family"] == forecast["family"] and start <= e["time_ns"] < stop
+            ),
+            key=lambda e: (e["time_ns"], e["source_id"]),
+            default=None,
+        )
+        for name, rule in rules.items():
+            value = first["values"][name] if first else None
+            expected = None if value is None else int(value)
+            assert original[name] == expected, (
+                f"{row['sample_id']}: {name} expected earliest original source label {expected!r}, actual {original[name]!r} at anchor position {row['anchor_row_position']}"
+            )
+            assert all(
+                original[f] == (expected is not None) for f in rule["validity_columns"]
+            ), f"{row['sample_id']}: {name} validity differs from earliest source event"
+    inputs = profile(binding, "input")
+    aligned = inputs["auxiliary"]["aligned"]
+    withheld = {
+        *aligned["fields"],
+        aligned["threshold"]["field"],
+        *(r["column"] for r in rules.values()),
+    }
+    fields = [
+        "age_range",
+        *(
+            alias
+            for _, _, _, fs in inputs["families"]
+            for alias, _, _ in fs
+            if alias not in withheld
+        ),
+        "hour",
+        "weekday",
+        "day",
+    ]
+    return FeatureChecks(
+        binding["feature_checks"],
+        mode,
+        {
+            "identity_cutoff": lambda batch: check_delivery(
+                batch, iter(anchors[s] for s in batch.metadata["sample_ids"])
+            ),
+            "history_values": history_checker(binding, anchors, events, state),
+            "aligned_targets": history_checker(
+                binding, anchors, events, state, auxiliary=True
+            ),
+            "matching_groups": matching_checker(anchors, state),
+            "stored_targets": lambda batch: verify_stored_batch(
+                binding,
+                batch,
+                [anchors[s] for s in batch.metadata["sample_ids"]],
+                state,
+            ),
+            "input_allowlist": lambda batch: check_allowlist(
+                batch, state, fields, withheld
+            ),
+        },
+        {r["sample_id"]: r["split"] for r in rows},
+    )

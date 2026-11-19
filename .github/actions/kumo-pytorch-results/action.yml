@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch readable results
+description: Retain full command output and publish a concise job summary.
+inputs:
+  title:
+    required: true
+    description: Human-readable job title.
+  artifact:
+    required: true
+    description: Unique diagnostics artifact name for this matrix job.
+  status:
+    required: true
+    description: Job status before reporting, including failures in external actions.
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      id: logs
+      if: ${{ always() }}
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/pytorch-ci-logs
+        if-no-files-found: warn
+        retention-days: 14
+    - name: Show results and artifact link
+      if: ${{ always() }}
+      shell: bash
+      env:
+        KUMO_CI_TITLE: ${{ inputs.title }}
+        KUMO_CI_ARTIFACT_URL: ${{ steps.logs.outputs.artifact-url }}
+        KUMO_CI_JOB_STATUS: ${{ steps.logs.outcome == 'failure' && 'failure (artifact upload)' || inputs.status }}
+      run: python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" summary

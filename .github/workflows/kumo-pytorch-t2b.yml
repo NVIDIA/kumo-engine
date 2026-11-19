@@ -17,6 +17,7 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/*kumo-pytorch-*.yml'
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
+      - '.github/actions/kumo-pytorch-results/**'
       - '.github/actions/rust-toolchain/**'
       - '.github/actions/apt-install/**'
       - '.github/scripts/kumo-pytorch-*.py'
@@ -76,7 +77,7 @@ jobs:
             echo '::warning::Could not list the changed files; running the kumo-pytorch checks.'
             echo affected=true >> "$GITHUB_OUTPUT"
           elif (( changed_files > 3000 )) || grep -q -E \
-            '^(test/kumo_pytorch/|packages/experimental/kumo-pytorch/|packages/diskgraph/|\.github/actions/(kumo-pytorch-setup|rust-toolchain|apt-install)/|scripts/diskgraph$|\.github/workflows/_diskgraph-wheel\.yml$|\.github/workflows/_?kumo-pytorch-[^/]+\.yml$|\.github/scripts/kumo-pytorch-[^/]+\.py$|setup\.py$|pyproject\.toml$|uv\.lock$)' \
+            '^(test/kumo_pytorch/|packages/experimental/kumo-pytorch/|packages/diskgraph/|\.github/actions/(kumo-pytorch-setup|kumo-pytorch-results|rust-toolchain|apt-install)/|scripts/diskgraph$|\.github/workflows/_diskgraph-wheel\.yml$|\.github/workflows/_?kumo-pytorch-[^/]+\.yml$|\.github/scripts/kumo-pytorch-[^/]+\.py$|setup\.py$|pyproject\.toml$|uv\.lock$)' \
             <<< "$files"; then
             echo affected=true >> "$GITHUB_OUTPUT"
           else
@@ -103,6 +104,11 @@ jobs:
       training: ${{ steps.plan.outputs.training }}
       lifecycle: ${{ steps.plan.outputs.lifecycle }}
       population: ${{ steps.plan.outputs.population }}
+    env:
+      KUMO_CI_LABEL: Suite plan
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -111,9 +117,12 @@ jobs:
         env:
           SEED_START: ${{ inputs.seed_start }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / plan" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           args=()
           if [ -n "$SEED_START" ]; then args=(--seed-start "$SEED_START"); fi
           python3 -m test.kumo_pytorch.nightly plan --output "$RUNNER_TEMP/suite-plan/plan.json" "${args[@]}"
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kumo-pytorch-suite-plan
@@ -121,11 +130,21 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Suite plan
+          artifact: kumo-pytorch-diagnostics-suite-plan
+          status: ${{ job.status }}
+
   diskgraph-wheel:
     needs: changes
     if: needs.changes.outputs.affected == 'true'
     name: Setup / DiskGraph Build
     uses: ./.github/workflows/_diskgraph-wheel.yml
+    with:
+      readable-output: true
 
   tooling:
     needs: changes
@@ -136,6 +155,11 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      KUMO_CI_LABEL: Dataset tools
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -145,15 +169,26 @@ jobs:
           python-version: '3.12'
       - name: Test acquisition without AWS or service fixtures
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Test acquisition without AWS or service fixtures" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           uvx --python 3.12 --from pytest==8.4.2 python -m pytest \
             -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
             test/kumo_pytorch/checks -q --junitxml="$RUNNER_TEMP/tooling.xml"
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
           name: kumo-pytorch-tooling-tests
           path: ${{ runner.temp }}/tooling.xml
           retention-days: 14
+
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Dataset tools
+          artifact: kumo-pytorch-diagnostics-tooling
+          status: ${{ job.status }}
 
   package:
     name: Shared / Package
@@ -184,6 +219,11 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.conformance) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      KUMO_CI_LABEL: Conformance / Shard ${{ matrix.shard }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -198,7 +238,11 @@ jobs:
           SEEDS: ${{ matrix.seeds }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ matrix.shards }}
-        run: python -m conformance --engine diskgraph --seeds "$SEEDS" --seed-start "$START" --shards "$SHARDS" --shard "$SHARD"
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check DiskGraph behavior and harness guards on the selected seed batches" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --junitxml=$RUNNER_TEMP/conformance.xml" python -m conformance --engine diskgraph --seeds "$SEEDS" --seed-start "$START" --shards "$SHARDS" --shard "$SHARD"
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ failure() }}
         with:
@@ -206,6 +250,14 @@ jobs:
           path: ${{ runner.temp }}/conformance-repros
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Conformance / Shard ${{ matrix.shard }}
+          artifact: kumo-pytorch-diagnostics-conformance-${{ matrix.shard }}
+          status: ${{ job.status }}
 
   host-metrics:
     needs: changes
@@ -216,12 +268,21 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      KUMO_CI_LABEL: Host memory collectors
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/host-metrics/*-validation.json
+        $RUNNER_TEMP/host-metrics/isolation/*-validation.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Validate Linux file-cache conditioning
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate Linux file-cache conditioning" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           mkdir -p "$RUNNER_TEMP/host-metrics"
           docker run --rm --network none --read-only --cgroupns private \
             --pids-limit 64 --memory 256m --cap-add SYS_ADMIN \
@@ -232,8 +293,11 @@ jobs:
             --mount type=volume,dst=/scratch \
             python:3.12-slim-bookworm python -c \
             'from test.kumo_pytorch.benchmarking.validate_cache import main; raise SystemExit(main(["--workdir", "/scratch", "--output", "/out/cache-validation.json"]))'
+          KUMO_CI_COMMAND
       - name: Validate complete workers and cgroup cleanup
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate complete workers and cgroup cleanup" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           docker run --rm --network none --read-only --cgroupns private \
             --pids-limit 64 --memory 256m --cap-add SYS_ADMIN \
             --security-opt apparmor=unconfined \
@@ -242,27 +306,21 @@ jobs:
             --mount "type=bind,src=$RUNNER_TEMP/host-metrics,dst=/out" \
             python:3.12-slim-bookworm python -c \
             'import os,subprocess; from pathlib import Path; subprocess.run(["mount","-o","remount,rw","/sys/fs/cgroup"],check=True); root=Path("/sys/fs/cgroup"); control=root/"supervisor"; control.mkdir(); (control/"cgroup.procs").write_text(str(os.getpid())); (root/"cgroup.subtree_control").write_text("+memory"); from test.kumo_pytorch.benchmarking.validate_isolation import main; raise SystemExit(main(["--output","/out/isolation"]))'
-      - name: Show Linux collector validation
-        if: ${{ always() }}
-        run: |
-          python - <<'PYTHON' >> "$GITHUB_STEP_SUMMARY"
-          import json, os
-          from pathlib import Path
-          for path in sorted((Path(os.environ['RUNNER_TEMP']) / 'host-metrics').rglob('*-validation.json')):
-              result = json.loads(path.read_text())
-              if 'status' not in result:
-                  continue
-              print(f'### {path.stem}')
-              print(f"Status: **{result['status']}**. Kernel: `{result['kernel']}`.")
-              for check in result.get('checks', []):
-                  print(f'- {check}')
-          PYTHON
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
           name: kumo-pytorch-benchmark-memory
           path: ${{ runner.temp }}/host-metrics
           retention-days: 14
+
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Host memory collectors
+          artifact: kumo-pytorch-diagnostics-host-metrics
+          status: ${{ job.status }}
 
   gpu-checks:
     name: Profiler / GPU Metrics
@@ -276,6 +334,13 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      KUMO_CI_LABEL: GPU collectors and regressions
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/gpu-checks/*.json
+        $RUNNER_TEMP/gpu-checks/*.xml
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -285,15 +350,24 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
           torch-extra: cu130
       - name: Install the measurement-only NVML binding
-        run: uv pip install nvidia-ml-py==13.615.71
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Install the measurement-only NVML binding" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv pip install nvidia-ml-py==13.615.71
+          KUMO_CI_COMMAND
       - name: Validate real GPU measurements
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate real GPU measurements" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m test.kumo_pytorch.benchmarking.validate_gpu \
             --output "$RUNNER_TEMP/gpu-checks"
+          KUMO_CI_COMMAND
       - name: Run existing CUDA-only package regressions
         if: ${{ !cancelled() }}
         working-directory: packages/experimental/kumo-pytorch
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Run existing CUDA-only package regressions" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m pytest -q --require-imports \
             tests/test_masking.py::test_masking_is_bitwise_equal_on_cpu_and_cuda \
             tests/test_model.py::test_packed_event_encoder_runs_with_cuda_fp16 \
@@ -305,15 +379,22 @@ jobs:
           report = ET.parse(Path(os.environ['RUNNER_TEMP']) / 'gpu-checks/package-tests.xml')
           assert not list(report.iter('skipped')), 'Required CUDA tests skipped on the GPU runner'
           PY
+          KUMO_CI_COMMAND
       - name: Install test-only GPU reference dependencies
         if: ${{ !cancelled() }}
         id: gpu-reference-setup
-        run: uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Install test-only GPU reference dependencies" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
+          KUMO_CI_COMMAND
       - name: Validate isolated GPU loader timing and fitted-state reuse
         if: ${{ !cancelled() && steps.gpu-reference-setup.outcome == 'success' }}
         env:
           KUMO_GPU_REFERENCE_REQUIRED: '1'
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate isolated GPU loader timing and fitted-state reuse" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           sudo --preserve-env=KUMO_GPU_REFERENCE_REQUIRED -- "$(command -v python)" \
             -m test.kumo_pytorch.benchmarking.cgroup_run \
             --uid "$(id -u)" --gid "$(id -g)" --timeout 300 -- \
@@ -321,12 +402,7 @@ jobs:
             -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch --required-coverage=gpu \
             test/kumo_pytorch/model_checks/test_benchmark_gpu_reference.py \
             --junitxml="$RUNNER_TEMP/gpu-checks/reference-tests.xml"
-      - name: Show GPU validation report
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/gpu-checks/report.md" ]; then
-            cat "$RUNNER_TEMP/gpu-checks/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -334,8 +410,16 @@ jobs:
           path: ${{ runner.temp }}/gpu-checks
           retention-days: 14
 
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: GPU collectors and regressions
+          artifact: kumo-pytorch-diagnostics-gpu-checks
+          status: ${{ job.status }}
+
   correctness:
-    name: Correctness / ${{ matrix.label }} / ${{ matrix.mode }}
+    name: Correctness
     needs: [diskgraph-wheel, plan]
     permissions:
       contents: read
@@ -347,6 +431,7 @@ jobs:
     with:
       executor: ${{ matrix.executor }}
       binding: ${{ matrix.binding }}
+      label: ${{ matrix.label }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
@@ -356,7 +441,7 @@ jobs:
       diskgraph-wheel-artifact: diskgraph-wheel
 
   training:
-    name: Training / ${{ matrix.label }} / ${{ matrix.mode }}
+    name: Training
     needs: [diskgraph-wheel, plan]
     permissions:
       contents: read
@@ -367,6 +452,7 @@ jobs:
     uses: ./.github/workflows/_kumo-pytorch-binding.yml
     with:
       binding: ${{ matrix.binding }}
+      label: ${{ matrix.label }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
@@ -376,7 +462,7 @@ jobs:
       diskgraph-wheel-artifact: diskgraph-wheel
 
   lifecycle:
-    name: Lifecycle / ${{ matrix.label }} / ${{ matrix.mode }}
+    name: Lifecycle
     needs: [diskgraph-wheel, plan]
     permissions:
       contents: read
@@ -388,6 +474,7 @@ jobs:
     with:
       executor: ${{ matrix.executor }}
       binding: ${{ matrix.binding }}
+      label: ${{ matrix.label }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
@@ -397,7 +484,7 @@ jobs:
       diskgraph-wheel-artifact: diskgraph-wheel
 
   hm-runs:
-    name: Setup / H&M ${{ matrix.scale }}
+    name: Setup
     needs: diskgraph-wheel
     strategy:
       fail-fast: false
@@ -414,7 +501,7 @@ jobs:
       diskgraph-wheel-artifact: diskgraph-wheel
 
   hm-checks:
-    name: ${{ matrix.group.label }} / H&M ${{ matrix.dataset.scale }}
+    name: ${{ matrix.group.label }}
     needs: [diskgraph-wheel, hm-runs]
     if: ${{ !cancelled() && needs.diskgraph-wheel.result == 'success' }}
     strategy:
@@ -439,7 +526,7 @@ jobs:
       diskgraph-wheel-artifact: diskgraph-wheel
 
   population:
-    name: Population / ${{ matrix.label }} / ${{ matrix.mode }}
+    name: Population
     needs: [diskgraph-wheel, plan]
     permissions:
       contents: read
@@ -450,6 +537,7 @@ jobs:
     uses: ./.github/workflows/_kumo-pytorch-binding.yml
     with:
       binding: ${{ matrix.binding }}
+      label: ${{ matrix.label }}
       dataset: ${{ matrix.dataset }}
       mode: ${{ matrix.mode }}
       batch_size: ${{ matrix.batch_size }}
@@ -476,6 +564,11 @@ jobs:
       run:
         working-directory: .
     env:
+      KUMO_CI_LABEL: ${{ matrix.label }} / Fitting memory / Repeat ${{ matrix.repeat }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/fitting-memory/report.json
       AML_CASE: ${{ matrix.case }}
       DATASET: ${{ matrix.dataset }}
       AML_REPEAT: ${{ matrix.repeat }}
@@ -507,23 +600,25 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Download and verify pinned sources and anchors" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-fitting-data" --report "$RUNNER_TEMP/aml-fitting-acquisition.json"
+          KUMO_CI_COMMAND
       - name: Compare fresh fitting at 25k and 400k training anchors
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Compare fresh fitting at 25k and 400k training anchors" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m test.kumo_pytorch.aml_fitting_memory \
             --case "$AML_CASE" --data-dir "$RUNNER_TEMP/aml-fitting-data" --output "$RUNNER_TEMP/fitting-memory" \
             --repetitions 3 --repeat "$AML_REPEAT" --memory-method sampled \
             --memory-interval 0.05 --worker-timeout 3600
-      - name: Show fitting-memory results
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/fitting-memory/report.md" ]; then
-            cat "$RUNNER_TEMP/fitting-memory/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          KUMO_CI_COMMAND
       - name: Collect this repetition's reports without data or indexes
         if: ${{ always() }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Collect this repetition's reports without data or indexes" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python3 - <<'PYCODE'
           import os, shutil
           from pathlib import Path
@@ -537,6 +632,7 @@ jobs:
                   target.parent.mkdir(parents=True, exist_ok=True)
                   shutil.copyfile(path, target)
           PYCODE
+          KUMO_CI_COMMAND
       - name: Retain fitting-memory reports and observations
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
@@ -551,6 +647,14 @@ jobs:
             ${{ runner.temp }}/pytorch-campaigns/**/observations.jsonl
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: ${{ matrix.label }} / Fitting memory / Repeat ${{ matrix.repeat }}
+          artifact: kumo-pytorch-diagnostics-fitting-${{ matrix.case }}-${{ matrix.repeat }}
+          status: ${{ job.status }}
 
   benchmarks:
     name: Benchmark / ${{ matrix.label }} / ${{ matrix.mode }}
@@ -573,6 +677,14 @@ jobs:
       run:
         working-directory: .
     env:
+      KUMO_CI_LABEL: ${{ matrix.label }} / ${{ matrix.mode }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE/results.json
+        $RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE/*/results.json
+        $RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE/*/coverage.json
+        $RUNNER_TEMP/sampled-memory-validation.json
       AML_CASE: ${{ matrix.case }}
       DATASET: ${{ matrix.dataset }}
       AML_MODE: ${{ matrix.mode }}
@@ -586,7 +698,11 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
           torch-extra: cu130
       - name: Install measurement-only NVML binding
-        run: uv pip install nvidia-ml-py==13.615.71
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Install measurement-only NVML binding" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv pip install nvidia-ml-py==13.615.71
+          KUMO_CI_COMMAND
       - name: Read private dataset inputs with the Engine test role
         id: aml-credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
@@ -603,24 +719,44 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
           AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Download and verify pinned sources and anchors" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
             --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
+          KUMO_CI_COMMAND
       - name: Plan the selected campaign
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Plan the selected campaign" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m test.kumo_pytorch.nightly benchmark-config \
             --case "$AML_CASE" --mode "$AML_MODE" --data-dir "$RUNNER_TEMP/aml-data" \
             --output "$RUNNER_TEMP/aml-case.json"
+          KUMO_CI_COMMAND
       - name: Install test-only Polars reference
         if: matrix.mode == 'timing-polars'
-        run: uv pip install polars==2.1.0
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Install test-only Polars reference" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv pip install polars==2.1.0
+          KUMO_CI_COMMAND
       - name: Install test-only GPU reference dependencies
         if: matrix.mode == 'timing-gpu'
-        run: uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Install test-only GPU reference dependencies" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv pip install -r test/kumo_pytorch/reference_engine/gpu-requirements.txt
+          KUMO_CI_COMMAND
       - name: Validate Polars timing adapters on tiny sources
         if: matrix.mode == 'timing-polars'
-        run: python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate Polars timing adapters on tiny sources" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m pytest -q test/kumo_pytorch/model_checks/test_benchmark_polars.py --junitxml="$RUNNER_TEMP/polars-tests.xml"
+          KUMO_CI_COMMAND
       - name: Run the complete campaign with all repetitions
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Run the complete campaign with all repetitions" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           options=()
           if [[ "$AML_MODE" == index ]]; then options+=(--index-lifecycle); fi
           if [[ "$AML_MODE" == timing-* ]]; then options+=(--measurement-profile timing); fi
@@ -629,9 +765,12 @@ jobs:
             --output "$RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE" \
             --isolate-memory --repetitions 3 --epochs 2 --worker-timeout 1800 \
             --gpu-interval 0.1 --memory-method sampled --memory-interval 0.01 "${options[@]}"
+          KUMO_CI_COMMAND
       - name: Validate sampled host memory on the GPU host
         if: ${{ always() }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate sampled host memory on the GPU host" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python - <<'PY'
           import os, subprocess, sys
           subprocess.run([
@@ -642,11 +781,7 @@ jobs:
               '--method', 'sampled', '--output', os.environ['RUNNER_TEMP'] + '/sampled-memory-validation.json',
           ], check=True)
           PY
-      - name: Show this campaign's results
-        if: ${{ always() }}
-        run: |
-          report="$RUNNER_TEMP/pytorch-campaigns/$AML_MODE/$AML_CASE/report.md"
-          if [ -f "$report" ]; then cat "$report" >> "$GITHUB_STEP_SUMMARY"; fi
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -668,6 +803,14 @@ jobs:
             ${{ runner.temp }}/aml-acquisition.json
           retention-days: 14
 
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: ${{ matrix.label }} / ${{ matrix.mode }}
+          artifact: kumo-pytorch-diagnostics-benchmark-${{ matrix.case }}-${{ matrix.mode }}
+          status: ${{ job.status }}
+
   binding-results:
     name: Results / Dataset Campaigns
     needs: [plan, benchmarks, fitting-memory, correctness, training, lifecycle, population]
@@ -677,6 +820,12 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      KUMO_CI_LABEL: Combined campaign results
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/pytorch-campaigns/report.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -697,18 +846,15 @@ jobs:
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Account for every shard and compare all loader timings" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python3 -m test.kumo_pytorch.nightly summary --directory "$RUNNER_TEMP/pytorch-campaigns" --revision "$GITHUB_SHA"
           python3 - <<'PYCODE'
           import json, os
           results = json.loads(os.environ['JOB_RESULTS'])
           assert all(job['result'] == 'success' for job in results.values()), results
           PYCODE
-      - name: Show combined results
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/pytorch-campaigns/report.md" ]; then
-            cat "$RUNNER_TEMP/pytorch-campaigns/report.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -716,6 +862,14 @@ jobs:
           path: ${{ runner.temp }}/pytorch-campaigns
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Combined campaign results
+          artifact: kumo-pytorch-diagnostics-campaign-results
+          status: ${{ job.status }}
 
   gate:
     name: kumo-pytorch-gate
@@ -726,6 +880,12 @@ jobs:
     defaults:
       run:
         working-directory: .
+    env:
+      KUMO_CI_LABEL: Full suite gate
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/nightly-status/status.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -734,7 +894,11 @@ jobs:
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
           AFFECTED: ${{ needs.changes.outputs.affected }}
-        run: python3 -m test.kumo_pytorch.automation record --output "$RUNNER_TEMP/nightly-status/status.json"
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Account for every required suite job" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python3 -m test.kumo_pytorch.automation record --output "$RUNNER_TEMP/nightly-status/status.json"
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -742,3 +906,10 @@ jobs:
           path: ${{ runner.temp }}/nightly-status/status.json
           if-no-files-found: error
           retention-days: 14
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Full suite gate
+          artifact: kumo-pytorch-diagnostics-gate
+          status: ${{ job.status }}

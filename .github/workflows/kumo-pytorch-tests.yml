@@ -21,6 +21,8 @@ jobs:
     name: Setup / DiskGraph Build
     if: ${{ !inputs.prebuilt-diskgraph-wheel }}
     uses: ./.github/workflows/_diskgraph-wheel.yml
+    with:
+      readable-output: true
 
   cpu:
     name: Correctness / Package Tests
@@ -32,6 +34,11 @@ jobs:
       run:
         shell: bash
         working-directory: packages/experimental/kumo-pytorch
+    env:
+      KUMO_CI_LABEL: Package tests
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -40,12 +47,30 @@ jobs:
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Test suite
-        run: python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py --ignore=tests/e2e/test_training.py
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Test suite" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py --ignore=tests/e2e/test_training.py --junitxml="$RUNNER_TEMP/package-tests.xml"
+          KUMO_CI_COMMAND
       - name: Style
         if: ${{ !cancelled() }}
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Style" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           uvx ruff@0.17.3 check .
           uvx ruff@0.17.3 format --check .
+          KUMO_CI_COMMAND
       - name: Package build
         if: ${{ !cancelled() }}
-        run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Package build" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+          KUMO_CI_COMMAND
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Package tests
+          artifact: kumo-pytorch-diagnostics-package
+          status: ${{ job.status }}

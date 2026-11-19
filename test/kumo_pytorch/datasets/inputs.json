@@ -561,6 +561,34 @@
           "sha256": "a6e69be8cb0ce4e4f96118c9503c12deac3d4ff4c8c2a6e7b8b84283ee147d32"
         }
       ]
+    },
+    "mbd-transaction-category": {
+      "dataset_id": "mbd",
+      "dataset_version": "v1",
+      "population": "transaction-forecast",
+      "anchor_versions": [
+        "v1"
+      ],
+      "source_bytes": 6037620860,
+      "accepted_identity": {
+        "upstream_revision": "7c1642ca66eb460b0a2097e63afbed2eece739fa",
+        "source_representation": "Original client membership and transaction partitions for folds 0\u20134; other modalities and fold -1 excluded."
+      },
+      "file_sets": [
+        "mbd-transactions"
+      ],
+      "files": [
+        {
+          "key": "anchors/mbd/v1/transaction-forecast/v1/manifest.json",
+          "bytes": 36195,
+          "sha256": "404ff82d14061b1b7b36d40626d0acf874662d4c1af662f4dd630b6eb598b7b2"
+        },
+        {
+          "key": "anchors/mbd/v1/transaction-forecast/v1/anchors.parquet",
+          "bytes": 963703701,
+          "sha256": "5a6476f7fc67761595ac063ba9892a8d9fbc08ff0f6e73b4dc8b4983efbbd5b6"
+        }
+      ]
     }
   },
   "file_sets": {

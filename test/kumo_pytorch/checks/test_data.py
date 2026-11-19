@@ -53,6 +53,7 @@ def test_manifest_has_exact_starter_inputs():
         "synthetic-medium-accounts",
         "synthetic-medium-ltv",
         "mbd-transaction-forecast",
+        "mbd-transaction-category",
     }
     aml = m["datasets"]["hi-small"]
     assert aml["source_bytes"] == 99240770
@@ -453,7 +454,6 @@ def test_count_forecast_inventory_and_grant_cover_only_selected_modalities():
     catalog = load_bindings()
     binding = catalog["M04"]
     assert len([ref for ref in catalog if ref.startswith("M04")]) == 1
-    assert not catalog["M03"]["campaigns"]
     assert binding["base_binding_id"].endswith("fa6e68e")
     assert set(binding["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
     assert set(task_definition(binding)["generated_checks"]) == {"generated_count"}
@@ -469,7 +469,7 @@ def test_count_forecast_inventory_and_grant_cover_only_selected_modalities():
     grant = json.loads((SUITE / "datasets/ci-mbd-read-policy.json").read_text())[
         "Statement"
     ]
-    assert len(grant) == 1 and grant[0]["Action"] == "s3:GetObject"
+    assert len(grant) == 2 and grant[0]["Action"] == "s3:GetObject"
     resources = grant[0]["Resource"]
     assert len(resources) == 13
     assert all(
@@ -486,3 +486,43 @@ def test_count_forecast_inventory_and_grant_cover_only_selected_modalities():
         )
         for pattern in resources
     )
+
+
+def test_category_forecast_reuses_sources_and_limits_new_read_grant():
+    from test.kumo_pytorch.bindings import (
+        dataset_definition,
+        load_bindings,
+        task_definition,
+    )
+
+    bindings = load_bindings()
+    selected = bindings["M03"]
+    assert selected["base_binding_id"].endswith("29575f5")
+    assert selected["binding_id"] == "suite:M03:auxiliary-labels-v1"
+    assert set(selected["campaigns"]) == {"smoke", "training", "full", "lifecycle"}
+    manifest = data.load_manifest()
+    original, category = [
+        {
+            f["key"]: f
+            for f in manifest["datasets"][
+                dataset_definition(bindings[ref])["inventory"]
+            ]["files"]
+        }
+        for ref in ["M04", "M03"]
+    ]
+    common = set(original) & set(category)
+    assert len(original) == len(category) == 1008 and len(common) == 1006
+    assert all(original[k] == category[k] for k in common)
+    extra = set(category) - set(original)
+    assert extra == {
+        "anchors/mbd/v1/transaction-forecast/v1/" + name
+        for name in ["anchors.parquet", "manifest.json"]
+    }
+    policy = json.loads((SUITE / "datasets/ci-mbd-read-policy.json").read_text())[
+        "Statement"
+    ][1]
+    assert policy["Action"] == "s3:GetObject" and policy["Effect"] == "Allow"
+    assert set(policy["Resource"]) == {
+        "arn:aws:s3:::kumo-engine-arena/" + key for key in extra
+    }
+    assert task_definition(selected)["auxiliary_checks"] == ["aligned", "matching"]

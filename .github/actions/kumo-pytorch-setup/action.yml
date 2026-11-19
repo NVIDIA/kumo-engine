@@ -45,13 +45,19 @@ runs:
     - name: Install DiskGraph from the wheel
       if: inputs.diskgraph-wheel-artifact != ''
       shell: bash
-      run: ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+      run: |
+        python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+          --title "Setup / Install DiskGraph from the wheel" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+        ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+        KUMO_CI_COMMAND
     - name: Install the locked workspace environment, then kumo-pytorch into it
       shell: bash
       env:
         NOTEBOOKS: ${{ inputs.notebooks }}
         TORCH_EXTRA: ${{ inputs.torch-extra }}
       run: |
+        python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+          --title "Setup / Install the locked workspace environment, then kumo-pytorch into it" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
         set -euo pipefail
         case "$TORCH_EXTRA" in cpu|cu130) ;; *) exit 1 ;; esac
         examples=()
@@ -62,6 +68,7 @@ runs:
           --package kumo-pytorch --extra dev "${examples[@]}"
         # The notebook runner's tools are not package dependencies.
         if [ "$NOTEBOOKS" = true ]; then uv pip install nbclient==0.11.0 ipykernel==7.4.0; fi
+        KUMO_CI_COMMAND
     - name: Runner
       shell: bash
       run: |

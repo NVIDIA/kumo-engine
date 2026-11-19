@@ -21,7 +21,6 @@ pytest.importorskip("torch_geometric")
 from e2e.datasets.hm import HMDataset  # noqa: E402
 from e2e.flows.common import CustomerRows, anchors, dataset  # noqa: E402
 from e2e.flows.hm_gnn import RECENT_PURCHASES  # noqa: E402
-
 from kumo.pytorch.api import (  # noqa: E402
     Artifact,
     Batch,

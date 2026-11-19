@@ -31,12 +31,17 @@ defaults:
 
 jobs:
   plan:
-    name: Setup / H&M Run Plan
+    name: H&M ${{ inputs.tier == 't2a' && 'Small' || 'Medium' }} / Model & seed plan
     if: ${{ inputs.campaign == 'prepare' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+    env:
+      KUMO_CI_LABEL: H&M ${{ inputs.tier }} / Plan
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -44,19 +49,40 @@ jobs:
       - name: Validate tier
         env:
           TIER: ${{ inputs.tier }}
-        run: 'case "$TIER" in t2a|t2b) ;; *) exit 1 ;; esac'
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate tier" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          case "$TIER" in t2a|t2b) ;; *) exit 1 ;; esac
+          KUMO_CI_COMMAND
       - id: matrix
-        run: echo "matrix=$(python3 tests/e2e/tiers.py $TIER)" >> "$GITHUB_OUTPUT"
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / matrix" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          echo "matrix=$(python3 tests/e2e/tiers.py $TIER)" >> "$GITHUB_OUTPUT"
+          KUMO_CI_COMMAND
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: H&M ${{ inputs.tier }} / Plan
+          artifact: kumo-pytorch-diagnostics-hm-plan-${{ inputs.tier }}-${{ inputs.campaign }}
+          status: ${{ job.status }}
 
   training:
     if: ${{ inputs.campaign == 'prepare' }}
-    name: Setup / H&M / ${{ matrix.flow == 'gnn' && 'GNN' || 'PRAGMA' }} / Seed ${{ matrix.seed }}
+    name: H&M ${{ inputs.tier == 't2a' && 'Small' || 'Medium' }} / ${{ matrix.flow == 'gnn' && 'GNN' || 'PRAGMA' }} / Train & save / Seed ${{ matrix.seed }}
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      KUMO_CI_LABEL: H&M ${{ inputs.tier }} / ${{ matrix.flow }} / Seed ${{ matrix.seed }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/e2e/$TIER/*/metrics.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -68,7 +94,11 @@ jobs:
         env:
           FLOW: ${{ matrix.flow }}
           SEED: ${{ matrix.seed }}
-        run: python -m tests.e2e.runs $TIER "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Train, persist, infer and serve" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m tests.e2e.runs $TIER "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kumo-pytorch-${{ inputs.tier }}-${{ matrix.flow }}-seed${{ matrix.seed }}
@@ -79,11 +109,26 @@ jobs:
             !${{ runner.temp }}/e2e/${{ inputs.tier }}/**/index/**
           retention-days: 14
 
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: H&M ${{ inputs.tier }} / ${{ matrix.flow }} / Seed ${{ matrix.seed }}
+          artifact: kumo-pytorch-diagnostics-hm-runs-${{ inputs.tier }}-${{ matrix.flow }}-${{ matrix.seed }}
+          status: ${{ job.status }}
+
   results:
-    name: Check ${{ inputs.campaign }}
+    name: >-
+      H&M ${{ inputs.tier == 't2a' && 'Small' || 'Medium' }} / GNN & PRAGMA /
+      ${{ fromJSON('{"correctness":"Labels & leakage","training":"Learning quality","lifecycle":"Reload, inference, serving & finetune"}')[inputs.campaign] || inputs.campaign }}
     if: ${{ inputs.campaign != 'prepare' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      KUMO_CI_LABEL: H&M ${{ inputs.tier }} / ${{ inputs.campaign }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -97,31 +142,29 @@ jobs:
           path: ${{ runner.temp }}/e2e-runs
       - name: Validate campaign and tier
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate campaign and tier" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           case "$TIER" in t2a|t2b) ;; *) exit 1 ;; esac
           case "$CAMPAIGN" in correctness|training|lifecycle) ;; *) exit 1 ;; esac
+          KUMO_CI_COMMAND
       - name: Place the runs where the checks read them
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Place the runs where the checks read them" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           mkdir -p "$RUNNER_TEMP/e2e/$TIER"
           for run in "$RUNNER_TEMP"/e2e-runs/kumo-pytorch-$TIER-*; do
             mv "$run" "$RUNNER_TEMP/e2e/$TIER/${run##*/kumo-pytorch-$TIER-}"
           done
+          KUMO_CI_COMMAND
       - name: Check the runs
         env:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check the runs" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           python -m pytest -q --require-imports --$TIER --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
             "tests/e2e/test_${CAMPAIGN}.py" --junitxml="$RUNNER_TEMP/$CAMPAIGN.xml"
-      - name: Summarize metrics and run times
-        if: ${{ always() }}
-        run: |
-          if [ -f "$RUNNER_TEMP/e2e/$TIER/metrics.json" ]; then
-            {
-              echo "### H&M $TIER $CAMPAIGN metrics"
-              echo '```json'
-              cat "$RUNNER_TEMP/e2e/$TIER/metrics.json"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          KUMO_CI_COMMAND
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ always() }}
         with:
@@ -136,3 +179,10 @@ jobs:
             !${{ runner.temp }}/e2e/${{ inputs.tier }}/sampled/**
             !${{ runner.temp }}/e2e/${{ inputs.tier }}/**/index/**
           retention-days: 14
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: H&M ${{ inputs.tier }} / ${{ inputs.campaign }}
+          artifact: kumo-pytorch-diagnostics-hm-${{ inputs.tier }}-${{ inputs.campaign }}
+          status: ${{ job.status }}

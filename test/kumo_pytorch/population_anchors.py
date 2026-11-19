@@ -61,6 +61,10 @@ def project_population(
     clocks = tuple(dict.fromkeys((time_column, execution_column)))
     columns = [sample_column, entity_column, *clocks, column]
     columns.extend(rule["column"] for rule in rules.values())
+    columns.extend(
+        c for rule in rules.values() for c in rule.get("validity_columns", ())
+    )
+    columns = list(dict.fromkeys(columns))
     source = pq.ParquetFile(path)
     for name in clocks:
         if source.schema_arrow.field(name).type != pa.timestamp(profile["time_unit"]):
@@ -137,6 +141,14 @@ def project_population(
                     raise ValueError(
                         "Graph cutoff must equal prediction time plus the declared execution offset"
                     )
+                for rule in rules.values():
+                    if any(
+                        type(row[flag]) is not bool
+                        for flag in rule.get("validity_columns", ())
+                    ):
+                        raise ValueError(
+                            f"Target validity must be non-null boolean: {rule['column']}"
+                        )
                 records.append(
                     {
                         "sample_id": sample_id,
@@ -145,6 +157,10 @@ def project_population(
                         "split": split,
                         **{
                             name: target_value(row[rule["column"]], rule)
+                            if all(
+                                row[c] is True for c in rule.get("validity_columns", ())
+                            )
+                            else None
                             for name, rule in rules.items()
                         },
                         **{
@@ -238,7 +254,7 @@ def validate_binding(binding):
         if (
             expected["column"] != rule["column"]
             or expected["dtype"] != rule["dtype"]
-            or expected["all_true_columns"]
+            or expected["all_true_columns"] != rule.get("validity_columns", [])
             or not expected["non_null_required"]
         ):
             raise ValueError(f"Target meaning changed: {name}")
@@ -263,6 +279,9 @@ def project_binding(path, destination, identities, binding, **options):
             raise ValueError(
                 f"Expected registered target dtype {expected} for {column}"
             )
+        for flag in rule.get("validity_columns", ()):
+            if flag not in schema.names or schema.field(flag).type != pa.bool_():
+                raise ValueError(f"Expected boolean target validity: {flag}")
     anchors, report = project_population(
         path,
         destination,

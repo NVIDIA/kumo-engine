@@ -576,6 +576,17 @@ def test_a_customer_without_history_is_scored_on_every_path(
     assert all(row["user_id"] != 4 for row in rows["card_transactions"])
     requests = [api.SampleRequest(f"user-{user_id}", user_id, cutoff) for user_id in (4, 5)]
 
+    def comparable(batch: api.Batch) -> api.Batch:
+        # Absent and null split metadata both mean these anchors are unassigned.
+        metadata = {
+            **batch.metadata,
+            "request_metadata": tuple(
+                {key: value for key, value in row.items() if key != "split" or value is not None}
+                for row in batch.metadata["request_metadata"]
+            ),
+        }
+        return replace(batch, metadata=metadata)
+
     def infer(engine_name: str, output_format: str = "inspectable") -> dict[str, api.Batch]:
         dataset, engine = _dataset(engine_name, rows, tmp_path / f"{engine_name}-{output_format}")
         with api.prepare(artifact.contract, dataset, engine) as plan:
@@ -583,7 +594,7 @@ def test_a_customer_without_history_is_scored_on_every_path(
                 _anchors(plan, requests), fitted=artifact.fitted_state, inference=True
             ) as task:
                 batches = task.batches(batch_size=1, seed=SEED, output_format=output_format)
-                return {batch.metadata["sample_ids"][0]: batch for batch in batches}
+                return {batch.metadata["sample_ids"][0]: comparable(batch) for batch in batches}
 
     reference = infer("diskgraph")
     assert sorted(reference) == ["user-4", "user-5"]
@@ -608,7 +619,7 @@ def test_a_customer_without_history_is_scored_on_every_path(
             if name != "merchants"
         }
         served = server.assemble({**own, "merchants": rows["merchants"]}, [request], seed=SEED)
-        assert_same_batches(served, [reference[request.sample_id]])
+        assert_same_batches([comparable(batch) for batch in served], [reference[request.sample_id]])
     for output_format in ("inspectable", "model"):
         actual = infer("diskgraph", output_format)
         assert actual.keys() == reference.keys()

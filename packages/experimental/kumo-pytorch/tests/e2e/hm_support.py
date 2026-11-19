@@ -34,7 +34,6 @@ from e2e.flows.common import (  # noqa: E402
 )
 from e2e.flows.hm_gnn import RECENT_PURCHASES  # noqa: E402
 from e2e.metrics import auroc  # noqa: E402
-
 from kumo.pytorch.api import (  # noqa: E402
     Artifact,
     Batch,
