@@ -63,13 +63,13 @@ def _cohorts(root):
     return output
 
 
-def _samples(root):
+def _samples(root, task_type=TaskType.REGRESSION):
     collector = f'{root}/subgraph_collector/pred'
     save_json(EntityMappings(mappings={'first': ['7']},
                              orig_mappings={'first': ['current-user']}),
               f'{collector}/strategy_mappings.json')
     graph = Subgraph(subgraph_store=SubgraphStore(
-        root_id=7, task_type=TaskType.REGRESSION,
+        root_id=7, task_type=task_type,
         nodes={7: SubgraphNode(7, 'users', 'current-user')},
         edges={}, tables={'users': [7]}))
     save_json(graph, f'{collector}/subgraph_json/7.json')
@@ -413,3 +413,138 @@ def test_model_support_error_retains_known_link_eligibility(
     assert xai.availability['samples'].reason == 'failed'
     assert 'config unavailable' in PredictionExplanations.load(
         tmp_path).availability['samples'].generation_failure
+
+
+def _ids(view):
+    return [card['id'] for card in view.data['tabs'][0]['cards']]
+
+
+@pytest.mark.parametrize('task', [
+    TaskType.BINARY_CLASSIFICATION, TaskType.REGRESSION,
+    TaskType.MULTICLASS_CLASSIFICATION, TaskType.MULTILABEL_CLASSIFICATION
+])
+@pytest.mark.parametrize('null_field', [
+    None, ('prediction_table', ), ('parents', ), ('parents', 'model'),
+    ('parents', 'snapshot')
+])
+def test_prediction_widget_shows_cohorts_and_subgraphs(tmp_path, task,
+                                                       null_field):
+    from kumo_core.train.artifact_manifest import PredictionArtifactType
+
+    from kumo.engine.trainer.trainer import PredictionResult
+
+    cohort = _cohorts(f'{tmp_path}/xai')
+    cohort.task_type = task
+    labeled = task in (TaskType.MULTICLASS_CLASSIFICATION,
+                       TaskType.MULTILABEL_CLASSIFICATION)
+    if labeled:
+        cohort.cohorts[0].predictions = {'blue': [.2, .8], 'red': [.8, .2]}
+    save_json(cohort,
+              f'{tmp_path}/xai/column_analysis/pred/column_analysis.json')
+    _samples(f'{tmp_path}/xai', task)
+    record = _record(tmp_path, result=_complete())
+    xai = PredictionExplanations.load(tmp_path)
+    selection = SimpleNamespace(job_id=record.run_id,
+                                pointer_path=str(tmp_path / 'current.json'))
+    result = PredictionResult(selection, PredictionArtifactType.PREDICTIONS,
+                              explanations=xai)
+    # Live metadata with a null typed field falls back to the saved record.
+    metadata = record.prediction.to_dict()
+    if null_field:
+        parent = metadata if len(null_field) == 1 else metadata[null_field[0]]
+        parent[null_field[-1]] = None
+    result._manifest_path.write_text(json.dumps(metadata))
+    view = result.visualize()
+    data = view.data
+    assert data['kind'] == 'prediction' and len(data['tabs']) == 1
+    assert data['header']['summary'] == '2 prediction rows'
+    assert dict(
+        data['header']['identity'])['Prediction type'] == (task.value.replace(
+            '_', ' ').capitalize())
+    assert _ids(view) == ['groups', 'subgraphs']
+    groups, graphs = data['tabs'][0]['cards']
+    col = groups['columns'][groups['default']]
+    col = col['by_class'][0] if labeled else col
+    assert [g['predicted'] for g in col['groups']] == [.2, .8]
+    assert 'actual' not in col['groups'][0] and 'average_actual' not in col
+    assert graphs['samples'][0]['nodes'][0]['value'] == 'current-user'
+    json.dumps(data, allow_nan=False)
+    svg = view._repr_svg_()
+    assert '<title>Batch explanations</title>' in svg and 'Batch: retained-run' in svg
+    assert 'young' in svg and 'average actual' not in svg and 'current-user' not in svg
+    assert 'To activate the widget, rerun this cell.' in view._snapshot.plain()
+    assert 'kumo-explainability' in view.html()
+    assert xai.visualize().data == data
+    if null_field == ('prediction_table', ):
+        # A retained record of another model under this batch ID.
+        other = replace(record.prediction, parents=replace(
+            record.prediction.parents, model=stub('model', 'other-model')))
+        write_record(str(tmp_path), record.model_copy(update={
+            'model_id': 'other-model', 'prediction': other}))
+        view = result.visualize()
+        assert _ids(view) == ['status']
+        assert view.data['tabs'][0]['cards'][0]['messages'][0] == (
+            'Retained explanations do not match this prediction batch.')
+
+
+@pytest.mark.parametrize(
+    'state', ['disabled', 'samples_only', 'unreadable_graph', 'missing',
+              'malformed'])
+@pytest.mark.parametrize('attached', ['loaded', 'unknown', 'complete'])
+def test_prediction_widget_respects_producer_status(tmp_path, state, attached):
+    """Status precedence and unreadable artifacts; producer outcomes are in
+    test_retained_producer_status_matches_live."""
+    _cohorts(f'{tmp_path}/xai')
+    _samples(f'{tmp_path}/xai')
+    result = _complete()
+    if state in ('samples_only', 'unreadable_graph'):
+        result = replace(result, cohorts=ProducerOutcome('unsupported'))
+        _samples(f'{tmp_path}/xai', TaskType.LINK_PREDICTION)
+    if state == 'unreadable_graph':
+        # An unreadable graph ordered before the readable one.
+        collector = tmp_path / 'xai/subgraph_collector/pred'
+        save_json(EntityMappings(mappings={'first': ['3', '7']},
+                                 orig_mappings={'first': ['x', 'y']}),
+                  str(collector / 'strategy_mappings.json'))
+        (collector / 'subgraph_json/3.json').write_text('not json')
+        result = replace(
+            result, samples=replace(
+                result.samples, artifacts=(
+                    *result.samples.artifacts,
+                    'subgraph_collector/pred/subgraph_json/3.json')),
+            provenance=replace(result.provenance, selected_stage_ids=(0, 1),
+                               collector_ids=('3', '7')))
+    _record(tmp_path, enabled=state != 'disabled',
+            result=None if state == 'disabled' else result)
+    path = tmp_path / 'xai/column_analysis/pred/column_analysis.json'
+    if state == 'missing':
+        path.unlink()
+    elif state == 'malformed':
+        path.write_text('{}')
+    source = (PredictionExplanations.load(tmp_path)
+              if attached == 'loaded' else PredictionExplanations.from_run(
+                  tmp_path, enabled=True,
+                  result=_complete() if attached == 'complete' else None))
+    view = source.visualize()
+    ids = _ids(view)
+    assert ids[0] == 'status' and 'groups' not in ids
+    assert ('subgraphs' in ids) == (state != 'disabled')
+    assert ('1 retained example subgraphs.'
+            in view._snapshot.plain()) == ('subgraphs' in ids)
+
+
+def test_prediction_widget_keeps_all_zero_variation_cohorts(tmp_path):
+    artifact = _cohorts(f'{tmp_path}/xai')
+    cohort = artifact.cohorts[0]
+    cohort.cohorts = [f'cohort-{i}' for i in range(12)]
+    cohort.populations = [1 / 12] * 12
+    cohort.predictions = [0.] * 12
+    cohort.prediction_score = 0.
+    save_json(artifact,
+              f'{tmp_path}/xai/column_analysis/pred/column_analysis.json')
+    _record(tmp_path, result=_complete())
+    view = PredictionExplanations.load(tmp_path).visualize()
+    column = next(iter(view.data['tabs'][0]['cards'][-1]['columns'].values()))
+    assert len(column['groups']) == 12 and column['average_predicted'] == 0.
+    assert 'cohort-11' in view._repr_svg_()
+    json.dumps(view.data, allow_nan=False)

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Script-free notebook snapshot of the default Evaluation views."""
+"""Script-free notebook snapshot of the default Evaluation views, or of a
+batch's explanation cards."""
 
 import math
 from html import escape
@@ -21,14 +22,21 @@ class Snapshot:
         self._marks: list[str] = []
         self._text: list[str] = []
         self._y = 12
-        self._line(f'{data["task_type"].replace("_", " ").title()} evaluation',
-                   size=20, bold=True)
-        for value in data['header'].values():
-            if value:
-                self._line(value)
+        batch = data.get('kind') == 'prediction'
+        self._title = 'Batch explanations' if batch else 'Training diagnostics'
+        self._line(
+            'Batch explanations' if batch else
+            f'{data["task_type"].replace("_", " ").title()} evaluation',
+            size=20, bold=True)
+        for key, value in data['header'].items():
+            for line in ([f'{k}: {v}' for k, v in value] if key == 'identity'
+                         else [] if batch and key == 'query' else [value]):
+                if line:
+                    self._line(line)
         cards = [
             card for tab in data['tabs']
-            if tab['id'] in ('evaluation', 'training') for card in tab['cards']
+            if tab['id'] in ('evaluation', 'training', 'explanation')
+            for card in tab['cards']
         ]
         if not cards:
             self._line('No evaluation diagnostics were recorded.')
@@ -41,20 +49,26 @@ class Snapshot:
             if card['id'] in ('history', 'training_table'):
                 getattr(self, '_' + card['id'])(card)
                 continue
-            view = card['views'][0]
+            if card['id'] == 'groups':
+                self._cohorts(card)
+                continue
+            view = card.get('views', [{}])[0]
             if card['id'] == 'metrics':
                 self._metrics(view)
             elif card['id'] == 'cutoff':
                 self._matrix(card)
             elif card['id'] == 'ranking':
                 self._by_k(view)
-            elif view['id'] == 'heatmap':
+            elif view.get('id') == 'heatmap':
                 self._heatmap(view)
             elif card['id'] in ('scores', 'predicted', 'forecast'):
                 self._comparison(view)
-            for note in (view.get('coverage'), card.get('coverage')):
-                if note:
-                    self._line(note)
+            for line in [
+                    view.get('coverage'), *card.get('messages', []),
+                    card.get('coverage')
+            ]:
+                if line:
+                    self._line(line)
 
     def _label(self, text: str, x: int, y: int, size: int = 14,
                anchor: str = 'start', bold: bool = False) -> None:
@@ -200,6 +214,21 @@ class Snapshot:
                    f'{view["x"]} {view["columns"][peak_col]}, '
                    f'{view["y"]} {view["rows"][peak_row]}')
 
+    def _cohorts(self, card: dict[str, Any]) -> None:
+        """The default column's average prediction by group."""
+        col = card['columns'][card['default']]
+        col = col['by_class'][0] if 'by_class' in col else col
+        self._comparison(
+            dict(
+                label=col['header'] +
+                (f" · class {col['label']}" if 'label' in col else ''),
+                y=col['axis'], series=['average predicted'],
+                reference_callout=col['average_callout'], tenths=[
+                    dict(label=f"{g['label']} · {g['share_text']}",
+                         values=[g['predicted']], texts=[g['predicted_text']])
+                    for g in col['groups']
+                ]))
+
     def _comparison(self, view: dict[str, Any]) -> None:
         rows = view.get('tenths', view.get('steps', []))
         self._line(view['label'] + ' · ' + view['y'])
@@ -218,8 +247,13 @@ class Snapshot:
         scale = 230 / (high - low) if high > low else 0
         zero = 112 - low * scale
         for row in rows:
-            self._y += 34
-            self._label(row['label'], 16, self._y)
+            # A label wider than the bars' left margin takes its own line.
+            if len(row['label']) > 12:
+                self._line(row['label'])
+                self._y += 20
+            else:
+                self._y += 34
+                self._label(row['label'], 16, self._y)
             for i, (value, text) in enumerate(zip(row['values'], row['texts'])):
                 y = self._y - 14 + i * 14
                 if isinstance(value, (int, float)) and math.isfinite(value):
@@ -242,7 +276,7 @@ class Snapshot:
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{_WIDTH}" '
             f'height="{height}" viewBox="0 0 {_WIDTH} {height}" '
             f'font-family="{THEME["font"]}" fill="{THEME["foreground"]}" '
-            'role="img"><title>Training diagnostics</title>'
+            f'role="img"><title>{self._title}</title>'
             f'<rect width="100%" height="100%" fill="{THEME["background"]}"/>' +
             ''.join(self._marks) + message + '</svg>')
 

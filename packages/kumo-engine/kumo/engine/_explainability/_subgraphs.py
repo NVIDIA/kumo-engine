@@ -81,24 +81,30 @@ def _sample(graph: Subgraph, task_type: str) -> Optional[dict[str, Any]]:
 
 
 def card(run: Run) -> Optional[dict[str, Any]]:
-    """Saved TEST examples; unavailable records never start model work."""
+    """Saved TEST or batch examples; unavailable records never start model
+    work."""
     if run.model_type == FORECASTING:
         return None
     try:
-        references = run.explanations.samples()
+        artifacts = run.explanations._cohort_artifacts('samples')
+        references = artifacts.samples()
     except (OSError, ValueError):
         return None
-    collector = posixpath.join(str(run.explanations.trial_root),
-                               'subgraph_collector', 'test')
+    collector = artifacts.collector_root
     # Each category keeps the collector's selection order.
-    categories = mapping(
-        mapping(read_json(posixpath.join(
-            collector, 'strategy_mappings.json'))).get('mappings'))
+    listed = {reference.artifact_id for reference in references}
+    categories = {
+        name: [i for i in ids if i in listed]
+        for name, ids in mapping(
+            mapping(
+                read_json(posixpath.join(collector, 'strategy_mappings.json'))).
+            get('mappings')).items()
+    }
     samples = []
     for reference in references:
         try:
             sample = reference.available and _sample(
-                run.explanations.sample(reference.artifact_id), run.task_type)
+                artifacts.sample(reference.artifact_id), run.task_type)
         except (OSError, ValueError):
             sample = None
         if sample:
@@ -115,7 +121,11 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     if not samples:
         return None
     return _json_value(
-        dict(title='Example subgraph', samples=samples, task_type=run.task_type,
-             categories=list(categories) or ['saved'],
-             category_samples=categories,
-             unavailable_count=len(references) - len(samples)))
+        dict(
+            title='Example subgraph', samples=samples, task_type=run.task_type,
+            categories=list(categories) or ['saved'],
+            category_samples=categories,
+            unavailable_count=len(references) - len(samples),
+            coverage=f'{len(samples):,} retained example subgraphs. Examples '
+            'are a sampled subset of this prediction batch.'
+            if run.batch else None))

@@ -31,7 +31,10 @@ if TYPE_CHECKING:
     from kumoapi.explain.column_analysis import ColumnAnalysisOutput
     from kumoapi.explain.gradient import GraphGradientScore
 
-    from kumo.engine.explain import TrainingExplanations
+    from kumo.engine.explain import (
+        PredictionExplanations,
+        TrainingExplanations,
+    )
     from kumo.engine.trainer.trainer import TrainingResult
 
 CLASSIFICATION = 'classification'
@@ -119,10 +122,14 @@ class Run:
     holdout_truncated: bool
     full_refit: bool
     history: Optional[dict[str, Any]]
-    explanations: 'TrainingExplanations'
+    explanations: 'TrainingExplanations | PredictionExplanations'
     table: Optional[str] = None
     snapshot: Optional[str] = None
     input_manifest: dict[str, Any] = field(default_factory=dict)
+    # A batch prediction run records no targets; ``cohort_rows`` counts the
+    # rows its cohort pass processed, when recorded.
+    batch: bool = False
+    cohort_rows: Optional[int] = None
 
     @property
     def entities(self) -> str:
@@ -174,6 +181,8 @@ class Run:
 
     @cached_property
     def gradient(self) -> Optional['GraphGradientScore']:
+        if self.batch:
+            return None
         try:
             return self.explanations.gradient_scores()
         except (OSError, ValueError):
@@ -241,8 +250,16 @@ class Run:
 
     def explanation_coverage(self) -> Optional[str]:
         """The explanation pass replays a fixed number of batches at a
-        quarter of the evaluation batch size."""
+        quarter of the evaluation batch size; a batch's cohort pass records
+        the rows it processed."""
         from kumo_core.training.runtime import LocalExplainRuntime
+
+        if self.batch:
+            return ('Cohort coverage was not recorded.'
+                    if self.cohort_rows is None else
+                    f'{self.cohort_rows:,} prediction rows processed for '
+                    'cohorts. Population shares describe sampled rows with '
+                    'recorded features, not the entire batch.')
 
         batch = self._batch
         return self.covered(None if batch is
