@@ -182,8 +182,8 @@ def test_hour_cutoff_rounding_keeps_non_utc_offset():
 
     source = DiskGraphSource.__new__(DiskGraphSource)
     source._clock, source._pa, source._pc = "hours", pa, pc
-    # On a +05:30 clock, 01:00 UTC floors to 00:30 UTC.
-    values = pa.array([3600, 7200, None], type=pa.timestamp("s", tz="+05:30"))
+    # In Kolkata, 01:00 UTC on January 1, 1970 floors to 00:30 UTC.
+    values = pa.array([3600, 7200, None], type=pa.timestamp("s", tz="Asia/Kolkata"))
     assert source._cutoff_array(values).to_pylist() == [0, 1, None]
 
 
