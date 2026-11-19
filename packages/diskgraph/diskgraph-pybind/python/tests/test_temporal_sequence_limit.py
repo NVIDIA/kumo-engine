@@ -460,6 +460,159 @@ def test_duplicate_source_keys_preserve_distinct_and_repeated_rows(
                 assert lengths["lengths"].to_pylist() == np.diff(a["offsets"]).tolist()
 
 
+PARALLEL_ITEM_TIMES = [0, 1, 2, 3, 4, 5, 5, 6, 7, 8]  # Items 5 and 6 tie.
+
+
+@pytest.fixture(scope="module")
+def parallel_edge_graph(tmp_path_factory):
+    """Users reach items through purchases that repeat (user, item) pairs."""
+    root = tmp_path_factory.mktemp("parallel_edges")
+    # User 1 buys item i (i % 3 + 1) times; user 2 buys two items five times each.
+    purchases = [(1, item) for item in range(10) for _ in range(item % 3 + 1)]
+    purchases += [(2, item) for item in (8, 9) for _ in range(5)]
+    pq.write_table(pa.table({"id": [1, 2, 3]}), root / "users.parquet")
+    times = [1_700_000_000 + t for t in PARALLEL_ITEM_TIMES]
+    pq.write_table(
+        pa.table(
+            {"id": list(range(10)), "time": pa.array(times, type=pa.timestamp("s"))}
+        ),
+        root / "items.parquet",
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "user_id": [user for user, _ in purchases],
+                "item_id": [item for _, item in purchases],
+            }
+        ),
+        root / "purchases.parquet",
+    )
+    source = {"type": "parquet"}
+    config = {
+        "dataset_name": "parallel_edges",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "users",
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}],
+                "source": {**source, "paths": [str(root / "users.parquet")]},
+            },
+            {
+                "name": "items",
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "time", "ingested_dtype": "timestamp"},
+                ],
+                "source": {**source, "paths": [str(root / "items.parquet")]},
+            },
+            {
+                "name": "purchases",
+                "columns": [
+                    {"name": "user_id", "ingested_dtype": "int64"},
+                    {"name": "item_id", "ingested_dtype": "int64"},
+                ],
+                "edge_table": {
+                    "src_fk": {"edge_column": "user_id", "ref_table": "users"},
+                    "dst_fk": {"edge_column": "item_id", "ref_table": "items"},
+                    "forward": {
+                        "time": {"table": "items", "column": "time", "unit": "s"}
+                    },
+                },
+                "source": {**source, "paths": [str(root / "purchases.parquet")]},
+            },
+        ],
+    }
+    diskgraph.ingest(json.dumps(config), str(root / "index"), col_stats=False)
+    engine = diskgraph.SamplerEngine(str(root / "index"))
+    relation = next(
+        r["name"]
+        for r in json.loads(engine.get_type_mapping())["edge_relations"]
+        if r["src_type"] == "users" and r["dst_type"] == "items"
+    )
+    return engine, relation
+
+
+def parallel_plan(relation, *, limit, order, distinct, lower=None):
+    return {
+        "frames": [
+            {
+                "name": "f",
+                "root_type": "users",
+                "path": [{"relation": relation, "destination_type": "items"}],
+                "time_column": "time",
+                "start_seconds": lower,
+                "stop_seconds": 0,
+                "distinct": distinct,
+                "columns": ["id"],
+            }
+        ],
+        "sequences": [
+            {
+                "name": "s",
+                "frame": "f",
+                "columns": ["id"],
+                "order": order,
+                "limit": limit,
+            }
+        ],
+        "aggregates": [],
+    }
+
+
+@pytest.mark.parametrize("order", ["ascending", "descending"])
+@pytest.mark.parametrize("distinct", [True, False])
+def test_parallel_edges_match_full_frame(parallel_edge_graph, order, distinct):
+    engine, relation = parallel_edge_graph
+    ids = engine.lookup_node_ids("users", pa.array([1, 2, 3, 1]))
+    roots = {"users": ids}
+    cutoffs = {"users": [1_700_000_008, 1_700_000_008, 1_700_000_008, 1_700_000_005]}
+    # Duplicates straddle every cut, items 5/6 tie, and user 2 has two items.
+    for lower in (None, -4):
+        for limit in range(1, 13):
+            plan = parallel_plan(
+                relation, limit=limit, order=order, distinct=distinct, lower=lower
+            )
+            reference = copy.deepcopy(plan)
+            reference["aggregates"] = [
+                {"name": "all", "frame": "f", "operation": "count"}
+            ]
+            actual = engine.query_temporal(roots, cutoffs, json.dumps(plan))
+            expected = engine.query_temporal(roots, cutoffs, json.dumps(reference))
+            actual, expected = actual["sequences"][0], expected["sequences"][0]
+            for key in ("offsets", "timestamps", "node_ids"):
+                assert actual[key] == expected[key], (lower, limit)
+            assert actual["batch"].equals(expected["batch"])
+            lengths = engine.query_temporal_lengths(roots, cutoffs, json.dumps(plan))
+            assert (
+                lengths["sequences"][0]["lengths"].to_pylist()
+                == np.diff(actual["offsets"]).tolist()
+            )
+
+
+@pytest.mark.parametrize(
+    "order,limit,distinct,edges",
+    [
+        # Items 9, 8, 7 hold 1 + 3 + 2 edges.
+        ("descending", 3, True, 6),
+        # Items 0-4 hold 9 edges; the tie at time 5 adds items 5 and 6.
+        ("ascending", 6, True, 13),
+        # Three edges end inside item 8's run, which the tie adds in full.
+        ("descending", 3, False, 4),
+    ],
+)
+def test_parallel_edges_are_read_once(
+    parallel_edge_graph, order, limit, distinct, edges
+):
+    engine, relation = parallel_edge_graph
+    plan = parallel_plan(relation, limit=limit, order=order, distinct=distinct)
+    roots = {"users": engine.lookup_node_ids("users", pa.array([1]))}
+    cutoffs = {"users": [1_700_000_008]}
+    result = engine.query_temporal(roots, cutoffs, json.dumps(plan))
+    assert result["stats"]["edges_visited"] == edges
+
+
 @pytest.fixture(
     params=[
         (bits, anchor, "s", False)

@@ -570,17 +570,27 @@ fn relation_columns(
     let in_window = window
         .filter(|(clock, ..)| clock.is_exact() && ranges[0].is_empty() && ranges[2].is_empty())
         .map(|_| ranges[1].len());
+    let mut walked = None;
     if let (Some((limit, order, distinct)), Some((clock, ..)), Some(count)) =
         (recent, window, in_window)
     {
         let interior = ranges[1].clone();
         let take = if distinct {
-            distinct_span(segment, interior.clone(), limit, order)
+            let read = distinct_prefix(segment, interior.clone(), limit, order, edges_visited);
+            let take = read.0.len();
+            walked = Some((order, read));
+            take
         } else {
             limit.min(count)
         };
         let time = |i| clock.decoder().decode(keys.key_at(i)).0;
-        ranges[1] = with_boundary_ties(interior, take, order, time);
+        let slice = with_boundary_ties(interior, take, order, time);
+        // The distinct walk already read its end of the slice; read only the tie run.
+        ranges[1] = match walked.as_ref().map(|(order, _)| order) {
+            None => slice,
+            Some(SequenceOrder::Descending) => slice.start + take..slice.end,
+            Some(SequenceOrder::Ascending) => slice.start..slice.end - take,
+        };
     }
     let candidates = ranges.iter().map(|range| range.len()).sum();
     let mut destinations = Vec::with_capacity(candidates);
@@ -609,22 +619,39 @@ fn relation_columns(
             *edges_visited = edges_visited.saturating_add(count as u64);
         }
     }
+    if let Some((order, read)) = walked {
+        let rest = (destinations, sort_keys);
+        let (mut front, back) = match order {
+            SequenceOrder::Descending => (read, rest),
+            SequenceOrder::Ascending => (rest, read),
+        };
+        front.0.extend(back.0);
+        if include_sort_keys {
+            front.1.extend(back.1);
+        } else {
+            front.1.clear();
+        }
+        (destinations, sort_keys) = front;
+    }
     Ok((destinations, sort_keys, in_window))
 }
 
-/// How many edges from the newest (descending) or oldest (ascending) end of
-/// `range` hold `limit` distinct destinations, or all of them.
-fn distinct_span(
+/// Edges from the newest (descending) or oldest (ascending) end of `range` up to
+/// the one completing `limit` distinct destinations, or all of them, in index order.
+fn distinct_prefix(
     segment: &RelationSegment<'_>,
     range: std::ops::Range<usize>,
     limit: usize,
     order: SequenceOrder,
-) -> usize {
+    edges_visited: &mut u64,
+) -> (Vec<u64>, Vec<u64>) {
     let mut seen = HashSet::<u64>::new();
-    let mut walked = 0;
+    let mut destinations = Vec::new();
+    let mut sort_keys = Vec::new();
     let mut destination_buffer = [0u64; 256];
     let mut sort_key_buffer = [0u64; 256];
-    while seen.len() < limit && walked < range.len() {
+    while seen.len() < limit && destinations.len() < range.len() {
+        let walked = destinations.len();
         let take = (limit - seen.len()).min(range.len() - walked).min(256);
         let batch = match order {
             SequenceOrder::Descending => range.start + walked..range.start + walked + take,
@@ -632,15 +659,24 @@ fn distinct_span(
         };
         let bytes =
             batch.start * segment.layout.entry_bytes..batch.end * segment.layout.entry_bytes;
-        let mut unpacker = EdgeUnpacker::new(&segment.data[bytes], &segment.layout);
-        unpacker.unpack_batch(
-            &mut destination_buffer[..take],
-            &mut sort_key_buffer[..take],
-        );
-        seen.extend(&destination_buffer[..take]);
-        walked += take;
+        let batch_destinations = &mut destination_buffer[..take];
+        let batch_keys = &mut sort_key_buffer[..take];
+        EdgeUnpacker::new(&segment.data[bytes], &segment.layout)
+            .unpack_batch(batch_destinations, batch_keys);
+        if order == SequenceOrder::Ascending {
+            batch_destinations.reverse();
+            batch_keys.reverse();
+        }
+        seen.extend(batch_destinations.iter());
+        destinations.extend_from_slice(batch_destinations);
+        sort_keys.extend_from_slice(batch_keys);
+        *edges_visited = edges_visited.saturating_add(take as u64);
     }
-    walked
+    if order == SequenceOrder::Ascending {
+        destinations.reverse();
+        sort_keys.reverse();
+    }
+    (destinations, sort_keys)
 }
 
 /// The `take` newest (descending) or oldest (ascending) positions of a
