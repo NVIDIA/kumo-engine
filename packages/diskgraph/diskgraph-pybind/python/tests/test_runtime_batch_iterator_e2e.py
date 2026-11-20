@@ -388,8 +388,10 @@ def test_index_build_identity_and_managed_sibling_task(seed_table_fixture, tmp_p
         paths.verify_task("task-1")
     from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 
-    with pytest.raises(diskgraph.DiskgraphConfigError, match="belongs to index build"):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="managed internal API"):
         NativeRuntimeIndex(str(paths.index_dir), str(task), 17, 1)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="belongs to index build"):
+        NativeRuntimeIndex._from_extension_path(str(paths.index_dir), str(task), 17, 1)
 
     # Ingest against the chosen base; only the sibling task tree is writable.
     shutil.rmtree(task)
@@ -400,7 +402,7 @@ def test_index_build_identity_and_managed_sibling_task(seed_table_fixture, tmp_p
         parent_index_path=str(paths.index_dir),
     )
     paths.verify_task("task-1")
-    NativeRuntimeIndex(str(paths.index_dir), str(task), 17, 1)
+    NativeRuntimeIndex._from_extension_path(str(paths.index_dir), str(task), 17, 1)
     assert {str(p.relative_to(paths.index_dir)): p.read_bytes()
             for p in paths.index_dir.rglob("*") if p.is_file()} == base_files
 
@@ -521,7 +523,10 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
             from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 
             ref = str(stage.relative_to(parent)) if kind == "legacy_alias" else str(stage)
-            NativeRuntimeIndex(str(parent), ref, 17, 1)
+            if pathlib.Path(ref).is_absolute():
+                NativeRuntimeIndex._from_extension_path(str(parent), ref, 17, 1)
+            else:
+                NativeRuntimeIndex(str(parent), ref, 17, 1)
         else:
             manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
             manifest["stages"]["train"]["index_path"] = str(stage)

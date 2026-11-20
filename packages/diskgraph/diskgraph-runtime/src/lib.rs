@@ -1253,12 +1253,38 @@ pub struct RuntimeIndex {
     namespace: String,
 }
 impl RuntimeIndex {
-    /// Open the graph and a seed extension by index-local reference or
-    /// absolute path.
+    /// Open the graph and a seed extension by index-local reference.
     /// The shared reader rejects the parent itself and aliases of it. Inside
     /// the parent, extensions must be train_tables/<id> or pred_tables/<id>;
-    /// external paths are accepted when their metadata matches the parent build.
+    /// External paths are reserved for managed internal callers.
     pub fn new(
+        parent_root: String,
+        tt_id: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+    ) -> Result<Self> {
+        if std::path::Path::new(&tt_id).is_absolute() {
+            return Err(RuntimeError::config(
+                "absolute extension paths require the managed internal API",
+            ));
+        }
+        Self::new_impl(parent_root, tt_id, rnd_seed, num_threads)
+    }
+
+    #[doc(hidden)]
+    pub fn _new_with_extension_path(
+        parent_root: String,
+        extension_path: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+    ) -> Result<Self> {
+        if !std::path::Path::new(&extension_path).is_absolute() {
+            return Err(RuntimeError::config("extension path must be absolute"));
+        }
+        Self::new_impl(parent_root, extension_path, rnd_seed, num_threads)
+    }
+
+    fn new_impl(
         parent_root: String,
         tt_id: String,
         rnd_seed: Option<u64>,
@@ -1272,7 +1298,7 @@ impl RuntimeIndex {
             .ok_or_else(|| RuntimeError::config("invalid extension path"))?
             .to_string();
         let reader = if extension.is_absolute() {
-            diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
+            diskgraph_index::graph::GraphIndexReader::_open_with_extension_subdir(
                 parent_path,
                 &tt_id,
                 &namespace,

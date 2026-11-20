@@ -1240,7 +1240,7 @@ impl GraphIndexReader {
         } else {
             (format!("train_tables/{tt_ref}"), tt_ref.to_string())
         };
-        Self::open_with_extension_subdir(parent_root, &subdir_rel, &namespace)
+        Self::_open_with_extension_subdir(parent_root, &subdir_rel, &namespace)
     }
 
     /// Generalization of [`open_with_tt`] to a relative or absolute extension
@@ -1250,7 +1250,8 @@ impl GraphIndexReader {
     /// extension's tables are merged under the `<namespace>/<table_name>`
     /// keys and its cross-boundary edges are decoded against the parent's
     /// node types — the same recipe `open_with_tt` uses.
-    pub fn open_with_extension_subdir(
+    #[doc(hidden)]
+    pub fn _open_with_extension_subdir(
         parent_root: &Path,
         subdir_rel: &str,
         namespace: &str,
@@ -2025,7 +2026,11 @@ mod extension_path_tests {
     fn rejects_base_before_reading_metadata() {
         let base = tempfile::tempdir().unwrap();
         for extension in [".", base.path().to_str().unwrap()] {
-            let result = GraphIndexReader::open_with_extension_subdir(base.path(), extension, "task");
+            let result = GraphIndexReader::_open_with_extension_subdir(
+                base.path(),
+                extension,
+                "task",
+            );
             assert!(result.err().unwrap().to_string().contains("base index"));
         }
     }
@@ -2064,7 +2069,7 @@ mod extension_path_tests {
         )
         .unwrap();
 
-        let error = GraphIndexReader::open_with_extension_subdir(
+        let error = GraphIndexReader::_open_with_extension_subdir(
             &base,
             extension.to_str().unwrap(),
             "task",

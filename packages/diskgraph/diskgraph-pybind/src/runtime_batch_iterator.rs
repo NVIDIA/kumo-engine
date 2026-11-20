@@ -666,6 +666,25 @@ impl RuntimeIndex {
         })
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (parent_root, extension_path, rnd_seed=None, num_threads=None))]
+    fn _from_extension_path(
+        parent_root: String,
+        extension_path: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: diskgraph_runtime::RuntimeIndex::_new_with_extension_path(
+                parent_root,
+                extension_path,
+                rnd_seed,
+                num_threads,
+            )
+            .map_err(map_runtime_err)?,
+        })
+    }
+
     /// A sampler view over this runtime's combined reader; does not open files.
     pub fn sampler(&self) -> crate::SamplerEngine {
         let (reader, engine) = self.inner.shared_context();
