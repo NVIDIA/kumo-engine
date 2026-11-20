@@ -92,6 +92,19 @@ def test_windows_cleanup_check_refuses_other_platforms():
     assert evidence['os_name'] == os.name
 
 
+def test_cleanup_tree_uses_base_interpreter(tmp_path, monkeypatch):
+    checker_path = SCRIPT.with_name('windows_cleanup_check.py')
+    spec = importlib.util.spec_from_file_location('windows_cleanup', checker_path)
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+    base = Path(sys._base_executable).resolve()
+    monkeypatch.setattr(sys, 'executable', 'venv-redirector.exe')
+    command = checker.tree_command(tmp_path)
+    assert command[0] == str(base)
+    assert command[1:4] == ['-Iu', '-c', checker.PARENT]
+    assert command[4:] == [str(tmp_path), checker.CHILD]
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process group check')
 def test_spawn_isolates_then_removes_storage(tmp_path, monkeypatch):
     child = tmp_path / 'child.py'
