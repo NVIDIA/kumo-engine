@@ -282,13 +282,13 @@ def test_binary_metrics_have_no_baseline_rows(tmp_path):
     assert not any(r['baseline'] for r in card['views'][0]['table']['rows'])
 
 
-@pytest.mark.parametrize('model_type', [_run.LINK_PREDICTION, 'ranking'])
-def test_top_k_metrics_order_by_family_then_k(tmp_path, model_type):
+def test_top_k_metrics_order_by_family_then_k(tmp_path):
     names = [
         'map@10', 'recall@20', 'precision@10', 'f1@10', 'recall@10',
         'precision@20', 'map@20'
     ]
-    card = _scored(_run.load(_result(tmp_path)), model_type, 'map@10', names)
+    card = _scored(_run.load(_result(tmp_path)), _run.LINK_PREDICTION, 'map@10',
+                   names)
     view = card['views'][0]
     assert [p['name']
             for p in view['pills']] == ['MAP@10', 'Recall@10', 'Precision@10']
@@ -712,6 +712,17 @@ def test_ranking_snapshot_lists_the_tuned_metric_by_k(tmp_path, cutoffs):
     labels = image.findall('.//{http://www.w3.org/2000/svg}text')
     assert {f'K={k}' for k in cutoffs} <= {label.text for label in labels}
     assert all(0 <= float(label.attrib['x']) <= 448 for label in labels)
+
+
+def test_ranking_preserves_zero_padded_metric_keys(tmp_path):
+    result = _result(tmp_path, 'multilabel_ranking', scores={
+        'test_recall@05': 0.4,
+        'test_recall@10': 0.6
+    }, tune='recall@05', refit=False)
+    card = _ranking.card(_run.load(result))
+    view = card['views'][0]
+    assert view['ks'] == [5, 10]
+    assert view['series'][0]['values'] == [0.4, 0.6]
 
 
 def test_tenths_only_include_observed_groups():

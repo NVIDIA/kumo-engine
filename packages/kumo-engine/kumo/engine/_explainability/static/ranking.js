@@ -16,7 +16,15 @@ function byKView(host, width, view, title) {
   const points = s => view.ks.map((k, i) => [k, s.values[i]]).filter(p => p[1] !== null);
   const all = view.series.flatMap(s => points(s).map(p => p[1]));
   const hi = Math.max(...all);
-  const c = curves(host, width, {height: 300, xDomain: [first - pad, last + pad], xTicks: view.ks,
+  const spacing = (String(last).length + 2) * 7 + 12;
+  let previous = -Infinity;
+  const ticks = view.ks.filter(k => {
+    const px = (k - first) / (last - first + 2 * pad) * Math.max(1, width - 80);
+    if (px - previous < spacing) return false;
+    previous = px;
+    return true;
+  });
+  const c = curves(host, width, {height: 300, xDomain: [first - pad, last + pad], xTicks: ticks,
     yDomain: [0, hi <= 1 ? Math.min(1, hi * 1.2) : hi * 1.1],
     lines: view.series.map(s => ({points: points(s), color: SPLIT_COLORS[s.id], width: 2.4, markers: true,
       pointTitle: p => `${s.label} · K=${p[0]} · ${s.texts[view.ks.indexOf(p[0])]}`})),

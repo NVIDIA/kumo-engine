@@ -34,11 +34,13 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     if run.model_type != LINK_PREDICTION:
         return None
     splits = _splits(run)
-    by_family: dict[str, set[int]] = {}
+    by_family: dict[str, dict[int, str]] = {}
     for metric in run.metric_names:
         k = _top_k(metric)
         if k is not None:
-            by_family.setdefault(_family(metric), set()).add(k)
+            names = by_family.setdefault(_family(metric), {})
+            if k not in names or metric == f'{_family(metric)}@{k}':
+                names[k] = metric
     tuned = _family(run.tune or '') if _top_k(run.tune
                                               or '') is not None else None
     order = sorted(
@@ -50,7 +52,7 @@ def card(run: Run) -> Optional[dict[str, Any]]:
         ks = sorted(by_family[family])
         series = []
         for split, label, values in splits:
-            found = [values.get(f'{family}@{k}') for k in ks]
+            found = [values.get(by_family[family][k]) for k in ks]
             if any(v is not None for v in found):
                 series.append(
                     dict(

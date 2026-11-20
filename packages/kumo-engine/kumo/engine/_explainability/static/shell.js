@@ -66,11 +66,14 @@ function metricsView(body, view) {
     H('div', 'kx-pill-name', box, pill.name);
     H('div', 'kx-pill-val', box, pill.holdout_text);
   }
-  const t = view.table;
+  reportTable(body, view.table, 'Metric', 'kx-metrics');
+}
+
+function reportTable(body, t, heading, className, format = text => text) {
   const wrap = H('div', 'kx-table-wrap', body);
-  const table = H('table', 'kx-table kx-metrics', wrap);
+  const table = H('table', 'kx-table ' + className, wrap);
   const cr = H('tr', 'kx-col', H('thead', null, table));
-  H('th', null, cr, 'Metric');
+  H('th', null, cr, heading);
   for (const col of t.columns) H('th', null, cr, col.label);
   const tb = H('tbody', null, table);
   let first = true;
@@ -78,7 +81,7 @@ function metricsView(body, view) {
     const tr = H('tr', row.baseline ? 'kx-baseline' : row.tune ? 'kx-tune' : null, tb);
     if (row.baseline && first) { tr.classList.add('kx-baseline-first'); first = false; }
     H('td', null, tr, row.name);
-    for (const text of row.texts) H('td', null, tr, text === null ? '' : text);
+    for (const text of row.texts) H('td', null, tr, text === null ? '' : format(text));
   }
 }
 
