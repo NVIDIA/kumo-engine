@@ -149,6 +149,30 @@ environment that already installs `kumo-api`.
 
 ## Native batch runtime
 
+### Managed local build paths
+
+`diskgraph.managed_paths.ManagedIndexPaths(root, index_build_id)` derives the
+same-root layout used by Kumo's FM loader integration:
+
+```text
+<root>/indexes/<index_build_id>/          completed base index
+<root>/tasks/<index_build_id>/<task_id>/  task extension
+<root>/cache/<index_build_id>/            derived statistics
+```
+
+Allocate `index_build_id` with `diskgraph.new_index_build_id()` before ingest
+and pass it to `diskgraph.ingest(index_build_id=...)` when the output directory
+must be chosen first. Otherwise ingest allocates a fresh ID. The base's
+`index_metadata.json` records this ID; extension ingest records the exact
+parent ID there as well. The reader rejects an extension whose parent ID does
+not match. Old indexes without IDs remain readable with their old extensions.
+An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
+IDs by default, even for the same source.
+
+The low-level path arguments remain available to DiskGraph internals. Kumo's
+public FM loader will derive these paths from its configured root and task ID
+in companion PR #403.
+
 [`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
 and worker-sharded batch generation without Python or transport dependencies. The
 Python binding uses this runtime and converts its batches to Arrow-backed Python

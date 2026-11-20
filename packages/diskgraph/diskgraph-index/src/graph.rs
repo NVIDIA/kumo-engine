@@ -1356,6 +1356,12 @@ fn merge_extension_into(
         &parent_node_types,
     )
     .with_context(|| format!("open extension {tt_id} at {}", subdir.display()))?;
+    ensure!(
+        ext.metadata.parent_index_build_id == reader.metadata.index_build_id,
+        "extension `{tt_id}` belongs to index build {:?}, not {:?}",
+        ext.metadata.parent_index_build_id,
+        reader.metadata.index_build_id,
+    );
     for (bare_name, table_arc) in ext.tables.iter() {
         let namespaced = format!("{tt_id}/{bare_name}");
         if reader.tables.contains_key(&namespaced) {

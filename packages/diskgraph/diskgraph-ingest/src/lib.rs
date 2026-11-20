@@ -2823,6 +2823,7 @@ struct IngestContext {
     /// reference columns to node-ids (see `resolve_columns`). `None` for an
     /// ordinary base-graph ingest.
     parent_index_path: Option<PathBuf>,
+    index_build_id: String,
     /// FK-free LP resolution columns (see [`crate::config::ResolveColumnSpec`]).
     /// When non-empty the encode phase resolves the listed columns' PK
     /// reference value(s) to graph node-ids and writes them as rowpack columns
@@ -7178,6 +7179,26 @@ impl IngestContext {
         output: &str,
         stage_sidecars: HashMap<String, StageSidecarColumns>,
     ) -> Result<Self> {
+        // An interrupted Index phase may already have written its metadata.
+        let resumed_id = options.resume_from_phase.and_then(|_| {
+            fs::read(Path::new(output).join("index_metadata.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<DatasetMetadata>(&bytes).ok())
+                .and_then(|metadata| metadata.index_build_id)
+        });
+        let index_build_id = match options.index_build_id.as_ref() {
+            Some(id) => {
+                ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
+                if let Some(previous) = &resumed_id {
+                    ensure!(
+                        id == previous,
+                        "resumed index_build_id does not match existing index"
+                    );
+                }
+                id.clone()
+            }
+            None => resumed_id.unwrap_or_else(diskgraph_core::metadata::new_index_build_id),
+        };
         let index_mem_budget_bytes = options
             .index_mem_budget_bytes
             .or_else(default_index_mem_budget_bytes);
@@ -7429,6 +7450,7 @@ impl IngestContext {
             row_subsample: options.row_subsample,
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
+            index_build_id,
             resolve_columns: options.resolve_columns,
             cutoff_col_stats: options.cutoff_col_stats,
         })
@@ -11967,6 +11989,19 @@ impl IngestContext {
         Ok(removed_bytes)
     }
 
+    fn read_parent_index_metadata(&self) -> Result<Option<DatasetMetadata>> {
+        self.parent_index_path
+            .as_ref()
+            .map(|parent| {
+                let path = parent.join("index_metadata.json");
+                let bytes = fs::read(&path)
+                    .with_context(|| format!("read parent metadata {}", path.display()))?;
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("parse parent metadata {}", path.display()))
+            })
+            .transpose()
+    }
+
     fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         // Coordinated layout fix (write side): if this is a sub-index ingest
@@ -11976,26 +12011,8 @@ impl IngestContext {
         // metadata stays clean — externals only live in the in-memory build
         // scope. See `GraphIndexBuilder::with_external_node_types`.
         let external_node_types = self
-            .parent_index_path
-            .as_ref()
-            .map(|p| -> Result<Vec<_>> {
-                let parent_meta_path = p.join("index_metadata.json");
-                let bytes = fs::read(&parent_meta_path).with_context(|| {
-                    format!(
-                        "coordinated layout fix: read parent metadata {}",
-                        parent_meta_path.display()
-                    )
-                })?;
-                let parent_meta: DatasetMetadata =
-                    serde_json::from_slice(&bytes).with_context(|| {
-                        format!(
-                            "coordinated layout fix: parse parent metadata {}",
-                            parent_meta_path.display()
-                        )
-                    })?;
-                Ok(parent_meta.node_types)
-            })
-            .transpose()?
+            .read_parent_index_metadata()?
+            .map(|metadata| metadata.node_types)
             .unwrap_or_default();
         let builder = GraphIndexBuilder::from_metadata(
             metadata,
@@ -12201,9 +12218,14 @@ impl IngestContext {
             });
         }
 
+        let parent_index_build_id = self
+            .read_parent_index_metadata()?
+            .and_then(|metadata| metadata.index_build_id);
         let index_metadata = DatasetMetadata {
             timestamp_unit: self.source.timestamp_unit,
             dataset_name: self.source.dataset_name.clone(),
+            index_build_id: Some(self.index_build_id.clone()),
+            parent_index_build_id,
             node_types,
             edge_relations,
         };
