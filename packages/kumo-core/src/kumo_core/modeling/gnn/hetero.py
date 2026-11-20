@@ -180,14 +180,18 @@ class ForeignKeyToPrimaryKeyConv(torch.nn.Module):
             return self.empty_output(x_dst.size(0))
         assert x_dst.size(0), "Missing destination nodes with inbound edges."
 
+        intervention = getattr(self, '_message_intervention', None)
+        messages = (intervention(x_src[edge_index[0]], edge_index)
+                    if intervention is not None else None)
         if deterministic:
             col, perm = edge_index[1].sort(stable=True)
             ptr = index2ptr(col, size=x_dst.size(0))
-            out = self.aggr(x_src[edge_index[0][perm]], ptr=ptr,
-                            dim_size=x_dst.size(0))
+            values = (x_src[edge_index[0][perm]]
+                      if messages is None else messages[perm])
+            out = self.aggr(values, ptr=ptr, dim_size=x_dst.size(0))
         else:
-            out = self.aggr(x_src[edge_index[0]], edge_index[1],
-                            dim_size=x_dst.size(0))
+            values = x_src[edge_index[0]] if messages is None else messages
+            out = self.aggr(values, edge_index[1], dim_size=x_dst.size(0))
 
         out = self.lin(out)
 
@@ -236,8 +240,12 @@ class PrimaryKeyToForeignKeyConv(torch.nn.Module):
             # No need for gathering, just return bias shared for all nodes:
             return self.empty_output(x_dst.size(0))
 
-        out = scatter(x_src[edge_index[0]], edge_index[1],
-                      dim_size=x_dst.size(0), reduce='any')
+        messages = x_src[edge_index[0]]
+        intervention = getattr(self, '_message_intervention', None)
+        if intervention is not None:
+            messages = intervention(messages, edge_index)
+        out = scatter(messages, edge_index[1], dim_size=x_dst.size(0),
+                      reduce='any')
         out = self.lin(out)
 
         return out

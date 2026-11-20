@@ -245,3 +245,47 @@ Incremental capture keeps one prediction batch in memory, and sink failures leav
 
 The separate [prediction-evidence guide](../../docs/evidence-bundles.md) covers original scoring graphs, signed numerical derivatives, portable bundles, controlled record removals and operator-managed interval calibration.
 These families have their own support boundaries and retained statuses; training or replay diagnostics never substitute for missing original-pass evidence.
+
+## Binary classification message masking (restricted prototype)
+
+```python
+from kumo.engine.evidence import ClassificationMaskingCompanion
+
+companion = ClassificationMaskingCompanion.fit(
+    fitting_evidence,
+    model="/path/to/trusted-model-bundle",
+    standins=learned_layer_vectors,
+    decision_threshold=0.5,
+    epochs=20,
+)
+companion.save("companion.pt")
+companion = ClassificationMaskingCompanion.load("companion.pt")
+result = companion.mask(prediction_evidence, prediction_id,
+                        model="/path/to/trusted-model-bundle")
+```
+
+Use the actual deployed binary decision threshold; it is bound into the companion checkpoint and never inferred from an example dataset.
+`standins` must contain a previously learned float32 channel vector for each message-passing layer.
+The fitting method keeps these supplied vectors fixed and trains only the gate networks; it does not learn stand-ins or silently initialize them to zero.
+Single-message fidelity trials produce the feasibility targets, with case-balanced binary cross entropy, one full-cohort Adam step per epoch, learning rate 0.01 and seed 36.
+Training task labels are not used.
+The default 20 epochs reproduces the selected prototype checkpoint duration; fitting on a new population requires separate qualification and does not promise the same sparsity.
+Checkpoint files own the network, fixed vectors, optimizer state, training identities and model/threshold bindings; loading does not imply resumable training or automatic validation-set checkpoint selection.
+
+Inference is a learned-ranking-plus-runtime-verified search hybrid, not a standalone one-pass sparse selector.
+It ranks detached original messages, their receivers and first-layer entity context once, then tries the first twelve occurrences in ascending keep probability with deterministic layer/relation/edge tie-breaking.
+Each proposal adds one replacement to the accepted set and must stay within 0.05 raw-logit error and 0.01 calibrated probability error of the original prediction, with the same decision.
+Rejected proposals leave the accepted set unchanged.
+The result contains the last accepted cumulative mask or a strictly replay-verified keep-all fallback, every trial/rejection, typed occurrence identities and separate replacement/kept counts.
+
+Replacement mixes a pre-aggregation source message with a fixed learned layer vector.
+It is not literal edge deletion: graph topology, relation bias, self updates and aggregation semantics remain intact.
+Masks are diagnostic alternatives satisfying the stated fidelity check, not causal explanations or guaranteed minimal subsets.
+The checkpoint and encoders must match retained evidence, and context comes from one original execution rather than a substituted hidden-tensor replay.
+The supported API profile is binary classification, one seed, CUDA float32, three sum/gather layers, linear/ReLU and no normalization or compilation.
+Other tasks and profiles are refused.
+Fresh CUDA and installed-wheel qualification of this integrated branch remain pending; CPU tests do not establish deployment support.
+
+`result["timing"]` reports synchronized context, ranking and verification durations and actual predictor call count, including the keep-all check.
+It excludes model loading, sampling, integrity hashing and serialization; it is not an end-to-end serving SLA.
+Runtime verification adds up to thirteen forwards beyond the original context pass, and keep-all remains a valid outcome.

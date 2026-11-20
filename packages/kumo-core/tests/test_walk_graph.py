@@ -428,3 +428,140 @@ def test_architecture_record_reads_actual_parameters():
     assert operations['preprocessing'] == [{'index': 0, 'kind': 'linear',
                                             'activation': 'relu', 'bias': True}]
     assert [op['activation'] for op in operations['head']] == ['relu', None]
+
+
+@pytest.mark.parametrize('gate', [0.0, 0.4, 1.0])
+def test_differentiable_message_masking(gate):
+    # Reuse the typed B1 graph to exercise both relation directions and trimming.
+    from kumo_core.explain.message_intervention import (
+        DifferentiableMessageMasking, MessageIntervention)
+    module, batch = b1_module(gnn_bias=True), b1_batch()
+    module.requires_grad_(False)
+    with MessageIntervention(module, gate=1) as discovery:
+        original = b1_forward(module, batch)
+    gates = {
+        (o['layer'], tuple(o['relation'])):
+        torch.full((o['count'], ), gate, dtype=F64, requires_grad=True)
+        for o in discovery.observations
+    }
+    baselines = {
+        layer: torch.nn.Parameter(torch.tensor([0.2], dtype=F64))
+        for layer, _ in gates
+    }
+    with DifferentiableMessageMasking(module, gates=gates,
+                                      baselines=baselines):
+        result = b1_forward(module, batch)
+    result.sum().backward()
+    assert all(p.grad is None for p in module.parameters())
+    assert all(g.grad is not None and torch.isfinite(g.grad).all()
+               for g in gates.values())
+    assert all(b.grad is not None and torch.isfinite(b.grad).all()
+               for b in baselines.values())
+    if gate == 1:
+        torch.testing.assert_close(result, original, rtol=0, atol=0)
+        assert all(
+            torch.count_nonzero(b.grad) == 0 for b in baselines.values())
+    else:
+        assert any(torch.count_nonzero(b.grad) for b in baselines.values())
+    assert not any(
+        hasattr(m, '_message_intervention') for m in module.modules())
+
+
+@pytest.mark.parametrize('fault', [
+    'unfrozen', 'training', 'missing', 'range', 'shape', 'nonfinite', 'extra',
+    'no_grad'
+])
+def test_differentiable_message_masking_refusal(fault):
+    from contextlib import nullcontext
+
+    from kumo_core.explain.message_intervention import (
+        DifferentiableMessageMasking, MessageIntervention)
+    module, batch = b1_module(), b1_batch()
+    module.requires_grad_(False)
+    with MessageIntervention(module, gate=1) as discovery:
+        b1_forward(module, batch)
+    gates = {
+        (o['layer'], tuple(o['relation'])):
+        torch.full((o['count'], ), 0.4, dtype=F64, requires_grad=True)
+        for o in discovery.observations
+    }
+    baselines = {
+        layer: torch.zeros(1, dtype=F64, requires_grad=True)
+        for layer, _ in gates
+    }
+    key = next(iter(gates))
+    if fault == 'unfrozen':
+        module.requires_grad_(True)
+    elif fault == 'training':
+        module.train()
+    elif fault == 'missing':
+        gates.pop(key)
+    elif fault == 'extra':
+        gates[(99, FK)] = torch.ones(1, dtype=F64)
+    elif fault in ('range', 'nonfinite'):
+        gates[key] = torch.full_like(gates[key],
+                                     1.1 if fault == 'range' else float('nan'))
+    elif fault == 'shape':
+        gates[key] = gates[key][:, None]
+    with pytest.raises(ValueError), torch.no_grad(
+    ) if fault == 'no_grad' else nullcontext():
+        with DifferentiableMessageMasking(module,
+                                          gates=gates,
+                                          baselines=baselines):
+            b1_forward(module, batch)
+    assert not any(
+        hasattr(m, '_message_intervention') for m in module.modules())
+
+
+def test_amortized_companion_uses_original_context_and_shared_parameters():
+    # The B1 fixture exercises gather/mean, empty relations and layer trimming.
+    from kumo_core.explain.message_intervention import (
+        AmortizedMessageCompanion, DifferentiableMessageMasking,
+        OriginalMessageContext)
+    module, batch = b1_module(gnn_bias=True), b1_batch()
+    module.requires_grad_(False)
+    with OriginalMessageContext(module) as capture:
+        original = b1_forward(module, batch)
+    contexts = capture.messages
+    assert all(not x.requires_grad for x in contexts.values())
+    saved = {key: value.clone() for key, value in contexts.items()}
+    torch.manual_seed(31)
+    companion = AmortizedMessageCompanion(contexts, 1).to(F64)
+    predictor = copy.deepcopy(module.state_dict())
+    optimizer = torch.optim.Adam(companion.parameters(), lr=.01)
+    assert not {id(p)
+                for p in module.parameters()
+                } & {id(p)
+                     for p in companion.parameters()}
+    gates, baselines = companion(contexts)
+    # Equal messages at different occurrences must receive exactly equal gates.
+    key = next(key for key, value in contexts.items() if value.shape[0] > 0)
+    repeated = {key: contexts[key][:1].repeat(3, 1)}
+    repeated_gates, _ = companion(repeated)
+    assert torch.equal(repeated_gates[key], repeated_gates[key][0].expand(3))
+    with DifferentiableMessageMasking(module, gates=gates, baselines=baselines):
+        masked = b1_forward(module, batch)
+    (masked - original).square().sum().backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0
+               for p in companion.networks.parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0
+               for p in companion.standins.parameters())
+    optimizer.step()
+    assert all(
+        torch.equal(saved[key], value) for key, value in contexts.items())
+    assert all(p.grad is None for p in module.parameters())
+    assert all(
+        torch.equal(value, predictor[key])
+        for key, value in module.state_dict().items())
+    other = AmortizedMessageCompanion(contexts, 1).to(F64)
+    other.load_state_dict(companion.state_dict())
+    expected, _ = companion(contexts, hard=True)
+    actual, _ = other(contexts, hard=True)
+    assert all(torch.equal(expected[key], actual[key]) for key in expected)
+    assert all(((g == 0) | (g == 1)).all() for g in actual.values())
+    with pytest.raises(ValueError, match='detached'):
+        companion({key: contexts[key].clone().requires_grad_()})
+    with pytest.raises(ValueError, match='Unknown'):
+        companion({(99, FK): torch.ones(1, 1, dtype=F64)})
+    assert not any(
+        hasattr(m, '_message_intervention') for m in module.modules())

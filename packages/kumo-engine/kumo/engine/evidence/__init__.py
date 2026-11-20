@@ -12,9 +12,11 @@ from .bundle import (
     PredictionEvidenceBundle,
     PredictionEvidenceSource,
 )
+from .masking import ClassificationMaskingCompanion
 from .walks import WalkAttributionBundle
 
 __all__ = [
+    'ClassificationMaskingCompanion',
     'WalkAttributionConfig',
     'WalkAttributionBundle',
     'EvidenceConfig',
