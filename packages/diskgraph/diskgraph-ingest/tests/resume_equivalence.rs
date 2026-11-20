@@ -3,9 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Integration tests proving that resuming from any phase produces a
-//! byte-identical final index compared to running the same ingest end-to-end
-//! without resume. This is the core correctness invariant the resume code
-//! must satisfy.
+//! equivalent final index compared to running the same ingest end-to-end
+//! without resume. Physical build IDs intentionally differ between ingests.
 //!
 //! Strategy: for each phase boundary P, run two ingests against the same
 //! synthetic dataset:
@@ -21,9 +20,9 @@
 //! Drop, and SIGKILL skips destructors). The in-process resume then runs
 //! `ingest_with_stats_from_source` with the appropriate `resume_from_phase`.
 //!
-//! Final outputs are compared byte-for-byte for files that should be
-//! deterministic (`index_metadata.json`, `nodes/<t>/shard-N/{offsets.bin,
-//! edges.bin,build_stats.json}`).
+//! Final outputs are compared byte-for-byte for deterministic files
+//! (`nodes/<t>/shard-N/{offsets.bin,edges.bin,build_stats.json}`). Metadata
+//! is compared after replacing only its per-ingest build ID.
 
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, TimestampSecondArray};
@@ -324,17 +323,34 @@ fn kill_and_wait(child: &mut Child) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Byte-identical comparison
+// Comparison excluding intentionally unique build IDs
 // ---------------------------------------------------------------------------
 
 /// Files we expect to be byte-identical between baseline and split runs.
 const COMPARE_BASENAMES: &[&str] = &["offsets.bin", "edges.bin", "build_stats.json"];
 
-fn assert_indexes_byte_identical(baseline: &Path, split: &Path) -> Result<()> {
-    // index_metadata.json — the user-visible final manifest.
+fn normalized_index_metadata(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let id = metadata["index_build_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow!("{} has no index_build_id", path.display()))?;
+    let quoted_id = serde_json::to_string(id)?;
+    let text = std::str::from_utf8(&bytes)?;
+    if text.matches(&quoted_id).count() != 1 {
+        bail!("{} does not contain exactly one build ID", path.display());
+    }
+    Ok(text.replacen(&quoted_id, "\"<index_build_id>\"", 1))
+}
+
+fn assert_indexes_equivalent(baseline: &Path, split: &Path) -> Result<()> {
+    // The user-visible metadata differs only in its per-ingest build ID.
     let a = baseline.join("index_metadata.json");
     let b = split.join("index_metadata.json");
-    compare_files_byte_for_byte(&a, &b)?;
+    if normalized_index_metadata(&a)? != normalized_index_metadata(&b)? {
+        bail!("index metadata differs apart from the per-ingest build ID");
+    }
 
     // For every node table directory present under nodes/ in baseline,
     // walk shards and compare offsets/edges/build_stats. Edge-table-only
@@ -571,7 +587,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
     if !split_root.join("index_metadata.json").exists() {
         bail!("split missing index_metadata.json");
     }
-    if let Err(e) = assert_indexes_byte_identical(&baseline_root, &split_root) {
+    if let Err(e) = assert_indexes_equivalent(&baseline_root, &split_root) {
         // Leak the tempdir so the user can inspect it.
         let leaked = tmp.keep();
         return Err(anyhow!(
@@ -589,8 +605,8 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Sanity check: two fresh runs against the same fixture must produce
-/// byte-identical output, otherwise the equivalence assertion below cannot
-/// distinguish "resume bug" from "intrinsic non-determinism".
+/// equivalent output except for their unique build IDs. Otherwise, the
+/// assertion below cannot distinguish resume bugs from nondeterminism.
 #[test]
 fn fresh_vs_fresh_is_deterministic() -> Result<()> {
     let tmp = tempdir()?;
@@ -615,7 +631,7 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
             },
         )?;
     }
-    if let Err(e) = assert_indexes_byte_identical(&a_root, &b_root) {
+    if let Err(e) = assert_indexes_equivalent(&a_root, &b_root) {
         let leaked = tmp.keep();
         return Err(anyhow!(
             "fresh ingest is not deterministic: {e}\n  a: {}\n  b: {}",
@@ -633,7 +649,7 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
 /// to construct, so this case is not testable with our partial-then-resume
 /// pattern. Instead, we assert the documented equivalence directly: a
 /// fresh run and a `resume_from_phase=Some(Encode)` run on a clean output
-/// dir must produce a byte-identical final index.
+/// dir must produce an equivalent final index, except for its build ID.
 #[test]
 fn resume_from_encode_matches_fresh() -> Result<()> {
     let tmp = tempdir()?;
@@ -672,7 +688,7 @@ fn resume_from_encode_matches_fresh() -> Result<()> {
             ..Default::default()
         },
     )?;
-    assert_indexes_byte_identical(&baseline_root, &split_root)?;
+    assert_indexes_equivalent(&baseline_root, &split_root)?;
     Ok(())
 }
 
@@ -757,8 +773,8 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
             "wipe failed: pk_hash-00000.bin still contains canary after resume from pk_map"
         );
     }
-    // And final output must match baseline byte-for-byte.
-    assert_indexes_byte_identical(&baseline_root, &split_root)?;
+    // Final output must match the baseline except for its build ID.
+    assert_indexes_equivalent(&baseline_root, &split_root)?;
     Ok(())
 }
 
@@ -802,5 +818,5 @@ fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
         let shards = metadata["node_types"][0]["shards"].as_array().map(Vec::len);
         assert_eq!(shards, Some(expected_shards));
     }
-    assert_indexes_byte_identical(&baseline_root, &tmp.path().join("split-1"))
+    assert_indexes_equivalent(&baseline_root, &tmp.path().join("split-1"))
 }
