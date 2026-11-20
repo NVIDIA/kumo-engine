@@ -187,7 +187,8 @@ def train(root, profile):
                         python_version=python_version, pip_requirements=[
                             f'torch=={torch.__version__.split("+")[0]}'
                         ],
-                        options={'cuda_version': torch.version.cuda or '12.6'})
+                        # This workload runs on CPU even with a CUDA-enabled torch wheel.
+                        options={'cuda_version': None})
                     require(
                         str(logged.version_name) == version,
                         'Snowflake registered another version')
