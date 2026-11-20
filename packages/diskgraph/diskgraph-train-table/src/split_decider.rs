@@ -1119,10 +1119,10 @@ pub(crate) fn flex_adjust_boundaries<U: UnitSystem>(
     tf: Dur<U>,
     anchor: Dur<U>,
     timeframe_step: Option<Dur<U>>,
-) {
+) -> bool {
     let n = boundaries.len();
     if n < 2 {
-        return;
+        return true;
     }
     let step = timeframe_step.unwrap_or(tf);
     let mut step_offset = boundaries[n - 1] - tf;
@@ -1133,10 +1133,14 @@ pub(crate) fn flex_adjust_boundaries<U: UnitSystem>(
             start = finish - tf - anchor;
         }
         while step_offset - anchor > start {
+            if step <= Dur::zero() {
+                return false;
+            }
             step_offset = step_offset - step;
         }
         boundaries[i] = step_offset - anchor;
     }
+    true
 }
 
 /// Validate the Kumo `flexible_boundaries` postcondition for DateOffsetSplit.
@@ -1198,6 +1202,9 @@ pub(crate) struct DateOffsetDecider<U: UnitSystem> {
     /// kumo `timeframe_step`; sampling-grid spacing for flexible snapping.
     /// `None` ⇒ grid spacing == `timeframe`.
     timeframe_step: Option<Dur<U>>,
+    /// Set by `derive_cutoffs` when a step that is not positive cannot reach
+    /// the snapped boundaries.
+    stalled: bool,
 }
 
 impl<U: UnitSystem> DateOffsetDecider<U> {
@@ -1232,6 +1239,7 @@ impl<U: UnitSystem> DateOffsetDecider<U> {
             shift: Dur::<U>::zero(),
             flexible_boundaries: false,
             timeframe_step: None,
+            stalled: false,
         }
     }
 
@@ -1329,7 +1337,12 @@ impl<U: UnitSystem> SplitDecider<U> for DateOffsetDecider<U> {
         }
         boundaries.push(max_ts + tf + self.anchor_start_offset);
         if self.flexible_boundaries {
-            flex_adjust_boundaries(&mut boundaries, tf, self.anchor_start_offset, self.timeframe_step);
+            self.stalled = !flex_adjust_boundaries(
+                &mut boundaries,
+                tf,
+                self.anchor_start_offset,
+                self.timeframe_step,
+            );
         }
         self.boundaries = boundaries;
     }
@@ -1339,6 +1352,13 @@ impl<U: UnitSystem> SplitDecider<U> for DateOffsetDecider<U> {
         // `flexible_boundaries`; rigid DateOffsetSplit preserves its legacy
         // raw-boundary behavior.
         if self.flexible_boundaries {
+            if self.stalled {
+                return Err(crate::errors::TTGenError::InvalidPlan(
+                    "a flexible-boundary split needs a positive timeframe_step, timeframe or \
+                     offset spacing on the index clock"
+                        .to_string(),
+                ));
+            }
             validate_flexible_train_window(&self.boundaries, self.shift)?;
         }
         Ok(())
@@ -3159,6 +3179,49 @@ mod tests {
         let err = d.validate_derived_cutoffs().unwrap_err();
         assert!(matches!(err, TTGenError::InvalidPlan(_)));
         assert!(err.to_string().contains("Not enough data for the split"));
+    }
+
+    #[test]
+    fn test_flex_boundaries_reject_a_step_that_never_reaches_the_grid() {
+        for step in [0, -5] {
+            let mut d: DateOffsetDecider<Seconds> = DateOffsetDecider::new(
+                vec![Dur::from_raw(-14), Dur::from_raw(-7)],
+                Dur::zero(),
+                Some(Dur::from_raw(10)),
+            )
+            .with_flexible_boundaries(true, Some(Dur::from_raw(step)));
+            let entity = Value::Int(0);
+            let target = Value::Int(0);
+            d.accumulate(&sample_row(&entity, Abs::from_raw(0), &target));
+            d.accumulate(&sample_row(&entity, Abs::from_raw(20), &target));
+            d.derive_cutoffs();
+
+            let err = d.validate_derived_cutoffs().unwrap_err();
+            assert!(err.to_string().contains("positive timeframe_step"), "{step}");
+        }
+    }
+
+    #[test]
+    fn test_flex_boundaries_keep_a_zero_step_that_needs_no_snapping() {
+        // The forecasting split of a past window: zero offsets and timeframe,
+        // anchor_start_offset -2h. Main never enters the snapping loop here.
+        let mut d: DateOffsetDecider<Seconds> = DateOffsetDecider::new(
+            vec![Dur::zero(), Dur::zero()],
+            Dur::from_raw(-7_200),
+            Some(Dur::zero()),
+        )
+        .with_flexible_boundaries(true, None);
+        let entity = Value::Int(0);
+        let target = Value::Int(0);
+        d.accumulate(&sample_row(&entity, Abs::from_raw(0), &target));
+        d.accumulate(&sample_row(&entity, Abs::from_raw(100_000), &target));
+        d.derive_cutoffs();
+
+        assert_eq!(
+            d.boundaries.iter().map(|b| b.raw()).collect::<Vec<_>>(),
+            vec![0, 100_000, 100_000, 92_800],
+        );
+        d.validate_derived_cutoffs().unwrap();
     }
 
     #[test]

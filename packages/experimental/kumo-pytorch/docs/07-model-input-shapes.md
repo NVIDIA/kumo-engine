@@ -20,7 +20,9 @@ states where it deviates.
 Every model reads the fitted state of its task (vocabulary sizes, ID spaces)
 to size its embeddings. Each model's code may reshape the arrays, but it uses
 the task's fitted vocabularies, buckets and thresholds instead of fitting its
-own.
+own. The helper below uses Python requests to inspect model inputs. Use a
+[Parquet AnchorTable](05-training-batches.md#training-on-the-diskgraph-engine)
+to load a training or benchmark population on DiskGraph.
 
 ## The shared data
 

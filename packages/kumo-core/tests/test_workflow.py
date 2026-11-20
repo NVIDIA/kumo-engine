@@ -56,8 +56,8 @@ USERS = NativeGraphTable(
 def request(tmp_path):
     return TrainingWorkflowRequest(
         query=ValidatedNativeQuery(
-            query=SimpleNamespace(
-                get_exclude_cols_dict=lambda: {}),
+            query=SimpleNamespace(query_type="static",
+                                  get_exclude_cols_dict=lambda: {}),
             task_type="binary_classification",
             task_family="node_prediction",
             entity_table="users",
@@ -419,6 +419,7 @@ def test_forecasting_task_options_derive_temporal_training_metadata(tmp_path):
         query=replace(
             request(tmp_path).query,
             query=SimpleNamespace(
+                query_type="temporal",
                 get_combined_date_offset_range=lambda: SimpleNamespace(
                     start=0,
                     end=1,

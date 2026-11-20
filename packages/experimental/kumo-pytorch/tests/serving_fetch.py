@@ -30,6 +30,11 @@ def fetch(
     """What a caller fetches for ``request`` by following ``spec`` over ``tables``."""
 
     keys = {table.name: table.primary_key for table in schema.tables}
+    # Separate source occurrences can even be aliases of the same input mapping.
+    sources = {
+        name: [dict(row) for row in rows] if keys[name] is None else rows
+        for name, rows in tables.items()
+    }
     cutoff = cutoff_to_epoch(request.as_of_time)
     fetched: dict[str, dict[object, Row]] = {}
     routes = sorted(
@@ -37,13 +42,14 @@ def fetch(
         key=lambda item: item[1].hop,
     )
     for name, route in routes:
-        rows = _joined(tables[name], route.join, request, fetched)
+        rows = _joined(sources[name], route.join, request, fetched)
         rows = _windowed(rows, route, cutoff)
         if route.limit is not None:
             rows = _limited(rows, route.limit, route.join)
         bucket = fetched.setdefault(name, {})
         for row in rows:
-            bucket.setdefault(row[keys[name]], row)
+            identity = row[keys[name]] if keys[name] is not None else id(row)
+            bucket.setdefault(identity, row)
     return {
         name: [
             {column: row[column] for column, rows in table.columns.items() if rows.required}

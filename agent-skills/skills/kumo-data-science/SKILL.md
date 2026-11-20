@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job."
+description: "Use for KumoAI graphs and predictive models on relational data in a warehouse, an object store or local files: inspect, visualize or export a graph's schema and relationships; train a model, score data with a trained one, explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction. For a new model it checks that the request names the data, outcome and time window, confirms the inferred tables and task, then generates one notebook or script; it runs it only when asked, in the notebook or as a host job. Also use it, before any general jobs or workspace skill, for a job, schedule, run or cluster that runs a Kumo notebook or scores a model published from one: creating, scheduling, pausing, submitting or debugging it."
 ---
 
 # Data Science Agent — Router Skill
@@ -15,6 +15,21 @@ it from this file, you have not loaded the skill — say so rather than guessing
 Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
 Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
+
+## Paths in these files
+
+A path that starts with a skill's name — `kumo-data-science/`, `kumoai-reference/`, or a skill in
+*Routing* below — is in that skill's directory, which sits inside this one or beside it. Any other
+path, such as `accept/` or `hosts/`, is relative to the skill whose file names it.
+
+## Read the host adapter first
+
+Before you answer any request this skill covers — a new model, scoring, a request routed to a
+capability skill below, a follow-up in a session that already has a notebook, or a question
+about a job — read `hosts/<host>/adapter.md`, the one directory under `hosts/`. Where it has a
+section on what you may do before the user confirms (the Databricks Genie adapter's §0), that
+holds for every reply. Where the adapter names a job file, a request about a job reads it before
+you act on any job, run or cluster.
 
 ## When to use
 
@@ -75,8 +90,8 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
   the minimum inputs needed
 - Join, clean, deduplicate, aggregate, create labels, or transform data **as model input**.
   Diagnostic scalar aggregates during preflight — reported as proposal evidence, never written and
-  never fed to training — are not this; they exist so a candidate key can be disqualified before
-  it silently discards rows
+  never fed to training — are not this; they exist so a key can be checked before it silently
+  discards rows
 - Search for, rank, or curate tables by business relevance
 - Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
   Step 3, and only when the user asks.
@@ -223,7 +238,7 @@ generated before the task is confirmed:
 - Task type: <temporal binary classification | link prediction | ...>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
-- Threshold (binary classification, predictions written): <the user's value [supplied] | 0.5 [default]>
+- Threshold (binary classification, written or local): <the user's value [supplied] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 
@@ -231,9 +246,23 @@ generated before the task is confirmed:
 target is NULL (`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1). If the user wants rows that
 already have a target scored (for example "every order"), the notebook stages an explicit
 population table. That is a write, and it goes in the source's system, so name it here: next to the confirmed
-destination by default (`<DESTINATION>_POPULATION`) when the destination is in the source's
-system; otherwise, or when there is no destination, ask for a schema or path in the source's
-system. Never stage it in the source schema.
+destination by default when the destination is in the source's system but not in the source schema
+or under the source path — the table
+`<DESTINATION>_POPULATION`, or for a path the sibling directory
+`<destination without its trailing / or file suffix>_population/` (`s3://b/scores/` →
+`s3://b/scores_population/`), never inside the destination, which must stay empty; otherwise, or
+when there is no destination, ask for a schema or path in the source's system. Never stage it in
+the source schema or under the source path, where it would read as a source table.
+
+**Name what a run replaces.** The notebook writes predictions with `OVERWRITE` and stages a
+population with `CREATE OR REPLACE` (a file: overwritten), on every run. Check from the catalog
+whether the destination and the population already exist, and say so on their lines —
+`<DB.SCHEMA.TABLE> (exists: replaced on every run)` — so confirming them approves the
+replacement. When the user does not want an existing table replaced, ask for another name, or
+for a destination, APPEND (`kumoai-reference/references/outputs.md`). If the check cannot run,
+say that instead. The approval covers the confirmed population name only: the notebook carries it
+as `POPULATION_CONFIRMED` and stops before staging if the name it would replace differs
+(`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1).
 
 | Condition | Transition |
 |---|---|
@@ -307,6 +336,14 @@ in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetun
   user asked for a job, running means submitting it and waiting for its status as the host's job
   file describes.
 - Report the outcome: the training metrics, or the exception and the cell that raised it
+- **Read what Kumo said about the data first.** A warning or error about the data — duplicate
+  primary keys, a foreign key that matched few rows, invalid values read as null, a float or
+  mismatched key, an empty training table — leads the report, with the table, column and count,
+  and the decision goes to the user: fix the source, change the key or link, or accept the loss.
+  A run that finished is not a success until they have decided. Never change the data, a column's
+  type or the query to make such a message go away
+  (`kumoai-reference/references/troubleshooting_signals.md` §1a). A failure that is not about the
+  data — an import, a misspelled argument — is the code's: fix it and run again
 - Let the notebook's own predict step run; predictions land at the confirmed destination — **the
   name is written verbatim**, no suffix, no case change; report it in the destination's own
   form (`DB.SCHEMA.TABLE`, or a path)

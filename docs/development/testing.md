@@ -19,6 +19,8 @@ them. Live Snowflake tests still need credentials and access to the service.
 In `test` and `dev_local` deployment modes, instance discovery uses the hostname
 without querying the EC2 metadata service.
 
+Temporal-backed tests start a local dev server from the Temporal CLI release in [`.temporal-cli-version`](../../.temporal-cli-version), downloading it on first use. Set `KUMO_TEMPORAL_CLI_PATH` to a local `temporal` binary to skip the download, or `TEMPORAL_SERVER=cloud` to use Temporal Cloud.
+
 Run from the repository root unless a component guide says otherwise.
 Python package test suites have different roots and fixtures; inspect the
 package's configuration before invoking pytest over multiple packages.
@@ -36,7 +38,9 @@ It builds its prerequisites and runs without cloud credentials. The
 [test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
 The [Engine PR check](engine-pr-ci.md) builds the candidate wheel on CPU and
-runs eight small task checks on CUDA through one shared smoke action. Repeated
+runs eight small task checks on CUDA through one shared smoke action. A
+required CPU job also runs the small MLflow lifecycle
+([MLOps validation](mlops-validation.md)). Repeated
 and reloaded predictions must match within `0.005` absolute tolerance and
 zero relative tolerance for every task. Labels and ranks can change only for
 score ambiguities within that tolerance. Complete valid outputs and completed

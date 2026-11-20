@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import kumo_core.diskgraph.lightning_data as dldm
-import pandas as pd
 import psutil
 import pyarrow as pa
 import pytest
@@ -32,8 +31,11 @@ from kumo_core.diskgraph.lightning_data import (
     DiskgraphValidRHS,
     _ShuffleStreamState,
 )
-from kumo_core.encoders.tensor_mapper import TensorMapper
-from kumoapi.encoder import Stype
+from kumo_core.encoders.tensor_mapper import (
+    CategoricalTensorMapper,
+    NumericalTensorMapper,
+    TensorMapper,
+)
 from torch.utils.data import DataLoader, IterableDataset
 from torch_geometric.data import HeteroData
 
@@ -71,12 +73,8 @@ def test_pidfd_syscall_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
         os.close(pidfd)
 
 
-def _numerical_mapper(values: list[float]) -> TensorMapper:
-    return TensorMapper.from_stype(Stype.numerical, pd.Series(values))
-
-
 def _mapper_bank() -> dict[str, dict[str, TensorMapper]]:
-    return {"users_v1": {"age": _numerical_mapper([18.0, 25.0, 30.0, 50.0])}}
+    return {"users_v1": {"age": NumericalTensorMapper()}}
 
 
 def test_stage_batch_allocation_is_proportional_and_covers_stages() -> None:
@@ -1551,7 +1549,7 @@ def test_explain_dataloader_maps_pred_stage_to_predict_runtime_stage(
     assert calls["kwargs"]["stage"] == "predict"
 
 
-def test_explain_dataloader_skips_lp_target_resolution_for_pred(
+def test_explain_dataloader_pred_resolves_only_entity(
     monkeypatch: pytest.MonkeyPatch, ) -> None:
     calls = _install_fake_diskgraph(monkeypatch)
     dm = DiskgraphLightningDataModule(
@@ -1569,11 +1567,11 @@ def test_explain_dataloader_skips_lp_target_resolution_for_pred(
     assert calls["kwargs"]["target_node_type"] == "Article"
 
     list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
-    assert "entity_node_type" not in calls["kwargs"]
+    assert calls["kwargs"]["entity_node_type"] == "User"
     assert "target_node_type" not in calls["kwargs"]
 
 
-def test_explain_dataloader_link_prediction_pred_uses_predict_loader(
+def test_explain_dataloader_lp_pred_keeps_selected_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -1586,7 +1584,7 @@ def test_explain_dataloader_link_prediction_pred_uses_predict_loader(
     list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
 
     assert calls["kwargs"]["stage"] == "predict"
-    assert "selected_stage_node_ids" not in calls["kwargs"]
+    assert calls["kwargs"]["selected_stage_node_ids"] == [10, 12]
 
 
 def test_explain_selection_capture_forces_single_worker_eval_loader() -> None:
@@ -4225,13 +4223,11 @@ def _projection_mapper_bank() -> dict[str, dict[str, TensorMapper]]:
     """
     return {
         "users_v1": {
-            "age": _numerical_mapper([18.0, 25.0, 30.0, 50.0]),
-            "country": TensorMapper.from_stype(
-                Stype.categorical, pd.Series(["US", "DE"])
-            ),
+            "age": NumericalTensorMapper(),
+            "country": CategoricalTensorMapper(category_counts=[("DE", 1), ("US", 1)]),
         },
         "txns_v1": {
-            "amount": _numerical_mapper([1.0, 2.0]),
+            "amount": NumericalTensorMapper(),
         },
         # Pure link table: no encoder columns at all.
         "links_v1": {},

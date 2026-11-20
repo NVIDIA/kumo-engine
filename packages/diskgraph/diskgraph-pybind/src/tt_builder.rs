@@ -14,6 +14,8 @@
 //! plan_json = b.build()
 //! ```
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
@@ -342,6 +344,7 @@ pub struct DiskGraphTTBuilder {
     prediction_type: tt::PredictionType,
     is_prediction: bool,
     split: Option<SplitSpecArgs>,
+    target_window: Option<(i64, i64, tt::TimeUnit)>,
     stages: Vec<(Vec<BuilderOp>, Option<tt::StageFilter>)>,
     current_ops: Vec<BuilderOp>,
     target_stype: Option<String>,
@@ -351,12 +354,15 @@ pub struct DiskGraphTTBuilder {
 struct TemporalArgs {
     timestamps: Vec<i64>,
     unit: tt::TimeUnit,
+    start_time: Option<i64>,
     forecast_length: i64,
     lag_timesteps: Option<i64>,
 }
 
 /// Lag and horizon offsets are the only op fields typed by the clock, so they
 /// wait for `build()`; every other op is complete when added.
+// Keep ready plan operations inline, including the shared row-aggregate variant.
+#[allow(clippy::large_enum_variant)]
 enum BuilderOp {
     Ready(tt::Op<Seconds>),
     Autoregression(ShiftedOp),
@@ -382,6 +388,7 @@ impl DiskGraphTTBuilder {
             prediction_type: tt::PredictionType::Node,
             is_prediction: false,
             split: None,
+            target_window: None,
             stages: Vec::new(),
             current_ops: Vec::new(),
             target_stype: None,
@@ -449,19 +456,23 @@ impl DiskGraphTTBuilder {
     }
 
     /// Set anchor timestamps. `unit` declares the source unit of the raw i64
-    /// values (e.g. "seconds", "nanoseconds"). Rust converts to the index
-    /// unit system internally.
-    #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None, unit="seconds"))]
+    /// values (e.g. "seconds", "nanoseconds"), and of the training
+    /// `start_time`. Rust converts to the index unit system internally.
+    #[pyo3(signature = (
+        timestamps, forecast_length, lag_timesteps=None, unit="seconds", start_time=None
+    ))]
     fn temporal(
         &mut self,
         timestamps: Vec<i64>,
         forecast_length: i64,
         lag_timesteps: Option<i64>,
         unit: &str,
+        start_time: Option<i64>,
     ) -> PyResult<()> {
         self.temporal = Some(TemporalArgs {
             timestamps,
             unit: parse_time_unit(unit)?,
+            start_time,
             forecast_length,
             lag_timesteps,
         });
@@ -481,6 +492,14 @@ impl DiskGraphTTBuilder {
     /// [`build_split_spec_json`] -- see there for why they are asymmetric.
     fn split_ratio(&mut self, spec: &Bound<'_, PyAny>) -> PyResult<()> {
         self.split = Some(extract_split_spec(spec)?);
+        Ok(())
+    }
+
+    /// The query's combined target window, from which pquery derives its
+    /// default split; split durations derived from it truncate with the window
+    /// and are left to the window warning.
+    fn target_window(&mut self, start: i64, end: i64, unit: &str) -> PyResult<()> {
+        self.target_window = Some((start, end, parse_time_unit(unit)?));
         Ok(())
     }
 
@@ -517,8 +536,7 @@ impl DiskGraphTTBuilder {
                 .into_iter()
                 .map(|(src_col, dst_table)| tt::TTFKeySpec {
                     src_col,
-                    dst_table,
-                })
+                    dst_table })
                 .collect(),
         );
     }
@@ -710,7 +728,7 @@ impl DiskGraphTTBuilder {
         &mut self,
         entity: tt::EntitySpec<Seconds>,
     ) -> PyResult<tt::DiskGraphTTPlan<U>> {
-        let stages = std::mem::take(&mut self.stages)
+        let stages: Vec<tt::Stage<U>> = std::mem::take(&mut self.stages)
             .into_iter()
             .map(|(ops, filter)| {
                 let ops = ops
@@ -720,6 +738,23 @@ impl DiskGraphTTBuilder {
                 Ok(tt::Stage { ops, filter })
             })
             .collect::<PyResult<_>>()?;
+        let mut truncated: BTreeSet<String> = stages
+            .iter()
+            .flat_map(|stage| &stage.ops)
+            .filter_map(truncated_window)
+            .collect();
+        let forecast_length = matches!(self.prediction_type, tt::PredictionType::Forecasting)
+            .then(|| self.temporal.as_ref().map_or(1, |t| t.forecast_length));
+        if let Some(split) = &self.split {
+            let target_window = self.target_window.take();
+            truncated.extend(truncated_split::<U>(split, target_window, forecast_length));
+        }
+        if !self.is_prediction {
+            truncated.extend(self.temporal.iter().flat_map(truncated_anchors::<U>));
+        }
+        for message in truncated {
+            tracing::warn!("{message}");
+        }
 
         Ok(tt::DiskGraphTTPlan {
             entity: tt::EntitySpec {
@@ -782,9 +817,7 @@ impl BuilderOp {
     }
 }
 
-/// Rejects a window whose bound is shorter than one tick of the clock `U`
-/// instead of letting it truncate to an empty window.
-fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
+fn window_of<U: UnitSystem>(op: &tt::Op<U>) -> Option<(i64, i64, TimeUnit)> {
     match op {
         tt::Op::Aggregate {
             window: Some((lo, hi)),
@@ -795,30 +828,202 @@ fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
             window: Some((lo, hi)),
             window_unit,
             ..
-        } => {
-            let unit = window_unit.unwrap_or(TimeUnit::Seconds);
-            if matches!(
-                unit,
-                TimeUnit::Milliseconds | TimeUnit::Microseconds | TimeUnit::Nanoseconds
-            ) {
-                return Err(crate::DiskgraphConfigError::new_err(format!(
-                    "windows in {} are not supported; use seconds or a coarser unit",
-                    unit_name(unit)
-                )));
-            }
-            if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
-                return Ok(());
-            }
-            if *lo != UNBOUNDED_LOWER_OFFSET {
-                check_tick::<U>("window bound", *lo, unit)?;
-            }
-            check_tick::<U>("window bound", *hi, unit)
-        }
+        } => Some((*lo, *hi, window_unit.unwrap_or(TimeUnit::Seconds))),
         tt::Op::Autoregression { target_op, .. } | tt::Op::FutureLabels { target_op, .. } => {
-            check_windows(target_op)
+            window_of(target_op)
         }
-        _ => Ok(()),
+        _ => None,
     }
+}
+
+/// Rejects a window whose bound is shorter than one tick of the clock `U`
+/// instead of letting it truncate to an empty window.
+fn check_windows<U: UnitSystem>(op: &tt::Op<U>) -> PyResult<()> {
+    let Some((lo, hi, unit)) = window_of(op) else {
+        return Ok(());
+    };
+    if matches!(
+        unit,
+        TimeUnit::Milliseconds | TimeUnit::Microseconds | TimeUnit::Nanoseconds
+    ) {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "windows in {} are not supported; use seconds or a coarser unit",
+            unit_name(unit)
+        )));
+    }
+    if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
+        return Ok(());
+    }
+    if lo != UNBOUNDED_LOWER_OFFSET {
+        check_tick::<U>("window bound", lo, unit)?;
+    }
+    check_tick::<U>("window bound", hi, unit)?;
+    if lo != UNBOUNDED_LOWER_OFFSET
+        && lo != hi
+        && dur_from_unit::<U>(lo, unit) == dur_from_unit::<U>(hi, unit)
+    {
+        let clock = unit_name(U::UNIT);
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "the window ({lo}, {hi}] {} is empty on the {clock} index clock. Use a window of \
+             whole {clock}, or a finer timestamp_precision.",
+            unit_name(unit),
+        )));
+    }
+    Ok(())
+}
+
+/// Describes a window whose bounds the clock `U` truncates, e.g. 90 minutes
+/// on the hours clock.
+fn truncated_window<U: UnitSystem>(op: &tt::Op<U>) -> Option<String> {
+    let (lo, hi, unit) = window_of(op)?;
+    if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
+        return None;
+    }
+    let in_clock = |value: i64| match value {
+        UNBOUNDED_LOWER_OFFSET => value,
+        _ => truncate_to_clock::<U>(value, unit),
+    };
+    let window = |lo: i64, hi: i64| match lo {
+        UNBOUNDED_LOWER_OFFSET => format!("(-inf, {hi}] {}", unit_name(unit)),
+        _ => format!("({lo}, {hi}] {}", unit_name(unit)),
+    };
+    let (lo_in_clock, hi_in_clock) = (in_clock(lo), in_clock(hi));
+    let clock = unit_name(U::UNIT);
+    ((lo_in_clock, hi_in_clock) != (lo, hi)).then(|| {
+        format!(
+            "The window {} truncates to {} on the {clock} index clock. Use a window of whole \
+             {clock}, or a finer timestamp_precision.",
+            window(lo, hi),
+            window(lo_in_clock, hi_in_clock),
+        )
+    })
+}
+
+/// Describes the split durations the clock `U` truncates, as the executor reads
+/// them: a time-range split shifts by `timeframe + anchor_start_offset`. A
+/// value that pquery derives from `target_window`, as in the default split, is
+/// left to the window warning.
+fn truncated_split<U: UnitSystem>(
+    split: &SplitSpecArgs,
+    target_window: Option<(i64, i64, TimeUnit)>,
+    forecast_length: Option<i64>,
+) -> Vec<String> {
+    let fixed = |unit: &Option<String>| {
+        parse_time_unit(unit_or(unit, "days"))
+            .ok()
+            .filter(|unit| !matches!(unit, TimeUnit::Months | TimeUnit::Years))
+    };
+    let mut durations = Vec::new();
+    match split.kind.as_deref() {
+        Some("DateOffsetSplit") => {
+            if let Some(unit) = fixed(&split.offset_unit) {
+                durations.extend(split.offsets.iter().flatten().map(|&o| ("offset", o, unit)));
+            }
+            if let Some(unit) = fixed(&split.unit) {
+                let step = split
+                    .timeframe_step
+                    .filter(|_| split.flexible_boundaries.unwrap_or(true));
+                let fields = [
+                    ("timeframe", split.timeframe),
+                    ("anchor_start_offset", split.anchor_start_offset),
+                    ("timeframe_step", step),
+                ];
+                durations.extend(fields.into_iter().filter_map(|(f, v)| Some((f, v?, unit))));
+            }
+        }
+        Some("TimeRangeSplit") => {
+            if let (Some(unit), Some(timeframe)) = (fixed(&split.unit), split.timeframe) {
+                let shift = timeframe.saturating_add(split.anchor_start_offset.unwrap_or(0));
+                durations.push(("timeframe + anchor_start_offset", shift, unit));
+            }
+        }
+        _ => {}
+    }
+    let derived = |field: &str, value: i64, unit: TimeUnit| {
+        let Some((start, end, _)) = target_window.filter(|window| window.2 == unit) else {
+            return false;
+        };
+        let timeframe = end.saturating_sub(start);
+        let forecast = forecast_length.map(|length| {
+            let horizon = length.saturating_mul(timeframe);
+            [1, 2].map(|k| timeframe.saturating_sub(horizon.saturating_mul(k)))
+        });
+        match field {
+            "offset" => value == -end || forecast.is_some_and(|offsets| offsets.contains(&value)),
+            "timeframe" => value == timeframe,
+            "anchor_start_offset" => value == start,
+            "timeframe + anchor_start_offset" => value == end,
+            _ => false,
+        }
+    };
+    let clock = unit_name(U::UNIT);
+    durations
+        .into_iter()
+        .filter(|&(field, value, unit)| !derived(field, value, unit))
+        .filter_map(|(field, value, unit)| {
+            let in_clock = truncate_to_clock::<U>(value, unit);
+            let unit = unit_name(unit);
+            (in_clock != value).then(|| {
+                format!(
+                    "The split {field} {value} {unit} truncates to {in_clock} {unit} on the \
+                     {clock} index clock. Use split durations of whole {clock}, or a finer \
+                     timestamp_precision."
+                )
+            })
+        })
+        .collect()
+}
+
+/// Describes anchors that the clock `U` truncates onto a shared tick, or to
+/// before the training `start_time`.
+fn truncated_anchors<U: UnitSystem>(temporal: &TemporalArgs) -> Vec<String> {
+    let unit = temporal.unit;
+    let in_clock = |anchor: i64| {
+        let ticks = abs_from_unit::<U>(anchor, unit).raw() as i128;
+        (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
+    };
+    let anchors: BTreeSet<i64> = temporal.timestamps.iter().copied().collect();
+    let mut ticks: BTreeMap<i64, usize> = BTreeMap::new();
+    for &anchor in &anchors {
+        *ticks.entry(in_clock(anchor)).or_default() += 1;
+    }
+    let clock = unit_name(U::UNIT);
+    let mut warnings = Vec::new();
+    if let Some(repeats) = ticks.values().copied().max().filter(|&n| n > 1) {
+        warnings.push(format!(
+            "{} anchors truncate to {} ticks of the {clock} index clock, so the table repeats \
+             (entity, anchor) rows up to {repeats} times. Space anchors by whole {clock}, or use \
+             a finer timestamp_precision.",
+            anchors.len(),
+            ticks.len(),
+        ));
+    }
+    if let (Some(start), Some(&first)) = (temporal.start_time, anchors.first()) {
+        if first >= start && in_clock(first) < start {
+            warnings.push(format!(
+                "start_time {} is not on the {clock} index clock, so the first training anchor \
+                 truncates to {}, before start_time. Align start_time to whole {clock}, or use \
+                 a finer timestamp_precision.",
+                utc(start, unit),
+                utc(in_clock(first), unit),
+            ));
+        }
+    }
+    warnings
+}
+
+fn utc(value: i64, unit: TimeUnit) -> String {
+    let (secs, nanos) = split_parts(value, unit);
+    chrono::DateTime::from_timestamp(secs, nanos).map_or_else(
+        || format!("{value} {}", unit_name(unit)),
+        |time| time.to_string(),
+    )
+}
+
+/// `value` in `unit` after the clock `U` truncates it.
+fn truncate_to_clock<U: UnitSystem>(value: i64, unit: TimeUnit) -> i64 {
+    let ticks = dur_from_unit::<U>(value, unit).raw() as i128;
+    (ticks * U::TICK_NANOS as i128 / unit.tick_nanos() as i128) as i64
 }
 
 fn check_tick<U: UnitSystem>(what: &str, value: i64, unit: TimeUnit) -> PyResult<()> {
@@ -1158,6 +1363,21 @@ pub fn build_split_spec_json(spec: &Bound<'_, PyAny>, timestamp_unit: &str) -> P
     .map_err(|e| {
         crate::DiskgraphConfigError::new_err(format!("failed to serialize split spec: {e}"))
     })
+}
+
+/// Convert fixed index-clock ticks using DG's existing rounding operations.
+#[pyfunction]
+#[pyo3(signature = (value, from, to, *, rounding="truncate"))]
+pub fn convert_ticks(value: i64, from: &str, to: &str, rounding: &str) -> PyResult<i64> {
+    let (from, to) = (parse_time_unit(from)?, parse_time_unit(to)?);
+    if !from.is_index_clock() || !to.is_index_clock() {
+        return Err(crate::DiskgraphConfigError::new_err("convert_ticks requires fixed index clocks"));
+    }
+    match rounding {
+        "truncate" => Ok(diskgraph_core::time::convert_trunc(value, from, to)),
+        "floor" => Ok(diskgraph_core::time::convert_floor(value, from, to)),
+        _ => Err(crate::DiskgraphConfigError::new_err("rounding must be truncate or floor")),
+    }
 }
 
 pub(crate) fn parse_index_clock(unit: &str) -> PyResult<TimeUnit> {

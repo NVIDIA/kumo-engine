@@ -83,6 +83,7 @@ class ColumnAnalysis(Explainer):
         self.normalize = normalize
         self.max_classes = max_classes
         self.max_categories = max_categories
+        self.processed_rows = 0
 
     def explain_start(
         self,
@@ -90,6 +91,9 @@ class ColumnAnalysis(Explainer):
         datamodule: Any,
         stage: TrainingStage,
     ) -> None:
+        self.failure = None
+        self.completed = False
+        self.processed_rows = 0
         self._dfs_dict: dict[TableHop, list[pd.DataFrame]] = defaultdict(list)
         self._num_nodes_dict: dict[TableHop, int] = defaultdict(int)
         self._cols_dict: dict[TableHop, set[ColID]] = defaultdict(set)
@@ -124,6 +128,7 @@ class ColumnAnalysis(Explainer):
                 batch_size = store.batch_size
                 seed_time = store.get('seed_time', None)
         assert batch_size is not None
+        self.processed_rows += batch_size
 
         # Remove the training table from the set of inputs:
         train_table_name = feature_store.train_table_name
@@ -297,15 +302,19 @@ class ColumnAnalysis(Explainer):
         r""":meth:`explain_end` aggregates entity-level information for
         each column into cohort-level information.
         """
+        # Release collected frames even when a batch or aggregation failed.
+        frames, self._dfs_dict = self._dfs_dict, defaultdict(list)
+        counts, self._num_nodes_dict = self._num_nodes_dict, defaultdict(int)
+        columns, self._cols_dict = self._cols_dict, defaultdict(set)
+        self._time_window_dict.clear()
+        self._time_unit_dict.clear()
+        # A missing batch shifts later features relative to prediction rows.
+        if self.failure is not None:
+            return None
         df_dict = {
             key: pd.concat(dfs).reset_index(drop=True)
-            for key, dfs in self._dfs_dict.items()
-            if self._num_nodes_dict[key] > 0
+            for key, dfs in frames.items() if counts[key] > 0
         }
-        del self._dfs_dict
-        del self._num_nodes_dict
-        del self._time_window_dict
-        del self._time_unit_dict
 
         target_mapper: TensorMapper | None = None
         if isinstance(module.target_encoder, CategoricalTargetEncoder
@@ -326,7 +335,7 @@ class ColumnAnalysis(Explainer):
         out = ColumnAnalysisOutput(task_type=self.task_type)
 
         for (table_name, hop), df in df_dict.items():
-            for col_name, stype in self._cols_dict[(table_name, hop)]:
+            for col_name, stype in columns[(table_name, hop)]:
                 if col_name == COUNT_COL or stype == Stype.numerical:
                     out[table_name, hop, col_name] = self.aggregate_range(  #
                         df, pred, target, col_name, target_mapper, stype)
@@ -340,8 +349,6 @@ class ColumnAnalysis(Explainer):
                     out[table_name, hop, col_name] = self.aggregate_category(
                         df, pred, target, col_name, target_mapper, stype)
 
-        del self._cols_dict
-
         if self.normalize:
             out = out.normalize()
 
@@ -350,8 +357,10 @@ class ColumnAnalysis(Explainer):
             root_dir = osp.join(self.root_dir, stage)
             makedirs(root_dir, exist_ok=True)
             save_json(out, osp.join(root_dir, 'column_analysis.json'))
+            self.completed = True
             return None
 
+        self.completed = True
         return out
 
     # Collect Helper functions ################################################
@@ -528,11 +537,11 @@ class ColumnAnalysis(Explainer):
         predictions = predictions[entity_mask]
         targets = targets[entity_mask] if targets is not None else None
 
-        if values.numel() > 0:  # Bins are given via quantiles on the raw data:
-            quantiles = torch.linspace(0, 1, self.num_cohorts + 1)
-            bins = values.to(torch.float).quantile(quantiles)
-        else:
-            bins = values
+        if values.numel() == 0:
+            return None
+        # Bins are given via quantiles on the non-null raw data.
+        quantiles = torch.linspace(0, 1, self.num_cohorts + 1)
+        bins = values.to(torch.float).quantile(quantiles)
 
         # TODO This logic is a bit flawed since we likely merge cohorts that
         # should be separate, e.g., [0.5, 1.5, 1.8, 2.5] would be merged to
@@ -625,6 +634,9 @@ class ColumnAnalysis(Explainer):
         cohorts = [value.split(':')[-1] for value in col_names]
         # Population count is given by the frequency of categories:
         count = freq_mat.sum(dim=0)
+        mask = count > 0
+        if not mask.any():
+            return None
 
         # For predictions/targets, we weight the relative frequency of a
         # (entity, category) by the score of its entity, and divide that by the
@@ -641,7 +653,6 @@ class ColumnAnalysis(Explainer):
             targets = (freq_mat * targets).sum(dim=0) / freq_mat.sum(dim=0)
 
         # Filter out all categories with zero/NaN population count:
-        mask = count > 0
         cohorts = [val for val, keep in zip(cohorts, mask.tolist()) if keep]
         count = count[mask]
         predictions = predictions[mask]

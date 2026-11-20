@@ -454,7 +454,7 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 <!-- test: output -->
 ```text
 60 anchors scored
-user-3-at-34 scores 0.630
+user-3-at-34 scores 0.647
 ```
 
 The first `prepare` builds the index under `shop-data/index`. A scheduled
@@ -469,8 +469,8 @@ computed, so the rows only a label would read are never read. In the example,
 the data runs to day 40. A training task anchored at day 34 would read the
 purchases of the following 7 days to compute its label; the inference task
 never reads them. You can score anchors whose future hasn't happened yet, and
-rows dated after the cutoff can't change a score, except that on the DiskGraph
-engine they can change which tied neighbor a graph sample keeps (see [scoring
+rows dated after the cutoff can affect a graph score only through explicit
+uniform sampling or DiskGraph's choice among equally recent neighbors (see [scoring
 offline on the DiskGraph engine](#scoring-offline-on-the-diskgraph-engine)). Anchors need no labels;
 labels an anchor table supplies are ignored.
 
@@ -620,9 +620,9 @@ print("serving equals batch inference:", all(matches))
 
 <!-- test: output -->
 ```text
-user-1-at-34 scores 0.135
-user-2-at-34 scores 0.134
-user-3-at-34 scores 0.630
+user-1-at-34 scores 0.116
+user-2-at-34 scores 0.112
+user-3-at-34 scores 0.647
 serving equals batch inference: True
 ```
 
@@ -634,7 +634,12 @@ is up to you. Each table's rows can be a list of dicts or a `pyarrow.Table`.
 
 `assemble` takes a sequence of requests, so one call can serve one request or
 several. For several, put the rows of all of them in one `rows` mapping, each
-row once (a repeated primary key is refused). Each request reads only the rows
+row once (a repeated declared primary key is refused). Keyless tables require
+no PK column and preserve separate identical rows. Their IDs are local to each
+prepared dataset, so equal-time limits, uniform draws and floating reduction
+rounding may differ when rows are reordered or fetched as a subset. Use a
+declared PK when stable choices across preparations are required.
+Each request reads only the rows
 that match it, so its sample is the same as when it is assembled alone:
 
 ```python
@@ -653,8 +658,11 @@ print(len(batch.metadata["sample_ids"]))
 ```
 
 All requests go into one batch unless you pass `batch_size`, or a token budget
-in the contract splits them. If the contract samples a graph with a seed, pass
-the same `seed` you used for batch scoring.
+in the contract splits them. The serving `seed` controls the in-memory sampler.
+Native DiskGraph uniform sampling uses the engine sampling seed and physical
+index identities, so its
+selected neighbors can differ from serving even with equal seeds. Recent
+sampling retains the existing offline/serving guarantees.
 
 Served batches use the inspectable output format. If you train on
 `output_format="model"` batches, your model takes them unchanged: both formats
@@ -722,12 +730,12 @@ for rows in (user_3, newest_8):
 
 <!-- test: output -->
 ```text
-12 purchases: 0.63
-8 purchases: 0.992
+12 purchases: 0.647
+8 purchases: 0.943
 ```
 
 User 3 has 12 purchases. With only the newest 8 supplied, the model sees a count
-of 8 and the score moves from 0.63 to 0.992.
+of 8 and the score moves from 0.647 to 0.943.
 
 `assemble` can't detect this. A row you leave out looks exactly like a row that
 doesn't exist, so the batch is built without it.

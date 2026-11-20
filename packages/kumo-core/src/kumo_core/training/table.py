@@ -124,6 +124,7 @@ class TrainTableRequest:
     downsampling: Mapping[str, Any] | None = None
     compiler_options: Mapping[str, Any] | None = None
     index_path_verified: bool = False
+    start_time: int | None = None
 
 
 @dataclass(frozen=True)
@@ -501,6 +502,7 @@ def generate_train_table(
         target_stype=request.target_stype,
         split=split,
         lp_rhs_entity_table=request.rhs_node_type,
+        start_time=request.start_time,
         **compile_options,
     )
     is_link_array = task_type in _LINK_TASK_TYPES

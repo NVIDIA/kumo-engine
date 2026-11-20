@@ -42,28 +42,25 @@ pub fn iter_edge(
     src_node: u64,
     sort_key_range: Option<SortKeyWindow>,
 ) -> Vec<EdgeEntry> {
-    let view = match src_table.edges_for_node(src_node) {
-        Ok(v) => v,
-        Err(_) => {
-            return Vec::new();
-        }
-    };
-    let segments = match view.relation_segments() {
-        Ok(s) => s,
-        Err(_) => {
-            return Vec::new();
-        }
-    };
-    let segment = match segments.get(relation_idx) {
-        Some(s) => s,
-        None => {
-            return Vec::new();
-        }
-    };
+    iter_edge_checked(src_table, relation_idx, layout, src_node, sort_key_range)
+        .unwrap_or_default()
+}
 
-    if segment.count == 0 {
-        return Vec::new();
-    }
+/// Fallible counterpart for callers that propagate reader failures.
+pub(crate) fn iter_edge_checked(
+    src_table: &Arc<TableReader>,
+    relation_idx: usize,
+    layout: &RelationLayout,
+    src_node: u64,
+    sort_key_range: Option<SortKeyWindow>,
+) -> crate::errors::TTGenResult<Vec<EdgeEntry>> {
+    use crate::errors::TTGenError;
+    let view = src_table.edges_for_node(src_node)
+        .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    let segments = view.relation_segments()
+        .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    let Some(segment) = segments.get(relation_idx) else { return Ok(Vec::new()); };
+    if segment.count == 0 { return Ok(Vec::new()); }
 
     let entry_bytes = layout.entry_bytes;
     let dst_mask = layout.dst_mask;
@@ -88,7 +85,7 @@ pub fn iter_edge(
         EdgeEntry { dst_node, sort_key }
     };
 
-    match sort_key_range {
+    Ok(match sort_key_range {
         Some((lo, hi)) => {
             // Binary search for the range (lo, hi] within sorted edges.
             // Matches Kumo's temporal join: start < edge_ts AND end >= edge_ts.
@@ -109,7 +106,7 @@ pub fn iter_edge(
             // Return all edges
             (0..num_entries).map(decode_entry).collect()
         }
-    }
+    })
 }
 
 /// Binary search helper: find the first index where predicate is false.
@@ -196,9 +193,18 @@ pub fn read_column_value(
     node_id: u64,
     col_idx: usize,
 ) -> Option<Value> {
-    let view = table.edges_for_node(node_id).ok()?;
+    row_column_value(table, node_row(table, node_id), col_idx)
+}
+
+/// A node's raw rowpack bytes, or `None` if it has none or cannot be read.
+pub fn node_row(table: &TableReader, node_id: u64) -> Option<&[u8]> {
+    table.edges_for_node(node_id).ok()?.node_data().ok()?
+}
+
+/// [`read_column_value`] on a row already fetched with [`node_row`].
+pub fn row_column_value(table: &TableReader, row: Option<&[u8]>, col_idx: usize) -> Option<Value> {
     let decoder = table.node_data_decoder()?;
-    let raw_data = view.node_data().ok()??;
+    let raw_data = decoder.row_or_null(row?);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -224,7 +230,7 @@ pub fn read_column_value_nullable(
 ) -> Option<Option<Value>> {
     let view = table.edges_for_node(node_id).ok()?;
     let decoder = table.node_data_decoder()?;
-    let raw_data = view.node_data().ok()??;
+    let raw_data = decoder.row_or_null(view.node_data().ok()??);
 
     let mut scratch = RowPackDecodeScratch::default();
     let value_ref = decoder
@@ -359,21 +365,39 @@ pub fn dispatch_multicat_source<F>(
     node_id: u64,
     col_idx: usize,
     is_multicat: bool,
+    observe: F,
+) -> MulticatDispatchOutcome
+where
+    F: FnMut(MulticatToken<'_>) -> bool,
+{
+    dispatch_multicat_row(
+        table,
+        node_row(table, node_id),
+        col_idx,
+        is_multicat,
+        observe,
+    )
+}
+
+/// [`dispatch_multicat_source`] on a row already fetched with [`node_row`].
+pub fn dispatch_multicat_row<F>(
+    table: &TableReader,
+    row: Option<&[u8]>,
+    col_idx: usize,
+    is_multicat: bool,
     mut observe: F,
 ) -> MulticatDispatchOutcome
 where
     F: FnMut(MulticatToken<'_>) -> bool,
 {
     use MulticatDispatchOutcome::*;
-    let Ok(view) = table.edges_for_node(node_id) else {
-        return SourceNull;
-    };
     let Some(decoder) = table.node_data_decoder() else {
         return SourceNull;
     };
-    let Ok(Some(raw)) = view.node_data() else {
+    let Some(raw) = row else {
         return SourceNull;
     };
+    let raw = decoder.row_or_null(raw);
 
     let logical_type = decoder.context().columns[col_idx].logical_type;
 

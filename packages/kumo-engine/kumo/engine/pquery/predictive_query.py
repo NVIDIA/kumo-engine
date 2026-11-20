@@ -59,6 +59,7 @@ from kumo_core.model_plan import (
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     NativeGraph,
+    TaskPlanPurpose,
     ValidatedNativeQuery,
     parse_and_validate_query,
     query_is_temporal,
@@ -323,7 +324,8 @@ class PredictiveQuery:
 
     def _generate(self, snapshot: GraphSnapshot, options: CoreGenerationPlan,
                   run_dir: Path, *, timestamps: tuple[int, ...] = (),
-                  validate_targets: bool = True) -> tuple:
+                  validate_targets: bool = True,
+                  purpose: TaskPlanPurpose = TaskPlanPurpose.TRAINING) -> tuple:
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=self.query,
@@ -338,7 +340,7 @@ class PredictiveQuery:
             timestamps=timestamps,
         )
         with no_encoder_inference_warnings():
-            task_plan = build_training_task_plan(workflow)
+            task_plan = build_training_task_plan(workflow, purpose=purpose)
         return workflow, task_plan, generate_train_table(
             task_plan.train_table, validate_targets=validate_targets)
 
@@ -350,7 +352,7 @@ class PredictiveQuery:
 
         from kumo_core.io.json import from_json_dict
 
-        # The fit's split ranges would not cover later anchors.
+        # The fit's split ranges do not cover later evaluation anchors.
         options = CoreGenerationPlan()
         if plan is not None:
             options = replace(from_json_dict(to_json_dict(plan),
@@ -362,7 +364,8 @@ class PredictiveQuery:
         try:
             _, _, generated = self._generate(snapshot, options, run_dir,
                                              timestamps=timestamps,
-                                             validate_targets=False)
+                                             validate_targets=False,
+                                             purpose=TaskPlanPurpose.LABELS)
             staging = Path(generated.staging_dir)
             yield sorted(str(part) for part in Path(
                 generated.train_table_path).glob('*.parquet'))
@@ -392,9 +395,13 @@ class PredictiveQuery:
 
         Args:
             snapshot: a snapshot of this query's graph to compile against.
-            prediction_time: the anchor timestamp for a temporal query;
-                when omitted, uses the latest source-time maximum across the
-                query's target aggregations in the snapshot.
+            prediction_time: the anchor time for a temporal query, as a
+                timezone-naive ``datetime`` read as UTC; a timezone-aware
+                value raises ``ValueError``. When omitted, uses the latest
+                timestamp among the tables aggregated in the query's
+                target, for example the latest ``order_time`` for
+                ``COUNT(orders.*, 0, 30, days)``. Static queries raise
+                ``ValueError`` when it is set.
             plan: effective training-table generation settings. Forecast
                 lag, year-over-year, and timeframe settings must match the
                 fitted trainer. A loaded trainer exposes this plan through
@@ -429,5 +436,4 @@ class PredictiveQuery:
             timestamps=request.timestamps,
             required_stages=request.task_dataset.required_stages,
             compiler_options=request.compiler_options,
-            forecast_timeframe_step=request.forecast_timeframe_step,
         )

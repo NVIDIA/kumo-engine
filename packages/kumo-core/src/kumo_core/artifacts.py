@@ -11,7 +11,7 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -98,17 +98,21 @@ class VitalArtifactSources:
     input_manifest: Path
     metrics: Path
     prediction_schema: Path
+    metric_history: Path | None = None
 
     def __post_init__(self) -> None:
-        for role in self.roles():
-            object.__setattr__(self, role, Path(getattr(self, role)))
+        for role, spec in self.__dataclass_fields__.items():
+            value = getattr(self, role)
+            if value is not None or spec.default is MISSING:
+                object.__setattr__(self, role, Path(value))
 
     @classmethod
     def roles(cls) -> tuple[str, ...]:
         return tuple(cls.__dataclass_fields__)
 
     def as_dict(self) -> dict[str, Path]:
-        return {role: getattr(self, role) for role in self.roles()}
+        return {role: path for role in self.roles()
+                if (path := getattr(self, role)) is not None}
 
 
 @dataclass(frozen=True)
@@ -179,6 +183,7 @@ class VitalArtifactPublicationPolicy:
         "input_manifest": "manifests/input.json",
         "metrics": "metrics.json",
         "prediction_schema": "prediction-schema.json",
+        "metric_history": "metric-history.json",
     }
 
     def publish(
@@ -471,6 +476,7 @@ def resolve_vital_artifact_sources(
     # Evaluation changes fit_mode; publish the mode hosted prediction and
     # warm start select, rather than whichever mode was evaluated last.
     best_trainer._set_fit_mode_to_use()
+    history = Path(auto_trainer.training_progress_file_path)
     return VitalArtifactSources(
         selected_checkpoint=local_path(best_trainer.best_ckpt),
         trainer_config=Path(best_trainer.original_log_dir) / "config.json",
@@ -482,20 +488,13 @@ def resolve_vital_artifact_sources(
         input_manifest=source_dir / "input.json",
         metrics=source_dir / "metrics.json",
         prediction_schema=source_dir / "prediction-schema.json",
+        metric_history=history if history.is_file() else None,
     )
 
 
 _BUNDLE_LAYOUT = {
-    'trainer_config': 'model/config.json',
+    **VitalArtifactPublicationPolicy._DESTINATIONS,
     'selected_checkpoint': 'model/checkpoint/step=0.ckpt',
-    'encoders': 'model/encoders.json',
-    'target_encoder': 'model/target-encoder.json',
-    'resolved_model_plan': 'model/resolved-model-plan.json',
-    'graph_manifest': 'manifests/graph.json',
-    'task_manifest': 'manifests/task.json',
-    'input_manifest': 'manifests/input.json',
-    'prediction_schema': 'prediction-schema.json',
-    'metrics': 'metrics.json',
 }
 
 
@@ -505,6 +504,13 @@ def bundle_task_type(artifacts: Mapping[str, str]) -> TaskType:
 
     schema = load_json(artifacts['prediction_schema'], dict)
     return TaskType(schema['task_type'])
+
+
+def bundle_task_options(artifacts: Mapping[str, str]) -> dict[str, Any]:
+    """The temporal task scalars a bundle's model was fitted with."""
+    from .resolved_task import fitted_task_options
+
+    return fitted_task_options(load_json(artifacts['input_manifest'], dict))
 
 
 def stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:

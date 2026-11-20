@@ -362,7 +362,6 @@
                 "fanout": 16,
                 "relation": "customer_transactions",
                 "strategy": "recent",
-                "temporal": "inherit",
                 "time_column": null
               }
             ]
@@ -376,7 +375,6 @@
                 "fanout": 1,
                 "relation": "article_transactions",
                 "strategy": "recent",
-                "temporal": "inherit",
                 "time_column": null
               }
             ]

@@ -28,7 +28,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Component, Path};
 
-use arrow::pyarrow::ToPyArrow;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use diskgraph_core::time::{TimeUnit, UnitSystem};
@@ -2331,6 +2331,7 @@ fn copy_stage_artifacts(
 pub struct TTParquetBatchIterator {
     dataset_path: String,
     columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
     parquet_paths: Option<Vec<std::path::PathBuf>>,
     next_part: usize,
     reader: Option<ParquetRecordBatchReader>,
@@ -2358,42 +2359,9 @@ impl TTParquetBatchIterator {
             return Ok(false);
         };
         self.next_part += 1;
-        let file = File::open(path).map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot open {} for read: {e}",
-                path.display()
-            ))
-        })?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot read parquet metadata for {}: {e}",
-                path.display()
-            ))
-        })?;
-        let builder = if let Some(cols) = &self.columns {
-            let parquet_schema = builder.parquet_schema();
-            let mut indices = Vec::with_capacity(cols.len());
-            let arrow_schema = builder.schema();
-            for col in cols {
-                let idx = arrow_schema.index_of(col).map_err(|_| {
-                    crate::DiskgraphDataError::new_err(format!(
-                        "column not found in {}: {col}",
-                        path.display()
-                    ))
-                })?;
-                indices.push(idx);
-            }
-            let mask = ProjectionMask::roots(parquet_schema, indices);
-            builder.with_projection(mask)
-        } else {
-            builder
-        };
-        let reader = builder.build().map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "cannot build parquet reader for {}: {e}",
-                path.display()
-            ))
-        })?;
+        let reader = diskgraph_train_table::custom_tt_chunk_processor::read_projected_parquet(
+            path, None, self.columns.as_deref(), self.batch_size,
+        ).map_err(crate::map_ttgen_err)?;
         let schema = reader.schema().clone();
         if self
             .schema
@@ -2469,15 +2437,37 @@ impl TTParquetBatchIterator {
 /// `diskgraph_batch_pred.py` — caller iterates batches without materializing
 /// the whole table.
 #[pyfunction]
-#[pyo3(signature = (parquet_path, columns = None))]
+#[pyo3(signature = (parquet_path, columns = None, *, batch_size = None))]
 pub fn read_tt_parquet_batches(
     parquet_path: &str,
     columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
 ) -> PyResult<TTParquetBatchIterator> {
     Ok(TTParquetBatchIterator {
         dataset_path: parquet_path.to_owned(),
         columns,
+        batch_size,
         parquet_paths: None,
+        next_part: 0,
+        reader: None,
+        schema: None,
+    })
+}
+
+/// Read one caller-selected custom TT input file using the projected native reader.
+/// Published TT output continues to require its dataset-directory contract.
+#[pyfunction]
+#[pyo3(signature = (parquet_path, columns = None, *, batch_size = None))]
+pub fn read_custom_tt_parquet_batches(
+    parquet_path: &str,
+    columns: Option<Vec<String>>,
+    batch_size: Option<usize>,
+) -> PyResult<TTParquetBatchIterator> {
+    Ok(TTParquetBatchIterator {
+        dataset_path: parquet_path.to_owned(),
+        columns,
+        batch_size,
+        parquet_paths: Some(vec![std::path::PathBuf::from(parquet_path)]),
         next_part: 0,
         reader: None,
         schema: None,
@@ -2840,3 +2830,49 @@ mod tests;
 
 #[cfg(test)]
 mod pseudo_time_tests;
+
+/// Python streaming access to the same rotating writer used by TT generation.
+#[pyclass(unsendable)]
+pub struct TaskParquetWriter {
+    inner: Option<diskgraph_train_table::parquet_dataset::ParquetDatasetWriter>,
+}
+#[pymethods]
+impl TaskParquetWriter {
+    #[new]
+    #[pyo3(signature = (path, max_rows_per_part=67_108_864))]
+    fn new(path: String, max_rows_per_part: usize) -> PyResult<Self> {
+        let inner = diskgraph_train_table::parquet_dataset::ParquetDatasetWriter::new(
+            Path::new(&path),
+            max_rows_per_part,
+        )
+        .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?;
+        Ok(Self { inner: Some(inner) })
+    }
+    fn write_batch(&mut self, batch: &Bound<'_, PyAny>) -> PyResult<()> {
+        let batch = RecordBatch::from_pyarrow_bound(batch)?;
+        self.inner
+            .as_mut()
+            .ok_or_else(|| crate::DiskgraphConfigError::new_err("writer is closed"))?
+            .write(&batch)
+            .map_err(|e| crate::DiskgraphSystemError::new_err(e.to_string()))
+    }
+    fn close(&mut self) -> PyResult<()> {
+        if let Some(writer) = self.inner.take() {
+            writer
+                .close()
+                .map_err(|e| crate::DiskgraphSystemError::new_err(e.to_string()))?;
+        }
+        Ok(())
+    }
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+    fn __exit__(
+        &mut self,
+        _ty: &Bound<'_, PyAny>,
+        _value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.close()
+    }
+}

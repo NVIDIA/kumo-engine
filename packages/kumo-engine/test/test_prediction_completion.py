@@ -47,6 +47,8 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
                         property(lambda _: tmp_path))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         prediction,
@@ -57,7 +59,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
             task_type='binary_classification', stage_counts={'predict': 8}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **kw: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *_: None)
     monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda n, accelerator=None:
                         (None, ) * n)
@@ -68,7 +70,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
         lambda n, fn, kw: [fn(worker_id=i, **kw) for i in range(n)])
     loads = []
 
-    def load(*args, **kwargs):
+    def load(task, *args, **kwargs):
         loads.append(kwargs)
         loss = BinaryCrossEntropyLoss(TaskType.BINARY_CLASSIFICATION,
                                       threshold=kwargs['binary_threshold'])
@@ -108,7 +110,7 @@ def prepared_prediction(snapshot, tmp_path, monkeypatch):
                 stats[kind] = writer.stats
             options['artifact_stats_collector'].add_partition(worker, stats)
 
-        return SimpleNamespace(predict=predict)
+        return SimpleNamespace(task=task, predict=predict)
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     return trainer, table, loads, snapshot
@@ -431,3 +433,53 @@ def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
         _ArrowExportFiles, 'copy_file',
         lambda *a, **kw: pytest.fail('recopied a complete export'))
     result.export(output)
+
+
+def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
+                                                       monkeypatch):
+    from unittest.mock import Mock
+
+    from kumo_core.prediction_explanation_result import (
+        PredictionExplanationSupport,
+    )
+
+    from kumo.engine.explain import _prediction as lifecycle
+    from kumo.engine.trainer import trainer as module
+
+    trainer, table, _, snapshot = prepared_prediction
+    trainer._training_result.id = 'published-model'
+    events = []
+    finish = module._run_manifest.finish
+
+    def finished(*args):
+        result = finish(*args)
+        events.append('finished')
+        return result
+
+    monkeypatch.setattr(module._run_manifest, 'finish', finished)
+    monkeypatch.setattr(module, '_collect_garbage',
+                        lambda stage: events.append('cleanup'))
+    monkeypatch.setattr(lifecycle, 'prediction_model_support',
+                        lambda task, model: PredictionExplanationSupport(True, True))
+
+    def replay(**kwargs):
+        assert events == ['finished', 'cleanup']
+        raise RuntimeError('post-export replay failed')
+
+    call = Mock(side_effect=replay)
+    monkeypatch.setattr(lifecycle, 'explain_prediction', call)
+    result = trainer.predict(table, snapshot=snapshot, explanations=True,
+                             binary_classification_threshold=.5)
+    call.assert_called_once()
+    assert result.num_rows == len(result.frame) == 8
+    assert result.manifest.status == 'succeeded'
+    assert result.explanations.availability['cohorts'].reason == 'failed'
+    assert events == ['finished', 'cleanup', 'cleanup']
+
+    # The same successful scoring path stays the default with no replay.
+    call.reset_mock()
+    result = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=.5)
+    call.assert_not_called()
+    assert result.num_rows == 8
+    assert result.explanations.availability['cohorts'].reason == 'disabled'

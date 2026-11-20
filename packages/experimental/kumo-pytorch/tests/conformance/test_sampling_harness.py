@@ -64,11 +64,6 @@ class WrongSampler(InMemoryGraphSampler):
             root = replace(root, cutoff=root.cutoff + 10**6)
         if defect == "fanout_plus_one":
             traversal = replace(traversal, fanout=traversal.fanout + 1)
-        if defect == "static_taints_shops":
-            if traversal.temporal == "static":
-                self.engine.tainted = True
-            if self.engine.tainted and current_table == "shops":
-                traversal = replace(traversal, temporal="static")
         if defect in ("tied_second_hop_dropped", "late_beyond_tied_first_hop"):
             if current_table == "users":
                 self._note_tie(row, current_table, traversal, root, seed, epoch)
@@ -129,7 +124,6 @@ class Wrong(InMemoryEngine):
         super().__init__()
         self.defect = defect
         self.opened = self.sampled = 0
-        self.tainted = False
         self.tied: set[str] = set()
 
     def open(self, dataset: Dataset, schema: DataSchema):
@@ -191,8 +185,8 @@ def _graph_case(name: str, **dimensions: object) -> GeneratedCase:
     )
 
 
-UNTIED = {"time.graph_ties": "distinct", "contract.graph_temporal": "inherit"}
-TIED = {"time.graph_ties": "tied", "contract.graph_temporal": "inherit"}
+UNTIED = {"time.graph_ties": "distinct"}
+TIED = {"time.graph_ties": "tied"}
 #: Property -> (case dimensions, engine replaced, defect, expected failure).
 WRONG_ENGINES = {
     "graph_differential": (UNTIED, "diskgraph", "fanout_plus_one", "vs reference changed graphs"),
@@ -225,7 +219,6 @@ MORE_DEFECTS = (
     ("graph_structure", "reversed_edges", "break orientation"),
     ("graph_structure", "older_on_ties", "recent kept other than the most recent"),
     ("graph_differential", "older_on_ties", "changed tied samples' first-hop clocks"),
-    ("graph_point_in_time", "static_taints_shops", "after the cutoff"),
     ("sequence_point_in_time", "delta_in_seconds", "wrong time deltas"),
     ("sequence_permutation", "unstable_rows", "a second run changed sequences"),
 )
@@ -235,10 +228,6 @@ MORE_DEFECTS = (
 DEFECT_CASES = {
     ("graph_structure", "older_on_ties"): TIED,
     ("graph_differential", "older_on_ties"): TIED,
-    ("graph_point_in_time", "static_taints_shops"): {
-        "schema_shape.graph_path": "fan_in",
-        "contract.graph_temporal": "static",
-    },
 }
 
 
@@ -258,20 +247,20 @@ def _check(name: str, defect: str) -> None:
         PROPERTIES[name].check(case, replaces, 0)
 
 
-#: Tied samples' later hops deleted (the review's g0-c10), or dated after the cutoff in the
+#: Tied samples' later hops deleted, or dated after the cutoff in the
 #: run with future rows: first-hop clocks stay the same, the layer-by-layer expansion doesn't.
 LATER_HOPS = (
-    ("graph_structure", "g0-c10", "in_memory", "tied_second_hop_dropped", EXPANSION),
+    ("graph_structure", "fan_in", "in_memory", "tied_second_hop_dropped", EXPANSION),
     (
         "graph_differential",
-        "g0-c10",
+        "fan_in",
         "diskgraph",
         "tied_second_hop_dropped",
         f"diskgraph vs reference: diskgraph: {EXPANSION}",
     ),
     (
         "graph_point_in_time",
-        "g0-c15",
+        "fan_in",
         "in_memory",
         "late_beyond_tied_first_hop",
         f"future rows: with future rows: {EXPANSION}",
@@ -279,9 +268,14 @@ LATER_HOPS = (
 )
 
 
-@pytest.mark.parametrize("name,case_id,replaces,defect,expected", LATER_HOPS)
-def test_tied_samples_are_checked_at_every_layer(name, case_id, replaces, defect, expected):
-    case = next(case for case in graph_batch(0, "diskgraph", name) if case.id == case_id)
+@pytest.mark.parametrize("name,path,replaces,defect,expected", LATER_HOPS)
+def test_tied_samples_are_checked_at_every_layer(name, path, replaces, defect, expected):
+    case = next(
+        case
+        for case in graph_batch(0, "diskgraph", name)
+        if case.dimensions["schema_shape.graph_path"] == path
+        and case.dimensions["time.graph_ties"] == "tied"
+    )
     assert case.dimensions["time.graph_ties"] == "tied"
     with patch("conformance.graph_cases.bound_tables", _binding(Wrong("none"), replaces)):
         PROPERTIES[name].check(case, replaces, 0)
@@ -385,9 +379,6 @@ def test_graph_cases_realize_their_dimensions(case):
         PATHS[dims["schema_shape.graph_path"]]
     )
     assert {s.fanout for s in samples} == {fanout}
-    to_events = {("user_events", "forward"), ("event_user", "reverse")}
-    static = {s.temporal for s in samples if (s.relation, s.direction) in to_events}
-    assert static == {"static" if dims["contract.graph_temporal"] == "static" else "inherit"}
     relations = {r.name: r for r in case.contract.schema.relations}
     shop = relations.get("event_shop") or relations["shop_event"]
     assert (shop.left_table == "events") == (dims["schema_shape.graph_orientation"] == "aligned")

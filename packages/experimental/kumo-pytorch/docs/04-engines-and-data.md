@@ -179,6 +179,14 @@ read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
 fitted encoders, so several contracts over the same tables can share one index.
+Fitting keeps the column statistics of encoders over stored columns in
+`col_stats/`, so it needs the index directory to be writable. Each encoder
+cutoff has one directory there, with a `<table>.col_stats.json` file per table.
+A later fit at the same cutoff computes only the columns and statistics those
+files lack, and adds them. Ingest computes the statistics for the cutoffs in
+`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and kept beside them as
+`<table>.<column>.text-<settings>.tokenizer.json`.
 Its manifest records the schema, the files and their resolved types. If the
 manifest doesn't match the dataset and schema you pass, `prepare` refuses the
 index rather than reusing it, and it never overwrites it. The shard count isn't
@@ -195,7 +203,7 @@ rows, rather than converting them.
 ### What it supports
 
 The DiskGraph engine supports entity fields, event histories, typed
-calculations, aggregates, generated labels and recent graph neighborhoods. A
+calculations, aggregates, generated labels and recent or uniform graph neighborhoods. A
 few contract features are outside what it runs today. `DiskGraphEngine.unsupported`
 lists them, each with a code, what is refused and a next step, and the
 [limitations](limitations.md#diskgraph) page shows the list. When a contract
@@ -206,10 +214,21 @@ refusal](#choosing-an-engine-and-early-refusal).
 ### Anchor tables
 
 An anchor is one example to build: an entity ID, a prediction time, and
-optionally a split, labels, candidates and tracing metadata. A few
-`SampleRequest`s are enough for a quick check. For real work, you write the
-anchors as a table and bind it with an `AnchorTable`. On the DiskGraph engine,
-the anchor table is a Parquet file:
+optionally a split, labels, candidates and tracing metadata. For production
+training, evaluation, offline scoring, and benchmarks, materialize a Parquet
+`AnchorTable` with DiskGraph, then call `task.batches(split=..., output_format="model")`
+without an explicit request argument. This selects native model iteration for
+eligible contracts. Benchmarks of that iterator should verify the execution
+route because some contracts still use Python assembly.
+
+Use Python `SampleRequest` objects for tests, debugging, or small sets of
+requests supplied at runtime. `task.batches(requests=...)` uses explicit
+request batching, even on a task materialized from an `AnchorTable`. A task
+materialized from a Python request sequence also stays request-backed when
+you call `task.batches(split=...)`. DiskGraph can still sample the data for
+these requests, but these calls bypass native AnchorTable batch iteration.
+
+This example shows how to bind a Parquet anchor table and select its splits:
 
 <!-- test: diskgraph -->
 ```python
@@ -249,13 +268,87 @@ valid [[55.0]]
 test [[154.0]]
 ```
 
-Each pass reads only the anchors in its own split, and encoders are fitted on
-`fit_split` alone, so held-out rows never shape
-vocabularies or statistics. When anchors carry splits, `fit_split` is required.
+Each pass reads only the anchors in its own split. Encoders over computed values
+fit on `fit_split`'s examples alone, so held-out anchors never shape them.
+Encoders over stored columns instead fit on every table row created at or
+before the encoder cutoff (by default the latest anchor time `fit_split`
+selects), whichever split that row's entity belongs to; a non-temporal table
+contributes every row. When anchors carry splits, `fit_split` is required.
 It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists
 (`api.CandidateColumn`).
+
+For graph-neighborhood and sequence tasks, DiskGraph materializes only the anchors into a
+task-owned native seed extension. The base graph stays unchanged. TT-NG then
+owns bounded reads, deterministic epoch order and rank partitioning, and
+produces topology and projected node features together. The existing fitted
+encoders and batch layouts still apply. Original row positions supply omitted
+sample IDs; repeated entity/time pairs remain separate examples. Native order
+may differ from the in-memory engine, and padding remains explicitly marked.
+Closing the task removes its temporary seed extension, not the base graph.
+
+For eligible sequence contracts, the native model iterator reads histories and
+merges event components before returning the batch to the existing encoders
+and tensor layouts. Eligible length-aware contracts also plan batches and
+reuse per-anchor lengths across epochs.
+
+A selection spanning multiple split stages uses native stage batches. Each stage
+is shuffled independently; batches never mix split stages. The output covers the
+same anchors, while its order differs from the previous global Python shuffle.
+Native graph output formats partition ranks, pad and drop partial
+tails per stage. Refit does not combine partial tails from different splits.
+With `drop_last=True`, either topology may drop a split completely when it is
+smaller than one full batch. Padding uses a rank-owned anchor from another
+selected stage if its current shard is empty; only a rank with no owned anchors
+in the whole selection borrows marked padding from another rank. Padding-only
+batches retain their source anchor's split and metadata.
+Encoder fitting remains a separate stage and is not made streaming here.
+
+The native model path avoids rebuilding a `SampleRequest` for each anchor.
+Initial entity-key normalization still runs in Python, and nested list/struct
+metadata uses per-row Arrow IPC serialization and decoding because RowPack has
+no corresponding scalar. This is not a guarantee of zero per-row Python work.
+Native chronological event merging requires timed components; an untimed merge
+is rejected when history is attached, before the iterator consumes any batches.
+
+Task extensions use the existing `train_tables` directory inside the graph index,
+including on Windows. They require no symlinks. Closing a task releases its
+combined reader before removing its task files.
+
+Kumo-pytorch cutoffs round downward on every graph clock, preserving the
+no-future-event boundary before 1970; stored datetimes round upward to their declared tick. Plain integer
+anchors remain epoch seconds even on an ms/us/ns index. Use a datetime or typed
+Arrow timestamp for an epoch-ms/us/ns anchor. Every frame in one temporal query
+must agree on its cutoff unit (an omitted unit means seconds). Declared timestamp
+fields retain their s/ms/us/ns precision through fitting, native model batches,
+and artifact reload. Inspectable values finer than Python datetime's microsecond
+resolution remain Arrow timestamp scalars; pandas is not required.
+
+### Scalar features and labels in task preparation
+
+For DiskGraph-backed training/BP, `Plan.materialize` computes declared scalar
+features and generated labels once before fitting or iteration:
+
+<!-- test: diskgraph -->
+```python
+with api.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
+    with plan.materialize(anchors, fit_split="train") as task:
+        for batch in task.batches(split="train", output_format="model"):
+            pass  # Supply these tensors to the model.
+```
+
+The materializer prepares the native aggregation plan once, reads projected
+anchor chunks with the existing custom-TT reader, and writes rotating Parquet
+parts under the managed task directory. It preserves anchor IDs, split,
+metadata, and external labels alongside generated scalar features and labels.
+The task owns these intermediate files and removes them on close.
+
+Model-format iteration reads the prepared scalar columns directly; graph and
+history retrieval remain dynamic. Explicit-request inspection and the unchanged
+fitting lifecycle retain reference adapters. Fitting can still require
+population-sized samples. Fixed anchor chunks do not bound the degree or group
+cardinality of an individual anchor.
 
 ## The in-memory engine
 

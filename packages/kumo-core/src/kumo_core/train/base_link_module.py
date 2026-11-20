@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Literal
 
 import torch
+from kumo_core.errors import TrainingValidationError
 from kumo_core.train.base_module import (
     DEFAULT_LR_SCHEDULER,
     DEFAULT_LR_SCHEDULER_INTERVAL,
@@ -30,6 +31,15 @@ logger = logging.getLogger(__name__)
 
 # One-time guard so the array-LP empty-supervision warning isn't per-batch spam.
 _WARNED_ARRAY_EMPTY_COO = False
+
+
+def sorted_membership(values: Tensor, sorted_ids: Tensor) -> Tensor:
+    positions = torch.searchsorted(sorted_ids, values)
+    found = positions < sorted_ids.numel()
+    if sorted_ids.numel():
+        probe = positions.clamp_max(sorted_ids.numel() - 1)
+        found &= sorted_ids[probe] == values
+    return found
 
 
 class BaseLinkLightningModule(BaseLightningModule, ABC):
@@ -121,6 +131,10 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         return self.rhs_name
 
     @property
+    def datamodule(self) -> Any:
+        return self.trainer.datamodule
+
+    @property
     def lp_train_table(self) -> "DiskgraphValidRHS":
         r"""Returns the DiskGraph RHS validity helper attached to the module."""
         if hasattr(self, '_lp_train_table'):
@@ -167,14 +181,31 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
 
     def on_predict_start(self):
         super().on_predict_start()
+        if self.task_type == TaskType.TEMPORAL_LINK_PREDICTION:
+            self.trainer.datamodule.require_single_predict_anchor()
         if self._valid_rhs_node_idx is not None:
             self._valid_rhs_node_idx = self._valid_rhs_node_idx.to(self.device)
 
     def tt_ng_valid_rhs_for_stage(self, stage: "Any") -> "Tensor | None":
-        """TT-NG temporal LP: RHS node-ids valid at ``stage``'s seed time, or
-        ``None`` (static LP / no temporal info -> rank the full catalog).
-        Shared by eval AND predict across LP families so both filter
-        consistently."""
+        """VAL/TEST: RHS node-ids valid at the stage time, or ``None`` to rank
+        the full catalog. PRED: also restricted to ``predict_candidates``."""
+        valid = self._rhs_valid_at_stage_time(stage)
+        if stage != TrainingStage.PRED:
+            return valid
+        candidates = self.datamodule.predict_candidates()
+        if candidates is None:
+            return valid
+        candidates = candidates.to(self.device)
+        if valid is not None:
+            candidates = valid[sorted_membership(valid, candidates)]
+        if not candidates.numel():
+            raise TrainingValidationError(
+                message=f"No candidate from table {self.rhs_name!r} is valid "
+                "at the prediction time; check its create and end times and "
+                "the target filter.")
+        return candidates
+
+    def _rhs_valid_at_stage_time(self, stage: "Any") -> "Tensor | None":
         from kumoapi.train import TrainingStage
 
         canonical = self._canonical_rhs_node_ids(self.device)
@@ -208,12 +239,7 @@ class BaseLinkLightningModule(BaseLightningModule, ABC):
         canonical = self._canonical_rhs_node_ids(device)
         if valid is None or canonical is None:
             return canonical if valid is None else valid
-        positions = torch.searchsorted(canonical, valid)
-        in_range = positions < canonical.numel()
-        if canonical.numel():
-            probe = positions.clamp_max(canonical.numel() - 1)
-            in_range &= canonical[probe] == valid
-        return valid[in_range]
+        return valid[sorted_membership(valid, canonical)]
 
     # Top-K prediction ########################################################
 

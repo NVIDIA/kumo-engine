@@ -251,6 +251,8 @@ Plan.materialize(
     fit_split: str | Collection[str | None] | AllAnchors | None = None,
     fitted: FittedState | None = None,
     inference: bool | None = None,
+    encoder_cutoff: str | int | datetime | date | None = LATEST_ANCHOR,
+    values: Any = None,
 ) -> Task
 ```
 
@@ -260,7 +262,7 @@ Bind anchors, fit what is still unfitted, and return the task.
 `SampleRequest` values built in code.
 
 `fit_split` says which anchors fitting may read, and is never implied
-when the anchors carry splits — so held-out or unassigned rows cannot
+when the anchors carry splits — so held-out or unassigned anchors cannot
 reach fitted state without an explicit choice:
 
 - anchors that declare splits require it: a split name, a set of names
@@ -277,6 +279,12 @@ is off, and the last partial batch is kept unless `drop_last` says
 otherwise. It never fits, so it requires `fitted` state: the complete
 state, or `state.inputs` alone, since inference reads no target state.
 It defaults to the plan's mode; an inference plan refuses `inference=False`.
+
+Encoders over stored table columns fit on every table row created at or
+before `encoder_cutoff`, whatever `fit_split` selects: by default the
+latest anchor time `fit_split` selects; `None` reads every row. The
+cutoff is an ISO 8601 string or a time as an anchor gives it: epoch
+seconds, a date or a datetime.
 
 Reused state applies unchanged: nothing refits, grows or renumbers.
 Complete state requires an equal `DataLoaderSpec.fingerprint`;
@@ -380,7 +388,8 @@ Task.batches(
     world_size: int = 1,
     drop_last: bool | None = None,
     chunk_batches: int = 8,
-    output_format: Literal['inspectable', 'model'] = 'inspectable',
+    output_format: Literal['inspectable', 'model', 'columnar'] = 'inspectable',
+    deduplicate_edges: bool = False,
 ) -> TaskBatches
 ```
 
@@ -398,12 +407,34 @@ repeating one of its own anchors, and `Batch.metadata["is_padding"]`
 marks those rows so a loss can exclude them. `drop_last` applies to
 the final batch of each rank's pass, not to every chunk.
 
+Native DiskGraph graph batches keep complete
+split-stage batches for refit: shuffle, rank partitioning, padding and
+`drop_last` apply separately to each selected split, without mixing
+partial tails. A split smaller than one batch may be dropped completely
+with `drop_last=True`, independently of graph topology.
+An empty stage shard pads from
+an anchor the rank owns in another selected split; only a rank owning
+no selected anchors borrows marked padding from another rank.
+Relations-inspectable contracts using Python fallback (for example,
+those with targets) retain their existing scheduling instead.
+
 Order is a pure function of `seed`, `epoch`, `shuffle`, `rank`
 and `world_size`; ranks are disjoint before padding. A token budget
 (`Batching.max_tokens`) with `world_size > 1` is refused.
 `output_format="model"` refuses raw types without a tensor
 representation before fetching a batch; `"inspectable"` keeps them
 as Arrow arrays. Both emit the same `Batch` structure.
+
+`"columnar"` emits `ColumnarGraph` inputs with Arrow feature tables
+and selected edge indexes, without tensor encoding. It requires
+materialized DiskGraph anchors, one graph input with explicit Raw
+fields and fixed sample counts. Both topologies support refit stages.
+Other sample values, targets, entity filters and availability checks
+are refused before iteration. Shuffle, sharding, padding, drop-last
+and resume retain their normal semantics. By default, selected edge pairs
+may repeat across native chunks. `deduplicate_edges=True` is available
+only for columnar output: it allocates edge arrays to retain the first
+occurrence of each pair per relation, preserving example isolation.
 
 #### `Task.preview`
 
@@ -524,8 +555,6 @@ class PreparedBatchPlan(
     contract: Any = None,
     schema_fingerprint=None,
     contract_fingerprint=None,
-    fitting_values=(),
-    length_summary=None,
     inference=False,
 )
 ```

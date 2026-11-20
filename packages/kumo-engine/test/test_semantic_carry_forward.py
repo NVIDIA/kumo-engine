@@ -130,7 +130,7 @@ def test_compile_rejects_invalid_prediction_time(snapshot, tmp_path, value,
 
 
 @pytest.mark.parametrize('query, threshold, message', [
-    ('PREDICT users.age FOR EACH users.id', .5, 'target/entity'),
+    ('PREDICT users.age FOR EACH users.id', .5, "query's target is"),
     ('PREDICT users.label FOR EACH users.id', 1.1, 'between 0 and 1'),
 ])
 def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
@@ -181,13 +181,15 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
         SimpleNamespace(manifest_path='task', bundle_dir='bundle'))
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
             task_type='binary_classification', stage_counts={'predict': 3}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
     calls = []
 
@@ -200,9 +202,9 @@ def test_binary_predictions_preserve_probabilities_and_metadata_contract(
                 'TARGET_PRED': [False, True, None]
             }))
 
-    def load(*args, **kwargs):
+    def load(task, *args, **kwargs):
         assert kwargs['binary_threshold'] == .7
-        return SimpleNamespace(predict=predict)
+        return SimpleNamespace(task=task, predict=predict)
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load)
     result = trainer.predict(table, snapshot=snapshot, output_config=output,
@@ -291,13 +293,15 @@ def test_predict_reuses_generated_table_without_recompiling(
                         fake_materialize)
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         lambda *a: tmp_path)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     (tmp_path / 'config.json').write_text('{}')
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
             task_type='binary_classification', stage_counts={'predict': 3}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
 
     def fake_predict(**kwargs) -> None:
@@ -308,7 +312,7 @@ def test_predict_reuses_generated_table_without_recompiling(
             }))
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *a, **k: SimpleNamespace(predict=fake_predict))
+                        lambda task, *a, **k: SimpleNamespace(task=task, predict=fake_predict))
 
     sink = SimpleNamespace(write_files=Mock())
     output = PredictionOutputConfig(SimpleNamespace(sink_backend=sink),
@@ -689,12 +693,14 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
 
     monkeypatch.setattr('kumo.engine.trainer.trainer._stage_model_bundle',
                         fake_stage)
+    monkeypatch.setattr('kumo.engine.trainer.trainer.bundle_task_options',
+                        lambda *a: {'lag_timesteps': 0})
     monkeypatch.setattr(
         DiskgraphTaskManifest, 'load', lambda *a: SimpleNamespace(
             task_type='binary_classification', stage_counts={'predict': 3}))
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *a, **k: None)
-    monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
+    monkeypatch.setattr('kumo_core.train.diskgraph_nested_trainer.load_encoders',
                         lambda *a: None)
 
     def fake_predict(**kwargs) -> None:
@@ -705,7 +711,7 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
             }))
 
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *a, **k: SimpleNamespace(predict=fake_predict))
+                        lambda task, *a, **k: SimpleNamespace(task=task, predict=fake_predict))
 
     sink = SimpleNamespace(write_files=Mock())
     output = PredictionOutputConfig(SimpleNamespace(sink_backend=sink),

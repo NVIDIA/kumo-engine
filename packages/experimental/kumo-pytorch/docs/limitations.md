@@ -28,7 +28,7 @@ kumo-pytorch doesn't provide the following:
   strings.
 - UUID and IP address types.
 - Fitted calculations other than the encoders, and choosing or weighting which
-  observations an encoder is fitted on.
+  observations an encoder is fitted on, other than `fit_split` and `encoder_cutoff`.
 - Updating a saved artifact, or reusing only part of one.
 - Online serving infrastructure, such as deployment, routing and row lookup.
 - Indexes spread over several machines. The rank and world-size arguments split
@@ -45,7 +45,7 @@ contract and its fitted state) that you trained with.
 
 DiskGraph supports direct entity fields, historical event fields, typed scalar
 calculations, supported aggregates and aggregate comparisons, nested grouping,
-generated scalar and row labels, and recent graph neighborhoods with node
+generated scalar and row labels, and recent or uniform graph neighborhoods with node
 fields. It can also build model-ready tensors directly
 (`output_format="model"`).
 
@@ -71,9 +71,7 @@ both `check` and `prepare` before any data is read; the others are refused while
 | `DG-DATED-ENTITY-VALUES` | The DiskGraph engine doesn't support `SampleSpec.dated_entity_values` yet. | `check()` | Declare an event input (`EventSpec`) over the same `Rows` instead. |
 | `DG-CURRENT-EVENTS` | The DiskGraph engine doesn't support `SampleSpec.current_events` yet. | `check()` | Read the event through an ordinary historical event input. |
 | `DG-CANDIDATE-SETS` | Candidate sets, in `SampleSpec.candidate_sets` or as candidate columns of an anchor table, are refused. | `check()` | Build the candidates' features with a second contract whose entity is the candidate table, anchored at the same times, and pair them in your own code. |
-| `DG-UNIFORM-GRAPH` | Uniform graph sampling isn't supported yet: DiskGraph's native uniform mode doesn't yet keep each example to rows at or before its own prediction time. | `check()` | Use `strategy="recent"`. |
 | `DG-GRAPH-CLOCK-OVERRIDE` | The DiskGraph engine doesn't support a graph traversal `time_column` other than the destination table's clock yet. | `check()` | Use the destination table's declared clock. |
-| `DG-STATIC-TIMED-TRAVERSAL` | A graph traversal into a table with a clock can't be `temporal="static"`. | `check()` | Use `temporal="inherit"`. |
 | `DG-REDUCTION-OPERAND` | Reductions over decimal or bytes columns are refused; direct decimal field reads are supported. | `check()` | Cast decimals to float64 or integer units, and bytes to a string or integer key, before writing the Parquet files. |
 | `DG-COLUMN-RENAME` | `Parquet(columns=...)` renames in a table binding are refused; physical column names must match the declared ones. Anchor tables accept renames. | `prepare()` | Rename the columns in the Parquet files to the declared names. |
 | `DG-INT64-CLOCK` | A column declared as a timestamp must be stored as a Parquet timestamp; an int64 column of epoch values is refused. | `prepare()` | Write the column as a Parquet timestamp in the declared unit. |
@@ -96,11 +94,16 @@ whole-second UTC timestamps, and decimal128/256. Arrays and structs are not
 supported scalar column declarations. Every table names its time column (its
 clock) or declares `NON_TEMPORAL`.
 
-Entity and candidate lookup use the chosen table's primary key. Relations join
+Entity and candidate lookup require the chosen table's declared primary key.
+Other tables may set `primary_key=None`; identical source rows remain separate
+occurrences. Their internal IDs and equal-time order are local to the index,
+so tied limits can select different rows after a rebuild or in a serving subset.
+Relations join
 one column on each side; composite keys and arbitrary join predicates are not
 expressible. DiskGraph applies its native ingestion rules: rows it rejects,
 such as rows with a NULL clock, are dropped, and building the index reports how
-many were dropped. The in-memory engine requires unique, non-NULL primary keys.
+many were dropped. The in-memory test engine requires declared primary keys to
+be unique and non-NULL.
 
 A column's type doesn't choose its encoding; you do. Values keep their declared
 type: kumo-pytorch won't turn numbers into strings, parse numeric strings, or
@@ -110,29 +113,36 @@ or infinity; encoders that require finite observations reject them.
 
 ## Time
 
-- Timestamps normalize to whole-second UTC instants. Stored subsecond values are
-  rounded toward positive infinity, including negative epochs. Anchor
-  (`as_of_time`) times round toward negative infinity, so a later event in the
-  same second is never history. Naïve datetimes mean UTC.
+- Stored timestamps round toward positive infinity to their declared tick.
+  Anchor (`as_of_time`) times round downward to the graph clock, including
+  negative epochs. This preserves the reference engine's existing causal
+  boundary; the reference engine remains seconds-only.
+  Naïve datetimes mean UTC. Integer anchors are epoch seconds; integer timestamp
+  field values use their declared ticks. Use typed timestamps for subsecond anchors.
 - Windows use `(start, stop]`, measured in seconds from each anchor: the start
   is excluded and the stop is included.
   Historical context stops at or before zero; generated targets start at or
   after zero.
 - A current event (`SampleSpec.current_events`) is the event stored at the
   anchor's own second, so its window must be exactly `(-1, 0]` with `limit=1`.
-- Equal-time merged events sort by component name and primary key.
+- Equal-time merged events sort by component name and primary key, or by local
+  internal identity for a keyless table.
 - Calendar calculations use UTC. `EventTimeDelta` is anchor minus event time,
   in its declared unit; it is not relative to the latest event.
-- Graph sampling needs a time column both to filter neighbors by time
-  (`temporal="inherit"`) and to keep the most recent ones (`strategy="recent"`),
-  even for a `temporal="static"` traversal.
-- On the DiskGraph engine, a graph traversal can't reach a table without a
-  clock (`NON_TEMPORAL`). Such a traversal must be `temporal="static"`, and the
-  only strategy that doesn't need a clock, `strategy="uniform"`, is refused
-  (`DG-UNIFORM-GRAPH`). A clockless table can still be a neighborhood's root
-  entity. If you want to reach a dimension table such as products, give it a
-  clock, for example the time each row was first listed.
-- Which of several equally timed graph neighbors a fanout keeps is unspecified,
+- Graph sampling defaults to `recent` for a destination with a declared clock,
+  otherwise `uniform`. Recent requires a declared clock and keeps neighbors at
+  or before the original anchor at every hop. Uniform samples without
+  replacement and deliberately ignores real anchor dates, including on timed
+  destinations.
+- `DiskGraphEngine(random_seed=0)` fixes native uniform sampling by default;
+  `None` permits fresh randomness. This seed is separate from batch shuffling.
+  Seeded selections repeat across epochs for the same index and plan. Index
+  rebuilds, physical IDs or adjacency changes can change the selected rows.
+  Native and in-memory/serving uniform draws need not choose the same rows.
+- The graph `temporal` argument has been removed from `GraphSample` and
+  `build.Hop`. Existing serialized graph contracts containing it must be
+  recreated with the new strategy rules; it is rejected rather than ignored.
+- Which of several equally timed recent graph neighbors a fanout keeps is unspecified,
   but the behavior guarantees require the choice not to depend on row order,
   how the tables are split into files, or how the index is sharded. The
   DiskGraph engine doesn't meet that yet: its choice depends on how the index
@@ -274,9 +284,11 @@ support current events, dated values or candidate sets yet.
 
 ## Fitting, saved state, and batching
 
-Only the selected fit anchors contribute observations. Shared input encoders
-collect observations from each selected input use; selecting overlapping data
-in several inputs can contribute it several times. External or generated
+Encoders over computed values learn only from the selected fit anchors. Shared
+input encoders collect observations from each selected input use; selecting
+overlapping data in several inputs can contribute it several times. Encoders
+over stored columns instead learn from each table row created at or before the
+encoder cutoff, once per column. External or generated
 labels do not silently enter a shared input vocabulary.
 
 An artifact doesn't include a copy of your data. `Artifact.load` reloads an artifact written by this version; one whose

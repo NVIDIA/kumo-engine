@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.autoregression import YOY_COL
 from kumo_core.types import TaskType
+from kumoapi.pquery import QueryType
 
 EdgeType = tuple[str, str, str]
 
@@ -397,3 +398,69 @@ def default_metrics(task_type: TaskType) -> list[str]:
             for metric in ("map", "precision", "recall", "f1")
         ]
     raise ValueError(f"unsupported task type {task_type.value!r}")
+
+
+def resolve_task_options(
+    query: Any,
+    *,
+    task_type: TaskType,
+    timeframe_step: int | None,
+    lag_timesteps: int | None,
+    forecast_length: int,
+) -> dict[str, int | None]:
+    """The temporal task scalars a fit resolves from its query and plan.
+
+    The window is the combined range of the target aggregations, the range
+    the labels are generated over.
+    """
+
+    from kumo_core.utils.time import compute_unix_step
+
+    start = end = step = None
+    if query.query_type == QueryType.TEMPORAL:
+        offset = query.get_combined_date_offset_range()
+        first, last = int(offset.start or 0), int(offset.end)
+        start = int(compute_unix_step(first, offset.unit))
+        end = int(compute_unix_step(last, offset.unit))
+        step = int(
+            compute_unix_step(timeframe_step or last - first, offset.unit))
+    if lag_timesteps is None:
+        lag_timesteps = 1 if task_type == TaskType.FORECASTING else 0
+    return {
+        "forecast_length": int(forecast_length),
+        "lag_timesteps": int(lag_timesteps),
+        "unix_start_offset": start,
+        "unix_end_offset": end,
+        "unix_step_size": step,
+    }
+
+
+def fitted_task_options(task: Mapping[str, Any]) -> dict[str, int | None]:
+    """The temporal task scalars stored with a fitted task."""
+
+    return {
+        name: task[name]
+        for name in ("forecast_length", "lag_timesteps", "unix_start_offset",
+                     "unix_end_offset", "unix_step_size")
+    }
+
+
+class IncompatiblePredictionPlan(ValueError):
+    pass
+
+
+def check_prediction_plan(
+    fitted: Mapping[str, Any],
+    *,
+    lag_timesteps: int | None,
+    forecast_length: int | None,
+) -> None:
+    """Reject a forecast prediction plan whose lags or horizon differ from
+    the fit."""
+
+    plan = {"lag_timesteps": lag_timesteps, "forecast_length": forecast_length}
+    for name, value in plan.items():
+        if value != fitted[name]:
+            raise IncompatiblePredictionPlan(
+                f"The model was fitted with {name} = {fitted[name]}, but the "
+                f"prediction table uses {name} = {value}. These must match.")

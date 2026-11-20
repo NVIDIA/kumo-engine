@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -108,13 +109,13 @@ IDENTIFIER_RULES = (
             r"\bapp\.snowflake\.com/(?:[a-z]{2}-[a-z]+-[0-9](?:\.[a-z]+)?/)?"
             r"(?P<value>[a-z0-9_-]+)/", re.IGNORECASE),
         "warehouse account",
-        SNOWFLAKE_PLACEHOLDER_ACCOUNTS,
+        SNOWFLAKE_PLACEHOLDER_ACCOUNTS | {"_deeplink"},
     ),
     (
         # Legacy account locators are two or three letters and five digits,
         # assigned to an account setting (quoted, unquoted, or typed).
         re.compile(
-            r"\baccount\w*[\"']?\s*(?::\s*\w+\s*)?[:=(]\s*[\"']?"
+            r"(?:\baccount\w*[\"']?\s*(?::\s*\w+\s*)?[:=(]\s*[\"']?|[\"'])"
             r"(?P<value>[a-z]{2,3}[0-9]{5})(?![a-z0-9])", re.IGNORECASE),
         "warehouse account",
         SNOWFLAKE_PLACEHOLDER_ACCOUNTS,
@@ -248,7 +249,61 @@ def github_repository(url: str) -> str | None:
     return repository.split("@", maxsplit=1)[0].lower().removesuffix(".git")
 
 
+def notebook_cell_ids(text: str) -> str:
+    """Mask only root cells[*].id values, preserving source line positions."""
+    decoder = json.JSONDecoder()
+    spans: list[tuple[int, int]] = []
+
+    def space(offset: int) -> int:
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        return offset
+
+    def visit(offset: int, path: tuple[str | int, ...]) -> int:
+        offset = space(offset)
+        if text[offset] == '{':
+            offset = space(offset + 1)
+            while text[offset] != '}':
+                key, offset = decoder.raw_decode(text, offset)
+                offset = visit(space(offset) + 1, (*path, key))
+                offset = space(offset)
+                if text[offset] != ',':
+                    break
+                offset = space(offset + 1)
+            return offset + 1
+        if text[offset] == '[':
+            offset, index = space(offset + 1), 0
+            while text[offset] != ']':
+                offset = space(visit(offset, (*path, index)))
+                index += 1
+                if text[offset] != ',':
+                    break
+                offset = space(offset + 1)
+            return offset + 1
+        value, end = decoder.raw_decode(text, offset)
+        if (len(path) == 3 and path[0] == 'cells' and isinstance(path[1], int)
+                and path[2] == 'id' and isinstance(value, str)
+                and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value)):
+            spans.append((offset, end))
+        return end
+
+    try:
+        # Reject malformed JSON before interpreting any path as a cell ID.
+        value = json.loads(text)
+        if not isinstance(value, dict) or not isinstance(
+                value.get('cells'), list):
+            return text
+        visit(0, ())
+    except (ValueError, IndexError, RecursionError):
+        return text
+    for start, end in reversed(spans):
+        text = text[:start] + '"' + 'x' * (end - start - 2) + '"' + text[end:]
+    return text
+
+
 def scan_text(path: str, text: str, *, strict: bool = False) -> list[Finding]:
+    if path.endswith(".ipynb"):
+        text = notebook_cell_ids(text)
     findings: list[Finding] = []
     identifier_rules = (() if path.startswith(IDENTIFIER_RULE_EXEMPT_PREFIXES)
                         else IDENTIFIER_RULES)

@@ -6,14 +6,15 @@ A `NeighborhoodSpec` samples each sample's neighborhood layer by layer, starting
 from the root entity. For every sample:
 
 1. **Fanout and time.** Each layer samples at most `fanout` neighbors per
-   frontier node for each `GraphSample`. When the traversal is temporal
-   (`temporal="inherit"` with a destination clock), only neighbors dated at or
-   before the anchor's cutoff are candidates. `strategy="recent"` keeps the
-   `fanout` most recent candidates.
-2. **Ties.** Which tied neighbors the engine keeps at the fanout limit is
-   deterministic given the same data. It does not depend on row order, on how
-   the tables are split into files, or on how an index is sharded. Which of the
-   tied neighbors it keeps is otherwise unspecified.
+   frontier node for each `GraphSample`. An omitted strategy resolves to recent
+   when the destination declares a clock, otherwise uniform. Recent requires a
+   declared clock, excludes rows after the anchor's cutoff, and keeps the
+   `fanout` most recent candidates. Uniform draws without replacement from all
+   neighbors, ignoring the real-time anchor even on a timed destination.
+2. **Ties.** For keyed tables, which tied neighbors the engine keeps at the
+   fanout limit is deterministic given the same data. It does not depend on row
+   order, on how the tables are split into files, or on how an index is sharded.
+   Which of the tied neighbors it keeps is otherwise unspecified.
 3. **Edges.** An edge appears at most once per sample, however many times
    layer-wise expansion reaches it.
 4. **Orientation.** Every edge of a relation points from its left table to its
@@ -21,14 +22,16 @@ from the root entity. For every sample:
    direction or how the index stores it.
 
 Nodes are unique per sample: a row reached more than once is one node.
+Keyless source occurrences remain separate nodes. Their opaque identities and
+equal-time tie breaks are local to the prepared dataset/index, as specified by
+[G-KEYLESS-001](../G-KEYLESS-001/guarantee.md).
 
 ## Boundaries
 
-A neighbor dated exactly at the cutoff is a candidate; a later one is excluded. The cutoff
-is each request's own, also when requests for the same entity are passed
-together. A static traversal
-(`temporal="static"`) is deliberately unfiltered; `strategy="recent"` still
-orders its candidates by the clock.
+For recent sampling, a neighbor dated exactly at the cutoff is a candidate; a
+later one is excluded. The cutoff is each request's own, also when requests
+for the same entity are passed together. Uniform sampling deliberately does
+not use that cutoff.
 
 Ties matter only at the fanout limit: when more candidates than the remaining
 slots share the boundary timestamp. There, rule 1 fixes the timestamps of the
@@ -52,9 +55,15 @@ recorded as a known gap in `conformance/registry.py` with a repro file, until it
 Edge uniqueness covers paths that traverse a relation again in a later layer:
 repeated edges are dropped and the others keep their output order.
 
-Uniform sampling, seeds and epochs, node features, sub-second clocks and timed
-intermediate hops outside a neighborhood are outside this rule. The golden
-format asserts raw entity values only, so no golden case holds a sampled graph.
+The generated graph properties cover recent sampling. Focused native tests in
+`tests/test_uniform_graph_sampling.py` cover uniform defaults, unfiltered
+selection, fanout, no replacement, and seeded replay through direct and native
+batch paths. DiskGraph's engine sampling seed defaults to zero; it is independent
+of the batch shuffle seed and epoch. Reproducibility is for the same index and
+plan, not across rebuilds or serving samplers. Node features, sub-second clocks
+and timed intermediate hops outside a neighborhood are outside this rule. The
+golden format asserts raw entity values only, so no golden case holds a sampled
+graph.
 
 ## Golden examples
 

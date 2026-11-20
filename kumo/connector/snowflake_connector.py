@@ -333,7 +333,7 @@ class SnowflakeConnector(SQLConnector):
                     "https://docs.nvidia.com/sdgm/kumo-engine/1.0.0/"
                     "kumo-studio-guide-coming-soon/preliminary-documentation/"
                     "connect-data/data-connectors"
-                    "#minimum-privileges-required-for-the-connecting-user",
+                    "#snowflake",
                     diagnostic_code=diagnostic_code,
                 ) from None
             finally:
@@ -388,6 +388,8 @@ class SnowflakeConnector(SQLConnector):
                 True,
                 'login_timeout':
                 5,
+                'ocsp_fail_open':
+                True,
                 'application':
                 get_snowflake_connection_string()
             })

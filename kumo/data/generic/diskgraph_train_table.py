@@ -21,6 +21,7 @@ from kumo_core.training.table import \
     build_split_spec as build_native_split_spec
 from kumo_core.training.table import \
     generate_train_table as generate_native_train_table
+from kumo_core.training.timestamps import forecast_offsets
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 
 from io_utils import fsutil, logging
@@ -676,10 +677,7 @@ def _ttng_forecasting_offset_kwargs(
     step = time_range.timeframe
     assert step is not None
 
-    future_offsets_secs = [
-        int(((pt + i * step) - pt).total_seconds())
-        for i in range(forecast_length)
-    ]
+    future_offsets_secs = list(forecast_offsets(step, forecast_length))
     lag_offsets_secs = None
     if lag_timesteps is not None:
         lag_ts = get_lag_timestamps(pt, lag_timesteps, step)
@@ -862,6 +860,7 @@ def generate_train_table_via_diskgraph_ttng(
     downsampling: Optional[dict[str, Any]] = None,
     input_timestamp_unit: TimeUnit,
     target_stype: str,
+    start_time: Optional[int] = None,
 ) -> Tuple[str, str]:
     """TT-NG sibling of :func:`generate_train_table_via_diskgraph`.
 
@@ -934,6 +933,7 @@ def generate_train_table_via_diskgraph_ttng(
                 query, forecast_length, lag_timesteps, year_over_year)
                               if task_type.lower() == 'forecasting' else None),
             index_path_verified=True,
+            start_time=start_time,
         ))
     return result.train_table_path, result.manifest_path
 

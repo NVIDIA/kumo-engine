@@ -91,6 +91,8 @@ os.environ.setdefault('AWS_TEST_ROLE_ARN',
                       'arn:aws:iam::926922431314:role/unittest-iam-role')
 
 _TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS = 30
+_TEMPORAL_CLI_VERSION_FILE = (pathlib.Path(__file__).resolve().parents[1] /
+                              '.temporal-cli-version')
 
 # Production code resolves GloVe artifacts through deploy_env_config.json. Keep
 # the public dataset fallback for tests of that configuration path; the
@@ -309,6 +311,16 @@ def _assert_loopback_sockets_available_for_temporal() -> None:
         )
 
 
+def _temporal_dev_server_kwargs() -> dict[str, str]:
+    """Select the Temporal CLI for ``WorkflowEnvironment.start_local``."""
+    cli_path = os.environ.get('KUMO_TEMPORAL_CLI_PATH')
+    if cli_path:
+        return {'dev_server_existing_path': cli_path}
+    version = _TEMPORAL_CLI_VERSION_FILE.read_text().strip()
+    # temporal.download serves releases by tag, so the "v" is required.
+    return {'dev_server_download_version': f'v{version}'}
+
+
 @pytest.fixture(scope="session")
 def temporal_workflow_env():
     """Start a version-pinned Temporal dev server once per pytest session.
@@ -326,6 +338,8 @@ def temporal_workflow_env():
         return
 
     _assert_loopback_sockets_available_for_temporal()
+    dev_server_kwargs = _temporal_dev_server_kwargs()
+    downloads_cli = 'dev_server_download_version' in dev_server_kwargs
 
     from temporalio.api.enums.v1 import IndexedValueType
     from temporalio.api.operatorservice.v1 import AddSearchAttributesRequest
@@ -338,7 +352,8 @@ def temporal_workflow_env():
     }
 
     async def _start() -> WorkflowEnvironment:
-        env = await WorkflowEnvironment.start_local(namespace="devtest")
+        env = await WorkflowEnvironment.start_local(namespace="devtest",
+                                                    **dev_server_kwargs)
         await env.client.operator_service.add_search_attributes(
             AddSearchAttributesRequest(
                 search_attributes=_SEARCH_ATTRS,
@@ -353,14 +368,15 @@ def temporal_workflow_env():
                 timeout=_TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS,
             ))
     except asyncio.TimeoutError:
-        pytest.fail(
+        message = (
             "Timed out after "
             f"{_TEMPORAL_LOCAL_STARTUP_TIMEOUT_SECONDS}s starting the local "
             "Temporal test server. Run these tests outside the "
-            "socket-restricted sandbox, set TEMPORAL_SERVER=cloud, or check "
-            "the cached Temporal CLI/dev-server environment.",
-            pytrace=False,
-        )
+            "socket-restricted sandbox or set TEMPORAL_SERVER=cloud.")
+        if downloads_cli:
+            message += (" To skip the Temporal CLI download, set "
+                        "KUMO_TEMPORAL_CLI_PATH to a local `temporal` binary.")
+        pytest.fail(message, pytrace=False)
     # Required because some activities call AutoRpcClientConfig.parse_from_env()
     # which falls back to deploy_env() and reads global DeployEnvConfig singleton
     # for the Temporal address.

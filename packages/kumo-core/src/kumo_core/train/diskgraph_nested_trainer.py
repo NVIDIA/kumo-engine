@@ -28,9 +28,14 @@ from kumo_core.diskgraph.lightning_data import (
     suppress_lightning_leafspec_warning,
 )
 from kumo_core.diskgraph.metadata import normalize_diskgraph_edge_type
-from kumo_core.diskgraph.stores import iter_primary_key_batches
+from kumo_core.diskgraph.stores import iter_primary_key_batches, rhs_catalog
+from kumo_core.embedding_models import EmbeddingModelStore
+from kumo_core.encoders.config import EncodersConfig
+from kumo_core.explain import ExplainRuntime
+from kumo_core.explain.base import Explainer
 from kumo_core.io.csv import save_csv
 from kumo_core.io.filesystem import fsspec_mangle
+from kumo_core.resolved_task import ResolvedNumericalTask
 from kumo_core.score_counts import Counts
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.train.artifact_stats import PredictionArtifactStatsCollector
@@ -46,6 +51,7 @@ from kumo_core.train.trainer import (
     create_multilabel_classification_prediction_output,
     create_multilabel_ranking_prediction_output,
     generate_majority_sampling_weight,
+    load_encoders,
 )
 from kumo_core.training.config import (
     DiskgraphNestedTrainerConfig,
@@ -55,7 +61,10 @@ from kumo_core.training.config import (
     _normalize_edge_type_key,
 )
 from kumo_core.training.options import allow_array_targets
-from kumo_core.training.runtime import DiskgraphTrainingRuntime
+from kumo_core.training.runtime import (
+    DiskgraphTrainingRuntime,
+    LocalDiskgraphTrainingRuntime,
+)
 from kumo_core.types import TaskType
 from kumo_core.utils.names import get_table_name
 from kumo_core.utils.registry import register
@@ -546,32 +555,11 @@ def _rhs_canonical_node_ids(
     index_path: str,
     rhs_node_type: str,
     expected_count: int,
-    batch_size: int = 50_000,
 ) -> np.ndarray:
-    """Materialize canonical physical IDs without retaining raw PK values."""
-    node_ids = np.empty(expected_count, dtype=np.int64)
-    offset = 0
-    for raw_node_ids, raw_batch in iter_primary_key_batches(
-            index_path, rhs_node_type, stop=expected_count,
-            batch_size=batch_size):
-        batch_node_ids = np.asarray(raw_node_ids)
-        batch = np.asarray(raw_batch)
-        if (batch_node_ids.ndim != 1
-                or batch_node_ids.dtype.kind not in {'i', 'u'}):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned invalid IDs')
-        if batch.ndim != 1 or len(batch_node_ids) != len(batch):
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned misaligned IDs')
-        if offset + len(batch_node_ids) > expected_count:
-            raise RuntimeError(
-                '[TT-NG LP] RHS primary-key reader returned more canonical '
-                f'rows than the DiskGraph node count ({expected_count})')
-        node_ids[offset:offset + len(batch_node_ids)] = batch_node_ids
-        offset += len(batch_node_ids)
-
-    node_ids = node_ids[:offset]
-    _validate_rhs_node_ids(node_ids, expected_count)
+    """Canonical physical IDs, sorted and unique, read by DiskGraph."""
+    node_ids = rhs_catalog(index_path, rhs_node_type)
+    if len(node_ids) and node_ids[-1] >= expected_count:
+        raise RuntimeError('[TT-NG LP] RHS node-ID catalog is out of range')
     return node_ids
 
 
@@ -1154,7 +1142,7 @@ class DiskgraphNestedTrainer(Trainer):
         self._fully_initialized = True
         return self
 
-    def explain(self, *args: Any, **kwargs: Any) -> None:
+    def explain(self, *args: Any, **kwargs: Any) -> tuple[Explainer, ...]:
         """Attach feature access and schema metadata for ``Trainer.explain``."""
         # Idempotent across repeat ``explain()`` calls on the same
         # trainer instance.
@@ -1474,10 +1462,9 @@ class DiskgraphNestedTrainer(Trainer):
                 link_prediction_kwargs["prediction_counts"] = prediction_counts
             return self._predict_lp(**link_prediction_kwargs)
 
-        self._prediction_mode = True
         if emit_predictions:
             top_k = self._preprocess_top_k(top_k)
-        self.init(task_manifest=task_manifest)
+        self.predict_setup(task_manifest=task_manifest)
         self.pl_model.eval_top_k = None
         output_partition_ids = output_partition_ids or [partition_id]
 
@@ -1835,8 +1822,7 @@ class DiskgraphNestedTrainer(Trainer):
             raise ValueError(
                 'Batch prediction must request predictions or embeddings.')
 
-        self._prediction_mode = True
-        self.init(task_manifest=task_manifest)
+        self.predict_setup(task_manifest=task_manifest)
         output_partition_ids = output_partition_ids or [partition_id]
 
         has_emb_hook_fn = (self.pl_model._get_register_embedding_hook_fn()
@@ -2304,6 +2290,59 @@ class DiskgraphNestedTrainer(Trainer):
                 else:
                     self.head.param_keys = []
             self.head.validate()
+
+    @classmethod
+    def load_prediction(
+        cls,
+        *,
+        manifest: DiskgraphTaskManifest,
+        model_dir: str,
+        bundle_dir: str,
+        run_id: str,
+        encoders: EncodersConfig | None = None,
+        task_options: Mapping[str, int | None] | None = None,
+        binary_threshold: float | None = None,
+        embedding_models: EmbeddingModelStore | None = None,
+        accelerator: str = 'auto',
+        device: int | None = None,
+        explain_runtime: ExplainRuntime | None = None,
+    ) -> DiskgraphNestedTrainer:
+        """Load scoring and replay from the same published model settings."""
+        task = ResolvedNumericalTask.from_manifest(
+            manifest, name=run_id, **(task_options or {}))
+        load_options: dict[str, float | list[int]] = {}
+        if binary_threshold is not None:
+            load_options['binary_threshold'] = binary_threshold
+        if device is not None:
+            load_options['devices'] = [device]
+        return cls.load(
+            task,
+            model_dir,
+            diskgraph_task_dataset_bundle_dir=bundle_dir,
+            encoders=encoders if encoders is not None else load_encoders(model_dir),
+            infer_config_path=False,
+            diskgraph_runtime=LocalDiskgraphTrainingRuntime(),
+            explain_runtime=explain_runtime,
+            embedding_models=embedding_models,
+            accelerator=accelerator,
+            **load_options,
+        )
+
+    def predict_setup(
+        self,
+        fit_mode_to_use: FitMode | None = None,
+        *,
+        task_manifest: DiskgraphTaskManifest | None = None,
+    ) -> None:
+        """Prepare DiskGraph inputs, preserving the current fit unless selected.
+
+        A published model directory already identifies the selected fit/refit;
+        callers loading that flat directory explicitly select ``FitMode.fit``.
+        """
+        self._prediction_mode = True
+        if fit_mode_to_use is not None:
+            self._set_fit_mode_to_use(fit_mode_to_use)
+        self.init(task_manifest=task_manifest)
 
     @classmethod
     def load(

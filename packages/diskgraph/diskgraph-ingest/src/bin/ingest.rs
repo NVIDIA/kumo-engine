@@ -351,6 +351,7 @@ fn run_worker(args: Args) -> Result<()> {
         index_threads: supervisor_thread_override("INDEX").or(args.index_threads),
         parent_index_path: args.parent_index_path.clone(),
         resolve_columns: Vec::new(),
+        cutoff_col_stats: None,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -487,6 +488,14 @@ fn run_worker(args: Args) -> Result<()> {
     if !stats.dropped_rows_counts.is_empty() {
         println!("{}", color("Dropped rows:", Color::YellowBold));
         let mut entries: Vec<_> = stats.dropped_rows_counts.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, count) in entries {
+            println!("  {}: {}", color(name, Color::YellowBold), count);
+        }
+    }
+    if !stats.oversized_rows_counts.is_empty() {
+        println!("{}", color("Oversized rows:", Color::YellowBold));
+        let mut entries: Vec<_> = stats.oversized_rows_counts.iter().collect();
         entries.sort_by(|a, b| a.0.cmp(b.0));
         for (name, count) in entries {
             println!("  {}: {}", color(name, Color::YellowBold), count);

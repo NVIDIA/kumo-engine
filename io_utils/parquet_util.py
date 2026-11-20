@@ -5,6 +5,7 @@
 import math
 import multiprocessing
 import os.path as osp
+import threading
 import warnings
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -84,6 +85,8 @@ _SUBPROCESS_TIMEOUT_SECS = EnvVar(
     default_value=300,
 )
 
+_FORK_LOCK = threading.Lock()
+
 # Fan-out for the per-fragment footer reads in _count_rows_per_file. The reads
 # are I/O-bound S3/GCS round-trips, so a large table (thousands of parts) counts
 # serially in ~part_count * footer_latency -- enough to blow the subprocess
@@ -121,7 +124,7 @@ def _run_in_isolated_subprocess(func, args):
     timeout_secs = _SUBPROCESS_TIMEOUT_SECS.parse_value()
     # Scope the py3.14 fork()-after-threads DeprecationWarning to this
     # deliberate fork (the timeout is the backstop) so it does not spam reads.
-    with warnings.catch_warnings():
+    with _FORK_LOCK, warnings.catch_warnings():
         warnings.filterwarnings(
             'ignore',
             message='.*fork.*may lead to deadlocks.*',

@@ -6,6 +6,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.prediction as prediction
+import kumo_core.prediction_options as prediction_options
 import numpy as np
 import pytest
 import torch
@@ -17,12 +18,13 @@ from kumo_core.pquery import (
 from kumo_core.prediction import (
     PredictionTableRequest,
     PreparedCustomPredictionTable,
-    forecast_task_options,
     generate_custom_prediction_table,
     generate_prediction_table,
     materialize_prediction_task,
 )
 from kumo_core.prediction_options import (
+    PredictionQueryContract,
+    prediction_task_type,
     resolve_classification_threshold,
     resolve_num_classes_to_return,
 )
@@ -131,6 +133,25 @@ def test_irrelevant_classification_threshold_is_cleared(threshold):
         threshold,
         binary_required=True,
     ) is None
+
+
+@pytest.mark.parametrize("trained, predicted, message", [
+    (None, "unparsable", "has no training query"),
+    ("plain", "filtered", "query's target filter is 'x', but the model was "
+     "trained without a target filter"),
+    ("filtered", "plain", "query has no target filter, but the model was "
+     "trained with 'x'"),
+])
+def test_prediction_query_keeps_the_trained_contract(monkeypatch, trained,
+                                                     predicted, message):
+    plain = PredictionQueryContract("target", None, "temporal_link_prediction",
+                                    ("users", "id"), "items", 0, ())
+    contracts = {"plain": plain, "filtered": plain._replace(target_filter="x")}
+    monkeypatch.setattr(prediction_options, "prediction_query_contract",
+                        lambda query, _: contracts[query])
+
+    with pytest.raises(ValueError, match=message):
+        prediction_task_type(trained, predicted, {})
 
 
 def request(tmp_path, *, family="node_prediction"):
@@ -294,9 +315,7 @@ def test_link_prediction_compiles_lhs_only(monkeypatch, tmp_path):
     assert runtime.compile_options["list_distinct_target_is_array"] is True
 
 
-def test_materialize_prediction_writes_predict_only_bundle(
-        monkeypatch, tmp_path):
-    req = request(tmp_path)
+def _materialize(monkeypatch, tmp_path, req):
     generated = SimpleNamespace(
         staging_dir=str(tmp_path / "staging"),
         table_path=str(tmp_path / "staging" / "tt.parquet"),
@@ -334,6 +353,8 @@ def test_materialize_prediction_writes_predict_only_bundle(
 
     monkeypatch.setattr(prediction, "write_thin_manifest", thin)
     monkeypatch.setattr(prediction, "write_flat_manifest", flat)
+    monkeypatch.setattr(prediction, "candidate_row_filter",
+                        lambda *args, **kwargs: None)
 
     result = materialize_prediction_task(
         req,
@@ -341,11 +362,75 @@ def test_materialize_prediction_writes_predict_only_bundle(
         graph_index_id="graph/version",
         runtime=IngestRuntime(),
     )
+    return result, calls
+
+
+def test_materialize_prediction_writes_predict_only_bundle(
+        monkeypatch, tmp_path):
+    result, calls = _materialize(monkeypatch, tmp_path, request(tmp_path))
 
     assert result.bundle_dir == str(tmp_path / "bundle")
     assert calls["thin"]["stage_counts"] == {"predict": 7}
     assert calls["thin"]["column_stats"] is False
     assert set(calls["thin"]["stage_table_refs"]) == {"predict"}
+    assert calls["thin"]["stage_seed_times"] is None
+
+
+def _write_parts(table, *parts):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table.mkdir(parents=True)
+    for index, (values, unit, statistics) in enumerate(parts):
+        pq.write_table(
+            pa.table({"TIMESTAMP": pa.array(values, pa.timestamp(unit))}),
+            table / f"part-{index:05d}.parquet", write_statistics=statistics)
+
+
+def test_anchor_range_reads_footers_and_unindexed_row_groups(tmp_path):
+    table = tmp_path / "tt.parquet"
+    _write_parts(table, ([5, 3], "ns", True), ([], "ns", True),
+                 ([2], "us", False))
+
+    assert prediction.table_anchor_range(str(table)) == (3, 2000)
+
+
+def test_anchor_range_requires_the_anchor_column(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = tmp_path / "tt.parquet"
+    table.mkdir()
+    pq.write_table(pa.table({"ENTITY1": [1]}), table / "part-00000.parquet")
+
+    with pytest.raises(ValueError, match="no TIMESTAMP column"):
+        prediction.table_anchor_range(str(table))
+
+
+def _link_request(tmp_path):
+    req = request(tmp_path, family="link_prediction")
+    return replace(
+        req, query=replace(req.query, task_type="temporal_link_prediction"))
+
+
+def test_custom_link_prediction_table_records_its_anchor(monkeypatch, tmp_path):
+    _write_parts(tmp_path / "staging" / "tt.parquet", ([7, 7], "ns", True))
+
+    _, calls = _materialize(monkeypatch, tmp_path, _link_request(tmp_path))
+
+    assert calls["thin"]["stage_seed_times"] == {"predict": [7, 7]}
+
+
+def test_custom_link_prediction_table_with_two_anchors_is_not_ingested(
+        monkeypatch, tmp_path):
+    _write_parts(tmp_path / "staging" / "tt.parquet", ([7, 8], "ns", True))
+
+    with pytest.raises(ValueError, match="one table per anchor time"):
+        materialize_prediction_task(
+            _link_request(tmp_path),
+            SimpleNamespace(table_path=str(tmp_path / "staging" /
+                                           "tt.parquet")),
+            graph_index_id="graph", runtime=SimpleNamespace())
 
 
 def forecast_request(tmp_path):
@@ -417,19 +502,6 @@ def test_forecast_prediction_compiles_only_historical_features(
     assert runtime.compile_options["lag_offsets_secs"] == (-86400, )
     assert "future_offsets_secs" not in runtime.compile_options
     assert req.compiler_options["future_offsets_secs"] == (0, 86400, 172800)
-    assert forecast_task_options(req) == {
-        "forecast_length": 3,
-        "lag_timesteps": 1,
-        "unix_start_offset": 0,
-        "unix_end_offset": 86400000000000,
-        "unix_step_size": 86400000000000,
-    }
-
-
-def test_forecast_task_options_uses_fitted_timeframe_step(tmp_path):
-    req = replace(forecast_request(tmp_path), forecast_timeframe_step=2)
-
-    assert forecast_task_options(req)['unix_step_size'] == 172800000000000
 
 
 @pytest.mark.parametrize("options", [{
@@ -519,7 +591,8 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
                 model=HeteroGNN(channels=8, num_mp_layers=1),
                 head=NodePredHead(), root_dir=str(model_dir)).config(),
         str(model_dir / "config.json"))
-    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_: None)
+    monkeypatch.setattr(DiskgraphTaskManifest, "load", lambda *_:
+                        SimpleNamespace(task_type=task.task_type.value))
     monkeypatch.setattr(ResolvedNumericalTask, "from_manifest",
                         lambda *_, **__: task)
     monkeypatch.setattr(prediction, "_publish_scored_shard",
@@ -544,7 +617,7 @@ def _score_shard_on_device(monkeypatch, tmp_path, devices, worker_id,
             pred_time_col_name=None, output_dir=str(tmp_path / "output"),
             attempt_id="attempt", graph_snapshot_id="snapshot",
             source_config_sha256="0" * 64, runtime_config_sha256="1" * 64,
-            binary_threshold=None, forecast_options=None,
+            binary_threshold=None, task_options=None,
             accelerator=accelerator),
     )
     return trainers
@@ -695,9 +768,9 @@ def test_in_process_scoring_parses_the_task_manifest_once(
                                       stage_counts={'predict': 1}))
         return loaded[-1]
 
-    def load_trainer(*args, **kwargs):
+    def load_trainer(task, *args, **kwargs):
         loads.append(kwargs)
-        return SimpleNamespace(predict=lambda **kw: predicts.append(kw))
+        return SimpleNamespace(task=task, predict=lambda **kw: predicts.append(kw))
 
     monkeypatch.setattr(DiskgraphTaskManifest, 'load', load_manifest)
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
@@ -760,7 +833,8 @@ def test_every_scorer_counts_its_scores_into_one_file(
     monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
                         lambda *_, **__: None)
     monkeypatch.setattr(DiskgraphNestedTrainer, 'load',
-                        lambda *_, **__: SimpleNamespace(predict=predict))
+                        lambda task, *_, **__: SimpleNamespace(task=task,
+                                                               predict=predict))
     monkeypatch.setattr('kumo_core.train.trainer.load_encoders',
                         lambda *_: None)
     monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',

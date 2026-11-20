@@ -89,7 +89,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'kumo-ai/kumo' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      KUMO_RUN_ADLS_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && contains(matrix.test_dir, 'test/io_utils/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       KUMO_RUN_GCP_TESTS: ${{ github.repository == 'NVIDIA/kumo-engine' && (contains(matrix.test_dir, 'test/io_utils/') || contains(matrix.test_dir, 'test/connector/') || contains(matrix.test_dir, 'test/rest/test_*.py')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
       AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
       AZURE_CONTAINER_NAME: ${{ vars.AZURE_CONTAINER_NAME }}
@@ -208,6 +208,10 @@ jobs:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           diskgraph-wheel-artifact: diskgraph-wheel
           install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
+
+      - name: Set up Temporal CLI
+        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/temporal-cli
 
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
@@ -640,7 +644,7 @@ jobs:
         # `-rs` prints the skip reasons so an empty live tier stays visible.
         run: |
           status=0
-          for package in kumo-pql kumo-core kumo-snowflake kumo-bigquery \
+          for package in kumo-settings kumo-pql kumo-core kumo-snowflake kumo-bigquery \
                          kumo-databricks kumo-s3 kumo-gcs kumo-adls; do
             echo "::group::pytest packages/$package"
             if [ "$package" = kumo-core ]; then
@@ -687,10 +691,14 @@ jobs:
           python -c "import importlib.util; assert importlib.util.find_spec('kumo.engine') is None"
           uv build --wheel packages/kumo-engine \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
+          uv build --wheel packages/kumo-settings \
+            --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           wheel=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_engine-*.whl' -print -quit)
-          test -n "$wheel"
-          uv pip install --no-deps "$wheel"
+          settings=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
+            -name 'kumo_settings-*.whl' -print -quit)
+          test -n "$wheel" && test -n "$settings"
+          uv pip install --no-deps "$wheel" "$settings"
           python - <<'PY'
           from pathlib import Path
 
@@ -737,11 +745,12 @@ jobs:
               -c "$KUMO_ENGINE_SOURCE_ROOT/pyproject.toml" -rs \
               "$KUMO_ENGINE_SOURCE_ROOT/test"
           ) || status=$?
-          uv pip uninstall kumo-engine
+          uv pip uninstall kumo-engine kumo-settings
           python - <<'PY'
           import importlib.util
 
           assert importlib.util.find_spec('kumo.engine') is None
+          assert importlib.util.find_spec('kumo.settings') is None
           PY
           exit $status
 
@@ -802,7 +811,7 @@ jobs:
 
       - name: Run the MLflow suites at the mlflow extra's floor
         run: |
-          uv pip install --no-deps -e packages/kumo-engine
+          uv pip install --no-deps -e packages/kumo-engine -e packages/kumo-settings
           # mlflow 3.5.0 pins a pyarrow with no wheel for this Python; the
           # extra installs mlflow-skinny, which holds the client and stores.
           uv pip uninstall mlflow mlflow-skinny mlflow-tracing

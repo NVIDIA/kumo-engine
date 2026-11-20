@@ -35,7 +35,7 @@ see `DataLoaderSpec.requires_anchor_time`.
 
 - `entity`: the table each sample is about.
 - `entity_values`: named scalar values: fields, constants, aggregates, comparisons and calculations.
-- `events`: named historical event components. Several components can merge into one batch input; equal-time events then order by component name and primary key.
+- `events`: named historical event components. Several components can merge into one batch input; equal-time events then order by component name and primary key, or local occurrence identity for a keyless table.
 - `dated_entity_values`: repeated timestamped facts, as opposed to the single values in `entity_values`.
 - `current_events`: events kept apart from `events` so an objective can distinguish the event being predicted from its history. Each requires `TimeWindow(column=..., start=-1, stop=0)` and `limit=1`, selecting the event at the anchor's stored second; a historical window ending at zero still includes that event too.
 - `neighborhoods`: named graph neighborhoods around the entity.
@@ -93,7 +93,7 @@ with the historical window ending at the sample time.
 - `time`: the window relative to the anchor; its column must be a `timestamp` or `date32`.
 - `filters`: typed comparisons on destination columns.
 - `active`: restricts to rows whose validity interval contains the prediction time, which is a different question from when they occurred.
-- `distinct`: after traversal, keep one row per destination table and primary key; fan-out through a join can otherwise repeat a row.
+- `distinct`: after traversal, keep one visit per destination row, identified by its primary key or its occurrence when keyless. Separate identical source rows remain separate; joins can revisit the same row.
 
 ### `TimeWindow`
 
@@ -489,8 +489,12 @@ class NeighborhoodSpec(layers: tuple[GraphLayer, ...])
 
 Rows belonging to one sampled neighborhood around the entity.
 
-Layers expand in order from the entity. A row or edge reached more than once
-appears once per sample. Node attributes are chosen in `BatchSpec` through
+Layers expand in order from the entity. Relations topology emits one node
+per sample/row and deduplicates edge pairs in model and inspectable output.
+Columnar relations output can retain repeated pairs unless
+`deduplicate_edges=True`. `Graph(topology="sampled")` retains native
+directed edge occurrences, discovery order and hop counts.
+Node attributes are chosen in `BatchSpec` through
 a `Graph` representation, not here.
 
 ### `GraphLayer`
@@ -512,25 +516,24 @@ class GraphSample(
     relation: str,
     fanout: int,
     direction: Literal['forward', 'reverse'] = 'forward',
-    strategy: Literal['recent', 'uniform'] = 'recent',
+    strategy: Literal['recent', 'uniform'] | None = None,
     time_column: str | None = None,
-    temporal: Literal['inherit', 'static'] = 'inherit',
 )
 ```
 
 One bounded relationship traversal used to select neighboring rows.
 
-Emitted edges keep the relation's left-to-right orientation whatever the
-traversal direction, self-relations included.
+Relations-topology edges keep the declared left-to-right orientation whatever
+the traversal direction, self-relations included. Sampled topology retains
+the native traversal direction instead.
 
 **Parameters**
 
 - `fanout`: maximum neighbors kept per frontier row.
 - `direction`: which way to follow the relation; `"forward"` is left table to right as written in `RelationSpec`.
 - `relation`: the declared relation followed.
-- `strategy`: how to choose when more neighbors exist than `fanout`: `"recent"` (the default) keeps the most recent and needs a clock, even when `temporal="static"`; `"uniform"` draws evenly among the candidates. Which tied neighbors at the fanout limit are kept is unspecified (G-GRAPH-001). The DiskGraph engine supports `"recent"` only.
+- `strategy`: `None` selects `"recent"` when the destination table declares a clock, otherwise `"uniform"`. Recent keeps the newest rows at or before the anchor and requires a declared clock. Uniform samples without replacement, ignoring the real-time anchor even on timed tables. Which equally recent neighbors are kept is unspecified (G-GRAPH-001).
 - `time_column`: overrides the destination table's declared clock.
-- `temporal`: `"inherit"` filters by the resolved clock; `"static"` states that this traversal is deliberately unfiltered.
 
 ### `ExternalTarget`
 

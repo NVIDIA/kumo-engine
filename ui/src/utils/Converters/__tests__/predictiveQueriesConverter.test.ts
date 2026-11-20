@@ -367,8 +367,9 @@ describe("parseTrainingWorkflowResponse", () => {
     });
 
     it("Should calculate total training time when start_time and last_updated_at exist", () => {
-        const start = new Date(Date.now() - 60_000).toISOString();
-        const end = new Date().toISOString();
+        const startMs = Date.now() - 60_000;
+        const start = new Date(startMs).toISOString();
+        const end = new Date(startMs + 60_000).toISOString();
         const result = parseTrainingWorkflowResponse({
             ...mockWorkflowResponse,
             training_job: {
@@ -485,6 +486,7 @@ describe("generateProgressStatsforChart", () => {
                     label: "Best validation metric"
                 }
             ],
+            trialIds: ["0", "1"],
             xLabel: "Experiments",
             yLabel: "AUROC",
             mode: "test-mode"
@@ -544,6 +546,7 @@ describe("generateProgressStatsforChart", () => {
                     label: "Best validation metric"
                 }
             ],
+            trialIds: ["1"],
             xLabel: "Experiments",
             yLabel: "AUROC",
             mode: ""
