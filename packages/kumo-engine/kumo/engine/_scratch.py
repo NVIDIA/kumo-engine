@@ -81,8 +81,8 @@ def snapshot_scratch_dir(graph_key: str) -> Path:
     r"""Scratch space for one `Graph`, keyed by `Graph.id` alone (not the
     data version) -- used only for staging raw source-table reads before
     ingest (`Graph.snapshot()`'s `persist_dir`). The materialized index
-    itself is keyed by `(graph_key, data_version)` via `kumo_core.diskgraph.
-    snapshot.LocalSnapshotStore`, nested under this same root.
+    itself is published under `indexes/<index_build_id>`. A graph/version
+    reference in this directory preserves reuse of the completed build.
     """
     return get_scratch_dir() / "snapshots" / graph_key
 

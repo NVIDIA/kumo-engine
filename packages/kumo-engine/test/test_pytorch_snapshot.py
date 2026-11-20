@@ -64,8 +64,7 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
         build_id = json.loads(
             (snapshot.index_path /
              'index_metadata.json').read_text())['index_build_id']
-        assert snapshot.index_path.resolve().is_relative_to(
-            (tmp_path / 'producer').resolve())
+        assert snapshot.index_path == tmp_path / 'producer' / 'indexes' / build_id
         anchor_path = tmp_path / 'anchors.parquet'
         pq.write_table(
             pa.table({
