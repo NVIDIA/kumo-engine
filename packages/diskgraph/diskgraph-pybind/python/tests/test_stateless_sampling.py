@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict
 from typing import Any
 
 import pyarrow as pa
@@ -21,6 +20,7 @@ from diskgraph import (
 )
 from diskgraph._c import SeedSchedule
 from diskgraph._c import SeedScheduleConfig as NativeSeedScheduleConfig
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from test_runtime_batch_iterator_e2e import (
     _sampling_plan,
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
@@ -69,8 +69,12 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2
     )
     sampling_plan = _sampling_plan()
-    for layer in sampling_plan.layers:
-        layer.default_fanout.fanout = 1
+    sampling_plan = SamplingPlan(
+        [
+            LayerSpec(default_fanout=FanoutSpec(1, "uniform", "uniform_fallback"))
+            for _ in sampling_plan.layers
+        ]
+    )
     options = {
         "stage": "train",
         "sampling_plan": sampling_plan,
@@ -87,7 +91,24 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         if extras == "neighborhood":
             current.with_neighborhoods(
                 json.dumps(
-                    {"context": {"plan": asdict(_sampling_plan()), "projections": {}}}
+                    {
+                        "context": {
+                            "plan": {
+                                "layers": [
+                                    {
+                                        "fanouts": {},
+                                        "default_fanout": {
+                                            "fanout": 4,
+                                            "mode": "uniform",
+                                            "absent_key_policy": "uniform_fallback",
+                                        },
+                                    }
+                                    for _ in range(2)
+                                ]
+                            },
+                            "projections": {},
+                        }
+                    }
                 )
             )
         elif extras == "history":

@@ -4513,7 +4513,7 @@ def test_sampling_plan_is_passed_through_untouched(tmp_path) -> None:
 
     assert not hasattr(dm.sampling_plan, "projections")
     assert not hasattr(dm.sampling_plan, "feature_columns")
-    assert dm.sampling_plan.layers == [LayerSpec(fanouts={})]
+    assert list(dm.sampling_plan.layers) == [LayerSpec(fanouts={})]
 
 
 def test_feature_projection_is_empty_without_a_schema(tmp_path) -> None:

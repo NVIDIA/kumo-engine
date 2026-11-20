@@ -2029,6 +2029,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PreparedAggregateQuery>()?;
     runtime_batch_iterator::register(m)?;
+    sampling_plan::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
     m.add_function(wrap_pyfunction!(tt_builder::convert_ticks, m)?)?;

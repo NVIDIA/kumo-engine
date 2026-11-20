@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import pickle
 import subprocess
 import sys
-from dataclasses import is_dataclass
 from types import SimpleNamespace
 from typing import TypedDict
 
@@ -24,6 +24,7 @@ from diskgraph.sampling_plan import (
     SamplingMode,
     SamplingPlan,
     WeightedSampling,
+    Weighting,
 )
 from test_runtime_batch_iterator_e2e import (
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
@@ -52,7 +53,7 @@ def _plan(mode: SamplingMode) -> SamplingPlan:
 
 
 def test_empty_plan_defaults_and_public_exports() -> None:
-    """Public dataclasses construct without mutable defaults shared between plans."""
+    """Public exports refer to native classes with immutable empty defaults."""
     classes = (
         SamplingPlan,
         LayerSpec,
@@ -63,30 +64,72 @@ def test_empty_plan_defaults_and_public_exports() -> None:
         CustomExpression,
     )
     for cls in classes:
-        assert is_dataclass(cls)
+        assert cls.__module__ == "diskgraph._c"
+        assert getattr(diskgraph._c, cls.__name__) is cls
         assert getattr(diskgraph, cls.__name__) is cls
         assert cls.__name__ in diskgraph.__all__
-    first, second = SamplingPlan(), SamplingPlan()
-    first.layers.append(LayerSpec())
-    assert second.layers == []
-    first_layer, second_layer = LayerSpec(), LayerSpec()
-    first_layer.fanouts["relation"] = FanoutSpec(0, "uniform", "reject_plan")
-    assert second_layer.fanouts == {}
-    assert SamplingPlan().layers == []
-    assert SamplingPlan([LayerSpec()]).layers == [LayerSpec()]
+    assert SamplingPlan().layers == ()
+    assert SamplingPlan([LayerSpec()]).layers == (LayerSpec(),)
 
 
-def test_plan_remains_editable_and_picklable() -> None:
-    """Dataclass fields remain mutable and survive worker-process serialization."""
-    plan = _plan("uniform")
-    original = pickle.loads(pickle.dumps(plan))
-    default = plan.layers[0].default_fanout
-    assert default is not None
-    default.fanout = 8
-    plan.layers[1].fanouts.clear()
-    assert plan != original
-    restored = pickle.loads(pickle.dumps(plan))
-    assert isinstance(restored, SamplingPlan)
+def test_native_plans_copy_inputs_and_expose_immutable_values() -> None:
+    """Native plans own their inputs and reject misleading in-place mutations."""
+    spec = FanoutSpec(4, "uniform", "reject_plan")
+    overrides = {"edge": spec}
+    layer = LayerSpec(fanouts=overrides)
+    layers = [layer]
+    plan = SamplingPlan(layers)
+
+    overrides.clear()
+    layers.clear()
+
+    assert plan.layers == (layer,)
+    assert layer.fanouts == {"edge": spec}
+    assert LayerSpec(layer.fanouts) == layer
+    with pytest.raises(AttributeError):
+        plan.layers.append(layer)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        layer.fanouts["edge"] = spec  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        spec.fanout = 8  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("protocol", [4, 5])
+@pytest.mark.parametrize(
+    "value",
+    [
+        ExponentialDecay(0.125),
+        LinearDecay(3600),
+        CustomExpression("score"),
+        WeightedSampling(ExponentialDecay(0.125)),
+        WeightedSampling(LinearDecay(3600), temporal=True),
+        WeightedSampling(CustomExpression("score")),
+        FanoutSpec(4, "uniform", "reject_plan"),
+        LayerSpec(),
+        SamplingPlan(),
+        _plan("uniform"),
+        _plan(WeightedSampling(ExponentialDecay(0.125), temporal=True)),
+    ],
+)
+def test_native_values_survive_pickle(value: object, protocol: int) -> None:
+    """Every native value reconstructs its Rust state through pickle arguments."""
+    restored = pickle.loads(pickle.dumps(value, protocol=protocol))
+
+    assert type(restored) is type(value)
+    assert restored == value
+
+
+def _worker_plan(plan: SamplingPlan) -> SamplingPlan:
+    return plan
+
+
+def test_native_plans_survive_spawned_worker_round_trip() -> None:
+    """Spawned workers can receive and return a complete native weighted plan."""
+    plan = _plan(WeightedSampling(CustomExpression("score"), temporal=True))
+
+    with multiprocessing.get_context("spawn").Pool(1) as workers:
+        restored = workers.apply(_worker_plan, (plan,))
+
     assert restored == plan
 
 
@@ -121,7 +164,7 @@ def test_iter_rejects_untyped_plans_before_accessing_the_manifest(
             batch_size=2,
         )
 
-    with pytest.raises(TypeError, match="diskgraph.SamplingPlan"):
+    with pytest.raises(TypeError, match="SamplingPlan"):
         diskgraph.RuntimeBatchIterator(
             parent_root="index-must-not-be-opened",
             tt_id="unused",
@@ -209,32 +252,17 @@ def test_typed_plans_produce_native_batches_and_unsupported_mode_errors(
         assert all("main" in batch["graphs"] for batch in batches)
 
 
-def test_native_validation_rejects_invalid_dataclass_fanout(
-    seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
-) -> None:
-    """Native validation remains authoritative for invalid sampling requests."""
-    plan = SamplingPlan(
-        [LayerSpec(default_fanout=FanoutSpec(-1, "uniform", "reject_plan"))]
-    )
-    index = RuntimeIndex(
-        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
-    )
+@pytest.mark.parametrize("fanout", [-1, 2**32])
+def test_native_validation_rejects_invalid_fanout(fanout: int) -> None:
+    """Invalid fanouts fail when constructing the native value."""
     with pytest.raises(DiskgraphConfigError, match="invalid fanout"):
-        index.iter(
-            stage="train",
-            sampling_plan=plan,
-            num_workers=1,
-            worker_id=0,
-            shuffle=False,
-            epoch=0,
-            batch_size=2,
-        )
+        FanoutSpec(fanout, "uniform", "reject_plan")
 
 
-def test_native_iterator_snapshots_mutable_plan_fields(
+def test_native_iterators_keep_values_when_the_plan_is_replaced(
     seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
 ) -> None:
-    """Each iterator owns the plan values extracted when it was constructed."""
+    """Each iterator owns the native values copied when it was constructed."""
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
@@ -249,7 +277,7 @@ def test_native_iterator_snapshots_mutable_plan_fields(
         batch_size=2,
         entity_node_type="users",
     )
-    plan.layers.clear()
+    plan = SamplingPlan()
     after, _ = index.iter(
         stage="train",
         sampling_plan=plan,
@@ -265,3 +293,50 @@ def test_native_iterator_snapshots_mutable_plan_fields(
     after_nodes = next(after)["graphs"]["main"]["node_ids"]
     assert len(before_nodes["orders"]) > 0
     assert "orders" not in after_nodes or len(after_nodes["orders"]) == 0
+
+
+@pytest.mark.parametrize(
+    "mode", ["uniform", "deterministic_uniform", "temporal_most_recent"]
+)
+def test_native_fanout_properties(mode: SamplingMode) -> None:
+    """Native fanouts expose the count, mode, and policy passed to construction."""
+    spec = FanoutSpec(7, mode, "uniform_fallback")
+
+    assert spec.fanout == 7
+    assert spec.mode == mode
+    assert spec.absent_key_policy == "uniform_fallback"
+
+
+@pytest.mark.parametrize("temporal", [False, True])
+@pytest.mark.parametrize(
+    "weighting", [ExponentialDecay(0.125), LinearDecay(3600), CustomExpression("score")]
+)
+def test_native_weighting_properties(weighting: Weighting, temporal: bool) -> None:
+    """Native enum wrappers preserve every weighting variant and temporal flag."""
+    mode = WeightedSampling(weighting, temporal=temporal)
+
+    assert mode.weighting == weighting
+    assert mode.temporal is temporal
+    assert FanoutSpec(3, mode, "reject_plan").mode == mode
+
+
+@pytest.mark.parametrize("invalid", [{}, object(), None])
+def test_native_constructors_reject_untyped_nested_values(invalid: object) -> None:
+    """Native constructors require native layers, fanouts, and weighting objects."""
+    with pytest.raises(TypeError):
+        SamplingPlan([invalid])  # type: ignore[list-item]
+    with pytest.raises(TypeError):
+        LayerSpec({"edge": invalid})  # type: ignore[dict-item]
+    with pytest.raises(TypeError):
+        WeightedSampling(invalid)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "mode, policy", [("unknown", "reject_plan"), ("uniform", "unknown")]
+)
+def test_native_constructors_reject_invalid_modes_and_policies(
+    mode: str, policy: str
+) -> None:
+    """Invalid native enum names produce configuration errors at construction."""
+    with pytest.raises(DiskgraphConfigError, match="invalid"):
+        FanoutSpec(1, mode, policy)  # type: ignore[arg-type]

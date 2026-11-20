@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import TYPE_CHECKING
+
 from ._c import (
     __version__,
     BUILD_COMMIT,
@@ -65,6 +67,17 @@ from ._c import (
     CUSTOM_TT_CONTRACT,
 )
 from ._exceptions import DiskgraphTaskError
+
+if TYPE_CHECKING:
+    from .sampling_plan import (
+        CustomExpression,
+        ExponentialDecay,
+        FanoutSpec,
+        LayerSpec,
+        LinearDecay,
+        SamplingPlan,
+        WeightedSampling,
+    )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
 def __getattr__(name):

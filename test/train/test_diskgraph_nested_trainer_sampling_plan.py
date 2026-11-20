@@ -158,7 +158,7 @@ def test_ttng_sampling_plan_resolves_kumo_edge_types_for_sparse_fanouts(
 def test_ttng_sampling_plan_keeps_default_fanout_behavior(tmp_path):
     plan = _build_plan(NumNeighbors([5, 3]), tmp_path)
 
-    assert plan.layers == [
+    assert list(plan.layers) == [
         LayerSpec(
             fanouts={},
             default_fanout=FanoutSpec(
@@ -257,7 +257,7 @@ def test_lp_plan_keeps_hops_through_target_table(module, rhs_emb_mode,
     plan = _lp_plan(NumNeighbors(LP_NUM_NEIGHBORS, [0, 0, 0, 0]), module,
                     rhs_emb_mode, tmp_path)
 
-    assert plan.layers == [
+    assert list(plan.layers) == [
         LayerSpec(
             fanouts={
                 "interactions_entity_id_to_entities_entity_id_reverse": _fanout(128)
@@ -286,7 +286,7 @@ def test_lp_list_plan_uses_default_fanout_on_every_hop(module, rhs_emb_mode,
                                                        tmp_path):
     plan = _lp_plan(NumNeighbors([12, 8]), module, rhs_emb_mode, tmp_path)
 
-    assert plan.layers == [
+    assert list(plan.layers) == [
         LayerSpec(fanouts={}, default_fanout=_fanout(12)),
         LayerSpec(fanouts={}, default_fanout=_fanout(8)),
     ]
@@ -298,7 +298,7 @@ def test_explicit_zero_overrides_default_fanout(tmp_path):
                      [12, 12]), LinkPredModuleType.ID, "lookup", tmp_path)
 
     rel = "interactions_entity_id_to_entities_entity_id_reverse"
-    assert plan.layers == [
+    assert list(plan.layers) == [
         LayerSpec(fanouts={rel: _fanout(0)}, default_fanout=_fanout(12)),
         LayerSpec(fanouts={rel: _fanout(5)}, default_fanout=_fanout(12)),
     ]
@@ -315,7 +315,7 @@ def test_unresolved_entry_is_reported(tmp_path, caplog):
         plan = _lp_plan(num_neighbors, LinkPredModuleType.SHALLOW_RHS, "fusion",
                         tmp_path)
 
-    assert plan.layers == [LayerSpec(
+    assert list(plan.layers) == [LayerSpec(
         fanouts={"interactions_entity_id_to_entities_entity_id_reverse": _fanout(4)},
         default_fanout=None,
     )]

@@ -859,7 +859,7 @@ impl RuntimeIndex {
     pub fn iter(
         &self,
         stage_table: String,
-        sampling_plan: &Bound<'_, PyAny>,
+        sampling_plan: PyRef<'_, crate::sampling_plan::PySamplingPlan>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -887,7 +887,7 @@ impl RuntimeIndex {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
-        let sampling_plan = crate::sampling_plan::extract_sampling_plan(sampling_plan)?;
+        let sampling_plan = sampling_plan.inner.clone();
         Ok(RuntimeBatchIterator {
             history: None,
             planning: None,
@@ -1024,7 +1024,7 @@ impl RuntimeBatchIterator {
         parent_root: String,
         tt_id: String,
         stage_table: String,
-        sampling_plan: &Bound<'_, PyAny>,
+        sampling_plan: PyRef<'_, crate::sampling_plan::PySamplingPlan>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1053,7 +1053,7 @@ impl RuntimeBatchIterator {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
-        let sampling_plan = crate::sampling_plan::extract_sampling_plan(sampling_plan)?;
+        let sampling_plan = sampling_plan.inner.clone();
         Ok(Self {
             history: None,
             planning: None,

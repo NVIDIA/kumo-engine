@@ -78,9 +78,9 @@ uv pip install .
 
 ### Typed runtime sampling plans
 
-`diskgraph.SamplingPlan` is a Python dataclass matching the native traversal
-schema. DiskGraph owns this contract so the native package remains independent
-of `kumo-core`. It uses ordinary lists and dictionaries:
+`diskgraph.SamplingPlan` is an immutable Rust-owned value exposed by PyO3.
+DiskGraph owns this contract so the native package remains independent of
+`kumo-core`. Constructors accept ordinary Python lists and mappings:
 
 ```python
 from diskgraph import FanoutSpec, LayerSpec, RuntimeIndex, SamplingPlan
@@ -100,13 +100,16 @@ batches, sample_count = index.iter(
 
 `LayerSpec.fanouts` keys are native relation names. A relation uses its override
 or the layer's `default_fanout`; `None` skips relations without an override.
-`RuntimeIndex.iter` accepts only `SamplingPlan`; PyO3 reads its dataclass fields
-directly into the Rust sampling structs. Dictionaries, JSON strings, `None`,
-and other types raise `TypeError`. Use
-`SamplingPlan()` for zero-hop iteration. Kumo trainer and DataModule callers pass
-the dataclass throughout the call stack. Plan construction does not open an
-index or load Torch/training modules. The dataclasses are mutable; edits affect
-subsequent iterator construction.
+`RuntimeIndex.iter` accepts only the native `SamplingPlan` class. Dictionaries,
+JSON strings, `None`, and other types raise `TypeError`; use `SamplingPlan()`
+for zero-hop iteration. The binding clones the underlying Rust plan for each
+iterator without traversing Python fields or serializing JSON.
+
+Constructors copy their inputs into native values. All properties are read-only:
+`layers` is a tuple, and `fanouts` is a read-only mapping. Construct a new plan
+to change the configuration. Native values support pickle, including complete
+plans passed to spawned worker processes. Construction opens no index and
+imports no Torch or training modules.
 
 `WeightedSampling(weighting, temporal=False)` represents the native `weighted`
 variant; `temporal=True` selects `temporal_weighted`. Weightings are
