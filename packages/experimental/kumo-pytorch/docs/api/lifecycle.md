@@ -421,6 +421,11 @@ those with targets) retain their existing scheduling instead.
 Order is a pure function of `seed`, `epoch`, `shuffle`, `rank`
 and `world_size`; ranks are disjoint before padding. A token budget
 (`Batching.max_tokens`) with `world_size > 1` is refused.
+For a single split and rank, with length bucketing disabled,
+`shuffle=False` preserves anchor-table order regardless of physical
+storage shards. Native model batching may group separate splits rather
+than interleave them in source order. `shuffle=True` permutes anchors
+reproducibly using the seed and epoch.
 `output_format="model"` refuses raw types without a tensor
 representation before fetching a batch; `"inspectable"` keeps them
 as Arrow arrays. Both emit the same `Batch` structure.

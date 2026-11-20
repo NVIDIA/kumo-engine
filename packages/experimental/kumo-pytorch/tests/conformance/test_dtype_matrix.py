@@ -55,7 +55,7 @@ DTYPES = (
 def pytest_generate_tests(metafunc):
     if "engine_name" in metafunc.fixturenames:
         selected = metafunc.config.getoption("--conformance-engine")
-        engines = ("in_memory", "diskgraph") if selected == "all" else (selected,)
+        engines = ("diskgraph",) if selected == "all" else (selected,)
         metafunc.parametrize("engine_name", engines)
 
 

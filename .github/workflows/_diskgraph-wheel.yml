@@ -9,6 +9,11 @@ name: DiskGraph wheel
 # DiskGraph from source.
 on:  # yamllint disable-line rule:truthy
   workflow_call:
+    inputs:
+      readable-output:
+        description: Retain PyTorch build logs and publish its concise diagnostics summary.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +30,7 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
       GITHUB_RUN_ID: ${{ github.run_id }}
+      KUMO_CI_READABLE: ${{ inputs.readable-output }}
     # Oldest runner image: the wheel must load on every consumer's glibc.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
@@ -64,7 +70,12 @@ jobs:
           key: python-wheel-py${{ steps.python.outputs.version }}
       - name: Build wheel
         if: steps.cache.outputs.cache-hit != 'true'
-        run: uv build --wheel --out-dir /tmp/diskgraph-wheel packages/diskgraph
+        run: |
+          output=()
+          if [[ "$KUMO_CI_READABLE" == true ]]; then
+            output=(python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run --title 'DiskGraph wheel build' --)
+          fi
+          "${output[@]}" uv build --wheel --out-dir /tmp/diskgraph-wheel packages/diskgraph
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
@@ -77,3 +88,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      - name: Publish readable results and full logs
+        if: ${{ always() && inputs.readable-output && steps.cache.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: DiskGraph wheel build
+          artifact: kumo-pytorch-diagnostics-diskgraph-build
+          status: ${{ job.status }}

@@ -4,12 +4,16 @@
 
 name: kumo-pytorch setup
 description: >-
-  kumo-engine's locked CPU workspace environment (CPU torch, kumo-core and its
+  kumo-engine's locked workspace environment (CPU or CUDA torch, kumo-core and its
   torch-geometric) plus kumo-pytorch and its dev extra (with notebooks: 'true',
   also its examples extra and a pinned Jupyter kernel and client); with
   diskgraph-wheel-artifact, also DiskGraph from that wheel of this commit's
   packages/diskgraph.
 inputs:
+  torch-extra:
+    description: Locked workspace PyTorch extra (cpu or cu130).
+    required: false
+    default: cpu
   python-version:
     required: false
     default: '3.12'
@@ -41,21 +45,30 @@ runs:
     - name: Install DiskGraph from the wheel
       if: inputs.diskgraph-wheel-artifact != ''
       shell: bash
-      run: ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+      run: |
+        python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+          --title "Setup / Install DiskGraph from the wheel" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+        ./scripts/diskgraph install --python "$(command -v python)" -f --wheel /tmp/diskgraph-wheel
+        KUMO_CI_COMMAND
     - name: Install the locked workspace environment, then kumo-pytorch into it
       shell: bash
       env:
         NOTEBOOKS: ${{ inputs.notebooks }}
+        TORCH_EXTRA: ${{ inputs.torch-extra }}
       run: |
+        python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+          --title "Setup / Install the locked workspace environment, then kumo-pytorch into it" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
         set -euo pipefail
+        case "$TORCH_EXTRA" in cpu|cu130) ;; *) exit 1 ;; esac
         examples=()
         if [ "$NOTEBOOKS" = true ]; then examples=(--extra examples); fi
         # --inexact keeps the DiskGraph wheel installed above and the root environment.
-        uv sync --locked --inexact --no-install-package diskgraph --extra cpu
+        uv sync --locked --inexact --no-install-package diskgraph --extra "$TORCH_EXTRA"
         uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
           --package kumo-pytorch --extra dev "${examples[@]}"
         # The notebook runner's tools are not package dependencies.
         if [ "$NOTEBOOKS" = true ]; then uv pip install nbclient==0.11.0 ipykernel==7.4.0; fi
+        KUMO_CI_COMMAND
     - name: Runner
       shell: bash
       run: |

@@ -1,0 +1,1705 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "repository": "https://github.com/kumo-ai/kumo-engine-arena",
+    "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+    "files": {
+      "kumo_specs/workload-selection.v1.json": "17068718d8057c291c5e4087c8143c65723190e4528ff3ed90101f66ab219b99",
+      "benchmarks/registry/anchors.v1.json": "e4e83aaa3b2312d5c749e3310dd6625db2f4abb99cbbcc59169505ac9cebd825"
+    },
+    "synthetic_medium": {
+      "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+      "files": {
+        "kumo_specs/workload-selection.v1.json": "17068718d8057c291c5e4087c8143c65723190e4528ff3ed90101f66ab219b99",
+        "kumo_specs/synthetic_source.py": "c39419545babc71343feaae80f1b1117ba429f9e336107396d214f6fe0777de6",
+        "kumo_specs/synthetic_contracts.py": "97d7ee026bfa8f95897b73f297799067e5516059283f46a2e60245dfc62572c7",
+        "datasets/pragma-synthetic-data/medium/reference/accepted-20261019/manifest.json": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34"
+      }
+    },
+    "mbd": {
+      "revision": "220aa187921ddb1d846985bec8f8edff1d3581c9",
+      "upstream_revision": "7c1642ca66eb460b0a2097e63afbed2eece739fa",
+      "files": {
+        "kumo_specs/mbd_source.py": "02cb033c2a689380cee3a9a7ed4ce2f4b2bc25484fad779550f64957db5b1303",
+        "kumo_specs/mbd_contracts.py": "e5a701285c2a14c764af9713a64c77e1bb27f622fdce039240c3536b281c19c2",
+        "datasets/mbd/extraction.json": "db51ea0bf5bcae9252b87b684720dd7d74520acc34a4f042788abae1e0eb4bb5"
+      }
+    },
+    "streaming_25b": {
+      "case": "packages/kumo-engine/test/cases/streaming_temporal_link.py",
+      "generator_revision": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+      "manifest_sha256": "169455eac395e84508d83e575f5ed4f9e1489693421b0ae43f7227db31a151a1"
+    }
+  },
+  "bindings": [
+    {
+      "ref": "E01",
+      "binding_id": "kumo-binding-df6cf994161c360dac8eed2fd75823e568812607471d9e4e74a9bb9c4ffa52b9",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "graphsage",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {"involvement": {"kind": "binary"}}
+        }
+      },
+      "campaigns": ["training", "smoke", "full", "legacy-lifecycle", "fitting"],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast-graph",
+      "execution": {"batch_size": 4, "threads": 1},
+      "case": "account-involvement-next24h-graphsage"
+    },
+    {
+      "ref": "E02",
+      "binding_id": "kumo-binding-0b7ba9313e19cae69aec45e615aaf123e1ad27506efd3a3502ed7e4f3b61b4b2",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "combined",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {"involvement": {"kind": "binary"}}
+        }
+      },
+      "campaigns": ["training", "smoke", "full", "legacy-lifecycle", "fitting"],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast-graph",
+      "execution": {"batch_size": 4, "threads": 1},
+      "case": "account-involvement-next24h-combined"
+    },
+    {
+      "ref": "E03",
+      "binding_id": "kumo-binding-b1bfeb2538aaff06bcfdb4a4d8cbc74005102e9aa9c933680a5ff6456d7146f6",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "masked-value-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "pragma",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": ["training", "smoke", "full", "legacy-lifecycle", "fitting"],
+      "inputs": "account-transactions",
+      "task": "masked-value-pretrain",
+      "anchors": "daily-pretrain",
+      "execution": {"batch_size": 4, "threads": 1},
+      "case": "masked-value-pretrain-pragma"
+    },
+    {
+      "ref": "E04",
+      "binding_id": "kumo-binding-f665a09c0be79cf81edf1c3107725913d90fd267fa7f6c387ab78510ef30f2a7",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-token-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": ["training", "smoke", "full", "legacy-lifecycle", "fitting"],
+      "inputs": "account-transactions",
+      "task": "next-token-pretrain",
+      "anchors": "daily-pretrain",
+      "execution": {"batch_size": 4, "threads": 1},
+      "case": "next-token-pretrain-nuformer"
+    },
+    {
+      "ref": "E05",
+      "binding_id": "suite:aml-hi-small-involvement-nuformer",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/hi-small",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {"involvement": {"kind": "binary"}}
+        }
+      },
+      "origin": "Existing suite combination, additional to the PDF baseline",
+      "campaigns": ["training", "smoke", "full", "legacy-lifecycle", "fitting"],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast",
+      "execution": {"batch_size": 4, "threads": 1},
+      "case": "account-involvement-next24h-nuformer"
+    },
+    {
+      "ref": "L01",
+      "binding_id": "kumo-binding-7a40060237eb9ad8c664793abc87888879efbb99bc2ca964a535caaf68e3122a",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-amount-currency"
+      },
+      "input_variant": "default",
+      "representation": "combined",
+      "split_column": "forecast_split",
+      "targets": {
+        "amount": {
+          "all_true_columns": [],
+          "column": "next_amount",
+          "dtype": "DECIMAL(38,10)",
+          "non_null_required": true,
+          "population_target_specifications": {
+            "next_amount": {"dtype": "DECIMAL(38,10)", "kind": "decimal_regression", "nullable": true}
+          }
+        },
+        "currency": {
+          "all_true_columns": [],
+          "column": "next_currency",
+          "dtype": "VARCHAR",
+          "non_null_required": true,
+          "population_target_specifications": {"next_currency": {"kind": "categorical", "nullable": true}}
+        }
+      },
+      "campaigns": [
+        "training",
+        "smoke",
+        "full",
+        "benchmark-training",
+        "index",
+        "timing-diskgraph",
+        "lifecycle",
+        "histories",
+        "sweeps",
+        "length-planning"
+      ],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-amount-currency",
+      "anchors": "daily-forecast-graph",
+      "execution": {"batch_size": 32, "threads": 1},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.involvement:combined_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F03", "F04", "F05", "F07", "F08", "F10", "F11", "F14"],
+        "source_targets": {"smoke": "test.kumo_pytorch.targets:verify_next_outgoing"},
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original account identity, prediction/execution clocks and allowed input branches",
+            "reference": "original account mapping and anchors"
+          },
+          "graph_membership": {
+            "features": ["F02", "F04"],
+            "description": "Full historical transaction membership, sender/receiver edges, counterparties and sample ownership",
+            "reference": "raw transactions before each prediction time"
+          },
+          "graph_values": {
+            "features": ["F04", "F08", "F11"],
+            "description": "Root/endpoint membership, graph values, validity, dtypes and shapes",
+            "reference": "raw transactions and independently applied saved encoders"
+          },
+          "history_membership": {
+            "features": ["F02", "F03", "F10", "F11"],
+            "description": "Complete event groups, separators, valid prefixes and source-row alignment",
+            "reference": "raw account transactions before each prediction time"
+          },
+          "history_values": {
+            "features": ["F03", "F07", "F08", "F10", "F11"],
+            "description": "Whole encoded records, direction, age, UTC calendar values and chronological groups allowing tied permutations",
+            "reference": "raw transactions and independently applied saved encoders"
+          },
+          "aggregate_counts": {
+            "features": ["F05"],
+            "description": "All twelve touching/sender/receiver counts and training-only normalization",
+            "reference": "raw transactions in full/24h/7d/30d windows"
+          },
+          "aggregate_layout": {
+            "features": ["F05", "F11"],
+            "description": "Aggregate float32 values, boolean validity and one scalar per anchor",
+            "reference": "declared aggregate tensor contract"
+          },
+          "stored_targets": {
+            "features": ["F14"],
+            "description": "Independent target masks/values, exact float32 projection and training-only vocabulary",
+            "reference": "original anchor rows and projected labels"
+          },
+          "forecast_targets": {
+            "features": ["F14"],
+            "description": "Amount and currency from the same earliest outgoing transaction in [T,T+24h)",
+            "reference": "raw transactions with source-row tie resolution",
+            "modes": ["smoke"]
+          }
+        }
+      },
+      "case": "li-medium-combined",
+      "history_checks": {"factory": "test.kumo_pytorch.history_checks:run_binding"}
+    },
+    {
+      "ref": "L02",
+      "binding_id": "kumo-binding-a89cd63158411b5899a9cb49d3dc0ba4858301950a6e26154c105acade5e88bc",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-delay"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "next_delay_seconds",
+          "dtype": "DOUBLE",
+          "non_null_required": true,
+          "population_target_specifications": {"next_delay_seconds": {"kind": "regression", "nullable": true, "units": "seconds"}}
+        }
+      },
+      "campaigns": [],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-delay",
+      "anchors": "daily-forecast",
+      "execution": {"batch_size": 32, "threads": 1},
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
+    },
+    {
+      "ref": "L03",
+      "binding_id": "kumo-binding-e7ffe3f2ecb17f5a8a24b6020be91f83105f8ca368d913d067d7ed1f74172e9e",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "next-outgoing-format"
+      },
+      "input_variant": "default",
+      "representation": "graphsage",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "next_format",
+          "dtype": "VARCHAR",
+          "non_null_required": true,
+          "population_target_specifications": {"next_format": {"kind": "categorical", "nullable": "no event in horizon"}}
+        }
+      },
+      "campaigns": [],
+      "inputs": "account-transactions",
+      "task": "next-outgoing-format",
+      "anchors": "daily-forecast-graph",
+      "execution": {"batch_size": 32, "threads": 1},
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
+    },
+    {
+      "ref": "L04",
+      "binding_id": "kumo-binding-aae23270c079c2e03f5890d00147d5c98de04038881ffee9baa8f1d53b152c22",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "aml-data/li-medium",
+        "dataset_version": "v8",
+        "population": "account-daily",
+        "workload_id": "account-involvement-next24h"
+      },
+      "input_variant": "default",
+      "representation": "pragma",
+      "split_column": "forecast_split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "involvement",
+          "dtype": "INTEGER",
+          "non_null_required": true,
+          "population_target_specifications": {"involvement": {"kind": "binary"}}
+        }
+      },
+      "campaigns": [],
+      "inputs": "account-transactions",
+      "task": "account-involvement-next24h",
+      "anchors": "daily-forecast",
+      "execution": {"batch_size": 32, "threads": 1},
+      "pending": "Real-data campaigns disabled by user; retain fixture coverage. Only L01 / Combined is enabled for AML Medium."
+    },
+    {
+      "ref": "S01",
+      "binding_id": "suite:S01:bpe-v1",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "weekly-account",
+        "workload_id": "account-masked-value-pretrain"
+      },
+      "input_variant": "bpe",
+      "representation": "pragma",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "inputs": "account-mixed-history",
+      "task": "masked-value-pretrain",
+      "anchors": "weekly-pretrain",
+      "source_view": "accounts",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 128},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:masked_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F03", "F07", "F08", "F09", "F10", "F11", "F12"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original account identity and prediction clock.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "history_values": {
+            "features": ["F01", "F02", "F03", "F07", "F08", "F10", "F11"],
+            "description": "Own financial events and owner-level events; strict cutoff, tied-event membership, encoded fields, positions and packed layout.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "masked_targets": {
+            "features": ["F11", "F12"],
+            "description": "Recover source values before corruption; verify masks, reconstruction labels and eligible positions.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          },
+          "bpe_pieces": {
+            "features": ["F09", "F10"],
+            "description": "Original dispute text resolves to the complete saved BPE piece sequence, shared ID mapping, per-field positions and field identities without truncation.",
+            "reference": "Original pinned public rows with account/owner membership; saved scalar/BPE state; independent packed records, temporal values and original reconstruction labels."
+          }
+        }
+      },
+      "base_binding_id": "kumo-binding-c233cc4c1a1df11b3045558632072c8916724fd27a28a11a8f34d6f4cabbca33"
+    },
+    {
+      "ref": "S02",
+      "binding_id": "kumo-binding-41605c06ba4a8facd8e18ee7034b4509a5098b3eb42a905069e707f78ca3566e",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "weekly-customer",
+        "workload_id": "customer-next-token-pretrain"
+      },
+      "input_variant": "default",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {},
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "inputs": "customer-mixed-history",
+      "task": "next-token-pretrain",
+      "anchors": "weekly-pretrain",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 128},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:sequence_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F03", "F07", "F08", "F10", "F11", "F13"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original customer identities and anchor clocks; historical events strictly precede cutoff.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          },
+          "history_values": {
+            "features": ["F01", "F02", "F03", "F07", "F08", "F10", "F11"],
+            "description": "All owned-account and customer events, each transfer once per customer; complete chronological encoded records with equal-time permutations permitted.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          },
+          "next_token_targets": {
+            "features": ["F13", "F11"],
+            "description": "The complete source-derived token sequence shifted exactly once, with padding and terminal positions excluded.",
+            "reference": "Original pinned public rows joined through customer/account ownership; UTC clocks and saved encoder state, independently of the prepared event tables."
+          }
+        }
+      }
+    },
+    {
+      "ref": "S04",
+      "binding_id": "suite:S04:aggregates-v1",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "pragma-synthetic-medium",
+        "dataset_version": "v1",
+        "population": "ltv_positive_6m",
+        "workload_id": "ltv_positive_6m"
+      },
+      "input_variant": "aggregates",
+      "representation": "combined",
+      "split_column": "split",
+      "targets": {
+        "label": {
+          "all_true_columns": [],
+          "column": "label",
+          "dtype": "BOOLEAN",
+          "non_null_required": true,
+          "population_target_specifications": {"label": {"kind": "binary"}}
+        }
+      },
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "base_binding_id": "kumo-binding-a53f69f20fa7930d17ea648a3c074f6eb02e881b8d131dd9a98fb2c2458925fa",
+      "inputs": "customer-fusion-history",
+      "task": "positive-lifetime-value",
+      "anchors": "onboarding-forecast-graph",
+      "source_view": "ltv",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 128},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.history_features:combined_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F10", "F11", "F14"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original customer identity, onboarding prediction clock and strict v2 execution clock.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "graph_values": {
+            "features": ["F01", "F02", "F04", "F08", "F11"],
+            "description": "Original event identities and values, root-to-event edges, sample ownership and complete historical membership independent of tensor order.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "history_values": {
+            "features": ["F01", "F02", "F03", "F07", "F08", "F10", "F11"],
+            "description": "Complete original customer event records, derived ages/calendar, scalar encodings, separators and positions; equal-time permutations only.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "aggregate_values": {
+            "features": ["F05", "F06", "F07", "F08", "F11"],
+            "description": "35 exact base counts, richer reductions, grouped/nested counts and ratios; independent masks, raw checks and training-only normalization.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          },
+          "stored_targets": {
+            "features": ["F14"],
+            "description": "Original LTV label equals gross_profit > 0, exact float32 transport, validity and stored-target encoding.",
+            "reference": "Original pinned customer/ownership/event rows and anchor labels; independently calculated graph, sequence, reductions, groups and threshold labels."
+          }
+        }
+      }
+    },
+    {
+      "ref": "M03",
+      "binding_id": "suite:M03:auxiliary-labels-v1",
+      "selector": {
+        "anchor_version": "v1",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "transaction-forecast",
+        "workload_id": "next-transaction-category"
+      },
+      "input_variant": "trx-composite",
+      "representation": "nuformer",
+      "split_column": "split",
+      "targets": {
+        "event_subtype": {
+          "all_true_columns": ["next_event_subtype_valid"],
+          "column": "next_event_subtype",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {"event_subtype": {"kind": "categorical", "validity_column": "next_event_subtype_valid"}}
+        },
+        "event_type": {
+          "all_true_columns": ["next_event_type_valid"],
+          "column": "next_event_type",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {"event_type": {"kind": "categorical", "validity_column": "next_event_type_valid"}}
+        }
+      },
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "base_binding_id": "kumo-binding-13fb18707441aaa64085ce5bb9a27889bd752ab012ae6221f8217bffe29575f5",
+      "inputs": "client-transaction-composite",
+      "anchors": "monthly-forecast-sequence",
+      "task": "next-transaction-category",
+      "source_view": "category",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 128},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.forecast_features:category_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F03", "F07", "F08", "F10", "F11", "F14", "F16"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original client and split membership, prediction clock and strict history cutoff.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "history_values": {
+            "features": ["F02", "F03", "F07", "F08", "F10", "F11"],
+            "description": "Original eligible events, independently encoded composite IDs, chronological groups and packed offsets.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "stored_targets": {
+            "features": ["F14"],
+            "description": "Original earliest future event, independently valid type/subtype labels and train-only encoders.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "aligned_targets": {
+            "features": ["F16"],
+            "description": "Withheld historical type/subtype fields and fixed-threshold amount labels follow exactly the retained events.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "matching_groups": {
+            "features": ["F16"],
+            "description": "Stable group IDs distinguish raw client identities and agree across repeats.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          },
+          "input_allowlist": {
+            "features": ["F02", "F16"],
+            "description": "All emitted input declarations exclude auxiliary target source fields and forecast labels.",
+            "reference": "Original pinned client/event rows and v1 anchors; independent scalar encoding, composite tuples, temporal membership and label rules."
+          }
+        }
+      }
+    },
+    {
+      "ref": "M04",
+      "binding_id": "suite:M04:generated-count-v1",
+      "selector": {
+        "anchor_version": "v2",
+        "dataset_id": "mbd",
+        "dataset_version": "v1",
+        "population": "transaction-forecast",
+        "workload_id": "future-trx-count"
+      },
+      "input_variant": "trx",
+      "representation": "graphsage",
+      "split_column": "split",
+      "targets": {
+        "count": {
+          "all_true_columns": [],
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "population_target_specifications": {"count": {"kind": "count", "validity": "all rows have recorded-span coverage"}}
+        }
+      },
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "base_binding_id": "kumo-binding-352a09604a3988b3d2e83e525858db1fe8b5418c92001439c2d93abe2fa6e68e",
+      "inputs": "client-transaction-graph",
+      "anchors": "monthly-forecast-graph",
+      "task": "future-trx-count",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 128},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.forecast_features:count_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F04", "F08", "F14", "F15"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original client membership, split, prediction clock and strict historical cutoff.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "graph_values": {
+            "features": ["F01", "F02", "F04", "F08"],
+            "description": "Original event identities, features, complete historical membership and connectivity independent of tensor order.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "stored_targets": {
+            "features": ["F14"],
+            "description": "Original BIGINT count and float32 training projection match the independently counted future window.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          },
+          "generated_targets": {
+            "features": ["F15"],
+            "description": "Native generated count equals original events in [T,T+30 days), including covered empty windows.",
+            "reference": "Original pinned client partitions, transaction rows and anchor labels; independent identity, graph and half-open future-window answers."
+          }
+        }
+      }
+    },
+    {
+      "ref": "T01",
+      "on_demand": true,
+      "binding_id": "suite:T01:session-count-v1",
+      "selector": {
+        "dataset_id": "streaming/25B",
+        "dataset_version": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+        "population": "viewer-weekly-10k",
+        "anchor_version": "v1",
+        "workload_id": "next-7d-session-count"
+      },
+      "origin": "Engine streaming_temporal_link case sources; suite-owned session-count task and fixed cohort.",
+      "input_variant": "sessions",
+      "representation": "graphsage",
+      "split_column": "split",
+      "targets": {
+        "count": {
+          "column": "future_count",
+          "dtype": "BIGINT",
+          "non_null_required": true,
+          "all_true_columns": []
+        }
+      },
+      "campaigns": ["smoke", "training", "full", "lifecycle"],
+      "inputs": "viewer-session-graph",
+      "anchors": "weekly-session-count",
+      "task": "next-7d-session-count",
+      "execution": {"batch_size": 4, "threads": 1, "runner": "rtxpro6000", "min_free_gib": 512},
+      "feature_checks": {
+        "factory": "test.kumo_pytorch.parquet_features:count_graph_features",
+        "modes": ["smoke", "training"],
+        "features": ["F01", "F02", "F04", "F08", "F14"],
+        "assertions": {
+          "identity_cutoff": {
+            "features": ["F01", "F02"],
+            "description": "Original viewer membership and strict historical cutoff.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          },
+          "graph_values": {
+            "features": ["F01", "F02", "F04", "F08"],
+            "description": "Sampled session identities, values, connectivity and eligible tie alternatives.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          },
+          "stored_targets": {
+            "features": ["F14"],
+            "description": "Original session counts and their float32 target projection.",
+            "reference": "Pinned original viewer/session Parquet rows; independent graph oracle and Python future-window counts."
+          }
+        }
+      }
+    }
+  ],
+  "datasets": {
+    "aml-data/hi-small": {
+      "display_name": "AML HI Small",
+      "inventory": "hi-small",
+      "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
+      "identity_path": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet",
+      "anchor_path": "anchors/aml-data/v8/hi-small/{population}/{version}/anchors.parquet",
+      "source_options": {
+        "variant": "hi-small",
+        "transactions": "datasets/aml-data/v8/hi-small/transactions.parquet",
+        "accounts_binding": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet"
+      },
+      "identity_column": "entity_id",
+      "history_bound": {"table": "account_events", "entity": "account_id"},
+      "tables": {
+        "accounts": {"key": "account_id", "time": "first_observed_time"},
+        "transactions": {"key": "transaction_id", "time": "event_time"},
+        "account_events": {"key": "event_id", "time": "event_time"}
+      },
+      "relations": [
+        ["account_touches", "accounts", "account_id", "account_events", "account_id"],
+        ["sender", "accounts", "account_id", "transactions", "sender_id"],
+        ["receiver", "accounts", "account_id", "transactions", "receiver_id"]
+      ],
+      "anchor_manifest_format": "arena"
+    },
+    "aml-data/li-medium": {
+      "display_name": "AML LI Medium",
+      "inventory": "li-medium",
+      "prepare": "test.kumo_pytorch.aml_source:normalize_sources",
+      "identity_path": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet",
+      "anchor_path": "anchors/aml-data/v8/li-medium/{population}/{version}/anchors.parquet",
+      "source_options": {
+        "variant": "li-medium",
+        "transactions": "datasets/aml-data/v8/li-medium/transactions.parquet",
+        "accounts_binding": "anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet"
+      },
+      "identity_column": "entity_id",
+      "history_bound": {"table": "account_events", "entity": "account_id"},
+      "tables": {
+        "accounts": {"key": "account_id", "time": "first_observed_time"},
+        "transactions": {"key": "transaction_id", "time": "event_time"},
+        "account_events": {"key": "event_id", "time": "event_time"}
+      },
+      "relations": [
+        ["account_touches", "accounts", "account_id", "account_events", "account_id"],
+        ["sender", "accounts", "account_id", "transactions", "sender_id"],
+        ["receiver", "accounts", "account_id", "transactions", "receiver_id"]
+      ],
+      "anchor_manifest_format": "arena"
+    },
+    "pragma-synthetic-medium": {
+      "display_name": "Synthetic Medium",
+      "inventory": "synthetic-medium-customers",
+      "prepare": "test.kumo_pytorch.relational_sources:prepare_sources",
+      "identity_path": "datasets/pragma-synthetic/medium/v1/customers/part-00000.parquet",
+      "identity_column": "customer_id",
+      "identity_id_column": "customer_id",
+      "identity_encoding": "canonical_integer",
+      "anchor_path": "anchors/pragma-synthetic-medium/v1/{population}/{version}/anchors.parquet",
+      "anchor_manifest_format": "arena",
+      "source_options": {
+        "root": {"table": "customers", "key": "customer_id", "time": "onboarded_at"},
+        "ownership": {"table": "accounts", "key": "account_id", "root": "customer_id"},
+        "events": {
+          "card_txns": {
+            "key": "txn_id",
+            "time": "event_at",
+            "fields": {"amount": "amount", "mcc": "mcc", "channel": "channel"},
+            "ownership": {"kind": "owned", "column": "account_id", "verify_root": "customer_id"}
+          },
+          "transfers": {
+            "key": "transfer_id",
+            "time": "event_at",
+            "fields": {"amount": "amount", "transfer_type": "transfer_type", "cross_border": "cross_border"},
+            "ownership": {"kind": "endpoints", "columns": ["src_account_id", "dst_account_id"]}
+          },
+          "logins": {
+            "key": "login_id",
+            "time": "event_at",
+            "fields": {"ip_region": "ip_region", "success": "success"},
+            "ownership": {"kind": "direct", "column": "customer_id"}
+          },
+          "profile_changes": {
+            "key": "change_id",
+            "time": "event_at",
+            "fields": {"change_type": "change_type"},
+            "ownership": {"kind": "direct", "column": "customer_id"}
+          },
+          "disputes": {
+            "key": "dispute_id",
+            "time": "event_at",
+            "fields": {"reason": "reason"},
+            "ownership": {"kind": "owned", "column": "account_id", "verify_root": "customer_id"}
+          },
+          "lifelong_events": {
+            "key": "lifelong_id",
+            "time": "event_at",
+            "fields": {"event_type": "event_type"},
+            "ownership": {"kind": "direct", "column": "customer_id"}
+          },
+          "plan_events": {
+            "key": "plan_event_id",
+            "time": "event_at",
+            "fields": {"plan": "plan"},
+            "ownership": {"kind": "direct", "column": "customer_id"}
+          }
+        },
+        "tables": {
+          "accounts": {"prefix": "datasets/pragma-synthetic/medium/v1/accounts/"},
+          "card_txns": {"prefix": "datasets/pragma-synthetic/medium/v1/card_txns/"},
+          "customers": {"prefix": "datasets/pragma-synthetic/medium/v1/customers/"},
+          "disputes": {"prefix": "datasets/pragma-synthetic/medium/v1/disputes/"},
+          "lifelong_events": {"prefix": "datasets/pragma-synthetic/medium/v1/lifelong_events/"},
+          "logins": {"prefix": "datasets/pragma-synthetic/medium/v1/logins/"},
+          "plan_events": {"prefix": "datasets/pragma-synthetic/medium/v1/plan_events/"},
+          "profile_changes": {"prefix": "datasets/pragma-synthetic/medium/v1/profile_changes/"},
+          "transfers": {"prefix": "datasets/pragma-synthetic/medium/v1/transfers/"}
+        }
+      },
+      "tables": {
+        "roots": {"key": "root_id", "time": "available_at"},
+        "card_txns": {"key": "event_id", "time": "event_time"},
+        "transfers": {"key": "event_id", "time": "event_time"},
+        "logins": {"key": "event_id", "time": "event_time"},
+        "profile_changes": {"key": "event_id", "time": "event_time"},
+        "disputes": {"key": "event_id", "time": "event_time"},
+        "lifelong_events": {"key": "event_id", "time": "event_time"},
+        "plan_events": {"key": "event_id", "time": "event_time"}
+      },
+      "relations": [
+        ["root_card_txns", "roots", "root_id", "card_txns", "root_id"],
+        ["root_transfers", "roots", "root_id", "transfers", "root_id"],
+        ["root_logins", "roots", "root_id", "logins", "root_id"],
+        ["root_profile_changes", "roots", "root_id", "profile_changes", "root_id"],
+        ["root_disputes", "roots", "root_id", "disputes", "root_id"],
+        ["root_lifelong_events", "roots", "root_id", "lifelong_events", "root_id"],
+        ["root_plan_events", "roots", "root_id", "plan_events", "root_id"]
+      ],
+      "views": {
+        "accounts": {
+          "inventory": "synthetic-medium-accounts",
+          "identity_path": "datasets/pragma-synthetic/medium/v1/accounts/part-00000.parquet",
+          "identity_column": "account_id",
+          "identity_id_column": "account_id",
+          "source_options": {
+            "root": {"table": "accounts", "key": "account_id", "time": "opened_at"},
+            "root_level": "owned",
+            "parent": {"table": "customers", "key": "customer_id"}
+          }
+        },
+        "ltv": {"inventory": "synthetic-medium-ltv"}
+      }
+    },
+    "mbd": {
+      "display_name": "MBD",
+      "inventory": "mbd-transaction-forecast",
+      "prepare": "test.kumo_pytorch.partitioned_sources:prepare_sources",
+      "identity_paths": [
+        "datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=1/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=2/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet"
+      ],
+      "identity_column": "client_id",
+      "anchor_path": "anchors/mbd/v1/{population}/{version}/anchors.parquet",
+      "anchor_manifest_format": "arena",
+      "source_options": {
+        "partition": "fold",
+        "splits": {"0": "train", "1": "train", "2": "train", "3": "valid", "4": "test"},
+        "root": {"table": "clients", "key": "client_id"},
+        "tables": {
+          "clients": {
+            "paths": [
+              "datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=1/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=2/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+              "datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet"
+            ]
+          },
+          "transactions": {"prefix": "datasets/mbd/v1/detail/trx/"}
+        },
+        "events": {
+          "transactions": {
+            "root": "client_id",
+            "time": "event_time",
+            "numerical": ["amount"],
+            "categorical": [
+              "currency",
+              "event_type",
+              "event_subtype",
+              "src_type11",
+              "src_type12",
+              "dst_type11",
+              "dst_type12",
+              "src_type21",
+              "src_type22",
+              "src_type31",
+              "src_type32"
+            ]
+          }
+        }
+      },
+      "tables": {"roots": {"key": "root_id"}, "transactions": {"key": "event_id", "time": "event_time"}},
+      "relations": [["client_transactions", "roots", "root_id", "transactions", "root_id"]],
+      "views": {
+        "category": {
+          "inventory": "mbd-transaction-category",
+          "source_options": {"event_identity_order": "timestamp"}
+        }
+      }
+    },
+    "streaming/25B": {
+      "display_name": "Streaming 25B",
+      "inventory": "streaming-25b",
+      "tables": {
+        "viewers": {
+          "prefix": "scale-bench/datasets/streaming/25B/viewers/",
+          "key": "viewer_id",
+          "time": "signup_time"
+        },
+        "genres": {"prefix": "scale-bench/datasets/streaming/25B/genres/", "key": "genre_id"},
+        "series": {
+          "prefix": "scale-bench/datasets/streaming/25B/series/",
+          "key": "series_id",
+          "time": "created_time"
+        },
+        "titles": {
+          "prefix": "scale-bench/datasets/streaming/25B/titles/",
+          "key": "title_id",
+          "time": "added_time"
+        },
+        "title_genres": {"prefix": "scale-bench/datasets/streaming/25B/title_genres/", "key": null},
+        "sessions": {
+          "prefix": "scale-bench/datasets/streaming/25B/sessions/",
+          "key": "session_id",
+          "time": "start_time"
+        },
+        "ratings": {"prefix": "scale-bench/datasets/streaming/25B/ratings/", "key": null, "time": "rated_time"}
+      },
+      "relations": [
+        ["genres_series", "genres", "genre_id", "series", "genre_id"],
+        ["series_titles", "series", "series_id", "titles", "series_id"],
+        ["titles_title_genres", "titles", "title_id", "title_genres", "title_id"],
+        ["genres_title_genres", "genres", "genre_id", "title_genres", "genre_id"],
+        ["viewers_sessions", "viewers", "viewer_id", "sessions", "viewer_id"],
+        ["titles_sessions", "titles", "title_id", "sessions", "title_id"],
+        ["viewers_ratings", "viewers", "viewer_id", "ratings", "viewer_id"],
+        ["titles_ratings", "titles", "title_id", "ratings", "title_id"]
+      ],
+      "anchor_generation": {
+        "root_table": "viewers",
+        "root_time": "signup_time",
+        "event_table": "sessions",
+        "event_root": "viewer_id",
+        "event_time": "start_time",
+        "cohort_size": 10000,
+        "window_seconds": 604800,
+        "prediction_times": {
+          "train": "2025-12-10T00:00:00Z",
+          "valid": "2025-12-17T00:00:00Z",
+          "test": "2025-12-24T00:00:00Z"
+        },
+        "coverage": ["2024-01-01T00:00:00Z", "2025-12-31T00:00:00Z"]
+      }
+    }
+  },
+  "tasks": {
+    "account-involvement-next24h": {
+      "kind": "stored",
+      "targets": {"label": {"column": "involvement", "dtype": "INTEGER", "kind": "binary"}}
+    },
+    "next-outgoing-amount-currency": {
+      "kind": "stored",
+      "targets": {
+        "amount": {"column": "next_amount", "dtype": "DECIMAL(38,10)", "kind": "decimal"},
+        "currency": {"column": "next_currency", "dtype": "VARCHAR", "kind": "category"}
+      }
+    },
+    "next-outgoing-delay": {
+      "kind": "stored",
+      "targets": {"label": {"column": "next_delay_seconds", "dtype": "DOUBLE", "kind": "delay_seconds"}}
+    },
+    "next-outgoing-format": {
+      "kind": "stored",
+      "targets": {"label": {"column": "next_format", "dtype": "VARCHAR", "kind": "category"}}
+    },
+    "masked-value-pretrain": {"kind": "masked_values", "targets": {}},
+    "next-token-pretrain": {"kind": "next_token", "targets": {}},
+    "positive-lifetime-value": {
+      "kind": "stored",
+      "targets": {
+        "label": {
+          "kind": "binary",
+          "column": "label",
+          "dtype": "BOOLEAN",
+          "threshold": {"column": "gross_profit", "value": 0.0}
+        }
+      }
+    },
+    "future-trx-count": {
+      "kind": "stored",
+      "targets": {"count": {"column": "future_count", "dtype": "BIGINT", "kind": "count"}},
+      "generated_checks": {
+        "generated_count": {
+          "stored": "count",
+          "path": ["client_transactions"],
+          "family": "transactions",
+          "clock": "event_time",
+          "window_seconds": 2592000
+        }
+      }
+    },
+    "next-transaction-category": {
+      "kind": "stored",
+      "targets": {
+        "event_type": {
+          "column": "next_event_type",
+          "dtype": "BIGINT",
+          "kind": "category",
+          "validity_columns": ["next_event_type_valid"]
+        },
+        "event_subtype": {
+          "column": "next_event_subtype",
+          "dtype": "BIGINT",
+          "kind": "category",
+          "validity_columns": ["next_event_subtype_valid"]
+        }
+      },
+      "auxiliary_checks": ["aligned", "matching"],
+      "forecast": {"family": "transactions", "window_seconds": 2592000}
+    },
+    "next-7d-session-count": {
+      "kind": "stored",
+      "targets": {"count": {"column": "future_count", "dtype": "BIGINT", "kind": "count"}}
+    }
+  },
+  "input_profiles": {
+    "account-transactions": {
+      "root_table": "accounts",
+      "root_type": "account",
+      "families": [
+        [
+          "transactions",
+          ["account_touches"],
+          "event_time",
+          [
+            ["direction", "direction", "categorical"],
+            ["amount_paid", "amount_paid", "numerical"],
+            ["payment_currency", "payment_currency", "categorical"],
+            ["amount_received", "amount_received", "numerical"],
+            ["receiving_currency", "receiving_currency", "categorical"],
+            ["payment_format", "payment_format", "categorical"]
+          ]
+        ]
+      ],
+      "graph": {
+        "node_table": "transactions",
+        "relations": ["sender", "receiver"],
+        "numerical": ["amount_paid", "amount_received"],
+        "categorical": ["payment_currency", "receiving_currency", "payment_format"],
+        "timestamp": "event_time_seconds"
+      },
+      "aggregates": [
+        ["all_history_total_touching_count", ["account_touches"], "event_time", null],
+        ["all_history_sender_count", ["sender"], "event_time", null],
+        ["all_history_receiver_count", ["receiver"], "event_time", null],
+        ["24h_total_touching_count", ["account_touches"], "event_time", -86400],
+        ["24h_sender_count", ["sender"], "event_time", -86400],
+        ["24h_receiver_count", ["receiver"], "event_time", -86400],
+        ["7d_total_touching_count", ["account_touches"], "event_time", -604800],
+        ["7d_sender_count", ["sender"], "event_time", -604800],
+        ["7d_receiver_count", ["receiver"], "event_time", -604800],
+        ["30d_total_touching_count", ["account_touches"], "event_time", -2592000],
+        ["30d_sender_count", ["sender"], "event_time", -2592000],
+        ["30d_receiver_count", ["receiver"], "event_time", -2592000]
+      ],
+      "variant": "default"
+    },
+    "customer-mixed-history": {
+      "variant": "default",
+      "root_table": "roots",
+      "root_type": "customer",
+      "families": [
+        [
+          "card_txns",
+          ["root_card_txns"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["mcc", "mcc", "categorical"],
+            ["channel", "channel", "categorical"]
+          ]
+        ],
+        [
+          "transfers",
+          ["root_transfers"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["transfer_type", "transfer_type", "categorical"],
+            ["cross_border", "cross_border", "categorical"],
+            ["direction", "direction", "categorical"]
+          ]
+        ],
+        [
+          "logins",
+          ["root_logins"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["ip_region", "ip_region", "categorical"],
+            ["success", "success", "categorical"]
+          ]
+        ],
+        [
+          "profile_changes",
+          ["root_profile_changes"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["change_type", "change_type", "categorical"]
+          ]
+        ],
+        [
+          "disputes",
+          ["root_disputes"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["reason", "reason", "categorical"]]
+        ],
+        [
+          "lifelong_events",
+          ["root_lifelong_events"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["event_type", "event_type", "categorical"]
+          ]
+        ],
+        [
+          "plan_events",
+          ["root_plan_events"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["plan", "plan", "categorical"]]
+        ]
+      ]
+    },
+    "account-mixed-history": {
+      "variant": "bpe",
+      "root_table": "roots",
+      "root_type": "account",
+      "families": [
+        [
+          "card_txns",
+          ["root_card_txns"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["mcc", "mcc", "categorical"],
+            ["channel", "channel", "categorical"]
+          ]
+        ],
+        [
+          "transfers",
+          ["root_transfers"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["transfer_type", "transfer_type", "categorical"],
+            ["cross_border", "cross_border", "categorical"],
+            ["direction", "direction", "categorical"]
+          ]
+        ],
+        [
+          "logins",
+          ["root_logins"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["ip_region", "ip_region", "categorical"],
+            ["success", "success", "categorical"]
+          ]
+        ],
+        [
+          "profile_changes",
+          ["root_profile_changes"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["change_type", "change_type", "categorical"]
+          ]
+        ],
+        [
+          "disputes",
+          ["root_disputes"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["reason", "reason", "categorical"]]
+        ],
+        [
+          "lifelong_events",
+          ["root_lifelong_events"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["event_type", "event_type", "categorical"]
+          ]
+        ],
+        [
+          "plan_events",
+          ["root_plan_events"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["plan", "plan", "categorical"]]
+        ]
+      ],
+      "encodings": {"reason": {"kind": "text", "vocabulary_size": 256, "min_frequency": 2, "empty": "empty"}}
+    },
+    "customer-fusion-history": {
+      "variant": "aggregates",
+      "root_table": "roots",
+      "root_type": "customer",
+      "families": [
+        [
+          "card_txns",
+          ["root_card_txns"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["mcc", "mcc", "categorical"],
+            ["channel", "channel", "categorical"]
+          ]
+        ],
+        [
+          "transfers",
+          ["root_transfers"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["amount", "amount", "numerical"],
+            ["transfer_type", "transfer_type", "categorical"],
+            ["cross_border", "cross_border", "categorical"],
+            ["direction", "direction", "categorical"]
+          ]
+        ],
+        [
+          "logins",
+          ["root_logins"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["ip_region", "ip_region", "categorical"],
+            ["success", "success", "categorical"]
+          ]
+        ],
+        [
+          "profile_changes",
+          ["root_profile_changes"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["change_type", "change_type", "categorical"]
+          ]
+        ],
+        [
+          "disputes",
+          ["root_disputes"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["reason", "reason", "categorical"]]
+        ],
+        [
+          "lifelong_events",
+          ["root_lifelong_events"],
+          "event_time",
+          [
+            ["source_kind", "source_kind", "categorical"],
+            ["event_type", "event_type", "categorical"]
+          ]
+        ],
+        [
+          "plan_events",
+          ["root_plan_events"],
+          "event_time",
+          [["source_kind", "source_kind", "categorical"], ["plan", "plan", "categorical"]]
+        ]
+      ],
+      "graph": {
+        "nodes": {
+          "card_txns": {
+            "numerical": ["amount"],
+            "categorical": ["source_kind", "mcc", "channel"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "transfers": {
+            "numerical": ["amount"],
+            "categorical": ["source_kind", "transfer_type", "cross_border", "direction"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "logins": {
+            "numerical": [],
+            "categorical": ["source_kind", "ip_region", "success"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "profile_changes": {
+            "numerical": [],
+            "categorical": ["source_kind", "change_type"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "disputes": {
+            "numerical": [],
+            "categorical": ["source_kind", "reason"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "lifelong_events": {
+            "numerical": [],
+            "categorical": ["source_kind", "event_type"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          },
+          "plan_events": {
+            "numerical": [],
+            "categorical": ["source_kind", "plan"],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          }
+        },
+        "relations": {
+          "root_card_txns": "card_txns",
+          "root_transfers": "transfers",
+          "root_logins": "logins",
+          "root_profile_changes": "profile_changes",
+          "root_disputes": "disputes",
+          "root_lifelong_events": "lifelong_events",
+          "root_plan_events": "plan_events"
+        },
+        "reverse_hop": false
+      },
+      "aggregates": [
+        ["all_history_card_txns_count", ["root_card_txns"], "event_time", null],
+        ["all_history_transfers_count", ["root_transfers"], "event_time", null],
+        ["all_history_logins_count", ["root_logins"], "event_time", null],
+        ["all_history_profile_changes_count", ["root_profile_changes"], "event_time", null],
+        ["all_history_disputes_count", ["root_disputes"], "event_time", null],
+        ["all_history_lifelong_events_count", ["root_lifelong_events"], "event_time", null],
+        ["all_history_plan_events_count", ["root_plan_events"], "event_time", null],
+        ["24h_card_txns_count", ["root_card_txns"], "event_time", -86400],
+        ["24h_transfers_count", ["root_transfers"], "event_time", -86400],
+        ["24h_logins_count", ["root_logins"], "event_time", -86400],
+        ["24h_profile_changes_count", ["root_profile_changes"], "event_time", -86400],
+        ["24h_disputes_count", ["root_disputes"], "event_time", -86400],
+        ["24h_lifelong_events_count", ["root_lifelong_events"], "event_time", -86400],
+        ["24h_plan_events_count", ["root_plan_events"], "event_time", -86400],
+        ["7d_card_txns_count", ["root_card_txns"], "event_time", -604800],
+        ["7d_transfers_count", ["root_transfers"], "event_time", -604800],
+        ["7d_logins_count", ["root_logins"], "event_time", -604800],
+        ["7d_profile_changes_count", ["root_profile_changes"], "event_time", -604800],
+        ["7d_disputes_count", ["root_disputes"], "event_time", -604800],
+        ["7d_lifelong_events_count", ["root_lifelong_events"], "event_time", -604800],
+        ["7d_plan_events_count", ["root_plan_events"], "event_time", -604800],
+        ["30d_card_txns_count", ["root_card_txns"], "event_time", -2592000],
+        ["30d_transfers_count", ["root_transfers"], "event_time", -2592000],
+        ["30d_logins_count", ["root_logins"], "event_time", -2592000],
+        ["30d_profile_changes_count", ["root_profile_changes"], "event_time", -2592000],
+        ["30d_disputes_count", ["root_disputes"], "event_time", -2592000],
+        ["30d_lifelong_events_count", ["root_lifelong_events"], "event_time", -2592000],
+        ["30d_plan_events_count", ["root_plan_events"], "event_time", -2592000],
+        ["180d_card_txns_count", ["root_card_txns"], "event_time", -15552000],
+        ["180d_transfers_count", ["root_transfers"], "event_time", -15552000],
+        ["180d_logins_count", ["root_logins"], "event_time", -15552000],
+        ["180d_profile_changes_count", ["root_profile_changes"], "event_time", -15552000],
+        ["180d_disputes_count", ["root_disputes"], "event_time", -15552000],
+        ["180d_lifelong_events_count", ["root_lifelong_events"], "event_time", -15552000],
+        ["180d_plan_events_count", ["root_plan_events"], "event_time", -15552000]
+      ],
+      "aggregate_queries": {
+        "card_amount_sum": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "sum",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_mean": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "mean",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_min": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "min",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_max": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "max",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_std_population": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "std_population",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_amount_var_population": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "var_population",
+          "column": "amount",
+          "dtype": "float64"
+        },
+        "card_distinct_mcc": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "count_distinct",
+          "column": "mcc",
+          "dtype": "int64"
+        },
+        "card_distinct_channel": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "count_distinct",
+          "column": "channel",
+          "dtype": "int64"
+        },
+        "card_channel_mode": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "mode",
+          "column": "channel",
+          "categorical": true,
+          "model": false,
+          "dtype": "string"
+        },
+        "card_recency_at_execution": {
+          "source": {"family": "card_txns", "start": -2592000},
+          "operation": "recency",
+          "column": "event_time",
+          "model": false,
+          "dtype": "float64"
+        },
+        "prediction_offset": {"constant": 1.0, "model": false, "dtype": "float64"},
+        "card_recency_seconds": {
+          "derived": "add",
+          "inputs": ["card_recency_at_execution", "prediction_offset"],
+          "dtype": "float64"
+        },
+        "recent_card_share": {
+          "derived": "divide",
+          "inputs": ["24h_card_txns_count", "30d_card_txns_count"],
+          "dtype": "float64"
+        },
+        "card_mcc_groups": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["mcc"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_mcc_max_count": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["mcc"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_channel_groups": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["channel"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_channel_max_count": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["channel"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_mcc_channel_groups": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["mcc", "channel"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "count",
+          "dtype": "int64"
+        },
+        "card_mcc_channel_max_count": {
+          "source": {
+            "source": {"family": "card_txns", "start": -2592000},
+            "keys": ["mcc", "channel"],
+            "values": {"n": {"operation": "count"}}
+          },
+          "operation": "max",
+          "column": "n",
+          "dtype": "int64"
+        },
+        "card_mean_channels_per_mcc": {
+          "source": {
+            "source": {
+              "source": {"family": "card_txns", "start": -2592000},
+              "keys": ["mcc", "channel"],
+              "values": {"n": {"operation": "count"}}
+            },
+            "keys": ["mcc"],
+            "values": {"channels": {"operation": "count"}}
+          },
+          "operation": "mean",
+          "column": "channels",
+          "dtype": "float64"
+        }
+      }
+    },
+    "client-transaction-graph": {
+      "variant": "trx",
+      "root_table": "roots",
+      "root_type": "client",
+      "families": [
+        [
+          "transactions",
+          ["client_transactions"],
+          "event_time",
+          [
+            ["amount", "amount", "numerical"],
+            ["currency", "currency", "categorical"],
+            ["event_type", "event_type", "categorical"],
+            ["event_subtype", "event_subtype", "categorical"],
+            ["src_type11", "src_type11", "categorical"],
+            ["src_type12", "src_type12", "categorical"],
+            ["dst_type11", "dst_type11", "categorical"],
+            ["dst_type12", "dst_type12", "categorical"],
+            ["src_type21", "src_type21", "categorical"],
+            ["src_type22", "src_type22", "categorical"],
+            ["src_type31", "src_type31", "categorical"],
+            ["src_type32", "src_type32", "categorical"]
+          ]
+        ]
+      ],
+      "graph": {
+        "nodes": {
+          "transactions": {
+            "numerical": ["amount"],
+            "categorical": [
+              "currency",
+              "event_type",
+              "event_subtype",
+              "src_type11",
+              "src_type12",
+              "dst_type11",
+              "dst_type12",
+              "src_type21",
+              "src_type22",
+              "src_type31",
+              "src_type32"
+            ],
+            "timestamp": "event_time_seconds",
+            "time_column": "event_time"
+          }
+        },
+        "relations": {"client_transactions": "transactions"},
+        "reverse_hop": false
+      }
+    },
+    "client-transaction-composite": {
+      "variant": "trx-composite",
+      "root_table": "roots",
+      "root_type": "client",
+      "families": [
+        [
+          "transactions",
+          ["client_transactions"],
+          "event_time",
+          [
+            ["amount", "amount", "numerical"],
+            ["currency", "currency", "categorical"],
+            ["event_type", "event_type", "categorical"],
+            ["event_subtype", "event_subtype", "categorical"],
+            ["src_type11", "src_type11", "categorical"],
+            ["src_type12", "src_type12", "categorical"],
+            ["dst_type11", "dst_type11", "categorical"],
+            ["dst_type12", "dst_type12", "categorical"],
+            ["src_type21", "src_type21", "categorical"],
+            ["src_type22", "src_type22", "categorical"],
+            ["src_type31", "src_type31", "categorical"],
+            ["src_type32", "src_type32", "categorical"]
+          ]
+        ]
+      ],
+      "sequence": {"row": "composite", "layout": "packed"},
+      "auxiliary": {
+        "aligned": {
+          "fields": ["event_type", "event_subtype"],
+          "threshold": {"name": "positive_amount", "field": "amount", "threshold": 0.0}
+        },
+        "matching": {"field": "root_id"}
+      }
+    },
+    "viewer-session-graph": {
+      "variant": "sessions",
+      "root_table": "viewers",
+      "root_type": "viewer",
+      "sampling_limit": 32,
+      "graph": {
+        "nodes": {
+          "sessions": {
+            "numerical": ["watch_seconds", "completion_frac"],
+            "categorical": ["device_type"],
+            "time_column": "start_time"
+          }
+        },
+        "relations": {"viewers_sessions": "sessions"},
+        "reverse_hop": false
+      }
+    }
+  },
+  "anchor_profiles": {
+    "daily-forecast": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "forecast_split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_offset_seconds": 0,
+      "version": "v1"
+    },
+    "daily-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "forecast_split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "version": "v2"
+    },
+    "daily-pretrain": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "cadence_seconds": 86400,
+      "execution_offset_seconds": 0,
+      "version": "v1"
+    },
+    "weekly-pretrain": {
+      "version": "v1",
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_offset_seconds": 0
+    },
+    "onboarding-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "time_unit": "ns",
+      "split": "split",
+      "version": "v2",
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "root_time_offset_seconds": 2419200
+    },
+    "monthly-forecast-graph": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_time": "graph_as_of_time",
+      "execution_offset_seconds": -1,
+      "version": "v2"
+    },
+    "monthly-forecast-sequence": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "version": "v1"
+    },
+    "weekly-session-count": {
+      "sample_id": "sample_id",
+      "entity_id": "entity_id",
+      "time": "as_of_time",
+      "split": "split",
+      "time_unit": "ns",
+      "execution_offset_seconds": -1,
+      "version": "v1"
+    }
+  }
+}

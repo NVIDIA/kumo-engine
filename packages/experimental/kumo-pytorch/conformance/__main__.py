@@ -17,7 +17,12 @@ from conformance.properties import seed_batches
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--engine", choices=("in_memory", "diskgraph", "all"), default="in_memory")
+    parser.add_argument("--engine", choices=("diskgraph", "all"), default="diskgraph")
+    parser.add_argument(
+        "--no-in-memory",
+        action="store_true",
+        help="Run behavior obligations without harness self-tests",
+    )
     parser.add_argument(
         "--seeds",
         type=int,
@@ -30,7 +35,13 @@ def main() -> int:
         default=0,
         help="first extra seed batch; the nightly run derives it from the date",
     )
+    parser.add_argument("--shards", type=int, default=1)
+    parser.add_argument("--shard", type=int, default=0)
     args = parser.parse_args()
+    if args.shards < 1 or not 0 <= args.shard < args.shards:
+        parser.error("Expected 0 <= shard < shards and shards > 0")
+    if args.no_in_memory and args.engine != "diskgraph":
+        parser.error("--no-in-memory requires --engine diskgraph")
     if args.seeds is not None:
         for engine in ENGINES if args.engine == "all" else (args.engine,):
             try:
@@ -39,8 +50,12 @@ def main() -> int:
                 parser.error(str(error))
     os.chdir(REPOSITORY)
     print(f"Checking goldens, generated properties and corpus on: {args.engine}", flush=True)
-    if args.engine == "in_memory":
-        print("DiskGraph is not executed by this command; use --engine all for both.", flush=True)
+    if args.no_in_memory:
+        print(
+            "InMemory execution is forbidden; harness self-tests "
+            "are outside this run. DiskGraph behavior obligations remain required.",
+            flush=True,
+        )
     return pytest.main(
         [
             "-q",
@@ -48,6 +63,9 @@ def main() -> int:
             "tests/conformance",
             f"--conformance-engine={args.engine}",
             "--conformance-complete",
+            f"--conformance-shards={args.shards}",
+            f"--conformance-shard={args.shard}",
+            *(["--conformance-no-in-memory"] if args.no_in_memory else []),
             *([f"--conformance-seeds={args.seeds}"] if args.seeds is not None else []),
             f"--conformance-seed-start={args.seed_start}",
         ]

@@ -1,0 +1,249 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: PyTorch — Binding Checks
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      executor:
+        description: Existing campaign entry point selected by the plan
+        type: string
+        default: binding
+      binding:
+        type: string
+        required: true
+      label:
+        description: Dataset and model display label from the shared campaign plan
+        type: string
+        required: true
+      mode:
+        type: string
+        required: true
+      dataset:
+        type: string
+        required: true
+      batch_size:
+        type: number
+        required: true
+      threads:
+        type: number
+        required: true
+      runner:
+        description: JSON runs-on value from the shared campaign plan
+        type: string
+        required: true
+      min_free_gib:
+        type: number
+        required: true
+      diskgraph-wheel-artifact:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  binding:
+    name: >-
+      ${{ inputs.label }}${{ inputs.executor == 'aml-prototype' && ' / All models' || '' }} /
+      ${{ fromJSON('{"smoke":"Inputs, targets & features","histories":"History feature sweeps","training":"100 CPU steps x 2 runs","lifecycle":"Reload, inference, finetune & resume","full":"All anchors & splits"}')[inputs.mode] || inputs.mode }}
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    # Use GitHub's runner limit: 5 days self-hosted, capped at 6 hours hosted.
+    timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 7200 }}
+    environment:
+      name: gha-kumo-workflow-tests
+      deployment: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: .
+    env:
+      KUMO_CI_LABEL: ${{ inputs.label }} / ${{ inputs.mode }}
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
+        $RUNNER_TEMP/storage-preflight.json
+        $RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING/report.json
+        $RUNNER_TEMP/lifecycle-hi-small/report.json
+        $RUNNER_TEMP/correctness-hi-small/report.json
+        $RUNNER_TEMP/aml-histories/report.json
+      BINDING: ${{ inputs.binding }}
+      CAMPAIGN: ${{ inputs.mode }}
+      DATASET: ${{ inputs.dataset }}
+      BATCH_SIZE: ${{ inputs.batch_size }}
+      THREADS: ${{ inputs.threads }}
+      MIN_FREE_GIB: ${{ inputs.min_free_gib }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: ${{ inputs.diskgraph-wheel-artifact }}
+          torch-extra: cpu
+      - name: Validate campaign entry point
+        env:
+          EXECUTOR: ${{ inputs.executor }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Validate campaign entry point" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          case "$EXECUTOR" in
+            binding) ;;
+            aml-prototype)
+              test "$DATASET" = hi-small && test "$BINDING" = hi-small || exit 1
+              case "$CAMPAIGN" in
+                lifecycle|histories|smoke) ;;
+                *) echo "Unknown grouped campaign: $CAMPAIGN" >&2; exit 1 ;;
+              esac
+              ;;
+            *) echo "Unknown campaign entry point: $EXECUTOR" >&2; exit 1 ;;
+          esac
+          KUMO_CI_COMMAND
+      - name: Verify campaign storage before downloading
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Verify campaign storage before downloading" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from test.kumo_pytorch.data import storage_preflight
+
+          root = Path(os.environ['RUNNER_TEMP'])
+          report = storage_preflight(root, int(os.environ['MIN_FREE_GIB']))
+          text = json.dumps(report, indent=2) + '\n'
+          (root / 'storage-preflight.json').write_text(text)
+          print(text)
+          if report['status'] != 'passed':
+              raise SystemExit('Insufficient free space for the declared campaign budget')
+          PY
+          KUMO_CI_COMMAND
+      - name: Read private dataset inputs with the Engine test role
+        id: aml-credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+          output-env-credentials: false
+          output-credentials: true
+          unset-current-credentials: true
+      - name: Download and verify pinned sources and anchors
+        id: aml-data
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.aml-credentials.outputs.aws-access-key-id }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.aml-credentials.outputs.aws-secret-access-key }}
+          AWS_SESSION_TOKEN: ${{ steps.aml-credentials.outputs.aws-session-token }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Download and verify pinned sources and anchors" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m test.kumo_pytorch.data fetch --dataset "$DATASET" \
+            --data-dir "$RUNNER_TEMP/aml-data" --report "$RUNNER_TEMP/aml-acquisition.json"
+          KUMO_CI_COMMAND
+      - name: Check the selected binding
+        if: ${{ inputs.executor == 'binding' }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check the selected binding" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m test.kumo_pytorch.nightly run --binding "$BINDING" --mode "$CAMPAIGN" \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --output "$RUNNER_TEMP/pytorch-campaigns/$CAMPAIGN/$BINDING" \
+            --batch-size "$BATCH_SIZE" --threads "$THREADS"
+          KUMO_CI_COMMAND
+      - name: Check bounded AML HI Small training lifecycle and mid-epoch resume
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'lifecycle' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check bounded AML HI Small training lifecycle and mid-epoch resume" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m test.kumo_pytorch.nightly group \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --prepared-dir "$RUNNER_TEMP/aml-lifecycle-prepared" \
+            --output "$RUNNER_TEMP/lifecycle-hi-small" --anchors-per-split 4 \
+            --batch-size "$BATCH_SIZE" --steps 1 --threads "$THREADS" --mode lifecycle
+          KUMO_CI_COMMAND
+      - name: Check real AML HI Small source inputs, targets and losses
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'smoke' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check real AML HI Small source inputs, targets and losses" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m test.kumo_pytorch.nightly group \
+            --data-dir "$RUNNER_TEMP/aml-data" \
+            --prepared-dir "$RUNNER_TEMP/aml-correctness-prepared" \
+            --output "$RUNNER_TEMP/correctness-hi-small" --anchors-per-split 4 \
+            --batch-size "$BATCH_SIZE" --threads "$THREADS" --mode smoke
+          KUMO_CI_COMMAND
+      - name: Check real AML HI Small multi-source histories
+        if: ${{ !cancelled() && inputs.executor == 'aml-prototype' && inputs.mode == 'histories' && steps.aml-data.outcome == 'success' }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Check real AML HI Small multi-source histories" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m test.kumo_pytorch.nightly group --mode histories \
+            --data-dir "$RUNNER_TEMP/aml-data" --output "$RUNNER_TEMP/aml-histories" \
+            --anchors-per-split 4 --threads "$THREADS"
+          KUMO_CI_COMMAND
+      - name: Retain real AML HI Small lifecycle reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'lifecycle' }}
+        with:
+          name: kumo-pytorch-aml-lifecycle
+          path: |
+            ${{ runner.temp }}/lifecycle-hi-small/report.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/result.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/report.json
+            ${{ runner.temp }}/lifecycle-hi-small/**/*.log
+          retention-days: 14
+
+      - name: Retain real AML HI Small history reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'histories' }}
+        with:
+          name: kumo-pytorch-aml-histories
+          path: |
+            ${{ runner.temp }}/aml-histories/report.json
+            ${{ runner.temp }}/aml-histories/report.md
+          retention-days: 14
+
+      - name: Retain real AML HI Small source correctness reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'aml-prototype' && inputs.mode == 'smoke' }}
+        with:
+          name: kumo-pytorch-aml-source-correctness
+          path: |
+            ${{ runner.temp }}/correctness-hi-small/report.json
+            ${{ runner.temp }}/correctness-hi-small/**/result.json
+          retention-days: 14
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() && inputs.executor == 'binding' }}
+        with:
+          name: kumo-pytorch-dataset-${{ inputs.mode }}-${{ inputs.binding }}
+          path: |
+            ${{ runner.temp }}/pytorch-campaigns/**/report.json
+            ${{ runner.temp }}/pytorch-campaigns/**/report.md
+            ${{ runner.temp }}/pytorch-campaigns/**/contract.json
+            ${{ runner.temp }}/pytorch-campaigns/**/loss-curve.csv
+            ${{ runner.temp }}/pytorch-campaigns/**/*.log
+            ${{ runner.temp }}/pytorch-campaigns/**/result.json
+            ${{ runner.temp }}/pytorch-campaigns/**/restore-fingerprints.json
+            ${{ runner.temp }}/pytorch-campaigns/**/model.pt
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ always() }}
+        with:
+          name: kumo-pytorch-acquisition-${{ inputs.mode }}-${{ inputs.binding }}
+          path: |
+            ${{ runner.temp }}/aml-acquisition.json
+            ${{ runner.temp }}/storage-preflight.json
+          retention-days: 14
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: ${{ inputs.label }} / ${{ inputs.mode }}
+          artifact: kumo-pytorch-diagnostics-${{ inputs.mode }}-${{ inputs.binding }}
+          status: ${{ job.status }}

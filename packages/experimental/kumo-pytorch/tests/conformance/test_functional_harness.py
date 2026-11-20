@@ -4,9 +4,8 @@
 
 """Functional-area checks fail on an engine with the defect, and pass without it.
 
-Stand-ins rewrite what the reference is asked (a window edge, a selection, a
-GroupBy key) so they run without the native package; checks of DiskGraph's own
-paths (model batches, fitted state, a fresh process) patch one DiskGraph method.
+Fault injection changes one native request or result (a window edge, selection,
+group key or typed column). Every case executes DiskGraph.
 """
 
 from collections.abc import Callable, Iterator
@@ -47,9 +46,9 @@ from kumo.pytorch.api import (
     Task,
 )
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
-from kumo.pytorch.engines.in_memory.anchors import InMemoryAnchors
+from kumo.pytorch.engines.native_anchors import NativeAnchors
 
-# -- Stand-ins that change what the reference is asked ----------------------
+# -- Native faults that change the declared computation ----------------------
 
 
 def _rows(rows: Rows, defect: str, target: bool) -> Rows:
@@ -97,38 +96,10 @@ def _asked(spec: SampleSpec, defect: str) -> SampleSpec:
 
 
 class Asked(Mutant):
-    """The reference, answering a slightly different question than it was asked."""
+    """DiskGraph deliberately receives a changed window, selection or group key."""
 
-    def open(self, dataset, schema):
-        source = super().open(dataset, schema)
-        build = source.build
-
-        def defective(spec, requests):
-            try:
-                return build(_asked(spec, self.defect), requests)
-            except ValueError as error:
-                if self.defect == "missing_root_bare" and "expected one" in str(error):
-                    raise RuntimeError("lookup failed") from None
-                raise
-
-        source.build = defective
-        return source
-
-    def materialize_anchors(self, table):
-        anchors = InMemoryAnchors(table)
-        rows = anchors._rows
-
-        def defective(selection):
-            chosen = rows(selection)
-            splits = [anchors._split_of(row) for row in chosen]
-            if self.defect == "null_split_dropped":
-                return tuple(row for row, split in zip(chosen, splits, strict=True) if split)
-            if self.defect == "union_unsorted":
-                return tuple(sorted(chosen, key=lambda row: str(anchors._split_of(row))))
-            return chosen
-
-        anchors._rows = defective
-        return anchors
+    def sample(self, spec):
+        return _asked(spec, self.defect)
 
 
 def _case(**dimensions):
@@ -142,7 +113,7 @@ def _case(**dimensions):
 def _run(name: str, dimensions: dict, defect: str, kind: str = "reference") -> None:
     position, case = _case(**dimensions)
     if kind == "reference":
-        binding, engine = _binding(reference=Asked(defect)), "in_memory"
+        binding, engine = _binding(native=Asked(defect)), "diskgraph"
     else:
         binding, engine = _binding(native=Asked(defect)), "diskgraph"
     with patch("conformance.properties.bound_tables", binding):
@@ -155,31 +126,31 @@ STAND_INS = (
     ("label_window", {}, "reference", "target_stop_exclusive", "label window", "M11"),
     ("label_window", {}, "reference", "target_start_inclusive", "label window", "M12"),
     ("label_window", {}, "reference", "target_start_ignored", "label window", "M29"),
-    ("differential", {}, "native", "row_target_swapped", "vs reference", "M13"),
-    ("differential", {}, "native", "target_stop_exclusive", "vs reference", "M11"),
-    ("differential", {}, "native", "lag_stop_ignored", "vs reference", "lag windows"),
+    ("aggregate_answers", {}, "native", "row_target_swapped", "fixture answers", "M13"),
+    ("aggregate_answers", {}, "native", "target_stop_exclusive", "fixture answers", "M11"),
+    ("aggregate_answers", {}, "native", "lag_stop_ignored", "fixture answers", "lag windows"),
     (
-        "differential",
+        "aggregate_answers",
         {**SIBLING, "contract.distinct": True},
         "native",
         "distinct_ignored",
-        "vs reference",
+        "fixture answers",
         "M03b",
     ),
     (
-        "differential",
+        "aggregate_answers",
         {**SIBLING, "contract.distinct": False},
         "native",
         "distinct_forced",
-        "vs reference",
+        "fixture answers",
         "M03",
     ),
     (
-        "differential",
+        "aggregate_answers",
         {"contract.group_by": "nested"},
         "native",
         "group_keys_dropped",
-        "vs reference",
+        "fixture answers",
         "M16",
     ),
     ("anchor_splits", {}, "reference", "null_split_dropped", "count|served", "M21"),
@@ -203,7 +174,7 @@ def test_a_wrong_engine_fails_a_functional_property(
 
 
 def test_distinct_and_group_keys_change_answers_on_their_cases():
-    """The cases the differential relies on actually reach a row twice / group twice."""
+    """The cases the aggregate_answers relies on actually reach a row twice / group twice."""
 
     for dimensions in (
         {**SIBLING, "contract.distinct": True},
@@ -214,7 +185,7 @@ def test_distinct_and_group_keys_change_answers_on_their_cases():
         if dimensions.get("contract.distinct") is True:
             defect = "distinct_ignored"
         with pytest.raises(PropertyFailure):
-            _run("differential", dimensions, defect, "native")
+            _run("aggregate_answers", dimensions, defect, "native")
 
 
 @contextmanager
@@ -260,15 +231,15 @@ PACKING_DEFECTS = (
 def test_packing_fails_on_a_wrong_planner(target, name, wrap, expected):
     position, case = _case()
     with _patched(target, name, wrap), pytest.raises(PropertyFailure, match=expected):
-        PROPERTIES["packing"].check(case, "in_memory", position)
-    PROPERTIES["packing"].check(case, "in_memory", position)
+        PROPERTIES["packing"].check(case, "diskgraph", position)
+    PROPERTIES["packing"].check(case, "diskgraph", position)
 
 
 def _drop_every_short_batch(original):
-    def batches(self, *arguments, drop_last=None, **keywords):
-        size = keywords.get("batch_size") or self.spec.batching.max_samples
-        drop = self.spec.batching.drop_last if drop_last is None else drop_last
-        for batch in original(self, *arguments, drop_last=False, **keywords):
+    def batches(self, assembler, *arguments, drop_last=None, **keywords):
+        size = keywords.get("batch_size") or assembler.spec.batching.max_samples
+        drop = assembler.spec.batching.drop_last if drop_last is None else drop_last
+        for batch in original(self, assembler, *arguments, drop_last=False, **keywords):
             if not (drop and len(batch.metadata["sample_ids"]) < size):
                 yield batch
 
@@ -281,11 +252,11 @@ def test_packing_checks_drop_last_under_a_token_budget():
     position, case = _case()
     budgeted = replace(case, dimensions={**case.dimensions, "execution.drop_last": "token_budget"})
     with (
-        _patched(PreparedBatchPlan, "batches", _drop_every_short_batch),
+        _patched(NativeAnchors, "batches", _drop_every_short_batch),
         pytest.raises(PropertyFailure, match="drop_last under max_tokens=12 kept 0 of"),
     ):
-        PROPERTIES["packing"].check(budgeted, "in_memory", position)
-    PROPERTIES["packing"].check(budgeted, "in_memory", position)
+        PROPERTIES["packing"].check(budgeted, "diskgraph", position)
+    PROPERTIES["packing"].check(budgeted, "diskgraph", position)
 
 
 def _ranks_ignored(original):
@@ -313,8 +284,8 @@ def test_refusal_timing_requires_a_declared_late_refusal(wrap, expected):
 
     position, case = _case(**{"contract.strategy": "max_tokens_world_size"})
     with _patched(Task, "batches", wrap), pytest.raises(PropertyFailure, match=expected):
-        PROPERTIES["refusal_timing"].check(case, "in_memory", position)
-    PROPERTIES["refusal_timing"].check(case, "in_memory", position)
+        PROPERTIES["refusal_timing"].check(case, "diskgraph", position)
+    PROPERTIES["refusal_timing"].check(case, "diskgraph", position)
 
 
 def test_refusal_timing_fails_when_a_declared_refusal_is_accepted():
@@ -324,12 +295,12 @@ def test_refusal_timing_fails_when_a_declared_refusal_is_accepted():
     for strategy in ("active_interval", "clock_override", "dated_values"):
         assert strategy in declared
         case = next(case for case in CASES if case.dimensions["contract.strategy"] == strategy)
-        with patch("conformance.properties.bound_tables", _binding(native=Asked("none"))):
+        with patch("conformance.properties.bound_tables", _binding(native=Asked("accept_refusal"))):
             with pytest.raises(PropertyFailure, match=f"accepted {strategy}, declared refused"):
                 PROPERTIES["refusal_timing"].check(case, "diskgraph", 0)
 
 
-def test_every_variant_is_a_registered_strategy_and_valid_on_the_reference():
+def test_every_variant_is_a_registered_strategy_and_structurally_valid():
     from conformance.registry import BY_NAME
 
     assert set(VARIANTS) <= set(BY_NAME["contract.strategy"].values)
@@ -341,14 +312,14 @@ def test_every_variant_is_a_registered_strategy_and_valid_on_the_reference():
 def test_regions_keep_refusal_strategies_generated_and_inapplicable_values_out():
     regions = blocked_regions("diskgraph")
     assert not any(r in regions for r in ENGINE_REFUSALS if r.strategy == "clock_override")
-    for engine in ("in_memory", "diskgraph"):
+    for engine in ("diskgraph",):
         values = {
             value
             for case in generate_batch(0, engine)
             for value in (case.dimensions["execution.output_format"],)
         }
         assert ("model" in values) == (engine == "diskgraph")
-    assert all(rule.engine == "in_memory" or rule.refused_at for rule in INAPPLICABLE)
+    assert all(rule.engine == "diskgraph" or rule.refused_at for rule in INAPPLICABLE)
 
 
 @pytest.mark.parametrize("case", [c for c in CASES if c.dimensions["schema_shape.path"] in SHAPED])
@@ -480,12 +451,12 @@ def _longer_lengths(original):
 
 
 NATIVE_DEFECTS = (
-    ("differential", "_adapt_model_result", _reverse_entity_values, "vs reference", "M22"),
+    ("aggregate_answers", "_adapt_model_result", _reverse_entity_values, "fixture answers", "M22"),
     ("point_in_time", "build_model_ordered", _shift_model_cutoffs, "future rows", "model PIT"),
-    ("fitted_state", "build_model", _shift_model_cutoffs, "tokens: fit inputs", "token fit"),
+    ("fitted_state", "build_model", _shift_model_cutoffs, "fitted state differs", "token fit"),
     ("model_delivery", "_adapt_model_result", _reverse_entity_values, "differs", "M22"),
     ("model_epoch_trend", "build_model_batch", _growing_model_work, "!= epoch 2", "model work"),
-    ("fitted_state", "build_model", _perturb_sum, "columns: fit inputs", "column fit"),
+    ("fitted_state", "build_model", _perturb_sum, "columns: fitted state", "column fit"),
     ("contract_transfer", "bound_contract", _unbound, "fresh process", "lost state"),
     ("packing", "model_lengths", _longer_lengths, "differ by format", "M17"),
 )
@@ -526,7 +497,7 @@ def test_a_wrong_typed_fitting_path_fails_fitted_state(native_cases):
 
     cases, _ = native_cases
     with _patched(assembly, "_model_rows", _swap_float_columns):
-        with pytest.raises(PropertyFailure, match="tokens: fitted state differs"):
+        with pytest.raises(PropertyFailure, match="fitted state differs"):
             PROPERTIES["fitted_state"].check(cases[0], "diskgraph", 0)
     PROPERTIES["fitted_state"].check(cases[0], "diskgraph", 0)
 
@@ -535,7 +506,7 @@ def test_a_wrong_typed_fitting_path_fails_fitted_state(native_cases):
 #: are in test_fake_ingest.py.
 FUNCTIONAL_COVERED = (
     {row[0] for row in STAND_INS} | {row[0] for row in NATIVE_DEFECTS} | {"packing", "index_layout"}
-) - {"differential", "point_in_time"}
+) - {"aggregate_answers", "point_in_time"}
 
 
 def test_every_functional_property_has_a_wrong_engine():

@@ -408,6 +408,15 @@ def test_fetch_features(orders_graph):
     assert isinstance(batch, pa.RecordBatch)
     assert batch.num_rows > 0
 
+    duplicate = dg.fetch_features([{
+        "node_type": "users", "node_ids": [0, 0, 1], "feature_names": [],
+    }])
+    rows = pa.Table.from_batches([event["batch"] for event in duplicate if event["type"] == "feature"])
+    assert rows.num_rows == 3
+    assert rows.slice(0, 1).equals(rows.slice(1, 1))
+    assert duplicate.native_profile["rows_decoded"] == 2
+    assert duplicate.native_profile["rows_examined"] == 2
+
     # Check Error Handling (Bad Type)
     bad_req = [{"node_type": "invalid_type", "node_ids": [0], "feature_names": []}]
     iter_bad = dg.fetch_features(bad_req)

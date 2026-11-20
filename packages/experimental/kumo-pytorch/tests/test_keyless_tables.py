@@ -14,16 +14,16 @@ import kumo.pytorch.api as r
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import build
+from tests.native_fixtures import prepare_rows, preview_rows
 
 
 def _case():
     return load_case(GUARANTEES / "G-KEYLESS-001/golden/C-KEYLESS-001.json")
 
 
-@pytest.fixture(params=("in_memory", "diskgraph"))
+@pytest.fixture(params=("diskgraph",))
 def engine_name(request):
-    if request.param == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     return request.param
 
 
@@ -121,7 +121,7 @@ def test_keyless_entities_are_refused_before_opening(candidate, inferred, engine
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_graph_history_targets_and_features(engine_name, output_format):
@@ -210,13 +210,13 @@ def test_keyless_non_primary_key_relation_remains_valid_on_reference():
     )
     tables = {**case.tables, "users": [{"id": 1, "group": 1}, {"id": 2, "group": 2}]}
     dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    preview = r.preview(contract, dataset, r.InMemoryEngine(), case.requests)
+    preview = preview_rows(contract, dataset, case.requests)
     assert preview.batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
 
 
 @pytest.mark.parametrize(
     ("engine_name", "output_format"),
-    (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
+    (("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
 )
 def test_keyless_constant_only_events(engine_name, output_format):
@@ -272,7 +272,9 @@ def test_keyless_non_temporal_count_only_frame(engine_name):
         assert batch.inputs["values"]["count"]["values"].tolist() == [4, 4, 0]
 
 
-def test_keyless_tie_order_survives_an_ordered_serving_subset():
+def test_keyless_tied_serving_choices_obey_source_membership_and_limit():
+    from tests.native_fixtures import request_anchor_table
+
     case = _case()
     event = r.EventSpec(
         r.Rows(("activity",)), {"amount": r.Field(column="amount")}, order="descending", limit=1
@@ -290,23 +292,35 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset():
             }
         ),
     )
-    # Removing an unrelated row must not change numeric source-order ties.
+    # Different preparations have local opaque identities. Tied choices may
+    # differ, but every result must come from an eligible source occurrence.
     tables = {
         **case.tables,
         "events": [
             {"owner": 2, "at": 9, "amount": 99},
             *({"owner": 1, "at": 9, "amount": i} for i in range(12)),
+            {"owner": 1, "at": 10, "amount": 100},
+            {"owner": 1, "at": 8, "amount": 200},
         ],
     }
     requests = (r.SampleRequest("tied", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+    with prepare_rows(contract, dataset) as plan:
+        with plan.materialize(request_anchor_table(requests, schema=contract.schema)) as task:
+            offline = next(iter(task.batches(batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
-    served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
-    assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
-    assert served.inputs["history"]["amount"]["values"].tolist() == [11]
+    eligible = [row for row in tables["events"] if row["owner"] == 1 and row["at"] <= 9]
+    newest = max(row["at"] for row in eligible)
+    allowed = {row["amount"] for row in eligible if row["at"] == newest}
+    batches = [offline]
+    for rows in (tables["events"][1:], list(reversed(tables["events"][1:]))):
+        batches.extend(server.assemble({**tables, "events": rows}, requests))
+    for batch in batches:
+        history = batch.inputs["history"]
+        assert history["offsets"].tolist() == [0, 1]
+        assert history["amount"]["valid"].tolist() == [True]
+        assert len(history["amount"]["values"]) == 1
+        assert history["amount"]["values"].item() in allowed
 
 
 def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
@@ -369,7 +383,7 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     }
     requests = (r.SampleRequest("rounding", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         with plan.materialize(requests) as task:
             offline = next(iter(task.batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())

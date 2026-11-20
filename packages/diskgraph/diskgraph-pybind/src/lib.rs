@@ -187,9 +187,9 @@ mod artifact_helpers;
 mod bp_col_stats;
 mod bp_evaluate;
 mod col_stats_export;
-mod cutoff_col_stats;
 mod custom_tt_contract;
 mod custom_tt_entry;
+mod cutoff_col_stats;
 mod exact_quantiles;
 mod index_metadata;
 mod runtime_batch_iterator;
@@ -290,6 +290,7 @@ struct PyOutputHandler {
     relation_src_type: Vec<usize>,
     relation_dst_type: Vec<usize>,
     edge_max_ids: HashMap<u16, (u32, u32)>,
+    decoded_rows: u64,
 }
 
 impl PyOutputHandler {
@@ -309,6 +310,7 @@ impl PyOutputHandler {
             relation_src_type,
             relation_dst_type,
             edge_max_ids: HashMap::new(),
+            decoded_rows: 0,
         }
     }
 
@@ -357,6 +359,10 @@ impl PyOutputHandler {
 }
 
 impl OutputHandler for PyOutputHandler {
+    fn record_decoded_rows(&mut self, rows: u64) {
+        self.decoded_rows += rows;
+    }
+
     fn handle_edge(
         &mut self,
         _hop: usize,
@@ -1125,6 +1131,8 @@ impl SamplerEngine {
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
         let mut state = self.pool.acquire();
+        let profile = Arc::new(std::sync::Mutex::new(None));
+        let completed_profile = Arc::clone(&profile);
 
         py.detach(move || {
             thread::spawn(move || {
@@ -1133,8 +1141,26 @@ impl SamplerEngine {
                     engine.relation_src_type.clone(),
                     engine.relation_info.clone(),
                 );
+                let started = std::time::Instant::now();
                 match engine.sample(&request, &mut state, &mut handler) {
                     Ok(()) => {
+                        let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+                        let mut values = HashMap::from([
+                            ("sampling_ns".to_string(), elapsed),
+                            (
+                                "rows_examined".to_string(),
+                                state.stats.rows_examined + handler.decoded_rows,
+                            ),
+                            ("rows_decoded".to_string(), handler.decoded_rows),
+                            (
+                                "fused".to_string(),
+                                u64::from(request.flags.fused_feature_fetching),
+                            ),
+                        ]);
+                        if request.flags.fused_feature_fetching {
+                            values.insert("retrieval_ns".to_string(), elapsed);
+                        }
+                        *completed_profile.lock().unwrap() = Some(values);
                         if count % 100 == 0 {
                             info!(
                                 total_nodes = state.stats.total_nodes,
@@ -1159,7 +1185,10 @@ impl SamplerEngine {
             });
         });
 
-        Ok(PySampleIterator { receiver: rx })
+        Ok(PySampleIterator {
+            receiver: rx,
+            profile,
+        })
     }
 
     #[tracing::instrument(level = "debug", skip(self, py, batch))]
@@ -1214,9 +1243,12 @@ impl SamplerEngine {
         let (tx, rx) = bounded(1);
         let engine = Arc::clone(&self.engine);
 
+        let profile = Arc::new(std::sync::Mutex::new(None));
+        let completed_profile = Arc::clone(&profile);
         py.detach(move || {
             thread::spawn(move || {
                 let mut handler = PyOutputHandler::new(tx.clone(), Vec::new(), Vec::new());
+                let started = std::time::Instant::now();
 
                 for feature_req in request.batch {
                     let node_type_id = match engine.node_type_to_id.get(&feature_req.node_type) {
@@ -1241,6 +1273,11 @@ impl SamplerEngine {
                         return;
                     }
                 }
+                *completed_profile.lock().unwrap() = Some(HashMap::from([
+                    ("retrieval_ns".to_string(), started.elapsed().as_nanos().min(u64::MAX as u128) as u64),
+                    ("rows_examined".to_string(), handler.decoded_rows),
+                    ("rows_decoded".to_string(), handler.decoded_rows),
+                ]));
                 if count % 100 == 0 {
                     info!(
                         process_rss_mb = get_current_rss_mb(),
@@ -1255,7 +1292,10 @@ impl SamplerEngine {
             });
         });
 
-        Ok(PySampleIterator { receiver: rx })
+        Ok(PySampleIterator {
+            receiver: rx,
+            profile,
+        })
     }
 
     pub fn get_type_mapping(&self) -> PyResult<String> {
@@ -1267,10 +1307,21 @@ impl SamplerEngine {
 #[pyclass]
 pub struct PySampleIterator {
     receiver: Receiver<SampleEvent>,
+    profile: Arc<std::sync::Mutex<Option<HashMap<String, u64>>>>,
 }
 
 #[pymethods]
 impl PySampleIterator {
+    /// Completed native operation only. Includes native output backpressure,
+    /// excludes Python conversion; None on pending or failed execution.
+    #[getter]
+    fn native_profile(&self) -> PyResult<Option<HashMap<String, u64>>> {
+        self.profile
+            .lock()
+            .map(|profile| profile.clone())
+            .map_err(|_| DiskgraphSystemError::new_err("native profile lock poisoned"))
+    }
+
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }

@@ -12,14 +12,16 @@ sample: node IDs per table and (left ID, right ID) edges per relation.
 from __future__ import annotations
 
 import random
+import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
-from conformance.assertions import bound_tables, require
+from conformance.assertions import bound_tables, require, write_anchor_table
 from conformance.generate import (
     GeneratedCase,
     Row,
@@ -30,6 +32,7 @@ from conformance.generate import (
     covering_rows,
     permuted,
 )
+from conformance.refusals import check_or_refuse
 from conformance.registry import GRAPH_DIMENSIONS, DimensionValue
 from kumo.pytorch.api import (
     Batching,
@@ -43,7 +46,6 @@ from kumo.pytorch.api import (
     Graph,
     GraphLayer,
     GraphSample,
-    InMemoryEngine,
     Input,
     NeighborhoodSource,
     NeighborhoodSpec,
@@ -274,7 +276,7 @@ def generate_graph_case(
 
 
 def graph_batch(seed: int, engine: str, property_name: str) -> list[GeneratedCase]:
-    scale: Scale = "XS" if engine == "in_memory" else "S"
+    scale: Scale = "S"
     rows = covering_rows(seed, engine, GRAPH_DIMENSIONS, property_name)
     return [generate_graph_case(seed, index, row, scale) for index, row in rows]
 
@@ -290,7 +292,7 @@ def _bound(
     *,
     parts: int = 1,
     shards: int | None = None,
-) -> Iterator[tuple[Dataset, InMemoryEngine | DiskGraphEngine]]:
+) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
     """The case's binding; ``shards`` overrides the case's DiskGraph shard count only."""
 
     with bound_tables(contract, tables, engine, parts=parts) as (dataset, bound):
@@ -313,15 +315,17 @@ def graph_answer(
     """Each sample's graph, from real batches through the public path."""
 
     with _bound(contract, tables, engine, parts=parts, shards=shards) as (dataset, bound):
-        issues = check(contract, dataset, bound)
-        require(not issues, f"{engine} refused a generated graph contract: {issues}")
-        with prepare(contract, dataset, bound) as plan:
-            return collect_graphs(plan.materialize(requests), requests)
+        check_or_refuse(contract, dataset, bound)
+        with tempfile.TemporaryDirectory(prefix="graph-anchors-") as directory:
+            table = write_anchor_table(requests, Path(directory) / "anchors.parquet")
+            with prepare(contract, dataset, bound) as plan:
+                with plan.materialize(table) as task:
+                    return collect_graphs(task, requests)
 
 
 def collect_graphs(task: Task, requests: Sequence[SampleRequest]) -> GraphAnswer:
     result: GraphAnswer = {}
-    for batch in task.batches(requests):
+    for batch in task.batches(output_format="model"):
         graph = batch.inputs[NEIGHBORHOOD]
         sample_ids = [str(sample_id) for sample_id in batch.metadata["sample_ids"]]
         require(not any(batch.metadata["is_padding"].tolist()), "padding in a request batch")
@@ -507,7 +511,7 @@ def expansion_problems(
     The expansion is rebuilt from the graph itself: layer 0's frontier is the root;
     a frontier node's kept neighbors are the distinct edges of the traversal's
     relation at it, and the next frontier is every kept neighbor, including one reached
-    before (the reference expands it again). At each frontier node the kept
+    before; each layer expands its own frontier. At each frontier node the kept
     neighbors must be candidates (keys join; dated at or before the cutoff unless the
     traversal is static), and their sorted clocks must be the ``fanout`` most recent
     candidates' clocks: count and recency, with the tied neighbor left free.
@@ -657,18 +661,9 @@ def _same_up_to_ties(
         require(not problems, f"{label}: {side}: {EXPANSION}:\n  " + "\n  ".join(problems[:4]))
 
 
-def graph_differential(case: GeneratedCase, engine: str, position: int) -> None:
-    """DiskGraph has the reference's node sets and distinct edges per sample, up to
-    which tied neighbors it keeps at a fanout limit; both are layer-by-layer expansions.
-    """
-
-    _same_up_to_ties(
-        case,
-        _base(case, "in_memory"),
-        _base(case, engine),
-        f"{engine} vs reference",
-        sides=("reference", engine),
-    )
+def graph_expected(case: GeneratedCase, engine: str, position: int) -> None:
+    """Every node and edge must be a permitted expansion of the fixture's root."""
+    graph_structure(case, engine, position)
 
 
 def with_future_graph_rows(case: GeneratedCase, rng: random.Random) -> tuple[Tables, set[str]]:
@@ -820,10 +815,14 @@ def graph_determinism(case: GeneratedCase, engine: str, position: int) -> None:
     """
 
     with _bound(case.contract, case.tables, engine) as (dataset, bound):
-        with prepare(case.contract, dataset, bound) as plan:
-            first = collect_graphs(plan.materialize(case.requests), case.requests)
+        with (
+            tempfile.TemporaryDirectory(prefix="graph-anchors-") as directory,
+            prepare(case.contract, dataset, bound) as plan,
+        ):
+            table = write_anchor_table(case.requests, Path(directory) / "anchors.parquet")
+            first = collect_graphs(plan.materialize(table), case.requests)
             for _ in range(RERUNS):
-                again = collect_graphs(plan.materialize(case.requests), case.requests)
+                again = collect_graphs(plan.materialize(table), case.requests)
                 differences = [key for key in sorted(first) if first[key] != again.get(key)]
                 require(
                     not differences,
@@ -892,7 +891,7 @@ def graph_inference_exact(case: GeneratedCase, engine: str, position: int) -> No
 
 
 GRAPH_CHECKS = {
-    "graph_differential": graph_differential,
+    "graph_expected": graph_expected,
     "graph_inference_exact": graph_inference_exact,
     "graph_point_in_time": graph_point_in_time,
     "graph_structure": graph_structure,

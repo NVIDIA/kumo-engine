@@ -2,11 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Metamorphic properties over generated cases (design §3.4).
+"""Fixture answers and metamorphic properties over generated cases (design §3.4).
 
-Each property needs no expected answer: it runs related inputs through the real
-public `check()` → `prepare()` → `materialize()` path and compares the results
-as sets keyed by ``sample_id``. A failing case is written as a repro file.
+Properties exercise the public `check()` → `prepare()` → `materialize()` path.
+They check independently calculated answers and invariants between related inputs.
+A failing case is written as a repro file.
 """
 
 from __future__ import annotations
@@ -58,7 +58,6 @@ from conformance.outputs import (
     decode_batches,
     entity_only,
     expected_targets,
-    fitted_structure,
     fitting_contract,
     flat_targets,
     model_contract,
@@ -68,9 +67,9 @@ from conformance.outputs import (
     selected,
     sequence_tokens,
     split_anchor_rows,
-    state_differences,
     typed_fitting_contract,
 )
+from conformance.refusals import check_or_refuse, record_refusal
 from conformance.registry import ENGINE_REFUSALS, late_refusal
 from conformance.repro import Repro, write_repro
 from conformance.sequence_cases import _RUNS as sequence_runs
@@ -86,8 +85,6 @@ from kumo.pytorch.api import (
     Dataset,
     DiskGraphEngine,
     DType,
-    InMemoryEngine,
-    InMemoryRows,
     Packed,
     Padded,
     Parquet,
@@ -100,17 +97,11 @@ from kumo.pytorch.api import (
     check,
     prepare,
 )
-from kumo.pytorch.column_stats import table_column_encoders
-from kumo.pytorch.contract.batch.encodings import Buckets
-from kumo.pytorch.contract.sample import BuiltSample
-from kumo.pytorch.contract.schema import table_clock
-from kumo.pytorch.data.model import ModelSourceBatch
-from kumo.pytorch.data.records import cutoff_to_epoch
 
 Answer = dict[str, dict[str, Scalar]]
 #: One delivered row: sample ID, padding flag, and each numeric field as (valid, value).
 Delivered = tuple[str, bool, tuple[tuple[str, bool, float | None], ...]]
-Engine = InMemoryEngine | DiskGraphEngine
+Engine = DiskGraphEngine
 Format = Literal["inspectable", "model"]
 PREVIEW_LIMIT = 8
 #: Reductions whose float result depends on summation order and algorithm.
@@ -124,11 +115,6 @@ SUMMATION_DEPENDENT = frozenset(
 #: floor for results near zero.
 #: Everything else is exact.
 MOMENT_TOLERANCE = 1e-12
-#: Allowed discrepancy: Buckets cuts over stored columns are t-digest quantiles, and
-#: the digest depends on how the index splits the rows into shards. Each engine's cut
-#: lies within 1.5 ranks of the exact quantile (tests/test_column_stats.py), so two
-#: engines' cuts lie within 3 ranks of each other.
-BUCKET_RANKS = 3
 
 
 # -- Running a case ----------------------------------------------------------
@@ -146,8 +132,7 @@ def answer(
 
     with bound_tables(contract, tables, engine_name, parts=parts, types=PHYSICAL_TYPES) as bound:
         dataset, engine = bound
-        issues = check(contract, dataset, engine)
-        _require(not issues, f"{engine_name} refused a generated contract: {issues}")
+        check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
             return _collect(plan.materialize(requests), requests)
 
@@ -275,7 +260,7 @@ def point_in_time(case: GeneratedCase, engine: str, position: int) -> None:
     """Rows dated after an anchor's cutoff leave its sample unchanged.
 
     Covers the destination table and a static intermediate. No passing obligation
-    checks a cutoff at a timed intermediate yet: the in-memory engine has the known
+    checks a cutoff at a timed intermediate yet: the engine has the known
     divergence DIV-TIMED-HOP-MEM there, and DiskGraph refuses that shape.
     """
 
@@ -404,15 +389,45 @@ def _runs_or_refuses_late(
         raise PropertyFailure(f"{strategy}: accepted at check(), then {error!r}") from error
 
 
-def differential(case: GeneratedCase, engine: str, position: int) -> None:
-    """DiskGraph equals the reference, once the reference holds point-in-time invariance."""
+def aggregate_answers(case: GeneratedCase, engine: str, position: int) -> None:
+    """Compare native aggregates and targets with independently calculated fixture answers."""
+    from conformance.expected import aggregate_answer, target_choices
 
-    try:
-        point_in_time(case, "in_memory", position)
-    except AssertionError as error:
-        raise PropertyFailure(f"reference failed point_in_time; not judged: {error}") from error
-    reference, actual = _judged(case, "in_memory"), _judged(case, engine)
-    _same(reference, actual, f"{engine} vs reference", rounding=True)
+    expected = aggregate_answer(case)
+    if case.dimensions.get("execution.output_format") == "model":
+        fields = {use.field for use in case.contract.batch.inputs["entity"].representation.fields}
+        for name, target in case.contract.batch.targets.items():
+            if hasattr(target, "fields"):
+                fields.update(f"target:{name}.{use.field}" for use in target.fields)
+            else:
+                fields.add(f"target:{name}")
+        expected = {sid: {key: row.get(key) for key in fields} for sid, row in expected.items()}
+    actual = _judged(case, engine)
+    for sid, targets in target_choices(case).items():
+        for name, choices in targets.items():
+            fields = set(choices[0])
+            if case.dimensions.get("execution.output_format") == "model":
+                fields.discard(f"target:{name}.offset")
+            match = next(
+                (
+                    choice
+                    for choice in choices
+                    if _same_value(
+                        {key: actual[sid].get(key) for key in fields},
+                        {key: choice.get(key) for key in fields},
+                    )
+                ),
+                None,
+            )
+            _require(
+                match is not None, f"fixture answers: {sid} {name}: not an eligible boundary row"
+            )
+            expected[sid].update({key: match.get(key) for key in fields})
+    # Raw previews omit missing values; model batches carry explicit validity masks.
+    actual = {
+        sid: {key: row.get(key) for key in expected[sid]} | row for sid, row in actual.items()
+    }
+    _same(expected, actual, "fixture answers", rounding=True)
 
 
 def permutation(case: GeneratedCase, engine: str, position: int) -> None:
@@ -512,14 +527,12 @@ def _anchored(
         bound_tables(contract or case.contract, case.tables, engine, types=PHYSICAL_TYPES) as bound,
     ):
         dataset, engine_object = bound
-        source: InMemoryRows | Parquet = InMemoryRows(rows)
-        if isinstance(dataset.tables["users"], Parquet):
-            import pyarrow as pa
-            import pyarrow.parquet as pq
+        import pyarrow as pa
+        import pyarrow.parquet as pq
 
-            path = Path(directory) / "anchors.parquet"
-            pq.write_table(pa.Table.from_pylist(rows), path)
-            source = Parquet(str(path))
+        path = Path(directory) / "anchors.parquet"
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        source = Parquet(str(path))
         yield (
             dataset,
             engine_object,
@@ -851,8 +864,7 @@ def batch_answer(
 
     with bound_tables(contract, tables, engine_name, types=PHYSICAL_TYPES) as bound:
         dataset, engine = bound
-        issues = check(contract, dataset, engine)
-        _require(not issues, f"{engine_name} refused a generated contract: {issues}")
+        check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
             task = plan.materialize(requests)
             batches = task.batches(requests, batch_size=BATCH_ROWS, output_format=output_format)
@@ -866,7 +878,7 @@ def batch_answer(
 
 def _judged(case: GeneratedCase, engine: str, tables: Tables | None = None) -> Answer:
     """Previews, or for an ``execution.output_format=model`` case, decoded batches:
-    DiskGraph's model batches and the reference's inspectable ones.
+    Both paths are judged against the fixture specification.
     """
 
     if tables is None:
@@ -1047,36 +1059,30 @@ def anchor_splits(case: GeneratedCase, engine: str, position: int) -> None:
     """
 
     rows = split_anchor_rows(case)
-    engines = (engine, "in_memory") if engine != "in_memory" else (engine,)
-    for name in engines:
-        with _anchored(case, name, anchor_rows=rows) as (dataset, engine_object, anchors):
-            with prepare(case.contract, dataset, engine_object) as plan:
-                task = plan.materialize(anchors, fit_split=ALL_ANCHORS)
-                whole = {row[0]: row[2] for row in _delivered(list(task.batches(batch_size=1)))}
-                for selection in SELECTIONS:
-                    expected = selected(rows, selection)
-                    shown = (
-                        sorted(selection, key=str)
-                        if isinstance(selection, frozenset)
-                        else selection
-                    )
-                    label = f"{name} split={shown}"
-                    count = task.count(selection)
-                    _require(count == len(expected), f"{label}: count {count} != {len(expected)}")
-                    served = _delivered(list(task.batches(split=selection, batch_size=3)))
-                    _require(
-                        [row[0] for row in served] == expected,
-                        f"{label}: served {[row[0] for row in served]} != {expected}",
-                    )
-                    _require(
-                        all(row[2] == whole[row[0]] for row in served), f"{label}: samples differ"
-                    )
-                    shuffled = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
-                    first = [row[0] for row in _delivered(list(shuffled))]
-                    repeated = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
-                    second = [row[0] for row in _delivered(list(repeated))]
-                    _require(sorted(first) == sorted(expected), f"{label}: shuffled anchors differ")
-                    _require(first == second, f"{label}: shuffle is not repeatable")
+    with _anchored(case, engine, anchor_rows=rows) as (dataset, engine_object, anchors):
+        with prepare(case.contract, dataset, engine_object) as plan:
+            task = plan.materialize(anchors, fit_split=ALL_ANCHORS)
+            whole = {row[0]: row[2] for row in _delivered(list(task.batches(batch_size=1)))}
+            for selection in SELECTIONS:
+                expected = selected(rows, selection)
+                shown = (
+                    sorted(selection, key=str) if isinstance(selection, frozenset) else selection
+                )
+                label = f"{engine} split={shown}"
+                count = task.count(selection)
+                _require(count == len(expected), f"{label}: count {count} != {len(expected)}")
+                served = _delivered(list(task.batches(split=selection, batch_size=3)))
+                _require(
+                    [row[0] for row in served] == expected,
+                    f"{label}: served {[row[0] for row in served]} != {expected}",
+                )
+                _require(all(row[2] == whole[row[0]] for row in served), f"{label}: samples differ")
+                shuffled = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
+                first = [row[0] for row in _delivered(list(shuffled))]
+                repeated = task.batches(split=selection, batch_size=3, shuffle=True, seed=7)
+                second = [row[0] for row in _delivered(list(repeated))]
+                _require(sorted(first) == sorted(expected), f"{label}: shuffled anchors differ")
+                _require(first == second, f"{label}: shuffle is not repeatable")
 
 
 def root_availability(case: GeneratedCase, engine: str, position: int) -> None:
@@ -1118,150 +1124,40 @@ def root_availability(case: GeneratedCase, engine: str, position: int) -> None:
 
 def fitting_contracts(case: GeneratedCase) -> dict[str, DataLoaderSpec]:
     """Fitted encoders over entity columns, and field tokens over entity values and an
-    event history. DiskGraph fits both from typed columns (``build_model``), the reference
-    from records.
+    event history, checked against independent fixture populations.
     """
 
     return {"columns": fitting_contract(case), "tokens": typed_fitting_contract(case)}
 
 
 def fitted_state(case: GeneratedCase, engine: str, position: int) -> None:
-    """The state DiskGraph fits equals the reference's, for both fitting contracts: the
-    same fit inputs (entity values and history events per sample) and the same fitted
-    structure: vocabulary entries, not their IDs; floats within MOMENT_TOLERANCE.
-    Every contract is judged, and the failure names each that differs.
-    """
+    """Every declared fitted encoder matches an independently calculated fixture state."""
+    from conformance.expected import encoder_expectations, fitted_structure
+    from conformance.outputs import state_differences
 
-    failures = []
     for label, contract in fitting_contracts(case).items():
-        states, inputs = {}, {}
-        for name in ("in_memory", engine):
-            with bound_tables(contract, case.tables, name, types=PHYSICAL_TYPES) as bound:
-                dataset, engine_object = bound
-                fitted: Answer = {}
-                with patch.object(engine_object, "open", _recording(engine_object, fitted)):
-                    with prepare(contract, dataset, engine_object) as plan:
-                        states[name] = plan.materialize(case.requests).fitted_state.to_dict()
-                inputs[name] = fitted
-        try:
-            _same(inputs["in_memory"], inputs[engine], f"{label}: fit inputs", rounding=True)
-        except PropertyFailure as error:
-            failures.append(str(error))
-            continue
-        reference, actual = fitted_structure(states["in_memory"]), fitted_structure(states[engine])
-        for identity, values in _bucket_values(case, contract).items():
-            cuts = [state["encoders"][identity]["boundaries"] for state in (reference, actual)]
-            ranks = [[bisect.bisect_left(values, cut) for cut in side] for side in cuts]
-            if len(ranks[0]) == len(ranks[1]) and all(
-                abs(left - right) <= BUCKET_RANKS for left, right in zip(*ranks, strict=True)
-            ):
-                actual["encoders"][identity]["boundaries"] = cuts[0]
-        differences = state_differences(reference, actual, MOMENT_TOLERANCE)
-        if differences:
-            failures.append(f"{label}: fitted state differs:\n  " + "\n  ".join(differences[:8]))
-    _require(not failures, "\n".join(failures))
-
-
-def _bucket_values(case: GeneratedCase, contract: DataLoaderSpec) -> dict[str, list]:
-    """The sorted values each Buckets encoder over stored columns fits on."""
-
-    cutoff = (
-        max(cutoff_to_epoch(request.as_of_time) for request in case.requests)
-        if contract.requires_anchor_time
-        else None
-    )
-    clocks = {table.name: table_clock(table) for table in contract.schema.tables}
-    return {
-        identity: sorted(
-            row[column]
-            for table, column in encoder.columns
-            for row in case.tables[table]
-            if row[column] is not None
-            and (cutoff is None or clocks[table] is None or row[clocks[table]] <= cutoff)
-        )
-        for identity, encoder in table_column_encoders(contract).items()
-        if isinstance(encoder.config, Buckets)
-    }
-
-
-def _recording(engine: Engine, inputs: Answer) -> Callable[..., object]:
-    """Wrap ``engine.open`` so what the source builds, as records or typed columns
-    (``build_model``), is recorded per sample as flat fit inputs.
-    """
-
-    original = engine.open
-
-    def opened(dataset: Dataset, schema: DataSchema) -> object:
-        source = original(dataset, schema)
-        build = source.build
-
-        def recorded(spec: object, requests: Sequence[SampleRequest]) -> object:
-            samples = build(spec, requests)
-            for sample in samples:
-                inputs[str(sample.sample_id)] = _record_inputs(sample)
-            return samples
-
-        source.build = recorded
-        build_model = getattr(source, "build_model", None)
-        if build_model is not None:
-
-            def recorded_model(spec: object, requests: Sequence[SampleRequest]) -> object:
-                values = build_model(spec, requests)
-                inputs.update(_typed_inputs(values))
-                return values
-
-            source.build_model = recorded_model
-        return source
-
-    return opened
-
-
-FitEvent = tuple[int, tuple[tuple[str, Scalar], ...]]
-
-
-def _flat_inputs(entity: Mapping[str, Scalar], events: Sequence[FitEvent]) -> dict[str, Scalar]:
-    """One sample's fit inputs as flat values; a null is the same as an absent value."""
-
-    flat: dict[str, Scalar] = dict(entity)
-    for index, (timestamp, fields) in enumerate(sorted(events, key=repr)):
-        flat[f"{HISTORY}[{index}].at"] = timestamp
-        flat.update({f"{HISTORY}[{index}].{name}": value for name, value in fields})
-    return {name: value for name, value in flat.items() if value is not None}
-
-
-def _record_inputs(sample: BuiltSample) -> dict[str, Scalar]:
-    events = [
-        (event.timestamp, tuple(sorted((f.key, f.value) for f in event.fields)))
-        for event in sample.history.events
-        if event.source == HISTORY
-    ]
-    return _flat_inputs({v.key: v.value for v in sample.history.entity.values}, events)
-
-
-def _py(column: Sequence[object], index: int) -> Scalar:
-    value = column[index]
-    return value.as_py() if hasattr(value, "as_py") else value  # type: ignore[return-value]
-
-
-def _typed_inputs(values: ModelSourceBatch) -> dict[str, dict[str, Scalar]]:
-    history = values.events.get(HISTORY)
-    result = {}
-    for position, sample_id in enumerate(values.sample_ids):
-        events: list[FitEvent] = []
-        if history is not None:
-            start, stop = (int(str(_py(history.offsets, position + k))) for k in (0, 1))
-            events = [
-                (
-                    int(str(_py(history.timestamps, row))),
-                    tuple(
-                        sorted((name, _py(column, row)) for name, column in history.fields.items())
-                    ),
+        expected, approximate = encoder_expectations(case, contract)
+        with bound_tables(contract, case.tables, engine, types=PHYSICAL_TYPES) as (dataset, native):
+            with prepare(contract, dataset, native) as plan:
+                state = plan.materialize(case.requests).fitted_state.to_dict()
+                actual = state["encoders"]
+        _require(actual.keys() == expected.keys(), f"{label}: fitted encoder inventory")
+        for identity, values in approximate.items():
+            cuts = actual[identity].get("boundaries", [])
+            wanted = expected[identity]["boundaries"]
+            _require(len(cuts) == len(wanted), f"{label} {identity}: boundary count")
+            for cut, want in zip(cuts, wanted, strict=True):
+                _require(
+                    math.isfinite(cut)
+                    and bisect.bisect_left(values, cut) <= bisect.bisect_right(values, want) + 1.5
+                    and bisect.bisect_right(values, cut) >= bisect.bisect_left(values, want) - 1.5,
+                    f"{label} {identity}: stored-column quantile ranks",
                 )
-                for row in range(start, stop)
-            ]
-        entity = {name: _py(column, position) for name, column in values.entity_values.items()}
-        result[str(sample_id)] = _flat_inputs(entity, events)
-    return result
+            expected[identity]["boundaries"] = cuts
+        differences = state_differences(
+            fitted_structure(contract, expected), state, MOMENT_TOLERANCE
+        )
+        _require(not differences, f"{label}: fitted state differs: " + "; ".join(differences[:8]))
 
 
 def contract_transfer(case: GeneratedCase, engine: str, position: int) -> None:
@@ -1355,26 +1251,25 @@ class Property:
     cases: Callable[[int, str], Sequence[GeneratedCase]] | None = None
 
 
-BOTH = ("in_memory", "diskgraph")
 NATIVE = ("diskgraph",)
 PROPERTIES: Mapping[str, Property] = {
     prop.name: prop
     for prop in (
-        Property("point_in_time", BOTH, point_in_time),
-        Property("refusal_timing", BOTH, refusal_timing),
-        Property("differential", NATIVE, differential),
-        Property("permutation", BOTH, permutation),
+        Property("point_in_time", NATIVE, point_in_time),
+        Property("refusal_timing", NATIVE, refusal_timing),
+        Property("aggregate_answers", NATIVE, aggregate_answers),
+        Property("permutation", NATIVE, permutation),
         Property("partition", NATIVE, partition),
-        Property("time_shift", BOTH, time_shift),
-        Property("irrelevance", BOTH, irrelevance),
-        Property("delivery", BOTH, delivery, per_batch=True),
-        Property("epoch_trend", BOTH, epoch_trend, per_batch=True),
+        Property("time_shift", NATIVE, time_shift),
+        Property("irrelevance", NATIVE, irrelevance),
+        Property("delivery", NATIVE, delivery, per_batch=True),
+        Property("epoch_trend", NATIVE, epoch_trend, per_batch=True),
         Property("truncated_parquet", NATIVE, truncated_parquet),
         # -- Functional areas --
-        Property("label_window", BOTH, label_window),
-        Property("anchor_splits", BOTH, anchor_splits, per_batch=True),
-        Property("root_availability", BOTH, root_availability, per_batch=True),
-        Property("packing", BOTH, packing, per_batch=True),
+        Property("label_window", NATIVE, label_window),
+        Property("anchor_splits", NATIVE, anchor_splits, per_batch=True),
+        Property("root_availability", NATIVE, root_availability, per_batch=True),
+        Property("packing", NATIVE, packing, per_batch=True),
         Property("model_delivery", NATIVE, model_delivery, per_batch=True),
         Property("model_epoch_trend", NATIVE, model_epoch_trend, per_batch=True),
         Property("fitted_state", NATIVE, fitted_state, per_batch=True),
@@ -1388,7 +1283,7 @@ PROPERTIES = {
     **{
         name: Property(
             name,
-            NATIVE if name in ("graph_differential", "graph_inference_exact") else BOTH,
+            NATIVE,
             check,
             cases=partial(graph_batch, property_name=name),
         )
@@ -1397,15 +1292,15 @@ PROPERTIES = {
     **{
         name: Property(
             name,
-            NATIVE if name == "sequence_differential" else BOTH,
+            NATIVE,
             check,
             cases=partial(sequence_batch, property_name=name),
         )
         for name, check in SEQUENCE_CHECKS.items()
     },
 }
-#: Seed batches per engine: XS in memory, S on DiskGraph (see ENGINE_SCALE).
-SEEDS: Mapping[str, tuple[int, ...]] = {"in_memory": (0, 1, 2), "diskgraph": (0,)}
+#: Required seed batches at DiskGraph scale S (see ENGINE_SCALE).
+SEEDS: Mapping[str, tuple[int, ...]] = {"diskgraph": (0,)}
 
 
 def seed_batches(engine: str, count: int | None = None, start: int = 0) -> tuple[int, ...]:
@@ -1419,14 +1314,22 @@ def seed_batches(engine: str, count: int | None = None, start: int = 0) -> tuple
     return tuple(sorted(set(SEEDS[engine]) | set(range(start, start + count))))
 
 
+COMPARISON_PROPERTIES = frozenset()
+
+
 def obligations(
-    engines: Sequence[str], seeds: int | None = None, start: int = 0
+    engines: Sequence[str],
+    seeds: int | None = None,
+    start: int = 0,
+    *,
+    include_comparisons: bool = True,
 ) -> list[tuple[str, str, int]]:
     """Every required (property, engine, seed batch) for the selected engines."""
 
     return [
         (name, engine, seed)
         for name, prop in PROPERTIES.items()
+        if include_comparisons or name not in COMPARISON_PROPERTIES
         for engine in engines
         if engine in prop.engines
         for seed in seed_batches(engine, seeds, start)
@@ -1461,6 +1364,8 @@ def run_obligation(name: str, engine: str, seed: int, repro_dir: Path | None = N
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as error:  # noqa: BLE001 - every failure gets a repro
+            if record_refusal(error, property=name, case=case.id, seed=seed) is not None:
+                continue
             path = write_repro(name, engine, case, position, error, repro_dir)
             failures.append(f"{case.id}: {error}\n  repro: {path}")
     if failures:

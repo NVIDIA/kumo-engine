@@ -14,6 +14,7 @@ import pytest
 
 from kumo.pytorch import api
 from tests.helpers import reorder_dicts
+from tests.native_fixtures import native_engine, parquet_dataset, prepare_rows, preview_rows
 
 
 def _contract(scope="entity", values=None):
@@ -79,7 +80,7 @@ def test_all_declaration_orders_resolve_dependencies_and_reuse_state(scope):
         contract.validate()
         assert contract.fingerprint == original.fingerprint
         assert contract.input_fingerprint == original.input_fingerprint
-        with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+        with prepare_rows(contract, dataset) as plan:
             with plan.materialize(requests, fitted=fitted) as task:
                 fields = task.preview(requests).batch.inputs["values"]
                 for name, expected in {"z_base": 2, "a_double": 4, "b_total": 6}.items():
@@ -122,8 +123,9 @@ def test_json_key_order_and_formatting_do_not_change_contract_identity(scope, in
 )
 def test_invalid_dependencies_refuse_before_opening_the_engine(scope, values, reason):
     contract, _ = _contract(scope, values)
-    engine = api.InMemoryEngine()
+    engine = native_engine()
     dataset = api.Dataset({"users": api.InMemoryRows([])})
+    dataset = parquet_dataset(contract.schema, dataset)
     issues = api.check(contract, dataset, engine)
     assert issues
     assert all(issue.suggestion for issue in issues)
@@ -149,7 +151,7 @@ def test_operand_order_and_repetition_keep_their_meaning():
     assert original.input_fingerprint != swapped.input_fingerprint
     dataset = api.Dataset({"users": api.InMemoryRows([{"id": 1}])})
     for contract, expected in ((original, 2), (swapped, -2)):
-        result = api.preview(contract, dataset, api.InMemoryEngine(), requests).batch
+        result = preview_rows(contract, dataset, requests).batch
         assert result.inputs["values"]["result"]["values"].tolist() == [expected]
 
 
@@ -179,7 +181,7 @@ def test_missing_data_and_undefined_arithmetic_remain_missing():
         ),
     )
     dataset = api.Dataset({"users": api.InMemoryRows([{"id": 1, "value": None}])})
-    fields = api.preview(contract, dataset, api.InMemoryEngine(), requests).batch.inputs["values"]
+    fields = preview_rows(contract, dataset, requests).batch.inputs["values"]
     for name in ("missing", "zero_division", "bad_log"):
         assert not fields[name]["valid"].any()
 
@@ -224,7 +226,7 @@ def test_shared_fitting_is_independent_of_named_input_and_field_placement(separa
     dataset = api.Dataset({"users": api.InMemoryRows([{"id": 1}])})
     fingerprints = []
     for variant in (contract, api.DataLoaderSpec.from_dict(reorder_dicts(contract.to_dict()))):
-        with api.prepare(variant, dataset, api.InMemoryEngine()) as plan:
+        with prepare_rows(variant, dataset) as plan:
             with plan.materialize(requests) as task:
                 fingerprints.append(task.bound_contract().fingerprint)
     assert fingerprints[0] == fingerprints[1]
@@ -233,14 +235,14 @@ def test_shared_fitting_is_independent_of_named_input_and_field_placement(separa
 def test_artifact_contract_preserves_executable_meaning(tmp_path):
     contract, requests = _contract()
     dataset = api.Dataset({"users": api.InMemoryRows([{"id": 1}])})
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         with plan.materialize(requests) as task:
             task.to_artifact().save(tmp_path)
             fitted = task.fitted_state
     restored = api.DataLoaderSpec.from_json((tmp_path / "contract.json").read_text())
     restored.validate()
     assert restored.fingerprint == contract.fingerprint
-    with api.prepare(restored, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(restored, dataset) as plan:
         with plan.materialize(requests, fitted=fitted) as task:
             assert task.preview(requests).batch.inputs["values"]["b_total"]["values"].tolist() == [
                 6

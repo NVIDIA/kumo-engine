@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/stanford-star/relbench",
+  "commit": "ecc9621f53d9b7edd33e0616e66fbaaae4dd99d2",
+  "relbench_version": "3.0.2",
+  "source_path": "relbench/modeling/nn.py",
+  "source_sha256": "3a7bf3d5b12227016b9e1691659e508c17c26e047883dfbb080363fa9c4ff2e1",
+  "copied_classes": [
+    "HeteroTemporalEncoder",
+    "HeteroGraphSAGE"
+  ],
+  "license": "Apache-2.0",
+  "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+  "class_ast_sha256": {
+    "HeteroTemporalEncoder": "e27ab74d235b29cbb308c75e0ca9d96e3ed499a9b82e411f3bd8377dfe8c796b",
+    "HeteroGraphSAGE": "8898b741ca0d9649c674391465fb3bababa3da82e94d570022982f50c7b5d19f"
+  }
+}

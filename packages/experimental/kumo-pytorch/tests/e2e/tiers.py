@@ -5,7 +5,7 @@
 """The end-to-end tiers: which data, how many seeds, and the model bands at each.
 
 T2a runs after every merge to ``main`` at S; T2b runs nightly at M. Both run the
-same flows and the same checks (``test_lifecycle.py``); only what is here
+same flows and correctness, training and lifecycle checks; only what is here
 differs. Every band was set after measuring, never to make a bad model pass;
 its reasoning sits next to its value.
 """

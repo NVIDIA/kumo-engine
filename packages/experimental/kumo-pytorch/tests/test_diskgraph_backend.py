@@ -16,6 +16,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
+from tests.native_fixtures import native_anchor_table, prepare_rows
 
 FIXTURE = Path(__file__).parent / "data" / "synthetic_banking_subset.json"
 
@@ -516,19 +517,15 @@ def _preview(contract, dataset, engine, requests):
         return plan.materialize(requests, fit_split="train").preview(requests, seed=7).batch
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 def test_named_dictionary_placement_preserves_columns_targets_and_graphs(tmp_path, engine_name):
     from tests.helpers import reorder_dicts
     from tests.test_preview import _equal as assert_tree_equal
 
     rows = _fixture_rows()
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
-        dataset = _write_parquet(rows, tmp_path / "tables")
-        engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
-    else:
-        dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
-        engine = api.InMemoryEngine()
+    pytest.importorskip("diskgraph")
+    dataset = _write_parquet(rows, tmp_path / "tables")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
     contract = _temporal_contract(_schema())
     payload = contract.to_dict()
     expected = None
@@ -763,20 +760,13 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
     schema = _schema()
     contract = _contract(schema)
     requests = _requests()
-    reference = _preview(
-        contract,
-        api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()}),
-        api.InMemoryEngine(),
-        requests,
-    )
     parquet = _write_parquet(rows, tmp_path / "parquet")
     indexes = [tmp_path / f"index-{run}" for run in range(2)]
     batches = [
         _preview(contract, parquet, api.DiskGraphEngine(index=index, num_threads=1), requests)
         for index in indexes
     ]
-    expected_graph = _canonical_graph(reference.inputs["graph"])
-    assert expected_graph["nodes"] == {
+    expected_nodes = {
         "accounts": [(4, 0), (5, 0), (6, 0), (7, 0), (8, 0), (9, 0), (10, 1), (11, 1), (12, 1)],
         "card_transactions": [
             (61, 0),
@@ -791,6 +781,23 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
         ],
         "users": [(2, 0), (3, 1)],
     }
+    keyed = {
+        table.name: {row[table.primary_key]: row for row in rows[table.name]}
+        for table in schema.tables
+    }
+    expected_edges = {}
+    for relation in schema.relations:
+        if relation.name not in {"user_accounts", "account_card_transactions"}:
+            continue
+        expected_edges[relation.name] = sorted(
+            (left, right)
+            for left, owner in expected_nodes[relation.left_table]
+            for right, other in expected_nodes[relation.right_table]
+            if owner == other
+            and keyed[relation.left_table][left][relation.left_key]
+            == keyed[relation.right_table][right][relation.right_key]
+        )
+    expected_graph = {"nodes": expected_nodes, "edges": expected_edges}
     assert [_canonical_graph(batch.inputs["graph"]) for batch in batches] == [
         expected_graph,
         expected_graph,
@@ -877,7 +884,7 @@ def test_diskgraph_checks_graph_support_before_ingestion(tmp_path: Path) -> None
         contract.batch,
     )
     assert not api.check(with_values, dataset, engine)
-    anchor_table = api.AnchorTable(
+    anchor_table = native_anchor_table(
         source=api.Parquet("/does/not/exist"), entity_id="user_id", as_of_time="as_of_time"
     )
     assert any(
@@ -1002,7 +1009,7 @@ def test_diskgraph_refuses_future_intermediate_edge_that_leaks_old_rows(tmp_path
         }
     )
     request = api.SampleRequest("account-1", 1, cutoff, split="train")
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         batch = next(plan.materialize((request,), fit_split="train").batches())
     assert batch.inputs["account"]["spend"]["values"].tolist() == [500.0]
     issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
@@ -1183,41 +1190,118 @@ def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_
         api.prepare(changed_contract, dataset, engine)
 
 
-def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_path: Path) -> None:
+def test_diskgraph_temporal_sequences_aggregates_and_labels_match_fixture(tmp_path: Path) -> None:
     pytest.importorskip("diskgraph")
     rows = _fixture_rows()
     schema = _schema()
     sample = _temporal_sample()
     requests = _requests()
-    memory_dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
+    import math
+    from collections import Counter
+    from statistics import mean, pvariance, variance
+
+    from kumo.pytorch.data.records import cutoff_to_epoch
+
     parquet = _write_parquet(rows, tmp_path / "parquet")
-    artifact = _index_at(tmp_path / "index")
-    reference_source = api.InMemoryEngine().open(memory_dataset, schema)
-    diskgraph_source = api.DiskGraphEngine(index=artifact.path, num_threads=1).open(parquet, schema)
+    diskgraph_source = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1).open(
+        parquet, schema
+    )
     try:
-        expected = reference_source.build(sample, requests)
         actual = diskgraph_source.build(sample, requests)
     finally:
-        reference_source.close()
         diskgraph_source.close()
-    for expected_sample, actual_sample in zip(expected, actual, strict=True):
-        assert actual_sample.history.events == expected_sample.history.events
+    assert [built.sample_id for built in actual] == [request.sample_id for request in requests]
+    expected_batches = {}
+    for request, built in zip(requests, actual, strict=True):
+        cutoff = cutoff_to_epoch(request.as_of_time)
+        user = next(row for row in rows["users"] if row["user_id"] == request.entity_id)
+        transactions = [
+            row for row in rows["card_transactions"] if row["user_id"] == request.entity_id
+        ]
+        history = [row for row in transactions if cutoff_to_epoch(row["occurred_at"]) <= cutoff]
+        future = sorted(
+            [
+                row
+                for row in transactions
+                if 0 < cutoff_to_epoch(row["occurred_at"]) - cutoff <= 7 * 86400
+            ],
+            key=lambda row: (row["occurred_at"], row["card_transaction_id"]),
+        )
+        amounts = [row["amount"] for row in history]
+        channels = Counter(row["channel"] for row in history)
         expected_values = {
-            value.key: value.value for value in expected_sample.history.entity.values
+            "country": user["country"],
+            "risk_segment": user["risk_segment"],
+            "transaction_count": len(history),
+            "merchant_count": len(
+                {row["merchant_id"] for row in history if row["merchant_id"] is not None}
+            ),
+            "total_spend": sum(amounts),
+            "mean_spend": mean(amounts),
+            "minimum_spend": min(amounts),
+            "maximum_spend": max(amounts),
+            "variance_population": pvariance(amounts),
+            "variance_sample": variance(amounts),
+            "std_population": math.sqrt(pvariance(amounts)),
+            "std_sample": math.sqrt(variance(amounts)),
+            "last_activity_seconds": cutoff
+            - max(cutoff_to_epoch(row["occurred_at"]) for row in history),
+            "usual_channel": min(
+                key for key, value in channels.items() if value == max(channels.values())
+            ),
+            "spend_across_account_groups": sum(amounts),
         }
-        actual_values = {value.key: value.value for value in actual_sample.history.entity.values}
+        actual_values = {field.key: field.value for field in built.history.entity.values}
         assert actual_values.keys() == expected_values.keys()
-        for name, expected_value in expected_values.items():
-            if isinstance(expected_value, float):
-                assert actual_values[name] == pytest.approx(expected_value)
-            else:
-                assert actual_values[name] == expected_value
-        expected_targets = {target.name: target.value for target in expected_sample.targets}
-        actual_targets = {target.name: target.value for target in actual_sample.targets}
-        assert actual_targets.keys() == expected_targets.keys()
-        assert actual_targets["future_spend"] == pytest.approx(expected_targets["future_spend"])
-        assert actual_targets["future_count"] == expected_targets["future_count"]
-        assert actual_targets["next_transaction"] == expected_targets["next_transaction"]
+        for name, want in expected_values.items():
+            assert actual_values[name] == (pytest.approx(want) if isinstance(want, float) else want)
+        selected = sorted(
+            history, key=lambda row: (row["occurred_at"], row["card_transaction_id"]), reverse=True
+        )[:5]
+        expected_events = [
+            (
+                cutoff_to_epoch(row["opened_at"]),
+                "accounts",
+                {
+                    "account_type": row["account_type"],
+                    "age_days": (cutoff - cutoff_to_epoch(row["opened_at"])) / 86400,
+                },
+            )
+            for row in rows["accounts"]
+            if row["user_id"] == request.entity_id and cutoff_to_epoch(row["opened_at"]) <= cutoff
+        ] + [
+            (
+                cutoff_to_epoch(row["occurred_at"]),
+                "transactions",
+                {
+                    "amount": row["amount"],
+                    "channel": row["channel"],
+                    "age_hours": (cutoff - cutoff_to_epoch(row["occurred_at"])) / 3600,
+                },
+            )
+            for row in selected
+        ]
+        ordered = sorted(expected_events, key=lambda event: (event[0], event[1]))
+        expected_batches[request.sample_id] = {
+            "entity": expected_values,
+            "transactions": [fields for _, source, fields in ordered if source == "transactions"],
+            "timeline": [fields for _, _, fields in ordered[-4:]],
+            "future_spend": sum(row["amount"] for row in future),
+            "next_transaction": {name: future[0][name] for name in ("amount", "channel")},
+        }
+        observed = [
+            (event.timestamp, event.source, {f.key: f.value for f in event.fields})
+            for event in built.history.events
+        ]
+        assert observed == sorted(expected_events, key=lambda event: (event[0], event[1]))
+        targets = {target.name: target.value for target in built.targets}
+        assert targets["future_count"] == len(future)
+        assert targets["future_spend"] == pytest.approx(sum(row["amount"] for row in future))
+        next_row = targets["next_transaction"]
+        assert next_row.timestamp == cutoff_to_epoch(future[0]["occurred_at"])
+        assert {field.key: field.value for field in next_row.fields} == {
+            name: future[0][name] for name in ("amount", "channel")
+        }
     profile = diskgraph_source.last_temporal_profile
     assert profile is not None
     assert profile["samples"] == 2
@@ -1230,12 +1314,6 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         "total",
     }
     contract = _temporal_contract(schema)
-    expected_batch = api.preview(
-        contract, memory_dataset, api.InMemoryEngine(), requests, seed=7
-    ).batch
-    actual_batch = api.preview(
-        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1), requests, seed=7
-    ).batch
 
     def assert_equal(actual_value: object, expected_value: object) -> None:
         if isinstance(expected_value, torch.Tensor):
@@ -1249,47 +1327,59 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         else:
             assert actual_value == expected_value
 
-    assert_equal(actual_batch.inputs["entity"], expected_batch.inputs["entity"])
-    assert_equal(actual_batch.inputs["transactions"], expected_batch.inputs["transactions"])
-    assert_equal(actual_batch.inputs["timeline"], expected_batch.inputs["timeline"])
-    assert _canonical_graph(actual_batch.inputs["graph"]) == _canonical_graph(
-        expected_batch.inputs["graph"]
+    # Stored-column encoders fit the source table up to the latest training cutoff,
+    # not only nodes retained by graph sampling.
+    fit_cutoff = max(cutoff_to_epoch(request.as_of_time) for request in requests)
+    fitted_accounts = [
+        row for row in rows["accounts"] if cutoff_to_epoch(row["opened_at"]) <= fit_cutoff
+    ]
+    counts = Counter(
+        row["account_type"] for row in fitted_accounts if row["account_type"] is not None
     )
-    for table, expected_node in expected_batch.inputs["graph"]["nodes"].items():
-        actual_node = actual_batch.inputs["graph"]["nodes"][table]
-        for field, expected_feature in expected_node["features"].items():
-            actual_feature = actual_node["features"][field]
-            expected_by_node = {
-                (int(raw_id), int(owner)): (value.item(), bool(valid))
-                for raw_id, owner, value, valid in zip(
-                    expected_node["ids"],
-                    expected_node["batch"],
-                    expected_feature["values"],
-                    expected_feature["valid"],
-                    strict=True,
-                )
-            }
-            actual_by_node = {
-                (int(raw_id), int(owner)): (value.item(), bool(valid))
-                for raw_id, owner, value, valid in zip(
-                    actual_node["ids"],
-                    actual_node["batch"],
-                    actual_feature["values"],
-                    actual_feature["valid"],
-                    strict=True,
-                )
-            }
-            assert actual_by_node.keys() == expected_by_node.keys()
-            for identity, (expected_value, expected_valid) in expected_by_node.items():
-                actual_value, actual_valid = actual_by_node[identity]
-                assert actual_valid == expected_valid
-                if isinstance(expected_value, float):
-                    assert actual_value == pytest.approx(expected_value)
-                else:
-                    assert actual_value == expected_value
-    assert_equal(actual_batch.targets, expected_batch.targets)
+    vocabulary = {
+        value: index + 2
+        for index, value in enumerate(sorted(counts, key=lambda value: (-counts[value], value)))
+    }
+    fitted_amounts = [
+        row["amount"]
+        for row in rows["card_transactions"]
+        if row["amount"] is not None and cutoff_to_epoch(row["occurred_at"]) <= fit_cutoff
+    ]
+    amount_mean, amount_scale = mean(fitted_amounts), math.sqrt(pvariance(fitted_amounts)) or 1.0
+    keyed = {
+        table: {row[key]: row for row in rows[table]}
+        for table, key in (("accounts", "account_id"), ("card_transactions", "card_transaction_id"))
+    }
+
+    def assert_graph_features(batch):
+        from tests.backend_answers import banking_graph
+
+        by_id = {request.sample_id: request for request in requests}
+        selected = [by_id[sid] for sid in batch.metadata["sample_ids"]]
+        assert _canonical_graph(batch.inputs["graph"]) == banking_graph(rows, selected)
+        for table, field, dtype in (
+            ("accounts", "account_type", torch.int64),
+            ("card_transactions", "amount", torch.float32),
+        ):
+            node = batch.inputs["graph"]["nodes"][table]
+            feature = node["features"][field]
+            raw = [keyed[table][identity][field] for identity in node["ids"].tolist()]
+            valid = [value is not None for value in raw]
+            if table == "accounts":
+                expected_values = [vocabulary[value] if value is not None else 0 for value in raw]
+            else:
+                expected_values = [
+                    (value - amount_mean) / amount_scale if value is not None else 0.0
+                    for value in raw
+                ]
+            assert feature["values"].dtype == dtype
+            assert feature["valid"].tolist() == valid
+            torch.testing.assert_close(
+                feature["values"], torch.tensor(expected_values, dtype=dtype)
+            )
+
     with api.prepare(
-        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
+        contract, parquet, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     ) as plan:
         task = plan.materialize(requests, fit_split="train")
         inspectable_batch = next(
@@ -1301,6 +1391,12 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         model_batch = next(
             iter(task.batches(requests, batch_size=2, output_format="model", seed=7))
         )
+        from tests.backend_answers import temporal_batch
+
+        temporal_batch(inspectable_batch, expected_batches, contract)
+        temporal_batch(model_batch, expected_batches, contract)
+        assert_graph_features(inspectable_batch)
+        assert_graph_features(model_batch)
         assert_equal(model_batch.inputs, inspectable_batch.inputs)
         assert_equal(model_batch.targets, inspectable_batch.targets)
         assert_equal(model_batch.metadata, inspectable_batch.metadata)
@@ -1318,13 +1414,12 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         }
 
 
-def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_path: Path) -> None:
+def test_diskgraph_pragma_batches_match_fixture_without_record_adaptation(tmp_path: Path) -> None:
     pytest.importorskip("diskgraph")
     rows = _fixture_rows()
     schema = _schema()
     contract = _pragma_contract(schema)
     requests = _requests()
-    memory_dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
     parquet = _write_parquet(rows, tmp_path / "parquet")
     artifact = _index_at(tmp_path / "index")
 
@@ -1344,17 +1439,12 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
         else:
             assert actual == expected
 
-    with (
-        api.prepare(contract, memory_dataset, api.InMemoryEngine()) as reference_plan,
-        api.prepare(
-            contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
-        ) as diskgraph_plan,
-    ):
-        reference_task = reference_plan.materialize(requests, fit_split="train")
+    with api.prepare(
+        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
+    ) as diskgraph_plan:
         diskgraph_task = diskgraph_plan.materialize(requests, fit_split="train")
-        assert diskgraph_task.fitted_state == reference_task.fitted_state
         assert diskgraph_plan._source.last_temporal_profile["output_format"] == "model"
-        expected = list(reference_task.batches(requests, seed=17, epoch=3))
+        fitted = diskgraph_task.fitted_state.to_dict()
         inspectable = list(diskgraph_task.batches(requests, seed=17, epoch=3))
         diskgraph_plan._source._adapt_temporal_result = lambda *_args: pytest.fail(
             "model output entered the inspectable Event/FieldValue adapter"
@@ -1365,14 +1455,14 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
         assert length_profile["native_stats"]["rowpack_timestamps"] == 0
         assert length_profile["native_stats"]["sort_key_timestamps"] > 0
         assert set(length_profile["native_timings_ns"]) == {"traversal", "time_filter", "total"}
-    assert len(expected) == len(inspectable) == len(model)
-    for expected_batch, inspectable_batch, model_batch in zip(
-        expected, inspectable, model, strict=True
-    ):
-        assert_equal(inspectable_batch.inputs, expected_batch.inputs)
-        assert_equal(inspectable_batch.targets, expected_batch.targets)
-        assert_equal(model_batch.inputs, expected_batch.inputs)
-        assert_equal(model_batch.targets, expected_batch.targets)
+    from tests.backend_answers import pragma_batches
+
+    pragma_batches(inspectable, rows, requests, fitted)
+    pragma_batches(model, rows, requests, fitted)
+    assert len(inspectable) == len(model)
+    for inspectable_batch, model_batch in zip(inspectable, model, strict=True):
+        assert_equal(model_batch.inputs, inspectable_batch.inputs)
+        assert_equal(model_batch.targets, inspectable_batch.targets)
 
 
 def test_diskgraph_model_uses_shared_anchor_shuffle(tmp_path: Path) -> None:
@@ -1416,7 +1506,7 @@ def _anchor_parquet(path: Path, rows: list[dict[str, object]]) -> api.AnchorTabl
     pq = pytest.importorskip("pyarrow.parquet")
     path.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows), path / "anchors.parquet")
-    return api.AnchorTable(
+    return native_anchor_table(
         source=api.Parquet(str(path)),
         entity_id="user_id",
         as_of_time="as_of",
@@ -1431,7 +1521,7 @@ def test_diskgraph_anchor_check_validates_every_parquet_file(tmp_path: Path) -> 
     pq = pytest.importorskip("pyarrow.parquet")
     pq.write_table(pa.table({"user_id": [1], "as_of": [0]}), tmp_path / "part-0.parquet")
     pq.write_table(pa.table({"user_id": [2]}), tmp_path / "part-1.parquet")
-    anchors = api.AnchorTable(
+    anchors = native_anchor_table(
         source=api.Parquet(str(tmp_path)), entity_id="user_id", as_of_time="as_of"
     )
     from kumo.pytorch.engines.parquet_anchors import check_parquet_anchors

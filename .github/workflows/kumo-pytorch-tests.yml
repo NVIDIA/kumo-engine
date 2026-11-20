@@ -2,65 +2,88 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: kumo-pytorch tests
+name: PyTorch — Package Tests
 
-# kumo-pytorch's CPU checks: golden cases on the in-memory engine, the test
-# suite, style and the package build. The in-memory engine computes column
-# statistics with DiskGraph's collector, so DiskGraph is built from this commit.
+# Called by the full suite; conformance and lifecycle have separate owners.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      prebuilt-diskgraph-wheel:
+        description: The caller uploaded this run's diskgraph-wheel artifact.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   diskgraph-wheel:
+    name: Setup / DiskGraph Build
+    if: ${{ !inputs.prebuilt-diskgraph-wheel }}
     uses: ./.github/workflows/_diskgraph-wheel.yml
+    with:
+      readable-output: true
 
   cpu:
-    name: kumo-pytorch-tests
+    name: Correctness / Package Tests
     needs: diskgraph-wheel
+    if: ${{ !cancelled() && (needs.diskgraph-wheel.result == 'success' || (inputs.prebuilt-diskgraph-wheel && needs.diskgraph-wheel.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
       run:
         shell: bash
         working-directory: packages/experimental/kumo-pytorch
+    env:
+      KUMO_CI_LABEL: Package tests
+      KUMO_CI_REPORTS: |
+        $RUNNER_TEMP/*.xml
+        $RUNNER_TEMP/*acquisition.json
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Golden cases on the in-memory engine
-        run: python -m conformance --engine in_memory
       - name: Test suite
-        run: python -m pytest -q
-      - name: Style
         run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Test suite" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          python -m pytest -q --require-imports --ignore=tests/conformance --ignore=tests/e2e/test_lifecycle.py --ignore=tests/e2e/test_correctness.py --ignore=tests/e2e/test_training.py --basetemp="$RUNNER_TEMP/package-checks" --junitxml="$RUNNER_TEMP/package-tests.xml"
+          KUMO_CI_COMMAND
+      - name: Retain lifecycle subprocess diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: kumo-pytorch-package-lifecycle-diagnostics
+          path: |
+            ${{ runner.temp }}/package-checks/**/*.log
+            ${{ runner.temp }}/package-checks/**/report.json
+            ${{ runner.temp }}/package-checks/**/result.json
+            ${{ runner.temp }}/package-checks/**/expected.json
+            ${{ runner.temp }}/package-checks/**/restore-fingerprints.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Style
+        if: ${{ !cancelled() }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Style" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
           uvx ruff@0.17.3 check .
           uvx ruff@0.17.3 format --check .
+          KUMO_CI_COMMAND
       - name: Package build
-        run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+        if: ${{ !cancelled() }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/test/kumo_pytorch/ci_reporting.py" run \
+            --title "$KUMO_CI_LABEL / Package build" -- bash -e -o pipefail <<'KUMO_CI_COMMAND'
+          uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
+          KUMO_CI_COMMAND
+      - name: Publish readable results and full logs
+        if: ${{ always() }}
+        uses: ./.github/actions/kumo-pytorch-results
+        with:
+          title: Package tests
+          artifact: kumo-pytorch-diagnostics-package
+          status: ${{ job.status }}

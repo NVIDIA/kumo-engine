@@ -14,7 +14,15 @@ import pytest
 
 from conformance.assertions import require_engine
 from conformance.cases import ENGINES, REPOSITORY
-from conformance.properties import PROPERTIES, obligation_id, obligations, replay, run_obligation
+from conformance.properties import (
+    COMPARISON_PROPERTIES,
+    PROPERTIES,
+    obligation_id,
+    obligations,
+    replay,
+    run_obligation,
+)
+from conformance.refusals import record_refusal
 from conformance.registry import REPLAYED
 from conformance.repro import load_corpus, load_repro
 
@@ -26,6 +34,7 @@ def _engines(config):
 
 def pytest_generate_tests(metafunc):
     engines = _engines(metafunc.config)
+    native_only = metafunc.config.getoption("--conformance-no-in-memory")
     if "obligation" in metafunc.fixturenames:
         metafunc.parametrize(
             "obligation",
@@ -35,13 +44,19 @@ def pytest_generate_tests(metafunc):
                     engines,
                     metafunc.config.getoption("--conformance-seeds"),
                     metafunc.config.getoption("--conformance-seed-start"),
+                    include_comparisons=not native_only,
                 )
             ],
         )
     if "corpus_engine" in metafunc.fixturenames:
         metafunc.parametrize("corpus_engine", engines)
     if "gap" in metafunc.fixturenames:
-        gaps = [gap for gap in REPLAYED if gap.engine in engines]
+        gaps = [
+            gap
+            for gap in REPLAYED
+            if gap.engine in engines
+            and (not native_only or gap.property not in COMPARISON_PROPERTIES)
+        ]
         metafunc.parametrize("gap", gaps, ids=[gap.id for gap in gaps])
 
 
@@ -51,22 +66,29 @@ def test_property(obligation):
     run_obligation(name, engine, seed)
 
 
-def test_corpus(corpus_engine):
+def test_corpus(corpus_engine, request):
     """Every corpus entry holds on each selected engine its property applies to."""
     require_engine(corpus_engine)
     failures = []
     for entry_id, entry in load_corpus().items():
         if corpus_engine not in PROPERTIES[entry.property].engines:
             continue
+        if (
+            request.config.getoption("--conformance-no-in-memory")
+            and entry.property in COMPARISON_PROPERTIES
+        ):
+            continue
         try:
             replay(entry, corpus_engine)
-        except AssertionError as error:
+        except Exception as error:
+            if record_refusal(error, corpus=entry_id) is not None:
+                continue
             failures.append(f"{entry_id} ({entry.issue}): {error}")
     assert not failures, "\n".join(failures)
 
 
 def test_known_gap(gap):
-    """Each known gap's or in-memory divergence's repro still fails as recorded; when one
+    """Each existing native gap's repro still fails as recorded; when one
     passes, lift the entry."""
     require_engine(gap.engine)
     repro = load_repro(REPOSITORY / gap.repro)

@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api, assembly
+from tests.native_fixtures import prepare_rows
 from tests.test_preview import _equal as assert_equal
 
 
@@ -209,7 +210,7 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
         api.BatchSpec(inputs, {"future": api.LabelTarget("future", api.Raw())} if label else {}),
     )
     fingerprint = contract.fingerprint
-    with api.prepare(contract, memory, api.InMemoryEngine()) as reference:
+    with prepare_rows(contract, memory) as reference:
         expected = next(
             reference.materialize(requests, fit_split="train").batches(requests, batch_size=4)
         )

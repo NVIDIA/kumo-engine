@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "provenance": {
+    "repository": "https://github.com/kumo-ai/kumo-engine-arena",
+    "revision": "b0701af6075de1cf79f0064d1f8213cc9fb4fbc6",
+    "catalogs": [
+      "benchmarks/registry/datasets.v1.json",
+      "benchmarks/registry/anchors.v1.json"
+    ]
+  },
+  "datasets": {
+    "hi-small": {
+      "dataset_id": "aml-data/hi-small",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 99240770,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "hi-medium": {
+      "dataset_id": "aml-data/hi-medium",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 626119918,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "hi-large": {
+      "dataset_id": "aml-data/hi-large",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 3300643349,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "li-small": {
+      "dataset_id": "aml-data/li-small",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 136681846,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "li-medium": {
+      "dataset_id": "aml-data/li-medium",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 611594783,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "li-large": {
+      "dataset_id": "aml-data/li-large",
+      "dataset_version": "v8",
+      "population": "account-daily",
+      "source_bytes": 3224494111,
+      "accepted_identity": {
+        "conversion_version": 1,
+        "source_handle": "ealtman2019/ibm-transactions-for-anti-money-laundering-aml/versions/8",
+        "source_inventory_sha256": "b2c5d1d02016d928e8bd1669b4b6f57b9715ff58ed14e335780fe5934bdd2ef6",
+        "source_representation": "All original source fields preserved as VARCHAR in the accepted converted Parquet files."
+      },
+      "anchor_versions": [
+        "v1",
+        "v2"
+      ],
+      "file_count": 11
+    },
+    "synthetic-medium-customers": {
+      "dataset_id": "pragma-synthetic-medium",
+      "dataset_version": "v1",
+      "population": "weekly-customer",
+      "anchor_versions": [
+        "v1"
+      ],
+      "source_bytes": 17606082087,
+      "accepted_identity": {
+        "source_manifest_sha256": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34",
+        "source_representation": "Nine original public tables; evaluation-only truth and mutable final profile fields are excluded from inputs."
+      },
+      "file_count": 1613
+    },
+    "synthetic-medium-accounts": {
+      "dataset_id": "pragma-synthetic-medium",
+      "dataset_version": "v1",
+      "population": "weekly-account",
+      "anchor_versions": [
+        "v1"
+      ],
+      "source_bytes": 17606082087,
+      "accepted_identity": {
+        "source_manifest_sha256": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34",
+        "source_representation": "Nine original public tables; evaluation-only truth and mutable final profile fields are excluded from inputs."
+      },
+      "file_count": 1613
+    },
+    "synthetic-medium-ltv": {
+      "dataset_id": "pragma-synthetic-medium",
+      "dataset_version": "v1",
+      "population": "ltv_positive_6m",
+      "anchor_versions": [
+        "v2"
+      ],
+      "source_bytes": 17606082087,
+      "accepted_identity": {
+        "source_manifest_sha256": "f927bca381078beb13d0da3ddbed590a4ec19a34b6358e25970375ad8f8cfc34",
+        "source_representation": "Nine original public tables; evaluation-only truth and mutable final profile fields are excluded from inputs."
+      },
+      "file_count": 1613
+    },
+    "mbd-transaction-forecast": {
+      "dataset_id": "mbd",
+      "dataset_version": "v1",
+      "population": "transaction-forecast",
+      "anchor_versions": [
+        "v2"
+      ],
+      "source_bytes": 6037620860,
+      "accepted_identity": {
+        "upstream_revision": "7c1642ca66eb460b0a2097e63afbed2eece739fa",
+        "source_representation": "Original client membership and transaction partitions for folds 0\u20134; other modalities and fold -1 excluded."
+      },
+      "file_count": 1008
+    },
+    "mbd-transaction-category": {
+      "dataset_id": "mbd",
+      "dataset_version": "v1",
+      "population": "transaction-forecast",
+      "anchor_versions": [
+        "v1"
+      ],
+      "source_bytes": 6037620860,
+      "accepted_identity": {
+        "upstream_revision": "7c1642ca66eb460b0a2097e63afbed2eece739fa",
+        "source_representation": "Original client membership and transaction partitions for folds 0\u20134; other modalities and fold -1 excluded."
+      },
+      "file_count": 1008
+    },
+    "streaming-25b": {
+      "dataset_id": "streaming/25B",
+      "dataset_version": "79b3704dd4a1930d49a9ca2adbed32b084718ec8",
+      "population": "viewer-weekly-10k",
+      "anchor_versions": [],
+      "bucket": "kumo-test-dataplane-bucket",
+      "expected_bucket_owner": "926922431314",
+      "source_bytes": 512202229780,
+      "file_count": 746
+    }
+  },
+  "inventory": {
+    "bucket": "kumo-engine-arena",
+    "region": "us-west-2",
+    "expected_bucket_owner": "926922431314",
+    "key": "testing/kumo-pytorch/inventories/9fd3712ac8a20f2a9657df01ee53d1b3bd2cfdb9a9ecbeac098d65bc7fa88c5b/inputs.json",
+    "sha256": "9fd3712ac8a20f2a9657df01ee53d1b3bd2cfdb9a9ecbeac098d65bc7fa88c5b",
+    "bytes": 662271
+  }
+}

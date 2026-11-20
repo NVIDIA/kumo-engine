@@ -11,6 +11,7 @@ import pytest
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.native_fixtures import native_anchor_table
 from tests.test_preview import _equal
 
 pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
@@ -153,7 +154,7 @@ def test_materialized_values_native_anchors_and_history(
     )
     path = tmp_path / "anchors.parquet"
     pq.write_table(rows, path, row_group_size=31)
-    anchors = api.AnchorTable(
+    anchors = native_anchor_table(
         api.Parquet(str(path)),
         "entity",
         "cutoff",

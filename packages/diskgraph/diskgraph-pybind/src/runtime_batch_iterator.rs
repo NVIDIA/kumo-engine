@@ -168,6 +168,13 @@ fn runtime_batch_to_pydict<'py>(
         raw_features.set_item(ns, raw_feature_bank_to_pydict(py, ns, bank)?)?;
     }
     dict.set_item("raw_features", raw_features)?;
+    let profile = PyDict::new(py);
+    profile.set_item("sampling_ns", batch.profile.sampling_ns)?;
+    profile.set_item("retrieval_ns", batch.profile.retrieval_ns)?;
+    profile.set_item("rows_examined", batch.profile.rows_examined)?;
+    profile.set_item("rows_decoded", batch.profile.rows_decoded)?;
+    profile.set_item("fused", batch.profile.fused)?;
+    dict.set_item("native_profile", profile)?;
 
     Ok(dict)
 }

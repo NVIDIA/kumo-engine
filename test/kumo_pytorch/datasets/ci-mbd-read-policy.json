@@ -1,0 +1,40 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadPytorchMbdTransactionForecast",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/client_split/fold=0/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/client_split/fold=1/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/client_split/fold=2/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/client_split/fold=3/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/client_split/fold=4/5cbb2a8a9f8046d4b74278546a1e1e5d-0.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/detail/trx/fold=0/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/detail/trx/fold=1/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/detail/trx/fold=2/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/detail/trx/fold=3/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/detail/trx/fold=4/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/mbd/v1/extraction.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v2/anchors.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v2/manifest.json"
+      ]
+    },
+    {
+      "Sid": "AllowEngineCIMBDCategoryAnchorsRead",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v1/anchors.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/mbd/v1/transaction-forecast/v1/manifest.json"
+      ]
+    }
+  ]
+}

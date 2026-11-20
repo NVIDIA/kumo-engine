@@ -163,6 +163,7 @@ impl QueryPython for QueryResult {
         stats.set_item("frames_materialized", self.stats.frames_materialized)?;
         stats.set_item("rows_materialized", self.stats.rows_materialized)?;
         stats.set_item("rows_decoded", self.stats.rows_decoded)?;
+        stats.set_item("rows_considered", self.stats.rows_considered)?;
         stats.set_item("values_decoded", self.stats.values_decoded)?;
         stats.set_item("edges_visited", self.stats.edges_visited)?;
         output.set_item("stats", stats)?;

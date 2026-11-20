@@ -1,0 +1,13 @@
+{
+  "data_dir": "test/kumo_pytorch/.data",
+  "workload": "account-involvement-next24h",
+  "family": "combined",
+  "anchors_per_split": 512,
+  "batch_size": 4,
+  "threads": 4,
+  "seed": 0,
+  "device": "cuda",
+  "training": true,
+  "cache_mode": "uncontrolled",
+  "binding": "E02"
+}

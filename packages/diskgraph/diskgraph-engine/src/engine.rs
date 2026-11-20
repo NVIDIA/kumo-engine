@@ -1293,7 +1293,9 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
+        let sampling_started = Instant::now();
         self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
+        let sampling_ns = sampling_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         output.finalize(&state)?;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
@@ -1302,6 +1304,7 @@ impl DiskGraphEngine {
         // path already populated `raw_features` via `handle_fused_features`
         // during sampling; we skip the post-fetch in that case to avoid
         // duplicate batches.
+        let retrieval_started = Instant::now();
         if !request.flags.fused_feature_fetching {
             for (type_id, type_state) in &state.type_states {
                 if self
@@ -1336,7 +1339,21 @@ impl DiskGraphEngine {
             }
         }
 
-        Ok(output.into_runtime_batch())
+        let retrieval_ns = retrieval_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let mut batch = output.into_runtime_batch();
+        let rows_decoded = batch.profile.rows_decoded;
+        batch.profile = crate::output::NativeProfile {
+            sampling_ns,
+            retrieval_ns: if request.flags.fused_feature_fetching {
+                sampling_ns
+            } else {
+                retrieval_ns
+            },
+            rows_examined: state.stats.rows_examined + rows_decoded,
+            rows_decoded,
+            fused: request.flags.fused_feature_fetching,
+        };
+        Ok(batch)
     }
 
     /// Sample another neighborhood for an already resolved native anchor batch.
@@ -2058,11 +2075,14 @@ impl DiskGraphEngine {
             self.id_to_node_type.clone(),
             HashSet::new(),
         );
+        let sampling_started = Instant::now();
         self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
+        let sampling_ns = sampling_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         output.finalize(&state)?;
 
         // Non-fused path: fetch features post-sampling per visited type (same as
         // the stage-table path) so the dict shape matches.
+        let retrieval_started = Instant::now();
         if !flags.fused_feature_fetching {
             for (type_id, type_state) in &state.type_states {
                 if self
@@ -2098,7 +2118,17 @@ impl DiskGraphEngine {
             }
         }
 
+        let retrieval_ns = retrieval_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         let mut runtime_batch = output.into_runtime_batch();
+        runtime_batch.profile.sampling_ns = sampling_ns;
+        runtime_batch.profile.retrieval_ns = if flags.fused_feature_fetching {
+            sampling_ns
+        } else {
+            retrieval_ns
+        };
+        runtime_batch.profile.rows_examined =
+            state.stats.rows_examined + runtime_batch.profile.rows_decoded;
+        runtime_batch.profile.fused = flags.fused_feature_fetching;
         // Task bag: only the seed identity / count / timestamps are meaningful in
         // NodeRange mode. All LP / negative / target fields stay at their Default
         // (empty / None / 0) — the two-tower MIPS reader uses the RHS embeddings
@@ -2401,6 +2431,7 @@ impl DiskGraphEngine {
                 decoder
                     .decode_row_to_builders(data, builders, &mask, scratch)
                     .map_err(|e| EngineError::Internal(e.to_string()))?;
+                output.record_decoded_rows(1);
 
                 type_state.builder_rows += 1;
                 type_state.builder_bytes += data.len();
@@ -2483,7 +2514,7 @@ impl DiskGraphEngine {
         let chunk_size = (num_nodes / ideal_chunks).clamp(2048, 64_000);
         let chunks: Vec<_> = node_ids.chunks(chunk_size).collect();
 
-        let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
+        let results: Vec<Result<(arrow_array::RecordBatch, u64)>> = self.thread_pool.install(|| chunks
             .into_par_iter()
             .map(|chunk_ids| {
                 // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
@@ -2571,13 +2602,15 @@ impl DiskGraphEngine {
                     .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
 
                 arrow_array::RecordBatch::try_new(unique_batch.schema(), expanded_columns)
+                    .map(|batch| (batch, unique_batch.num_rows() as u64))
                     .map_err(|e| EngineError::Internal(format!("batch creation failed: {}", e)))
             })
             .collect()
         );
 
         for res in results {
-            let batch = res?;
+            let (batch, decoded_rows) = res?;
+            output.record_decoded_rows(decoded_rows);
             output.handle_feature_batch(batch)?;
         }
 
@@ -2932,6 +2965,10 @@ impl DiskGraphEngine {
             }
         }
         work_queue.sort_unstable_by_key(|(node_type_id, _)| *node_type_id);
+        state.stats.rows_examined += work_queue
+            .iter()
+            .map(|(_, rows)| rows.len() as u64)
+            .sum::<u64>();
 
         // Fused fetching path
         if fused {

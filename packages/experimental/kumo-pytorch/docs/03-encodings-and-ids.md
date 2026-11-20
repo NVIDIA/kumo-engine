@@ -29,7 +29,7 @@ where `None` reads every row. `Vocabulary` uses its category counts (exact for
 the first million distinct values it meets), `ZScore` its mean and standard
 deviation, and `Buckets` cuts interpolated from its t-digest. `Text` trains its
 tokenizer on the column's values over those rows: inside DiskGraph on the
-DiskGraph engine, and with `tokenizers` in Python on the in-memory engine.
+DiskGraph engine.
 
 Materialized scalar features and labels use the same statistics collectors over
 selected training anchors. Their learned bucket cuts use t-digest quantiles;
@@ -56,6 +56,27 @@ Our example is a single users table with a currency column and a country column
 that happen to share a value (`"USD"`), plus a balance.
 
 ```python
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+
+def parquet_data(rows, schema):
+    """Write this example's small, explicitly typed fixture tables."""
+    root = Path("data")
+    root.mkdir(exist_ok=True)
+    sources = {}
+    for table in schema.tables:
+        arrow_schema = pa.schema(
+            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+        )
+        path = root / f"{table.name}.parquet"
+        pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
+        sources[table.name] = api.Parquet(str(path))
+    return api.Dataset(sources)
+
+
 from kumo.pytorch import api
 
 schema = api.DataSchema(
@@ -81,15 +102,14 @@ sample = api.SampleSpec(
         "balance": api.Field(column="balance"),
     },
 )
-dataset = api.Dataset(
-    tables={
-        "users": api.InMemoryRows(
-            rows=[
-                {"id": 1, "currency": "USD", "country": "USD", "balance": 12.5},
-                {"id": 2, "currency": "EUR", "country": "GB", "balance": 30.0},
-            ]
-        )
-    }
+dataset = parquet_data(
+    {
+        "users": [
+            {"id": 1, "currency": "USD", "country": "USD", "balance": 12.5},
+            {"id": 2, "currency": "EUR", "country": "GB", "balance": 30.0},
+        ]
+    },
+    schema,
 )
 anchors = (
     api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),
@@ -159,9 +179,12 @@ A task exposes its fitted encoders (`task.encoders`), ID spaces
 exactly as that output does:
 
 ```python
-# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
+    api.prepare(
+        contract=contract,
+        dataset=dataset,
+        engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
+    ) as plan,
     plan.materialize(anchors=anchors) as task,
 ):
     local = task.output(name="local").field(name="currency")

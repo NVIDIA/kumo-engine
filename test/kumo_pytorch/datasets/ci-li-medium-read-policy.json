@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadPinnedPytorchNightlyAMLMediumInputs",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/datasets/aml-data/v8/li-medium/accounts.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/aml-data/v8/li-medium/patterns.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/aml-data/v8/li-medium/transactions.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/_bindings/v1/accounts.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/_bindings/v1/binding.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/_bindings/v1/entities.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/account-daily/v1/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/account-daily/v1/anchors.parquet",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/account-daily/v2/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/aml-data/v8/li-medium/account-daily/v2/anchors.parquet"
+      ],
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      }
+    }
+  ]
+}

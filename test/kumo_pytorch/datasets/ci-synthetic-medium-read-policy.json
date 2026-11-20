@@ -1,0 +1,51 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadPytorchSyntheticMediumCustomerInputs",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/accounts/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/card_txns/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/customers/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/disputes/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/lifelong_events/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/logins/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/plan_events/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/profile_changes/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/transfers/*.parquet",
+        "arn:aws:s3:::kumo-engine-arena/datasets/pragma-synthetic/medium/v1/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-customer/v1/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-customer/v1/anchors.parquet"
+      ]
+    },
+    {
+      "Sid": "ReadPytorchSyntheticMediumAccountAnchors",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-account/v1/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/weekly-account/v1/anchors.parquet"
+      ]
+    },
+    {
+      "Sid": "ReadPytorchSyntheticMediumLtvAnchors",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::926922431314:role/gha-kumo-workflow-tests"
+      },
+      "Action": "s3:GetObject",
+      "Resource": [
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/manifest.json",
+        "arn:aws:s3:::kumo-engine-arena/anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/anchors.parquet"
+      ]
+    }
+  ]
+}

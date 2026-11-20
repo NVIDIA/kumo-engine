@@ -464,6 +464,8 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+        self._last_sampling_profile: Mapping[str, Any] | None = None
+        self._last_retrieval_profile: Mapping[str, Any] | None = None
 
     @property
     def _sampler(self):
@@ -1535,6 +1537,7 @@ class DiskGraphSource:
         source: str,
         roots: Sequence[GraphRoot],
     ) -> tuple[Any, list[Mapping[str, Any]], Mapping[str, str]]:
+        self._last_sampling_profile = None
         neighborhood = sample.neighborhoods.get(source)
         if neighborhood is None:
             raise ValueError(f"unknown neighborhood {source!r}")
@@ -1545,20 +1548,21 @@ class DiskGraphSource:
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
+            self._last_sampling_profile = runtime.get("native_profile")
             return self._runtime_graph_events(sample, source, runtime)
         root_ids = self._root_ids(sample.entity.table, roots)
 
         plan, physical_relations = self._sampling_plan(neighborhood)
-        events = list(
-            self._sampler.sample(
-                {sample.entity.table: root_ids},
-                json.dumps(plan),
-                fused=False,
-                seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
-                swap_edge_direction=False,
-                seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
-            )
+        iterator = self._sampler.sample(
+            {sample.entity.table: root_ids},
+            json.dumps(plan),
+            fused=False,
+            seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
+            swap_edge_direction=False,
+            seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
         )
+        events = list(iterator)
+        self._last_sampling_profile = getattr(iterator, "native_profile", None)
         return neighborhood, events, physical_relations
 
     def close(self) -> None:
@@ -2323,6 +2327,7 @@ class DiskGraphSource:
         node_ids: Sequence[int],
         names: Sequence[str],
     ) -> dict[str, Any]:
+        self._last_retrieval_profile = None
         runtime = getattr(self, "_runtime_batch", None)
         if runtime is not None and table in runtime["raw_features"]:
             ids = runtime["graphs"]["main"]["node_ids"].get(table)
@@ -2344,9 +2349,10 @@ class DiskGraphSource:
                 for name in names
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
-        for event in self._sampler.fetch_features(
+        iterator = self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
-        ):
+        )
+        for event in iterator:
             if event["type"] == "feature":
                 batch = event["batch"]
                 for name in names:
@@ -2354,6 +2360,7 @@ class DiskGraphSource:
                     if index < 0:
                         raise RuntimeError(f"DiskGraph returned no {name!r} feature for {table!r}")
                     chunks[name].append(batch.column(index))
+        self._last_retrieval_profile = getattr(iterator, "native_profile", None)
         result = {
             name: (
                 parts[0]
