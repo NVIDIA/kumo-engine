@@ -1256,7 +1256,8 @@ pub struct RuntimeIndex {
     namespace: String,
 }
 impl RuntimeIndex {
-    /// Open the graph and a seed extension, by legacy reference or absolute path.
+    /// Open the graph and a seed extension by index-local reference or
+    /// absolute path.
     /// The shared index reader validates relative and absolute extension paths,
     /// including rejecting the parent itself and aliases of it.
     pub fn new(
@@ -1270,7 +1271,7 @@ impl RuntimeIndex {
         let namespace = extension
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| RuntimeError::system("invalid extension path".to_string()))?
+            .ok_or_else(|| RuntimeError::config("invalid extension path"))?
             .to_string();
         let reader = if extension.is_absolute() {
             diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
@@ -1281,7 +1282,13 @@ impl RuntimeIndex {
         } else {
             diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
         }
-        .map_err(|e| RuntimeError::system(e.to_string()))?;
+        .map_err(|e| {
+            if e.is::<diskgraph_index::graph::InvalidExtensionPath>() {
+                RuntimeError::config(e.to_string())
+            } else {
+                RuntimeError::system(e.to_string())
+            }
+        })?;
         let reader = Arc::new(reader);
         let engine = Arc::new(
             DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
