@@ -176,6 +176,7 @@ class ExplainabilityView:
         return self._snapshot.svg()
 
     def _repr_pretty_(self, printer: Any, cycle: bool) -> None:
+        del cycle  # IPython supplies this flag; the plain snapshot never recurses.
         printer.text(self._snapshot.plain())
 
     def _ipython_display_(self) -> None:
