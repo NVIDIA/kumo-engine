@@ -592,7 +592,8 @@ def test_only_rank_zero_tracks(monkeypatch):
     assert recorder.calls == []
 
 
-def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
+@pytest.mark.parametrize('stalls', ['tracker', 'report'])
+def test_a_stall_does_not_stall_the_fit(monkeypatch, stalls):
     import kumo.engine._tracking as tracking
 
     monkeypatch.setattr(tracking, 'FINISH_SECONDS', 0.5)
@@ -601,13 +602,19 @@ def test_a_hung_tracker_does_not_stall_the_fit(monkeypatch):
     class Hung(_Recorder):
         def start(self, record):
             super().start(record)
+            if stalls == 'tracker':
+                release.wait(30)
+
+    def spec() -> RunSpec:
+        if stalls == 'report':
             release.wait(30)
+        return fitted_spec(session.spec, RESULT)
 
     session = TrackingSession(Hung())
     began = time.monotonic()
     try:
         session.start(lambda: fit_spec(CONTEXT))
-        session.finish(None, None)
+        session.finish(spec if stalls == 'report' else None, None)
         elapsed = time.monotonic() - began
     finally:
         release.set()
