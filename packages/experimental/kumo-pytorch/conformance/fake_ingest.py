@@ -146,6 +146,7 @@ class FakeDiskGraph:
         index_threads: int | None = None,
         parent_index_path: str | None = None,
         cutoff_col_stats: str | None = None,
+        index_build_id: str | None = None,
     ) -> None:
         """The parameters of the pinned ``diskgraph.ingest``; an unknown keyword fails."""
 
@@ -163,6 +164,7 @@ class FakeDiskGraph:
             "index_threads": index_threads,
             "parent_index_path": parent_index_path,
             "cutoff_col_stats": cutoff_col_stats,
+            "index_build_id": index_build_id,
         }
         call = IngestCall(config, Path(output_dir), options)
         self.calls.append(call)

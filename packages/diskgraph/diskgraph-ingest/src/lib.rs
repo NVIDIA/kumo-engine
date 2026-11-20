@@ -871,13 +871,20 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     if !matches!(&*target, OutputTarget::Local { .. }) {
         return Err(anyhow!("index build requires local output"));
     }
+    let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
+    if let OutputTarget::Local { root, .. } = &*target {
+        ensure!(
+            options.index_build_id.is_none() || resume_from_phase.is_some() || !root.exists(),
+            "index_build_id already has output at {}; choose a new ID or resume the existing build",
+            root.display()
+        );
+    }
     // Invalidation belongs at the reusable ingest boundary, not only in the
     // CLI supervisor: pybind and direct Rust callers can also retry/resume.
     // Complete this synchronously before `prepare`, a fresh local wipe, phase
     // cleanup, or any upload can mutate objects below a published marker.
     target.invalidate_publication()?;
     target.prepare()?;
-    let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
     if let OutputTarget::Local { root, .. } = &*target {
         // Log disk space before ingest as a pre-flight warning
         log_disk_space(root);
@@ -1474,6 +1481,37 @@ mod tests_resume_phase {
         .unwrap_err();
         assert!(error.to_string().contains("index_build_id must not be empty"));
         assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn reused_index_build_id_does_not_replace_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("index");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("index_metadata.json"), br#"{"index_build_id":"build-a"}"#)
+            .unwrap();
+        fs::write(output.join("_SUCCESS"), b"published").unwrap();
+        let source: GraphConfig =
+            serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
+        let error = ingest_with_stats_from_source(
+            source,
+            None,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                index_build_id: Some("build-a".into()),
+                ..IngestOptions::default()
+            },
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("index_build_id already has output"));
+        assert_eq!(fs::read(output.join("_SUCCESS")).unwrap(), b"published");
+        assert_eq!(
+            fs::read(output.join("index_metadata.json")).unwrap(),
+            br#"{"index_build_id":"build-a"}"#
+        );
     }
 
     #[test]
