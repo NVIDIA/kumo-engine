@@ -429,6 +429,30 @@ def test_extension_reference_preserves_index_local_layout(tmp_path, directory):
     ) == f"{directory}/task"
 
 
+def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
+    target = tmp_path / "external" / "different-name"
+    target.parent.mkdir()
+    shutil.copytree(parent / "train_tables" / seed_table_fixture["tt_id"], target)
+    alias = parent / "train_tables" / "task-alias"
+    alias.symlink_to(target, target_is_directory=True)
+    assert _extension_ref_from_stage_path(str(parent), str(alias)) == "train_tables/task-alias"
+
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["index_path"] = str(alias)
+    path = tmp_path / "alias-manifest.json"
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    assert len(list(iterator)) == 2
+
+
 @pytest.mark.parametrize("path_input", ["stage", "parent"])
 def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, path_input):
     from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
