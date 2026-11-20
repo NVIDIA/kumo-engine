@@ -322,3 +322,39 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer model lifecycle
+
+The lifecycle launcher accepts `--workload` for a committed module implementing
+[the workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
+The module declares its phases and owns its model, metrics and registry loader.
+The notebook installs additional wheels supplied with repeated
+`--workload-wheel` arguments and runs the selected phases in isolated processes.
+The permission prerequisite, installed Engine checksum, runtime identity,
+`pip check`, source admission, evidence collection and attempt cleanup remain
+required. The custom workload's phases and SHA-256 are checked on readback.
+Native UI review remains separate.
+
+For the experimental PyTorch regression example, build `kumo-pytorch` from the
+same checkout. Also retain the exact DiskGraph constituent wheel from the
+complete Engine build (`--keep-work` retains its build directory). Install it
+alongside Engine so pip can satisfy `kumo-pytorch`'s DiskGraph requirement.
+The launcher rejects dependency wheels that overwrite any candidate Engine
+file with different bytes; a separately built native wheel is not equivalent.
+
+```sh
+python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+  --execute --engine-checks-only --cluster-id DEDICATED_TEST_CLUSTER_ID \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --candidate /absolute/path/candidate.json \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
+  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
+  --output-dir /tmp/databricks-customer-model-001
+```
+
+This example checks two registered PyTorch versions, MSE/RMSE history,
+preprocessing/weight fingerprints, alias promotion and identical predictions
+after removing producer scratch. It uses the in-memory batch engine and does
+not qualify DiskGraph execution, model quality or native registry UI.
