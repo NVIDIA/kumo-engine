@@ -400,3 +400,26 @@ def test_a_nonnull_constant_required_field_needs_no_validity_scan(tmp_path, monk
     dataset, engine = _setup("diskgraph", tmp_path)
     entry = _entry(contract, dataset, engine)
     assert entry["file"] is None
+
+
+def test_bpe_piece_offsets_across_short_and_long_source_rows():
+    from conformance.assertions import bound_tables
+    from conformance.cases import discover_cases
+
+    golden = discover_cases()["C-ENCODING-003"]
+    lengths = (16, 128, 1024)
+    texts = [" ".join(["red", "bike"] * (length // 2)) for length in lengths]
+    texts.extend(["", None, "?"])
+    rows = [{"id": i, "description": text} for i, text in enumerate(texts)]
+    contract = replace(
+        golden.contract, batch=replace(golden.contract.batch, batching=api.Batching(max_samples=6))
+    )
+    with bound_tables(contract, {"users": rows}, "diskgraph") as (dataset, backend):
+        anchors = api.AnchorTable(dataset.tables["users"], entity_id="id")
+        with api.prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+            (batch,) = task.batches(batch_size=6, output_format="model")
+    field = batch.inputs["entity"]["description"]
+    assert batch.metadata["entity_ids"].tolist() == list(range(6))
+    assert field["values"].tolist() == [8, 11] * (sum(lengths) // 2) + [12, 0]
+    assert field["piece_offsets"].tolist() == [0, 16, 144, 1168, 1168, 1169, 1170]
+    assert field["valid"].tolist() == [True, True, True, True, False, True]

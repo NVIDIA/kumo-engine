@@ -4,6 +4,7 @@
 
 """Native anchor identity/partition and real model-facing GNN parity."""
 
+import json
 from dataclasses import replace
 
 import pyarrow as pa
@@ -167,6 +168,49 @@ def test_unshuffled_mixed_splits_preserve_source_order(native_task, selection, e
         assert list(_by_sample(actual)) == [sid for group in groups for sid in group[rank::3]]
 
 
+class _AnchorOrderMismatch(AssertionError):
+    pass
+
+
+_MULTISHARD_ORDER = pytest.mark.xfail(
+    strict=True,
+    raises=_AnchorOrderMismatch,
+    reason="Physical shard traversal changes unshuffled anchor order",
+)
+
+
+@pytest.mark.parametrize(
+    "num_shards",
+    [1, pytest.param(2, marks=_MULTISHARD_ORDER), pytest.param(3, marks=_MULTISHARD_ORDER)],
+)
+def test_unshuffled_single_split_preserves_source_order_across_storage_shards(
+    monkeypatch, request, num_shards
+):
+    import diskgraph
+
+    ingest = diskgraph.ingest
+    anchor_ingests = []
+
+    def ingest_with_shards(config, *args, **kwargs):
+        settings = json.loads(config)
+        if settings["dataset_name"] == "anchors":
+            settings["num_shards"] = num_shards
+            anchor_ingests.append(num_shards)
+            config = json.dumps(settings)
+        return ingest(config, *args, **kwargs)
+
+    monkeypatch.setattr(diskgraph, "ingest", ingest_with_shards)
+    _, task, _ = request.getfixturevalue("native_task")
+    assert anchor_ingests == [num_shards]
+    batches = task.batches(split="train", batch_size=2, shuffle=False, output_format="model")
+    groups = [b.metadata["sample_ids"] for b in batches]
+    assert [len(group) for group in groups] == [2, 2]
+    ids = [sid for group in groups for sid in group]
+    assert sorted(ids) == list("abdf")
+    if ids != list("abdf"):
+        raise _AnchorOrderMismatch(f"expected a,b,d,f in source order, got {ids}")
+
+
 def _by_sample(batches):
     result = {}
     for batch in batches:
@@ -204,6 +248,18 @@ def test_gnn_handoff_reuses_sampling_and_projected_features(native_task, monkeyp
     actual = list(task.batches(split="train", output_format="model"))
     assert _by_sample(actual) == {"a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0}
     for old, new in zip(expected, actual, strict=True):
+        # The first two event IDs for each user occur before the anchor's cutoff.
+        past = {"a": [0, 1], "b": [0, 1], "d": [3, 4], "f": [0, 1]}
+        events = new.inputs["graph"]["nodes"]["events"]
+        for owner, sid in enumerate(new.metadata["sample_ids"]):
+            assert sorted(events["ids"][events["batch"] == owner].tolist()) == past[sid]
+        amount = events["features"]["amount"]
+        torch.testing.assert_close(
+            amount["values"], events["ids"].to(torch.float64), rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            amount["valid"], torch.ones_like(events["ids"], dtype=torch.bool)
+        )
         assert old.metadata["sample_ids"] == new.metadata["sample_ids"]
         for table in old.inputs["graph"]["nodes"]:
             a, b = old.inputs["graph"]["nodes"][table], new.inputs["graph"]["nodes"][table]
@@ -283,6 +339,7 @@ def test_native_single_split_padding_keeps_columnar_batch_path(
     monkeypatch.setattr(task._assembler._source, "build_model_ordered", unexpected)
     for rank in range(world_size):
         actual = list(task.batches(rank=rank, world_size=world_size, output_format="model"))
+        assert list(_by_sample(actual)) == list("abcdefg"[rank::world_size])
         assert len(actual) == len(expected[rank])
         for a, b in zip(expected[rank], actual, strict=True):
             _equal(a.inputs, b.inputs)
@@ -308,6 +365,26 @@ def test_native_default_ids_remain_original_row_ordinals(native_task):
     with plan.materialize(replace(table, sample_id=None), fit_split="train") as task:
         rows = task._anchors.fetch(api.ALL_ANCHORS, range(7))
         assert [row.sample_id for row in rows] == [0, 1, 3, 5, 2, 6, 4]
+        for epoch in (0, 1):
+            batches = task.batches(
+                split="train", seed=5, epoch=epoch, shuffle=True, output_format="model"
+            )
+            delivered = [
+                (sid, entity, label)
+                for batch in batches
+                for sid, entity, label in zip(
+                    batch.metadata["sample_ids"],
+                    batch.metadata["entity_ids"],
+                    batch.targets["label"]["values"].tolist(),
+                    strict=True,
+                )
+            ]
+            assert sorted(delivered) == [
+                (0, "u1", 1.0),
+                (1, "u1", 2.0),
+                (3, "u2", 4.0),
+                (5, "u1", 6.0),
+            ]
         path = task._anchors.path
     assert not path.exists()
     assert plan._source._sampler is not None
@@ -402,6 +479,32 @@ def test_invalid_native_anchors_do_not_drop_rows(native_task, tmp_path, column, 
     assert set(tmp_path.glob(".anchors-*")) == before
 
 
+def test_missing_native_anchor_path_is_named(native_task, tmp_path):
+    plan, _, table = native_task
+    missing = replace(table, source=api.Parquet(str(tmp_path / "missing.parquet")))
+    issues = api.check(plan.contract, plan.dataset, plan.engine, anchors=missing)
+    assert [issue.path for issue in issues] == ["anchors.source.path"]
+
+
+def _assert_history_amounts(batch, layout, offsets):
+    # Fixture amounts are event IDs: 0/1, 3/4 and 6/7 precede the cutoff.
+    base = {"u1": 0.0, "u2": 3.0, "u3": 6.0}
+    amounts = torch.tensor(
+        [[base[entity] + offset for offset in offsets] for entity in batch.metadata["entity_ids"]],
+        dtype=torch.float64,
+    )
+    history = batch.inputs["history"]
+    if isinstance(layout, api.Packed):
+        torch.testing.assert_close(
+            history["offsets"], torch.arange(len(amounts) + 1) * len(offsets)
+        )
+        amounts = amounts.flatten()
+    torch.testing.assert_close(history["amount"]["values"], amounts, rtol=0, atol=0)
+    valid = torch.ones_like(amounts, dtype=torch.bool)
+    torch.testing.assert_close(history["valid"], valid)
+    torch.testing.assert_close(history["amount"]["valid"], valid)
+
+
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
 def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
     native_task, layout, monkeypatch
@@ -453,6 +556,11 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
             monkeypatch.setattr(source, "_sampler", Guard())
             actual = list(task.batches(split="train", output_format="model"))
             for old, new in zip(expected, actual, strict=True):
+                _assert_history_amounts(new, layout, (0, 1))
+                count = new.inputs["entity"]["count"]
+                size = len(new.metadata["sample_ids"])
+                torch.testing.assert_close(count["values"], torch.full((size,), 2))
+                torch.testing.assert_close(count["valid"], torch.ones(size, dtype=torch.bool))
                 _equal(old.inputs, new.inputs)
                 _equal(old.targets, new.targets)
                 assert old.metadata["sample_ids"] == new.metadata["sample_ids"]
@@ -460,10 +568,12 @@ def test_sequence_native_anchors_reuse_ids_and_existing_temporal_loader(
 
 
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
-@pytest.mark.parametrize("order,keep", [("ascending", "first"), ("descending", "last")])
+@pytest.mark.parametrize(
+    "order,keep,offsets", [("ascending", "first", (0, 0, 1)), ("descending", "last", (1, 1, 0))]
+)
 @pytest.mark.parametrize("rank,world_size", [(0, 1), (1, 3), (9, 10)])
 def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
-    native_task, monkeypatch, layout, order, keep, rank, world_size
+    native_task, monkeypatch, layout, order, keep, offsets, rank, world_size
 ):
     from tests.test_preview import _equal
 
@@ -522,6 +632,7 @@ def test_native_sequence_iterator_retrieves_and_merges_without_python_requests(
             )
             assert len(actual) == len(expected)
             for a, b in zip(expected, actual, strict=True):
+                _assert_history_amounts(b, layout, offsets)
                 _equal(a.inputs, b.inputs)
                 _equal(a.targets, b.targets)
                 assert a.metadata["sample_ids"] == b.metadata["sample_ids"]
@@ -580,8 +691,9 @@ def test_replacing_closed_anchor_task_releases_old_reader(native_task):
     task.close()
     with plan.materialize(table, fitted=fitted) as restored:
         assert restored._anchors._history_engine is plan._source._sampler
+        batches = restored.batches(split="train", output_format="model")
+        assert [batch.metadata["sample_ids"] for batch in batches] == [("a", "b"), ("d", "f")]
         assert set(_base_index_mappings(plan._source._index_path).values()) == {1}
-        assert sum(len(b.metadata["sample_ids"]) for b in restored.batches(split="train")) == 4
 
 
 def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, monkeypatch):

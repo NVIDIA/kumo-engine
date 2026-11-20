@@ -123,6 +123,10 @@ def test_native_planning_without_event_primary_key(
 
 
 @pytest.mark.parametrize(
+    "chunk_batches,expected_ids,padded_slots",
+    [(1, [(1, 0), (3, 2), (5, 4)], 168), (3, [(1, 3), (5, 0), (2, 4)], 154)],
+)
+@pytest.mark.parametrize(
     "layout",
     [
         api.Packed(),
@@ -131,16 +135,17 @@ def test_native_planning_without_event_primary_key(
         api.Nested(fields=api.Padded(), events=api.Packed()),
     ],
 )
-def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, monkeypatch, layout):
+def test_native_bucketing_sorts_by_model_token_length(
+    history_data, tmp_path, monkeypatch, layout, chunk_batches, expected_ids, padded_slots
+):
     from dataclasses import replace
 
     from tokenizers import Tokenizer
     from tokenizers.models import BPE
 
-    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
-
     schema, dataset, _, _, _ = history_data
-    # Both users have seven events, but their encoded histories have 21/28 tokens.
+    # Three mixed pairs of 21/28 tokens occupy 147 packed slots and 168 padded slots.
+    # Sorting all six together lowers the padded cost to 42 + 56 + 56.
     events = pa.table(
         {
             "id": list(range(14)),
@@ -193,14 +198,8 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
-            task._anchors = ParquetAnchors(anchors)
-            try:
-                expected = list(task.batches(shuffle=False, chunk_batches=3, output_format="model"))
-            finally:
-                task._anchors.close()
-                task._anchors = native
-            expected_ids = [batch.metadata["sample_ids"] for batch in expected]
-            assert expected_ids == [(1, 3), (5, 0), (2, 4)]
+            expected = _reference_batches(task, chunk_batches=chunk_batches)
+            assert [batch.metadata["sample_ids"] for batch in expected] == expected_ids
 
             def forbidden(*args, **kwargs):
                 pytest.fail("native bucketing reconstructed requests or re-encoded for planning")
@@ -209,9 +208,12 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
             monkeypatch.setattr(task._assembler, "_model_lengths", forbidden)
             for epoch in (0, 1):
                 actual = list(
-                    task.batches(shuffle=False, epoch=epoch, chunk_batches=3, output_format="model")
+                    task.batches(epoch=epoch, chunk_batches=chunk_batches, output_format="model")
                 )
                 assert [batch.metadata["sample_ids"] for batch in actual] == expected_ids
+                if isinstance(layout, (api.Packed, api.Padded)):
+                    slots = sum(b.inputs["history"]["value_ids"].numel() for b in actual)
+                    assert slots == (147 if isinstance(layout, api.Packed) else padded_slots)
                 for a, b in zip(actual, expected, strict=True):
                     _equal(a.inputs, b.inputs)
                 assert native._last_length_planning_stats == ((6, 0) if epoch == 0 else (0, 6))
@@ -502,7 +504,8 @@ def test_nested_native_composition_matches_existing_length_policy(
             assert native._last_length_planning_stats == (28, 0)
 
 
-def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_path):
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
+def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_path, layout):
     from dataclasses import replace
 
     schema, dataset, _, index, _ = history_data
@@ -519,7 +522,7 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
             "history": api.Input(
                 api.EventSource(("history",), max_events=4),
                 api.Fields((api.Encode("amount", api.Raw()),)),
-                api.Padded(),
+                layout,
             )
         },
         batching=api.Batching(
@@ -551,18 +554,23 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
         dataset,
         api.DiskGraphEngine(index=index, num_threads=2),
     ) as plan:
-        # Fit on a legal empty history, then refuse a longer unseen input.
+        # At cutoff 4, user 2 has no history, user 3 has one row, and user 1 exceeds the budget.
         with plan.materialize(
             [api.SampleRequest("empty", 2, 4, split="train")], fit_split="train"
         ) as calibration:
             fitted = calibration.fitted_state
-        with plan.materialize(anchors, fitted=fitted) as task:
-            with pytest.raises(
-                diskgraph.DiskgraphConfigError, match="one sample exceeds Batching.max_tokens"
-            ):
-                list(task.batches(output_format="model"))
+        with plan.materialize(_review_anchors(tmp_path, (3,), 4), fitted=fitted) as task:
+            (exact,) = task.batches(output_format="model")
+            assert exact.inputs["history"]["amount"]["values"].flatten().tolist() == [80.0]
             with pytest.raises(ValueError, match="world_size"):
                 list(task.batches(output_format="model", world_size=2))
+        for owners in ((1,), (1, 3), (3, 1), (3, 1, 3), (3, 3, 1)):
+            with plan.materialize(_review_anchors(tmp_path, owners, 4), fitted=fitted) as task:
+                with pytest.raises(
+                    diskgraph.DiskgraphConfigError, match="exceeds Batching.max_tokens"
+                ):
+                    for batch in task.batches(batch_size=1, chunk_batches=1, output_format="model"):
+                        assert all(owners[sid] == 3 for sid in batch.metadata["sample_ids"])
 
 
 @pytest.mark.parametrize("missing", ["omit", "emit", "skip_event"])
@@ -809,11 +817,13 @@ def test_counting_policies_are_used_by_native_budget_planning(
 
 
 @pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
+@pytest.mark.parametrize(
+    "max_events,expected_ids",
+    [(8, [(1, 3), (5, 0), (2, 4)]), (1, [(0, 1), (2, 3), (4, 5)])],
+)
 def test_native_row_bucketing_without_budget_reuses_history_only_cache(
-    history_data, tmp_path, monkeypatch, layout
+    history_data, tmp_path, monkeypatch, layout, max_events, expected_ids
 ):
-    from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
-
     schema, dataset, _, _, _ = history_data
     sample = api.SampleSpec(
         api.EntitySpec("users"),
@@ -829,7 +839,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
         api.BatchSpec(
             {
                 "history": api.Input(
-                    api.EventSource(("history",), max_events=8),
+                    api.EventSource(("history",), max_events=max_events),
                     api.Fields((api.Encode("amount", api.Raw()),)),
                     layout,
                 )
@@ -845,13 +855,7 @@ def test_native_row_bucketing_without_budget_reuses_history_only_cache(
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             native = task._anchors
-            task._anchors = ParquetAnchors(anchors)
-            try:
-                expected = list(task.batches(shuffle=False, chunk_batches=3, output_format="model"))
-            finally:
-                task._anchors.close()
-                task._anchors = native
-            expected_ids = [(1, 3), (5, 0), (2, 4)]
+            expected = _reference_batches(task, chunk_batches=3)
             assert [batch.metadata["sample_ids"] for batch in expected] == expected_ids
 
             def forbidden(*args, **kwargs):
@@ -944,19 +948,20 @@ def _review_anchors(tmp_path, entities=(1, 3), cutoff=5):
     return api.AnchorTable(api.Parquet(str(path)), "entity", "at")
 
 
-def _reference_batches(task):
+def _reference_batches(task, chunk_batches=2):
     from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
     native = task._anchors
     task._anchors = ParquetAnchors(native._table)
     try:
-        return list(task.batches(shuffle=False, chunk_batches=2, output_format="model"))
+        return list(task.batches(chunk_batches=chunk_batches, output_format="model"))
     finally:
         task._anchors.close()
         task._anchors = native
 
 
-def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
+@pytest.mark.parametrize("length_input,budget", [("a", None), ("a", 4), ("follower", 4)])
+def test_length_planning_preserves_other_event_inputs(history_data, tmp_path, length_input, budget):
     schema, dataset, _, _, _ = history_data
     events = {
         name: api.EventSpec(
@@ -965,19 +970,20 @@ def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
         )
         for name, start in (("a", None), ("b", -2))
     }
+    fields = api.Fields((api.Encode("amount", api.Raw()),))
+    inputs = {
+        name: api.Input(api.EventSource((name,), max_events=4), fields, api.Packed())
+        for name in events
+    }
+    inputs["follower"] = api.Input(api.EventsOf("a"), fields, api.Packed())
     spec = api.DataLoaderSpec(
         schema,
         api.SampleSpec(api.EntitySpec("users"), events=events),
         api.BatchSpec(
-            inputs={
-                name: api.Input(
-                    api.EventSource((name,), max_events=4),
-                    api.Fields((api.Encode("amount", api.Raw()),)),
-                    api.Packed(),
-                )
-                for name in events
-            },
-            batching=api.Batching(max_samples=2, length_input="a", bucket_by_length=True),
+            inputs=inputs,
+            batching=api.Batching(
+                max_samples=2, max_tokens=budget, length_input=length_input, bucket_by_length=True
+            ),
         ),
     )
     with api.prepare(
@@ -985,11 +991,23 @@ def test_length_planning_preserves_other_event_inputs(history_data, tmp_path):
     ) as plan:
         with plan.materialize(_review_anchors(tmp_path), fit_split=api.ALL_ANCHORS) as task:
             expected = _reference_batches(task)
-            actual = list(task.batches(shuffle=False, chunk_batches=2, output_format="model"))
-            assert len(actual) == len(expected)
-            for got, want in zip(actual, expected, strict=True):
-                _equal(got.inputs, want.inputs)
-                assert got.metadata["sample_ids"] == want.metadata["sample_ids"]
+            assert [sid for batch in expected for sid in batch.metadata["sample_ids"]] == [1, 0]
+            for batch in expected:
+                _equal(batch.inputs["a"], batch.inputs["follower"])
+                if budget is not None:
+                    assert batch.inputs[length_input]["amount"]["values"].numel() <= budget
+            if length_input == "follower":
+                with pytest.raises(ValueError, match="requires an EventSource length input"):
+                    next(task.batches(output_format="model"))
+                return
+            for epoch in (0, 1):
+                actual = task.batches(epoch=epoch, chunk_batches=2, output_format="model")
+                for got, want in zip(actual, expected, strict=True):
+                    _equal(got.inputs, want.inputs)
+                    assert got.metadata["sample_ids"] == want.metadata["sample_ids"]
+                assert task._anchors._last_length_planning_stats == (
+                    (2, 0) if epoch == 0 else (0, 2)
+                )
 
 
 def test_length_planning_accepts_absent_input_fit_metadata(history_data, tmp_path):
