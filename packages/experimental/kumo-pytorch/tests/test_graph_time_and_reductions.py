@@ -190,7 +190,7 @@ class TestUniformSampling:
 
     def test_diskgraph_refuses_it_with_its_code(self) -> None:
         contract = _contract(_neighborhood(strategy="uniform"))
-        issues = DiskGraphEngine(index="/i").check_contract(contract.resolve())
+        issues = DiskGraphEngine().check_contract(contract.resolve())
         issue = next(item for item in issues if item.path.endswith(".strategy"))
         assert issue.code == "DG-UNIFORM-GRAPH"
         assert "uniform" in issue.message

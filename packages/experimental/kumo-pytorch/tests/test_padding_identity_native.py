@@ -74,7 +74,7 @@ def graph_plan(tmp_path_factory):
     )
     # The same public saved contract drives both inspectable and model delivery.
     contract = api.DataLoaderSpec.from_json(contract.to_json())
-    engine = api.DiskGraphEngine(index=root / "index", num_threads=1)
+    engine = api.DiskGraphEngine(num_threads=1)
     with api.prepare(contract, api.Dataset(sources), engine) as plan:
         yield plan
 

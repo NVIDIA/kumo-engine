@@ -177,6 +177,8 @@ class FakeDiskGraph:
             "timestamp_unit": "seconds",
             "edge_relations": edge_relations(config),
         }
+        if index_build_id is not None:
+            metadata["index_build_id"] = index_build_id
         (call.output_dir / "index_metadata.json").write_text(json.dumps(metadata))
         stats = {"stats": {"dropped_rows_counts": dict(self.dropped)}}
         (call.output_dir / "ingest_stats.json").write_text(json.dumps(stats))

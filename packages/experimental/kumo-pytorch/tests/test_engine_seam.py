@@ -118,7 +118,7 @@ class TestDatasetDescribesDataNotEngines:
 
     def test_the_same_dataset_is_checked_by_each_engine(self) -> None:
         assert check(CONTRACT, PARQUET, InMemoryEngine())
-        assert check(CONTRACT, PARQUET, DiskGraphEngine(index="/i")) == ()
+        assert check(CONTRACT, PARQUET, DiskGraphEngine()) == ()
 
     def test_a_source_renames_physical_columns_to_logical_ones(self) -> None:
         source = Parquet("/lake/events", columns={"ts": "occurred_at"})
@@ -156,7 +156,7 @@ class TestBindingIsCheckedBeforeAnyDataIsRead:
         assert any("orders" in issue.message for issue in issues)
 
     def test_an_engine_that_cannot_read_the_format_is_refused(self) -> None:
-        issues = check(CONTRACT, IN_MEMORY, DiskGraphEngine(index="/i"))
+        issues = check(CONTRACT, IN_MEMORY, DiskGraphEngine())
         issue = next(item for item in issues if "does not read" in item.message)
         assert "in_memory" in issue.message
         assert issue.code == "DG-SOURCE-KIND"
@@ -175,14 +175,14 @@ class TestEnginesRefuseEarly:
         assert all(issue.suggestion for issue in issues)
 
     def test_diskgraph_lists_what_it_does_not_support_read_only(self) -> None:
-        unsupported = DiskGraphEngine(index="/i").unsupported
+        unsupported = DiskGraphEngine().unsupported
         assert unsupported is DiskGraphEngine.unsupported
         assert all(code == entry.code for code, entry in unsupported.items())
         with pytest.raises(TypeError):
             unsupported["DG-NEW"] = unsupported["DG-ROW-FILTER"]  # type: ignore[index]
 
     def test_diskgraph_accepts_fitted_direct_entity_values(self) -> None:
-        assert check(CONTRACT, PARQUET, DiskGraphEngine(index="/i")) == ()
+        assert check(CONTRACT, PARQUET, DiskGraphEngine()) == ()
 
     def test_prepare_refuses_rather_than_raising_not_implemented(self) -> None:
         with pytest.raises(ValidationError):
@@ -198,7 +198,7 @@ class TestSelection:
         assert set(available_engines()) >= {"diskgraph", "in_memory"}
 
     def test_a_name_resolves_to_the_same_class_as_construction(self) -> None:
-        assert isinstance(engine_from_name("diskgraph", index="/i"), DiskGraphEngine)
+        assert isinstance(engine_from_name("diskgraph"), DiskGraphEngine)
 
     def test_an_unknown_name_lists_what_is_available(self) -> None:
         with pytest.raises(ValueError, match="unknown engine 'cugraph'"):
@@ -212,7 +212,7 @@ class TestSelection:
         register_engine("in_memory", InMemoryEngine)
 
     def test_engines_satisfy_the_engine_protocol(self) -> None:
-        for engine in (InMemoryEngine(), DiskGraphEngine(index="/i"), _RefusesEverything()):
+        for engine in (InMemoryEngine(), DiskGraphEngine(), _RefusesEverything()):
             assert isinstance(engine, Engine)
 
 

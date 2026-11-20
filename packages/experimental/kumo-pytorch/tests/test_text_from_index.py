@@ -15,6 +15,7 @@ import pytest
 from tokenizers import Tokenizer
 
 from kumo.pytorch import api, encoding
+from kumo.pytorch._storage import managed_paths
 from kumo.pytorch.column_stats import DROPPED, TableColumnEncoder, read_token_lengths
 from kumo.pytorch.encoding import fit_encoder, train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
@@ -86,7 +87,7 @@ def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engi
             with plan.materialize(_requests(), fit_split="train") as task:
                 assert _tokenizer(task) == expected
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
-        texts = tmp_path.glob("index/col_stats/*/*.text-*.tokenizer.json")
+        texts = tmp_path.glob("cache/index/col_stats/*/*.text-*.tokenizer.json")
         published.append({path: path.stat().st_mtime_ns for path in texts})
     if engine_name == "diskgraph":
         assert any(".text-" in name for name in statistics["col_stats"])
@@ -146,14 +147,18 @@ def test_the_index_trains_the_tokenizer_python_trains_on_every_thread_count(tmp_
         )
     )
     dataset = api.Dataset({"notes": api.Parquet(str(tmp_path / "notes.parquet"))})
-    index = ensure_diskgraph_index(schema, dataset, tmp_path / "index", num_shards=3)
+    index = ensure_diskgraph_index(
+        schema, dataset, tmp_path / "indexes" / "index", num_shards=3, index_build_id="index"
+    )
     encoder = TableColumnEncoder(TEXT, api.DType("string"), (("notes", "body"),))
     expected = train_text(TEXT, [[value for value in values if value is not None]])
     for threads in (1, 4):
-        source = DiskGraphSource(index, schema, num_threads=threads)
+        source = DiskGraphSource(
+            index, schema, num_threads=threads, paths=managed_paths("index"), identity="index"
+        )
         tokenizer, name = source.column_text(encoder, None)
         assert tokenizer == expected
-        (tmp_path / "index" / "col_stats" / name).unlink()
+        (tmp_path / "cache" / "index" / "col_stats" / name).unlink()
 
 
 def test_a_fit_without_length_input_keeps_no_token_lengths(tmp_path):
@@ -161,7 +166,7 @@ def test_a_fit_without_length_input_keeps_no_token_lengths(tmp_path):
     with api.prepare(_text_contract(), dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             assert "token_lengths" not in task.fitted_state.fit["inputs"]["statistics"]
-    assert not list(tmp_path.glob("index/col_stats/*/*.lengths-*.bin"))
+    assert not list(tmp_path.glob("cache/index/col_stats/*/*.lengths-*.bin"))
 
 
 @pytest.mark.parametrize("padded", (False, True))
@@ -183,14 +188,18 @@ def test_a_measured_fit_keeps_each_event_rows_token_count(tmp_path, padded):
                 encoder = task.output("transactions").field(name="description").encoder
                 tokenizer = encoder.tokenizer
                 lengths = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"]
-        path = tmp_path / "index" / "col_stats" / lengths["card_transactions"]["file"]
+        path = tmp_path / "cache" / "index" / "col_stats" / lengths["card_transactions"]["file"]
         kept.append((lengths, path.stat().st_mtime_ns))
     assert kept[0] == kept[1]
     rows = _fixture_rows()["card_transactions"]
-    nodes = diskgraph.SamplerEngine(str(tmp_path / "index")).lookup_node_ids(
+    nodes = diskgraph.SamplerEngine(str(tmp_path / "indexes" / "index")).lookup_node_ids(
         "card_transactions", pa.array([row["card_transaction_id"] for row in rows])
     )
-    constant, pieces = read_token_lengths(tmp_path / "index", lengths["card_transactions"])
+    constant, pieces = read_token_lengths(
+        tmp_path / "indexes" / "index",
+        lengths["card_transactions"],
+        cache_root=tmp_path / "cache" / "index",
+    )
     assert constant == 2  # amount and channel
     assert len(pieces) == len(rows)
     for node, row in zip(nodes, rows, strict=True):
@@ -202,7 +211,7 @@ def _edited(directory, column: str, value, step: int):
     for row in rows["card_transactions"][::step]:
         row[column] = value
     dataset = _write_parquet(rows, directory / "parquet")
-    engine = api.DiskGraphEngine(index=directory / "index", num_threads=2)
+    engine = api.DiskGraphEngine(index=directory / "indexes" / "index", num_threads=2)
     return rows["card_transactions"], dataset, engine
 
 
@@ -216,7 +225,7 @@ def _entry(contract: api.DataLoaderSpec, dataset, engine) -> dict:
 def _nodes(directory, rows):
     import diskgraph
 
-    engine = diskgraph.SamplerEngine(str(directory / "index"))
+    engine = diskgraph.SamplerEngine(str(directory / "indexes" / "index"))
     ids = pa.array([row["card_transaction_id"] for row in rows])
     return engine.lookup_node_ids("card_transactions", ids)
 
@@ -237,7 +246,9 @@ def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
         with plan.materialize(_requests(), fit_split="train") as task:
             encoder = task.output("transactions").field(name="description").encoder
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
-    _, pieces = read_token_lengths(tmp_path / "index", entry)
+    _, pieces = read_token_lengths(
+        tmp_path / "indexes" / "index", entry, cache_root=tmp_path / "cache" / "index"
+    )
     descriptions = pa.array([row["description"] for row in rows])
     emitted = encoder.encode_arrow(descriptions)["piece_offsets"].diff().tolist()
     nodes = _nodes(tmp_path, rows)
@@ -261,7 +272,9 @@ def test_a_row_with_a_null_required_field_is_marked_dropped(tmp_path, length_inp
         batching=replace(contract.batch.batching, length_input=length_input),
     )
     entry = _entry(replace(contract, batch=batch), dataset, engine)
-    _, counts = read_token_lengths(tmp_path / "index", entry)
+    _, counts = read_token_lengths(
+        tmp_path / "indexes" / "index", entry, cache_root=tmp_path / "cache" / "index"
+    )
     expected = [DROPPED if row["channel"] is None else 0 for row in rows]
     assert counts[_nodes(tmp_path, rows)].tolist() == expected
 
@@ -299,7 +312,7 @@ def test_a_changed_empty_policy_or_required_field_never_reuses_counts(tmp_path):
     )
     files = [_entry(contract, dataset, engine)["file"] for contract in contracts]
     assert len(set(files)) == len(files)
-    assert all((tmp_path / "index" / "col_stats" / file).is_file() for file in files)
+    assert all((tmp_path / "cache" / "index" / "col_stats" / file).is_file() for file in files)
 
 
 def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkeypatch):
@@ -313,7 +326,7 @@ def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkey
     for row in rows["card_transactions"][::3]:
         row["channel"] = None
     dataset = _write_parquet(rows, tmp_path / "parquet")
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2)
     contract = _measured(_contract())
     transactions = contract.batch.inputs["transactions"]
     group = transactions.representation
@@ -338,9 +351,9 @@ def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkey
                 batch.inputs["transactions"]["field_offsets"].diff().tolist()
                 for batch in task.batches(_requests())
             ]
-    assert read_token_lengths(tmp_path / "index", entry) == (2, None)
+    assert read_token_lengths(tmp_path / "indexes" / "index", entry) == (2, None)
     assert {count for counts in emitted for count in counts} == {2}
-    assert not list(tmp_path.glob("index/col_stats/*/*.lengths-*"))
+    assert not list(tmp_path.glob("cache/index/col_stats/*/*.lengths-*"))
 
 
 def _lengths(contract: api.DataLoaderSpec, directory) -> tuple[dict, bytes]:
@@ -348,7 +361,7 @@ def _lengths(contract: api.DataLoaderSpec, directory) -> tuple[dict, bytes]:
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
-    return entry, (directory / "index" / "col_stats" / entry["file"]).read_bytes()
+    return entry, (directory / "cache" / "index" / "col_stats" / entry["file"]).read_bytes()
 
 
 def test_only_the_length_inputs_columns_count(tmp_path):

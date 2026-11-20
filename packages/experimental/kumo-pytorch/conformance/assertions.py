@@ -111,6 +111,8 @@ def bound_tables(
         require_engine(engine_name)
         with tempfile.TemporaryDirectory(prefix="conformance-") as temporary:
             directory = Path(temporary)
+            import kumo.settings
+
             bindings = {}
             for name, rows in tables.items():
                 path = directory / (f"{name}.parquet" if parts == 1 else name)
@@ -120,14 +122,14 @@ def bound_tables(
                 # Refusal paths deliberately do not exist. Reading one is a bug.
                 bindings[name] = Parquet(str(path))
             settings = _CASE.get()
-            yield (
-                Dataset(bindings),
-                DiskGraphEngine(
-                    index=directory / "index",
-                    num_threads=int(settings.get("execution.num_threads", 1)),
-                    num_shards=int(settings.get("execution.num_shards", 1)),
-                ),
-            )
+            with patch.object(kumo.settings, "_configured", directory):
+                yield (
+                    Dataset(bindings),
+                    DiskGraphEngine(
+                        num_threads=int(settings.get("execution.num_threads", 1)),
+                        num_shards=int(settings.get("execution.num_shards", 1)),
+                    ),
+                )
     else:
         raise ValueError(f"unknown conformance engine {engine_name!r}")
 

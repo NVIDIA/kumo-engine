@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Storage policy for index-local and external consumer state."""
+"""Storage policy for managed DiskGraph indexes and derived state."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ class TaskDirectory:
 
 
 class ColumnCache:
-    """Read immutable base caches and publish missing entries to the writable root."""
+    """Read base caches and publish missing entries to the requested root."""
 
     def __init__(self, index: str | Path, root: str | Path | None = None):
         self.index = Path(index)

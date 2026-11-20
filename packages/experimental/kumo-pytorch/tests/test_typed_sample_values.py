@@ -330,7 +330,10 @@ def test_native_integer_min_max_and_distinct_preserve_exact_values(tmp_path, dty
             api.Dataset({name: api.InMemoryRows(value) for name, value in rows.items()}),
             api.InMemoryEngine(),
         ),
-        (api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)),
+        (
+            api.Dataset(sources),
+            api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1),
+        ),
     ):
         result = api.preview(contract, dataset, engine, requests).batch.inputs["values"]
         assert {name: value["values"].item() for name, value in result.items()} == {

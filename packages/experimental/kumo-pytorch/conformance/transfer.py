@@ -75,7 +75,10 @@ def main(directory: Path) -> None:
     inputs = json.loads((directory / "inputs.json").read_text())
     dataset = Dataset({name: Parquet(path) for name, path in inputs["tables"].items()})
     requests = [SampleRequest(**request) for request in inputs["requests"]]
-    engine = DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=directory)
+    engine = DiskGraphEngine(num_threads=1, num_shards=1)
     with prepare(contract, dataset, engine) as plan:
         task = plan.materialize(requests[:FRESH_FIT])
         output = batches_json(task.batches(requests, **TRANSFER_ARGUMENTS))

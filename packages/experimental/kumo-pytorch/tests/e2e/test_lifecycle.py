@@ -75,6 +75,13 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 REORDER_TOLERANCE = 1e-6
 
 
+def _managed_engine(root: Path) -> DiskGraphEngine:
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=root)
+    return DiskGraphEngine()
+
+
 # Per flow and test cutoff: test-anchor scores without, then with, the added rows.
 FutureScores = dict[str, dict[str, tuple[dict[int, float], dict[int, float]]]]
 
@@ -390,7 +397,7 @@ def test_weights_and_state_are_refused_under_another_contract_or_fit(
         load_weights(pragma / "model.pt", gnn_artifact.fitted_state)
     with pytest.raises(ValueError, match="trained against"):
         load_weights(pragma / "model.pt", pretrained.fitted_state)
-    engine = DiskGraphEngine(index=root / "refusal-index")
+    engine = _managed_engine(root)
     with prepare(pragma_artifact.contract, dataset(hm.root), engine) as plan:
         with pytest.raises(ValueError, match="fitted for different inputs"):
             plan.materialize(anchors(hm.root), fitted=gnn_artifact.fitted_state, inference=True)
@@ -414,7 +421,7 @@ def test_the_contract_label_is_the_generator_label(
     artifact = Artifact.load(runs["gnn"][0].work / "artifact")
     oracle = pq.read_table(hm.labels, columns=["sample_id", "label"])
     labels = dict(zip(oracle["sample_id"].to_pylist(), oracle["label"].to_pylist(), strict=True))
-    engine = DiskGraphEngine(index=root / "label-index")
+    engine = _managed_engine(root)
     seen = 0
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(anchors(hm.root), fitted=artifact.fitted_state) as task:
@@ -532,7 +539,7 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     assert tied_requests, "no served request cuts a tie; the gap can no longer be seen here"
     sample_id = min(tied_requests)
     in_memory = reference["gnn"][sample_id]
-    engine = DiskGraphEngine(index=root / "tie-index")
+    engine = _managed_engine(root)
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(
             [tied_requests[sample_id]], fitted=artifact.fitted_state, inference=True
@@ -556,7 +563,7 @@ def test_a_history_batch_without_any_event_assembles(
     request = _request_without_history(hm)
     store, server = CustomerRows.open(hm.root), ServingAssembler(artifact)
     (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
-    engine = DiskGraphEngine(index=root / "empty-index")
+    engine = _managed_engine(root)
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize([request], fitted=artifact.fitted_state, inference=True) as task:
             (scored,) = list(task.batches(output_format="model"))
@@ -645,9 +652,9 @@ def _gnn_inputs(artifact: Artifact, data: Path, index: Path) -> dict[int, GnnInp
         )
         for table in [pq.read_table(data / "tables" / f"{name}.parquet")]
     }
-    shutil.rmtree(index, ignore_errors=True)
+    engine = _managed_engine(index.parent)
     found: dict[int, GnnInputs] = {}
-    with prepare(artifact.contract, dataset(data), DiskGraphEngine(index=index)) as plan:
+    with prepare(artifact.contract, dataset(data), engine) as plan:
         with plan.materialize(anchors(data), fitted=artifact.fitted_state, inference=True) as task:
             for batch in task.batches(split="test", output_format="model"):
                 found.update(_per_sample(batch, times, article_of))

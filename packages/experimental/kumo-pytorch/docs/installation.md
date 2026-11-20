@@ -72,9 +72,10 @@ The [quick start](../README.md#quick-start) runs as published. Save it to a
 file and run it with the environment's Python, and it prints two inputs and a
 `(2, 2)` padded history.
 
-The first `prepare()` with `DiskGraphEngine(index=...)` builds the index if it's
-missing, and later runs reuse it. With `ingest="never"` it only uses an index
-that already exists. It never overwrites an index that doesn't match your data.
+The first `prepare()` with `DiskGraphEngine()` builds a managed index. Pass its
+`index_build_id` to a later engine to reuse it. With `ingest="never"` it only
+uses an index that already exists. It never overwrites an index that doesn't
+match your data.
 See [engines and data](04-engines-and-data.md#building-and-reusing-the-index)
 for details.
 
