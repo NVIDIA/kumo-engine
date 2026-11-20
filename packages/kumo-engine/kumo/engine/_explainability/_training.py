@@ -132,7 +132,8 @@ def _split(run: Run, name: str) -> Optional[dict[str, Any]]:
     counts = mapping(target.get('count'))
     entities = integer(
         _data_summaries._value({
-            **stats, 'num_train_rows': rows
+            'num_entities': integer(stats.get('num_entities')),
+            'num_train_rows': rows
         }, target, 'entities', {}))
     positive = None
     if counts and set(counts) <= {'true', 'false'} and all(

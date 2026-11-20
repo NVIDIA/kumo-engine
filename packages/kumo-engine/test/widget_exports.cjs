@@ -89,6 +89,27 @@ async function alter(filename, change) {
         const reopened = await context.newPage(); await reopened.goto(pathToFileURL(saved).href);
         assert.equal(await reopened.locator('[data-card="importance"] svg[role="img"]').textContent(), expanded);
         assert.equal(await reopened.locator('[data-card="subgraphs"] g.kx-sg-node[aria-pressed="true"]').getAttribute('data-id'), pinned);
+        // Class outcomes keep independent pages through HTML and print exports.
+        await alter(saved, payload => {
+          const graph = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'subgraphs');
+          graph.task_type = 'multilabel_classification';
+          for (const sample of graph.samples) {
+            sample.prediction = Object.fromEntries(Array.from({length: 23}, (_, i) => ['class-' + i, i / 100]));
+            sample.target = Object.fromEntries(Array.from({length: 23}, (_, i) => ['class-' + i, Number(i === 22)]));
+          }
+        });
+        await reopened.goto(pathToFileURL(saved).href);
+        await reopened.getByRole('button', {name: 'Next page of predictions', exact: true}).click();
+        await reopened.getByRole('button', {name: 'Next page of ground truth', exact: true}).click();
+        await reopened.getByRole('button', {name: 'Next page of ground truth', exact: true}).click();
+        const outcomes = await reopened.locator('.kx-sg-class-outcome tbody').allTextContents();
+        const outcomePrint = await print(reopened);
+        assert.deepEqual(await outcomePrint.locator('.kx-sg-class-outcome tbody').allTextContents(), outcomes);
+        await outcomePrint.close();
+        await save(reopened, saved); await reopened.goto(pathToFileURL(saved).href);
+        assert.deepEqual(await reopened.locator('.kx-sg-class-outcome tbody').allTextContents(), outcomes);
+        await reopened.locator('.kx-sg-entity select').selectOption({index: 0});
+        assert.deepEqual(await reopened.locator('.kx-sg-class-outcome .kx-sg-pager span').allTextContents(), ['1 of 3', '1 of 3']);
         await page.getByRole('tab', {name: 'Evaluation', exact: true}).click();
         assert.equal(await page.locator('[data-card="cutoff"] .kx-cutoff-curves > *').count(), 3);
         const cutoff = page.locator('[data-card="cutoff"] input[type="range"]');

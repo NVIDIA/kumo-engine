@@ -257,7 +257,6 @@ KX.cards.groups = (parent, card, ctx) => {
    restored export or the copy being printed. */
 function mount(host, data, signal, onDispose) {
   const root = H('div', 'kx', host);
-  root.dataset.kind = data.kind || 'training';
   const cards = Object.fromEntries(data.tabs.flatMap(t => t.cards).map(c => [c.id, c]));
   const ctx = {signal, onDispose, state: store(signal, saved), data, host, cards};
   root.state = ctx.state;

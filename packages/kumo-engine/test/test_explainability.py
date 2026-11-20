@@ -11,6 +11,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from xml.etree import ElementTree
 
 import numpy as np
@@ -342,7 +343,8 @@ def _split_stats(result: TrainingResult, **splits: dict[str, Any]) -> None:
     _write_json(path, {f'{k}_table_stats': v for k, v in splits.items()})
 
 
-def test_training_table_of_a_temporal_regression(tmp_path):
+@pytest.mark.parametrize('entities', [30, float('nan'), float('inf')])
+def test_training_table_of_a_temporal_regression(tmp_path, entities):
     result = _result(tmp_path)
 
     def day(month):
@@ -354,9 +356,10 @@ def test_training_table_of_a_temporal_regression(tmp_path):
                            target_distribution=dict(target_mean=2.925)),
         val=dict(num_train_rows=480, num_entities=900, min_date=day(6),
                  max_date=day(6), target_distribution=dict(target_mean=12.5)),
-        test=dict(num_train_rows=30, num_entities=30, min_date=day(7),
+        test=dict(num_train_rows=30, num_entities=entities, min_date=day(7),
                   max_date=day(7),
                   target_distribution=dict(target_mean=float('nan'))))
+    assert '<!doctype html>' in result.visualize().page()
     card = _cards(result)['training_table']
     assert card['title'] == 'Training Table'
     assert card['columns'] == [
@@ -367,7 +370,8 @@ def test_training_table_of_a_temporal_regression(tmp_path):
         dict(name='Training',
              texts=['960', '240', '2.9', '2024-04-01 to 2024-05-01']),
         dict(name='Validation', texts=['480', '480', '12.5', '2024-06-01']),
-        dict(name='Holdout', texts=['30', '30', '', '2024-07-01']),
+        dict(name='Holdout',
+             texts=['30', '30' if entities == 30 else '', '', '2024-07-01']),
     ]
 
 
@@ -552,7 +556,7 @@ def test_labeled_classification_cohorts(tmp_path, task):
         tmp_path, task, test_rows=3, holdout=pd.DataFrame(
             dict(ENTITY=range(3), TARGET=[True, False, True], TARGET_PRED=1.0,
                  True_PROB=0.5, False_PROB=0.5)))
-    assert _run.load(result).holdout is not None
+    assert (_run.load(result).holdout is None) == (task in _run.CLASS_LABELED)
     path = (Path(result.explanations.trial_root) /
             'column_analysis/test/column_analysis.json')
     entry = dict(table_name='users', hop=0, col_name='age', stype=None,
@@ -637,7 +641,10 @@ def test_cards_per_model_type(tmp_path, task, cards):
         json.dumps(data, allow_nan=False)  # the payload the front end reads
         return [[card['id'] for card in tab['cards']] for tab in data['tabs']]
 
-    assert listed() == cards
+    with patch.object(_run, 'read_parquet', wraps=_run.read_parquet) as read:
+        assert listed() == cards
+        if task in _run.CLASS_LABELED:
+            read.assert_not_called()
     (result.bundle_dir / 'holdout.parquet').unlink()
     assert listed()[2] == cards[2]
 

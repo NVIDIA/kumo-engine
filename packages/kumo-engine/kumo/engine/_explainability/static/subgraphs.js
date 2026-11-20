@@ -65,7 +65,7 @@ function pager(parent, go, signal, name) {
   };
 }
 
-function classOutcome(parent, title, values, signal) {
+function classOutcome(parent, title, values, signal, state) {
   const section = H('div', 'kx-sg-class-outcome', parent);
   const table = H('table', 'kx-table', section);
   H('caption', null, table, title);
@@ -79,6 +79,7 @@ function classOutcome(parent, title, values, signal) {
   }
   const pages = Math.ceil(rows.length / 10);
   const show = page => {
+    state[title] = page;
     body.replaceChildren();
     for (const [label, value] of rows.slice(page * 10, (page + 1) * 10)) {
       const row = H('tr', null, body);
@@ -88,7 +89,7 @@ function classOutcome(parent, title, values, signal) {
     move?.(page, pages);
   };
   const move = pages > 1 ? pager(section, show, signal, title.toLowerCase()) : null;
-  show(0);
+  show(Math.min(state[title] || 0, pages - 1));
 }
 
 KX.cards.subgraphs = (panel, payload, ctx) => {
@@ -247,7 +248,7 @@ KX.cards.subgraphs = (panel, payload, ctx) => {
     scoring = scoreNodes(sample.nodes);
     allTables = [...new Set(sample.nodes.map(n => n.table))];
     if (ui.sample !== sample.id) {
-      Object.assign(ui, {sample: sample.id, pinned: sample.root, tables: [...allTables], sizes: [], expanded: [], fullDepth: false});
+      Object.assign(ui, {sample: sample.id, pinned: sample.root, tables: [...allTables], sizes: [], expanded: [], fullDepth: false, outcomePages: {}});
     }
     if (built !== sample) buildFilters();
     built = sample;
@@ -268,8 +269,9 @@ KX.cards.subgraphs = (panel, payload, ctx) => {
     move(list.indexOf(sample), list.length);
     outcome.replaceChildren();
     if (['multiclass_classification', 'multilabel_classification'].includes(payload.task_type)) {
-      classOutcome(outcome, 'Predictions', sample.prediction, nodeOptions.signal);
-      classOutcome(outcome, 'Ground truth', sample.target, nodeOptions.signal);
+      const pages = ui.outcomePages ??= {};
+      classOutcome(outcome, 'Predictions', sample.prediction, nodeOptions.signal, pages);
+      classOutcome(outcome, 'Ground truth', sample.target, nodeOptions.signal, pages);
     } else if (ctx.data.model_type === 'classification') {
       outcomeValue('Predicted probability of True',
         typeof sample.prediction === 'number' ? (sample.prediction * 100).toFixed(1) + '%' : fmt(sample.prediction));

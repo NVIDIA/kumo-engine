@@ -52,8 +52,6 @@ _TASKS = dict(binary_classification=CLASSIFICATION,
 
 _HOLDOUT_COLUMNS = dict(
     binary_classification=['ENTITY', 'TARGET', 'True_PROB', 'False_PROB'],
-    multiclass_classification=['ENTITY', 'TARGET'],
-    multilabel_classification=['ENTITY', 'TARGET'],
     regression=['ENTITY', 'TARGET', 'TARGET_PRED'], forecasting=[
         'ENTITY', 'TIMESTAMP', 'ANCHOR_TIMESTAMP', 'TARGET', 'TARGET_PRED'
     ])

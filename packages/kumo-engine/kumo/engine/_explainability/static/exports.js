@@ -69,7 +69,7 @@ function widgetExports(root, {host, data, signal, onDispose, css, source, render
         'addEventListener("pagehide",event=>{if(!event.persisted){controller.abort();cleanups.forEach(fn=>fn())}});' +
         '(' + source + ')({host,widgetId:host.id,data,signal:controller.signal,onDispose:fn=>cleanups.push(fn)},saved);';
       doc.body.append(script);
-      download(doc, (data.kind || 'training') + '-report.html');
+      download(doc, 'training-report.html');
       status.textContent = 'HTML downloaded with the widget’s saved data.';
     } catch (error) { status.textContent = 'HTML export failed. Please retry.'; console.error(error); }
   }, {signal});
