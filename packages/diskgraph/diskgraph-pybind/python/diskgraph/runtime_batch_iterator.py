@@ -119,6 +119,8 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     paths require finalized index metadata; the native reader validates it.
     The catalog namespace is the index-local ID for a relative ref, including
     a symlink, and the resolved directory basename for an absolute external ref.
+    A path nested below an index-local extension is passed through to the
+    reader and rejected as an invalid extension location.
     """
     # Keep the catalog ID for an index-local symlink even if its target is
     # elsewhere. Let the native reader resolve and validate the target.

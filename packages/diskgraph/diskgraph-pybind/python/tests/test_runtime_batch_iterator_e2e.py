@@ -534,6 +534,26 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
             )
 
 
+def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
+    nested = parent / "train_tables" / seed_table_fixture["tt_id"] / "nested"
+    nested.mkdir()
+    assert _extension_ref_from_stage_path(str(parent), str(nested)) == str(nested.resolve())
+
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["index_path"] = str(nested)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="index-local extension"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False, num_threads=1,
+        )
+
+
 def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
     external = tmp_path / "not-an-index"
     external.mkdir()
