@@ -10,7 +10,7 @@ import logging
 import os
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -26,6 +26,7 @@ class DiskgraphSnapshotError(RuntimeError):
 @dataclass(frozen=True)
 class DiskgraphLocalConfig:
     data_root: str
+    managed_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,11 +102,73 @@ class LocalSnapshotStore:
         self.config = config
 
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
+        reference = self._reference(handle)
+        if self.config.managed_root is not None and reference.is_file():
+            from diskgraph.managed_paths import ManagedIndexPaths
+
+            build_id = json.loads(reference.read_text())["index_build_id"]
+            paths = ManagedIndexPaths(Path(self.config.managed_root), build_id)
+            if paths.index_dir.exists():
+                paths.verify_index()
+                return str(paths.index_dir)
+        return self.staging_path(handle)
+
+    def staging_path(self, handle: DiskgraphSnapshotHandle) -> str:
+        """Legacy location, also used while the subprocess builds a new index."""
         return os.path.join(
             self.config.data_root,
             handle.graph_key,
             handle.graph_data_version,
         )
+
+    def _reference(self, handle: DiskgraphSnapshotHandle) -> Path:
+        return Path(self.staging_path(handle) + ".index.json")
+
+    def use_legacy(self, handle: DiskgraphSnapshotHandle) -> None:
+        """Select a verified restore at the legacy location, preserving old bases."""
+        legacy = LocalSnapshotStore(DiskgraphLocalConfig(self.config.data_root))
+        legacy.verify(handle)
+        self._reference(handle).unlink(missing_ok=True)
+
+    def publish(self, handle: DiskgraphSnapshotHandle,
+                result: DiskgraphIngestResult) -> DiskgraphIngestResult:
+        """Publish a fresh build under its native ID without copying its files.
+
+        The caller holds the graph lock. Existing legacy snapshots need not
+        move. The reference is published last, so a failed ingest never changes
+        the cached build. A crash after rename can leave an unreferenced build,
+        but cannot redirect readers to an incomplete one.
+        """
+        if self.config.managed_root is None:
+            return result
+        from diskgraph.managed_paths import ManagedIndexPaths
+
+        source = Path(result.index_path)
+        metadata = json.loads((source / "index_metadata.json").read_text())
+        build_id = metadata.get("index_build_id")
+        if not isinstance(build_id, str) or not build_id:
+            raise DiskgraphSnapshotError("New snapshot has no index_build_id")
+        paths = ManagedIndexPaths(Path(self.config.managed_root), build_id)
+        if not (source / "_SUCCESS").is_file():
+            raise DiskgraphSnapshotError("Cannot publish an incomplete snapshot")
+        if result.missing_paths():
+            raise DiskgraphSnapshotError("Cannot publish a snapshot with missing files")
+        target = paths.index_dir
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError(f"Index build already exists: {target}")
+        source.rename(target)
+        published = replace(DiskgraphIngestResult.for_index(target),
+                            pkey_duplicate_counts=result.pkey_duplicate_counts)
+        write_diskgraph_success_marker(str(target), published)
+        reference = self._reference(handle)
+        temporary = reference.with_name(reference.name + f".{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps({"index_build_id": build_id}))
+            temporary.replace(reference)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return published
 
     @staticmethod
     def durable_path(handle: DiskgraphSnapshotHandle, durable_root: str) -> str:
@@ -141,17 +204,23 @@ class LocalSnapshotStore:
             except OSError:
                 continue
             for version in versions:
+                is_reference = (self.config.managed_root is not None
+                                and version.endswith(".index.json"))
+                handle = DiskgraphSnapshotHandle(
+                    graph_key, version[:-11] if is_reference else version)
                 snapshot_dir = os.path.join(graph_dir, version)
-                if not os.path.isdir(snapshot_dir):
+                if not is_reference and not os.path.isdir(snapshot_dir):
                     continue
                 try:
+                    if is_reference:
+                        snapshot_dir = self.path(handle)
                     result = check_diskgraph_output(snapshot_dir)
-                except DiskgraphSnapshotError:
+                except (DiskgraphSnapshotError, OSError, ValueError, KeyError):
                     logger.warning("Skipping invalid snapshot at %s",
                                    snapshot_dir)
                     continue
-                if result is not None:
-                    ready.append(DiskgraphSnapshotHandle(graph_key, version))
+                if result is not None and handle not in ready:
+                    ready.append(handle)
         return ready
 
     def verify(self, handle: DiskgraphSnapshotHandle) -> DiskgraphIngestResult:

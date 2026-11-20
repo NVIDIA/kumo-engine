@@ -26,6 +26,9 @@ def ingests(tmp_path, monkeypatch):
     import kumo_core.diskgraph.ingest as ingest
     import kumo_core.diskgraph.snapshot as snapshots
 
+    monkeypatch.setattr(snapshots.LocalSnapshotStore, 'publish',
+                        lambda self, handle, result: result)
+
     import kumo.engine._scratch as scratch
 
     monkeypatch.setattr(scratch, '_root', tmp_path)

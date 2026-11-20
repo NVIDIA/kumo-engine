@@ -422,16 +422,16 @@ def test_failed_load_leaves_nothing_and_restarts_cleanly(
     scratch('gpu')
     with pytest.raises(ValueError, match='corrupt.*checksum'):
         _load(exports, location)
-    graph_dir = tmp_path / 'gpu/snapshots' / snapshot.index_path.parent.name
+    graph_dir = tmp_path / 'gpu/snapshots' / snapshot._graph_key
     assert not [path for path in graph_dir.iterdir() if path.suffix != '.lock']
 
     stats.write_bytes(original)
-    (graph_dir / f'{snapshot.index_path.name}.loading').mkdir()
+    (graph_dir / f'{snapshot._data_version}.loading').mkdir()
     loaded = _load(exports, location)
     assert _index_files(loaded.index_path) == _index_files(snapshot.index_path)
     assert [
         path.name for path in graph_dir.iterdir() if path.suffix != '.lock'
-    ] == [snapshot.index_path.name]
+    ] == [snapshot._data_version]
 
 
 def test_load_refuses_before_downloading_when_disk_is_too_small(
@@ -802,3 +802,52 @@ def test_a_failed_store_follows_on_error(tmp_path, scratch, graph,
     with outcome():
         graph.snapshot(mlops=kumo.MLOps(str(tmp_path / 'root'),
                                         on_error=on_error))
+
+
+def test_managed_snapshot_reuse_and_legacy_compatibility(
+        tmp_path, scratch, graph, exports):
+    snapshot = graph.snapshot()
+    build_id = json.loads(
+        (snapshot.index_path / 'index_metadata.json').read_text())['index_build_id']
+    assert snapshot.index_path == tmp_path / 'cpu/indexes' / build_id
+    assert graph.snapshot().index_path == snapshot.index_path
+    reference = (tmp_path / 'cpu/snapshots' / snapshot._graph_key /
+                 f'{snapshot._data_version}.index.json')
+    assert json.loads(reference.read_text()) == {'index_build_id': build_id}
+    # Simulate an existing snapshot from before the layout migration.
+    legacy = reference.with_name(snapshot._data_version)
+    snapshot.index_path.rename(legacy)
+    from kumo_core.diskgraph.snapshot import (
+        DiskgraphIngestResult,
+        write_diskgraph_success_marker,
+    )
+    write_diskgraph_success_marker(str(legacy), DiskgraphIngestResult.for_index(legacy))
+    reference.unlink()
+    reused = graph.snapshot()
+    assert reused.id == snapshot.id
+    assert reused.index_path == legacy
+    location = _put(reused, exports)
+    scratch('restored')
+    restored = _load(exports, location)
+    assert restored.id == snapshot.id
+    assert restored._data_version == snapshot._data_version
+    assert _index_files(restored.index_path) == _index_files(legacy)
+
+
+def test_import_does_not_replace_a_managed_base(tmp_path, scratch, graph, exports):
+    first = graph.snapshot()
+    first_bytes = _index_files(first.index_path)
+    reference = (tmp_path / 'cpu/snapshots' / first._graph_key /
+                 f'{first._data_version}.index.json')
+    reference.unlink()
+    second = graph.snapshot()
+    assert second.id == first.id
+    assert second.index_path != first.index_path
+    second_bytes = _index_files(second.index_path)
+    location = _put(first, exports)
+    restored = _load(exports, location)
+    assert restored.index_path != second.index_path
+    assert _index_files(first.index_path) == first_bytes
+    assert _index_files(second.index_path) == second_bytes
+    assert _index_files(restored.index_path) == first_bytes
+    assert graph.snapshot() == restored

@@ -16,30 +16,15 @@ cloud SDK's `_LocalGraphBackend.create_snapshot`
 `Table.connector.source_backend.prepare_ingest(...)`
 (`kumoapi.plugin.SourceBackend`).
 
-The materialized `GraphSnapshot.id` is `f'{graph.id}@{data_version[:16]}'`
--- `graph.id` (`Graph.id`, the schema-only fingerprint) plus a fingerprint
-of every table's `prepared.version` -- exactly the composite identity
-`kumo_core.diskgraph.snapshot.DiskgraphSnapshotHandle`/`LocalSnapshotStore`
-already model (as `graph_key`/`graph_data_version`), and exactly what the
-cloud SDK's own `create_snapshot` builds (`graph_key=_fingerprint(
-graph_config)`, `graph_data_version=_fingerprint(dict(versions))`,
-`kumoai/backend/local/graph.py:366-372,443`). This is not optional:
-`Graph.id` alone is schema-only, so keying the output directory on it alone
-(an earlier version of this method did) means re-running `snapshot()` after
-the *source data* changes silently overwrites the index directory an
-already-returned, ostensibly-immutable `GraphSnapshot` still points to -- a
-caller holding an old `GraphSnapshot` would have its `index_path` mutated
-out from under it. Including `data_version` in the directory key makes two
-`snapshot()` calls against different data land in different directories, so
-an existing `GraphSnapshot` is never invalidated by a later one.
-
-`LocalSnapshotStore` also gives this a safe, free reuse check
-(`check_diskgraph_output`, used the same way its own `list_ready()` does): if
-a valid completed build already exists for this exact `(graph.id,
-data_version)`, ingest is skipped and the existing index is reused --
-reusing was *not* safe under the old schema-only id (two calls could
-legitimately mean different data), but is now, since the id changes
-whenever the data does.
+The materialized `GraphSnapshot.id` combines the graph schema fingerprint
+with the source data version. This logical identity controls reuse and export;
+it is independent of the native physical `index_build_id`. New completed bases
+are published at `<root>/indexes/<index_build_id>`. A small reference under
+`<root>/snapshots/<graph>/<version>.index.json` maps the logical identity to
+that build. Existing snapshots at `<root>/snapshots/<graph>/<version>` remain
+readable in place. The subprocess builds at that legacy location before a
+same-filesystem rename publishes the completed index; no base-file copy is
+needed. A failed publication can leave an unreferenced build for cleanup.
 
 Two `snapshot()` calls sharing a `graph_key` (`self.id`) -- different
 processes, or different threads in this one -- would otherwise race on two
@@ -311,7 +296,8 @@ def _store() -> Any:
     )
 
     return LocalSnapshotStore(
-        DiskgraphLocalConfig(data_root=str(get_scratch_dir() / 'snapshots')))
+        DiskgraphLocalConfig(data_root=str(get_scratch_dir() / 'snapshots'),
+                             managed_root=str(get_scratch_dir())))
 
 
 def _lock(graph_key: str) -> Any:
@@ -348,12 +334,14 @@ def _load_local(connector: Any, path: str, root: str,
     handle = DiskgraphSnapshotHandle(
         graph_key=manifest['graph_key'],
         graph_data_version=manifest['data_version'])
-    target = Path(store.path(handle))
     with _lock(manifest['graph_key']):
         result = _loaded(store, handle)
         if result is not None and holds_export(Path(result.index_path),
                                                manifest):
             return result
+        # Restores retain the legacy layout. Never replace a managed build
+        # with another physical build that has the same logical snapshot ID.
+        target = Path(store.staging_path(handle))
         try:
             load_into(connector, path, root, manifest, target)
         except FileNotFoundError:
@@ -362,6 +350,7 @@ def _load_local(connector: Any, path: str, root: str,
                     or newer['snapshot_id'] != manifest['snapshot_id']):
                 raise
             load_into(connector, path, newer_root, newer, target)
+        store.use_legacy(handle)
         result = _loaded(store, handle)
     if result is None:
         raise RuntimeError(f'The snapshot loaded from {path} did not pass '
@@ -443,6 +432,7 @@ class GraphSnapshot:
     index_path: Path
     graph_config: Dict[str, Any]
     record_sources: bool | None = field(default=None, compare=False)
+    _version: str | None = field(default=None, compare=False, repr=False)
 
     @property
     def _graph_key(self) -> str:
@@ -450,7 +440,7 @@ class GraphSnapshot:
 
     @property
     def _data_version(self) -> str:
-        return Path(self.index_path).name
+        return self._version or Path(self.index_path).name
 
     @cached_property
     def _native_graph(self) -> NativeGraph:
@@ -494,6 +484,7 @@ class GraphSnapshot:
         result = _load_local(connector, path, root, manifest)
         snapshot = cls(id=manifest['snapshot_id'],
                        index_path=Path(result.index_path),
+                       _version=manifest['data_version'],
                        graph_config=manifest['graph_config'])
         if graph is not None:
             snapshot._warn_changed_sources(graph, path)
@@ -775,10 +766,10 @@ class Graph:
                  ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
-        index. The index is stored under a directory keyed by both `self.id`
-        and a fingerprint of every table's data version (`data_version`) --
-        see the module docstring for why `self.id` alone isn't a safe key,
-        and `GraphSnapshot`'s docstring for the resulting `id` shape. If a
+        index. New indexes are published under `indexes/<index_build_id>`
+        in the configured scratch root. A reference keyed by both `self.id`
+        and a fingerprint of every table's data version (`data_version`)
+        preserves reuse independently of the physical build location. If a
         valid build already exists for that exact key, ingest is skipped and
         it's reused as is.
 
@@ -861,6 +852,7 @@ class Graph:
             DiskgraphIngestResult,
             DiskgraphSnapshotHandle,
             check_diskgraph_output,
+            rebased,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
         from kumo_core.sources.layout import staging_dir
@@ -941,8 +933,9 @@ class Graph:
 
             existing = check_diskgraph_output(str(output_dir))
             if existing is not None:
-                result = existing
+                result = rebased(store, handle)
             else:
+                output_dir = Path(store.staging_path(handle))
                 output_dir.mkdir(parents=True, exist_ok=True)
                 # The Rust ingest binary only writes the index's
                 # `_MANIFEST.json` (read later by, e.g., kumo_core.diskgraph.
@@ -974,6 +967,8 @@ class Graph:
             _write_snapshot_manifest(result, snapshot_id, source_tables,
                                      record_sources, fresh=existing is None,
                                      build=build)
+            if existing is None:
+                result = store.publish(handle, result)
 
             _warn_ingest_data_loss(result, graph_config)
             if events is not None:
@@ -984,6 +979,7 @@ class Graph:
                 index_path=Path(result.index_path),
                 graph_config=graph_config,
                 record_sources=record_sources,
+                _version=data_version,
             )
         finally:
             discard_destination(str(persist_dir))
