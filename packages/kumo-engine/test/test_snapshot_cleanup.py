@@ -55,6 +55,9 @@ def test_snapshot_warns_when_invalid_primary_keys_drop_rows(tmp_path):
 def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
     import kumo_core.diskgraph.ingest as ingest
     import kumo_core.diskgraph.snapshot as snapshots
+
+    monkeypatch.setattr(snapshots.LocalSnapshotStore, 'publish',
+                        lambda self, handle, result: result)
     import kumo_core.sources.transfer as transfer
     from filelock import FileLock, Timeout
 
@@ -77,6 +80,7 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
     index.mkdir()
     (index / 'index').write_bytes(b'index')
     result = SimpleNamespace(index_path=str(index))
+    monkeypatch.setattr(snapshots, 'rebased', lambda store, handle: result)
     calls = []
 
     class Source:

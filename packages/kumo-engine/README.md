@@ -87,6 +87,15 @@ When training completes, the example prints the first five predictions:
 
 `graph.snapshot()` writes the graph to a scratch directory, `~/.cache/kumo-engine` by default, which also holds training runs, model bundles, and predictions. If your home directory is on a network volume, such as an Amazon EBS boot volume, call `kumo.engine.configure(scratch_dir=...)` before taking the snapshot to use a directory on a local NVMe SSD instead.
 
+New completed snapshots live at `<scratch>/indexes/<index_build_id>`. Kumo
+keeps a graph/data-version reference under `<scratch>/snapshots` for reuse;
+existing snapshots in the older graph/version directories remain readable
+without moving them. The ingest subprocess builds in a graph/version staging
+location, then Kumo renames the completed directory into `indexes` on the same
+filesystem. Export locations and logical snapshot IDs are unchanged. PyTorch
+uses the same root for sibling `tasks/<build>/<task>` and `cache/<build>` state.
+
+
 ## Next Steps
 
 ### Use a Coding Agent
