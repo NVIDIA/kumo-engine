@@ -109,7 +109,6 @@ class AnchorTask(Protocol):
         """Release whatever the task holds. Must tolerate repeat calls."""
         ...
 
-
 # --------------------------------------------------------------------------
 # The source boundary
 # --------------------------------------------------------------------------
@@ -163,6 +162,13 @@ class SampleSource(Protocol):
 
 
 @runtime_checkable
+class ArtifactIdentitySource(Protocol):
+    """Optional source identity used to bind reusable fitted and materialized state."""
+
+    artifact_identity: str
+
+
+@runtime_checkable
 class ModelSampleSource(Protocol):
     """Optional hot-path extension that keeps source values in typed buffers."""
 
@@ -205,6 +211,15 @@ class Engine(Protocol):
         anchor-to-graph edges — and fixes the canonical row order.
         """
         ...
+
+
+@runtime_checkable
+class ExistingIndexEngine(Protocol):
+    """Optional hooks for engines that bind a stored index without a Dataset."""
+
+    def _check_binding(self, dataset: Dataset | None, schema: DataSchema) -> tuple[Any, ...]: ...
+
+    def _resolve_index_schema(self, schema: DataSchema) -> DataSchema: ...
 
 
 # --------------------------------------------------------------------------

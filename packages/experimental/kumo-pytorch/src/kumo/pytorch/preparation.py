@@ -52,7 +52,13 @@ from kumo.pytorch.contract.batch.encodings import Text
 from kumo.pytorch.contract.sample import Aggregate, Compare, SampleRequest
 from kumo.pytorch.dataset import Dataset, Parquet, TableSource
 from kumo.pytorch.encoding import FittedEncoder
-from kumo.pytorch.engine import AnchorTask, Engine, SampleSource
+from kumo.pytorch.engine import (
+    AnchorTask,
+    ArtifactIdentitySource,
+    Engine,
+    ExistingIndexEngine,
+    SampleSource,
+)
 from kumo.pytorch.spec import (
     DataLoaderSpec,
     ValidationError,
@@ -65,6 +71,38 @@ from kumo.pytorch.task import Task
 __all__ = ["Plan", "check", "prepare", "preview"]
 
 logger = logging.getLogger(__name__)
+
+
+@overload
+def check(
+    contract: DataLoaderSpec,
+    dataset: Dataset,
+    engine: Engine,
+    *,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
+
+
+@overload
+def check(
+    contract: DataLoaderSpec,
+    dataset: None,
+    engine: Engine,
+    *,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
+
+
+@overload
+def check(
+    contract: DataLoaderSpec,
+    *,
+    engine: Engine,
+    anchors: AnchorTable | None = None,
+    inference: bool = False,
+) -> tuple[ValidationIssue, ...]: ...
 
 
 def check(
@@ -108,6 +146,7 @@ def _check(
         # Keep reporting declaration issues for a bad binding when types are
         # already known, but never read metadata through a missing binding.
         if dataset is None and not issues:
+            assert isinstance(engine, ExistingIndexEngine)
             contract = replace(contract, schema=engine._resolve_index_schema(contract.schema))
         contract = contract.resolve(dataset=None if issues else dataset)
     except (ValueError, KeyError, OSError) as error:
@@ -178,8 +217,10 @@ class Plan:
         self.engine = engine
         self.inference = inference
         self._source: SampleSource | None = source
-        self._dataset_fingerprint = getattr(source, "artifact_identity", None) or _fingerprint(
-            dataset
+        self._dataset_fingerprint = (
+            source.artifact_identity
+            if isinstance(source, ArtifactIdentitySource) and source.artifact_identity
+            else _fingerprint(dataset)
         )
 
     def materialize(
@@ -575,6 +616,35 @@ def reused_state(
     return fitted._input_state, fitted._target_encoders
 
 
+@overload
+def prepare(
+    contract: DataLoaderSpec,
+    dataset: Dataset,
+    engine: Engine,
+    *,
+    inference: bool = False,
+) -> Plan: ...
+
+
+@overload
+def prepare(
+    contract: DataLoaderSpec,
+    dataset: None,
+    engine: Engine,
+    *,
+    inference: bool = False,
+) -> Plan: ...
+
+
+@overload
+def prepare(
+    contract: DataLoaderSpec,
+    *,
+    engine: Engine,
+    inference: bool = False,
+) -> Plan: ...
+
+
 def prepare(
     contract: DataLoaderSpec,
     dataset: Dataset | None = None,
@@ -671,11 +741,11 @@ def _binding_issues(
     engine: Engine,
 ) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    _check_binding = getattr(engine, "_check_binding", None)
-    if _check_binding is not None:
-        issues.extend(_check_binding(dataset, contract.schema))
+    existing_index = isinstance(engine, ExistingIndexEngine)
+    if existing_index:
+        issues.extend(engine._check_binding(dataset, contract.schema))
     if dataset is None:
-        if _check_binding is None:
+        if not existing_index:
             issues.append(ValidationIssue("dataset", "this engine requires a Dataset"))
         return issues
     declared = [table.name for table in contract.schema.tables]
