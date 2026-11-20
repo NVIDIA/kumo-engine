@@ -20,7 +20,9 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 
 import numpy as np
 import pandas as pd
+from kumo_core.diskgraph.snapshot import DiskgraphIngestResult
 from kumo_core.io import filesystem
+from kumo_core.io.json import to_json_dict
 
 from kumo.engine import _text
 from kumo.engine._explainability._format import numbers, percent
@@ -193,7 +195,8 @@ class Run:
             posixpath.join(self.table, 'diskgraph_manifest.json'))
         rhs = mapping(
             mapping(manifest).get('task_dataset')).get('rhs_node_type')
-        stats = read_json(posixpath.join(self.snapshot, 'ingest_stats.json'))
+        stats = read_json(
+            DiskgraphIngestResult.for_index(self.snapshot).ingest_stats_path)
         size = mapping(mapping(
             mapping(stats).get('stats')).get('node_counts')).get(str(rhs))
         seeds = posixpath.join(self.table, 'test_seeds')
@@ -282,9 +285,14 @@ def load(result: 'TrainingResult') -> Run:
     trial = result.explanations.trial_root
     if history is None and trial is not None:
         # The retained run's search progress, beside the selected trial.
-        history = read_json(
-            posixpath.join(posixpath.dirname(trial),
-                           'auto_train_progress.json'))
+        from kumo_core.callbacks import train_progress_logger
+
+        try:
+            history = to_json_dict(
+                train_progress_logger.AutoTrainerProgress.load(
+                    posixpath.dirname(trial)))
+        except (OSError, ValueError):
+            history = None
     manifest = result.manifest
     fit_mode = None if manifest is None else manifest.fit_mode
     full_refit = (fit_mode == 'refit_full' if fit_mode else mapping(

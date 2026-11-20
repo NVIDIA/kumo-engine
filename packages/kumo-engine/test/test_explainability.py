@@ -226,7 +226,8 @@ def _cards(result: TrainingResult) -> dict[str, dict[str, Any]]:
     return {c['id']: c for tab in data['tabs'] for c in tab['cards']}
 
 
-@pytest.mark.parametrize('recorded', ['bundle', 'progress', None])
+@pytest.mark.parametrize('recorded',
+                         ['bundle', 'progress', 'invalid_progress', None])
 def test_epoch_history_follows_search_experiments(tmp_path, recorded):
     result = _result(tmp_path)
     epochs = {
@@ -248,13 +249,20 @@ def test_epoch_history_follows_search_experiments(tmp_path, recorded):
     if recorded == 'bundle':
         _write_json(tmp_path / 'history.json', dict(trial_progress=trials))
         result.artifact_paths['metric_history'] = str(tmp_path / 'history.json')
-    elif recorded == 'progress':
+    elif recorded in ('progress', 'invalid_progress'):
+        if recorded == 'progress':
+            trials['2']['metrics'] = {
+                k: v
+                for k, v in epochs.items() if k.isdigit() and v is not None
+            }
+            for trial in trials.values():
+                trial['num_epochs_completed'] = len(trial['metrics'])
         # Without a bundle record, the retained run's search progress.
         _write_json(
             Path(result.explanations.trial_root).parent /
             'auto_train_progress.json', dict(trial_progress=trials))
     tabs = result.visualize().data['tabs']
-    if not recorded:
+    if not recorded or recorded == 'invalid_progress':
         assert 'history' not in _cards(result)
         return
     assert [tab['id']
@@ -923,14 +931,44 @@ def test_render_html_is_self_contained(tmp_path):
 @pytest.mark.skipif(not shutil.which('node'), reason='needs node')
 @pytest.mark.parametrize('task', [
     'binary_classification', 'regression', 'forecasting',
-    'temporal_link_prediction', 'multilabel_ranking'
+    'temporal_link_prediction', 'static_link_prediction', 'multilabel_ranking',
+    'multiclass_classification', 'multilabel_classification'
 ])
 def test_rendered_script_parses_for_each_model_type(tmp_path, task):
-    html = _model_type_result(tmp_path, task).visualize().html()
+    result = _model_type_result(tmp_path, task)
+    if _run.model_type(task) == _run.LINK_PREDICTION:
+        result = replace(result, metrics=_ranking_scores())
+    _write_json(
+        tmp_path / 'history.json',
+        dict(trial_progress={
+            '0': dict(metrics={'0': dict(train_metrics=dict(train_loss=1.0))})
+        }))
+    result.artifact_paths['metric_history'] = str(tmp_path / 'history.json')
+    view = result.visualize()
+    html = view.html()
     # Validate the transported source, including script-tag escaping.
     source = html.split('<script>//<![CDATA[', 1)[1].split('</script>', 1)[0]
     subprocess.run(['node', '--check'], input=source, text=True,
                    capture_output=True, check=True)
+    # Check fields read by the actual renderer, not a duplicate schema.
+    source = _explainability.script(view.model_type).rsplit(
+        'const fallback =', 1)[0]
+    source += r'''
+for (const tab of data.tabs) for (const card of tab.cards) {
+  const render = KX.cards[card.id];
+  if (!render) throw Error(`Missing renderer: ${card.id}`);
+  const source = render.toString(), param = source.match(/^\([^,]+,\s*(\w+)/)[1];
+  for (const [, key] of source.matchAll(new RegExp(`\\b${param}\\.(\\w+)`, 'g'))) {
+    if (!Object.hasOwn(card, key)) throw Error(`${card.id}: missing ${key}`);
+  }
+}
+}
+renderExplainability({data: JSON.parse(process.argv[1])});
+'''
+    checked = subprocess.run(
+        ['node', '-e', source, json.dumps(view.data)], text=True,
+        capture_output=True)
+    assert checked.returncode == 0, checked.stderr
 
 
 def test_anywidget_keeps_static_output_with_widget_model(tmp_path):

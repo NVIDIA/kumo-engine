@@ -28,14 +28,7 @@ from kumo.engine._explainability import (
 )
 from kumo.engine._explainability._forecasting import forecast_card
 from kumo.engine._explainability._regression import predicted_card
-from kumo.engine._explainability._run import (
-    FORECASTING,
-    LINK_PREDICTION,
-    Run,
-    load,
-    mapping,
-    read_json,
-)
+from kumo.engine._explainability._run import Run, load, mapping, read_json
 from kumo.engine._explainability._snapshot import Snapshot
 
 if TYPE_CHECKING:
@@ -85,10 +78,12 @@ def script(model_type: str) -> str:
         'charts.js', 'shell.js', 'epoch-history.js', 'training-table.js',
         'exports.js'
     ]
-    names.append('ranking.js' if model_type ==
-                 LINK_PREDICTION else f'{model_type}.js')
-    if model_type != FORECASTING:
-        names.append('subgraphs.js')
+    names.extend({
+        'classification': ('classification.js', 'subgraphs.js'),
+        'regression': ('regression.js', 'subgraphs.js'),
+        'forecasting': ('forecasting.js', ),
+        'link_prediction': ('ranking.js', 'subgraphs.js'),
+    }[model_type])
     # The widget layer runs the script inside one function; keep it from
     # closing its own <script> element.
     code = '\n'.join(_static(name) for name in names).replace('</', '<\\/')
