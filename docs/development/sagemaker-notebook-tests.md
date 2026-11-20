@@ -354,6 +354,12 @@ verification tools. They establish execution coverage and leave notebook-export,
 native Studio and native MLflow UI qualification unverified.
 
 
+
+In Actions, select `workload=pytorch`, `scenario=engine` and
+`engine_checks_only=true`. The dispatch builds the adapter and retains the
+matching DiskGraph constituent wheel. Published phase results include
+`platform-prerequisite`, `train` and `reload`.
+
 The branch exception is limited to `egu/byom-mlops-lifecycle` in this workflow
 and the `sagemaker-mlops-test` environment. Its reviewer gate is disabled so
 manual test dispatches can run directly. Administrator-bypass restrictions and
