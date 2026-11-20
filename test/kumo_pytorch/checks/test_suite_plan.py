@@ -351,7 +351,7 @@ def test_hi_small_checks_use_their_own_matrix_with_original_commands(
     )
     worker = (ROOT / ".github/workflows/_kumo-pytorch-binding.yml").read_text()
     assert (
-        "timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 180 }}"
+        "timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 7200 }}"
         in worker
     )
     artifact_step = worker_step(
