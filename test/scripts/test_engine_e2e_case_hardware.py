@@ -9,7 +9,7 @@ import select
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import yaml
@@ -90,6 +90,37 @@ def test_reference_comparison_requires_equal_known_instance_types():
                                (None, "g7e.8xlarge"), ("g7e.8xlarge", None)]:
         with pytest.raises(ValueError, match="instance"):
             common.compare_reference(result(current), result(reference), .25)
+
+
+def test_results_record_placement_and_capacity_wait(tmp_path, monkeypatch):
+    for name in ("psutil", "kumo", "kumo.engine", "kumoapi.jobs"):
+        monkeypatch.setitem(sys.modules, name, ModuleType(name))
+    sys.modules["kumoapi.jobs"].MetadataField = None
+    args = SimpleNamespace(case="adtech_binary", scale="100M", control=False,
+                           source_sha="a" * 40, instance_type="g7e.8xlarge",
+                           write_reference=False,
+                           reference=tmp_path / "missing.json",
+                           output=tmp_path / "result.json")
+    values = dict(ENGINE_E2E_REGION="eu-north-1", ENGINE_E2E_ZONE="eu-north-1b",
+                  ENGINE_E2E_CAPACITY_WAIT_SECONDS="75")
+    null = dict(region=None, zone=None)
+    for env, placement, wait in [
+        ({}, null, None),
+        (values, dict(region="eu-north-1", zone="eu-north-1b"), 75),
+        (dict(ENGINE_E2E_CAPACITY_WAIT_SECONDS="0"), null, 0),
+        (dict(ENGINE_E2E_CAPACITY_WAIT_SECONDS="-5"), null, None),
+        (dict(ENGINE_E2E_CAPACITY_WAIT_SECONDS="abc"), null, None)
+    ]:
+        args.output.unlink(missing_ok=True)
+        for key in values:
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with pytest.raises(FileNotFoundError):
+            common.run(None, None, None, None, args=args)
+        result = json.loads(args.output.read_text())
+        assert result["placement"] == placement
+        assert result["capacity_wait_seconds"] == wait
 
 
 @pytest.mark.parametrize("tier", ["nightly", "weekly"])
@@ -233,8 +264,9 @@ print('Unhandled' if failed else 'None')
                            "2000000000"), INSTANCE_TYPE="g7e.8xlarge",
         LABEL=cases[0]["label"], POOL_CASES=json.dumps(cases),
         CAPACITY_FUNCTION="fixture", AWS_REGION="us-west-2",
-        actual_instance="g7e.8xlarge", TIER="weekly"), capture_output=True,
-                            text=True, timeout=10)
+        actual_instance="g7e.8xlarge", region="us-west-2", zone="us-west-2a",
+        capacity_wait="0", TIER="weekly"), capture_output=True, text=True,
+                            timeout=10)
     assert result.returncode == status, result.stdout + result.stderr
     lines = (tmp_path / "events").read_text().splitlines()
     events = [json.loads(line) for line in lines]
@@ -258,6 +290,76 @@ print('Unhandled' if failed else 'None')
         assert "Bootstrap failure notification failed" in result.stderr
     assert (tmp_path / "shutdown.log").read_text() == "shutdown"
     assert not list(tmp_path.glob("token.*"))
+
+
+@pytest.mark.parametrize(
+    "tier,boot,region,zone,expected",
+    [("nightly", 2000000000 - 4 * 3600 + 1200, "eu-north-1", "eu-north-1b",
+      1200),
+     ("weekly", 2000000000 - 24 * 3600 + 1200, "us-west-2", "us-west-2a", 1200),
+     ("weekly", 2000000000 - 24 * 3600 - 30, "us-west-2", "us-west-2a", 0),
+     ("weekly", 2000000000 - 24 * 3600 + 1200, "us-west-2", "us-west-2-lax-1a",
+      1200),
+     ("weekly", 2000000000, "us-west-2x", "us-west-2a", "instance region"),
+     ("weekly", 2000000000, "us-west-2", "us-east-1a", "instance zone"),
+     ("weekly", 2000000000, "us-west-2", "", "instance zone"),
+     ("weekly", 2000000000, "us-west-2", "us-west-2", "instance zone"),
+     ("weekly", 2000000000, "us-west-2", "us-west-2A", "instance zone"),
+     ("weekly", "", "us-west-2", "us-west-2a", "boot time")])
+def test_runner_records_its_placement_and_capacity_wait(tmp_path, tier, boot,
+                                                        region, zone, expected):
+    source = (ROOT / ".github/scripts/engine-e2e-runner.sh").read_text()
+    functions = "\n".join(
+        re.findall(r"^[a-z_]+\(\) \{\n.*?^\}", source,
+                   re.MULTILINE | re.DOTALL))
+    body = source[source.index("boot_check='instance type'"):]
+    body = body[:body.index("boot_check='local SSD setup'")].replace(
+        "/proc/stat", str(tmp_path / "stat"))
+    env_file = next(line for line in source.splitlines()
+                    if line.endswith(" >> .env"))
+    (tmp_path / "stat").write_text(f"cpu 1 2 3\nbtime {boot}\nprocesses 9\n")
+    commands = dict(
+        date="echo 2000000000", shutdown="exit 0",
+        curl='case ${!#} in */api/token) echo token;; */instance-type) '
+        'echo g7e.8xlarge;; */region) echo "$TEST_REGION";; '
+        '*/availability-zone) echo "$TEST_ZONE";; *) exit 22;; esac')
+    for name, command in commands.items():
+        (tmp_path / name).write_text("#!/bin/bash\n" + command + "\n")
+        (tmp_path / name).chmod(0o755)
+    result = subprocess.run([
+        "/bin/bash", "-c", "set -euo pipefail\nbootstrapping=1\n" + functions +
+        "\ntrap finish EXIT\n" + body + env_file + "\n"
+    ], cwd=tmp_path, env=dict(os.environ, PATH=f"{tmp_path}:/usr/bin:/bin",
+                              TIER=tier, CAPACITY_DEADLINE="2000000000",
+                              INSTANCE_TYPE="g7e.8xlarge", TEST_REGION=region,
+                              TEST_ZONE=zone), capture_output=True, text=True,
+                            timeout=10)
+    if isinstance(expected, str):
+        assert f"Bootstrap failed: {expected} (exit 1)" in result.stderr
+        assert result.returncode == 1 and not (tmp_path / ".env").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / ".env").read_text().splitlines() == [
+            "ENGINE_E2E_INSTANCE_TYPE=g7e.8xlarge",
+            f"ENGINE_E2E_REGION={region}", f"ENGINE_E2E_ZONE={zone}",
+            f"ENGINE_E2E_CAPACITY_WAIT_SECONDS={expected}",
+            "ENGINE_E2E_CAPACITY_DEADLINE=2000000000"
+        ]
+
+
+def test_metadata_token_outlives_the_retries_of_every_read():
+    source = (ROOT / ".github/scripts/engine-e2e-runner.sh").read_text()
+    ttl = int(re.search(r"token-ttl-seconds: ([0-9]+)", source)[1])
+    reads = re.findall(r'^.*"X-aws-ec2-metadata-token: \$metadata_token".*$',
+                       source, re.MULTILINE)
+
+    def flag(read, name):
+        return int(re.search(rf"--{name} ([0-9]+)", read)[1])
+
+    worst_case = sum(
+        flag(read, "retry-max-time") + 2**(flag(read, "retry") - 1) +
+        flag(read, "max-time") for read in reads)
+    assert len(reads) == 3 and ttl >= worst_case
 
 
 @pytest.mark.parametrize("deadline,requests", [(2000000000, 2), (1, 1)])
@@ -287,6 +389,9 @@ def test_admission_preserves_bootstrap_failure_when_claim_already_exists(
                            GITHUB_RUN_ATTEMPT="2", GITHUB_SHA="a" * 40,
                            ENGINE_E2E_EXPECTED_INSTANCE_TYPE="g7e.8xlarge",
                            ENGINE_E2E_CAPACITY_DEADLINE=str(deadline),
+                           ENGINE_E2E_REGION="eu-north-1",
+                           ENGINE_E2E_ZONE="eu-north-1b",
+                           ENGINE_E2E_CAPACITY_WAIT_SECONDS="75",
                            RESULTS_S3="s3://fixture/results").items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(subprocess, "run", aws)
@@ -295,4 +400,51 @@ def test_admission_preserves_bootstrap_failure_when_claim_already_exists(
     result = json.loads((tmp_path / "e2e/result.json").read_text())
     assert result["phase"] == "bootstrap"
     assert result["error"] == error
+    assert result["placement"] == dict(region=None, zone=None)
+    assert result["capacity_wait_seconds"] is None
     assert len(calls) == requests
+
+
+def test_lifecycle_failure_records_null_placement_and_capacity_wait(
+        tmp_path, monkeypatch):
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/engine-e2e-lifecycle.yml").read_text())
+    step = next(s for s in workflow["jobs"]["failed-case"]["steps"]
+                if s.get("name") == "Record the runner failure")
+    script = step["run"].split("\n", 1)[1].rsplit("\nPY", 1)[0]
+    for key, value in dict(RUNNER_TEMP=str(tmp_path), CASE="adtech_binary",
+                           SCALE="100M", SOURCE_SHA="a" * 40,
+                           INSTANCE="g7e.8xlarge", FAILURE_PHASE="capacity",
+                           FAILURE_ERROR="No runner capacity",
+                           CAPACITY_DEADLINE="2000000000").items():
+        monkeypatch.setenv(key, value)
+    exec(compile(script, "lifecycle", "exec"), {})
+    result = json.loads((tmp_path / "result.json").read_text())
+    assert result["placement"] == dict(region=None, zone=None)
+    assert result["capacity_wait_seconds"] is None
+
+
+def test_setup_failure_records_runner_placement_and_capacity_wait(tmp_path):
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/kumo-engine-e2e.yml").read_text())
+    step = next(s for s in workflow["jobs"]["cases"]["steps"]
+                if s.get("name", "").startswith("Preserve results"))
+    command = next(line for line in step["run"].splitlines()
+                   if line.startswith("test -f result.json || "))
+    (tmp_path / "python3.12").symlink_to(sys.executable)
+    values = dict(ENGINE_E2E_REGION="eu-north-1", ENGINE_E2E_ZONE="eu-north-1b",
+                  ENGINE_E2E_CAPACITY_WAIT_SECONDS="75")
+    null = dict(region=None, zone=None)
+    for env, placement, wait in [
+        ({}, null, None),
+        (values, dict(region="eu-north-1", zone="eu-north-1b"), 75),
+        (dict(ENGINE_E2E_CAPACITY_WAIT_SECONDS="abc"), null, None)
+    ]:
+        (tmp_path / "result.json").unlink(missing_ok=True)
+        subprocess.run(["/bin/bash", "-e", "-c", command], cwd=tmp_path,
+                       env=dict(PATH=f"{tmp_path}:/usr/bin:/bin",
+                                CASE="adtech_binary", **env), check=True,
+                       timeout=10)
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["placement"] == placement
+        assert result["capacity_wait_seconds"] == wait

@@ -54,10 +54,22 @@ trap finish EXIT
 boot_check='capacity deadline'
 (( $(date +%s) < CAPACITY_DEADLINE ))
 boot_check='instance type'
-metadata_token=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
+metadata_token=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)
 actual_instance=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-type)
 [[ $actual_instance == "$INSTANCE_TYPE" ]]
+boot_check='instance region'
+region=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/placement/region)
+[[ $region =~ ^[a-z]+(-[a-z]+)+-[0-9]+$ ]]
+boot_check='instance zone'
+zone=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+[[ $zone == "$region"?* && $zone =~ ^[a-z0-9-]+$ ]]
 unset metadata_token
+boot_check='boot time'
+boot_time=$(sed -n 's/^btime //p' /proc/stat)
+[[ $boot_time =~ ^[1-9][0-9]{0,10}$ ]]
+case $TIER in nightly) capacity_hours=4 ;; weekly) capacity_hours=24 ;; esac
+pool_start=$(( CAPACITY_DEADLINE - capacity_hours * 3600 ))
+capacity_wait=$(( boot_time > pool_start ? boot_time - pool_start : 0 ))
 boot_check='local SSD setup'
 curl --retry 5 --retry-all-errors --retry-max-time 120 --connect-timeout 10 --max-time 30 --fail --silent --show-error --location "https://raw.githubusercontent.com/$REPOSITORY/$SOURCE_SHA/packages/diskgraph/scripts/localssd-raid0-xfs-tui.sh" -o /run/engine-e2e-localssd.sh
 # The formatter writes to /dev/tty even with --yes.
@@ -98,7 +110,7 @@ mode=()
 if [[ $TIER == weekly ]]; then mode+=(--ephemeral); fi
 runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./config.sh --unattended --disableupdate --url "https://github.com/$REPOSITORY" --token "$RUNNER_TOKEN" --name "$LABEL-$(hostname)" --labels "$LABEL" --no-default-labels --work /mnt/localssd/engine-e2e/_work "${mode[@]}"
 unset RUNNER_TOKEN
-printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$CAPACITY_DEADLINE" >> .env
+printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_REGION=%s\nENGINE_E2E_ZONE=%s\nENGINE_E2E_CAPACITY_WAIT_SECONDS=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$region" "$zone" "$capacity_wait" "$CAPACITY_DEADLINE" >> .env
 chown engine-e2e:engine-e2e .env
 bootstrapping=0
 runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./run.sh
