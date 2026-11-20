@@ -6,9 +6,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
+from functools import cached_property
 from hashlib import sha256
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict, Unpack, cast
 
 import orjson
 import pyarrow as pa
@@ -16,16 +17,17 @@ import pyarrow as pa
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 
-class WeightedSeedSampling(TypedDict):
+class WeightedSeedSamplingArguments(TypedDict):
     """Weights and draw count accepted by the native weighted seed scheduler."""
 
     false_weight: NotRequired[float]
     true_weight: NotRequired[float]
     num_samples: int
+    use_sample_weights: NotRequired[bool]
 
 
-class SamplingOptions(TypedDict, total=False):
-    """Native iterator arguments shared by scheduling and explicit batch requests."""
+class SamplingArguments(TypedDict, total=False):
+    """Native keyword argument dictionaries accepted at the compatibility boundary."""
 
     stage: str
     sampling_plan: dict[str, JsonValue] | str
@@ -49,11 +51,275 @@ class SamplingOptions(TypedDict, total=False):
     rhs_seed_node_type: str | None
     rhs_seed_time: int | None
     group_by_timestamp: bool
-    weighted_seed_sampling: WeightedSeedSampling | None
+    weighted_seed_sampling: WeightedSeedSamplingArguments | None
     selected_stage_node_ids: list[int] | None
     pseudo_seed_time: int | None
     disable_pseudo_time: bool
     projections: dict[str, list[str]] | None
+
+
+@dataclass(frozen=True)
+class FrozenJsonObject:
+    """An immutable JSON object whose array children are tuples.
+
+    Args:
+        entries: Object keys and values; nested containers are copied and frozen.
+
+    Raises:
+        TypeError: If keys or values are not JSON-compatible.
+        ValueError: If object keys are duplicated.
+    """
+
+    entries: tuple[tuple[str, FrozenJsonValue], ...]
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(key, str) for key, _ in self.entries):
+            raise TypeError("sampling plan keys must be strings")
+        if len({key for key, _ in self.entries}) != len(self.entries):
+            raise ValueError("sampling plan keys must be unique")
+        object.__setattr__(
+            self,
+            "entries",
+            tuple(sorted((key, _freeze_json(value)) for key, value in self.entries)),
+        )
+
+
+FrozenJsonValue = (
+    None | bool | int | float | str | tuple["FrozenJsonValue", ...] | FrozenJsonObject
+)
+
+
+def _freeze_json(value: object) -> FrozenJsonValue:
+    if isinstance(value, FrozenJsonObject):
+        return value
+    if isinstance(value, dict):
+        return FrozenJsonObject(
+            tuple((key, _freeze_json(item)) for key, item in value.items())
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError("sampling plans require JSON-compatible values")
+
+
+def _thaw_json(value: FrozenJsonValue) -> JsonValue:
+    if isinstance(value, FrozenJsonObject):
+        return {key: _thaw_json(item) for key, item in value.entries}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True, kw_only=True)
+class WeightedSeedSampling:
+    """Immutable class/sample weights and draw count for native scheduling."""
+
+    num_samples: int
+    false_weight: float | None = None
+    true_weight: float | None = None
+    use_sample_weights: bool = False
+
+    def to_native_kwargs(self) -> WeightedSeedSamplingArguments:
+        """Return native settings, preserving whether class weights were omitted.
+
+        Returns:
+            Fresh native keyword dictionary with absent weights omitted.
+        """
+        return cast(
+            WeightedSeedSamplingArguments,
+            {
+                item.name: value
+                for item in fields(self)
+                if (value := getattr(self, item.name)) is not None
+            },
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SamplingOptions:
+    """Owned immutable sampling configuration, independent of native dictionaries.
+
+    Use ``from_kwargs`` to snapshot existing native iterator arguments. Nested
+    plans, projections, selections, and weights cannot change after construction.
+
+    Raises:
+        TypeError: If a plan or weight configuration is not immutable.
+    """
+
+    stage: str
+    batch_size: int
+    sampling_plan: FrozenJsonObject | str = FrozenJsonObject((("layers", ()),))
+    num_workers: int = 1
+    worker_id: int = 0
+    shuffle: bool = False
+    epoch: int = 0
+    rnd_seed: int | None = None
+    drop_last: bool = False
+    fused: bool | None = None
+    swap_edge_direction: bool = True
+    neg_rhs_node_type: str | None = None
+    neg_amount_m: int | None = None
+    neg_rnd_seed: int | None = None
+    replace: bool = False
+    disjoint: bool = True
+    adaptive: bool = False
+    entity_node_type: str | None = None
+    target_node_type: str | None = None
+    rhs_seed_node_type: str | None = None
+    rhs_seed_time: int | None = None
+    group_by_timestamp: bool = False
+    weighted_seed_sampling: WeightedSeedSampling | None = None
+    selected_stage_node_ids: tuple[int, ...] | None = None
+    pseudo_seed_time: int | None = None
+    disable_pseudo_time: bool = False
+    projections: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sampling_plan, (FrozenJsonObject, str)):
+            raise TypeError(
+                "use SamplingOptions.from_kwargs to snapshot a mutable plan"
+            )
+        if self.weighted_seed_sampling is not None and not isinstance(
+            self.weighted_seed_sampling, WeightedSeedSampling
+        ):
+            raise TypeError("weights must be an immutable WeightedSeedSampling")
+        if self.selected_stage_node_ids is not None:
+            object.__setattr__(
+                self, "selected_stage_node_ids", tuple(self.selected_stage_node_ids)
+            )
+        if self.projections is not None:
+            object.__setattr__(
+                self,
+                "projections",
+                tuple(
+                    sorted((name, tuple(columns)) for name, columns in self.projections)
+                ),
+            )
+
+    @classmethod
+    def from_kwargs(cls, **arguments: Unpack[SamplingArguments]) -> SamplingOptions:
+        """Copy native keyword arguments into an immutable owned configuration.
+
+        Args:
+            **arguments: Existing native iterator keyword arguments.
+
+        Returns:
+            Configuration independent of the caller's mutable containers.
+
+        Raises:
+            KeyError: If stage or batch size is missing.
+            TypeError: If the sampling plan is not a JSON object or string.
+        """
+        plan = _freeze_json(arguments.get("sampling_plan", {"layers": []}))
+        if not isinstance(plan, (FrozenJsonObject, str)):
+            raise TypeError("sampling_plan must be an object or string")
+        weights = arguments.get("weighted_seed_sampling")
+        selected = arguments.get("selected_stage_node_ids")
+        projections = arguments.get("projections")
+        return cls(
+            stage=arguments["stage"],
+            batch_size=arguments["batch_size"],
+            sampling_plan=plan,
+            weighted_seed_sampling=WeightedSeedSampling(**weights)
+            if weights is not None
+            else None,
+            selected_stage_node_ids=tuple(selected) if selected is not None else None,
+            projections=tuple(
+                (name, tuple(columns)) for name, columns in projections.items()
+            )
+            if projections is not None
+            else None,
+            num_workers=arguments.get("num_workers", 1),
+            worker_id=arguments.get("worker_id", 0),
+            shuffle=arguments.get("shuffle", False),
+            epoch=arguments.get("epoch", 0),
+            rnd_seed=arguments.get("rnd_seed", None),
+            drop_last=arguments.get("drop_last", False),
+            fused=arguments.get("fused", None),
+            swap_edge_direction=arguments.get("swap_edge_direction", True),
+            neg_rhs_node_type=arguments.get("neg_rhs_node_type", None),
+            neg_amount_m=arguments.get("neg_amount_m", None),
+            neg_rnd_seed=arguments.get("neg_rnd_seed", None),
+            replace=arguments.get("replace", False),
+            disjoint=arguments.get("disjoint", True),
+            adaptive=arguments.get("adaptive", False),
+            entity_node_type=arguments.get("entity_node_type", None),
+            target_node_type=arguments.get("target_node_type", None),
+            rhs_seed_node_type=arguments.get("rhs_seed_node_type", None),
+            rhs_seed_time=arguments.get("rhs_seed_time", None),
+            group_by_timestamp=arguments.get("group_by_timestamp", False),
+            pseudo_seed_time=arguments.get("pseudo_seed_time", None),
+            disable_pseudo_time=arguments.get("disable_pseudo_time", False),
+        )
+
+    def to_native_kwargs(self) -> SamplingArguments:
+        """Return fresh native dictionaries and lists without exposing owned state.
+
+        Returns:
+            Native iterator keyword arguments; mutating them cannot alter this object.
+        """
+        arguments = cast(
+            SamplingArguments,
+            {item.name: getattr(self, item.name) for item in fields(self) if item.init},
+        )
+        plan = _thaw_json(self.sampling_plan)
+        arguments["sampling_plan"] = cast(dict[str, JsonValue] | str, plan)
+        arguments["selected_stage_node_ids"] = (
+            list(self.selected_stage_node_ids)
+            if self.selected_stage_node_ids is not None
+            else None
+        )
+        arguments["projections"] = (
+            {name: list(columns) for name, columns in self.projections}
+            if self.projections is not None
+            else None
+        )
+        arguments["weighted_seed_sampling"] = (
+            self.weighted_seed_sampling.to_native_kwargs()
+            if self.weighted_seed_sampling is not None
+            else None
+        )
+        return arguments
+
+    @cached_property
+    def digest(self) -> str:
+        """Canonical identity, computed only for configurations needing a cache key."""
+        return content_digest(canonical_json(self.to_native_kwargs()))
+
+    @property
+    def has_seed_schedule(self) -> bool:
+        """Whether this configuration selects or shards a trainer-owned schedule."""
+        return (
+            self.num_workers != 1
+            or self.worker_id != 0
+            or self.shuffle
+            or self.epoch != 0
+            or self.drop_last
+            or self.group_by_timestamp
+            or self.weighted_seed_sampling is not None
+            or self.selected_stage_node_ids is not None
+        )
+
+    def sampling_only(self) -> SamplingOptions:
+        """Return immutable traversal settings without trainer-owned seed selection.
+
+        Returns:
+            This object when already sampling-only, otherwise a normalized copy.
+        """
+        if not self.has_seed_schedule:
+            return self
+        return replace(
+            self,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            drop_last=False,
+            group_by_timestamp=False,
+            weighted_seed_sampling=None,
+            selected_stage_node_ids=None,
+        )
 
 
 class NativeTask(TypedDict):
@@ -108,7 +374,7 @@ class NativeBatch(TypedDict):
     raw_features: dict[str, NativeFeatureBlock]
 
 
-WIRE_VERSION = 1
+WIRE_VERSION = 2
 SAMPLING_VERSION = 1
 
 
@@ -173,11 +439,16 @@ class BatchRequest:
     logical_shard_count: int
     batch_ordinal: int
     seed_ids: tuple[int, ...]
-    options_json: bytes
+    options: SamplingOptions
     engine_seed: int
     num_threads: int
     wire_version: int = WIRE_VERSION
     sampling_version: int = SAMPLING_VERSION
+
+    def __post_init__(self) -> None:
+        if isinstance(self.options, SamplingOptions):
+            # Carry the cached key through Ray, avoiding per-batch plan serialization.
+            _ = self.options.digest
 
     @property
     def request_id(self) -> str:
@@ -209,10 +480,10 @@ class BatchRequest:
     @property
     def sampling_plan_digest(self) -> str:
         """Identity of traversal, projection, supervision, and output options."""
-        return content_digest(self.options_json)
+        return self.options.digest
 
     def validate(self) -> SamplingOptions:
-        """Validate immutable metadata and decode native sampling options.
+        """Validate immutable metadata and return typed native sampling options.
 
         Returns:
             Sampling options suitable for native context construction.
@@ -237,7 +508,7 @@ class BatchRequest:
         )
         if (
             not isinstance(self.seed_ids, tuple)
-            or not isinstance(self.options_json, bytes)
+            or not isinstance(self.options, SamplingOptions)
             or any(type(value) is not int for value in (*integers, *self.seed_ids))
         ):
             raise SamplingContractError(
@@ -259,33 +530,16 @@ class BatchRequest:
             < 0
         ):
             raise SamplingContractError("invalid seed or logical RNG identity")
-        try:
-            options = orjson.loads(self.options_json)
-        except orjson.JSONDecodeError as error:
-            raise SamplingContractError("invalid sampling options JSON") from error
-        if not isinstance(options, dict):
-            raise SamplingContractError("sampling options must be an object")
-        if type(options.get("batch_size")) is not int:
-            raise SamplingContractError("native batch size must be an integer")
-        if any(
-            key in options
-            for key in (
-                "num_workers",
-                "worker_id",
-                "shuffle",
-                "epoch",
-                "drop_last",
-                "selected_stage_node_ids",
-                "weighted_seed_sampling",
-                "group_by_timestamp",
-            )
-        ):
+        options = self.options
+        if type(options.batch_size) is not int or options.batch_size < 1:
+            raise SamplingContractError("native batch size must be a positive integer")
+        if options.has_seed_schedule:
             raise SamplingContractError("feeder options cannot own a seed schedule")
-        if len(self.seed_ids) > options["batch_size"]:
+        if len(self.seed_ids) > options.batch_size:
             raise SamplingContractError("request exceeds native batch size")
-        if options.get("neg_rhs_node_type") and options.get("neg_rnd_seed") is None:
+        if options.neg_rhs_node_type and options.neg_rnd_seed is None:
             raise SamplingContractError("remote negatives require neg_rnd_seed")
-        return cast(SamplingOptions, options)
+        return options
 
 
 @dataclass(frozen=True)
@@ -337,7 +591,7 @@ class BatchPayload:
                 raise SamplingContractError(f"missing native task array: {name}")
         seed_ids = (
             task["seed_node_ids"]
-            if options.get("rhs_seed_node_type")
+            if options.rhs_seed_node_type
             else task["tt_stage_node_ids"]
         )
         if not seed_ids.equals(pa.array(expected.seed_ids, type=pa.uint64())):

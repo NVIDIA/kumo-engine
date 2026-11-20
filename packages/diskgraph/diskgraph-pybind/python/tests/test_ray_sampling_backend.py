@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from kumo_core.diskgraph.batch_contract import SamplingOptions
+    from kumo_core.diskgraph.batch_contract import SamplingArguments
     from kumo_core.diskgraph.ray_sampling import RayRuntimeIndex
 
 import pytest
@@ -93,7 +93,7 @@ def test_remote_native_batches_match_local(
     mode: str,
 ) -> None:
     """Transport complete Arrow batches with identical local sampling semantics."""
-    options: SamplingOptions = {
+    options: SamplingArguments = {
         "stage": "train",
         "sampling_plan": _sampling_plan(),
         "entity_node_type": "users",
