@@ -1914,7 +1914,7 @@ def test_sagemaker_rejects_reserved_customer_basename_before_source_admission(
                                             engine_checks_only=True), tmp_path)
 
 
-@pytest.mark.parametrize('fault', [None, 'phase', 'hash', 'wheel', 'exit', 'metadata'])
+@pytest.mark.parametrize('fault', [None, 'phase', 'hash', 'wheel', 'exit', 'metadata', 'runtime_phases'])
 def test_customer_verdict_binds_selected_phases_wheels_and_source(
         modules, retained_execution, fault):
     e = retained_execution
@@ -1928,7 +1928,7 @@ def test_customer_verdict_binds_selected_phases_wheels_and_source(
         name: 'e' * 64 for name in custom['wheels']}
     reference = e.report['phases']['fit']
     e.report['phases'] = {
-        name: dict(copy.deepcopy(reference), workload=dict(sha256=custom['sha256']))
+        name: dict(copy.deepcopy(reference), workload=dict(sha256=custom['sha256'], phases=list(custom['phases'])))
         for name in ('platform-prerequisite', 'train', 'reload')}
     if fault == 'phase':
         del e.report['phases']['reload']
@@ -1940,6 +1940,8 @@ def test_customer_verdict_binds_selected_phases_wheels_and_source(
         e.report['phases']['reload']['returncode'] = 1
     elif fault == 'metadata':
         e.report['workload']['phases'] = ['fit']
+    elif fault == 'runtime_phases':
+        e.report['phases']['reload']['workload']['phases'].append('audit')
     if fault:
         with pytest.raises(ValueError):
             modules.run.verdict(e.report, e.spec, e.job, e.pipeline)
@@ -1970,7 +1972,8 @@ def test_engine_only_verification_does_not_import_browser_tools(modules, monkeyp
     assert not (tmp_path / 'notebook.html').exists()
 
 
-def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_path):
+@pytest.mark.parametrize('changed_phases', [False, True])
+def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_path, changed_phases):
     import ast
     tree = ast.parse((HERE / 'kernel.py').read_text())
     selected = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
@@ -1989,7 +1992,9 @@ def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_p
         if name == 'reload':
             assert not (lifecycle / 'scratch-train').exists()
         (lifecycle / ('scratch-' + name)).mkdir()
-        (lifecycle / (name + '.json')).write_text(json.dumps(dict(status='passed')))
+        (lifecycle / (name + '.json')).write_text(json.dumps(dict(
+            status='passed', workload=dict(phases=['train', 'reload', 'audit']
+                                           if changed_phases else ['train', 'reload']))))
         calls.append(name)
         return 0
     report = dict(phases={})
@@ -1998,6 +2003,11 @@ def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_p
                  evidence=evidence, root=tmp_path, report=report, wheel=tmp_path / 'candidate.whl',
                  budget=SimpleNamespace(remaining=lambda root, cap: cap), helpers=SimpleNamespace(execute=worker))
     exec(compile(ast.Module(body=[selected, loop], type_ignores=[]), '<custom-kernel-loop>', 'exec'), scope)
+    if changed_phases:
+        assert calls == ['platform-prerequisite']
+        assert report['phases']['platform-prerequisite']['status'] == 'failed'
+        assert 'Runtime workload phases' in report['phases']['platform-prerequisite']['error']
+        return
     assert calls == ['platform-prerequisite', 'train', 'reload']
     assert set(report['phases']) == set(calls)
     assert all(value['returncode'] == 0 for value in report['phases'].values())

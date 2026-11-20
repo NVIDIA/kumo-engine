@@ -177,6 +177,10 @@ def verdict(report, spec, job, pipeline):
         for name, phase in phases.items():
             if custom and phase.get('workload', {}).get('sha256') != custom['sha256']:
                 raise ValueError('Lifecycle phase used another customer workload: ' + name)
+            if (custom and phase.get('workload', {}).get('phases')
+                    != custom['phases']):
+                raise ValueError(
+                    'Lifecycle phase changed the admitted workload phases: ' + name)
             runtime = phase.get('platform', {}).get('placement', {})
             if (phase.get('status') != 'passed'
                     or phase.get('returncode') != 0 or phase.get(
