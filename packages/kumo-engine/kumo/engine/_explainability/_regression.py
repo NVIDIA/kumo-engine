@@ -123,6 +123,8 @@ def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
                      math.sqrt(x_span) * math.sqrt(y_span) / 100,
                      max(x_span, y_span) / 9999)
     while True:
+        cell_width = heatmap.cell_width * math.ceil(
+            cell_width / heatmap.cell_width)
         columns = math.floor(x_span / cell_width + 1e-9) + 1
         rows = math.floor(y_span / cell_width + 1e-9) + 1
         if columns * rows <= 10_000:
@@ -130,8 +132,9 @@ def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
         cell_width *= max(1.01, math.sqrt(columns * rows / 10_000))
     cells = np.zeros((rows, columns), dtype=int)
     for (x, y), count in zip(heatmap.cells, heatmap.counts):
-        row = min(rows - 1, max(0, round((y - start) / cell_width)))
-        col = min(columns - 1, max(0, round((x - start) / cell_width)))
+        row = min(rows - 1, max(0, math.floor((y - start) / cell_width + 1e-9)))
+        col = min(columns - 1,
+                  max(0, math.floor((x - start) / cell_width + 1e-9)))
         cells[row, col] += count
     total = sum(heatmap.counts)
 

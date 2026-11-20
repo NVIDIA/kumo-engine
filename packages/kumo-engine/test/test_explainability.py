@@ -836,12 +836,13 @@ def test_regression_distributions_keep_offset_and_sparse_bins(tmp_path, case):
 
 @pytest.mark.parametrize('saved', [
     'valid', 'malformed', 'absent', 'unbounded', 'inverted', 'unpaired',
-    'merged', 'edge', 'separated', 'constant'
+    'merged', 'edge', 'separated', 'constant', 'coarsened'
 ])
 def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
     result = _result(tmp_path, test_rows=20)
     width, (x0, x1), (y0, y1), cells, counts = {
         'valid': (1.0, (-1, 0), (-1, 0), [[-1, -1], [0, 0]], [11, 1]),
+        'coarsened': (1.0, (0, 1000), (0, 1000), [[6, 6], [10, 10]], [12, 7]),
         'merged': (1.0, (0, 200), (0, 200), [[0, 0], [1, 0]], [12, 7]),
         'edge': (1.0, (0, 110), (0, 366), [[0, 0], [110, 0]], [12, 7]),
         'separated': (0.02, (0, 1), (1e4, 10001), [[0, 1e4], [1,
@@ -882,6 +883,9 @@ def test_regression_heatmap_prefers_saved_artifact(tmp_path, saved):
         assert len(heatmap['rows']) * len(heatmap['columns']) <= 10_000
         assert heatmap['x_edges'][0] == heatmap['y_edges'][0]
         assert sum(map(sum, heatmap['counts'])) == 19
+        if saved == 'coarsened':
+            assert heatmap['counts'][0][0] == 19
+            assert heatmap['x_edges'][1] >= 11
 
 
 def test_regression_bands_without_a_zero_band(tmp_path):

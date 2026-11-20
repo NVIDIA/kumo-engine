@@ -38,6 +38,7 @@ function cardFrame(parent, card, ctx, views, renderView, extraTop) {
     for (const button of root.querySelectorAll('.kx-switch button')) {
       button.setAttribute('aria-pressed', String(button.dataset.view === id));
     }
+    body.querySelectorAll('.kx-chart').forEach(chart => ctx.resizeObserver?.unobserve(chart));
     body.replaceChildren();
     renderView(body, views ? views.find(v => v.id === id) : null, ui);
   };

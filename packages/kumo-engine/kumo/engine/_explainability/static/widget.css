@@ -21,7 +21,6 @@
 --kx-train:light-dark(#4f7896,#6f9dc2);
 --kx-val:light-dark(#b78035,#cf9a52);
 --kx-base:light-dark(#b9bfbb,#5b6267);
---kx-chip-ink:light-dark(#ffffff,#15171a);
 display:block;container-type:inline-size;max-width:100%;box-sizing:border-box;padding:4px 2px 2px;
 background:var(--kx-bg);color:var(--kx-ink);font:14px/1.45 var(--kx-font);
 font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}

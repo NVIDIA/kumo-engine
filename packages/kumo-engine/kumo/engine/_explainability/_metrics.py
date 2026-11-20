@@ -15,7 +15,6 @@ import numpy as np
 
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability._run import (
-    CLASS_LABELED,
     FORECASTING,
     LINK_PREDICTION,
     REGRESSION,
@@ -71,8 +70,6 @@ def _holdout(run: Run) -> dict[str, float]:
 
 def baselines(run: Run) -> Baselines:
     out: Baselines = {}
-    if run.task_type in CLASS_LABELED:
-        return out
     if run.model_type == LINK_PREDICTION and run.catalog is not None:
         size, mean_targets, _ = run.catalog
         for metric in run.metric_names:

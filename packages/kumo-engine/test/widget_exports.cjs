@@ -74,6 +74,16 @@ async function alter(filename, change) {
     for (const engine of [chromium, firefox, webkit]) {
       const browser = await engine.launch(), context = await browser.newContext({acceptDownloads: true});
       const errors = []; context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
+      await context.addInitScript(() => {
+        const Original = ResizeObserver;
+        window.observed = new Set();
+        window.ResizeObserver = class extends Original {
+          constructor(callback) { super(callback); this.targets = new Set(); }
+          observe(target, ...args) { this.targets.add(target); window.observed.add(target); super.observe(target, ...args); }
+          unobserve(target) { this.targets.delete(target); window.observed.delete(target); super.unobserve(target); }
+          disconnect() { this.targets.forEach(t => window.observed.delete(t)); this.targets.clear(); super.disconnect(); }
+        };
+      });
       try {
         const page = await context.newPage(); await page.goto(training);
         await page.getByRole('tab', {name: 'Explanation', exact: true}).click();
@@ -167,18 +177,32 @@ async function alter(filename, change) {
         await reopened.goto(pathToFileURL(saved).href); const single = await print(reopened);
         assert.equal(await single.title(), 'Kumo · Evaluation'); await single.close();
         await page.goto(forecast); await save(page, saved);
+        await alter(saved, payload => {
+          const views = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'forecast').views;
+          const horizon = views.find(v => v.id === 'horizon');
+          horizon.steps = Array.from({length: 90}, (_, i) => ({...horizon.steps[0], label: String(i + 1), values: [1, 2]}));
+          views.find(v => v.id === 'totals').total_callout = null;
+        });
+        await reopened.setViewportSize({width: 360, height: 900});
+        await reopened.goto(pathToFileURL(saved).href);
+        assert.ok(await reopened.locator('.kx-bar').evaluateAll(bars => bars.length === 180 && bars.every(b => +b.getAttribute('width') > 0)));
         for (const values of [[-10, -5], [-10, 5]]) {
           await alter(saved, payload => { const totals = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'forecast').views.find(v => v.id === 'totals');
             totals.steps.forEach(step => { step.values = values; }); payload.saved = null; });
           await reopened.goto(pathToFileURL(saved).href);
           await reopened.locator('[data-card="forecast"] button[data-view="totals"]').click();
           await plots(reopened, '[data-card="forecast"] .kx-chart svg');
+          assert.ok(!(await reopened.locator('svg text').allTextContents()).includes('null'));
           assert.ok(await reopened.locator('[data-card="forecast"] .kx-chart svg').evaluate(svg => {
             const height = svg.viewBox.baseVal.height, points = [...svg.querySelectorAll('circle')];
             return points.length > 0 && points.every(p => +p.getAttribute('cy') >= 0 && +p.getAttribute('cy') <= height);
           }), 'Signed forecast markers must remain inside the plotted SVG.');
         }
+        await reopened.setViewportSize({width: 1280, height: 900});
         await page.goto(regression);
+        for (let i = 0; i < 5; i++) for (const view of ['heatmap', 'tenths'])
+          await page.locator('[data-card="predicted"] [data-view="' + view + '"]').click();
+        assert.equal(await page.evaluate(() => [...window.observed].filter(n => n.matches('.kx-chart') && !n.isConnected).length), 0);
         await page.locator('[data-card="predicted"] [data-view="heatmap"]').click();
         await page.getByLabel('Hide outliers', {exact: true}).check();
         await plots(page, '.kx-heatmap svg');

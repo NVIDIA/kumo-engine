@@ -99,6 +99,7 @@ class Space {
 /* Place a text at the first free candidate; candidates are {x, y, anchor}
    with y the text baseline. Falls back to the first candidate, clamped. */
 function note(parent, space, text, candidates, cls, optional) {
+  if (text == null) return null;
   /* A two-line callout reads like the reference annotations: the event on
      the first line, its numbers on the second. */
   const lines = String(text).split('\n');
@@ -223,10 +224,14 @@ function chartHost(parent, draw, ctx) {
     host.replaceChildren();
     draw(host, w);
   };
-  const observer = new ResizeObserver(() => window.requestAnimationFrame(render));
-  observer.observe(host);
-  ctx.onDispose(() => observer.disconnect());
-  host.redraw = () => { width = 0; render(); };
+  if (!ctx.resizeObserver) {
+    ctx.resizeObserver = new ResizeObserver(entries => window.requestAnimationFrame(() => {
+      for (const {target} of entries) if (target.isConnected) target.redraw(false);
+    }));
+    ctx.onDispose(() => ctx.resizeObserver.disconnect());
+  }
+  host.redraw = (force = true) => { if (force) width = 0; render(); };
+  ctx.resizeObserver.observe(host);
   render();
   return host;
 }
@@ -281,7 +286,7 @@ function columns(host, width, opts) {
   const x0 = left, x1 = width - right;
   const band = (x1 - x0) / n;
   const inner = Math.min(band * 0.78, m * 46);
-  const gap = m > 1 ? 3 : 0;
+  const gap = m > 1 ? Math.min(3, inner / (2 * m)) : 0;
   const barW = (inner - gap * (m - 1)) / m;
   /* When two values of a category cannot sit side by side on their bars,
      they stack above the taller bar of the pair, coloured like their series. */
