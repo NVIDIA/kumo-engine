@@ -35,7 +35,7 @@ def test_get_data_version_s3_single_file():
 
     version = file_connector.get_data_version('table')
 
-    # A single object is versioned by its S3 VersionId, else its ETag.
+    # A single object is versioned by a hash of its whole S3 identity.
     assert version and version != '1663190838'
     assert file_connector.get_data_version(
         'table', skip_cache=True, save_to_cache=False) == version
