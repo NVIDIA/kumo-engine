@@ -210,6 +210,8 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
     return {
         "manifest_path": str(manifest_path),
         "parent_root": str(parent_root),
+        "parent_config": parent_config,
+        "seed_config": seed_config,
         "tt_id": tt_id,
         "n_seeds": n_seeds,
         "n_users": n_users,
@@ -354,6 +356,67 @@ def test_external_extension_runs_without_an_index_local_copy(seed_table_fixture,
         _assert_runtime_batch_dict_contract(batch, 3, seed_table_fixture["n_users"])
     assert {str(p.relative_to(parent)): p.read_bytes()
             for p in parent.rglob("*") if p.is_file()} == before
+
+
+def test_index_build_identity_and_managed_sibling_task(seed_table_fixture, tmp_path):
+    from diskgraph.managed_paths import ManagedIndexPaths
+
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    original_id = json.loads((original / "index_metadata.json").read_text())["index_build_id"]
+    assert original_id
+
+    copied = tmp_path / "copy"
+    shutil.copytree(original, copied)
+    assert json.loads((copied / "index_metadata.json").read_text())["index_build_id"] == original_id
+
+    build_id = diskgraph.new_index_build_id()
+    paths = ManagedIndexPaths(tmp_path / "managed", build_id)
+    diskgraph.ingest(
+        config_json=json.dumps(seed_table_fixture["parent_config"]),
+        output_dir=str(paths.index_dir),
+        col_stats=False,
+        index_build_id=build_id,
+    )
+    assert build_id != original_id
+    paths.verify_index()
+    base_files = {str(p.relative_to(paths.index_dir)): p.read_bytes()
+                  for p in paths.index_dir.rglob("*") if p.is_file()}
+
+    task = paths.task_dir("task-1")
+    shutil.copytree(original / "train_tables" / seed_table_fixture["tt_id"], task)
+    with pytest.raises(ValueError, match="parent index build ID mismatch"):
+        paths.verify_task("task-1")
+    from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+    with pytest.raises(diskgraph.DiskgraphSystemError, match="belongs to index build"):
+        NativeRuntimeIndex(str(paths.index_dir), str(task), 17, 1)
+
+    # Ingest against the chosen base; only the sibling task tree is writable.
+    shutil.rmtree(task)
+    diskgraph.ingest(
+        config_json=json.dumps(seed_table_fixture["seed_config"]),
+        output_dir=str(task),
+        col_stats=True,
+        parent_index_path=str(paths.index_dir),
+    )
+    paths.verify_task("task-1")
+    NativeRuntimeIndex(str(paths.index_dir), str(task), 17, 1)
+    assert {str(p.relative_to(paths.index_dir)): p.read_bytes()
+            for p in paths.index_dir.rglob("*") if p.is_file()} == base_files
+
+
+def test_legacy_index_without_build_ids_remains_readable(seed_table_fixture, tmp_path):
+    parent = tmp_path / "legacy"
+    shutil.copytree(seed_table_fixture["parent_root"], parent)
+    extension = parent / "train_tables" / seed_table_fixture["tt_id"]
+    for metadata_path in (parent / "index_metadata.json", extension / "index_metadata.json"):
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("index_build_id", None)
+        metadata.pop("parent_index_build_id", None)
+        metadata_path.write_text(json.dumps(metadata))
+    from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
+
+    NativeRuntimeIndex(str(parent), seed_table_fixture["tt_id"], 17, 1)
 
 
 @pytest.mark.parametrize("directory", ["train_tables", "pred_tables"])

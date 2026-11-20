@@ -324,6 +324,7 @@ fn run_worker(args: Args) -> Result<()> {
     };
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
+        index_build_id: None,
         profile_dir: args.profile.clone(),
         progress: build_progress(),
         parallel: args.parallel,
