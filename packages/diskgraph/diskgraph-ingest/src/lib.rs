@@ -1505,21 +1505,23 @@ mod tests_resume_phase {
         fs::write(output.join("sentinel"), b"keep").unwrap();
         let source: GraphConfig =
             serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
-        let error = ingest_with_stats_from_source(
-            source,
-            None,
-            output.to_str().unwrap(),
-            Dest::Local,
-            IngestOptions {
-                index_build_id: Some(" ".into()),
-                ..IngestOptions::default()
-            },
-            None,
-            None,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("index_build_id must not be empty"));
-        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+        for bad_id in [" ", ".", "..", "nested/build", "nested\\build"] {
+            let error = ingest_with_stats_from_source(
+                source.clone(),
+                None,
+                output.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some(bad_id.into()),
+                    ..IngestOptions::default()
+                },
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("index_build_id"), "{bad_id}: {error}");
+            assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+        }
     }
 
     #[test]
@@ -13046,6 +13048,10 @@ fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
 
 fn validate_index_build_id(id: &str) -> Result<()> {
     ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
+    ensure!(
+        id != "." && id != ".." && !id.contains('/') && !id.contains('\\'),
+        "index_build_id must be a single path component"
+    );
     Ok(())
 }
 

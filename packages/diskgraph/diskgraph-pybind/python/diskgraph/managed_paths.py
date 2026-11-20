@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def _component(value: str, name: str) -> str:
-    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+    if not value.strip() or value in {".", ".."} or "/" in value or "\\" in value:
         raise ValueError(f"{name} must be a single nonempty path component")
     return value
 
