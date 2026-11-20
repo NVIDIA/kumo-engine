@@ -29,6 +29,11 @@ from evidence import (
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 SHARED = HERE.parent / 'snowflake_notebook'
+from wheel_mlops_workload import (  # noqa: E402
+    check_workload_wheels,
+    workload_phases,
+)
+
 SOURCES = {
     'wheel_mlops_lifecycle.py': HERE.parent / 'wheel_mlops_lifecycle.py',
     'wheel_mlops_platform.py': HERE.parent / 'wheel_mlops_platform.py',
@@ -41,16 +46,16 @@ SOURCES = {
 }
 
 
-def committed_sources():
+def committed_sources(extra_sources=()):
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO,
                                      text=True).strip()
     paths = sorted(
-        set(SOURCES.values()) | set(HERE.glob('*.py')) | set(HERE.glob('*.in'))
+        set(SOURCES.values()) | set(extra_sources) | set(HERE.glob('*.py')) | set(HERE.glob('*.in'))
         | set(HERE.glob('*.txt')) | set(HERE.glob('*.cjs'))
         | {
             HERE / 'browser.cjs', HERE / 'requirements.txt', SHARED /
             'graph_ui.cjs', SHARED / 'explanation_ui.cjs', SHARED /
-            'verification.cjs', HERE.parent / 'platform_candidate.py', SHARED /
+            'verification.cjs', HERE.parent / 'platform_candidate.py', HERE.parent / 'wheel_mlops_workload.py', SHARED /
             'browser/package.json', SHARED /
             'browser/package-lock.json', HERE.parent / 'pr172/inputs.json'
         })
@@ -156,11 +161,22 @@ def verdict(report, spec, job, pipeline):
             or job['TrainingJobStatus'] != 'Completed'):
         raise ValueError(
             'Notebook lacks successful installed-product runtime evidence')
+    custom = spec.get('workload')
+    if report.get('workload') != custom:
+        raise ValueError('Notebook used another customer workload')
+    if custom is not None:
+        expected_wheels = {name: spec['assets'][name]['sha256'] for name in custom['wheels']}
+        if report['installation'].get('workload_wheels') != expected_wheels:
+            raise ValueError('Notebook installed other workload wheels')
     if spec['scenario'] in ('engine', 'all'):
         phases = report.get('phases', {})
-        if set(phases) != {'negative', 'fit', 'score', 'evaluate'}:
-            raise ValueError('Lifecycle did not execute all four phases')
+        expected = ({'platform-prerequisite', *custom['phases']} if custom else
+                    {'negative', 'fit', 'score', 'evaluate'})
+        if set(phases) != expected:
+            raise ValueError('Lifecycle did not execute all selected phases')
         for name, phase in phases.items():
+            if custom and phase.get('workload', {}).get('sha256') != custom['sha256']:
+                raise ValueError('Lifecycle phase used another customer workload: ' + name)
             runtime = phase.get('platform', {}).get('placement', {})
             if (phase.get('status') != 'passed'
                     or phase.get('returncode') != 0 or phase.get(
@@ -179,7 +195,18 @@ def verdict(report, spec, job, pipeline):
 
 
 def execute(args, root):
-    commit, frozen, hashes = committed_sources()
+    custom_path = getattr(args, 'workload', None)
+    extra_wheels = getattr(args, 'workload_wheel', None) or []
+    if extra_wheels and custom_path is None:
+        raise ValueError('--workload-wheel requires --workload')
+    if custom_path is not None:
+        if args.scenario != 'engine' or not args.engine_checks_only:
+            raise ValueError('Customer workloads require --scenario engine --engine-checks-only')
+        custom_path = custom_path.resolve(strict=True)
+        reserved = set(SOURCES) | {path.name for path in HERE.glob('*.py')} | {'wheel_mlops_workload.py'}
+        if custom_path.name in reserved:
+            raise ValueError('Workload basename is reserved for a notebook helper')
+    commit, frozen, hashes = committed_sources((custom_path,) if custom_path else ())
 
     def source(path):
         return frozen[path.relative_to(REPO).as_posix()]
@@ -190,6 +217,17 @@ def execute(args, root):
     sys.path.insert(0, str(HERE.parent))
     from platform_candidate import verify
     verify(REPO, candidate, commit)
+    custom = None
+    if custom_path is not None:
+        names = [custom_path.name] + [wheel.name for wheel in extra_wheels]
+        reserved = set(SOURCES) | {candidate['candidate']['wheel_file']}
+        if len(set(names)) != len(names) or set(names) & reserved:
+            raise ValueError('Workload asset names must be unique')
+        custom = dict(file=custom_path.name, phases=workload_phases(source(custom_path)),
+                      sha256=digest(source(custom_path)), wheels=[wheel.name for wheel in extra_wheels])
+        if args.wheel is None:
+            raise ValueError('Customer workloads require the local candidate --wheel')
+        check_workload_wheels(args.wheel, extra_wheels)
     cfg = configuration()
     client = Client(cfg)
     admission = client.preflight()
@@ -210,9 +248,14 @@ def execute(args, root):
     assets[candidate['wheel_file']] = client.asset(candidate['wheel_file'],
                                                    candidate['wheel_sha256'],
                                                    args.wheel)
-    assets['pr172-inputs-v1.tar.gz'] = client.asset('pr172-inputs-v1.tar.gz',
-                                                    fixture['sha256'],
-                                                    args.fixture)
+    if args.scenario in ('graph', 'all'):
+        assets['pr172-inputs-v1.tar.gz'] = client.asset('pr172-inputs-v1.tar.gz',
+                                                        fixture['sha256'],
+                                                        args.fixture)
+    if custom is not None:
+        for path in (custom_path, *extra_wheels):
+            checksum = custom['sha256'] if path == custom_path else digest(path.read_bytes())
+            assets[path.name] = client.asset(path.name, checksum, path)
     attempt = uuid.uuid4().hex[:12]
     spec = dict(
         cfg, attempt=attempt, candidate=candidate, assets=assets,
@@ -223,6 +266,8 @@ def execute(args, root):
         output_prefix=cfg['root'] + '/runs/' + attempt + '/outputs',
         job_prefix=cfg['root'] + '/notebook-jobs/' + attempt,
         job_receipt_key=cfg['root'] + '/runs/' + attempt + '/job-identity.json')
+    if custom is not None:
+        spec['workload'] = custom
     save(root / 'scenario.json', spec)
     from cleanup import AttemptResources
     with AttemptResources(client, spec, root) as resources:
@@ -246,6 +291,12 @@ def execute(args, root):
 
 
 def verify_browser(args, root, client, spec, report):
+    if spec.get('workload') is not None and not args.engine_checks_only:
+        raise ValueError('Customer workloads require --engine-checks-only for execution verification')
+    save(root / 'execution-result.json', report)
+    if spec['scenario'] == 'engine' and args.engine_checks_only:
+        report['verification_scope'] = 'execution'
+        return report
     import nbformat
     from browser import verify
     from nbconvert import HTMLExporter
@@ -480,13 +531,16 @@ def main(argv=None):
     parser.add_argument('--producer-commit', help='Producer SHA verified from GitHub run metadata')
     parser.add_argument('--candidate', type=Path, default=candidate_path())
     parser.add_argument('--wheel', type=Path)
+    parser.add_argument('--workload', type=Path, help='Committed customer workload module')
+    parser.add_argument('--workload-wheel', type=Path, action='append',
+                        help='Additional dependency wheel; repeat for each wheel')
     parser.add_argument('--fixture', type=Path)
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--timeout', type=int, default=4500)
     args = parser.parse_args(argv)
     if bool(args.ui_run) != bool(args.producer_commit):
         parser.error('--ui-run requires its verified --producer-commit')
-    if args.ui_run and (args.wheel or args.fixture):
+    if args.ui_run and (args.wheel or args.fixture or args.workload or args.workload_wheel):
         parser.error('--ui-run cannot submit a new wheel or fixture')
     if args.timeout <= 0:
         parser.error('Timeout must be positive')

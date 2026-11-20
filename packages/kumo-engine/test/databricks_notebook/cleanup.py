@@ -18,6 +18,11 @@ class AttemptResources:
         self.root = Path(root)
         self.remote = None
         self.file_budget = file_budget
+        self.model_version_limit = spec.get('model_version_limit', 2)
+        if ('model_version_limit' in spec and not lifecycle
+                or type(self.model_version_limit) is not int
+                or not 1 <= self.model_version_limit <= 20):
+            raise ValueError('Invalid attempt model version limit')
         attempt = spec['attempt']
         if not re.fullmatch('[a-f0-9]{12}', attempt):
             raise ValueError('Invalid cleanup attempt')
@@ -44,6 +49,8 @@ class AttemptResources:
         scope = dict(notebook=spec['notebook_path'], prefixes=self.prefixes,
                      experiment=self.experiment, model=self.model,
                      user=config.get('expected_user'))
+        if 'model_version_limit' in spec:
+            scope['model_version_limit'] = self.model_version_limit
         scope_hash = hashlib.sha256(json.dumps(
             scope, sort_keys=True).encode()).hexdigest()
         if resume:
@@ -204,7 +211,10 @@ class AttemptResources:
                 number = str(version.get('version'))
                 parent = '.'.join(str(version.get(key, '')) for key in
                                   ('catalog_name', 'schema_name', 'model_name'))
-                if (number not in ('1', '2') or number in versions
+                if (not re.fullmatch('[1-9][0-9]*', number)
+                        or int(number) > self.model_version_limit
+                        or len(versions) >= self.model_version_limit
+                        or number in versions
                         or parent.casefold() != model['full_name'].casefold()
                         or version.get('created_by') != self.config['expected_user']
                         or type(version.get('created_at')) is not int

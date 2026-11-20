@@ -328,20 +328,31 @@ as searchable text instead of unextractable Type 3 glyph paths.
 
 The lifecycle launcher accepts `--workload` for a committed module implementing
 [the workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
-The module declares its phases and owns its model, metrics and registry loader.
+The module declares its phases in one top-level literal `PHASES` list or tuple
+and owns its model, metrics and registry loader. The submission client reads
+that declaration without importing customer code; top-level model imports are
+resolved only in the prepared notebook environment. Computed phase declarations
+are refused before cloud access.
 The notebook installs additional wheels supplied with repeated
 `--workload-wheel` arguments and runs the selected phases in isolated processes.
 The permission prerequisite, installed Engine checksum, runtime identity,
 `pip check`, source admission, evidence collection and attempt cleanup remain
 required. The custom workload's phases and SHA-256 are checked on readback.
-Native UI review remains separate.
+Native UI review remains separate. Custom workloads may publish versions 1–20
+of the supplied attempt-scoped model. Cleanup retains the ownership, creation-time
+and concurrency checks, with this bound included in the signed recovery record.
+The default Kumo scenario keeps its two-version bound.
 
 For the experimental PyTorch regression example, build `kumo-pytorch` from the
 same checkout. Also retain the exact DiskGraph constituent wheel from the
 complete Engine build (`--keep-work` retains its build directory). Install it
 alongside Engine so pip can satisfy `kumo-pytorch`'s DiskGraph requirement.
 The launcher rejects dependency wheels that overwrite any candidate Engine
-file with different bytes; a separately built native wheel is not equivalent.
+file with different bytes, including members relocated from wheel `purelib`
+or `platlib` directories and conflicting dependency wheels. Additional wheels
+must install their files into site-packages; prefix-level `data`, `scripts`, and
+`headers` layouts are refused because their destinations vary with the runtime.
+A separately built native wheel is not equivalent.
 
 ```sh
 python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \

@@ -311,3 +311,44 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer model lifecycle
+
+Use `--scenario engine --engine-checks-only --workload PATH` to run a committed
+customer workload in the managed notebook kernel. The module declares one
+literal top-level `PHASES` tuple/list and implements
+[the shared workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
+The client reads phase declarations without importing customer dependencies.
+Customer modules cannot use built-in helper basenames. Their committed bytes
+and SHA-256 are recorded alongside the notebook sources.
+
+Pass each additional installed dependency with `--workload-wheel PATH`.
+For `kumo-pytorch`, supply both its wheel and the exact DiskGraph constituent
+wheel retained from the candidate Engine build. Admission uses the same
+[dependency checks as Databricks](databricks-notebook-tests.md#customer-model-lifecycle),
+including normalized installation paths and cross-dependency conflicts.
+Initialization installs these wheels with the Engine product, separately from
+locked kernel tools, and retains `pip check` and installed-wheel identity checks.
+
+```sh
+python packages/kumo-engine/test/sagemaker_notebook/run.py \
+  --execute --scenario engine --engine-checks-only \
+  --candidate /absolute/path/candidate.json \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
+  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
+  --output-dir /tmp/sagemaker-customer-model-001
+```
+
+The permission prerequisite runs before the workload's selected phases. Each
+worker verifies the actual notebook job/role, candidate Engine checksum and
+workload hash. Producer scratch is removed before recovery. Evidence readback
+requires every declared phase, successful worker exits, matching installed
+wheels and source identity. Existing attempt-owned model, experiment, Pipeline
+and storage cleanup applies; shared caches are retained.
+
+Engine-only checks do not stage the graph fixture or import browser/export
+verification tools. They establish execution coverage and leave notebook-export,
+native Studio and native MLflow UI qualification unverified.
