@@ -14,22 +14,71 @@ import math
 import os
 import time
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, Unpack, cast
 
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
     BatchPayload,
     BatchRequest,
     ConsumerToken,
+    NativeBatch,
     SamplingContractError,
+    SamplingOptions,
     canonical_json,
     content_digest,
 )
+
+if TYPE_CHECKING:
+    from diskgraph._c import SeedSchedule
+    from ray import ObjectRef
+    from ray.util.scheduling_strategies import SchedulingStrategyT
+
+_MethodArgs = ParamSpec("_MethodArgs")
+_MethodResult = TypeVar("_MethodResult")
+
+
+class RemoteMethod(Protocol[_MethodArgs, _MethodResult]):
+    """Typed invocation surface for a bound Ray actor method."""
+
+    def remote(
+        self, *args: _MethodArgs.args, **kwargs: _MethodArgs.kwargs
+    ) -> ObjectRef[_MethodResult]:
+        """Submit a method call and return its typed Ray reference."""
+        ...
+
+
+class SamplerActor(Protocol):
+    """Only the remote operations required from an owned sampler actor."""
+
+    @property
+    def sample(self) -> RemoteMethod[[BatchRequest], BatchPayload]:
+        """Sample an explicit batch request."""
+        ...
+
+    @property
+    def drain(self) -> RemoteMethod[[], None]:
+        """Confirm completion of preceding serial native work."""
+        ...
+
+    @property
+    def ready(self) -> RemoteMethod[[], ReplicaConfig]:
+        """Read the verified replica configuration."""
+        ...
+
+
+class BatchContext(Protocol):
+    """Native stateless sampling interface cached by each replica."""
+
+    def sample_request(self, node_ids: list[int]) -> NativeBatch:
+        """Sample the supplied canonical seed IDs without advancing a cursor."""
+        ...
+
 
 logger = logging.getLogger(__name__)
 RAY_VERSION = "2.59.0"
@@ -39,7 +88,7 @@ class SamplingUnavailableError(RuntimeError):
     """No compatible healthy replica can satisfy the request within its budget."""
 
 
-def _ray() -> Any:
+def _ray() -> ModuleType:
     import ray
 
     if ray.__version__ != RAY_VERSION:
@@ -109,7 +158,7 @@ class RayBackendConfig:
 
     connection: RayConnection
     # Delay deserializing actor handles until the receiving process connects.
-    replicas: object
+    replicas: bytes | tuple[SamplerActor, ...]
     artifacts: ArtifactIdentity
     engine_seed: int
     num_threads: int
@@ -151,16 +200,21 @@ class _SamplerPool:
         config.connection.connect()
         self.ray = _ray()
         self.config = config
-        self.replicas = tuple(self.ray.cloudpickle.loads(config.replicas))
+        encoded = config.replicas
+        self.replicas = (
+            cast(tuple[SamplerActor, ...], self.ray.cloudpickle.loads(encoded))
+            if isinstance(encoded, bytes)
+            else encoded
+        )
         if not self.replicas:
             raise SamplingContractError("at least one sampling replica is required")
         self.available = deque(range(len(self.replicas)))
-        self.pending: dict[Any, int] = {}
+        self.pending: dict[ObjectRef[BatchPayload], int] = {}
         self.lock = Lock()
         self.close_lock = Lock()
         self.closed = False
 
-    def submit(self, request: BatchRequest) -> Any:
+    def submit(self, request: BatchRequest) -> ObjectRef[BatchPayload]:
         """Submit directly to an idle actor; callers bound their request window.
 
         Args:
@@ -193,7 +247,7 @@ class _SamplerPool:
             self.pending[result] = replica_id
             return result
 
-    def get(self, result: Any) -> Any:
+    def get(self, result: ObjectRef[BatchPayload]) -> BatchPayload:
         """Receive a result and make only its completed actor available again.
 
         Args:
@@ -212,7 +266,9 @@ class _SamplerPool:
             if result not in self.pending:
                 raise SamplingContractError("unknown sampling result")
         try:
-            payload = self.ray.get(result, timeout=self.config.request_timeout)
+            payload = cast(
+                BatchPayload, self.ray.get(result, timeout=self.config.request_timeout)
+            )
         except self.ray.exceptions.ActorDiedError:
             self._finished(result, failed=True)
             raise
@@ -226,7 +282,7 @@ class _SamplerPool:
                 raise SamplingUnavailableError("discarding cancelled sampling result")
         return payload
 
-    def _finished(self, result: Any, failed: bool = False) -> None:
+    def _finished(self, result: ObjectRef[BatchPayload], failed: bool = False) -> None:
         with self.lock:
             if not self.closed:
                 replica_id = self.pending.pop(result)
@@ -292,7 +348,7 @@ class _SamplerReplica:
                     ref["index_path"],
                 )
             )
-        self.contexts: OrderedDict[bytes, Any] = OrderedDict()
+        self.contexts: OrderedDict[bytes, BatchContext] = OrderedDict()
 
     def ready(self) -> ReplicaConfig:
         """Return the verified local placement after native engines are opened."""
@@ -312,13 +368,15 @@ class _SamplerReplica:
         options = request.validate()
         context = self.contexts.get(request.options_json)
         if context is None:
-            context, _ = self.index.iter(
+            context_options: SamplingOptions = {
                 **options,
-                num_workers=1,
-                worker_id=0,
-                shuffle=False,
-                epoch=0,
-            )
+                "num_workers": 1,
+                "worker_id": 0,
+                "shuffle": False,
+                "epoch": 0,
+            }
+            native_context, _ = self.index.iter(**context_options)
+            context = cast(BatchContext, native_context)
             self.contexts[request.options_json] = context
             if len(self.contexts) > self.config.context_capacity:
                 self.contexts.popitem(last=False)
@@ -332,8 +390,8 @@ class _SamplerReplica:
 
 
 def start_sampling_replicas(
-    configs: list[ReplicaConfig], placements: list[object]
-) -> tuple[Any, ...]:
+    configs: list[ReplicaConfig], placements: list[SchedulingStrategyT]
+) -> tuple[SamplerActor, ...]:
     """Create snapshot-local serial actors without a remote admission coordinator.
 
     Args:
@@ -363,17 +421,20 @@ def start_sampling_replicas(
             "replicas must have identical artifacts and RNG pools"
         )
     ray = _ray()
-    actors = []
+    actors: list[SamplerActor] = []
     with ExitStack() as cleanup:
         actor_class = ray.remote(_SamplerReplica)
         for config, placement in zip(configs, placements, strict=True):
-            actor = actor_class.options(
-                num_cpus=config.num_threads,
-                max_concurrency=1,
-                max_restarts=0,
-                max_task_retries=0,
-                scheduling_strategy=placement,
-            ).remote(config)
+            actor = cast(
+                SamplerActor,
+                actor_class.options(
+                    num_cpus=config.num_threads,
+                    max_concurrency=1,
+                    max_restarts=0,
+                    max_task_retries=0,
+                    scheduling_strategy=placement,
+                ).remote(config),
+            )
             actors.append(actor)
             cleanup.callback(ray.kill, actor, no_restart=True)
         ray.get([actor.ready.remote() for actor in actors], timeout=300)
@@ -381,7 +442,7 @@ def start_sampling_replicas(
         return tuple(actors)
 
 
-def stop_sampling_replicas(replicas: tuple[Any, ...]) -> None:
+def stop_sampling_replicas(replicas: tuple[SamplerActor, ...]) -> None:
     """Terminate owned actors before releasing their snapshot leases.
 
     Args:
@@ -405,7 +466,9 @@ class RayRuntimeIndex:
         self._manifest_verified = False
         self.samplers = _SamplerPool(config)
 
-    def iter(self, **options: Any) -> tuple[Iterator[Mapping[str, Any]], int]:
+    def iter(
+        self, **options: Unpack[SamplingOptions]
+    ) -> tuple[Iterator[NativeBatch], int]:
         """Create a seed iterator without opening local adjacency/features.
 
         Args:
@@ -420,7 +483,9 @@ class RayRuntimeIndex:
         requests, count = self.iter_requests(**options)
         return map(self._sample, requests), count
 
-    def iter_requests(self, **options: Any) -> tuple[Iterator[BatchRequest], int]:
+    def iter_requests(
+        self, **options: Unpack[SamplingOptions]
+    ) -> tuple[Iterator[BatchRequest], int]:
         """Schedule logical requests without submitting remote sampling work.
 
         Args:
@@ -465,7 +530,7 @@ class RayRuntimeIndex:
         return self._requests(schedule, options, canonical_json(native_options)), count
 
     def _requests(
-        self, schedule: Any, options: Mapping[str, Any], native_options: bytes
+        self, schedule: SeedSchedule, options: SamplingOptions, native_options: bytes
     ) -> Iterator[BatchRequest]:
         ordinal = 0
         while (seeds := schedule.next_seed_ids()) is not None:
@@ -483,7 +548,7 @@ class RayRuntimeIndex:
             )
             ordinal += 1
 
-    def _sample(self, request: BatchRequest) -> Mapping[str, Any]:
+    def _sample(self, request: BatchRequest) -> NativeBatch:
         ray = _ray()
         for attempt in range(self.config.max_retries + 1):
             ref = self.samplers.submit(request)

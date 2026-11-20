@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import replace
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
@@ -17,6 +19,7 @@ from kumo_core.diskgraph.batch_contract import (
     BatchPayload,
     BatchRequest,
     ConsumerToken,
+    NativeBatch,
     SamplingContractError,
     canonical_json,
     content_digest,
@@ -27,6 +30,7 @@ from kumo_core.diskgraph.ray_sampling import (
     RayConnection,
     RayRuntimeIndex,
     ReplicaConfig,
+    SamplerActor,
     SamplingUnavailableError,
     _SamplerPool,
     _SamplerReplica,
@@ -34,34 +38,41 @@ from kumo_core.diskgraph.ray_sampling import (
     stop_sampling_replicas,
 )
 
+if TYPE_CHECKING:
+    from ray.actor import ActorHandle
+
 pytest.importorskip("ray", reason="Install kumo-core[ray] for backend tests")
 
 
-def _request(**changes: Any) -> BatchRequest:
-    return replace(
-        BatchRequest(
-            ArtifactIdentity("snapshot", "task", "mapping"),
-            ConsumerToken("job", 0, "optimization", 0),
-            3,
-            0,
-            1,
-            0,
-            (9, 14),
-            canonical_json(
-                {"stage": "train", "batch_size": 2, "sampling_plan": {"layers": []}}
-            ),
-            42,
-            2,
+def _request() -> BatchRequest:
+    return BatchRequest(
+        ArtifactIdentity("snapshot", "task", "mapping"),
+        ConsumerToken("job", 0, "optimization", 0),
+        3,
+        0,
+        1,
+        0,
+        (9, 14),
+        canonical_json(
+            {"stage": "train", "batch_size": 2, "sampling_plan": {"layers": []}}
         ),
-        **changes,
+        42,
+        2,
     )
+
+
+def _invalid_request(changes: dict[str, object]) -> BatchRequest:
+    request = _request()
+    for name, value in changes.items():
+        object.__setattr__(request, name, value)
+    return request
 
 
 def _config() -> ReplicaConfig:
     return ReplicaConfig("runtime.json", "snapshot.json", _request().artifacts, 42, 2)
 
 
-def _batch(request: BatchRequest) -> dict[str, Any]:
+def _batch(request: BatchRequest) -> NativeBatch:
     ids = pa.array(request.seed_ids, type=pa.uint64())
     # Exercise Array slices and separate RecordBatches, including ragged/nulls.
     feature = pa.record_batch(
@@ -82,7 +93,7 @@ def _batch(request: BatchRequest) -> dict[str, Any]:
                 "batch_dict": {"nodes": pa.array([0, 1], type=pa.uint32())},
                 "edge_index_dict": [],
                 "num_sampled_nodes_dict": {"nodes": pa.array([2], type=pa.uint64())},
-                "num_sampled_edges_dict": {},
+                "num_sampled_edges_dict": [],
             }
         },
         "raw_features": {
@@ -101,7 +112,7 @@ def test_request_identity_and_envelope_validation() -> None:
     assert request.request_id == _request().request_id
     assert (
         request.request_id
-        != _request(consumer=replace(request.consumer, generation=1)).request_id
+        != replace(request, consumer=replace(request.consumer, generation=1)).request_id
     )
     payload = BatchPayload(request, _batch(request), 0.1)
     assert payload.validate(request) is payload.batch
@@ -112,7 +123,7 @@ def test_request_identity_and_envelope_validation() -> None:
         with pytest.raises(SamplingContractError, match="wrong request"):
             payload.validate(wrong)
     with pytest.raises(SamplingContractError, match="incomplete native"):
-        BatchPayload(request, {}, 0).validate(request)
+        BatchPayload(request, cast(NativeBatch, {}), 0).validate(request)
     wrong_batch = _batch(request)
     wrong_batch["task"]["tt_stage_node_ids"] = pa.array([14, 9], type=pa.uint64())
     with pytest.raises(SamplingContractError, match="membership/order"):
@@ -132,9 +143,9 @@ def test_request_identity_and_envelope_validation() -> None:
         {"options_json": canonical_json({"batch_size": 2, "neg_rhs_node_type": "rhs"})},
     ],
 )
-def test_request_rejects_invalid_contract(changes: dict[str, Any]) -> None:
+def test_request_rejects_invalid_contract(changes: dict[str, object]) -> None:
     with pytest.raises(SamplingContractError):
-        _request(**changes).validate()
+        _invalid_request(changes).validate()
 
 
 def test_replica_verifies_artifacts_and_budgets() -> None:
@@ -197,7 +208,7 @@ def test_actor_startup_cleanup_and_explicit_placement() -> None:
 
 
 @pytest.fixture(scope="module")
-def ray_cluster() -> Any:
+def ray_cluster() -> Iterator[ModuleType]:
     ray = pytest.importorskip("ray")
     assert ray.__version__ == RAY_VERSION
     ray.init(
@@ -212,7 +223,7 @@ def ray_cluster() -> Any:
 
 
 def test_backend_descriptor_delays_actor_handle_deserialization(
-    ray_cluster: Any,
+    ray_cluster: ModuleType,
 ) -> None:
     """A new process must connect before deserializing a backend actor handle."""
     import subprocess
@@ -330,7 +341,7 @@ class _CancellationGate:
 class _CancellationReplica(_SamplerReplica):
     """Model a serial Rust call that does not poll Ray's cancellation flag."""
 
-    def __init__(self, gate: Any) -> None:
+    def __init__(self, gate: ActorHandle[_CancellationGate]) -> None:
         self.gate = gate
 
     def sample(self, request: BatchRequest) -> BatchPayload:
@@ -357,11 +368,11 @@ class _CancellationReplica(_SamplerReplica):
     ],
 )
 def test_request_rejects_mutable_or_noninteger_identity(
-    changes: dict[str, Any],
+    changes: dict[str, object],
 ) -> None:
     """Reject mutable metadata and values that JSON would coerce ambiguously."""
     with pytest.raises(SamplingContractError):
-        _request(**changes).validate()
+        _invalid_request(changes).validate()
 
 
 class _ArrowReplica:
@@ -383,7 +394,9 @@ class _FailingReplica(_ArrowReplica):
         os._exit(1)
 
 
-def _backend(replicas: tuple[Any, ...], **changes: Any) -> RayBackendConfig:
+def _backend(
+    replicas: tuple[SamplerActor, ...], request_timeout: float = 300.0
+) -> RayBackendConfig:
     return RayBackendConfig(
         RayConnection("auto", "sampling-tests"),
         replicas,
@@ -391,18 +404,20 @@ def _backend(replicas: tuple[Any, ...], **changes: Any) -> RayBackendConfig:
         42,
         2,
         "job",
-        **changes,
+        request_timeout=request_timeout,
     )
 
 
-def _actors(ray: Any, count: int = 2) -> tuple[Any, ...]:
+def _actors(ray: ModuleType, count: int = 2) -> tuple[SamplerActor, ...]:
     import sys
 
     ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
-    return tuple(ray.remote(_ArrowReplica).remote() for _ in range(count))
+    return tuple(
+        cast(SamplerActor, ray.remote(_ArrowReplica).remote()) for _ in range(count)
+    )
 
 
-def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: Any) -> None:
+def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: ModuleType) -> None:
     """Keep one request per actor and refill the actor whose result was consumed."""
     ray = ray_cluster
     replicas = _actors(ray)
@@ -427,7 +442,7 @@ def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: Any) -> None
         stop_sampling_replicas(replicas)
 
 
-def test_real_actor_death_retries_on_survivor(ray_cluster: Any) -> None:
+def test_real_actor_death_retries_on_survivor(ray_cluster: ModuleType) -> None:
     """Retry the identical logical request after a terminal actor failure."""
     ray = ray_cluster
     survivor = _actors(ray, 1)[0]
@@ -472,7 +487,7 @@ def test_shutdown_kills_only_owned_actors() -> None:
     """Shutdown needs no broker or Ray runtime shutdown."""
     ray = MagicMock()
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
-        stop_sampling_replicas(("a", "b"))
+        stop_sampling_replicas((MagicMock(), MagicMock()))
     assert ray.kill.call_count == 2
     ray.shutdown.assert_not_called()
     ray.get.assert_not_called()
@@ -480,7 +495,7 @@ def test_shutdown_kills_only_owned_actors() -> None:
 
 @pytest.mark.parametrize("timeout_first", [False, True])
 def test_cancellation_drains_native_work_before_reuse(
-    ray_cluster: Any, timeout_first: bool
+    ray_cluster: ModuleType, timeout_first: bool
 ) -> None:
     """Cancellation-ready refs retain actor ownership until a serial drain finishes."""
     import sys
