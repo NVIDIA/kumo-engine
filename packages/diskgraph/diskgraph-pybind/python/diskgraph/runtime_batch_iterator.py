@@ -118,8 +118,17 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     or an absolute external extension path for a read-only base index. External
     paths require finalized index metadata; the native reader validates it.
     """
-    # Preserve filesystem semantics (symlinks before '..') and index-local refs.
-    # Placement and finalized-metadata validation belong to the native reader.
+    # Keep the catalog ID for an index-local symlink even if its target is
+    # elsewhere. Let the native reader resolve and validate the target.
+    if ".." not in Path(parent_root).parts and ".." not in Path(stage_index_path).parts:
+        lexical_parent = Path(os.path.abspath(parent_root))
+        lexical_stage = Path(os.path.abspath(stage_index_path))
+        if lexical_stage.is_relative_to(lexical_parent):
+            parts = lexical_stage.relative_to(lexical_parent).parts
+            if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
+                return "/".join(parts)
+    # Resolve other paths before testing placement: a symlink before '..'
+    # changes which directory that segment names.
     parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
     if stage.is_relative_to(parent):
         parts = stage.relative_to(parent).parts

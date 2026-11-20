@@ -814,6 +814,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         raise_open_file_limit();
     }
     validate_profile_dir(options.profile_dir.as_deref())?;
+    if let Some(id) = options.index_build_id.as_deref() {
+        validate_index_build_id(id)?;
+    }
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.
     validate_exact_category_count_options(&options)?;
@@ -1516,6 +1519,31 @@ mod tests_resume_phase {
     }
 
     #[test]
+    fn invalid_index_build_id_does_not_remove_existing_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("index");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("sentinel"), b"keep").unwrap();
+        let source: GraphConfig =
+            serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
+        let error = ingest_with_stats_from_source(
+            source,
+            None,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                index_build_id: Some(" ".into()),
+                ..IngestOptions::default()
+            },
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("index_build_id must not be empty"));
+        assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[test]
     fn ingest_phase_ordering() {
         assert!(IngestPhase::Encode < IngestPhase::PkMap);
         assert!(IngestPhase::PkMap < IngestPhase::EdgesMap);
@@ -2006,6 +2034,8 @@ mod tests_repopulate_helpers {
             row_subsample: false,
             text_sample_stats: HashMap::new(),
             parent_index_path: None,
+            index_build_id: "test-build".into(),
+            parent_index_build_id: None,
             resolve_columns: Vec::new(),
             cutoff_col_stats: None,
         }
@@ -2017,6 +2047,25 @@ mod tests_repopulate_helpers {
             mirror: None,
             manifest: Arc::new(crate::snapshot_mirror::ManifestAccumulator::new()),
         })
+    }
+
+    #[test]
+    fn resume_rejects_a_different_encoded_parent_build() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("_tmp")).unwrap();
+        let source = graph_config(Vec::new());
+        let mut encoded = make_ctx(source.clone(), local_target(root), 1);
+        encoded.parent_index_build_id = Some("build-a".into());
+        encoded.persist_encode_state().unwrap();
+
+        let mut resumed = make_ctx(source.clone(), local_target(root), 1);
+        resumed.parent_index_build_id = Some("build-b".into());
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("resumed parent_index_build_id"));
+
+        resumed.parent_index_build_id = Some("build-a".into());
+        resumed.restore_encode_state().unwrap();
     }
 
     // -- A. repopulate_node_stats_from_meta --------------------------------
@@ -2824,6 +2873,7 @@ struct IngestContext {
     /// ordinary base-graph ingest.
     parent_index_path: Option<PathBuf>,
     index_build_id: String,
+    parent_index_build_id: Option<String>,
     /// FK-free LP resolution columns (see [`crate::config::ResolveColumnSpec`]).
     /// When non-empty the encode phase resolves the listed columns' PK
     /// reference value(s) to graph node-ids and writes them as rowpack columns
@@ -2832,7 +2882,7 @@ struct IngestContext {
     cutoff_col_stats: Option<crate::cutoff_col_stats::CutoffColStatsRequest>,
 }
 
-const ENCODE_STATE_VERSION: u32 = 2;
+const ENCODE_STATE_VERSION: u32 = 3;
 const ENCODE_STATE_PATH: &str = "_tmp/encode_state.json";
 const RESUME_STATS_STATE_VERSION: u32 = 1;
 const PK_MAP_STATE_PATH: &str = "_tmp/pk_map_state.json";
@@ -2859,6 +2909,7 @@ struct EncodeWeightCounts {
 struct EncodeState {
     version: u32,
     source: GraphConfig,
+    parent_index_build_id: Option<String>,
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
     dropped_rows_counts: HashMap<String, u64>,
@@ -7188,7 +7239,7 @@ impl IngestContext {
         });
         let index_build_id = match options.index_build_id.as_ref() {
             Some(id) => {
-                ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
+                validate_index_build_id(id)?;
                 if let Some(previous) = &resumed_id {
                     ensure!(
                         id == previous,
@@ -7199,6 +7250,12 @@ impl IngestContext {
             }
             None => resumed_id.unwrap_or_else(diskgraph_core::metadata::new_index_build_id),
         };
+        let parent_index_build_id = options
+            .parent_index_path
+            .as_deref()
+            .map(Self::read_parent_index_metadata_at)
+            .transpose()?
+            .and_then(|metadata| metadata.index_build_id);
         let index_mem_budget_bytes = options
             .index_mem_budget_bytes
             .or_else(default_index_mem_budget_bytes);
@@ -7451,6 +7508,7 @@ impl IngestContext {
             text_sample_stats: HashMap::new(),
             parent_index_path: options.parent_index_path,
             index_build_id,
+            parent_index_build_id,
             resolve_columns: options.resolve_columns,
             cutoff_col_stats: options.cutoff_col_stats,
         })
@@ -8103,6 +8161,7 @@ impl IngestContext {
         let state = EncodeState {
             version: ENCODE_STATE_VERSION,
             source: self.source.clone(),
+            parent_index_build_id: self.parent_index_build_id.clone(),
             pk_sampled_max_key_len: self.pk_sampled_max_key_len.clone(),
             binary_label_counts: self
                 .binary_label_counts
@@ -8161,6 +8220,10 @@ impl IngestContext {
                 path.display()
             ));
         }
+        ensure!(
+            state.parent_index_build_id == self.parent_index_build_id,
+            "resumed parent_index_build_id does not match the parent used by Encode"
+        );
         self.source = state.source;
         self.binary_label_counts = state
             .binary_label_counts
@@ -11989,16 +12052,18 @@ impl IngestContext {
         Ok(removed_bytes)
     }
 
+    fn read_parent_index_metadata_at(parent: &Path) -> Result<DatasetMetadata> {
+        let path = parent.join("index_metadata.json");
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read parent metadata {}", path.display()))?;
+        serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse parent metadata {}", path.display()))
+    }
+
     fn read_parent_index_metadata(&self) -> Result<Option<DatasetMetadata>> {
         self.parent_index_path
-            .as_ref()
-            .map(|parent| {
-                let path = parent.join("index_metadata.json");
-                let bytes = fs::read(&path)
-                    .with_context(|| format!("read parent metadata {}", path.display()))?;
-                serde_json::from_slice(&bytes)
-                    .with_context(|| format!("parse parent metadata {}", path.display()))
-            })
+            .as_deref()
+            .map(Self::read_parent_index_metadata_at)
             .transpose()
     }
 
@@ -12218,14 +12283,18 @@ impl IngestContext {
             });
         }
 
-        let parent_index_build_id = self
+        let current_parent_index_build_id = self
             .read_parent_index_metadata()?
             .and_then(|metadata| metadata.index_build_id);
+        ensure!(
+            current_parent_index_build_id == self.parent_index_build_id,
+            "parent_index_build_id changed during ingest"
+        );
         let index_metadata = DatasetMetadata {
             timestamp_unit: self.source.timestamp_unit,
             dataset_name: self.source.dataset_name.clone(),
             index_build_id: Some(self.index_build_id.clone()),
-            parent_index_build_id,
+            parent_index_build_id: self.parent_index_build_id.clone(),
             node_types,
             edge_relations,
         };
@@ -13018,6 +13087,11 @@ fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
         !cfg!(windows) || profile_dir.is_none(),
         "CPU profiling is not supported on Windows"
     );
+    Ok(())
+}
+
+fn validate_index_build_id(id: &str) -> Result<()> {
+    ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
     Ok(())
 }
 
