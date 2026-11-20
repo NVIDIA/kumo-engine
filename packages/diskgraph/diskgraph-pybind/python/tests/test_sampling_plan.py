@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 import subprocess
 import sys
@@ -12,7 +13,6 @@ from dataclasses import is_dataclass
 from typing import TypedDict
 
 import diskgraph
-import orjson
 import pytest
 from diskgraph import DiskgraphConfigError, RuntimeIndex
 from diskgraph.runtime_batch_iterator import _sampling_plan_json
@@ -115,7 +115,7 @@ def test_basic_modes_and_relation_overrides_keep_native_shape(
         ]
     }
     assert plan.to_dict() == expected
-    assert orjson.loads(_sampling_plan_json(plan)) == expected
+    assert json.loads(_sampling_plan_json(plan)) == expected
 
 
 @pytest.mark.parametrize("temporal", [False, True])

@@ -21,8 +21,6 @@ import json
 import os
 from typing import Any, Mapping, Optional
 
-import orjson
-
 from ._exceptions import DiskgraphConfigError
 from .sampling_plan import SamplingPlan
 
@@ -140,7 +138,7 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
 def _sampling_plan_json(sampling_plan: SamplingPlan) -> str:
     if not isinstance(sampling_plan, SamplingPlan):
         raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
-    return orjson.dumps(sampling_plan.to_dict(), option=orjson.OPT_SORT_KEYS).decode()
+    return json.dumps(sampling_plan.to_dict(), sort_keys=True)
 
 
 def _weighted_seed_sampling_json(
