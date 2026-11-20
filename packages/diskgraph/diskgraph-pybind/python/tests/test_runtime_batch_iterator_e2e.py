@@ -331,11 +331,17 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
         )
 
 
-def test_external_extension_runs_without_an_index_local_copy(seed_table_fixture, tmp_path):
-    parent = tmp_path / "parent"
-    shutil.copytree(seed_table_fixture["parent_root"], parent)
-    external = tmp_path / "consumer" / seed_table_fixture["tt_id"]
-    external.parent.mkdir()
+def test_managed_sibling_extension_runs_without_an_index_local_copy(seed_table_fixture, tmp_path):
+    from diskgraph.managed_paths import ManagedIndexPaths
+
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    build_id = json.loads((original / "index_metadata.json").read_text())["index_build_id"]
+    paths = ManagedIndexPaths(tmp_path / "managed", build_id)
+    parent = paths.index_dir
+    parent.parent.mkdir(parents=True)
+    shutil.copytree(original, parent)
+    external = paths.task_dir(seed_table_fixture["tt_id"])
+    external.parent.mkdir(parents=True)
     shutil.move(str(parent / "train_tables" / seed_table_fixture["tt_id"]), external)
     before = {str(p.relative_to(parent)): p.read_bytes()
               for p in parent.rglob("*") if p.is_file()}
@@ -454,18 +460,26 @@ def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp
     assert count == seed_table_fixture["n_seeds"]
     assert len(list(iterator)) == 2
 
-    # Moving the same extension outside the base changes its catalog namespace
-    # from the index-local alias to the external directory's basename.
-    assert _extension_ref_from_stage_path(str(parent), str(target)) == str(target.resolve())
+
+def test_manifest_rejects_unmanaged_extension_path(seed_table_fixture, tmp_path):
+    from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
+
+    parent = pathlib.Path(seed_table_fixture["parent_root"])
+    target = tmp_path / "external" / "different-name"
+    target.parent.mkdir()
+    shutil.copytree(parent / "train_tables" / seed_table_fixture["tt_id"], target)
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="same managed root"):
+        _extension_ref_from_stage_path(str(parent), str(target))
+    manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
     manifest["stages"]["train"]["index_path"] = str(target)
+    path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))
-    iterator, count = make_runtime_batch_iterator(
-        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
-        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
-        batch_size=3, drop_last=False,
-    )
-    assert count == seed_table_fixture["n_seeds"]
-    assert len(list(iterator)) == 2
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="same managed root"):
+        make_runtime_batch_iterator(
+            str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+            num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+            batch_size=3, drop_last=False,
+        )
 
 
 @pytest.mark.parametrize("path_input", ["stage", "parent"])
@@ -486,14 +500,17 @@ def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, pa
             (task / "index_metadata.json").write_text("{}")
         parent = tmp_path / "base"
         stage = alias / ".." / "task"
-        expected = str((runs / "task").resolve())
     else:
         parent = alias / ".." / "base"
         stage = runs / "base" / "train_tables" / "task"
         stage.mkdir(parents=True)
         (stage / "index_metadata.json").write_text("{}")
         expected = "train_tables/task"
-    assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
+    if path_input == "stage":
+        with pytest.raises(diskgraph.DiskgraphConfigError, match="same managed root"):
+            _extension_ref_from_stage_path(str(parent), str(stage))
+    else:
+        assert _extension_ref_from_stage_path(str(parent), str(stage)) == expected
 
 
 @pytest.mark.parametrize("entrypoint", ["native", "manifest"])
@@ -516,7 +533,7 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
         stage = parent / "train_tables" / ("base-alias-" + entrypoint)
         stage.symlink_to(parent, target_is_directory=True)
     match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
-    if kind == "missing":
+    if kind == "missing" and entrypoint == "native":
         match = "extension `stage`"
     with pytest.raises(diskgraph.DiskgraphConfigError, match=match):
         if entrypoint == "native":
@@ -545,7 +562,8 @@ def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path)
     parent = pathlib.Path(seed_table_fixture["parent_root"])
     nested = parent / "train_tables" / seed_table_fixture["tt_id"] / "nested"
     nested.mkdir()
-    assert _extension_ref_from_stage_path(str(parent), str(nested)) == str(nested.resolve())
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="index-local extension"):
+        _extension_ref_from_stage_path(str(parent), str(nested))
 
     manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
     manifest["stages"]["train"]["index_path"] = str(nested)
@@ -560,10 +578,18 @@ def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path)
 
 
 def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fixture, tmp_path):
-    external = tmp_path / "not-an-index"
-    external.mkdir()
+    from diskgraph.managed_paths import ManagedIndexPaths
+
+    original = pathlib.Path(seed_table_fixture["parent_root"])
+    build_id = json.loads((original / "index_metadata.json").read_text())["index_build_id"]
+    paths = ManagedIndexPaths(tmp_path / "managed", build_id)
+    paths.index_dir.parent.mkdir(parents=True)
+    shutil.copytree(original, paths.index_dir)
+    external = paths.task_dir("not-an-index")
+    external.mkdir(parents=True)
     (external / "index_metadata.json").write_text("{}")
     manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
+    manifest["graph"]["index_path"] = str(paths.index_dir)
     manifest["stages"]["train"]["index_path"] = str(external)
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest))
