@@ -192,10 +192,16 @@ def materialize_values(
 
     if isinstance(anchors.source, Parquet):
         from kumo.pytorch.dataset import _local_parquet_files
+        from kumo.pytorch.engines.parquet_anchors import _entity_id_type
 
         original = pq.read_schema(_local_parquet_files(anchors.source.path)[0])
         renamed = dict(anchors.source.columns)
         types = {renamed.get(field.name, field.name): field.type for field in original}
+        # Use the type the anchor readers give the ids, not just the first file's type.
+        entity = next(t for t in plan.contract.schema.tables if t.name == sample.entity.table)
+        types[anchors.entity_id] = _entity_id_type(
+            types[anchors.entity_id], entity.columns[entity.primary_key]
+        )
     else:
         types = {
             field.name: field.type for field in pa.Table.from_pylist(anchors.source.rows).schema

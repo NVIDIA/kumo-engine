@@ -143,6 +143,28 @@ def test_partial_parquet_resolution_preserves_explicit_int64(tmp_path):
     assert resolved.schema.tables[0].columns == {"id": int64, "value": int64}
 
 
+@pytest.mark.parametrize(
+    "values,hinted",
+    [
+        (pa.array([42.0, None], type=pa.float64()), True),
+        (pa.array([42.0, None], type=pa.float32()), True),
+        (pa.array(["42", None]), False),
+        (pa.array([42, None], type=pa.uint64()), False),
+    ],
+    ids=["float64", "float32", "string", "uint64"],
+)
+def test_check_names_pandas_when_a_declared_integer_is_stored_as_float(tmp_path, values, hinted):
+    pq.write_table(pa.table({"id": [1, 2], "value": values}), tmp_path / "users.parquet")
+    dataset = api.Dataset({"users": api.Parquet(str(tmp_path))})
+    contract = _source_contract({"id": None, "value": api.DType("int64")})
+    (issue,) = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    assert "declared DType(name='int64'" in issue.message
+    assert ("pandas stores an integer column that contains NULLs as float64" in issue.message) is (
+        hinted
+    )
+    assert ("DataFrame.to_arrow()" in issue.message) is hinted
+
+
 def test_inferred_int64_requires_matching_types_across_files(tmp_path):
     pq.write_table(pa.table({"id": [1], "value": [42]}), tmp_path / "one.parquet")
     pq.write_table(

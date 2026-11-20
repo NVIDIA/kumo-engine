@@ -22,6 +22,9 @@ Integer width and signedness, decimal precision/scale, and timestamp units are
 part of the declaration. For a declared `int64`, DiskGraph accepts narrower
 signed integers and scale-zero `decimal128` or `decimal256` from Parquet.
 Native ingest rejects decimal values outside the signed 64-bit range.
+Under `Plan.materialize` on DiskGraph, Parquet anchor entity ids for an `int64`
+primary key accept the same types, are read as `int64`, and fail on values
+outside that range.
 Stored timestamps are whole-second UTC instants. Finer physical timestamps
 round toward positive infinity to the next whole second, including negative
 epochs. For example, -1 microsecond becomes second 0 and +1 microsecond becomes

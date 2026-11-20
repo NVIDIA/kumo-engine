@@ -170,6 +170,7 @@ class Dataset:
                         ):
                             raise ValueError(
                                 f"declared {expected!r}, physical type resolves to {actual!r}"
+                                + _float_integer_hint(actual, expected)
                             )
                 except (KeyError, ValueError, OSError) as error:
                     raise ValueError(f"bind {table.name} in {path!r}: {error}") from error
@@ -183,6 +184,20 @@ def _can_coerce_to_int64(physical: DType, declared: DType) -> bool:
         physical.name in {"int8", "int16", "int32"}
         or (physical.name in {"decimal128", "decimal256"} and physical.scale == 0)
     )
+
+
+def _float_integer_hint(physical: DType, declared: DType) -> str:
+    """Name the usual source of float data for an integer column, and how to avoid it.
+
+    A float column is never read as an integer: float64 is exact only up to 2**53.
+    """
+    if declared.integer and physical.name in {"float32", "float64"}:
+        return (
+            "; pandas stores an integer column that contains NULLs as float64 (Snowpark's "
+            "to_pandas() does this), so read the data through Arrow instead, for example "
+            "with DataFrame.to_arrow()"
+        )
+    return ""
 
 
 def _local_parquet_files(value: str) -> list[str]:

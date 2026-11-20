@@ -18,7 +18,9 @@ from typing import Any
 import numpy as np
 
 from kumo.pytorch.anchors import AllAnchors, AnchorTable, PositionalAnchors, SplitSelection
+from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
+from kumo.pytorch.dataset import _can_coerce_to_int64
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
 
@@ -37,6 +39,39 @@ def _physical(table: AnchorTable) -> dict[str, str]:
     logical_of = dict(getattr(table.source, "columns", {}) or {})
     physical_of = {logical: physical for physical, logical in logical_of.items()}
     return {name: physical_of.get(name, name) for name in table.columns}
+
+
+def _entity_id_type(physical: Any, key: DType) -> Any:
+    """The Arrow type that entity ids stored as ``physical`` are read as, for this key.
+
+    An ``int64`` key reads narrower signed integers and scale-zero decimals as
+    ``int64``, the same physical types a declared ``int64`` table column
+    accepts. Every other type is kept, and its values are checked one by one.
+    """
+
+    try:
+        coerced = _can_coerce_to_int64(DType.from_arrow(physical), key)
+    except (TypeError, ValueError):
+        return physical
+    return key.to_arrow() if coerced else physical
+
+
+def _entity_ids(values: Any, key: DType, file: str) -> Any:
+    """Read one batch of entity ids as `_entity_id_type` says, refusing values outside the key."""
+
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    target = _entity_id_type(values.type, key)
+    if target == values.type:
+        return values
+    try:
+        return pc.cast(values, target, safe=True)
+    except pa.ArrowInvalid as error:
+        raise ValueError(
+            f"anchors.entity_id in {file!r}: a {values.type} id is outside the "
+            f"{key.name} primary key's range ({error})"
+        ) from error
 
 
 def check_parquet_anchors(table: AnchorTable) -> tuple[ValidationIssue, ...]:

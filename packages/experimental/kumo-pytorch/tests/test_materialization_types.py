@@ -160,6 +160,32 @@ def test_declared_int64_still_rejects_incompatible_physical_types(tmp_path, valu
         )
 
 
+@pytest.mark.parametrize(
+    "declared,values,hinted",
+    [
+        ("int64", pa.array([42.0, None], type=pa.float64()), True),
+        ("int32", pa.array([42.0, None], type=pa.float32()), True),
+        ("int64", pa.array([42, None], type=pa.uint64()), False),
+        ("float64", pa.array([42, None], type=pa.int64()), False),
+    ],
+    ids=["int64-float64", "int32-float32", "int64-uint64", "float64-int64"],
+)
+def test_prepare_names_pandas_when_a_declared_integer_is_stored_as_float(
+    tmp_path, declared, values, hinted
+):
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"id": [1, 2], "value": values}), path)
+    with pytest.raises(ValueError, match=r"rows.value.*declared.*physical") as error:
+        prepare(
+            _contract(DType(declared)),
+            Dataset({"rows": Parquet(str(path))}),
+            DiskGraphEngine(index=tmp_path / "index"),
+        )
+    message = str(error.value)
+    assert ("pandas stores an integer column that contains NULLs as float64" in message) is hinted
+    assert ("DataFrame.to_arrow()" in message) is hinted
+
+
 def test_untyped_all_null_source_is_not_guessed_from_a_declaration(tmp_path):
     source = tmp_path / "rows.parquet"
     pq.write_table(pa.table({"id": [1], "value": [None]}), source)
