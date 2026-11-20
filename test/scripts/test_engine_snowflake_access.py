@@ -222,3 +222,80 @@ def test_legacy_dependency_hashes_do_not_block_new_candidates(resources, monkeyp
                                'dependency-asset.json': 'b' * 64})
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
     assert resources.require() == resources.expected()
+
+
+@pytest.mark.parametrize('environment_name', [
+    'snowflake-mlops-test', 'sagemaker-mlops-test', 'databricks-mlops-test',
+    'other-platform-test'
+])
+@pytest.mark.parametrize('dispatch', ['main', 'egu/byom-mlops-lifecycle'])
+def test_only_selected_platforms_admit_the_exact_test_branch(
+        environment_guard, monkeypatch, environment_name, dispatch):
+    import io
+
+    guard, environment, policies = environment_guard
+    selected = environment_name in guard.BRANCH_TEST_ENVIRONMENTS
+    if selected:
+        policies['branch_policies'].append(
+            dict(name=guard.TEST_BRANCH, type='branch'))
+    policies['total_count'] = len(policies['branch_policies'])
+    monkeypatch.setenv('GITHUB_REPOSITORY', guard.REPOSITORY)
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('GITHUB_REF', 'refs/heads/' + dispatch)
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    calls = []
+
+    def get(request, timeout):
+        calls.append(request.full_url)
+        value = policies if 'deployment-branch-policies' in request.full_url else environment
+        return io.BytesIO(json.dumps(value).encode())
+
+    monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
+    if selected or dispatch == 'main':
+        guard.main(environment=environment_name)
+        assert len(calls) == 2
+    else:
+        with pytest.raises(SystemExit, match='manual dispatch'):
+            guard.main(environment=environment_name)
+        assert calls == []
+
+
+@pytest.mark.parametrize('fault', [
+    'missing-branch', 'missing-main', 'wildcard', 'other-branch', 'tag',
+    'duplicate', 'count', 'self-review', 'bypass', 'reviewer'
+])
+def test_branch_exception_preserves_environment_restrictions(environment_guard, fault):
+    guard, environment, policies = environment_guard
+    policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
+    if fault == 'missing-branch':
+        policies['branch_policies'].pop()
+    elif fault == 'missing-main':
+        policies['branch_policies'].pop(0)
+    elif fault == 'wildcard':
+        policies['branch_policies'][1]['name'] = 'egu/*'
+    elif fault == 'other-branch':
+        policies['branch_policies'].append(dict(name='unapproved', type='branch'))
+    elif fault == 'tag':
+        policies['branch_policies'][1]['type'] = 'tag'
+    elif fault == 'duplicate':
+        policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
+    elif fault == 'self-review':
+        environment['protection_rules'][0]['prevent_self_review'] = False
+    elif fault == 'bypass':
+        environment['can_admins_bypass'] = True
+    elif fault == 'reviewer':
+        environment['protection_rules'][0]['reviewers'] = []
+    policies['total_count'] = len(policies['branch_policies']) + (fault == 'count')
+    with pytest.raises(ValueError):
+        guard.validate(environment, policies,
+                       allowed_branches=('main', guard.TEST_BRANCH),
+                       required_branch=guard.TEST_BRANCH)
+
+
+def test_workflows_admit_the_same_explicit_branch():
+    for platform in ('snowflake', 'sagemaker'):
+        path = ROOT / '.github/workflows' / f'kumo-engine-{platform}-notebook.yml'
+        source = path.read_text()
+        condition = "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')"
+        assert source.count(condition) == (3 if platform == 'snowflake' else 2)
+        assert "github.event_name == 'workflow_dispatch'" in source

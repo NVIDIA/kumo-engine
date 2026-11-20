@@ -218,8 +218,8 @@ limit and use the existing lifecycle process-group cleanup.
 
 In repository **Settings → Environments**, configure `snowflake-mlops-test`:
 
-1. Allow only `main` under deployment branch rules. Do not allow trial
-   branches, wildcard branches, or tags.
+1. Allow `main` and the exact `egu/byom-mlops-lifecycle` test branch under
+   deployment branch rules. Reject other branches, wildcards and tags.
 2. Require `NVIDIA/kumo-engineers` as the only reviewer, enable
    `prevent_self_review`, and disable administrator bypass.
 3. Add these environment secrets:
@@ -237,7 +237,7 @@ Browser artifacts require the current authenticated test page; session expiry
 suppresses captures. Raw browser errors and authentication URLs are not retained.
 
 Open **Actions → Snowflake notebook platform checks → Run workflow**, select
-`main`, and choose `engine` or `graph-ui`. A maintainer other than the
+`main` or `egu/byom-mlops-lifecycle`, and choose `engine` or `graph-ui`. A maintainer other than the
 person who started the run must approve the environment before credentials are available. The workflow is
 manual-only. Lifecycle UI verification is currently a separate local command.
 
@@ -298,9 +298,9 @@ Keep notebook credentials separate from ordinary pull-request Snowflake CI.
 The existing workflow uses `SNOWFLAKE_CI_USER`/`SNOWFLAKE_CI_PRIVATE_KEY` in a
 different environment; do not give that user the notebook role or grants.
 
-The Snowflake guard requires independent maintainer approval and a main-only
-deployment allowlist. It rejects feature-branch dispatches before reading
-environment settings or accessing platform credentials.
+The Snowflake guard requires independent maintainer approval and an explicit
+deployment allowlist. It rejects unapproved branch dispatches before reading environment settings or
+accessing platform credentials.
 After an interrupted engine step, Actions attempts bounded recovery of the owned
 query, Code Bundle and submission prefix. Atomic local journals distinguish
 completed bundle creation from execution intent. Before any CREATE intent, or
@@ -374,3 +374,11 @@ must contain `platform-prerequisite` plus every declared phase, with matching
 workload and candidate hashes and successful worker exits. `verify.py` accepts
 those selected engine checks while retaining the separate native UI review gap.
 The default Kumo scenario retains its four phases and existing qualification gaps.
+
+
+The temporary branch exception is limited to `egu/byom-mlops-lifecycle` in the
+workflow and `snowflake-mlops-test` environment. Manual dispatch and existing
+maintainer approval remain required; self-review and administrator bypass stay
+disabled. Remove the exact branch rule and guard exception when branch testing
+finishes. Older main-only guard revisions reject the expanded environment
+allowlist until the guard update is merged.
