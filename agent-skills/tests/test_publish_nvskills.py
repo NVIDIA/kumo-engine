@@ -177,6 +177,22 @@ def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: 
     assert publish_nvskills.stale(dest, catalog) == [f'~ {ROUTER}/SKILL.md']
 
 
+def test_publish_leaves_unchanged_skills_and_their_stamp_alone(tmp_path: Path,
+                                                               catalog: Path) -> None:
+    """Refreshing one skill must not rewrite another, or NVSkills CI re-signs it for nothing."""
+    dest = tmp_path / 'skills'
+    publish_nvskills.publish(dest, catalog)
+    router = dest / ROUTER / 'SKILL.md'
+    old = publish_nvskills.package_skill.MARKER.sub('SKILL-BUILD: 2000-01-01-0',
+                                                    router.read_text(encoding='utf-8'))
+    router.write_text(old, encoding='utf-8')
+    (dest / 'kumo-model-tuning' / 'SKILL.md').write_text('stale\n', encoding='utf-8')
+
+    assert publish_nvskills.publish(dest, catalog) == ['~ kumo-model-tuning/SKILL.md']
+    assert router.read_text(encoding='utf-8') == old
+    assert publish_nvskills.stale(dest, catalog) == []
+
+
 @pytest.mark.parametrize('rel', ['kumo-data-science/skill.oms.sig',
                                  'kumo-data-science/evals/skill.oms.sig',
                                  'kumo-data-science/evals/BENCHMARK.md',
