@@ -30,7 +30,9 @@ def test_managed_layout_and_identity(tmp_path):
         paths.verify_task("task-1")
 
 
-@pytest.mark.parametrize("bad_id", ["", " ", ".", "..", "../other", "nested/task", "a\\b"])
+@pytest.mark.parametrize(
+    "bad_id", ["", " ", ".", "..", "../other", "nested/task", "a\\b", "D:task"]
+)
 def test_managed_ids_are_single_components(tmp_path, bad_id):
     with pytest.raises(ValueError):
         ManagedIndexPaths(tmp_path, bad_id)

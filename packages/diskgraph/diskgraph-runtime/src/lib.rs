@@ -1258,8 +1258,9 @@ pub struct RuntimeIndex {
 impl RuntimeIndex {
     /// Open the graph and a seed extension by index-local reference or
     /// absolute path.
-    /// The shared index reader validates relative and absolute extension paths,
-    /// including rejecting the parent itself and aliases of it.
+    /// The shared reader rejects the parent itself and aliases of it. Inside
+    /// the parent, extensions must be train_tables/<id> or pred_tables/<id>;
+    /// external paths are accepted when their metadata matches the parent build.
     pub fn new(
         parent_root: String,
         tt_id: String,
