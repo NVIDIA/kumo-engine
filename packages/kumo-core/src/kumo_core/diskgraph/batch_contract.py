@@ -8,10 +8,105 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import NotRequired, TypedDict, cast
 
 import orjson
 import pyarrow as pa
+
+JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+class WeightedSeedSampling(TypedDict):
+    """Weights and draw count accepted by the native weighted seed scheduler."""
+
+    false_weight: NotRequired[float]
+    true_weight: NotRequired[float]
+    num_samples: int
+
+
+class SamplingOptions(TypedDict, total=False):
+    """Native iterator arguments shared by scheduling and explicit batch requests."""
+
+    stage: str
+    sampling_plan: dict[str, JsonValue] | str
+    num_workers: int
+    worker_id: int
+    shuffle: bool
+    epoch: int
+    batch_size: int
+    rnd_seed: int | None
+    drop_last: bool
+    fused: bool | None
+    swap_edge_direction: bool
+    neg_rhs_node_type: str | None
+    neg_amount_m: int | None
+    neg_rnd_seed: int | None
+    replace: bool
+    disjoint: bool
+    adaptive: bool
+    entity_node_type: str | None
+    target_node_type: str | None
+    rhs_seed_node_type: str | None
+    rhs_seed_time: int | None
+    group_by_timestamp: bool
+    weighted_seed_sampling: WeightedSeedSampling | None
+    selected_stage_node_ids: list[int] | None
+    pseudo_seed_time: int | None
+    disable_pseudo_time: bool
+    projections: dict[str, list[str]] | None
+
+
+class NativeTask(TypedDict):
+    """Required seed identity arrays in a complete native task block."""
+
+    input_ids: pa.Array
+    tt_stage_node_ids: pa.Array
+    seed_node_ids: pa.Array
+
+
+class NativeEdge(TypedDict):
+    """Typed relation and aligned source/destination arrays."""
+
+    edge_type: dict[str, str]
+    src: pa.Array
+    dst: pa.Array
+
+
+class NativeEdgeCounts(TypedDict):
+    """Per-hop sampling counts for one relation."""
+
+    edge_type: dict[str, str]
+    counts: pa.Array
+
+
+class NativeGraph(TypedDict):
+    """Required topology and provenance arrays for one graph channel."""
+
+    node_ids: dict[str, pa.Array]
+    batch_dict: dict[str, pa.Array]
+    edge_index_dict: list[NativeEdge]
+    num_sampled_nodes_dict: dict[str, pa.Array]
+    num_sampled_edges_dict: list[NativeEdgeCounts]
+
+
+class NativeFeatureBlock(TypedDict):
+    """Arrow feature chunks and the row count used to verify completeness."""
+
+    num_rows: int
+    record_batches: list[pa.RecordBatch]
+    node_ids: NotRequired[pa.Array]
+
+
+class NativeBatch(TypedDict):
+    """Required sections of the complete native batch transported by this backend.
+
+    Native dictionaries retain additional task/history fields without repacking.
+    """
+
+    task: NativeTask
+    graphs: dict[str, NativeGraph]
+    raw_features: dict[str, NativeFeatureBlock]
+
 
 WIRE_VERSION = 1
 SAMPLING_VERSION = 1
@@ -116,7 +211,7 @@ class BatchRequest:
         """Identity of traversal, projection, supervision, and output options."""
         return content_digest(self.options_json)
 
-    def validate(self) -> Mapping[str, Any]:
+    def validate(self) -> SamplingOptions:
         """Validate immutable metadata and decode native sampling options.
 
         Returns:
@@ -190,7 +285,7 @@ class BatchRequest:
             raise SamplingContractError("request exceeds native batch size")
         if options.get("neg_rhs_node_type") and options.get("neg_rnd_seed") is None:
             raise SamplingContractError("remote negatives require neg_rnd_seed")
-        return options
+        return cast(SamplingOptions, options)
 
 
 @dataclass(frozen=True)
@@ -198,10 +293,10 @@ class BatchPayload:
     """One complete batch retaining Arrow/native buffer owners until conversion."""
 
     request: BatchRequest
-    batch: Mapping[str, Any]
+    batch: NativeBatch
     sampling_seconds: float
 
-    def validate(self, expected: BatchRequest) -> Mapping[str, Any]:
+    def validate(self, expected: BatchRequest) -> NativeBatch:
         """Check identity and required complete-batch fields before tensor mapping.
 
         Args:
@@ -213,13 +308,14 @@ class BatchPayload:
         Raises:
             SamplingContractError: If identity or native batch structure differs.
         """
-        expected.validate()
+        options = expected.validate()
         if self.request != expected:
             raise SamplingContractError("wrong request, artifact, or phase generation")
         if not all(key in self.batch for key in ("task", "graphs", "raw_features")):
             raise SamplingContractError("incomplete native batch")
+        sections: Mapping[str, object] = self.batch
         if not all(
-            isinstance(self.batch[key], Mapping)
+            isinstance(sections[key], Mapping)
             for key in ("task", "graphs", "raw_features")
         ):
             raise SamplingContractError("native batch sections must be mappings")
@@ -239,13 +335,12 @@ class BatchPayload:
         for name in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
             if not isinstance(task.get(name), pa.Array):
                 raise SamplingContractError(f"missing native task array: {name}")
-        options = orjson.loads(expected.options_json)
-        seed_field = (
-            "seed_node_ids"
+        seed_ids = (
+            task["seed_node_ids"]
             if options.get("rhs_seed_node_type")
-            else "tt_stage_node_ids"
+            else task["tt_stage_node_ids"]
         )
-        if not task[seed_field].equals(pa.array(expected.seed_ids, type=pa.uint64())):
+        if not seed_ids.equals(pa.array(expected.seed_ids, type=pa.uint64())):
             raise SamplingContractError("response seed membership/order differs")
         for channel in self.batch["graphs"].values():
             for node_type, ids in channel["node_ids"].items():

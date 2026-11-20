@@ -6,14 +6,45 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
+
+from kumo_core.diskgraph.batch_contract import SamplingOptions
+
+if TYPE_CHECKING:
+    from diskgraph._c import SeedSchedule
+
+
+class SeedShard(TypedDict):
+    """Inclusive seed IDs stored in one index shard."""
+
+    min_id: int
+    max_id: int
+
+
+class SeedTableMetadata(TypedDict):
+    """Seed table name and shard ranges read from index metadata."""
+
+    name: str
+    shards: list[SeedShard]
+
+
+class SeedIndexMetadata(TypedDict):
+    """Subset of native index metadata needed by seed scheduling."""
+
+    node_types: list[SeedTableMetadata]
+
+
+class SeedStageRef(TypedDict):
+    """Task manifest paths identifying the stage's seed table."""
+
+    index_path: str
+    table_name: str
 
 
 def make_seed_schedule(
     dataset_ref: str,
-    options: Mapping[str, Any],
-) -> tuple[Any, int]:
+    options: SamplingOptions,
+) -> tuple[SeedSchedule, int]:
     """Build the native seed schedule using metadata and seed sidecars only.
 
     Args:
@@ -41,7 +72,7 @@ def make_seed_schedule(
 
     manifest, split_info = _manifest_view(dataset_ref)
     stage = options["stage"]
-    ref = _stage_tables(manifest).get(stage)
+    ref: SeedStageRef | None = _stage_tables(manifest).get(stage)
     if ref is None or not split_info["stage_counts"].get(stage):
         raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
     parent = _graph_index_path(manifest)
@@ -49,7 +80,7 @@ def make_seed_schedule(
     root = os.path.join(parent, extension)
     rhs_type = options.get("rhs_seed_node_type")
     table_name = (rhs_type or ref["table_name"]).rsplit("/", 1)[-1]
-    metadata = _load_json(
+    metadata: SeedIndexMetadata = _load_json(
         os.path.join(parent if rhs_type else root, "index_metadata.json")
     )
     table = next(
@@ -73,20 +104,20 @@ def make_seed_schedule(
         and "/" not in stage_key
     ):
         stage_key = f"{extension.rsplit('/', 1)[-1]}/{stage_key}"
-    config = {
-        "stage_key": stage_key,
-        "ranges": ranges,
-        "num_workers": options["num_workers"],
-        "worker_id": options["worker_id"],
-        "shuffle": options["shuffle"],
-        "rnd_seed": options["rnd_seed"],
-        "epoch": options["epoch"],
-        "batch_size": options["batch_size"],
-        "drop_last": options.get("drop_last", False),
-        "rhs": rhs_type is not None,
-        "selected_stage_node_ids": options.get("selected_stage_node_ids"),
-        "weighted_seed_sampling_json": weighted_sampling,
-        "bucket_extension_root": root if options.get("group_by_timestamp") else None,
-    }
-    schedule = SeedSchedule(SeedScheduleConfig(**config))
+    config = SeedScheduleConfig(
+        stage_key=stage_key,
+        ranges=ranges,
+        num_workers=options["num_workers"],
+        worker_id=options["worker_id"],
+        shuffle=options["shuffle"],
+        rnd_seed=options["rnd_seed"],
+        epoch=options["epoch"],
+        batch_size=options["batch_size"],
+        drop_last=options.get("drop_last", False),
+        rhs=rhs_type is not None,
+        selected_stage_node_ids=options.get("selected_stage_node_ids"),
+        weighted_seed_sampling_json=weighted_sampling,
+        bucket_extension_root=root if options.get("group_by_timestamp") else None,
+    )
+    schedule = SeedSchedule(config)
     return schedule, schedule.num_samples()

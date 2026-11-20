@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from kumo_core.diskgraph.batch_contract import SamplingOptions
+    from kumo_core.diskgraph.ray_sampling import RayRuntimeIndex
 
 import pytest
 from diskgraph import RuntimeIndex
@@ -18,10 +22,19 @@ from test_runtime_batch_iterator_e2e import (
 from test_stateless_sampling import _assert_equal
 
 
+class SeedTableFixture(TypedDict):
+    """Paths and sizes provided by the shared native ingest fixture."""
+
+    manifest_path: str
+    parent_root: str
+    n_users: int
+    n_seeds: int
+
+
 @pytest.fixture(scope="module")
 def remote_index(
-    seed_table_fixture: dict[str, Any],  # noqa: F811 -- imported pytest fixture
-) -> Iterator[Any]:
+    seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
+) -> Iterator[RayRuntimeIndex]:
     """Open two native samplers on a local Ray cluster; close only owned actors."""
     backend = pytest.importorskip("kumo_core.diskgraph.ray_sampling")
     from kumo_core.diskgraph.batch_contract import (
@@ -75,12 +88,12 @@ def remote_index(
 
 @pytest.mark.parametrize("mode", ["flat", "selected", "rhs"])
 def test_remote_native_batches_match_local(
-    remote_index: Any,
-    seed_table_fixture: dict[str, Any],  # noqa: F811 -- imported pytest fixture
+    remote_index: RayRuntimeIndex,
+    seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
     mode: str,
 ) -> None:
     """Transport complete Arrow batches with identical local sampling semantics."""
-    options: dict[str, Any] = {
+    options: SamplingOptions = {
         "stage": "train",
         "sampling_plan": _sampling_plan(),
         "entity_node_type": "users",
@@ -94,7 +107,8 @@ def test_remote_native_batches_match_local(
     if mode == "selected":
         options["selected_stage_node_ids"] = [4, 1, 4, 2, 0]
     elif mode == "rhs":
-        options.update(rhs_seed_node_type="users", rhs_seed_time=1000)
+        options["rhs_seed_node_type"] = "users"
+        options["rhs_seed_time"] = 1000
     local = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
