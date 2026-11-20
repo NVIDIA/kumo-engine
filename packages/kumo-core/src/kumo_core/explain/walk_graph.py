@@ -292,10 +292,6 @@ class _Layer:
     post: dict | None = None
 
 
-def _f64(x):
-    return x.detach().to(device='cpu', dtype=F64)
-
-
 def _copy(x):
     return x.detach().clone()
 
@@ -455,13 +451,17 @@ class GraphCapture:
             raise ValueError('Distribution readouts are unsupported')
         self.output = _copy(output)
 
-    def computation(self, seed_index=0, numerics=None):
-        """Build the typed computation for one seed of the captured forward."""
+    def computation(self, seed_index=0, numerics=None, *, preserve_device=False):
+        """Build one seed's computation; opt in to the captured tensor device.
+
+        The default retains the CPU contract of existing walk methods.
+        """
         if self.failure is not None:
             raise ValueError(f'Activation capture failed: {self.failure}')
         if self.output is None or self.h0 is None:
             raise ValueError('No completed scoring forward captured')
-        return WalkComputation(self, seed_index=seed_index, numerics=numerics)
+        return WalkComputation(self, seed_index=seed_index, numerics=numerics,
+                               preserve_device=preserve_device)
 
 
 class WalkComputation:
@@ -481,7 +481,18 @@ class WalkComputation:
     `numerics`, `model_dtype`, `gnn_bias_present`, `head_bias_present`.
     """
 
-    def __init__(self, capture, *, seed_index=0, numerics=None):
+    def __init__(self, capture, *, seed_index=0, numerics=None,
+                 preserve_device=False):
+        self.capture_device = capture.output.device
+        self.qualification = capture.qualification
+        self.device = capture.output.device if preserve_device else torch.device(
+            'cpu')
+
+        def convert(x):
+            if preserve_device and x.device != self.device:
+                raise ValueError('Captured tensors span multiple devices')
+            return x.detach().to(device=self.device, dtype=F64).clone()
+
         module = capture.module
         model, head = module.model, module.head
         self.T = len(model.hetero_convs)
@@ -494,7 +505,7 @@ class WalkComputation:
             raise ValueError('Invalid seed index')
         self.seed = (self.entity_table_name, seed_index)
         self.activation = None if model.act is None else 'relu'
-        self.h0 = {t: _f64(x) for t, x in capture.h0.items()}
+        self.h0 = {t: convert(x) for t, x in capture.h0.items()}
         if len(capture.preprocess) != len(model.lins) or len(capture.layers) != self.T:
             raise ValueError('Incomplete layer capture')
         self.preprocessing = []
@@ -504,28 +515,31 @@ class WalkComputation:
                 raise ValueError('Incomplete preprocessing capture')
             self.preprocessing.append(LinearOp(
                 index=i, kind='preprocess', activation=self.activation,
-                weight={t: _f64(w) for t, w in layer['weight'].items()},
-                bias={t: None if b is None else _f64(b) for t, b in layer['bias'].items()},
-                input={t: _f64(x) for t, x in layer['input'].items()},
-                pre_activation={t: _f64(x) for t, x in layer['pre'].items()}))
-            hidden = {t: _f64(x) for t, x in layer['post'].items()}
+                weight={t: convert(w) for t, w in layer['weight'].items()},
+                bias={t: None if b is None else convert(b) for t, b in layer['bias'].items()},
+                input={t: convert(x) for t, x in layer['input'].items()},
+                pre_activation={t: convert(x) for t, x in layer['pre'].items()}))
+            hidden = {t: convert(x) for t, x in layer['post'].items()}
         self.hidden = {0: hidden}
         self.pre_activation, self.relations, self.roots = {}, {}, {}
         for t, layer in enumerate(capture.layers, start=1):
+            if preserve_device and any(r.edge_index.device != self.device
+                                       for r in layer.relations):
+                raise ValueError('Captured edges differ from the tensor device')
             if layer.pre is None or layer.post is None:
                 raise ValueError(f'Incomplete capture at layer {t}')
             self._check_layer(t, layer, capture)
             self.relations[t] = [RelationOp(
                 relation=r.relation, direction=r.direction, operator=r.operator,
-                edge_index=r.edge_index.clone(), n_src=r.n_src, n_dst=r.n_dst,
-                weight=_f64(r.weight), bias=None if r.bias is None else _f64(r.bias))
+                edge_index=r.edge_index.to(self.device).clone(), n_src=r.n_src, n_dst=r.n_dst,
+                weight=convert(r.weight), bias=None if r.bias is None else convert(r.bias))
                 for r in sorted(layer.relations, key=lambda r: r.relation)]
             self.roots[t] = {table: RootOp(
-                root.kind, None if root.weight is None else _f64(root.weight),
-                None if root.bias is None else _f64(root.bias), root.n_dst)
+                root.kind, None if root.weight is None else convert(root.weight),
+                None if root.bias is None else convert(root.bias), root.n_dst)
                 for table, root in layer.roots.items()}
-            self.pre_activation[t] = {k: _f64(x) for k, x in layer.pre.items()}
-            self.hidden[t] = {k: _f64(x) for k, x in layer.post.items()}
+            self.pre_activation[t] = {k: convert(x) for k, x in layer.pre.items()}
+            self.hidden[t] = {k: convert(x) for k, x in layer.post.items()}
         head_act = None if head.mlp.act is None else 'relu'
         last = len(capture.head_rows) - 1
         if last + 1 != len(head.mlp.lins):
@@ -533,12 +547,12 @@ class WalkComputation:
         table = self.entity_table_name
         self.head = [LinearOp(
             index=j, kind='head', activation=head_act if j < last else None,
-            weight={table: _f64(row['weight'])},
-            bias={table: None if row['bias'] is None else _f64(row['bias'])},
-            input={table: _f64(row['input'])}, pre_activation={table: _f64(row['pre'])})
+            weight={table: convert(row['weight'])},
+            bias={table: None if row['bias'] is None else convert(row['bias'])},
+            input={table: convert(row['input'])}, pre_activation={table: convert(row['pre'])})
             for j, row in enumerate(capture.head_rows)]
         output = capture.output.reshape(capture.output.size(0), -1)
-        self.head_output = _f64(output[seed_index])
+        self.head_output = convert(output[seed_index])
         # Actual captured parameters, never options or plans.
         self.gnn_bias_present = (
             any(b is not None for op in self.preprocessing for b in op.bias.values())
@@ -548,7 +562,7 @@ class WalkComputation:
         self.head_bias_present = any(b is not None for op in self.head
                                      for b in op.bias.values())
         self._incoming = {}
-        self._eye = torch.eye(self.channels, dtype=F64)
+        self._eye = torch.eye(self.channels, dtype=F64, device=self.device)
         self._relevant = self._find_relevant()
 
     # Validation ------------------------------------------------------------
@@ -616,7 +630,7 @@ class WalkComputation:
         """Captured activation pattern at `H[t, node]` as a float64 vector."""
         table, occurrence = node
         if self.activation is None:
-            return torch.ones(self.channels, dtype=F64)
+            return torch.ones(self.channels, dtype=F64, device=self.device)
         return (self.pre_activation[t][table][occurrence] > 0).to(F64)
 
     def incoming(self, t, node):

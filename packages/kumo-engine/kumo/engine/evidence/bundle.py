@@ -673,6 +673,14 @@ class PredictionEvidenceBundle:
             'status_counts': dict(counts)
         }
 
+    def explain_classification(self, prediction_id, *, model,
+                               selected_class=None, max_walks=10000, top_k=20):
+        """Return restricted binary relevance and bounded walks on CUDA."""
+        from .classification import explain_classification
+        return explain_classification(
+            self, prediction_id, model=model, selected_class=selected_class,
+            max_walks=max_walks, top_k=top_k)
+
     def attribute_walks(self, *, model, config, output):
         """Attribute a trusted frozen model on retained graphs, without resampling."""
         from kumo.engine.evidence.walks import attribute_bundle

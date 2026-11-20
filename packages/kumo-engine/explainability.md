@@ -245,3 +245,37 @@ Incremental capture keeps one prediction batch in memory, and sink failures leav
 
 The separate [prediction-evidence guide](../../docs/evidence-bundles.md) covers original scoring graphs, signed numerical derivatives, portable bundles, controlled record removals and operator-managed interval calibration.
 These families have their own support boundaries and retained statuses; training or replay diagnostics never substitute for missing original-pass evidence.
+
+## Binary classification relevance and walks (restricted prototype)
+
+For a retained prediction evidence bundle and its trusted model bundle:
+
+```python
+explanation = evidence.explain_classification(
+    prediction_id, model="/path/to/model-bundle", selected_class=True,
+    max_walks=10000, top_k=20,
+)
+print(explanation["fields"])
+print(explanation["records"])
+print(explanation["accounting"])
+print(explanation["walks"])
+```
+
+This entry point requires a single binary prediction on CUDA float32, three sum/gather message-passing layers, linear/ReLU operations, fitted numerical/categorical encoders, no normalization and no compilation.
+Other architectures and tasks raise an error; multiclass classification is unqualified.
+The model checkpoint and encoders must match the retained evidence fingerprint.
+The field and graph hooks capture one execution together; the returned capture digest binds those actual tensors, while separate replay checks compare the raw logit and served positive-class probability with the original prediction.
+A matching score does not establish equality of hidden tensors across executions.
+Internal-tensor replay has an unresolved historical failure, so this remains a restricted prototype with mandatory per-execution replay and accounting checks.
+
+`smooth_floor_v1` is a distinct allocation rule, not unchanged canonical LRP.
+For operands `z`, sum `S`, absolute sum `A`, incoming relevance `R`, and `q=A/100+1e-9`, it allocates `R*z*S/(S*S+q*q)` and reports `R*q*q/(S*S+q*q)` as stabilization.
+Float64 allocation includes explicit bias, constants, stabilization and numerical residual; fitted-field totals plus these bins reconstruct the selected signed raw logit.
+Record subtotals preserve sampled occurrence identities even when primary keys repeat.
+Signs describe allocations, not probability changes, finite-removal directions or causal effects.
+
+Walks display bounded, typed paths with direction, layer and edge-occurrence identity.
+Their scores are encoded-input allocations, distinct from fitted-field subtotals.
+The display is capped at 100 paths and search at 10,000 expansions; incomplete search reports unknown total/omitted mass rather than an unsupported completeness claim.
+Positive and negative coverage are separate, and the displayed paths need not sum to the prediction.
+Existing registered walk methods retain their identities and behavior.
