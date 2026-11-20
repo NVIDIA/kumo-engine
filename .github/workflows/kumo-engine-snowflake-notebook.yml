@@ -38,7 +38,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - &check-environment
-        name: Verify maintainer-protected environment
+        name: Verify test environment policy
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py

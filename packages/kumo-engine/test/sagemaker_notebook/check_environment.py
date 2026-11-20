@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Require approved-branch dispatch and independent maintainer approval."""
+"""Require approved-branch dispatch and the configured test environment policy."""
 import sys
 from pathlib import Path
 
