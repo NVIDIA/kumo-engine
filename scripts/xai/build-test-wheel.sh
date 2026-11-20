@@ -2,10 +2,20 @@
 # Build and validate a committed candidate without changing the prototype.
 set -euo pipefail
 ENGINE="$(git rev-parse --show-toplevel)"
-PROTO="${XAI_PROTOTYPE:-/home/joliveira/kumo-work/supply-chain-xai-prototype}"
-PY312="${XAI_PYTHON:-/home/joliveira/.local/share/mise/installs/python/3.12.13/bin/python3}"
-RUST_BIN="${XAI_RUST_BIN:-/home/joliveira/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin}"
-test "$(git -C "$ENGINE" branch --show-current)" = supply-chain-xai
+PROTO="$(realpath -- "${XAI_PROTOTYPE:?Set XAI_PROTOTYPE to the supply-chain prototype checkout}")"
+PY312="${XAI_PYTHON:-python3.12}"
+"$PY312" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else "Python 3.12 required")'
+if [[ -n "${XAI_RUST_BIN:-}" ]]; then
+    export PATH="$XAI_RUST_BIN:$PATH"
+fi
+cargo --version
+rustc --version
+for input in build-requirements.txt pyproject.toml uv.lock data/modeling artifacts/runs/quality_v1/retained/model; do
+    if [[ ! -r "$PROTO/$input" ]]; then
+        printf 'Missing prototype input: %s\n' "$PROTO/$input" >&2
+        exit 1
+    fi
+done
 git -C "$ENGINE" diff --exit-code
 git -C "$ENGINE" diff --cached --exit-code
 UNCOMMITTED_SOURCE="$(git -C "$ENGINE" ls-files --others --exclude-standard -- packages/kumo-core packages/kumo-engine scripts/xai)"
@@ -30,7 +40,7 @@ export CARGO_HOME="$RUN/cache/cargo"
 export CARGO_TARGET_DIR="$RUN/cache/native-target"
 export XDG_CACHE_HOME="$RUN/cache"
 export CARGO_BUILD_JOBS=2
-export PATH="$RUN/build-venv/bin:$RUN/cargo-tools/bin:$RUST_BIN:/usr/bin:/bin"
+export PATH="$RUN/build-venv/bin:$RUN/cargo-tools/bin:$PATH"
 unset PYTHONPATH PYTHONHOME DISKGRAPH_INGEST_BIN
 "$RUN/build-venv/bin/python" -m pip --isolated install --index-url https://pypi.org/simple -r "$RUN/build-requirements.txt"
 cargo install cargo-zigbuild --version 0.24.1 --locked --root "$RUN/cargo-tools"
@@ -71,7 +81,7 @@ cd "$RUN/acceptance"
 export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
 export CUDA_VISIBLE_DEVICES="" PYTHONDONTWRITEBYTECODE=1
 /usr/bin/time -v -o "$RUN/unit.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I -m pytest tests --import-mode=prepend -p no:cacheprovider -q -s --junitxml="$RUN/unit.xml" > "$RUN/unit.log" 2>&1
-/usr/bin/time -v -o "$RUN/native.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I runner.py --suite native --wheel "$WHEEL" --source-revision "$REV" --output "$RUN/results/native" > "$RUN/native.log" 2>&1
+/usr/bin/time -v -o "$RUN/native.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I runner.py --suite native --prototype-root "$PROTO" --wheel "$WHEEL" --source-revision "$REV" --output "$RUN/results/native" > "$RUN/native.log" 2>&1
 /usr/bin/time -v -o "$RUN/walk-native.resources.txt" timeout 1800 "$RUN/test-venv/bin/python" -I walk_native_gate.py --wheel "$WHEEL" --output "$RUN/results/walk-native" > "$RUN/walk-native.log" 2>&1
 /usr/bin/time -v -o "$RUN/supply-chain.resources.txt" timeout 3600 "$RUN/test-venv/bin/python" -I runner.py --suite supply-chain --wheel "$WHEEL" --source-revision "$REV" --prototype-root "$PROTO" --output "$RUN/results/supply-chain" > "$RUN/supply-chain.log" 2>&1
 sha256sum "$RUN"/*.log "$RUN"/*.resources.txt "$RUN"/results/*/acceptance.json > "$RUN/acceptance-evidence.sha256"

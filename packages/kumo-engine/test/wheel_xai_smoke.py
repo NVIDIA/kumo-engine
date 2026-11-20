@@ -459,10 +459,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     output = args.output.resolve()
-    prototype = (args.prototype_root
-                 or Path('/home/joliveira/kumo-work/supply-chain-xai-prototype')
-                 ).resolve()
-    if output.is_relative_to(prototype):
+    if args.suite == 'supply-chain' and args.prototype_root is None:
+        parser.error('--suite supply-chain requires --prototype-root')
+    prototype = args.prototype_root.resolve() if args.prototype_root else None
+    if prototype is not None and output.is_relative_to(prototype):
         raise ValueError('Never write acceptance outputs inside the prototype')
     output.mkdir(parents=True, exist_ok=False)
     if args.development:

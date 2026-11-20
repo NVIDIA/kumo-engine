@@ -184,7 +184,6 @@ Ordinary prediction export and model saving still do not include evidence.
 
 Build the merged test wheel using [the supported builder](../packages/kumo-engine/scripts/build_wheel.sh), then run [the installed-wheel smoke harness](../packages/kumo-engine/test/wheel_xai_smoke.py) outside the source checkout.
 Source-overlay unit tests are not installed-wheel acceptance evidence.
-The [local wheel runbook](evidence-validation.md) gives exact commands, acceptance stages, resource estimates and rollback instructions.
 
 Methodology references: [conformal tutorial](https://arxiv.org/abs/2107.07511), [exchangeability and drift](https://arxiv.org/abs/2202.13415), [conformalized quantile regression](https://arxiv.org/abs/1905.03222), [GNNExplainer](https://arxiv.org/abs/1903.03894), and [Integrated Gradients](https://proceedings.mlr.press/v70/sundararajan17a.html).
 The last two are methodological alternatives, not claims of implemented causal or additive attribution.
