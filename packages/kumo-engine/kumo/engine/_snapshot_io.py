@@ -10,13 +10,21 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.diskgraph.sampling_artifacts import (
+    ArtifactFile,
+    relative_artifact_path,
+)
 from pyarrow.fs import FileSystem
+
+from kumo.engine.connector.base import Connector
 
 _FORMAT = 1
 _MANIFEST = 'kumo_snapshot.json'
@@ -40,7 +48,7 @@ def _location(connector: Any, path: str) -> Tuple[FileSystem, str]:
     store = file_store(connector, path)
     if store is None:
         raise NotImplementedError(
-            f'{type(connector).__name__} cannot hold a snapshot export; use '
+            f'{type(connector).__name__} cannot hold an artifact export; use '
             'an S3, GCS or file connector.')
     return store
 
@@ -87,28 +95,39 @@ class _Progress:
                     and self.moved < self.total):
                 return
             self.logged = now
-        logger.info('Snapshot %s of %s: %d of %d bytes, %.2f GB/s',
+        logger.info('Artifact %s of %s: %d of %d bytes, %.2f GB/s',
                     self.action, self.path, self.moved, self.total,
                     self.moved / max(now - self.started, 1e-9) / 1e9)
 
 
+@dataclass(frozen=True)
+class _TransferWork:
+    action: str
+    run: Callable[..., Any]
+    uploaded: Callable[[Any], None] | None = None
+
+
 def _transfer(connector: Any, path: str, items: Sequence[Any],
-              sizes: Sequence[int], work: Callable[..., Any],
-              action: str) -> List[Any]:
+              sizes: Sequence[int], work: _TransferWork) -> List[Any]:
     from kumo_core.sources.object_store import copies
     from kumo_core.sources.parallel import run_in_parallel
 
     if not items:
         return []
     stop = threading.Event()
+    notification_lock = threading.Lock()
     with copies(items) as workers:
         client = _Client(connector, path)
-        logger.info('Snapshot %s of %s: %d files, %d bytes, %d workers',
-                    action, path, len(items), sum(sizes), workers)
-        progress = _Progress(action, path, sum(sizes))
+        logger.info('Artifact %s of %s: %d files, %d bytes, %d workers',
+                    work.action, path, len(items), sum(sizes), workers)
+        progress = _Progress(work.action, path, sum(sizes))
 
         def run(item: Any, size: int) -> Any:
-            result = _retried(client, work, item, stop)
+            result = _retried(client, work.run, item, stop)
+            if work.uploaded is not None:
+                with notification_lock:
+                    _stopped(stop)
+                    work.uploaded(result)
             progress.add(size)
             return result
 
@@ -130,7 +149,7 @@ def _retried(client: _Client, work: Callable[..., Any], item: Any,
         except OSError as error:
             if attempt + 1 == _ATTEMPTS:
                 raise
-            logger.warning('Retrying a snapshot transfer after: %s', error)
+            logger.warning('Retrying an artifact transfer after: %s', error)
             client.renew(current)
             stop.wait(2**attempt)
             attempt += 1
@@ -141,6 +160,72 @@ def _stopped(stop: threading.Event) -> None:
 
     if stop.is_set():
         raise WorkCancelled('abandoned after another transfer failed')
+
+
+def upload_files(
+    connector: Connector,
+    source: Path,
+    path: str,
+    files: Mapping[str, int],
+    on_file_uploaded: Callable[[str, ArtifactFile], None] | None = None,
+) -> tuple[ArtifactFile, ...]:
+    """Upload files through the MLOps transfer, retry and progress machinery.
+
+    Args:
+        connector: Connector owning the destination.
+        source: Immutable local root containing the inventory.
+        path: Connector-relative destination directory.
+        files: Relative file names and expected byte sizes.
+        on_file_uploaded: Serialized notification after a successful stream close.
+            Callback errors propagate outside the upload retry loop.
+    Returns:
+        File identities when notifications are requested, otherwise an empty tuple.
+        Digests are computed while uploading only when a notification needs them.
+    Raises:
+        ValueError: If paths escape the source or the inventory changes.
+        OSError: If upload fails after retries.
+    """
+    if not files:
+        return ()
+    source = source.resolve(strict=True)
+    for name, size in files.items():
+        relative_artifact_path(name)
+        if size < 0:
+            raise ValueError('Artifact sizes must be nonnegative')
+    _, target = _location(connector, path)
+
+    def upload(client: FileSystem, name: str,
+               stop: threading.Event) -> ArtifactFile | None:
+        local = source / relative_artifact_path(name)
+        before = local.stat()
+        if local.is_symlink() or not local.resolve(strict=True).is_relative_to(source):
+            raise ValueError('Symbolic-link artifact or source outside its root')
+        size = files[name]
+        if before.st_size != size:
+            raise ValueError('Artifact size differs from its inventory')
+        digest = hashlib.sha256() if on_file_uploaded is not None else None
+        with local.open('rb', buffering=0) as reader, _open_output(
+                client, f'{target}/{name}', size) as writer:
+            for offset in range(0, size, _CHUNK):
+                _stopped(stop)
+                expected = min(_CHUNK, size - offset)
+                chunk = reader.read(expected)
+                if len(chunk) != expected:
+                    raise ValueError('Artifact changed while it was exported')
+                writer.write(chunk)
+                if digest is not None:
+                    digest.update(chunk)
+        after = local.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise ValueError('Artifact changed while it was exported')
+        return None if digest is None else ArtifactFile(name, size, digest.hexdigest())
+
+    names = sorted(files, key=lambda name: -files[name])
+    notify = (None if on_file_uploaded is None else
+              lambda entry: on_file_uploaded(target, entry))
+    result = _transfer(connector, path, names, [files[name] for name in names],
+                       _TransferWork('export', upload, notify))
+    return tuple(entry for entry in result if entry is not None)
 
 
 def _read_json(filesystem: FileSystem, path: str) -> Optional[Any]:
@@ -200,7 +285,19 @@ def export_location(snapshot: Any, path: str) -> str:
     return f"{path.rstrip('/')}/{graph_key}/{data_version[:16]}"
 
 
-def store(snapshot: Any, settings: Any) -> None:
+def store(snapshot: Any, settings: Any,
+          on_file_uploaded: Callable[[str, ArtifactFile], None] | None = None,
+          on_files_uploaded: Callable[[], None] | None = None) -> None:
+    """Store a snapshot using the configured artifact root.
+
+    Args:
+        snapshot: Completed immutable graph snapshot.
+        settings: MLOps settings supplying its writable artifact root.
+        on_file_uploaded: Serialized notification after each successful file close.
+        on_files_uploaded: Replica barrier invoked before committing the export.
+    Raises:
+        RuntimeError: If upload, notification, or the replica barrier fails.
+    """
     from kumo.engine._manifest import SnapshotManifest
     from kumo.engine._mlops import snapshot_path
 
@@ -215,15 +312,38 @@ def store(snapshot: Any, settings: Any) -> None:
             marker = _read_json(filesystem, f'{root}/{_MANIFEST}')
         except ValueError:
             marker = None
-        if not (isinstance(marker, dict) and marker.get('format') == _FORMAT
+        if on_file_uploaded is not None or not (
+                isinstance(marker, dict) and marker.get('format') == _FORMAT
                 and marker.get('snapshot_id') == snapshot.id):
-            export(snapshot, connector, path)
+            if on_file_uploaded is None:
+                export(snapshot, connector, path)
+            else:
+                export(snapshot, connector, path,
+                       on_file_uploaded=on_file_uploaded,
+                       on_files_uploaded=on_files_uploaded)
     except Exception as error:
         raise RuntimeError(f"Could not store snapshot {snapshot.id} under the "
                            f"artifact root: {error}") from error
 
 
-def export(snapshot: Any, connector: Any, path: str) -> str:
+def export(snapshot: Any, connector: Any, path: str, *,
+           on_file_uploaded: Callable[[str, ArtifactFile], None] | None = None,
+           on_files_uploaded: Callable[[], None] | None = None) -> str:
+    """Export a graph, optionally pipelining replica downloads before commit.
+
+    Args:
+        snapshot: Completed immutable graph snapshot.
+        connector: Connector providing the destination filesystem.
+        path: Snapshot parent directory on the connector.
+        on_file_uploaded: Receives the storage directory and verified file identity.
+            Callback failures propagate without retrying the successful upload.
+        on_files_uploaded: Final replica barrier; failure preserves the last export.
+    Returns:
+        Connector-relative location of the committed snapshot export.
+    Raises:
+        OSError: If artifact reads or writes fail after retries.
+        ValueError: If the snapshot identity or artifact inventory is invalid.
+    """
     from diskgraph import snapshot_range_checksums
 
     from kumo.engine._provenance import environment
@@ -231,8 +351,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     graph_key, data_version = snapshot._graph_key, snapshot._data_version
     location = export_location(snapshot, path)
     snapshot_manifest = _snapshot_manifest(snapshot)
-    if _holds_copy(connector, location, snapshot.id, source,
-                   snapshot_manifest):
+    if on_file_uploaded is None and _holds_copy(
+            connector, location, snapshot.id, source, snapshot_manifest):
         logger.info('%s already holds an identical export of snapshot %s; '
                     'reused it', location, snapshot.id)
         return location
@@ -242,26 +362,17 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
     filesystem, root = _location(connector, location)
     base = f'{root}/{generation}'
 
-    def upload(client: FileSystem, name: str, stop: threading.Event) -> None:
-        size = sizes[name]
-        with open(source / name, 'rb', buffering=0) as reader, _open_output(
-                client, f'{base}/index/{name}', size) as writer:
-            for offset in range(0, size, _CHUNK):
-                _stopped(stop)
-                chunk = reader.read(min(_CHUNK, size - offset))
-                if len(chunk) != min(_CHUNK, size - offset):
-                    raise OSError(f'{source / name} changed while it was '
-                                  'exported')
-                writer.write(chunk)
-
-    names = sorted(sizes, key=lambda name: -sizes[name])
+    if on_file_uploaded is not None:
+        sizes.update({name: (source / name).stat().st_size
+                      for name in (_INDEX_MANIFEST, '_SUCCESS', PROVENANCE_FILE)
+                      if (source / name).is_file()})
     with ThreadPoolExecutor(1) as pool:
-        checksums = pool.submit(snapshot_range_checksums, str(source),
-                                _RANGE_BYTES)
-        _transfer(connector, location, names,
-                  [sizes[name] for name in names], upload, 'export')
+        checksums = pool.submit(snapshot_range_checksums, str(source), _RANGE_BYTES)
+        upload_files(connector, source, f'{location}/{generation}/index', sizes,
+                     on_file_uploaded)
         crc32 = checksums.result()
-    _write(filesystem, f'{base}/index/{_INDEX_MANIFEST}', index_manifest)
+    if on_file_uploaded is None:
+        _write(filesystem, f'{base}/index/{_INDEX_MANIFEST}', index_manifest)
     _write(filesystem, f'{base}/{PROVENANCE_FILE}', snapshot_manifest)
     marker = {
         'format': _FORMAT,
@@ -275,6 +386,8 @@ def export(snapshot: Any, connector: Any, path: str) -> str:
         'range_bytes': _RANGE_BYTES,
         'crc32': crc32,
     }
+    if on_files_uploaded is not None:
+        on_files_uploaded()
     _commit(filesystem, root, generation, json.dumps(marker).encode())
     try:
         (source / _EXPORT_IDENTITY).write_text(export_identity(marker))
@@ -464,7 +577,7 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
                         key=lambda item: -item[2])
         try:
             _transfer(connector, path, ranges, [item[2] for item in ranges],
-                      partial(_download, root, staging), 'load')
+                      _TransferWork('load', partial(_download, root, staging)))
         except ValueError as error:
             raise _corrupt(path, str(error)) from error
         (staging / _INDEX_MANIFEST).write_bytes(index_manifest)

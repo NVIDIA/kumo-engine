@@ -761,7 +761,7 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
         warnings.simplefilter('always')
         result = trainer.fit(
             SimpleNamespace(query='PREDICT COUNT(*)'),
-            snapshot=SimpleNamespace(id='s'),
+            snapshot=SimpleNamespace(id='s', _compute=None),
             mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
                              registry=registry, store=False))
     failures = [w for w in caught if 'Could not register' in str(w.message)]
@@ -776,7 +776,7 @@ def test_mlops_registry_registers_after_the_fit(tmp_path: Path, monkeypatch,
         with pytest.raises(RuntimeError, match='ZeroDivisionError') as raised:
             trainer.fit(
                 SimpleNamespace(query='PREDICT COUNT(*)'),
-                snapshot=SimpleNamespace(id='s'),
+                snapshot=SimpleNamespace(id='s', _compute=None),
                 mlops=kumo.MLOps(str(tmp_path / 'root'), tracking=tracker,
                                  registry=registry, store=False,
                                  on_error='raise'))
@@ -790,7 +790,7 @@ def test_mlops_registry_alias_is_checked_before_the_fit(tmp_path: Path,
     monkeypatch.setattr(Trainer, '_fit', lambda *a, **k: 1 / 0)
     with pytest.raises(ValueError, match='model alias'):
         Trainer(ModelPlan()).fit(
-            SimpleNamespace(query='q'), snapshot=SimpleNamespace(id='s'),
+            SimpleNamespace(query='q'), snapshot=SimpleNamespace(id='s', _compute=None),
             mlops=kumo.MLOps(
                 str(tmp_path), tracking=_RegistryTracker(_AliasingSink()),
                 registry=ModelRegistryLocation('CHURN_GNN', alias='LATEST'),

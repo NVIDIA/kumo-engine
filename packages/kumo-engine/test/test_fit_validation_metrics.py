@@ -20,9 +20,8 @@ def test_invalid_model_plan_fails_before_task_materialization(
     from dataclasses import replace
     from unittest.mock import Mock
 
+    import kumo_core.training.preparation as preparation_module
     from kumo_core.model_plan import TrainingTableGenerationPlan
-
-    import kumo.engine.trainer.trainer as trainer_module
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -51,7 +50,7 @@ def test_invalid_model_plan_fails_before_task_materialization(
         original = deepcopy(plan)
         trainer = kumo.Trainer(plan)
         materialize = Mock(side_effect=AssertionError('materialization began'))
-        monkeypatch.setattr(trainer_module,
+        monkeypatch.setattr(preparation_module,
                             'build_generated_training_task_dataset', materialize)
 
         with pytest.raises(ValueError, match=error):
@@ -69,9 +68,8 @@ def test_fit_warns_about_random_split_before_task_materialization(
         tmp_path, monkeypatch, caplog):
     from unittest.mock import Mock
 
+    import kumo_core.training.preparation as preparation_module
     from kumoapi.model_plan import TrainingTableGenerationPlan
-
-    import kumo.engine.trainer.trainer as trainer_module
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -97,7 +95,7 @@ def test_fit_warns_about_random_split_before_task_materialization(
                 split='RandomSplit(ratio=[0.8, 0.1, 0.1])'))
         caplog.clear()
         materialize = Mock(side_effect=RuntimeError('stop after validation'))
-        monkeypatch.setattr(trainer_module,
+        monkeypatch.setattr(preparation_module,
                             'build_generated_training_task_dataset',
                             materialize)
 
@@ -119,10 +117,9 @@ def test_model_plan_uses_normalized_weight_schema(tmp_path, monkeypatch,
     from pathlib import Path
     from unittest.mock import Mock
 
+    import kumo_core.training.preparation as preparation_module
     import kumo_core.training.workflow as workflow
     from kumoapi.train import TrainingTableSpec
-
-    import kumo.engine.trainer.trainer as trainer_module
 
     previous = get_scratch_dir()
     kumo.configure(scratch_dir=tmp_path / 'scratch')
@@ -166,7 +163,7 @@ def test_model_plan_uses_normalized_weight_schema(tmp_path, monkeypatch,
         else:
             before = set(snapshot.index_path.rglob('*'))
             materialize = Mock(side_effect=AssertionError('materialization began'))
-            monkeypatch.setattr(trainer_module,
+            monkeypatch.setattr(preparation_module,
                                 'build_generated_training_task_dataset',
                                 materialize)
             with pytest.raises(ValueError, match='weight_mode.*not supported'):

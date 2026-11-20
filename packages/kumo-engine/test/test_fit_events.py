@@ -72,12 +72,12 @@ def test_fit_reports_progress_events(table_and_snapshot, quick_plan,
 
 
 def test_failed_fit_reports_fit_ended(table_and_snapshot, monkeypatch):
-    import kumo.engine.trainer.trainer as trainer_module
+    import kumo_core.training.preparation as preparation_module
 
     def fail(*args, **kwargs):
         raise ValueError('stop')
 
-    monkeypatch.setattr(trainer_module, 'build_generated_training_task_dataset',
+    monkeypatch.setattr(preparation_module, 'build_generated_training_task_dataset',
                         fail)
     table, snapshot = table_and_snapshot
     events = []

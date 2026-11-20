@@ -107,6 +107,7 @@ from kumo.engine.connector.base import Connector
 from kumo.engine.table import Table
 
 if TYPE_CHECKING:
+    from kumo.engine.cluster import ComputeCluster
     from kumo.engine.trainer.output_config import SnapshotOutputConfig
 
 logger = logging.getLogger(__name__)
@@ -291,6 +292,26 @@ def report_other_graph(message: str, before: Optional[Mapping[str, Any]],
                   stacklevel=stacklevel + 1)
 
 
+@dataclass(frozen=True)
+class _SnapshotSources:
+    versions: Dict[str, str]
+    paths: Dict[str, str]
+    tables: Dict[str, SourceTableEntry]
+
+    def data_version(self, timestamp_precision: TimestampPrecision) -> str:
+        """Return the source-version fingerprint for the selected index clock.
+
+        Args:
+            timestamp_precision: Timestamp resolution encoded in this index.
+        Returns:
+            Stable fingerprint matching local snapshot identity semantics.
+        """
+        parts = [json.dumps(self.versions, sort_keys=True).encode()]
+        if timestamp_precision != 'seconds':
+            parts.append(timestamp_precision.encode())
+        return fingerprint(*parts)
+
+
 class _SnapshotEvents(EventEmitter):
 
     def __init__(self, callbacks: Sequence[Callable[[Event], None]]):
@@ -443,6 +464,7 @@ class GraphSnapshot:
     index_path: Path
     graph_config: Dict[str, Any]
     record_sources: bool | None = field(default=None, compare=False)
+    _compute: 'ComputeCluster | None' = field(default=None, compare=False, repr=False)
 
     @property
     def _graph_key(self) -> str:
@@ -786,7 +808,8 @@ class Graph:
         `"nanoseconds"`, `"microseconds"`, `"milliseconds"`, `"seconds"` (the
         default), `"hours"` or `"days"`. Window lengths truncate to the clock,
         and a window shorter than one tick is a configuration error. Each
-        clock is cached as a separate snapshot.
+        clock is cached as a separate snapshot. When configured by `kumo.init`,
+        the ComputeCluster builds or reuses this index on remote workers.
 
         Args:
             mlops: also export the snapshot under this `kumo.MLOps` root.
@@ -794,6 +817,20 @@ class Graph:
                 SQL text.
             callbacks: called with each progress `Event`.
         """
+        from kumo.engine.config import _get_compute_cluster
+
+        cluster = _get_compute_cluster()
+        if cluster is not None:
+            if mlops is not None:
+                raise ValueError(
+                    'Configure cluster storage through '
+                    'kumo.init(artifact_root=...)')
+            if callbacks:
+                raise ValueError('Remote snapshot callbacks are not supported')
+            return cluster._graph_snapshot(self, {
+                'timestamp_precision': timestamp_precision,
+                'record_sources': record_sources,
+            })
         validate_timestamp_precision(timestamp_precision)
         self.validate()
         for table in self._named_tables.values():
@@ -840,12 +877,78 @@ class Graph:
                 raise_on_error(settings, error, 'Graph.snapshot')
         return snapshot
 
+    def _stage_snapshot_sources(
+        self, persist_dir: Path, record_sources: bool,
+        events: Optional['_SnapshotEvents'] = None,
+    ) -> '_SnapshotSources':
+        from kumo_core.sources.layout import staging_dir
+        from kumoapi.source_table import CustomSQLSourceTable
+
+        from kumo.engine.connector.source_table import checked_sql
+
+        table_data_versions: Dict[str, str] = {}
+        source_paths: Dict[str, str] = {}
+        source_tables: Dict[str, SourceTableEntry] = {}
+        for alias, table in self._named_tables.items():
+            assert table.definition is not None  # portable_graph_config
+            # already required this.
+            connector = table.connector
+            source_backend = connector.source_backend
+            dest_dir = staging_dir(persist_dir, alias)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+
+            name, sql = table.table_name, None
+            source = table.definition.source_table
+            if isinstance(source, CustomSQLSourceTable):
+                checked = checked_sql(connector, source.sql)
+                name, sql = checked.table, checked.sql
+            prepared = source_backend.prepare_ingest(
+                connector,
+                name,
+                str(dest_dir),
+                dtypes={
+                    col.name: col.dtype
+                    for col in table.definition.cols
+                },
+                sql=sql,
+            )
+            if prepared.credentials is not None:
+                raise NotImplementedError(
+                    "TODO(local-sdk): scoped per-table ingest credentials "
+                    "(PrepareIngestResult.credentials) aren't wired through "
+                    "to kumo-core's ingest yet -- matches the current "
+                    "limitation in kumoai/backend/local/graph.py's "
+                    "_stage_sources, which raises the same way.")
+            table_data_versions[alias] = prepared.version
+            if events is not None:
+                events.emit('table_staged', params={'table': alias})
+            source_tables[alias] = source_table(
+                connector, name, sql, prepared.version,
+                record_sources=record_sources)
+
+            paths = prepared.source.get('paths') or []
+            if paths:
+                parents = {str(Path(path).parent) for path in paths}
+                if len(parents) != 1:
+                    raise NotImplementedError(
+                        "TODO(local-sdk): a table staged across multiple "
+                        "directories isn't handled here (mirrors "
+                        "kumoai/backend/local/graph.py's create_snapshot, "
+                        "which also refuses this case).")
+                source_paths[alias] = parents.pop()
+            else:
+                source_paths[alias] = str(
+                    prepared.source.get('path') or dest_dir)
+
+        return _SnapshotSources(table_data_versions, source_paths, source_tables)
+
     def _snapshot_no_lock(
             self, graph_key: str, persist_dir: Path,
             timestamp_precision: TimestampPrecision = 'seconds',
             record_sources: bool = True,
             events: Optional['_SnapshotEvents'] = None,
-            *, timed: bool = False) -> GraphSnapshot:
+            *, timed: bool = False,
+            prepared: Optional['_SnapshotSources'] = None) -> GraphSnapshot:
         r"""`snapshot()`'s body, run under its `FileLock`. Not meant to be
         called on its own -- `persist_dir`, unlike everything else here,
         isn't a pure function of `self` alone (it's `snapshot()`'s lock key,
@@ -863,78 +966,20 @@ class Graph:
             check_diskgraph_output,
         )
         from kumo_core.diskgraph.stores import diskgraph_index_size_bytes
-        from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
-        from kumoapi.source_table import CustomSQLSourceTable
-
-        from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
         store = _store()
 
-        table_data_versions: Dict[str, str] = {}
-        source_paths: Dict[str, str] = {}
-        source_tables: Dict[str, SourceTableEntry] = {}
-
         started = start() if timed else None
         try:
-            for alias, table in self._named_tables.items():
-                assert table.definition is not None  # portable_graph_config
-                # already required this.
-                connector = table.connector
-                source_backend = connector.source_backend
-                dest_dir = staging_dir(persist_dir, alias)
-                dest_dir.mkdir(parents=True, exist_ok=True)
+            sources = prepared or self._stage_snapshot_sources(
+                persist_dir, record_sources, events)
+            table_data_versions = sources.versions
+            source_paths = sources.paths
+            source_tables = sources.tables
 
-                name, sql = table.table_name, None
-                source = table.definition.source_table
-                if isinstance(source, CustomSQLSourceTable):
-                    checked = checked_sql(connector, source.sql)
-                    name, sql = checked.table, checked.sql
-                prepared = source_backend.prepare_ingest(
-                    connector,
-                    name,
-                    str(dest_dir),
-                    dtypes={
-                        col.name: col.dtype
-                        for col in table.definition.cols
-                    },
-                    sql=sql,
-                )
-                if prepared.credentials is not None:
-                    raise NotImplementedError(
-                        "TODO(local-sdk): scoped per-table ingest credentials "
-                        "(PrepareIngestResult.credentials) aren't wired through "
-                        "to kumo-core's ingest yet -- matches the current "
-                        "limitation in kumoai/backend/local/graph.py's "
-                        "_stage_sources, which raises the same way.")
-                table_data_versions[alias] = prepared.version
-                if events is not None:
-                    events.emit('table_staged', params={'table': alias})
-                source_tables[alias] = source_table(
-                    connector, name, sql, prepared.version,
-                    record_sources=record_sources)
-
-                paths = prepared.source.get('paths') or []
-                if paths:
-                    parents = {str(Path(path).parent) for path in paths}
-                    if len(parents) != 1:
-                        raise NotImplementedError(
-                            "TODO(local-sdk): a table staged across multiple "
-                            "directories isn't handled here (mirrors "
-                            "kumoai/backend/local/graph.py's create_snapshot, "
-                            "which also refuses this case).")
-                    source_paths[alias] = parents.pop()
-                else:
-                    source_paths[alias] = str(
-                        prepared.source.get('path') or dest_dir)
-
-            version_parts = [
-                json.dumps(table_data_versions, sort_keys=True).encode()
-            ]
-            if timestamp_precision != 'seconds':
-                version_parts.append(timestamp_precision.encode())
-            data_version = fingerprint(*version_parts)
+            data_version = sources.data_version(timestamp_precision)
             handle = DiskgraphSnapshotHandle(graph_key=graph_key,
                                              graph_data_version=data_version)
             output_dir = Path(store.path(handle))

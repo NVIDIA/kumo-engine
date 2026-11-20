@@ -34,7 +34,7 @@ ALIAS = re.compile(r'\bkumo\.([A-Za-z_][A-Za-z0-9_]*)')
 # Names the skills say do not exist (superseded or hosted-only) and must never be emitted.
 NOT_EXPORTED = {
     'ComputeType', 'Dtype', 'EdgeType', 'FilesystemArtifactLocation', 'LocalBackend', 'NodeType',
-    'Session', 'Storage', 'Stype', 'create_identity', 'get_backend', 'init', 'set_backend',
+    'Session', 'Storage', 'Stype', 'create_identity', 'get_backend', 'set_backend',
     'test_identity_credentials',
 }
 
