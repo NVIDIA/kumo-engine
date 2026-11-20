@@ -178,7 +178,7 @@ def test_check_ignores_the_build_stamp_but_not_content(tmp_path: Path, catalog: 
 
 
 def test_publish_leaves_unchanged_skills_and_their_stamp_alone(tmp_path: Path,
-                                                              catalog: Path) -> None:
+                                                               catalog: Path) -> None:
     """Refreshing one skill must not rewrite another, or NVSkills CI re-signs it for nothing."""
     dest = tmp_path / 'skills'
     publish_nvskills.publish(dest, catalog)
