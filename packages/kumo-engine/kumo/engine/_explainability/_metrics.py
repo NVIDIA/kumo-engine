@@ -150,8 +150,8 @@ def _table(run: Run, holdout: dict[str, float],
     out = [
         dict(
             name=name, tune=tune, baseline=False, texts=[
-                None if values[i] is None else fmt.number(values[i])
-                for i in keep
+                None if value is None else fmt.number(value)
+                for value in (values[i] for i in keep)
             ]) for name, tune, values in rows
     ]
     # A baseline is scored on the holdout alone; its rows group by baseline.
