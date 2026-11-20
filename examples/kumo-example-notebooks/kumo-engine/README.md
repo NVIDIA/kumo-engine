@@ -14,8 +14,12 @@ The synthetic industry notebooks below generate their own related tables and use
 | --- | --- | --- |
 | [Build a custom training table](cross-industry/notebooks/local_kumo_engine_custom_training_table.ipynb) | Local | Focused workflow |
 | [Choose a static or temporal query](cross-industry/notebooks/local_kumo_engine_static_and_temporal_queries.ipynb) | Local | Focused workflow |
+| [Choose exactly which rows to score](cross-industry/notebooks/local_kumo_engine_custom_prediction_table.ipynb) | Local | Focused workflow |
 | [Choose the customers to score](cross-industry/notebooks/databricks_kumo_engine_custom_prediction_population.ipynb) | Databricks | Focused workflow |
+| [Predict the rows that have no label yet](cross-industry/notebooks/local_kumo_engine_static_query_predictions.ipynb) | Local | Focused workflow |
 | [Preview graph visualization](cross-industry/notebooks/local_kumo_engine_graph_visualization_preview.ipynb) | Local | Commented preview |
+| [Score new customers as data arrives](cross-industry/notebooks/local_kumo_engine_incremental_scoring.ipynb) | Local | Focused workflow |
+| [Train on your own labeled rows with a temporal query](cross-industry/notebooks/local_kumo_engine_temporal_custom_training_table.ipynb) | Local | Focused workflow |
 
 ### SDK code examples
 
