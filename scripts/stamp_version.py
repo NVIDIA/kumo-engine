@@ -59,6 +59,9 @@ SITES = (
     # kumo-engine's wheel metadata reads this (setuptools `attr`).
     Site('packages/kumo-engine/kumo/engine/_version.py', '__version__',
          PYTHON_VERSION, semver=False),
+    # kumo.pytorch ships inside the kumo-engine wheel.
+    Site('packages/experimental/kumo-pytorch/src/kumo/pytorch/__about__.py',
+         '__version__', PYTHON_VERSION, semver=False),
     # kumo-sdk's wheel metadata reads this; its release workflow rewrites it
     # through packages/kumo-sdk/scripts/set_version.py, which sets VERSION.
     Site('packages/kumo-sdk/kumoai_studio/_version.py', '__version__',

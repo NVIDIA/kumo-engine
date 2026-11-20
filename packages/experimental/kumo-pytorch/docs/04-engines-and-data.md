@@ -148,7 +148,6 @@ changes, loading fails loudly instead of quietly reading a different type.
 
 The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 [kumo-engine README](https://github.com/NVIDIA/kumo-engine#readme) describes.
-[Installation](installation.md) explains how to install it.
 
 ### Building and reusing the index
 

@@ -21,15 +21,9 @@ ideas these examples use.
 
 ## Running them
 
-The notebooks need kumo-pytorch with its `examples` extra and Jupyter, which
-[installation](../docs/installation.md) covers. DiskGraph is installed with
-kumo-pytorch, so the pragma-fraud and churn examples need nothing more. Then open
-`walkthrough.ipynb` in the example's folder with Jupyter.
+The notebooks need kumo-engine with the `pytorch` extra (see [Install](../README.md#install)) and Jupyter. kumo-engine also installs DiskGraph and PyTorch Geometric, which hm-recommendation uses, so the examples need nothing more. Then open `walkthrough.ipynb` in the example's folder with Jupyter.
 
-You can also run every notebook headless, the way kumo-engine's CI does. Set up
-the kumo-engine checkout as described in
-[running the tests and notebooks from a checkout](../docs/installation.md#run-the-tests-and-notebooks-from-a-checkout),
-then, with that environment active, run this from `packages/experimental/kumo-pytorch`:
+You can also run every notebook headless, the way kumo-engine's CI does. Set up the kumo-engine checkout as described in [development](../README.md#development), then, with that environment active, run this from `packages/experimental/kumo-pytorch`:
 
 ```bash
 python -m pytest -m notebook

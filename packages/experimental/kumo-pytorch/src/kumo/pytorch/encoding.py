@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import importlib.util
 import json
 import math
 from collections import Counter
@@ -186,6 +187,7 @@ class FittedEncoder:
 
     @cached_property
     def tokenizer(self):
+        _require_tokenizers()
         from tokenizers import Tokenizer
 
         tokenizer = Tokenizer.from_str(self.tokenizer_json)
@@ -417,7 +419,18 @@ TEXT_SPECIAL_TOKENS = ["[MISSING]", "[UNK]"]
 TEXT_UNKNOWN = "[UNK]"
 
 
+def _require_tokenizers() -> None:
+    """Text encodings need tokenizers, which kumo-engine installs with its `pytorch` extra."""
+
+    if importlib.util.find_spec("tokenizers") is None:
+        raise ModuleNotFoundError(
+            'Text encodings need the tokenizers package: pip install "kumo-engine[pytorch]"',
+            name="tokenizers",
+        )
+
+
 def train_text(config: Text, batches: Iterable[Sequence[str]]) -> str:
+    _require_tokenizers()
     from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
     tokenizer = Tokenizer(models.BPE(unk_token=TEXT_UNKNOWN))
@@ -531,6 +544,7 @@ def fit_encoder(
             boundaries=tuple(float(value) for value in boundaries),
         )
     if isinstance(config, Text):
+        _require_tokenizers()
         from tokenizers import Tokenizer
 
         if config.state is not None:

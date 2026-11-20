@@ -128,8 +128,8 @@ def verify_wheel(path: Path, platform_tag: str) -> dict[str, list[str]]:
         if wheel_metadata.get_all('Tag') != [expected_tag]:
             raise ValueError('Wheel metadata tag differs from its filename')
         required = {
-            'kumo/engine/__init__.py', 'kumo_core/__init__.py',
-            'kumoapi/__init__.py', 'kumopql/__init__.py',
+            'kumo/engine/__init__.py', 'kumo/pytorch/__init__.py',
+            'kumo_core/__init__.py', 'kumoapi/__init__.py', 'kumopql/__init__.py',
             'diskgraph/__init__.py', 'kumo_bundle_manifest.json',
             dist_info + '/licenses/LICENSE',
             dist_info + '/licenses/THIRD-PARTY.txt',
