@@ -354,3 +354,24 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     assert '-- --exact | tee directory-sync-tests.log' in build
     assert "grep -Eq '^test result: ok\\. 1 passed;'" in build
     assert 'snapshot_mirror::tests | tee snapshot-mirror-tests.log' in build
+    assert 'success_marker::tests | tee success-marker-tests.log' in build
+    assert ("grep -Eq '^test result: ok\\. [1-9][0-9]* passed;' "
+            'success-marker-tests.log') in build
+
+
+@pytest.mark.parametrize('marker_tests', [0, 1])
+def test_windows_marker_guard_requires_executed_tests(tmp_path, marker_tests):
+    cargo = '''cargo() {
+      count=1
+      if [[ "$*" == *success_marker::tests* ]]; then
+        count="$MARKER_TESTS"
+      fi
+      printf 'test result: ok. %s passed;\\n' "$count"
+    }
+    '''
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', cargo +
+         _step('build', 'Test Windows path validation')['run']],
+        cwd=tmp_path, env=dict(os.environ, MARKER_TESTS=str(marker_tests)),
+        capture_output=True, text=True, timeout=15)
+    assert (result.returncode == 0) == (marker_tests > 0)

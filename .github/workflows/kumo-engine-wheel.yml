@@ -193,6 +193,11 @@ jobs:
             --release --locked -p diskgraph-ingest --lib \
             snapshot_mirror::tests | tee snapshot-mirror-tests.log
           grep -Eq '^test result: ok\. [1-9][0-9]* passed;' snapshot-mirror-tests.log
+          cargo --config packages/diskgraph/.cargo/config.toml \
+            test --manifest-path packages/diskgraph/Cargo.toml \
+            --release --locked -p diskgraph-ingest --lib \
+            success_marker::tests | tee success-marker-tests.log
+          grep -Eq '^test result: ok\. [1-9][0-9]* passed;' success-marker-tests.log
 
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
       # Native Windows wheels are experimental internal CI artifacts only.
