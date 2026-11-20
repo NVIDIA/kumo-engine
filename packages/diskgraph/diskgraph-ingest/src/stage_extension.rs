@@ -101,6 +101,7 @@ pub struct ResolveSpec {
 /// Helper used by the synthetic-column appender to build a NEW node-id column.
 fn node_id_column(name: &str, dtype: IngestedType) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: name.to_string(),
         source_dtype: None,
         ingested_dtype: dtype,

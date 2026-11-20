@@ -165,7 +165,14 @@ def _set_column(
 
 
 def _renamed(dataset: Dataset, engine: Engine) -> tuple[Dataset, Engine]:
-    events = Parquet(dataset.tables["events"].path, columns={"amount": "amount"})
+    source = dataset.tables["events"]
+    data = pq.read_table(source.path)
+    renamed = Path(source.path).with_name("renamed-events.parquet")
+    pq.write_table(
+        data.rename_columns(["AMOUNT" if name == "amount" else name for name in data.column_names]),
+        renamed,
+    )
+    events = Parquet(str(renamed), columns={"AMOUNT": "amount"})
     return Dataset({**dataset.tables, "events": events}), engine
 
 
@@ -231,8 +238,8 @@ VARIANTS: Mapping[str, Callable[[GeneratedCase], Variant]] = {
     "uniform_graph": lambda case: _device_variant(
         case, neighborhoods=_graph(GraphSample("user_devices", 2, strategy="uniform"))
     ),
-    # Accepted at check(), refused later: known gaps, or batches() arguments (INAPPLICABLE).
     "column_rename": lambda case: _bound(case, _renamed),
+    # Accepted at check(), refused later: known gaps, or batches() arguments (INAPPLICABLE).
     "duplicate_layer_relation": lambda case: _device_variant(
         case,
         neighborhoods=_graph(

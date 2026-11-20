@@ -46,6 +46,7 @@ fn table(name: &str, cols: &[(&str, IngestedType)]) -> TableSpec {
         columns: cols
             .iter()
             .map(|(n, t)| ColumnSpec {
+                source_name: None,
                 name: n.to_string(),
                 ingested_dtype: t.clone(),
                 source_dtype: None,
@@ -125,6 +126,7 @@ fn infer_pk_prefers_customer_id_over_postal_code() {
         name: "kaggle_hm_customers".to_string(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "customer_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -137,6 +139,7 @@ fn infer_pk_prefers_customer_id_over_postal_code() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "postal_code".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -468,6 +471,7 @@ fn infer_fk_relationship() {
         TableSpec {
             name: "users".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "user_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -496,6 +500,7 @@ fn infer_fk_relationship() {
         TableSpec {
             name: "orders".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "user_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -536,6 +541,7 @@ fn infer_fk_skips_incompatible() {
         TableSpec {
             name: "devices".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "device_id".to_string(),
                 ingested_dtype: IngestedType::Uuid,
                 source_dtype: None,
@@ -564,6 +570,7 @@ fn infer_fk_skips_incompatible() {
         TableSpec {
             name: "sessions".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "device_id".to_string(),
                 ingested_dtype: IngestedType::Bytes,
                 source_dtype: None,
@@ -621,6 +628,7 @@ fn infer_fk_prefers_best_token_match() {
         TableSpec {
             name: "d_items".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -649,6 +657,7 @@ fn infer_fk_prefers_best_token_match() {
         TableSpec {
             name: "d_lab".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -677,6 +686,7 @@ fn infer_fk_prefers_best_token_match() {
         TableSpec {
             name: "labevents".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -717,6 +727,7 @@ fn infer_fk_self_reference_suffix() {
         name: "poe".to_string(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "poe_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -729,6 +740,7 @@ fn infer_fk_self_reference_suffix() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "discontinue_of_poe_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -825,6 +837,7 @@ fn infer_fk_base_match_allows_code() {
         TableSpec {
             name: "d_hcpcs".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "code".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -853,6 +866,7 @@ fn infer_fk_base_match_allows_code() {
         TableSpec {
             name: "hcpcs".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "hcpcs_cd".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -893,6 +907,7 @@ fn infer_fk_avoids_generic_code_match() {
         TableSpec {
             name: "d_hcpcs".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "code".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -921,6 +936,7 @@ fn infer_fk_avoids_generic_code_match() {
         TableSpec {
             name: "d_icd_diag".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "icd_code".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -974,6 +990,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
         TableSpec {
             name: "poe".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "poe_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -1002,6 +1019,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
         TableSpec {
             name: "poe_detail".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "poe_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -1030,6 +1048,7 @@ fn infer_fk_prefers_shorter_table_on_tie() {
         TableSpec {
             name: "emar".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "poe_id".to_string(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -1069,6 +1088,7 @@ fn infer_fk_exact_pk_name_match() {
         TableSpec {
             name: "admits".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "hadm_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1097,6 +1117,7 @@ fn infer_fk_exact_pk_name_match() {
         TableSpec {
             name: "services".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "hadm_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1136,6 +1157,7 @@ fn infer_fk_itemid_prefers_lab_table() {
         TableSpec {
             name: "d_items".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1164,6 +1186,7 @@ fn infer_fk_itemid_prefers_lab_table() {
         TableSpec {
             name: "d_lab".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1192,6 +1215,7 @@ fn infer_fk_itemid_prefers_lab_table() {
         TableSpec {
             name: "labevents".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "itemid".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1231,6 +1255,7 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
         TableSpec {
             name: "user".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "user_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1259,6 +1284,7 @@ fn infer_pk_pk_relationship_when_table_names_overlap() {
         TableSpec {
             name: "user_profile".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "user_id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1299,6 +1325,7 @@ fn infer_pk_pk_skips_generic_id() {
         TableSpec {
             name: "alpha".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1327,6 +1354,7 @@ fn infer_pk_pk_skips_generic_id() {
         TableSpec {
             name: "beta".to_string(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "id".to_string(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -1657,6 +1685,7 @@ fn infer_create_time_prefers_in_over_out() {
 #[test]
 fn compatible_numeric_to_var_string() {
     let a = ColumnSpec {
+        source_name: None,
         name: "user_id".to_string(),
         ingested_dtype: IngestedType::Int64,
         source_dtype: None,
@@ -1669,6 +1698,7 @@ fn compatible_numeric_to_var_string() {
         multicategorical_delimiter: None,
     };
     let b = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         ingested_dtype: IngestedType::String,
         source_dtype: None,
@@ -1686,6 +1716,7 @@ fn compatible_numeric_to_var_string() {
 #[test]
 fn incompatible_uuid_and_bytes() {
     let a = ColumnSpec {
+        source_name: None,
         name: "device_id".to_string(),
         ingested_dtype: IngestedType::Uuid,
         source_dtype: None,
@@ -1698,6 +1729,7 @@ fn incompatible_uuid_and_bytes() {
         multicategorical_delimiter: None,
     };
     let b = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         ingested_dtype: IngestedType::Bytes,
         source_dtype: None,
@@ -1715,6 +1747,7 @@ fn incompatible_uuid_and_bytes() {
 #[test]
 fn compatible_uuid() {
     let a = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         ingested_dtype: IngestedType::Uuid,
         source_dtype: None,
@@ -1727,6 +1760,7 @@ fn compatible_uuid() {
         multicategorical_delimiter: None,
     };
     let b = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         ingested_dtype: IngestedType::Uuid,
         source_dtype: None,

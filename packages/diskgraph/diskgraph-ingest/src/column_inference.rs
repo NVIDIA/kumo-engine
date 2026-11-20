@@ -39,6 +39,7 @@ pub fn infer_stage_columns(parquet_path: &Path) -> Result<Vec<ColumnSpec>> {
                 )
             })?;
             Ok(ColumnSpec {
+                source_name: None,
                 name: field.name().clone(),
                 source_dtype: Some(format!("{:?}", field.data_type())),
                 ingested_dtype,

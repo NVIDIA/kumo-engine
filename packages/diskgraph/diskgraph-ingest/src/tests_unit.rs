@@ -50,6 +50,7 @@ fn node_batcher_accepts_rows_larger_than_u16() {
 #[test]
 fn test_negative_int64_key() {
     let col = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Int64,
@@ -90,6 +91,7 @@ fn test_negative_int64_key() {
 #[test]
 fn test_negative_decimal128_key() {
     let col = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Decimal128,
@@ -132,6 +134,7 @@ fn test_negative_decimal128_key() {
 #[test]
 fn test_decimal256_key_as_string() {
     let col = ColumnSpec {
+        source_name: None,
         name: "id".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Decimal256,
@@ -258,6 +261,7 @@ fn single_col_table(ingested: IngestedType) -> TableSpec {
     TableSpec {
         name: "sample".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "id".to_string(),
             ingested_dtype: ingested,
             source_dtype: None,
@@ -379,6 +383,7 @@ fn convert_string_timestamp_to_rowpack_timestamp() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "created_at".to_string(),
             ingested_dtype: IngestedType::Timestamp,
             source_dtype: None,
@@ -417,6 +422,7 @@ fn convert_int_timestamp_with_unit() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "created_at".to_string(),
             ingested_dtype: IngestedType::Timestamp,
             source_dtype: None,
@@ -511,6 +517,7 @@ fn convert_string_date_to_rowpack_date() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "created_date".to_string(),
             ingested_dtype: IngestedType::Date,
             source_dtype: None,
@@ -557,6 +564,7 @@ fn convert_numeric_to_string_for_rowpack() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "id".to_string(),
             ingested_dtype: IngestedType::String,
             source_dtype: None,
@@ -598,6 +606,7 @@ fn convert_bytes_to_int_for_rowpack() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "id".to_string(),
             ingested_dtype: IngestedType::Int32,
             source_dtype: None,
@@ -715,6 +724,7 @@ fn int32_yyyymmdd_create_time_via_format() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "event_date".to_string(),
             ingested_dtype: IngestedType::Int32,
             source_dtype: Some("int".to_string()),
@@ -765,6 +775,7 @@ fn int32_epoch_secs_no_format_unchanged() {
     let table = TableSpec {
         name: "events".to_string(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "ts".to_string(),
             ingested_dtype: IngestedType::Int32,
             source_dtype: None,

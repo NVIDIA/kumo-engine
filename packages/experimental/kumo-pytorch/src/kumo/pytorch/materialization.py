@@ -20,7 +20,7 @@ from kumo.pytorch.column_stats import StatRequest, stats_request
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
-from kumo.pytorch.dataset import Dataset, Parquet, _local_parquet_files
+from kumo.pytorch.dataset import Dataset, Parquet, _local_parquet_files, _MissingParquetColumns
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 
 _MANIFEST = "index_manifest.json"
@@ -78,8 +78,8 @@ def ensure_diskgraph_index(
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
-    Accepts local Parquet with physical column names matching the logical
-    schema and PK/FK relations with exactly one primary-key side.
+    Accepts local Parquet with optional column renames and PK/FK relations
+    with exactly one primary-key side.
     A matching index is reused. An incompatible or incomplete index is never
     overwritten. ``if_missing=False`` requires the index to exist already.
     An ingest also computes ``column_stats``: requests at cutoffs in epoch nanoseconds.
@@ -235,32 +235,35 @@ def _compile_diskgraph_config(
             raise TypeError(
                 f"DiskGraph materialization requires Parquet for table {table.name!r}, got {kind!r}"
             )
-        if source.columns:
-            raise DISKGRAPH_UNSUPPORTED["DG-COLUMN-RENAME"].error(
-                "DiskGraph materialization requires matching physical column names; "
-                f"table {table.name!r} declares {dict(source.columns)!r}"
-            )
         if "://" in source.path:
             raise DISKGRAPH_UNSUPPORTED["DG-REMOTE-PARQUET"].error(
                 f"local Parquet paths are required; got {source.path!r}"
             )
         paths = _local_parquet_files(source.path)
-        source_types[table.name] = {}
+        schemas = {}
         for path in paths:
             try:
-                physical = pq.read_schema(path)
+                schemas[path] = pq.read_schema(path)
             except Exception as error:
                 raise ValueError(
                     f"table {table.name!r}: cannot read Parquet schema from {path}: {error}"
                 ) from error
-            missing = sorted(set(table.columns) - set(physical.names))
-            if missing:
-                raise ValueError(
-                    f"Parquet table {table.name!r} in {path!r} is missing columns {missing}"
-                )
+        try:
+            binding = source._bind_columns(
+                tuple(table.columns),
+                file_columns={path: schema.names for path, schema in schemas.items()},
+            )
+        except _MissingParquetColumns as error:
+            raise ValueError(
+                f"Parquet table {table.name!r} in {error.path!r} is missing columns {error.columns}"
+            ) from error
+        except (ValueError, OSError) as error:
+            raise ValueError(f"bind {table.name} {error}") from error
+        source_types[table.name] = {}
+        for path, physical in schemas.items():
             source_types[table.name][path] = {}
             for name, declared in table.columns.items():
-                actual = physical.field(name).type
+                actual = physical.field(binding[name]).type
                 try:
                     resolved = DType.from_arrow(actual)
                 except (ValueError, TypeError) as error:
@@ -283,7 +286,11 @@ def _compile_diskgraph_config(
         configs[table.name] = {
             "name": table.name,
             "columns": [
-                {"name": name, **_diskgraph_dtype(pa, dtype.to_arrow())}
+                {
+                    "name": name,
+                    **({"source_name": binding[name]} if binding[name] != name else {}),
+                    **_diskgraph_dtype(pa, dtype.to_arrow()),
+                }
                 for name, dtype in sorted(table.columns.items())
             ],
             "source": {"type": "parquet", "paths": paths},

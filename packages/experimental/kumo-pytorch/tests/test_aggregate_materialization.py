@@ -21,6 +21,7 @@ from kumo.pytorch.api import (
     prepare,
 )
 from tests.test_anchor_tables import ANCHORS, DATASET, _contract, _table
+from tests.test_column_renames import _parquet
 
 
 def test_materializes_in_chunks_and_reuses_values_without_reading_rows(tmp_path, monkeypatch):
@@ -154,7 +155,8 @@ def test_parquet_scan_is_bounded_and_positional_ids_do_not_restart(tmp_path, mon
     ]
 
 
-def test_actual_diskgraph_scalar_materialization_reuses_model_values(tmp_path):
+@pytest.mark.parametrize("renamed", [False, True])
+def test_actual_diskgraph_scalar_materialization_reuses_model_values(tmp_path, renamed):
     pytest.importorskip("diskgraph")
     import pyarrow as pa
     import torch
@@ -166,11 +168,12 @@ def test_actual_diskgraph_scalar_materialization_reuses_model_values(tmp_path):
     for table in SCHEMA.tables:
         path = tmp_path / (table.name + ".parquet")
         schema = pa.schema([(name, dtype.to_arrow()) for name, dtype in table.columns.items()])
-        pq.write_table(pa.Table.from_pylist(DATASET.tables[table.name].rows, schema=schema), path)
-        sources[table.name] = Parquet(str(path))
-    path = tmp_path / "anchors.parquet"
-    pq.write_table(pa.Table.from_pylist(ANCHORS), path)
-    anchors = replace(_table(), source=Parquet(str(path)))
+        data = pa.Table.from_pylist(DATASET.tables[table.name].rows, schema=schema)
+        sources[table.name] = _parquet(path, data, renamed)
+    anchors = replace(
+        _table(),
+        source=_parquet(tmp_path / "anchors.parquet", pa.Table.from_pylist(ANCHORS), renamed),
+    )
     with prepare(
         _contract(), Dataset(sources), DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
