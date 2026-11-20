@@ -22,9 +22,11 @@ import os
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
+from .sampling_plan import SamplingPlan
 
 
 TaskDatasetRef = str
+SamplingPlanInput = SamplingPlan | Mapping[str, object] | str | None
 
 
 def _load_json(path: str) -> dict[str, Any]:
@@ -135,7 +137,9 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     )
 
 
-def _sampling_plan_json(sampling_plan: Any) -> str:
+def _sampling_plan_json(sampling_plan: SamplingPlanInput) -> str:
+    if isinstance(sampling_plan, SamplingPlan):
+        sampling_plan = sampling_plan.to_dict()
     if isinstance(sampling_plan, str):
         return sampling_plan
     return json.dumps(sampling_plan or {"layers": []}, sort_keys=True)
@@ -353,7 +357,7 @@ class RuntimeIndex:
     def iter(
         self,
         stage: str,
-        sampling_plan: Any,
+        sampling_plan: SamplingPlanInput,
         num_workers: int,
         worker_id: int,
         shuffle: bool,
@@ -386,8 +390,10 @@ class RuntimeIndex:
         ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
         defaults to the one the index was opened with, which is what callers
         almost always want; pass it explicitly only to vary the shuffle
-        independently of the engine seed. Static LP cutoffs default to the
-        manifest stage. Prediction can set ``disable_pseudo_time=True``.
+        independently of the engine seed. ``sampling_plan`` accepts a
+        :class:`diskgraph.SamplingPlan` or the existing dictionary/JSON-string
+        representation. Static LP cutoffs default to the manifest stage.
+        Prediction can set ``disable_pseudo_time=True``.
 
         ``projections`` maps a node type to the columns the caller will
         actually consume, and is resolved once when the iterator is built:

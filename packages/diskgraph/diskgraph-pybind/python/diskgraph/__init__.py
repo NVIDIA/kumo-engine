@@ -112,6 +112,13 @@ def __getattr__(name):
         "TASK_DATASET_SCHEMA_VERSION",                  # bundle schema version constant
         "TASK_DATASET_IMPLEMENTATION_KIND",             # mock/dev implementation marker
     }
+    if name in {
+        "SamplingPlan", "LayerSpec", "FanoutSpec", "WeightedSampling",
+        "ExponentialDecay", "LinearDecay", "CustomExpression",
+    }:
+        from . import sampling_plan as m
+        return getattr(m, name)
+
     if name == "SeedScheduleConfig":
         from .seed_schedule import SeedScheduleConfig
         return SeedScheduleConfig
@@ -203,6 +210,13 @@ __all__ = [
     "TASK_DATASET_IMPLEMENTATION_KIND",
     "RuntimeIndex",
     "SeedScheduleConfig",
+    "SamplingPlan",
+    "LayerSpec",
+    "FanoutSpec",
+    "WeightedSampling",
+    "ExponentialDecay",
+    "LinearDecay",
+    "CustomExpression",
     "task_stage_size",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",
