@@ -6,15 +6,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass, field, fields, replace
 from hashlib import sha256
 from typing import NotRequired, TypedDict, Unpack, cast
 
-import orjson
 import pyarrow as pa
-
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
+from diskgraph.sampling_plan import SamplingPlan
 
 
 class WeightedSeedSamplingArguments(TypedDict):
@@ -30,7 +27,7 @@ class SamplingArguments(TypedDict, total=False):
     """Native keyword argument dictionaries accepted at the compatibility boundary."""
 
     stage: str
-    sampling_plan: dict[str, JsonValue]
+    sampling_plan: SamplingPlan
     num_workers: int
     worker_id: int
     shuffle: bool
@@ -85,15 +82,11 @@ class WeightedSeedSampling:
 
 @dataclass(frozen=True, kw_only=True)
 class SamplingOptions:
-    """Sampling settings with fixed fields and an owned copy of the native plan.
-
-    The plan stays a normal dictionary. Field reassignment is blocked, but nested
-    plan edits are allowed; treat request options as read-only while in flight.
-    """
+    """Sampling settings carrying DiskGraph's immutable native plan directly."""
 
     stage: str
     batch_size: int
-    sampling_plan: dict[str, JsonValue] = field(default_factory=lambda: {"layers": []})
+    sampling_plan: SamplingPlan = field(default_factory=SamplingPlan)
     num_workers: int = 1
     worker_id: int = 0
     shuffle: bool = False
@@ -120,7 +113,6 @@ class SamplingOptions:
     projections: tuple[tuple[str, tuple[str, ...]], ...] | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "sampling_plan", deepcopy(self.sampling_plan))
         if self.selected_stage_node_ids is not None:
             object.__setattr__(
                 self, "selected_stage_node_ids", tuple(self.selected_stage_node_ids)
@@ -147,16 +139,15 @@ class SamplingOptions:
         Raises:
             KeyError: If stage or batch size is missing.
         """
-        plan = arguments.get("sampling_plan")
-        if plan is None:
-            plan = {"layers": []}
         weights = arguments.get("weighted_seed_sampling")
         selected = arguments.get("selected_stage_node_ids")
         projections = arguments.get("projections")
         return cls(
             stage=arguments["stage"],
             batch_size=arguments["batch_size"],
-            sampling_plan=plan,
+            sampling_plan=arguments["sampling_plan"]
+            if "sampling_plan" in arguments
+            else SamplingPlan(),
             weighted_seed_sampling=WeightedSeedSampling(**weights)
             if weights is not None
             else None,
@@ -190,7 +181,7 @@ class SamplingOptions:
         )
 
     def to_native_kwargs(self) -> SamplingArguments:
-        """Return native arguments, borrowing the plan dictionary for read-only use.
+        """Return native arguments with the typed plan unchanged.
 
         Returns:
             Native keyword arguments with list/dictionary views of tuple fields.
@@ -215,11 +206,6 @@ class SamplingOptions:
             else None
         )
         return arguments
-
-    @property
-    def digest(self) -> str:
-        """Compute identity from the current plan without retaining a stale key."""
-        return content_digest(canonical_json(self.to_native_kwargs()))
 
     @property
     def has_seed_schedule(self) -> bool:
@@ -316,21 +302,6 @@ class SamplingContractError(RuntimeError):
     """A request or response violates the sampling identity or batch contract."""
 
 
-def canonical_json(value: object) -> bytes:
-    """Return sorted JSON bytes for an immutable request configuration.
-
-    Args:
-        value: JSON-compatible configuration.
-
-    Returns:
-        Canonical UTF-8 JSON bytes.
-
-    Raises:
-        TypeError: If the configuration cannot be represented as JSON.
-    """
-    return orjson.dumps(value, option=orjson.OPT_SORT_KEYS)
-
-
 def content_digest(content: bytes) -> str:
     """Return the SHA-256 identity of configuration or manifest bytes.
 
@@ -378,38 +349,6 @@ class BatchRequest:
     num_threads: int
     wire_version: int = WIRE_VERSION
     sampling_version: int = SAMPLING_VERSION
-
-    @property
-    def request_id(self) -> str:
-        """Stable identity retained by every attempt of this logical batch."""
-        return content_digest(
-            canonical_json(
-                [
-                    self.artifacts.snapshot_digest,
-                    self.artifacts.task_digest,
-                    self.artifacts.mapping_digest,
-                    self.consumer.job,
-                    self.consumer.trainer_rank,
-                    self.consumer.consumer_kind,
-                    self.consumer.generation,
-                    self.epoch,
-                    self.logical_shard,
-                    self.logical_shard_count,
-                    self.batch_ordinal,
-                    self.seed_ids,
-                    self.sampling_plan_digest,
-                    self.engine_seed,
-                    self.num_threads,
-                    self.wire_version,
-                    self.sampling_version,
-                ]
-            )
-        )
-
-    @property
-    def sampling_plan_digest(self) -> str:
-        """Identity of traversal, projection, supervision, and output options."""
-        return self.options.digest
 
     def validate(self) -> SamplingOptions:
         """Validate immutable metadata and return typed native sampling options.

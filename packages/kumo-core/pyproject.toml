@@ -36,7 +36,6 @@ dependencies = [
   "kumo-settings>=0.1.0.dev1",
   "matplotlib>=3.10.0",
   "numpy>=1.26,<3",
-  "orjson>=3.10,<4",
   "optuna>=4,<5",
   "pandas>=1.5,<3",
   "pyarrow>=15,<25",

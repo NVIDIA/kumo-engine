@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.diskgraph.batch_contract import (
     WIRE_VERSION,
     ArtifactIdentity,
@@ -23,7 +24,6 @@ from kumo_core.diskgraph.batch_contract import (
     NativeBatch,
     SamplingContractError,
     SamplingOptions,
-    canonical_json,
     content_digest,
 )
 from kumo_core.diskgraph.ray_sampling import (
@@ -107,13 +107,9 @@ def _batch(request: BatchRequest) -> NativeBatch:
 
 def test_request_identity_and_envelope_validation() -> None:
     request = _request()
-    assert canonical_json({"b": 2, "a": 1}) == b'{"a":1,"b":2}'
     assert len(content_digest(b"manifest")) == 64
-    assert request.request_id == _request().request_id
-    assert (
-        request.request_id
-        != replace(request, consumer=replace(request.consumer, generation=1)).request_id
-    )
+    assert request == _request()
+    assert request != replace(request, consumer=replace(request.consumer, generation=1))
     payload = BatchPayload(request, _batch(request), 0.1)
     assert payload.validate(request) is payload.batch
     for wrong in (
@@ -175,9 +171,8 @@ def test_replica_reuses_context_without_advancing_it() -> None:
     ray = MagicMock()
     # Native ownership is tested in the DiskGraph suite; this pins the RPC boundary.
     replica = _SamplerReplica.__new__(_SamplerReplica)
-    from collections import OrderedDict
 
-    replica.config, replica.index, replica.contexts = config, index, OrderedDict()
+    replica.config, replica.index, replica.contexts = config, index, []
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         one = replica.sample(request)
         two = replica.sample(request)
@@ -552,22 +547,35 @@ def test_cancellation_drains_native_work_before_reuse(
         ray.kill(gate, no_restart=True)
 
 
-def test_replica_context_key_tracks_the_current_plan_dictionary() -> None:
-    """An owned plan edit must not reuse a context under its previous cached identity."""
-    from collections import OrderedDict
-
+def test_replica_reuses_equal_native_plans_and_evicts_old_contexts() -> None:
+    """Structural plan equality drives the bounded LRU without serialized keys."""
     request = _request()
     context = MagicMock()
     context.sample_request.return_value = _batch(request)
     index = MagicMock()
     index.iter.return_value = (context, 2)
     replica = _SamplerReplica.__new__(_SamplerReplica)
-    replica.config, replica.index, replica.contexts = _config(), index, OrderedDict()
-    original_key = request.options.digest
+    replica.config = replace(_config(), context_capacity=2)
+    replica.index, replica.contexts = index, []
     replica.sample(request)
-    request.options.sampling_plan["layers"] = [{"fanouts": {}}]
-    updated_key = request.options.digest
+    replica.sample(
+        replace(request, options=replace(request.options, sampling_plan=SamplingPlan()))
+    )
+    assert index.iter.call_count == 1
+    second = replace(
+        request.options,
+        sampling_plan=SamplingPlan(
+            [LayerSpec(default_fanout=FanoutSpec(4, "uniform", "reject_plan"))]
+        ),
+    )
+    third = replace(
+        request.options,
+        sampling_plan=SamplingPlan(
+            [LayerSpec(default_fanout=FanoutSpec(8, "uniform", "reject_plan"))]
+        ),
+    )
+    replica.sample(replace(request, options=second))
     replica.sample(request)
-    assert original_key != updated_key
-    assert index.iter.call_count == 2
-    assert list(replica.contexts) == [original_key, updated_key]
+    replica.sample(replace(request, options=third))
+    assert index.iter.call_count == 3
+    assert [options for options, _ in replica.contexts] == [request.options, third]

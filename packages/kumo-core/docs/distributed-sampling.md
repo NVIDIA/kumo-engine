@@ -2,7 +2,8 @@
 
 The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants must use
 that version and a DiskGraph build with `SeedScheduleConfig`, `SeedSchedule`, and
-`RuntimeBatchIterator.sample_request` support.
+`RuntimeBatchIterator.sample_request` support, plus the native `SamplingPlan` API
+from #445.
 
 This backend returns complete native Arrow batches. Feature encoding, hetero
 assembly, asynchronous trainer prefetch, and training integration are separate
@@ -12,15 +13,11 @@ layers. It does not change the existing DataLoader implementation.
 
 - `batch_contract.py` defines immutable artifact identities, consumer generations,
   explicit seed requests, and validated batch envelopes.
-  `SamplingOptions` and `WeightedSeedSampling` are frozen dataclasses.
-  The sampling plan stays a normal dictionary, copied when configuration takes
-  ownership; nested edits are allowed. Selected IDs and projections use tuples.
-  `BatchRequest.options` carries the typed value directly. Context keys are
-  computed from the current configuration, so edits cannot leave a stale cached
-  digest. Treat request options as read-only while requests are in flight.
-  JSON conversion remains an internal hashing/native-API detail.
-  Request identity includes the ordered seeds and sampling configuration, so
-  retries preserve the same logical batch regardless of actor placement.
+  `SamplingOptions` and `WeightedSeedSampling` are frozen dataclasses carrying
+  DiskGraph's immutable native `SamplingPlan` directly. Requests and cached
+  contexts compare typed values; no plan JSON, copies, digests, or serialized
+  cache keys are needed. The actor retains at most `context_capacity` contexts,
+  using structural equality and least-recently-used eviction.
   Wire version 2 rejects the previous JSON-bytes request format. All participants
   must use the matching request implementation. Native batch and manifest shapes
   remain `TypedDict`s because those dictionaries come from DiskGraph or JSON.
