@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from kumo.engine import _text
+from kumo.engine import _data_summaries, _text
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability._run import Run, integer, mapping
 
@@ -99,7 +99,6 @@ def history_card(run: Run) -> Optional[dict[str, Any]]:
         metrics.remove(run.tune)
         metrics.insert(0, run.tune)
     return dict(title='Learning Curves', metrics=metrics,
-                tune=run.tune if run.tune in metrics else None,
                 experiments=experiments)
 
 
@@ -129,17 +128,19 @@ def _split(run: Run, name: str) -> Optional[dict[str, Any]]:
     seeds = mapping(seeds).get(name)
     if not (first and last) and isinstance(seeds, list) and len(seeds) == 2:
         first, last = _seed_day(seeds[0]), _seed_day(seeds[1])
-    entities = integer(stats.get('num_entities'))
     target = mapping(stats.get('target_distribution'))
     counts = mapping(target.get('count'))
-    total = sum(counts.values()) if counts and all(
-        integer(v) is not None for v in counts.values()) else 0
+    entities = integer(
+        _data_summaries._value({
+            **stats, 'num_train_rows': rows
+        }, target, 'entities', {}))
     positive = None
-    if total and set(counts) <= {'true', 'false'}:
-        positive = counts.get('true', 0) / total
+    if counts and set(counts) <= {'true', 'false'} and all(
+            integer(value) is not None for value in counts.values()):
+        positive = _data_summaries._value(stats, target, 'positive rate', {})
     return dict(
-        rows=rows, entities=None if entities is None else min(entities, rows),
-        positive=positive, mean=_finite(target.get('target_mean')),
+        rows=rows, entities=entities, positive=positive,
+        mean=_finite(target.get('target_mean')),
         time=None if not (first and last) else
         first if first == last else f'{first} to {last}')
 

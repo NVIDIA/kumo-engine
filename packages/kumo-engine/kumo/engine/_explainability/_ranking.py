@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ranking quality by cutoff K, for multilabel ranking and link prediction.
 
-Every value is the one ``TrainingResult.metrics`` reports: the published
-model's holdout scores, and the original run's validation and last-epoch
-training scores.
+Every value is the one ``TrainingResult.metrics`` reports: the evaluated
+fit's holdout scores (before full refit when applicable), and the original
+run's validation and last-epoch training scores.
 """
 
 from typing import Any, Optional
@@ -61,8 +61,7 @@ def card(run: Run) -> Optional[dict[str, Any]]:
             name = display_name(f'{family}@{ks[0]}').split('@')[0]
             views.append(
                 dict(id=family, label=name, ks=ks, series=series,
-                     x='K (number of items ranked)', y=name,
-                     tune=family == tuned))
+                     x='K (number of items ranked)', y=name))
     if not views:
         return None
     return dict(title='Ranking quality by cutoff K', views=views,

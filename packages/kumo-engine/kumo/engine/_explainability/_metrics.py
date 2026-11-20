@@ -188,7 +188,7 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     if line:
         line = 'Baselines: ' + line[0].lower() + line[1:]
     pills = [
-        dict(name=display_name(metric), tune=metric == run.tune,
+        dict(name=display_name(metric),
              holdout_text=fmt.number(holdout[metric])) for metric in shown
     ]
     view = dict(id='metrics', label='Metrics', pills=pills,

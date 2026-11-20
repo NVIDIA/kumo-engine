@@ -201,8 +201,8 @@ def test_metrics_card_is_one_view_of_pills_and_a_table(tmp_path):
     card = _card(_metrics.card, result)
     [view] = card['views']
     assert view['pills'] == [
-        dict(name='MAE', tune=True, holdout_text='1.50'),
-        dict(name='RMSE', tune=False, holdout_text='2.00')
+        dict(name='MAE', holdout_text='1.50'),
+        dict(name='RMSE', holdout_text='2.00')
     ]
     table = view['table']
     assert [c['label']
@@ -264,7 +264,7 @@ def test_epoch_history_follows_search_experiments(tmp_path, recorded):
                for view in _cards(result)['metrics']['views'])
     history = _cards(result)['history']
     assert history['title'] == 'Learning Curves'
-    assert history['metrics'] == ['mae', 'loss'] and history['tune'] == 'mae'
+    assert history['metrics'] == ['mae', 'loss']
     # The retained run selected version_2, the first of these experiments.
     assert history['experiments'] == [
         dict(
@@ -649,7 +649,6 @@ def test_ranking_card_reports_metrics_by_k(tmp_path, task, refit):
     card = _card(_ranking.card, result)
     assert [view['id'] for view in card['views']
             ] == ['f1', 'recall', 'precision', 'map', 'ndcg']
-    assert [view['tune'] for view in card['views']] == [True] + [False] * 4
     holdout = 'test_refit_' if refit else 'test_'
     for view in card['views']:
         assert view['ks'] == [1, 5, 10]
@@ -690,15 +689,29 @@ def test_ranking_card_applies_to_ranking_tasks_only(tmp_path):
     assert _ranking.card(_run.load(result)) is None
 
 
-def test_ranking_snapshot_lists_the_tuned_metric_by_k(tmp_path):
-    result = _result(tmp_path, 'multilabel_ranking', scores=_ranking_scores(),
+@pytest.mark.parametrize(
+    'cutoffs',
+    [(1, 5, 10), tuple(range(1, 11)),
+     tuple(range(1, 51))])
+def test_ranking_snapshot_lists_the_tuned_metric_by_k(tmp_path, cutoffs):
+    scores = _ranking_scores()
+    scores.update({
+        f'{split}_recall@{k}': k / 100
+        for split in ('test', 'val', 'train')
+        for k in cutoffs
+    })
+    result = _result(tmp_path, 'multilabel_ranking', scores=scores,
                      tune='recall@5', refit=False)
     view = result.visualize()
     assert [card['id'] for card in view.data['tabs'][0]['cards']
             ] == ['metrics', 'ranking']
-    text = ' '.join(ElementTree.fromstring(view._repr_svg_()).itertext())
+    image = ElementTree.fromstring(view._repr_svg_())
+    text = ' '.join(image.itertext())
     assert 'Multilabel Ranking evaluation' in text
-    assert 'Recall by K' in text and 'K=10' in text
+    assert 'Recall by K' in text
+    labels = image.findall('.//{http://www.w3.org/2000/svg}text')
+    assert {f'K={k}' for k in cutoffs} <= {label.text for label in labels}
+    assert all(0 <= float(label.attrib['x']) <= 448 for label in labels)
 
 
 def test_tenths_only_include_observed_groups():

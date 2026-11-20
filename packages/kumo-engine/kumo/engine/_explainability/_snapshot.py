@@ -106,18 +106,25 @@ class Snapshot:
 
     def _by_k(self, view: dict[str, Any]) -> None:
         self._line(view['y'] + ' by K', bold=True)
-        self._y += 23
-        edges = [432 - 52 * i for i in range(len(view['ks']))][::-1]
-        for x, k in zip(edges, view['ks']):
-            self._label(f'K={k}', x, self._y, anchor='end', bold=True)
-        for series in view['series']:
-            names = _wrap(series['label'], 22)
-            self._y += 23
-            self._label(names[0], 16, self._y)
-            for x, text in zip(edges, series['texts']):
-                self._label(text or 'N/A', x, self._y, anchor='end')
-            for name in names[1:]:
-                self._line(name)
+        labels = {
+            'holdout': 'Holdout',
+            'val': 'Validation',
+            'train': 'Training'
+        }
+        self._metrics({
+            'table': {
+                'columns': [{
+                    'label': labels[series['id']]
+                } for series in view['series']],
+                'rows': [
+                    dict(
+                        name=f'K={k}', baseline=False, tune=False, texts=[
+                            series['texts'][i] or 'N/A'
+                            for series in view['series']
+                        ]) for i, k in enumerate(view['ks'])
+                ],
+            }
+        })
 
     def _matrix(self, card: dict[str, Any]) -> None:
         cls, cutoff = card['classes'][0], card['grid_text'][card['default']]
