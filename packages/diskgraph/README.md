@@ -162,10 +162,13 @@ same-root layout used by Kumo's FM loader integration:
 
 Allocate `index_build_id` with `diskgraph.new_index_build_id()` before ingest
 and pass it to `diskgraph.ingest(index_build_id=...)` when the output directory
-must be chosen first. Otherwise ingest allocates a fresh ID. The base's
+must be chosen first. A fresh ingest with a supplied ID refuses an existing
+output directory; resume the partial build or choose a new ID instead.
+Otherwise ingest allocates a fresh ID. The base's
 `index_metadata.json` records this ID; extension ingest records the exact
 parent ID there as well. The reader rejects an extension whose parent ID does
-not match. Old indexes without IDs remain readable with their old extensions.
+not match. Old indexes without IDs remain readable with their old extensions,
+but cannot be mixed with ID-bearing builds or verified by `ManagedIndexPaths`.
 An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
 IDs by default, even for the same source.
 
