@@ -55,15 +55,15 @@ try:
     required = {
         'lifecycle-config.json', 'snowflake.json', 'wheel_mlops_lifecycle.py',
         'wheel_mlops_platform.py', 'wheel_gpu_smoke.py', 'offline_support.py',
-        'wheelhouse.tar', 'wheelhouse-manifest.json'
+        'wheelhouse.tar', 'wheelhouse-manifest.json', 'wheel_mlops_workload.py'
     }
     wheel_names = {
         name
         for name in references
         if name.startswith('kumo_engine-') and name.endswith('.whl')
     }
-    assert len(wheel_names) == 1 and set(
-        references) == required | wheel_names, 'Incomplete cached payload'
+    assert len(wheel_names) == 1 and required | wheel_names <= set(
+        references), 'Incomplete cached payload'
     for name, entry in references.items():
         assert re.fullmatch(
             r'[A-Za-z0-9_.+-]+',
@@ -93,7 +93,26 @@ try:
     (evidence / 'cached-files.json').write_text(json.dumps(
         references, indent=2))
     config = json.loads((payload / 'lifecycle-config.json').read_text())
+    custom = config.get('workload')
+    extra_sources = set()
+    if custom is not None:
+        assert set(custom) == {'file', 'helpers', 'phases', 'sha256',
+                               'wheels'}, 'Invalid workload descriptor'
+        sources = [custom['file'], *custom['helpers']]
+        assert len(set(sources)) == len(sources) and all(
+            re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.py', name)
+            for name in sources), 'Invalid workload source filenames'
+        extra_sources = set(sources)
+        assert not extra_sources & (
+            required | wheel_names), 'Workload source collides with payload'
+        assert references[custom['file']]['sha256'] == custom[
+            'sha256'], 'Workload source hash differs'
+    assert set(
+        references
+    ) == required | wheel_names | extra_sources, 'Unexpected cached payload files'
     receipt.update(mode=config['mode'], wheel_sha256=config['wheel_sha256'])
+    if custom is not None:
+        receipt['workload'] = custom
     wheel = payload / config['wheel_file']
     assert hashlib.sha256(wheel.read_bytes()).hexdigest(
     ) == config['wheel_sha256'], 'Candidate wheel changed during stage transfer'
@@ -109,19 +128,35 @@ try:
     dependencies = support.unpack(payload, wheelhouse)
     (evidence / 'dependency-manifest.json').write_text(
         json.dumps(dependencies, indent=2))
+    if custom is not None:
+        assert custom['wheels'] == dependencies.get(
+            'workload_wheels', []) and set(custom['wheels']) <= set(
+                dependencies['wheels']), 'Workload dependency inventory differs'
+        helper_spec = importlib.util.spec_from_file_location(
+            'workload_tools', payload / 'wheel_mlops_workload.py')
+        tools = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(tools)
+        assert tools.workload_phases((payload / custom['file']).read_bytes(
+        )) == custom['phases'], 'Workload phase declaration differs'
+        tools.check_workload_wheels(
+            wheel, [wheelhouse / name for name in custom['wheels']])
     venv = local / 'venv'
     with (evidence / 'venv.log').open('w') as log:
         subprocess.run([sys.executable, '-m', 'venv',
                         str(venv)], stdout=log, stderr=subprocess.STDOUT,
                        check=True, timeout=60)
     python = venv / 'bin/python'
+    install = [
+        str(python), '-I', '-m', 'pip', '--isolated', 'install', '--no-index',
+        '--find-links',
+        str(wheelhouse),
+        str(wheel) + '[snowflake]'
+    ]
+    if custom is not None:
+        install += [str(wheelhouse / name) for name in custom['wheels']]
     with (evidence / 'install.log').open('w') as log:
-        subprocess.run([
-            str(python), '-I', '-m', 'pip', '--isolated', 'install',
-            '--no-index', '--find-links',
-            str(wheelhouse),
-            str(wheel) + '[snowflake]'
-        ], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+        subprocess.run(install, stdout=log, stderr=subprocess.STDOUT,
+                       check=True, timeout=600)
     with (evidence / 'pip-check.log').open('w') as log:
         pip_check = subprocess.run(
             [str(python), '-I', '-m', 'pip', '--isolated', 'check'], stdout=log,
@@ -181,12 +216,16 @@ finally: connection.close()
             'platform_lifecycle', payload / 'wheel_mlops_platform.py')
         runner = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(runner)
+        options = {}
+        if custom is not None and config['mode'] == 'lifecycle':
+            options['workload'] = payload / custom['file']
         result = runner.run_notebook(
             config=payload / 'snowflake.json', wheel=wheel,
             expected_version=config['expected_version'],
             output_dir=evidence / 'lifecycle', python_executable=python,
             attempt=attempt,
-            phase='negative' if config['mode'] == 'negative' else None)
+            phase='negative' if config['mode'] == 'negative' else None,
+            **options)
         receipt['lifecycle'] = result
         receipt['status'] = (result.get('summary')
                              or {}).get('status', 'failed')
@@ -231,10 +270,16 @@ print(json.dumps(receipt, default=str))
 if receipt['status'] != 'passed':
     summary = (receipt.get('lifecycle') or {}).get('summary') or {}
     phases = summary.get('phases', {})
+    custom = config.get('workload')
+    expected_phases = {
+        'platform-prerequisite', *custom['phases']
+    } if custom else {'fit', 'score', 'evaluate', 'negative'}
     engine_passed = (
-        config.get('mode') == 'lifecycle'
-        and set(phases) == {'fit', 'score', 'evaluate', 'negative'} and all(
-            phase.get('status') == 'passed' and phase.get('returncode') == 0
+        config.get('mode') == 'lifecycle' and set(phases) == expected_phases
+        and all(
+            phase.get('status') == 'passed' and phase.get('returncode') == 0 and
+            (custom is None
+             or phase.get('workload', {}).get('sha256') == custom['sha256'])
             for phase in phases.values()))
     if not engine_passed:
         raise RuntimeError('Lifecycle prerequisite/test is ' +

@@ -4,12 +4,14 @@
 """Run installed-wheel Snowflake notebook preflight and lifecycle from one local process."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import logging
 import os
 import re
 import tempfile
 import time
+from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,6 +24,53 @@ SCHEMA = TARGET['schema']
 STAGE = TARGET['stage']
 WAREHOUSE = TARGET['warehouse']
 POOL = TARGET['pool']
+
+
+@cache
+def workload_tools():
+    path = Path(__file__).resolve().parent.parent / 'wheel_mlops_workload.py'
+    spec = importlib.util.spec_from_file_location('snowflake_workload_tools',
+                                                  path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def workload_files(custom):
+    if custom is None:
+        return set()
+    if not isinstance(custom, dict) or set(custom) != {
+            'file', 'helpers', 'phases', 'sha256', 'wheels'
+    }:
+        raise ValueError('Invalid customer workload descriptor')
+    names = [custom['file'], *custom['helpers']]
+    if (not all(
+            isinstance(name, str)
+            and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*\.py', name)
+            for name in names) or len(set(names)) != len(names)
+            or not re.fullmatch('[a-f0-9]{64}', custom['sha256'])):
+        raise ValueError(
+            'Workload sources must have unique flat Python filenames and a SHA256'
+        )
+    phases = workload_tools().workload_phases('PHASES = ' +
+                                              repr(custom['phases']))
+    if phases != custom['phases']:
+        raise ValueError('Workload phases differ from their declaration')
+    wheels = custom['wheels']
+    if (not isinstance(wheels, list) or len(set(wheels)) != len(wheels)
+            or not all(
+                isinstance(name, str)
+                and re.fullmatch(r'[A-Za-z0-9_.+\-]+\.whl', name)
+                for name in wheels)):
+        raise ValueError('Invalid customer dependency wheel filenames')
+    return set(names)
+
+
+def lifecycle_phases(manifest):
+    custom = manifest.get('workload')
+    return ('platform-prerequisite',
+            *custom['phases']) if custom else ('fit', 'score', 'evaluate',
+                                               'negative')
 
 
 def configured_account():
@@ -185,9 +234,15 @@ def prepare_payload(root, runtime, source, approved=None):
         'lifecycle.ipynb', 'lifecycle-config.json', 'snowflake.json',
         'wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
         'wheel_gpu_smoke.py', 'wheelhouse.tar', 'wheelhouse-manifest.json',
-        'offline_support.py'
+        'offline_support.py', 'wheel_mlops_workload.py'
     }
     paths = list(source.iterdir())
+    config = json.loads((source / 'lifecycle-config.json').read_text())
+    custom = config.get('workload')
+    custom_files = workload_files(custom)
+    if custom_files & allowed:
+        raise ValueError('Workload source collides with a notebook helper')
+    allowed |= custom_files
     if approved is None:
         raise ValueError('An explicit payload manifest is required')
     remote_assets = approved['remote_assets']
@@ -205,16 +260,18 @@ def prepare_payload(root, runtime, source, approved=None):
         if path.name not in allowed and not (
                 path.name.startswith('kumo_engine-') and path.suffix == '.whl'):
             raise ValueError('Unexpected lifecycle payload file: ' + path.name)
-    config = json.loads((source / 'lifecycle-config.json').read_text())
-    if set(config) != {
-            'wheel_file', 'wheel_sha256', 'expected_version', 'mode'
-    }:
+    config_fields = {'wheel_file', 'wheel_sha256', 'expected_version', 'mode'}
+    if custom is not None:
+        config_fields.add('workload')
+    if set(config) != config_fields:
         raise ValueError('Unknown lifecycle configuration fields')
     if config['mode'] not in ('preflight', 'lifecycle', 'negative'):
         raise ValueError('Select preflight, lifecycle, or negative')
+    if custom != approved.get('workload'):
+        raise ValueError('Workload differs from the reviewed manifest')
     if {
             key: value
-            for key, value in config.items() if key != 'mode'
+            for key, value in config.items() if key not in ('mode', 'workload')
     } != approved['candidate']:
         raise ValueError('Candidate differs from the reviewed manifest')
     expected_files = approved['modes'][config['mode']]
@@ -223,6 +280,20 @@ def prepare_payload(root, runtime, source, approved=None):
         raise ValueError('Payload file set differs from the reviewed manifest')
     if any(sha(path) != expected_files[path.name] for path in paths):
         raise ValueError('Payload content differs from the reviewed manifest')
+    if custom is not None:
+        if sha(source / custom['file']) != custom['sha256']:
+            raise ValueError('Workload source differs from its descriptor')
+        phases = workload_tools().workload_phases(
+            (source / custom['file']).read_bytes())
+        if phases != custom['phases']:
+            raise ValueError(
+                'Workload source phases differ from its descriptor')
+        dependencies = json.loads(
+            (source / 'wheelhouse-manifest.json').read_text())
+        if (custom['wheels'] != dependencies.get('workload_wheels', [])
+                or not set(custom['wheels']) <= set(dependencies['wheels'])):
+            raise ValueError(
+                'Workload wheels differ from the reviewed dependency inventory')
     if config['wheel_file'] not in remote_assets or remote_assets[
             config['wheel_file']]['sha256'] != config['wheel_sha256']:
         raise ValueError('Candidate wheel differs from the staged asset')
@@ -257,6 +328,8 @@ def prepare_payload(root, runtime, source, approved=None):
             path.name: sha(path)
             for path in (root / 'payload').iterdir()
         })
+    if custom is not None:
+        manifest['workload'] = custom
     manifest['remote_assets'] = remote_assets
     manifest['payload_sha256'].update({
         name: asset['sha256']
@@ -496,13 +569,20 @@ def ensure_cached_file(cursor, path, expected_hash, work, candidates=None):
 
 
 def lifecycle_verdict(by_path, manifest):
-    phases = ('fit', 'score', 'evaluate', 'negative')
+    phases = lifecycle_phases(manifest)
     needed = {'lifecycle/summary.json'
               } | {f'lifecycle/{name}.json'
                    for name in phases}
     if not needed.issubset(by_path):
         return None
     summary = json.loads(by_path['lifecycle/summary.json'].read_text())
+    custom = manifest.get('workload')
+    if set(summary.get('phases', {})) != set(phases):
+        raise AssertionError('Lifecycle summary describes another phase set')
+    if custom is not None and summary.get('workload',
+                                          {}).get('sha256') != custom['sha256']:
+        raise AssertionError(
+            'Lifecycle summary describes another customer workload')
     states = {}
     for name in phases:
         phase = json.loads(by_path[f'lifecycle/{name}.json'].read_text())
@@ -514,17 +594,26 @@ def lifecycle_verdict(by_path, manifest):
             if not (recorded['returncode'] == 0):
                 raise AssertionError(
                     'Lifecycle worker did not exit successfully')
+            if custom is not None and (
+                    phase.get('workload', {}).get('sha256') != custom['sha256']
+                    or recorded.get('workload',
+                                    {}).get('sha256') != custom['sha256']):
+                raise AssertionError(
+                    'Lifecycle phase used another customer workload')
             if not (phase['environment']['sha256'] == manifest['wheel_sha256']):
                 raise AssertionError('Lifecycle phase used another wheel')
         states[name] = state
     state = 'passed' if all(s == 'passed' for s in states.values()) else (
         'failed' if 'failed' in states.values() else 'blocked')
-    return dict(
+    result = dict(
         status=state, phases=states, remaining_requirements={
             name: gap
             for name, gap in summary.get('required_gaps', {}).items()
             if gap.get('status') != 'passed'
         })
+    if custom is not None:
+        result['workload'] = custom
+    return result
 
 
 def validate_lifecycle_exit(receipt, by_path, manifest):
@@ -544,9 +633,13 @@ def validate_lifecycle_exit(receipt, by_path, manifest):
                 and summary['status'] == receipt['status'] == 'blocked'):
             raise AssertionError('Unexpected worker exit')
         gaps = checks['remaining_requirements']
-        if not (set(gaps) == {'exported_epoch_history', 'ui_review'}):
+        expected_gaps = {'ui_review'} if manifest.get('workload') else {
+            'exported_epoch_history', 'ui_review'
+        }
+        if not (set(gaps) == expected_gaps):
             raise AssertionError('Unexpected qualification gaps')
-        if not (gaps['exported_epoch_history']['status'] == 'not implemented'):
+        if 'exported_epoch_history' in gaps and gaps['exported_epoch_history'][
+                'status'] != 'not implemented':
             raise AssertionError('Unexpected export result')
         if not (gaps['ui_review']['status'] == 'blocked'):
             raise AssertionError('Unexpected UI result')
@@ -610,11 +703,10 @@ def show_saved_result(root):
         receipt = result.get('notebook_receipt', {})
         paths = {}
         for filename, relative in receipt.get('logical_files', {}).items():
-            if relative in {
-                    'lifecycle/summary.json', 'lifecycle/fit.json',
-                    'lifecycle/score.json', 'lifecycle/evaluate.json',
-                    'lifecycle/negative.json'
-            }:
+            if relative in ({'lifecycle/summary.json'} | {
+                    f'lifecycle/{phase}.json'
+                    for phase in lifecycle_phases(result['plan'])
+            }):
                 if not (re.fullmatch('[A-Za-z0-9_.-]+', filename)):
                     raise AssertionError('Unsafe evidence filename')
                 path = root / name / 'download' / filename
@@ -658,7 +750,8 @@ def cleanup_submission(connection, manifest, *, query_unknown, bundle_created,
 
 def execute(root, manifest, connection, timeout):
     if manifest.get('kind') != 'lifecycle':
-        raise ValueError('Only prepared lifecycle notebook payloads are supported')
+        raise ValueError(
+            'Only prepared lifecycle notebook payloads are supported')
     report = dict(
         status='running',
         scope=('Notebook execution and exported outputs; UI excluded'),
@@ -734,9 +827,7 @@ def execute(root, manifest, connection, timeout):
             save(root / 'report.json', report)
             cached_files = {}
             for path in sorted((root / 'payload').iterdir()):
-                if path.name not in {
-                        'code_bundle.yml', 'lifecycle.ipynb'
-                }:
+                if path.name not in {'code_bundle.yml', 'lifecycle.ipynb'}:
                     report['operation'] = 'cache_lookup'
                     report['current_file'] = path.name
                     save(root / 'report.json', report)
@@ -888,8 +979,7 @@ def execute(root, manifest, connection, timeout):
                     if not (receipt.get('wheel_sha256')
                             == manifest['wheel_sha256']):
                         raise AssertionError('Unexpected candidate wheel')
-                if not (receipt['status']
-                        in ('passed', 'failed', 'blocked')):
+                if not (receipt['status'] in ('passed', 'failed', 'blocked')):
                     raise AssertionError('Invalid notebook result status')
                 artifacts = receipt.get('artifacts', {})
                 logical = receipt.get('logical_files', {})
@@ -925,25 +1015,21 @@ def execute(root, manifest, connection, timeout):
                         }
                     elif manifest['mode'] == 'negative':
                         required |= {
-                            'lifecycle/platform.json',
-                            'lifecycle/negative.json'
+                            'lifecycle/platform.json', 'lifecycle/negative.json'
                         }
                     else:
                         required |= {
-                            'lifecycle/summary.json',
-                            'lifecycle/platform.json'
+                            'lifecycle/summary.json', 'lifecycle/platform.json'
                         }
                         required |= {
                             f'lifecycle/{phase}.json'
-                            for phase in ('fit', 'score', 'evaluate',
-                                          'negative')
+                            for phase in lifecycle_phases(manifest)
                         }
                     if not (required.issubset(by_path)):
                         raise AssertionError('Required evidence is missing')
                     if not (receipt['pip_check_returncode'] ==
                             receipt['child_auth_returncode'] == 0):
-                        raise AssertionError(
-                            'Prerequisite checks did not pass')
+                        raise AssertionError('Prerequisite checks did not pass')
                     if not (receipt['payload_references_sha256']
                             == manifest['cache_references_sha256']):
                         raise AssertionError(
@@ -953,9 +1039,8 @@ def execute(root, manifest, connection, timeout):
                         by_path['cached-files.json'].read_text())
                     expected_cache = {
                         name: digest
-                        for name, digest in
-                        manifest['payload_sha256'].items() if name not in
-                        {'code_bundle.yml', 'lifecycle.ipynb'}
+                        for name, digest in manifest['payload_sha256'].items()
+                        if name not in {'code_bundle.yml', 'lifecycle.ipynb'}
                     }
                     if not ({
                             name: entry['sha256']
@@ -973,31 +1058,25 @@ def execute(root, manifest, connection, timeout):
                                 (root / 'payload' /
                                  'wheelhouse-manifest.json').read_text())):
                         raise AssertionError(
-                            'Dependency wheel manifest differs from payload'
-                        )
+                            'Dependency wheel manifest differs from payload')
                     child_identity = json.loads(
                         by_path['child-auth.stdout.json'].read_text())
-                    if not (all(
-                        (child_identity[key] == report['caller'][key]
-                         for key in ('account', 'user', 'role')))):
-                        raise AssertionError(
-                            'Fresh child identity mismatch')
+                    if not (all((child_identity[key] == report['caller'][key]
+                                 for key in ('account', 'user', 'role')))):
+                        raise AssertionError('Fresh child identity mismatch')
                     if manifest['mode'] == 'preflight':
-                        if not (receipt['candidate_admission_returncode']
-                                == 0):
+                        if not (receipt['candidate_admission_returncode'] == 0):
                             raise AssertionError(
                                 'Candidate admission did not pass')
                         admitted = json.loads(
                             by_path['candidate-admission.json'].read_text())
-                        if not (admitted['sha256']
-                                == manifest['wheel_sha256']):
+                        if not (admitted['sha256'] == manifest['wheel_sha256']):
                             raise AssertionError('Admission wheel differs')
                     else:
                         validate_lifecycle_exit(receipt, by_path, manifest)
-                        phases = ('negative',
-                                  ) if manifest['mode'] == 'negative' else (
-                                      'fit', 'score', 'evaluate',
-                                      'negative')
+                        phases = ('negative', ) if manifest[
+                            'mode'] == 'negative' else lifecycle_phases(
+                                manifest)
                         for phase in phases:
                             if not (json.loads(
                                     by_path[f'lifecycle/{phase}.json'].
@@ -1006,15 +1085,12 @@ def execute(root, manifest, connection, timeout):
                                     'A lifecycle phase did not pass')
                         if manifest['mode'] == 'negative':
                             proof = json.loads(
-                                by_path['lifecycle/negative.json'].
-                                read_text())
-                            if proof.get('result', {}).get(
-                                    'denied_artifact_access') != 'passed':
+                                by_path['lifecycle/negative.json'].read_text())
+                            proof_result = proof.get('result', {})
+                            if proof_result.get('denied_artifact_access') != 'passed':
                                 raise AssertionError(
-                                    'Missing actual permission-denial evidence'
-                                )
-                            if not (proof.get('environment',
-                                              {}).get('sha256')
+                                    'Missing actual permission-denial evidence')
+                            if not (proof.get('environment', {}).get('sha256')
                                     == manifest['wheel_sha256']):
                                 raise AssertionError(
                                     'Permission check did not admit the selected wheel'
@@ -1176,9 +1252,9 @@ def main(argv=None):
         help='Prepared graph notebook configuration; requires --ui')
     args = parser.parse_args(argv)
     if args.wait_compute:
-        if (args.execute or args.ui or args.show_result
-                or args.negative_only or args.payload_manifest
-                or args.ui_notebook or args.ui_run or args.ui_credentials):
+        if (args.execute or args.ui or args.show_result or args.negative_only
+                or args.payload_manifest or args.ui_notebook or args.ui_run
+                or args.ui_credentials):
             parser.error(
                 '--wait-compute cannot be combined with execution modes')
         if args.timeout <= 0:
