@@ -58,7 +58,7 @@ def _ranking(view_id: str, label: str, items: list[tuple[str, str, float,
              dominant: dict[str, Optional[str]]) -> dict[str, Any]:
     """Bars as shares of the summed score, top ten then the remainder."""
     total = sum(score for _, _, score, _ in items)
-    bars = [
+    bars: list[dict[str, Any]] = [
         dict(table=table, label=f'{table}.{column}', share=score / total,
              text=fmt.percent(score / total), group=group,
              callout=dominant.get(group or ''))

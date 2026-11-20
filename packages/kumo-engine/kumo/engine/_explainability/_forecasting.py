@@ -4,7 +4,7 @@
 """Forecasting card: Forecast against actual, from the published model's
 holdout predictions, one row per entity and forecast step."""
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -46,20 +46,21 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
     if run.model_type != FORECASTING or run.holdout is None:
         return None
     frame = run.holdout.astype({'TARGET': float, 'TARGET_PRED': float})
-    frame = frame[np.isfinite(frame['TARGET'])
-                  & np.isfinite(frame['TARGET_PRED'])]
+    frame = cast(
+        pd.DataFrame, frame[np.isfinite(frame['TARGET'])
+                            & np.isfinite(frame['TARGET_PRED'])])
     if frame.empty:
         return None
     error = frame['TARGET_PRED'] - frame['TARGET']
-    word = period(frame['TIMESTAMP'])
+    word = period(cast(pd.Series, frame['TIMESTAMP']))
     by_step = frame.assign(model=error.abs(), zero=frame['TARGET'].abs(),
                            bias=error).groupby('TIMESTAMP', sort=True)
-    horizon = by_step[['model', 'zero', 'bias']].mean()
-    steps = _steps(horizon[['model', 'zero']],
+    horizon = cast(pd.DataFrame, by_step[['model', 'zero', 'bias']].mean())
+    steps = _steps(cast(pd.DataFrame, horizon[['model', 'zero']]),
                    fmt.numbers([*horizon['model'], *horizon['zero']]))
     for step, bias in zip(steps, horizon['bias']):
         step['sub'] = f'bias {fmt.signed(float(bias))}'
-    totals = by_step[['TARGET', 'TARGET_PRED']].sum()
+    totals = cast(pd.DataFrame, by_step[['TARGET', 'TARGET_PRED']].sum())
     values = [*totals['TARGET'], *totals['TARGET_PRED']]
     target = frame['TARGET'].to_numpy()
     # A count target totals to whole units; the forecast is shown on the
@@ -81,8 +82,10 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
                            f'of actual over {len(totals)} {word}s')
             if actual > 0 else None),
     ]
-    per = frame.groupby('ENTITY', sort=True)[['TARGET', 'TARGET_PRED']].sum()
-    total = float(per['TARGET'].sum())
+    per = cast(
+        pd.DataFrame,
+        frame.groupby('ENTITY', sort=True)[['TARGET', 'TARGET_PRED']].sum())
+    total = float(cast(pd.Series, per['TARGET']).sum())
     if total > 0:
         group = equal_count_groups(per['TARGET_PRED'].to_numpy(dtype=float),
                                    per.index.to_numpy())

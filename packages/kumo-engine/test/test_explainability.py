@@ -467,6 +467,12 @@ def test_bundle_alone_keeps_published_holdout(tmp_path, truncated, full_refit):
 
 
 MALFORMED = {
+    'split-stats-nan': dict(test_table_stats=dict(num_train_rows=float('nan'))),
+    'split-stats-inf': dict(test_table_stats=dict(num_train_rows=float('inf'))),
+    'holdout-nan': float('nan'),
+    'holdout-inf': float('inf'),
+    'holdout-range': 1.1,
+    'holdout-text': 'invalid',
     'split-stats-array': dict(test_table_stats=[1, 2]),
     'split-stats-string': dict(test_table_stats='invalid'),
     'runtime-stages': dict(stages=[1]),
@@ -481,7 +487,8 @@ MALFORMED = {
 @pytest.mark.parametrize('missing',
                          ['holdout', 'explain_test', 'split_stats', *MALFORMED])
 def test_missing_optional_files_omit_views(tmp_path, missing):
-    result = _result(tmp_path)
+    result = (_binary(tmp_path, [.2, .8], [False, True])
+              if missing.startswith('holdout-') else _result(tmp_path))
     trial = Path(result.explanations.trial_root)
     stats = tmp_path / 'snap/train_tables/tt-run/split_stats.json'
     scores = trial / 'explain_test' / 'scores.csv'
@@ -493,6 +500,10 @@ def test_missing_optional_files_omit_views(tmp_path, missing):
     target['split-stats'] = stats
     if missing not in MALFORMED:
         target[missing].unlink()
+    elif missing.startswith('holdout-'):
+        frame = pd.read_parquet(target['holdout'])
+        frame['True_PROB'] = MALFORMED[missing]
+        frame.to_parquet(target['holdout'])
     elif missing.startswith('scores-'):
         scores.write_text(MALFORMED[missing])
     else:
@@ -512,7 +523,7 @@ def test_missing_optional_files_omit_views(tmp_path, missing):
                 ]))
     run = _run.load(result)
     card = _card(_metrics.card, result)
-    if missing == 'holdout':
+    if missing.startswith('holdout'):
         assert run.holdout is None
         assert not any(r['baseline'] for r in card['views'][0]['table']['rows'])
     if explained:
@@ -523,6 +534,10 @@ def test_missing_optional_files_omit_views(tmp_path, missing):
         assert run.covered(1) is None
     view = result.visualize()
     assert view.data['tabs'] and 'Training diagnostics' in view._repr_svg_()
+    assert '<!doctype html>' in view.page()
+    if missing.startswith('holdout-'):
+        assert not any(c['id'] in ('cutoff', 'scores')
+                       for tab in view.data['tabs'] for c in tab['cards'])
 
 
 def test_unsupported_task_type(tmp_path):

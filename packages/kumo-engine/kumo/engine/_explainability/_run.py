@@ -16,7 +16,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -101,7 +101,8 @@ def mapping(value: Any) -> dict[str, Any]:
 
 
 def integer(value: Any) -> Optional[int]:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and not math.isfinite(value))):
         return None
     return int(value)
 
@@ -210,7 +211,8 @@ class Run:
         if (not isinstance(size, int) or size <= 0 or not frames
                 or any(frame is None for frame in frames)):
             return None
-        lengths = pd.concat(frames)['TARGET1'].map(len).to_numpy(dtype=float)
+        lengths = pd.concat(cast(list[pd.DataFrame], frames))[
+            'TARGET1'].map(len).to_numpy(dtype=float)
         return (size, float(lengths.mean()), str(rhs)) if len(lengths) else None
 
     def covered(self, rows: Optional[int]) -> Optional[str]:
@@ -268,6 +270,7 @@ def load(result: 'TrainingResult') -> Run:
     paths = result.artifact_paths
     task = mapping(read_json(paths.get('prediction_schema'))).get('task_type')
     kind = model_type(task)
+    assert isinstance(task, str)
     try:
         query = ' '.join(
             read_training_spec(result.bundle_dir).predictive_query.split())
@@ -296,6 +299,18 @@ def load(result: 'TrainingResult') -> Run:
             path, listed = _listed_holdout(result.bundle_dir)
             holdout = read_parquet(path, columns)
             truncated = truncated or listed is True
+    if task == 'binary_classification' and holdout is not None:
+        try:
+            probabilities = holdout[['True_PROB', 'False_PROB']].to_numpy(
+                dtype=float)
+            valid = (np.isfinite(probabilities).all()
+                     and ((probabilities >= 0) & (probabilities <= 1)).all()
+                     and np.isin(holdout['TARGET'].to_numpy(),
+                                 [True, False]).all())
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            holdout = None
     root = result.explanations.run_root
     runtime = mapping(
         read_json(None if root is None else posixpath.

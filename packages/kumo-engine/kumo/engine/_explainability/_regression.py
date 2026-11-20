@@ -7,9 +7,10 @@ holdout predictions and the training table's label histogram bin width."""
 import math
 import posixpath
 import re
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
+import pandas as pd
 
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability._run import (
@@ -104,8 +105,9 @@ def _heatmap(run: Run, width: Optional[float]) -> Optional[dict[str, Any]]:
         if run.holdout is None or width is None:
             return None
         frame = run.holdout[['TARGET', 'TARGET_PRED']].copy()
-        frame = frame[np.isfinite(frame['TARGET'])
-                      & np.isfinite(frame['TARGET_PRED'])]
+        frame = cast(
+            pd.DataFrame, frame[np.isfinite(frame['TARGET'])
+                                & np.isfinite(frame['TARGET_PRED'])])
         if frame.empty:
             return None
         sample = frame.sample(min(len(frame), 10_000), random_state=0)
