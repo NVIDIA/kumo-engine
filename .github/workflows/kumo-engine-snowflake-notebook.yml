@@ -24,7 +24,7 @@ jobs:
     name: Check protected Snowflake environment
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.ref == 'refs/heads/main' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle') &&
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
@@ -57,7 +57,7 @@ jobs:
     name: Snowflake notebook engine checks (UI excluded)
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.ref == 'refs/heads/main' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle') &&
       github.event_name == 'workflow_dispatch' && inputs.mode == 'engine'
     runs-on: ubuntu-22.04
     timeout-minutes: 80
@@ -166,7 +166,7 @@ jobs:
     name: Snowflake notebook graph and explanation UI
     if: >-
       github.repository == 'NVIDIA/kumo-engine' &&
-      github.ref == 'refs/heads/main' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle') &&
       github.event_name == 'workflow_dispatch' && inputs.mode == 'graph-ui'
     runs-on: ubuntu-22.04
     timeout-minutes: 140

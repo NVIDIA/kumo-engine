@@ -170,12 +170,13 @@ The suite uses account `926922431314`, region `us-west-2`, the existing
 GitHub authenticates with OIDC as `kumo-engine-sagemaker-test-runner`. Its trust
 accepts only this repository's `sagemaker-mlops-test` environment subject and
 `sts.amazonaws.com` audience. There is no AWS access-key secret. That environment
-allows only manual dispatches from `main`, requires independent
+allows manual dispatches from `main` and the explicitly approved
+`egu/byom-mlops-lifecycle` test branch, requires independent
 `NVIDIA/kumo-engineers` approval with `prevent_self_review` enabled, and disables
 administrator bypass. The shared environment guard verifies these settings
 before the wheel build and again before AWS authentication. These server-side
 settings and the IAM trust enforce access; the branch-owned preflight is
-configuration lint. Trial branches, wildcards and tags are rejected.
+configuration lint. Other branches, wildcards and tags are rejected.
 
 Account provisioning and IAM policy changes are administrator prerequisites
 managed outside this repository. The test runner uses existing resources; it
@@ -352,3 +353,11 @@ and storage cleanup applies; shared caches are retained.
 Engine-only checks do not stage the graph fixture or import browser/export
 verification tools. They establish execution coverage and leave notebook-export,
 native Studio and native MLflow UI qualification unverified.
+
+
+The branch exception is limited to `egu/byom-mlops-lifecycle` in this workflow
+and the `sagemaker-mlops-test` environment. Maintainer approval, prevention of
+self-review, administrator-bypass restrictions and environment-only OIDC trust
+remain required. Remove the exact branch rule and guard exception when branch
+testing finishes. Older main-only guard revisions reject the expanded
+environment allowlist until the guard update is merged.
