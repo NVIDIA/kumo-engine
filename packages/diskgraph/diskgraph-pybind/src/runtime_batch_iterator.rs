@@ -263,6 +263,27 @@ pub struct RuntimeIndex {
     inner: diskgraph_runtime::RuntimeIndex,
 }
 #[pyclass]
+pub struct SeedSchedule {
+    inner: diskgraph_runtime::SeedSchedule,
+}
+#[pymethods]
+impl SeedSchedule {
+    #[new]
+    fn new(config_json: String) -> PyResult<Self> {
+        Ok(Self {
+            inner: diskgraph_runtime::SeedSchedule::from_json(&config_json)
+                .map_err(map_runtime_err)?,
+        })
+    }
+    fn num_samples(&self) -> usize {
+        self.inner.num_samples()
+    }
+    fn next_seed_ids(&mut self, py: Python<'_>) -> PyResult<Option<Vec<u64>>> {
+        py.detach(|| self.inner.next_seed_ids())
+            .map_err(map_runtime_err)
+    }
+}
+#[pyclass]
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,
     history: Option<HistoryIteration>,
@@ -782,6 +803,57 @@ impl RuntimeIndex {
         })
     }
 }
+impl RuntimeBatchIterator {
+    fn batch_to_python(&self, py: Python<'_>, mut batch: RuntimeBatch) -> PyResult<Py<PyAny>> {
+        let (batch, history) = py.detach(|| {
+            self.inner
+                .add_neighborhoods(&mut batch)
+                .map_err(map_runtime_err)?;
+            let history = self
+                .history
+                .as_ref()
+                .map(|config| {
+                    let cutoffs = batch
+                        .task
+                        .seed_timestamps
+                        .clone()
+                        .unwrap_or_else(|| vec![0; batch.task.seed_node_ids.len()]);
+                    config
+                        .plan
+                        .execute(
+                            &config.reader,
+                            &batch.task.seed_node_ids,
+                            &cutoffs,
+                            &config.engine.thread_pool,
+                        )
+                        .and_then(|result| {
+                            let orders = result.merged_event_orders(&config.merges)?;
+                            Ok((result, orders))
+                        })
+                        .map_err(DiskgraphConfigError::new_err)
+                })
+                .transpose()?;
+            Ok::<_, PyErr>((batch, history))
+        })?;
+        let output = runtime_batch_to_pydict(py, &batch)?;
+        if let Some((result, orders)) = history {
+            output.set_item("history", result.into_python(py, true)?)?;
+            let merged = PyDict::new(py);
+            for (name, bounds, order) in orders {
+                merged.set_item(
+                    name,
+                    (
+                        Int64Array::from(bounds).to_data().to_pyarrow(py)?,
+                        Int64Array::from(order).to_data().to_pyarrow(py)?,
+                    ),
+                )?;
+            }
+            output.set_item("history_merges", merged)?;
+        }
+        Ok(output.into())
+    }
+}
+
 #[pymethods]
 impl RuntimeBatchIterator {
     /// Backwards-compatible constructor: open an index and immediately
@@ -1013,6 +1085,13 @@ impl RuntimeBatchIterator {
             .map_or((0, 0), |v| (v.computed, v.hits))
     }
 
+    /// Sample explicit canonical seeds without consuming this iterator's cursor.
+    pub fn sample_request(&self, py: Python<'_>, node_ids: Vec<u64>) -> PyResult<Py<PyAny>> {
+        let batch = py
+            .detach(|| self.inner.sample_request(&node_ids))
+            .map_err(map_runtime_err)?;
+        self.batch_to_python(py, batch)
+    }
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let next = py.detach(|| {
             let batch = if let Some(planning) = self.planning.as_mut() {
@@ -1035,55 +1114,13 @@ impl RuntimeBatchIterator {
             } else {
                 self.inner.next_batch().map_err(map_runtime_err)?
             };
-            let Some(mut batch) = batch else {
+            let Some(batch) = batch else {
                 return Ok(None);
             };
-            self.inner
-                .add_neighborhoods(&mut batch)
-                .map_err(map_runtime_err)?;
-            let history = self
-                .history
-                .as_ref()
-                .map(|config| {
-                    let cutoffs = batch
-                        .task
-                        .seed_timestamps
-                        .clone()
-                        .unwrap_or_else(|| vec![0; batch.task.seed_node_ids.len()]);
-                    config.plan.execute(
-                        &config.reader,
-                        &batch.task.seed_node_ids,
-                        &cutoffs,
-                        &config.engine.thread_pool,
-                    )
-                    .and_then(|result| {
-                        let orders = result.merged_event_orders(&config.merges)?;
-                        Ok((result, orders))
-                    })
-                    .map_err(DiskgraphConfigError::new_err)
-                })
-                .transpose()?;
-            Ok::<_, PyErr>(Some((batch, history)))
+            Ok::<_, PyErr>(Some(batch))
         })?;
-        let Some((batch, history)) = next else {
-            return Ok(None);
-        };
-        let output = runtime_batch_to_pydict(py, &batch)?;
-        if let Some((result, orders)) = history {
-            output.set_item("history", result.into_python(py, true)?)?;
-            let merged = PyDict::new(py);
-            for (name, bounds, order) in orders {
-                merged.set_item(
-                    name,
-                    (
-                        Int64Array::from(bounds).to_data().to_pyarrow(py)?,
-                        Int64Array::from(order).to_data().to_pyarrow(py)?,
-                    ),
-                )?;
-            }
-            output.set_item("history_merges", merged)?;
-        }
-        Ok(Some(output.into()))
+        next.map(|batch| self.batch_to_python(py, batch))
+            .transpose()
     }
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
@@ -1114,6 +1151,7 @@ fn discover_tts(parent_root: String) -> PyResult<Vec<String>> {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeIndex>()?;
     m.add_class::<RuntimeLengthCache>()?;
+    m.add_class::<SeedSchedule>()?;
     m.add_class::<RuntimeBatchIterator>()?;
     m.add_function(wrap_pyfunction!(discover_tts, m)?)?;
     Ok(())
