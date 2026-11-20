@@ -110,7 +110,7 @@ def native_task(tmp_path, request):
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
     ) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
@@ -617,7 +617,7 @@ def test_native_extension_uses_existing_base_directory_without_symlinks(native_t
     monkeypatch.setattr(Path, "symlink_to", forbidden)
     with plan.materialize(table, fitted=previous.fitted_state) as task:
         extension = Path(task._anchors._extension.name)
-        assert extension.parent == Path(plan._require_open()._index_path) / "train_tables"
+        assert extension.parent == plan._require_open()._paths.task_dir("probe").parent
         assert (extension / "index_metadata.json").is_file()
         assert not any(path.is_symlink() for path in extension.iterdir())
         assert _by_sample(task.batches(split="train", output_format="model")) == {
@@ -692,7 +692,7 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
         batch=replace(plan.contract.batch, inputs={**plan.contract.batch.inputs, "entity": entity}),
     )
     dataset = api.Dataset(tables={**plan.dataset.tables, "users": api.Parquet(str(path))})
-    engine = api.DiskGraphEngine(index=tmp_path / "scored-index", num_threads=1)
+    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "scored-index", num_threads=1)
     with api.prepare(contract, dataset, engine) as prepared:
         with prepared.materialize(table, fit_split="train") as task:
             native = task._anchors

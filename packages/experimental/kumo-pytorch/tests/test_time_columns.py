@@ -181,9 +181,9 @@ def test_diskgraph_refuses_a_window_on_a_value_column_before_reading_data(tmp_pa
     dataset = Dataset(
         {name: Parquet(path=str(tmp_path / f"{name}.parquet")) for name in ("users", "events")}
     )
-    engine = DiskGraphEngine(index=tmp_path / "index")
+    engine = DiskGraphEngine(index=tmp_path / "indexes" / "index")
     with patch.object(engine, "open", side_effect=AssertionError("opened before refusal")):
         issues = check(contract, dataset, engine)
     path = SHAPES["window"][1]
     assert [issue.path for issue in issues if "amount" in issue.message] == [path]
-    assert not (tmp_path / "index").exists()
+    assert not (tmp_path / "indexes" / "index").exists()

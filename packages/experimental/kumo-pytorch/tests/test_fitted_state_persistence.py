@@ -297,7 +297,7 @@ def test_an_artifact_with_inconsistent_fitted_state_is_refused(tmp_path: Path) -
             task.to_artifact().save(tmp_path / "artifact")
 
     def changed(name: str, text: str) -> Path:
-        directory = tmp_path / "changed"
+        directory = tmp_path / "indexes" / "changed"
         shutil.rmtree(directory, ignore_errors=True)
         shutil.copytree(tmp_path / "artifact", directory)
         (directory / name).write_text(text)

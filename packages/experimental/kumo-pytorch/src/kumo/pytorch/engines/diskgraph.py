@@ -209,9 +209,8 @@ class DiskGraphEngine:
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
-    :param index: source-ingestion index directory. A path under the configured
-        root's ``indexes/`` uses managed storage; other paths retain index-local layout.
-        Omit to allocate a new managed build.
+    :param index: existing managed index path under the configured root's
+        ``indexes/`` directory. Omit to allocate a new managed build.
     :param index_build_id: physical build to create or reuse under the configured root.
         Omit to allocate a new ID. Cannot be combined with ``index``.
     :param num_threads: native sampling threads.
@@ -249,9 +248,11 @@ class DiskGraphEngine:
 
             resolved = Path(index).resolve()
             managed_root = kumo.settings.scratch_dir().resolve() / "indexes"
-            self._paths = managed_paths(resolved.name) if resolved.parent == managed_root else None
-        self.index = self._paths.index_dir if self._paths is not None else Path(index)
-        self.index_build_id = self._paths.index_build_id if self._paths is not None else None
+            if resolved.parent != managed_root:
+                raise ValueError("index path must be under the configured Kumo root's indexes")
+            self._paths = managed_paths(resolved.name)
+        self.index = self._paths.index_dir
+        self.index_build_id = self._paths.index_build_id
         self._binding = None
         self.num_threads = num_threads
         self.num_shards = num_shards
@@ -270,8 +271,8 @@ class DiskGraphEngine:
         DiskGraph's managed path resolver. A path to the same managed base is
         accepted. The build ID is physical identity,
         independent of schema/data-version identity. No original sources are read.
-        ID-less indexes cannot be adopted; the existing index= constructor
-        remains available for source ingestion and reuse.
+        ID-less indexes cannot be adopted. Use index_build_id with a dataset
+        for source ingestion and reuse.
         """
         if isinstance(index_build_id, Path) or "/" in index_build_id or "\\" in index_build_id:
             import kumo.settings
@@ -299,8 +300,7 @@ class DiskGraphEngine:
 
         if not base.is_relative_to(kumo.settings.scratch_dir().resolve()):
             raise ValueError(
-                "snapshot must belong to the configured Kumo root; "
-                "cross-root import is unsupported"
+                "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
             )
         binding = open_index(base, snapshot_id=snapshot.id)
         result = cls(index_build_id=binding.identity, ingest="never", num_threads=num_threads)
@@ -495,8 +495,7 @@ class DiskGraphEngine:
         *,
         column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
-        if self._paths is not None:
-            verify_managed_roots(self._paths, self.index)
+        verify_managed_roots(self._paths, self.index)
         if self._binding is not None:
             if dataset is not None:
                 raise ValueError("an existing-index engine does not accept Dataset")
@@ -522,29 +521,19 @@ class DiskGraphEngine:
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
             index_build_id=self.index_build_id,
         )
-        if self._paths is not None:
-            self._paths.verify_index()
+        self._paths.verify_index()
         return DiskGraphSource(
             artifact,
             schema,
             num_threads=self.num_threads,
             paths=self._paths,
-            identity=self.index_build_id or _artifact_identity(artifact),
+            identity=self.index_build_id,
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
         # anchors are read from Parquet independently of the graph index: an anchor
         # table is per task, the index is per dataset
         return ParquetAnchors(table)
-
-
-def _artifact_identity(artifact: _DiskGraphIndex) -> str:
-    """Identify one physical build for fitted and materialized task state."""
-    metadata = json.loads((Path(artifact.path) / "index_metadata.json").read_text())
-    build_id = metadata.get("index_build_id")
-    if isinstance(build_id, str) and build_id:
-        return build_id
-    return hashlib.sha256((Path(artifact.path) / "index_manifest.json").read_bytes()).hexdigest()
 
 
 class DiskGraphSource:
@@ -556,7 +545,7 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
-        paths: Any = None,
+        paths: Any,
         identity: str | None = None,
     ) -> None:
         try:
@@ -575,9 +564,7 @@ class DiskGraphSource:
         self._index_path = artifact.path
         self.artifact_identity = identity
         self._paths = paths
-        self._column_cache = ColumnCache(
-            artifact.path, None if paths is None else paths.cache_dir
-        )
+        self._column_cache = ColumnCache(artifact.path, paths.cache_dir)
         self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
@@ -601,16 +588,8 @@ class DiskGraphSource:
         self._last_graph_profile: Mapping[str, Any] | None = None
 
     def new_task_directory(self, task_id: str | None = None):
-        if self._paths is not None:
-            verify_managed_roots(self._paths, self._index_path)
-            return TaskDirectory(self._paths, task_id)
-        if task_id is not None:
-            raise ValueError("task_id requires a managed index")
-        import tempfile
-
-        parent = Path(self._index_path) / "tasks"
-        parent.mkdir(parents=True, exist_ok=True)
-        return tempfile.TemporaryDirectory(prefix="task-", dir=parent)
+        verify_managed_roots(self._paths, self._index_path)
+        return TaskDirectory(self._paths, task_id)
 
     @property
     def _sampler(self):

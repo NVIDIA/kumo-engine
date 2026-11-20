@@ -439,7 +439,10 @@ scoring_table = api.AnchorTable(
     as_of_time="as_of",
     sample_id="sample_id",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine()
 disk_predictions = {}
 with api.prepare(artifact.contract, parquet, engine) as plan:
     with plan.materialize(scoring_table, fitted=artifact.fitted_state, inference=True) as task:
@@ -457,9 +460,10 @@ print(f"user-3-at-34 scores {disk_predictions['user-3-at-34']:.3f}")
 user-3-at-34 scores 0.647
 ```
 
-The first `prepare` builds the index under `shop-data/index`. A scheduled
-scoring job usually passes `ingest="never"`, so that it fails if the index it
-expects is missing instead of building a new one. See
+The first `prepare` builds the index under the configured scratch root's
+`indexes/<index_build_id>/`. Persist `engine.index_build_id` with the model if
+a scheduled scoring job will reuse that build. The job passes that ID and
+`ingest="never"`, so it fails if the expected index is missing. See
 [building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
 To score from a completed build without source tables, [open its snapshot or
 managed index](04-engines-and-data.md#open-an-existing-snapshot-or-index).

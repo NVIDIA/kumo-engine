@@ -52,7 +52,7 @@ def test_in_memory_two_level_packing_carries_cu_seqlens() -> None:
 def test_diskgraph_model_path_carries_the_same_metadata(tmp_path: Path) -> None:
     pytest.importorskip("diskgraph")
     parquet = _write_parquet(_fixture_rows(), tmp_path / "parquet")
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
     with api.prepare(_two_level_contract(), parquet, engine) as plan:
         task = plan.materialize(_requests(), fit_split="train")
         batch = next(iter(task.batches(_requests(), batch_size=2, output_format="model")))

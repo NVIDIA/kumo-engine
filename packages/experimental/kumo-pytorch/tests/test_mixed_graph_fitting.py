@@ -106,7 +106,7 @@ def _contract(schema, shared, target):
 def test_mixed_fitting_keeps_columnar_values_and_matches_records(
     history_data, tmp_path, monkeypatch, anchor_table, shared, target
 ):
-    schema, dataset, _memory, index, original = history_data
+    schema, dataset, _memory, original = history_data
     contract = _contract(schema, shared, target)
     requests = [
         replace(request, targets=(api.TargetValue("label", str(i % 2)),))
@@ -141,7 +141,7 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
         )
     # Exercise chunk boundaries without manufacturing a large fitting population.
     monkeypatch.setattr(assembly, "_FIT_CHUNK", 2)
-    with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=1)) as plan:
+    with api.prepare(contract, dataset, api.DiskGraphEngine(num_threads=1)) as plan:
         with monkeypatch.context() as previous:
             previous.setattr(DiskGraphSource, "build_model", None)
             reference = plan.materialize(anchors, fit_split="train")
