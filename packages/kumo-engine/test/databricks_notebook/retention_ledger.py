@@ -97,6 +97,8 @@ class ControlRecord:
         }
         if lifecycle:
             self.spec['experiment'] = spec['experiment']
+            if 'model_version_limit' in spec:
+                self.spec['model_version_limit'] = spec['model_version_limit']
         self.kind = 'lifecycle' if lifecycle else 'graph'
         self.path = file_path(config, spec['attempt'])
         self.previous = None

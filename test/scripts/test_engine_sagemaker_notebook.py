@@ -594,6 +594,7 @@ def test_dirty_browser_sources_cannot_reuse_committed_provenance(
         'snowflake_notebook/graph_ui.cjs',
         'snowflake_notebook/explanation_ui.cjs',
         'snowflake_notebook/verification.cjs', 'platform_candidate.py',
+        'wheel_mlops_workload.py',
         'snowflake_notebook/browser/package.json',
         'snowflake_notebook/browser/package-lock.json'
     ]
@@ -1582,7 +1583,8 @@ def test_studio_input_keeps_original_code_outputs_and_receipt(
             upload.read_bytes()) != modules.evidence.digest(before)
 
 
-def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_path):
+@pytest.mark.parametrize('custom', [False, True])
+def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_path, custom):
     import ast
     tree = ast.parse((HERE / 'bootstrap.py').read_text())
     loop = next(node for node in ast.walk(tree)
@@ -1602,6 +1604,8 @@ def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_pa
                  subprocess=subprocess, budget=SimpleNamespace(remaining=remaining),
                  helpers=SimpleNamespace(execute=lambda command, cwd, log, timeout:
                                          captured.append((command, timeout)) or 0))
+    if custom:
+        scope['config']['workload'] = dict(wheels=['diskgraph.whl', 'kumo_pytorch.whl'])
     exec(compile(ast.Module(body=[loop], type_ignores=[]), '<bootstrap-install>', 'exec'), scope)
     assert calls == [1200, 1200]
     kernel, product = captured
@@ -1610,6 +1614,10 @@ def test_bootstrap_separates_tool_lock_and_candidate_product_dependencies(tmp_pa
     assert '--require-hashes' not in product[0]
     assert str(tmp_path / 'candidate.whl') + '[sagemaker]' in product[0]
     assert product[0][product[0].index('--index-url') + 1] == 'https://pypi.org/simple'
+    if custom:
+        for name in ('diskgraph.whl', 'kumo_pytorch.whl'):
+            assert str(tmp_path / name) in product[0]
+            assert str(tmp_path / name) not in kernel[0]
 
 
 def test_phase_caps_are_retained_within_shared_work_deadline(tmp_path, monkeypatch):
@@ -1867,3 +1875,130 @@ def test_native_explanation_diagnostics_retain_graph_status_and_safe_message(
     value['error'] += ' PRIVATE'
     path.write_text(json.dumps(value))
     assert 'PRIVATE' not in json.dumps(modules.run.browser_diagnostics(tmp_path))
+
+
+def test_sagemaker_reuses_shared_customer_workload_admission(modules):
+    from wheel_mlops_workload import check_workload_wheels, workload_phases
+    assert modules.run.check_workload_wheels is check_workload_wheels
+    assert modules.run.workload_phases is workload_phases
+
+
+def test_customer_source_is_frozen_without_importing_it(modules, monkeypatch):
+    path = HERE.parent / 'wheel_mlops_pytorch.py'
+    read_bytes = Path.read_bytes
+
+    def git_read(command, **kwargs):
+        if 'rev-parse' in command:
+            return 'a' * 40
+        return read_bytes(modules.run.REPO / command[2].split(':', 1)[1])
+    monkeypatch.setattr(modules.run.subprocess, 'check_output', git_read)
+    _, frozen, hashes = modules.run.committed_sources((path,))
+    relative = path.relative_to(modules.run.REPO).as_posix()
+    assert frozen[relative] == read_bytes(path)
+    assert hashes[relative] == modules.evidence.digest(read_bytes(path))
+    monkeypatch.setattr(Path, 'read_bytes', lambda value: b'dirty customer source'
+                        if value == path else read_bytes(value))
+    with pytest.raises(ValueError, match='Commit the exact test inputs'):
+        modules.run.committed_sources((path,))
+
+
+@pytest.mark.parametrize('name', ['wheel_mlops_lifecycle.py', 'wheel_mlops_workload.py', 'kernel.py', 'client.py'])
+def test_sagemaker_rejects_reserved_customer_basename_before_source_admission(
+        modules, monkeypatch, tmp_path, name):
+    source = tmp_path / name
+    source.write_text('PHASES = ("train",)')
+    monkeypatch.setattr(modules.run, 'committed_sources',
+                        Mock(side_effect=AssertionError('must reject basename first')))
+    with pytest.raises(ValueError, match='basename is reserved'):
+        modules.run.execute(SimpleNamespace(workload=source, scenario='engine',
+                                            engine_checks_only=True), tmp_path)
+
+
+@pytest.mark.parametrize('fault', [None, 'phase', 'hash', 'wheel', 'exit', 'metadata'])
+def test_customer_verdict_binds_selected_phases_wheels_and_source(
+        modules, retained_execution, fault):
+    e = retained_execution
+    e.spec['scenario'] = 'engine'
+    custom = dict(file='customer.py', phases=['train', 'reload'],
+                  sha256='d' * 64, wheels=['diskgraph.whl', 'kumo_pytorch.whl'])
+    e.spec['workload'] = custom
+    e.spec['assets'] = {name: dict(sha256='e' * 64) for name in custom['wheels']}
+    e.report['workload'] = copy.deepcopy(custom)
+    e.report['installation']['workload_wheels'] = {
+        name: 'e' * 64 for name in custom['wheels']}
+    reference = e.report['phases']['fit']
+    e.report['phases'] = {
+        name: dict(copy.deepcopy(reference), workload=dict(sha256=custom['sha256']))
+        for name in ('platform-prerequisite', 'train', 'reload')}
+    if fault == 'phase':
+        del e.report['phases']['reload']
+    elif fault == 'hash':
+        e.report['phases']['reload']['workload']['sha256'] = 'f' * 64
+    elif fault == 'wheel':
+        e.report['installation']['workload_wheels']['diskgraph.whl'] = 'f' * 64
+    elif fault == 'exit':
+        e.report['phases']['reload']['returncode'] = 1
+    elif fault == 'metadata':
+        e.report['workload']['phases'] = ['fit']
+    if fault:
+        with pytest.raises(ValueError):
+            modules.run.verdict(e.report, e.spec, e.job, e.pipeline)
+    else:
+        result = modules.run.verdict(e.report, e.spec, e.job, e.pipeline)
+        assert result['engine'] == 'passed'
+        assert result['native_mlflow'] == 'not verified'
+        assert result['full_qualification'] == 'incomplete'
+
+
+def test_customer_metadata_substitution_is_rejected_during_collection(
+        modules, execution, tmp_path):
+    execution.spec['workload'] = dict(file='customer.py', phases=['train'], sha256='a' * 64)
+    s3 = Mock()
+    s3.get_object.return_value = {'Body': io.BytesIO(execution.content)}
+    with pytest.raises(ValueError, match='source/payload'):
+        modules.evidence.collect(s3, 'bucket', execution.executed, execution.submitted,
+                                 execution.spec, tmp_path)
+
+
+def test_engine_only_verification_does_not_import_browser_tools(modules, monkeypatch, tmp_path):
+    for name in ('browser', 'nbformat', 'nbconvert'):
+        monkeypatch.setitem(sys.modules, name, None)
+    report = dict(status='passed')
+    result = modules.run.verify_browser(SimpleNamespace(engine_checks_only=True),
+                                        tmp_path, Mock(), dict(scenario='engine'), report)
+    assert result['verification_scope'] == 'execution'
+    assert not (tmp_path / 'notebook.html').exists()
+
+
+def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_path):
+    import ast
+    tree = ast.parse((HERE / 'kernel.py').read_text())
+    selected = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == 'selected_phases'
+                            for target in node.targets))
+    loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For)
+                and isinstance(node.target, ast.Name) and node.target.id == 'phase')
+    lifecycle, evidence, payload = [tmp_path / name for name in ('lifecycle', 'evidence', 'payload')]
+    for path in (lifecycle, evidence, payload):
+        path.mkdir()
+    calls = []
+
+    def worker(command, cwd, log, timeout):
+        name = command[command.index('--phase') + 1]
+        assert command[command.index('--workload') + 1] == str(payload / 'customer.py')
+        if name == 'reload':
+            assert not (lifecycle / 'scratch-train').exists()
+        (lifecycle / ('scratch-' + name)).mkdir()
+        (lifecycle / (name + '.json')).write_text(json.dumps(dict(status='passed')))
+        calls.append(name)
+        return 0
+    report = dict(phases={})
+    scope = dict(sys=sys, json=json, shutil=shutil, custom=dict(file='customer.py', phases=['train', 'reload']),
+                 config=dict(candidate=dict(expected_version='1')), payload=payload, lifecycle=lifecycle,
+                 evidence=evidence, root=tmp_path, report=report, wheel=tmp_path / 'candidate.whl',
+                 budget=SimpleNamespace(remaining=lambda root, cap: cap), helpers=SimpleNamespace(execute=worker))
+    exec(compile(ast.Module(body=[selected, loop], type_ignores=[]), '<custom-kernel-loop>', 'exec'), scope)
+    assert calls == ['platform-prerequisite', 'train', 'reload']
+    assert set(report['phases']) == set(calls)
+    assert all(value['returncode'] == 0 for value in report['phases'].values())
+    assert not list(lifecycle.glob('scratch-*'))

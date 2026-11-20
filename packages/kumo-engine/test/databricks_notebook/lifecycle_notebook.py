@@ -8,9 +8,7 @@ import re
 import subprocess
 import sys
 import uuid
-import zipfile
 from pathlib import Path
-from types import SimpleNamespace
 
 from client import Client, admit_cluster, configuration
 from run import (
@@ -23,6 +21,13 @@ from run import (
     save,
     submit_and_wait,
     successful_task,
+)
+
+sys.path.append(str(HERE.parent))
+from wheel_mlops_workload import (  # noqa: E402,F401
+    check_workload_wheels,
+    installed_wheel_files,
+    workload_phases,
 )
 
 
@@ -159,21 +164,6 @@ def denied_storage(client, config):
                 artifact_root=volume + '/mlops-validation/lifecycle')
 
 
-def check_workload_wheels(engine_wheel, extra_wheels):
-    """Reject dependency wheels that replace the admitted Engine bytes."""
-    with zipfile.ZipFile(engine_wheel) as engine:
-        engine_files = set(engine.namelist())
-        for wheel in extra_wheels:
-            if not re.fullmatch(r'[A-Za-z0-9_.+\-]+\.whl', wheel.name):
-                raise ValueError('Expected a regular workload wheel filename')
-            with zipfile.ZipFile(wheel) as archive:
-                for name in engine_files & set(archive.namelist()):
-                    if not name.endswith('/') and engine.read(
-                            name) != archive.read(name):
-                        raise ValueError(
-                            'Workload wheel replaces candidate bytes: ' + name)
-
-
 def execute(args, root):
     repo = HERE.parents[3]
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
@@ -185,7 +175,7 @@ def execute(args, root):
     paths += [
         HERE.parent / n
         for n in ('wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
-                  'wheel_gpu_smoke.py')
+                  'wheel_gpu_smoke.py', 'wheel_mlops_workload.py')
     ]
     custom_path = getattr(args, 'workload', None)
     extra_wheels = getattr(args, 'workload_wheel', None) or []
@@ -193,6 +183,9 @@ def execute(args, root):
         raise ValueError('--workload-wheel requires --workload')
     if custom_path is not None:
         custom_path = custom_path.resolve(strict=True)
+        if custom_path.name in {path.name for path in paths}:
+            raise ValueError(
+                'Workload basename is reserved for a notebook helper')
         paths.append(custom_path)
     committed, sources = {}, {}
     for path in paths:
@@ -208,8 +201,6 @@ def execute(args, root):
     candidate = read_candidate(args.candidate)
     custom = None
     if custom_path is not None:
-        from wheel_mlops_lifecycle import workload
-        module = workload(SimpleNamespace(workload=custom_path))
         names = [custom_path.name] + [wheel.name for wheel in extra_wheels]
         reserved = (set(committed) -
                     {custom_path.name}) | {candidate['wheel_file']}
@@ -217,7 +208,7 @@ def execute(args, root):
             raise ValueError('Workload asset names must be unique')
         custom = dict(file=custom_path.name,
                       sha256=digest(committed[custom_path.name]),
-                      phases=list(module.PHASES),
+                      phases=workload_phases(committed[custom_path.name]),
                       wheels=[wheel.name for wheel in extra_wheels])
         check_workload_wheels(args.wheel, extra_wheels)
     config = configuration(args.cluster_id)
@@ -236,8 +227,10 @@ def execute(args, root):
                                 digest(committed[name]), local)
     if custom is not None:
         for local in (custom_path, *extra_wheels):
+            checksum = custom['sha256'] if local == custom_path else digest(
+                local.read_bytes())
             assets[local.name], _ = asset(client, config['volume'], local.name,
-                                          digest(local.read_bytes()), local)
+                                          checksum, local)
     attempt = uuid.uuid4().hex[:12]
     folder = '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
     spec = dict(
@@ -252,6 +245,7 @@ def execute(args, root):
         output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs')
     if custom is not None:
         spec['workload'] = custom
+        spec['model_version_limit'] = 20
     if storage['status'] == 'ready':
         spec['denied_artifact_root'] = storage['artifact_root']
     save(root / 'scenario.json', spec)

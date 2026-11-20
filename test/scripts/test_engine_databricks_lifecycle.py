@@ -392,3 +392,94 @@ def test_workload_dependency_cannot_replace_candidate_bytes(
             runner.check_workload_wheels(engine, [dependency])
     else:
         runner.check_workload_wheels(engine, [dependency])
+
+
+@pytest.mark.parametrize('scheme', ['purelib', 'platlib'])
+def test_relocated_workload_dependency_cannot_replace_candidate(
+        runner, tmp_path, scheme):
+    import zipfile
+    engine, dependency = tmp_path / 'engine.whl', tmp_path / 'dependency.whl'
+    with zipfile.ZipFile(engine, 'w') as archive:
+        archive.writestr('kumo/engine/trainer.py', b'candidate')
+    with zipfile.ZipFile(dependency, 'w') as archive:
+        archive.writestr(f'dependency-1.data/{scheme}/kumo/engine/trainer.py',
+                         b'other build')
+    with pytest.raises(ValueError, match='replaces candidate bytes'):
+        runner.check_workload_wheels(engine, [dependency])
+
+
+def test_workload_wheels_cannot_replace_each_other(runner, tmp_path):
+    import zipfile
+    engine, first, second = [
+        tmp_path / (name + '.whl') for name in ('engine', 'first', 'second')
+    ]
+    with zipfile.ZipFile(engine, 'w') as archive:
+        archive.writestr('kumo/engine/__init__.py', b'engine')
+    with zipfile.ZipFile(first, 'w') as archive:
+        archive.writestr('customer_model/__init__.py', b'first build')
+    with zipfile.ZipFile(second, 'w') as archive:
+        archive.writestr('second-1.data/purelib/customer_model/__init__.py',
+                         b'second build')
+    with pytest.raises(ValueError, match='another dependency'):
+        runner.check_workload_wheels(engine, [first, second])
+
+
+@pytest.mark.parametrize('name', [
+    'pkg-1.data/data/lib/python3.12/site-packages/kumo/engine/trainer.py',
+    '../kumo/engine/trainer.py',
+    '/kumo/engine/trainer.py',
+])
+def test_unmappable_dependency_install_paths_are_rejected(
+        runner, tmp_path, name):
+    import zipfile
+    wheel = tmp_path / 'dependency.whl'
+    with zipfile.ZipFile(wheel, 'w') as archive:
+        archive.writestr(name, b'other build')
+    with pytest.raises(ValueError):
+        runner.installed_wheel_files(wheel)
+
+
+def test_notebook_phase_discovery_does_not_execute_customer_imports(runner):
+    source = b'import customer_model_not_installed_on_client\nPHASES = ("train", "reload")\nraise RuntimeError("must not execute on client")'
+    assert runner.workload_phases(source) == ['train', 'reload']
+    assert runner.workload_phases(b'PHASES: tuple[str, ...] = ("train",)') == [
+        'train'
+    ]
+
+
+@pytest.mark.parametrize('declaration', [
+    'PHASES = tuple(["train"])',
+    'PHASES = ()',
+    'PHASES = ("train", "train")',
+    'PHASES = ("../escape",)',
+    'PHASES = ("platform-prerequisite",)',
+    'PHASES = ("summary",)',
+    'PHASES = ("train",)\nPHASES = ("reload",)',
+])
+def test_notebook_requires_a_literal_phase_declaration(runner, declaration):
+    with pytest.raises(ValueError, match='literal PHASES'):
+        runner.workload_phases(declaration)
+
+
+@pytest.mark.parametrize('name', [
+    'wheel_mlops_lifecycle.py',
+    'wheel_mlops_platform.py',
+    'wheel_gpu_smoke.py',
+    'lifecycle_kernel.py',
+    'lifecycle_notebook.py',
+    'client.py',
+    'run.py',
+])
+def test_notebook_rejects_reserved_workload_basename_before_reading_sources(
+        runner, tmp_path, monkeypatch, name):
+    from types import SimpleNamespace
+    path = tmp_path / name
+    path.write_text('PHASES = ("train",)')
+
+    def git_output(command, **kwargs):
+        assert 'rev-parse' in command, 'Reserved workload must fail before source collection'
+        return 'a' * 40
+
+    monkeypatch.setattr(runner.subprocess, 'check_output', git_output)
+    with pytest.raises(ValueError, match='basename is reserved'):
+        runner.execute(SimpleNamespace(workload=path), tmp_path)

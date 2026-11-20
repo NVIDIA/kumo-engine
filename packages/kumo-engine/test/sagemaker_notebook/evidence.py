@@ -83,7 +83,8 @@ def collect(s3, bucket, executed, submitted, spec, directory):
                              key)
     if (report.get('execution_id') != record['execution_id']
             or report.get('test_sources') != spec['test_sources']
-            or report.get('payload') != spec['assets']):
+            or report.get('payload') != spec['assets']
+            or report.get('workload') != spec.get('workload')):
         raise ValueError('Stored report differs from executed source/payload')
     save(Path(directory) / 'receipt.json', record)
     return report
@@ -95,7 +96,8 @@ def validate_explanations(report, spec, directory, record):
     destination = directory / 'outputs'
     if spec.get('scenario') in ('graph', 'all'):
         import sys
-        sys.path.append(str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
+        sys.path.append(
+            str(Path(__file__).resolve().parents[1] / 'snowflake_notebook'))
         from explanation import FILES, validate_exports
         if not set(FILES) <= set(record['files']):
             raise ValueError(
