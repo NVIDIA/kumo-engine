@@ -2,8 +2,6 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING
-
 from ._c import (
     __version__,
     BUILD_COMMIT,
@@ -67,17 +65,15 @@ from ._c import (
     CUSTOM_TT_CONTRACT,
 )
 from ._exceptions import DiskgraphTaskError
-
-if TYPE_CHECKING:
-    from .sampling_plan import (
-        CustomExpression,
-        ExponentialDecay,
-        FanoutSpec,
-        LayerSpec,
-        LinearDecay,
-        SamplingPlan,
-        WeightedSampling,
-    )
+from .sampling_plan import (
+    CustomExpression,
+    ExponentialDecay,
+    FanoutSpec,
+    LayerSpec,
+    LinearDecay,
+    SamplingPlan,
+    WeightedSampling,
+)
 
 # Lazy imports for modules that have external dependencies (kumoapi)
 def __getattr__(name):
@@ -125,13 +121,6 @@ def __getattr__(name):
         "TASK_DATASET_SCHEMA_VERSION",                  # bundle schema version constant
         "TASK_DATASET_IMPLEMENTATION_KIND",             # mock/dev implementation marker
     }
-    if name in {
-        "SamplingPlan", "LayerSpec", "FanoutSpec", "WeightedSampling",
-        "ExponentialDecay", "LinearDecay", "CustomExpression",
-    }:
-        from . import sampling_plan as m
-        return getattr(m, name)
-
     if name == "SeedScheduleConfig":
         from .seed_schedule import SeedScheduleConfig
         return SeedScheduleConfig
