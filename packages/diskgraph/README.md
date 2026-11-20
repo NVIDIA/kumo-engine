@@ -172,6 +172,9 @@ output has not been published. The base's
 parent ID there as well. The reader rejects an extension whose parent ID does
 not match. Old indexes without IDs remain readable with their old extensions,
 but cannot be mixed with ID-bearing builds or verified by `ManagedIndexPaths`.
+Partial builds with version-2 Encode state cannot resume because that state lacks
+build identity; restart them as a fresh ingest, choosing a new ID and output
+path if the ID was preallocated.
 An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
 IDs by default, even for the same source.
 

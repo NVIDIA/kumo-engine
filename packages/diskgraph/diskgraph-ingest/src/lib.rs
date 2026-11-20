@@ -2156,6 +2156,27 @@ mod tests_repopulate_helpers {
         resumed.restore_encode_state().unwrap();
     }
 
+    #[test]
+    fn resume_rejects_version_2_encode_state_without_build_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::create_dir(root.join("_tmp")).unwrap();
+        let source = graph_config(Vec::new());
+        let encoded = make_ctx(source.clone(), local_target(root), 1);
+        encoded.persist_encode_state().unwrap();
+        let path = root.join(ENCODE_STATE_PATH);
+        let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        state["version"] = 2.into();
+        state.as_object_mut().unwrap().remove("index_build_id");
+        state.as_object_mut().unwrap().remove("parent_index_build_id");
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+        let mut resumed = make_ctx(source, local_target(root), 1);
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("unsupported Encode state version 2"));
+        assert!(error.to_string().contains("restart as a fresh ingest"));
+    }
+
     // -- A. repopulate_node_stats_from_meta --------------------------------
 
     #[test]
@@ -2999,6 +3020,7 @@ struct EncodeState {
     source: GraphConfig,
     #[serde(default)]
     index_build_id: Option<String>,
+    #[serde(default)]
     parent_index_build_id: Option<String>,
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
@@ -8306,7 +8328,7 @@ impl IngestContext {
             .with_context(|| format!("decode completed Encode state: {}", path.display()))?;
         if state.version != ENCODE_STATE_VERSION {
             return Err(anyhow!(
-                "unsupported Encode state version {} at {}",
+                "unsupported Encode state version {} at {}; restart as a fresh ingest",
                 state.version,
                 path.display()
             ));
