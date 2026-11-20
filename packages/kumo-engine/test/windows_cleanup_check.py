@@ -24,7 +24,9 @@ with (scratch / 'held.bin').open('wb') as held:
     held.write(b'held until termination')
     held.flush()
     ready = scratch / 'ready.tmp'
-    ready.write_text(json.dumps({'parent': os.getppid(), 'child': os.getpid()}))
+    ready.write_text(json.dumps({'parent': os.getppid(), 'child': os.getpid(),
+                                 'executable': sys.executable,
+                                 'platform': sys.platform, 'os_name': os.name}))
     ready.replace(scratch / 'ready.json')
     time.sleep(120)
 '''
@@ -37,6 +39,13 @@ child.wait(timeout=120)
 WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 258
 SYNCHRONIZE = 0x00100000
+
+
+def tree_command(scratch):
+    # Windows venv python.exe can redirect to a different interpreter process.
+    # This stdlib-only tree uses the base interpreter so Popen owns its real PID.
+    executable = Path(sys._base_executable).resolve(strict=True)
+    return [str(executable), '-Iu', '-c', PARENT, str(scratch), CHILD]
 
 
 def kernel_api():
@@ -88,7 +97,9 @@ def cleanup(kernel, parent, pids, handles):
 
 def main():
     print(json.dumps(dict(platform=platform.platform(), sys_platform=sys.platform,
-                          os_name=os.name, python=sys.version)), flush=True)
+                          os_name=os.name, python=sys.version,
+                          invoker_executable=sys.executable,
+                          base_executable=sys._base_executable)), flush=True)
     if sys.platform != 'win32' or os.name != 'nt':
         raise RuntimeError('This cleanup proof requires native Windows')
     # Isolated Python (-I) omits the script directory from its import path.
@@ -101,8 +112,8 @@ def main():
     kernel = kernel_api()
     scratch = Path(tempfile.mkdtemp(prefix='drq-cleanup-'))
     try:
-        parent = subprocess.Popen([sys.executable, '-Iu', '-c', PARENT,
-                                   str(scratch), CHILD], cwd=scratch,
+        command = tree_command(scratch)
+        parent = subprocess.Popen(command, cwd=scratch,
                                   stdin=subprocess.DEVNULL)
     except OSError:
         shutil.rmtree(scratch)
@@ -121,6 +132,9 @@ def main():
         if record['parent'] != parent.pid:
             raise RuntimeError('Readiness did not come from the expected child')
         pids.append(record['child'])
+        if (record['platform'] != 'win32' or record['os_name'] != 'nt'
+                or not os.path.samefile(record['executable'], command[0])):
+            raise RuntimeError('The process tree did not use native base Python')
         for pid in pids:
             handle = kernel.OpenProcess(SYNCHRONIZE, False, pid)
             if not handle:
@@ -143,6 +157,7 @@ def main():
     if scratch.exists():
         raise RuntimeError('Worker scratch survived process cleanup')
     print(json.dumps(dict(status='PASS', parent_pid=pids[0], child_pid=pids[1],
+                          tree_executable=record['executable'],
                           parent_wait_timed_out=True,
                           parent_terminated=True, child_terminated=True,
                           scratch_removed=True)), flush=True)
