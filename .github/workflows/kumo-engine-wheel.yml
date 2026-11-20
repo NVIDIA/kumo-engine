@@ -69,7 +69,7 @@ jobs:
             platform: manylinux_2_34_aarch64
           - arch: windows-x86_64
             machine: x86_64
-            runner: windows-2022
+            runner: windows-amd64-cpu4
             platform: win_amd64
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -91,6 +91,10 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+
+      - name: Verify native Windows process cleanup
+        if: ${{ matrix.arch == 'windows-x86_64' }}
+        run: python -I packages/kumo-engine/test/windows_cleanup_check.py
 
       - name: Check release tag matches the VERSION file
         if: ${{ github.event_name == 'release' }}

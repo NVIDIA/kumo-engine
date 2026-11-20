@@ -13,7 +13,7 @@ permissions:
 jobs:
   windows-reload:
     name: Native Windows CPU reload (Python ${{ matrix.python }})
-    runs-on: windows-2022
+    runs-on: windows-amd64-cpu4
     timeout-minutes: 60
     environment: {name: gha-kumo-workflow-tests, deployment: false}
     permissions: {contents: read, id-token: write}
@@ -68,7 +68,7 @@ jobs:
           stage="$(cygpath -u "$RUNNER_TEMP")/windows-reload"
           inputs="$(cygpath -u "$RUNNER_TEMP")/reload-inputs"
           mkdir -p "$stage/test" "$stage/results"
-          cp packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke}.py "$stage/test/"
+          cp packages/kumo-engine/test/{desktop_reload_qualification,wheel_gpu_smoke,windows_cleanup_check}.py "$stage/test/"
           cd "$stage"
           wheels=(artifacts/kumo_engine-*.whl)
           [ "${#wheels[@]}" -eq 1 ] && [ -f "${wheels[0]}" ]
@@ -77,6 +77,7 @@ jobs:
           uv pip install --python "$python" --torch-backend=cpu "${wheels[0]}[cpu]" 2>&1 | tee results/install.log
           uv pip check --python "$python" 2>&1 | tee results/dependencies.log
           uv pip freeze --python "$python" > results/freeze.txt
+          "$python" -I test/windows_cleanup_check.py 2>&1 | tee results/cleanup.log
           "$python" -I test/desktop_reload_qualification.py run --wheel "${wheels[0]}" --device cpu \
             --data-dir "$inputs" --output-dir results --commit "$CANDIDATE_SHA"
       - if: always()
@@ -99,7 +100,7 @@ jobs:
         python: ['3.11', '3.12', '3.13', '3.14']
         target:
           - platform: windows-native
-            runner: windows-2022
+            runner: windows-amd64-cpu4
             artifact: windows-x86_64
           - platform: windows-wsl
             runner: wsl-amd64-gpu-t4-latest-1
