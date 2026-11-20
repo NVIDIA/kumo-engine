@@ -12,6 +12,7 @@ fn base_table(name: &str) -> TableSpec {
         name: name.into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -24,6 +25,7 @@ fn base_table(name: &str) -> TableSpec {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "name".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -67,6 +69,52 @@ fn base_metadata() -> GraphConfig {
     }
 }
 
+#[test]
+fn source_names_validate_per_table() {
+    for (source, csv, duplicate, expected) in [
+        ("", false, false, Some("empty source_name")),
+        ("ID", true, false, Some("requires a Parquet source")),
+        ("name", false, false, Some("read the same source column")),
+        ("ID", false, false, None),
+        ("ID", false, true, Some("has duplicate column id")),
+    ] {
+        let mut config = base_metadata();
+        config.tables[0].columns[0].source_name = Some(source.into());
+        config.tables[1].columns[0].source_name = Some(source.into());
+        if csv {
+            config.tables[0].source = DataSource::Csv {
+                paths: vec!["table.csv".into()],
+            };
+        }
+        if duplicate {
+            let column = config.tables[0].columns[0].clone();
+            config.tables[0].columns.push(column);
+        }
+        match expected {
+            None => config.validate().unwrap(),
+            Some(needle) => {
+                let message = config.validate().unwrap_err().to_string();
+                assert!(message.contains(needle), "{message}");
+                if duplicate {
+                    assert_eq!(message.matches(needle).count(), 1, "{message}");
+                    assert!(
+                        !message.contains("read the same source column"),
+                        "{message}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn old_config_round_trip_omits_source_name() {
+    let json = serde_json::to_string(&base_metadata()).unwrap();
+    let restored: GraphConfig = serde_json::from_str(&json).unwrap();
+    assert!(!json.contains("source_name"));
+    assert_eq!(serde_json::to_string(&restored).unwrap(), json);
+}
+
 fn assert_err_contains(meta: GraphConfig, needle: &str) {
     let err = meta.validate().unwrap_err();
     let msg = err.to_string();
@@ -96,6 +144,7 @@ fn validate_minimal_metadata() {
 fn validate_rejects_unsupported_direct_multicategorical_dtype() {
     let mut table = base_table("User");
     table.columns.push(ColumnSpec {
+        source_name: None,
         name: "bad_multicat".into(),
         ingested_dtype: IngestedType::Int64,
         source_dtype: None,
@@ -130,6 +179,7 @@ fn validate_missing_pk_column() {
         tables: vec![TableSpec {
             name: "User".into(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "name".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -205,6 +255,7 @@ fn validate_table_no_columns() {
 fn validate_duplicate_column_names() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "id".into(),
         ingested_dtype: IngestedType::Int64,
         source_dtype: None,
@@ -262,6 +313,7 @@ fn validate_create_time_invalid_type() {
 fn validate_decimal_missing_precision() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
         source_dtype: None,
@@ -280,6 +332,7 @@ fn validate_decimal_missing_precision() {
 fn validate_decimal_missing_scale() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
         source_dtype: None,
@@ -298,6 +351,7 @@ fn validate_decimal_missing_scale() {
 fn validate_decimal_precision_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
         source_dtype: None,
@@ -316,6 +370,7 @@ fn validate_decimal_precision_out_of_range() {
 fn validate_decimal_scale_out_of_range() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "amount".into(),
         ingested_dtype: IngestedType::Decimal128,
         source_dtype: None,
@@ -334,6 +389,7 @@ fn validate_decimal_scale_out_of_range() {
 fn validate_decimal_precision_on_non_decimal() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "bad".into(),
         ingested_dtype: IngestedType::Int64,
         source_dtype: None,
@@ -352,6 +408,7 @@ fn validate_decimal_precision_on_non_decimal() {
 fn validate_decimal_precision_allowed_with_source_decimal() {
     let mut meta = base_metadata();
     meta.tables[0].columns.push(ColumnSpec {
+        source_name: None,
         name: "castable".into(),
         ingested_dtype: IngestedType::Int64,
         source_dtype: Some("Decimal128(10, 2)".into()),
@@ -372,6 +429,7 @@ fn validate_edge_fk_missing_column() {
     meta.tables.push(TableSpec {
         name: "Edge".into(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "src_id".into(),
             ingested_dtype: IngestedType::Int64,
             source_dtype: None,
@@ -421,6 +479,7 @@ fn validate_edge_fk_missing_table() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -433,6 +492,7 @@ fn validate_edge_fk_missing_table() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -484,6 +544,7 @@ fn validate_edge_fk_ref_table_no_pk() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -496,6 +557,7 @@ fn validate_edge_fk_ref_table_no_pk() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -548,6 +610,7 @@ fn validate_edge_fk_int_string_ok() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -560,6 +623,7 @@ fn validate_edge_fk_int_string_ok() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -610,6 +674,7 @@ fn validate_edge_fk_string_int_ok() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,
@@ -622,6 +687,7 @@ fn validate_edge_fk_string_int_ok() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -680,6 +746,7 @@ fn validate_edge_fk_string_bytes_ok() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -692,6 +759,7 @@ fn validate_edge_fk_string_bytes_ok() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Bytes,
                 source_dtype: None,
@@ -750,6 +818,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         name: "Edge".into(),
         columns: vec![
             ColumnSpec {
+                source_name: None,
                 name: "src_id".into(),
                 ingested_dtype: IngestedType::String,
                 source_dtype: None,
@@ -762,6 +831,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
                 multicategorical_delimiter: None,
             },
             ColumnSpec {
+                source_name: None,
                 name: "dst_id".into(),
                 ingested_dtype: IngestedType::Bytes,
                 source_dtype: None,
@@ -814,6 +884,7 @@ fn validate_edge_fk_uuid_ok() {
     meta.tables.push(TableSpec {
         name: "Edge".into(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "src_id".into(),
             ingested_dtype: IngestedType::Uuid,
             source_dtype: None,
@@ -865,6 +936,7 @@ fn validate_edge_fk_uuid_mismatch() {
     meta.tables.push(TableSpec {
         name: "Edge".into(),
         columns: vec![ColumnSpec {
+            source_name: None,
             name: "src_id".into(),
             ingested_dtype: IngestedType::Bytes,
             source_dtype: None,
@@ -1283,6 +1355,7 @@ mod new_schema_types {
         let table = TableSpec {
             name: "transactions".into(),
             columns: vec![ColumnSpec {
+                source_name: None,
                 name: "user_id".into(),
                 ingested_dtype: IngestedType::Int64,
                 source_dtype: None,

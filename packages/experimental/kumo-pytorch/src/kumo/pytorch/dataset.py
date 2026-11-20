@@ -19,6 +19,7 @@ A `Dataset` names no engine and, apart from in-memory rows, is serializable.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from glob import glob, has_magic
@@ -34,6 +35,15 @@ __all__ = [
     "Parquet",
     "TableSource",
 ]
+
+
+class _MissingParquetColumns(ValueError):
+    """Missing logical columns in one physical file."""
+
+    def __init__(self, path: str, columns: list[str]) -> None:
+        self.path = path
+        self.columns = columns
+        super().__init__(f"in {path!r}: missing columns {columns}")
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,57 @@ class Parquet:
         if len(set(renames.values())) != len(renames):
             raise ValueError(f"Parquet column renames collide: {sorted(renames.values())}")
         object.__setattr__(self, "columns", renames)
+
+    def _bind_columns(
+        self,
+        selected: Sequence[str] | None = None,
+        *,
+        file_columns: Mapping[str, Sequence[str]] | None = None,
+    ) -> dict[str, str]:
+        """Resolve logical names to physical fields consistently across every file.
+
+        With no selection, discover all logical columns. Renames apply simultaneously;
+        ambiguity is refused only for selected columns. Physical field names must be unique.
+        """
+        import pyarrow.parquet as pq
+
+        binding = None
+        for path in _local_parquet_files(self.path) if file_columns is None else file_columns:
+            try:
+                names = pq.read_schema(path).names if file_columns is None else file_columns[path]
+                duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
+                if duplicates:
+                    raise ValueError(f"duplicate physical column names {duplicates}")
+                candidates: dict[str, list[str]] = {}
+                for name in names:
+                    candidates.setdefault(self.columns.get(name, name), []).append(name)
+                if selected is None and binding is not None and set(binding) != set(candidates):
+                    raise ValueError(
+                        "column names differ across Parquet files; "
+                        "select shared columns explicitly with TableSpec.columns"
+                    )
+                missing = sorted(set(selected) - candidates.keys()) if selected is not None else []
+                if missing:
+                    raise _MissingParquetColumns(path, missing)
+                current = {}
+                for logical in candidates if selected is None else selected:
+                    physical = candidates.get(logical, [])
+                    if len(physical) != 1:
+                        raise ValueError(
+                            f"ambiguous logical column {logical!r}: physical columns {physical}"
+                        )
+                    current[logical] = physical[0]
+                if binding is not None and current != binding:
+                    raise ValueError(
+                        f"column binding differs across Parquet files: {current!r} != {binding!r}"
+                    )
+                binding = current
+            except _MissingParquetColumns:
+                raise
+            except (ValueError, OSError) as error:
+                raise ValueError(f"in {path!r}: {error}") from error
+        assert binding is not None
+        return binding
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-compatible form of this storage reference."""
@@ -145,22 +206,18 @@ class Dataset:
                     f"schema.tables.{table.name}.columns: type inference requires Parquet "
                     "metadata; declare every DType for InMemoryRows"
                 )
-            columns = None if table.columns is None else dict(table.columns)
+            try:
+                binding = source._bind_columns(
+                    None if table.columns is None else tuple(table.columns)
+                )
+            except (ValueError, OSError) as error:
+                raise ValueError(f"bind {table.name} {error}") from error
+            columns = dict.fromkeys(binding) if table.columns is None else dict(table.columns)
             for path in _local_parquet_files(source.path):
                 try:
                     metadata = pq.read_schema(path)
-                    physical = {
-                        source.columns.get(field.name, field.name): field.type for field in metadata
-                    }
-                    if columns is None:
-                        columns = dict.fromkeys(physical)
-                    elif table.columns is None and set(columns) != set(physical):
-                        raise ValueError(
-                            "column names differ across Parquet files; "
-                            "select shared columns explicitly with TableSpec.columns"
-                        )
                     for name, declared in columns.items():
-                        actual = DType.from_arrow(physical[name])
+                        actual = DType.from_arrow(metadata.field(binding[name]).type)
                         if declared is not None and actual != declared:
                             raise ValueError(
                                 f"declared {declared!r}, physical type resolves to {actual!r}"

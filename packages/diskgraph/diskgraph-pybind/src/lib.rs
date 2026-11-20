@@ -1854,6 +1854,7 @@ fn compute_col_stats_for_parquet(
                 })
                 .transpose()?;
             Ok(ColumnSpec {
+                source_name: None,
                 name: c.name,
                 source_dtype: None,
                 ingested_dtype,

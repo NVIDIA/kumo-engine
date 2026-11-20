@@ -64,6 +64,153 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
     Ok(())
 }
 
+#[test]
+fn parquet_source_names_preserve_graph_and_statistics() -> Result<()> {
+    let dir = tempdir()?;
+    let keys = ["customer-000000000001", "customer-000000000002"];
+    let tables: [(serde_json::Value, Vec<ArrayRef>); 2] = [
+        (
+            serde_json::json!({"name": "Users", "primary_key": "id", "columns": [
+                {"name": "id", "ingested_dtype": "string", "semantic_type": "id"},
+                {"name": "bio", "ingested_dtype": "string", "semantic_type": "text"}
+            ]}),
+            vec![
+                Arc::new(StringArray::from(keys.to_vec())),
+                Arc::new(StringArray::from(vec![
+                    "books and music",
+                    "games and music",
+                ])),
+            ],
+        ),
+        (
+            serde_json::json!({"name": "Orders", "primary_key": "id", "create_time": "at", "columns": [
+                {"name": "id", "ingested_dtype": "int64"},
+                {"name": "user_id", "ingested_dtype": "string"},
+                {"name": "at", "ingested_dtype": "timestamp"},
+                {"name": "A", "ingested_dtype": "int64"},
+                {"name": "B", "ingested_dtype": "int64"}
+            ], "fkeys": [{"src_column": "user_id", "dst_table": "Users", "bidirectional": true,
+                "reverse": {"time": {"table": "Orders", "column": "at", "unit": "s"}}}]}),
+            vec![
+                Arc::new(Int64Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(keys.to_vec())),
+                Arc::new(TimestampSecondArray::from(vec![100, 200])),
+                Arc::new(Int64Array::from(vec![3, 4])),
+                Arc::new(Int64Array::from(vec![30, 40])),
+            ],
+        ),
+    ];
+    let mut snapshots = Vec::new();
+    for renamed in [false, true] {
+        let input = dir.path().join(format!("input-{renamed}"));
+        let output = dir.path().join(format!("index-{renamed}"));
+        let mut config =
+            serde_json::json!({"dataset_name": "source_names", "num_shards": 1, "tables": []});
+        for (spec, arrays) in &tables {
+            // A/B already exist in both schemas: ignoring their aliases silently swaps values.
+            let physical = |name: &str| {
+                if renamed {
+                    match name {
+                        "A" => "B".into(),
+                        "B" => "A".into(),
+                        _ => name.to_uppercase(),
+                    }
+                } else {
+                    name.to_string()
+                }
+            };
+            let path = input.join(format!("{}.parquet", spec["name"].as_str().unwrap()));
+            let mut table = spec.clone();
+            let columns = table["columns"].as_array_mut().unwrap();
+            let mut fields: Vec<_> = columns
+                .iter()
+                .zip(arrays)
+                .map(|(column, array)| {
+                    Field::new(
+                        physical(column["name"].as_str().unwrap()),
+                        array.data_type().clone(),
+                        false,
+                    )
+                })
+                .collect();
+            let mut data = arrays.clone();
+            if renamed {
+                fields.reverse();
+                data.reverse();
+                for column in columns {
+                    column["source_name"] = physical(column["name"].as_str().unwrap()).into();
+                }
+            }
+            write_parquet(&path, Schema::new(fields), data)?;
+            table["source"] = serde_json::json!({"type": "parquet", "paths": [path]});
+            config["tables"].as_array_mut().unwrap().push(table);
+        }
+        let mut links = config["tables"][1].clone();
+        links["name"] = "Links".into();
+        for field in ["primary_key", "create_time", "fkeys"] {
+            links.as_object_mut().unwrap().remove(field);
+        }
+        links["edge_table"] = serde_json::json!({"src_fk": {"edge_column": "user_id", "ref_table": "Users"},
+            "dst_fk": {"edge_column": "id", "ref_table": "Orders"}});
+        config["tables"].as_array_mut().unwrap().push(links);
+        let config_path = input.join("config.json");
+        fs::write(&config_path, serde_json::to_vec(&config)?)?;
+        ingest_with_stats(
+            &config_path,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                col_stats: true,
+                cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::Hybrid,
+                source_loader_threads: Some(1),
+                source_encoder_threads: Some(1),
+                pk_map_threads: Some(1),
+                edges_map_threads: Some(1),
+                index_threads: Some(1),
+                ..Default::default()
+            },
+        )?;
+        let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output)?;
+        assert_pkey_lookups(&reader, "Users", &keys)?;
+        assert_pkey_lookups(&reader, "Orders", &["10", "20"])?;
+        assert_eq!(
+            sum_relation_edges(&reader.table("Users").unwrap(), "edge_Links_src_to_dst")?,
+            2
+        );
+        let stats: serde_json::Value =
+            serde_json::from_slice(&fs::read(output.join("col_stats.json"))?)?;
+        assert!(stats["Users"]["bio"]["avg_tokens"].as_f64().unwrap() > 0.0);
+        snapshots.push((decoded_graph(&reader)?, stats));
+    }
+    assert_eq!(snapshots[0], snapshots[1]);
+    Ok(())
+}
+
+fn decoded_graph(reader: &GraphIndexReader) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    for name in reader.table_names() {
+        let table = reader.table(&name).unwrap();
+        for offset in 0..table.node_count() {
+            let id = table.node_id_from_offset(offset).unwrap();
+            let row = table
+                .decode_node_data_json(&table.edges_for_node(id)?)?
+                .unwrap();
+            values.push(format!("{name}:{row}"));
+            for relation in table.relations() {
+                let target = reader.table(&relation.dst_type).unwrap();
+                for (dst_id, sort) in extract_relation_entries(&table, &relation.name, id)? {
+                    let dst = target
+                        .decode_node_data_json(&target.edges_for_node(dst_id)?)?
+                        .unwrap();
+                    values.push(format!("{}:{row}:{dst}:{sort}", relation.name));
+                }
+            }
+        }
+    }
+    values.sort();
+    Ok(values)
+}
+
 fn assert_pkey_lookups(reader: &GraphIndexReader, table_name: &str, keys: &[&str]) -> Result<()> {
     let table = reader
         .table(table_name)

@@ -27,6 +27,7 @@ use rayon::ThreadPool;
 
 fn column(name: &str, dtype: IngestedType, semantic_type: Option<SemanticType>) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: name.to_string(),
         source_dtype: None,
         ingested_dtype: dtype,

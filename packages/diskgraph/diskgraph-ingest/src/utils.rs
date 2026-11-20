@@ -110,6 +110,7 @@ mod tests {
 
     fn make_col(name: &str, dtype: IngestedType) -> ColumnSpec {
         ColumnSpec {
+            source_name: None,
             name: name.to_string(),
             source_dtype: None,
             ingested_dtype: dtype,

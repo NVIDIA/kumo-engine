@@ -270,13 +270,6 @@ def _nested(tmp_path: Path) -> None:
     _compile_diskgraph_config(SCHEMA, dataset, num_shards=1, dataset_name="t")
 
 
-def _renamed(tmp_path: Path) -> None:
-    dataset = Dataset(
-        {**PARQUET.tables, "accounts": Parquet("/warehouse/accounts", {"opened": "opened_at"})}
-    )
-    _compile_diskgraph_config(SCHEMA, dataset, num_shards=1, dataset_name="t")
-
-
 #: Further variants of entries whose refusal covers several declarations.
 VARIANT_CASES: tuple[tuple[str, str, Callable[[], DataLoaderSpec]], ...] = (
     (
@@ -333,7 +326,6 @@ def test_check_refuses_each_variant_with_the_entry_code(code: str, build) -> Non
 
 #: Entries refused while prepare() binds the data, each with the call that refuses it.
 PREPARE_CASES: dict[str, Callable[[Path], None]] = {
-    "DG-COLUMN-RENAME": _renamed,
     "DG-INT64-CLOCK": _int64_clock,
     "DG-NESTED-COLUMN": _nested,
 }

@@ -53,6 +53,7 @@ fn write_parquet(path: &Path, columns: Vec<(&str, ArrayRef)>) {
 
 fn int_col(name: &str) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: name.to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::Int64,

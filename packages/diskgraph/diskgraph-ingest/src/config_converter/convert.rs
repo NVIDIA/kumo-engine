@@ -449,6 +449,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         }
 
         columns.push(ColumnSpec {
+            source_name: None,
             name: name.to_string(),
             source_dtype: dtype.map(|s| s.to_string()),
             ingested_dtype,

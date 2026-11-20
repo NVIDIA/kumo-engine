@@ -1066,6 +1066,7 @@ pub(crate) fn infer_parquet_schema_from_arrow(
             }
         }
         columns.push(ColumnSpec {
+            source_name: None,
             name: field.name().to_string(),
             ingested_dtype,
             source_dtype: Some(field.data_type().to_string()),
@@ -1636,6 +1637,7 @@ impl ColumnStats {
             }
         }
         ColumnSpec {
+            source_name: None,
             name: name.to_string(),
             ingested_dtype,
             source_dtype: Some("string".to_string()),

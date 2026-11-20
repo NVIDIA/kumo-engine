@@ -91,6 +91,7 @@ fn make_col_spec(
     delim: Option<&str>,
 ) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: "c".into(),
         source_dtype: None,
         ingested_dtype: ingested,
