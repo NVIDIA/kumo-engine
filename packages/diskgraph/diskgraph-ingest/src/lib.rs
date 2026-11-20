@@ -251,18 +251,6 @@ struct ParquetInput {
     condition: Option<CloudObjectCondition>,
 }
 
-/// Rows for the encoding context, taken as a stride across the table's files.
-///
-/// Every encoding decision is made from this sample, and value vocabularies are
-/// partitioned across files, so the head of one file shows a fraction of a
-/// column's distinct values however many rows it reads. Spread the sample
-/// across files to cover more of the column's vocabulary.
-///
-/// This reads through its own readers and consumes nothing from the encode
-/// stream, so encode still reads every file whole. These rows are therefore
-/// read twice, which for `sample_limit` rows out of a whole table is cheaper
-/// than any coupling that would avoid it. Loading without a resident budget
-/// takes the ranged-read path rather than downloading whole cloud objects.
 /// Longest value in a variable-width column. An upper bound on the key
 /// `pk_map` hashes, since `parse_bytes_key` only ever shrinks its input.
 fn max_binary_value_len(array: &ArrayRef) -> usize {
@@ -306,6 +294,18 @@ fn max_binary_value_len(array: &ArrayRef) -> usize {
     }
 }
 
+/// Rows for the encoding context, taken as a stride across the table's files.
+///
+/// Every encoding decision is made from this sample, and value vocabularies are
+/// partitioned across files, so the head of one file shows a fraction of a
+/// column's distinct values however many rows it reads. Spread the sample
+/// across files to cover more of the column's vocabulary.
+///
+/// This reads through its own readers and consumes nothing from the encode
+/// stream, so encode still reads every file whole. These rows are therefore
+/// read twice, which for `sample_limit` rows out of a whole table is cheaper
+/// than any coupling that would avoid it. Loading without a resident budget
+/// takes the ranged-read path rather than downloading whole cloud objects.
 fn sample_context_batches(
     table: &TableSpec,
     transfer: Option<&CloudTransfer>,
@@ -7617,8 +7617,8 @@ impl IngestContext {
                     )?;
                     for batch in &strided {
                         if let Some(col) = pk_col_index {
-                            pk_max_key_len =
-                                pk_max_key_len.max(max_binary_value_len(batch.column(col)));
+                            let pk = source_column(batch, &table.columns[col])?;
+                            pk_max_key_len = pk_max_key_len.max(max_binary_value_len(pk));
                         }
                         let cols = build_access_cols(batch, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
@@ -7658,8 +7658,8 @@ impl IngestContext {
                         let sampled_rows = compact.num_rows();
                         prefix_permit.shrink_to(compact.get_array_memory_size() as u64);
                         if let Some(col) = pk_col_index {
-                            pk_max_key_len =
-                                pk_max_key_len.max(max_binary_value_len(compact.column(col)));
+                            let pk = source_column(&compact, &table.columns[col])?;
+                            pk_max_key_len = pk_max_key_len.max(max_binary_value_len(pk));
                         }
                         let cols = build_access_cols(&compact, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
@@ -9270,11 +9270,7 @@ impl IngestContext {
                     let batch = batch?;
                     let mut cols = Vec::with_capacity(table.columns.len());
                     for col in &table.columns {
-                        let idx = batch
-                            .schema()
-                            .index_of(&col.name)
-                            .context("missing column in batch")?;
-                        cols.push(batch.column(idx).clone());
+                        cols.push(source_column(&batch, col)?.clone());
                     }
                     access.set_cols(&cols);
                     let mut src_key_buf = Vec::new();
@@ -9555,6 +9551,7 @@ impl IngestContext {
                         } else {
                             None
                         };
+                        let scratch = &mut std::mem::take(scratch);
                         let mut fkey_bitmaps: Vec<memmap2::MmapMut> = Vec::new();
                         for rel in relationships.iter().filter(|r| r.src_table == table_name) {
                             let path = root.join(temp_fkey_bitmap_path(&table_name, &rel.name_forward, shard));
@@ -9579,8 +9576,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Int64);
-                                    pkmap.seen_u64.clear();
                                     reserve_map(&mut pkmap.seen_u64, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -9700,16 +9695,12 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::VarBytes);
-                                    let pre_clear_cap = pkmap.seen_bytes.capacity();
-                                    pkmap.seen_bytes.clear();
                                     reserve_map(&mut pkmap.seen_bytes, reserve_rows_usize);
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
                                         table = %table_name, shard, phase = "task_start",
                                         seen_len = 0u64,
                                         seen_cap = pkmap.seen_bytes.capacity() as u64,
-                                        prev_seen_cap = pre_clear_cap as u64,
                                         reserve_rows = reserve_rows_usize as u64,
                                         union_rows = union_rows,
                                         avg_var_bytes = avg_var_bytes,
@@ -9882,8 +9873,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid);
-                                    pkmap.seen_uuid.clear();
                                     reserve_map(&mut pkmap.seen_uuid, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10004,8 +9993,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Uuid256);
-                                    pkmap.seen_uuid256.clear();
                                     reserve_map(&mut pkmap.seen_uuid256, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10126,8 +10113,6 @@ impl IngestContext {
                                     let pkmap = scratch;
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
-                                    pkmap.clear_others_for(KeyType::Ip);
-                                    pkmap.seen_ip.clear();
                                     reserve_map(&mut pkmap.seen_ip, reserve_rows_usize);
                                     duplicate_samples_local.clear();
                                     {
@@ -10244,6 +10229,7 @@ impl IngestContext {
                                 }
                             }
                         }?;
+                        update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                         if duplicate_count > 0 {
                             let key = format!("{}:shard-{:05}", table_name, shard);
                             duplicate_counts
@@ -16407,6 +16393,16 @@ fn oversized_row_nulls(
     nulls
 }
 
+/// `column`'s array in a source batch. Source batches keep the source's own
+/// column order, which need not match the config's, so resolve by name.
+fn source_column<'a>(batch: &'a RecordBatch, column: &ColumnSpec) -> Result<&'a ArrayRef> {
+    let idx = batch
+        .schema()
+        .index_of(&column.name)
+        .with_context(|| format!("missing column {} in batch", column.name))?;
+    Ok(batch.column(idx))
+}
+
 /// Build the per-column `ArrayRef` list for `RowAccess`, fetching real columns
 /// from `batch` by name and substituting a length-correct null placeholder for
 /// synthetic resolution node-id columns (whose values come from the override
@@ -16426,11 +16422,7 @@ fn build_access_cols(
             cols.push(arrow_array::new_null_array(&DataType::Null, n));
             continue;
         }
-        let idx = batch
-            .schema()
-            .index_of(&col.name)
-            .context("missing column in batch")?;
-        cols.push(batch.column(idx).clone());
+        cols.push(source_column(batch, col)?.clone());
     }
     Ok(cols)
 }

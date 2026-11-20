@@ -86,8 +86,16 @@ class Shape:
 class _Source:
     """In place of DiskGraphSource: what the engine hands the sampler."""
 
-    def __init__(self, artifact: _DiskGraphIndex, schema: DataSchema, *, num_threads: int | None):
+    def __init__(
+        self,
+        artifact: _DiskGraphIndex,
+        schema: DataSchema,
+        *,
+        num_threads: int | None,
+        random_seed: int | None,
+    ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
+        self.random_seed = random_seed
 
 
 def _write(schema: DataSchema, tables: Tables, directory: Path, parts: int = 1) -> Dataset:
@@ -117,6 +125,7 @@ def _open(
     with recording(fake), patch("kumo.pytorch.engines.diskgraph.DiskGraphSource", _Source):
         source = engine.open(dataset, schema)
     assert isinstance(source, _Source)
+    assert source.random_seed == engine.random_seed
     return source
 
 

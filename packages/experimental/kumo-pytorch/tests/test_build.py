@@ -86,7 +86,7 @@ history = build.Events(
 )
 activity = build.Neighborhood(
     layers=(
-        build.Hop(link=user_accounts, fanout=2, strategy="uniform", temporal="static"),
+        build.Hop(link=user_accounts, fanout=2, strategy="uniform"),
         build.Hop(link=account_transactions, fanout=1, strategy="recent", time="occurred_at"),
     )
 )
@@ -186,7 +186,6 @@ EXPECTED = DataLoaderSpec(
                                 relation="user_accounts",
                                 fanout=2,
                                 strategy="uniform",
-                                temporal="static",
                             ),
                         )
                     ),
