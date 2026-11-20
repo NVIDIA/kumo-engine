@@ -117,6 +117,8 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
     or an absolute external extension path for a read-only base index. External
     paths require finalized index metadata; the native reader validates it.
+    The catalog namespace is the index-local ID for a relative ref, including
+    a symlink, and the resolved directory basename for an absolute external ref.
     """
     # Keep the catalog ID for an index-local symlink even if its target is
     # elsewhere. Let the native reader resolve and validate the target.

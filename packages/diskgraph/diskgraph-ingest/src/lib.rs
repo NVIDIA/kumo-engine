@@ -665,6 +665,30 @@ fn encoded_num_shards(root: &Path) -> Result<Option<usize>> {
         .map(|n| n as usize))
 }
 
+fn encoded_index_build_id(root: &Path) -> Result<Option<String>> {
+    let path = root.join(ENCODE_STATE_PATH);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok(state["index_build_id"].as_str().map(str::to_owned))
+}
+
+fn recorded_index_build_id(root: &Path) -> Result<Option<String>> {
+    let metadata_id = fs::read(root.join("index_metadata.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<DatasetMetadata>(&bytes).ok())
+        .and_then(|metadata| metadata.index_build_id);
+    let encoded_id = encoded_index_build_id(root)?;
+    if let (Some(metadata_id), Some(encoded_id)) = (&metadata_id, &encoded_id) {
+        ensure!(
+            metadata_id == encoded_id,
+            "resumed index_build_id metadata/state mismatch"
+        );
+    }
+    Ok(metadata_id.or(encoded_id))
+}
+
 /// An Encode marker written before the clock was always recorded omits it, which
 /// reads as seconds.
 fn encode_marker_matches(marker: &[u8], payload: &[u8]) -> bool {
@@ -940,8 +964,23 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     }
     let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
     if let OutputTarget::Local { root, .. } = &*target {
+        if resume_from_phase.is_some() {
+            if let (Some(id), Some(recorded_id)) = (
+                options.index_build_id.as_deref(),
+                recorded_index_build_id(root)?,
+            ) {
+                ensure!(id == recorded_id, "resumed index_build_id does not match existing index");
+            }
+        }
+        let matching_partial_restart = restart
+            && !root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
+            && !root.join("index_metadata.json").exists()
+            && options.index_build_id.as_deref() == encoded_index_build_id(root)?.as_deref();
         ensure!(
-            options.index_build_id.is_none() || resume_from_phase.is_some() || !root.exists(),
+            options.index_build_id.is_none()
+                || resume_from_phase.is_some()
+                || !root.exists()
+                || matching_partial_restart,
             "index_build_id already has output at {}; choose a new ID or resume the existing build",
             root.display()
         );
@@ -2947,6 +2986,8 @@ struct EncodeWeightCounts {
 struct EncodeState {
     version: u32,
     source: GraphConfig,
+    #[serde(default)]
+    index_build_id: Option<String>,
     parent_index_build_id: Option<String>,
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
@@ -7268,13 +7309,13 @@ impl IngestContext {
         output: &str,
         stage_sidecars: HashMap<String, StageSidecarColumns>,
     ) -> Result<Self> {
-        // An interrupted Index phase may already have written its metadata.
-        let resumed_id = options.resume_from_phase.and_then(|_| {
-            fs::read(Path::new(output).join("index_metadata.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<DatasetMetadata>(&bytes).ok())
-                .and_then(|metadata| metadata.index_build_id)
-        });
+        // An interrupted Index phase may already have written metadata;
+        // otherwise Encode state carries the physical build ID.
+        let resumed_id = if options.resume_from_phase.is_some() {
+            recorded_index_build_id(Path::new(output))?
+        } else {
+            None
+        };
         let index_build_id = match options.index_build_id.as_ref() {
             Some(id) => {
                 validate_index_build_id(id)?;
@@ -8199,6 +8240,7 @@ impl IngestContext {
         let state = EncodeState {
             version: ENCODE_STATE_VERSION,
             source: self.source.clone(),
+            index_build_id: Some(self.index_build_id.clone()),
             parent_index_build_id: self.parent_index_build_id.clone(),
             pk_sampled_max_key_len: self.pk_sampled_max_key_len.clone(),
             binary_label_counts: self
