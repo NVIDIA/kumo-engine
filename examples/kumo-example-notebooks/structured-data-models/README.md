@@ -14,6 +14,13 @@ Client examples require an existing endpoint; they do not provision one.
 
 ### Cross-industry
 
+#### Notebooks
+
+| Example | Deployment | Scope |
+| --- | --- | --- |
+| [Improve KumoRelational performance on imbalanced data, with a fraud example](relational/cross-industry/notebooks/local_structured_data_models_imbalanced_classification_tuning.ipynb) | Local | Model workflow |
+| [Improve KumoRelational regression accuracy, with a spend-forecasting example](relational/cross-industry/notebooks/local_structured_data_models_regression_tuning.ipynb) | Local | Model workflow |
+
 #### SDK code examples
 
 | Example | Deployment | Scope |
