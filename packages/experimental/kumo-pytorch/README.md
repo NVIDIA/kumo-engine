@@ -119,7 +119,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 # Some data: two users and their purchases, saved as Parquet files.
 data = Path(tempfile.mkdtemp())
@@ -142,13 +142,13 @@ purchases_schema = pa.schema(
 pq.write_table(pa.Table.from_pylist(purchases, schema=purchases_schema), data / "purchases.parquet")
 
 # The two tables and how they connect. Column types are read from the files.
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(name="users", primary_key="user_id", time_column=api.NON_TEMPORAL),
-        api.TableSpec(name="purchases", primary_key="purchase_id", time_column="at"),
+        kp.TableSpec(name="users", primary_key="user_id", time_column=kp.NON_TEMPORAL),
+        kp.TableSpec(name="purchases", primary_key="purchase_id", time_column="at"),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_purchases",
             left_table="users",
             left_key="user_id",
@@ -159,31 +159,31 @@ schema = api.DataSchema(
 )
 
 # What each example looks at: the user's country and their earlier purchases.
-past = api.Rows(path=("user_purchases",), time=api.TimeWindow(column="at", stop=0))
-sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
-    entity_values={"country": api.Field(column="country")},
-    events={"purchases": api.EventSpec(rows=past, fields={"amount": api.Field(column="amount")})},
+past = kp.Rows(path=("user_purchases",), time=kp.TimeWindow(column="at", stop=0))
+sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
+    entity_values={"country": kp.Field(column="country")},
+    events={"purchases": kp.EventSpec(rows=past, fields={"amount": kp.Field(column="amount")})},
 )
 
 # How the model sees it: the country as a vocabulary index, and the purchase
 # amounts normalized and padded into a sequence.
-batch = api.BatchSpec(
+batch = kp.BatchSpec(
     inputs={
-        "user": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
-                fields=(api.Encode(field="country", encoding=api.Vocabulary()),)
+        "user": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
+                fields=(kp.Encode(field="country", encoding=kp.Vocabulary()),)
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
-        "history": api.Input(
-            source=api.EventSource(events=("purchases",)),
-            representation=api.Fields(fields=(api.Encode(field="amount", encoding=api.ZScore()),)),
-            layout=api.Padded(),
+        "history": kp.Input(
+            source=kp.EventSource(events=("purchases",)),
+            representation=kp.Fields(fields=(kp.Encode(field="amount", encoding=kp.ZScore()),)),
+            layout=kp.Padded(),
         ),
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
 
 # Two examples to build: users 1 and 2, both as of January 10.
@@ -197,8 +197,8 @@ pq.write_table(
     ),
     data / "anchors.parquet",
 )
-anchors = api.AnchorTable(
-    source=api.Parquet(path=str(data / "anchors.parquet")),
+anchors = kp.AnchorTable(
+    source=kp.Parquet(path=str(data / "anchors.parquet")),
     entity_id="user_id",
     as_of_time="as_of",
     sample_id="sample_id",
@@ -206,16 +206,16 @@ anchors = api.AnchorTable(
 )
 
 # Put it together. The DiskGraph engine indexes the files the first time, then builds the batch.
-contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
-dataset = api.Dataset(
+contract = kp.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+dataset = kp.Dataset(
     tables={
-        "users": api.Parquet(path=str(data / "users.parquet")),
-        "purchases": api.Parquet(path=str(data / "purchases.parquet")),
+        "users": kp.Parquet(path=str(data / "users.parquet")),
+        "purchases": kp.Parquet(path=str(data / "purchases.parquet")),
     }
 )
-engine = api.DiskGraphEngine(index=data / "index", ingest="if_missing")
+engine = kp.DiskGraphEngine(index=data / "index", ingest="if_missing")
 with (
-    api.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
+    kp.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
     plan.materialize(anchors=anchors, fit_split="train") as task,
 ):
     result = next(task.batches(split="train", output_format="model"))

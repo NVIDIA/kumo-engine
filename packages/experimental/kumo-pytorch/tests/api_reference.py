@@ -42,7 +42,7 @@ API_PAGES: tuple[Page, ...] = (
         file="schema.md",
         title="Schema and types",
         intro="Stored tables, their scalar column types, keys, relationships and clocks.",
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=("DataSchema", "TableSpec", "RelationSpec", "NON_TEMPORAL", "NonTemporal", "DType"),
     ),
     Page(
@@ -52,7 +52,7 @@ API_PAGES: tuple[Page, ...] = (
             "What one example may read at its prediction time: rows, values, calculations, "
             "histories, graph neighborhoods, candidates and generated targets."
         ),
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "SampleSpec",
             "EntitySpec",
@@ -91,7 +91,7 @@ API_PAGES: tuple[Page, ...] = (
             "Named model inputs: sources, ordered fields, row and history arrangements, "
             "layouts, batching limits and the emitted `Batch`."
         ),
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "BatchSpec",
             "Input",
@@ -128,7 +128,7 @@ API_PAGES: tuple[Page, ...] = (
         file="encodings.md",
         title="Encodings and ID spaces",
         intro="Explicit value encoders, shared encoders, final ID spaces and field-name IDs.",
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "ValueEncoding",
             "ScalarEncoding",
@@ -146,7 +146,7 @@ API_PAGES: tuple[Page, ...] = (
         file="targets.md",
         title="Targets",
         intro="Explicitly encoded labels and input-derived objectives.",
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "TargetSpec",
             "LabelTarget",
@@ -166,7 +166,7 @@ API_PAGES: tuple[Page, ...] = (
         intro=(
             "The contract, validation, preparation, anchors, fitting, batch iteration and previews."
         ),
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "DataLoaderSpec",
             "check",
@@ -192,7 +192,7 @@ API_PAGES: tuple[Page, ...] = (
         file="engines.md",
         title="Datasets and engines",
         intro="Where table bytes live, which engine executes the contract, and what it supports.",
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "Dataset",
             "InMemoryRows",
@@ -224,7 +224,7 @@ API_PAGES: tuple[Page, ...] = (
         intro=(
             "Saving and loading fitted state, model weights, and serving from caller-supplied rows."
         ),
-        module="kumo.pytorch.api",
+        module="kumo.pytorch",
         symbols=(
             "Artifact",
             "FittedState",
@@ -283,9 +283,9 @@ def _module_or_none(name: str) -> ModuleType | None:
 
 def _pages() -> tuple[Page, ...]:
     build = importlib.import_module("kumo.pytorch.build")
-    api = importlib.import_module("kumo.pytorch.api")
+    package = importlib.import_module("kumo.pytorch")
     authoring = tuple(
-        name for name in build.__all__ if getattr(api, name, None) is not getattr(build, name)
+        name for name in build.__all__ if getattr(package, name, None) is not getattr(build, name)
     )
     pages = [*API_PAGES, dataclasses.replace(AUTHORING_PAGE, symbols=authoring)]
     datasets = _module_or_none("kumo.pytorch.datasets")
@@ -296,18 +296,19 @@ def _pages() -> tuple[Page, ...]:
 
 
 def _check_coverage(pages: tuple[Page, ...]) -> None:
-    api = importlib.import_module("kumo.pytorch.api")
-    placed = [name for page in pages if page.module == "kumo.pytorch.api" for name in page.symbols]
+    package = importlib.import_module("kumo.pytorch")
+    placed = [name for page in pages if page.module == "kumo.pytorch" for name in page.symbols]
     duplicated = sorted({name for name in placed if placed.count(name) > 1})
-    unplaced = sorted(set(api.__all__) - set(placed))
-    unknown = sorted(set(placed) - set(api.__all__))
+    exported = set(package.__all__) - {"__version__"}
+    unplaced = sorted(exported - set(placed))
+    unknown = sorted(set(placed) - exported)
     problems = []
     if unplaced:
         problems.append(f"public symbols not mapped to a page: {unplaced}")
     if duplicated:
         problems.append(f"symbols mapped to more than one page: {duplicated}")
     if unknown:
-        problems.append(f"mapped symbols missing from kumo.pytorch.api.__all__: {unknown}")
+        problems.append(f"mapped symbols missing from kumo.pytorch.__all__: {unknown}")
     if problems:
         raise SystemExit("tests/api_reference.py API_PAGES: " + "; ".join(problems))
 
@@ -590,7 +591,7 @@ def _symbol_section(name: str, obj: object, module: str) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-def _page_text(page: Page, api: ModuleType) -> str:
+def _page_text(page: Page, package: ModuleType) -> str:
     module = importlib.import_module(page.module)
     header = [
         f"# {page.title}",
@@ -605,11 +606,11 @@ def _page_text(page: Page, api: ModuleType) -> str:
     if page.module == "kumo.pytorch.build":
         build = importlib.import_module("kumo.pytorch.build")
         shared = [
-            name for name in build.__all__ if getattr(api, name, None) is getattr(build, name)
+            name for name in build.__all__ if getattr(package, name, None) is getattr(build, name)
         ]
         if shared:
             links = ", ".join(f"[`{name}`]({_page_of(name)}#{anchor(name)})" for name in shared)
-            header.extend([f"Also re-exported from `kumo.pytorch.api`: {links}.", ""])
+            header.extend([f"Also re-exported from `kumo.pytorch`: {links}.", ""])
     sections = []
     for name in page.symbols:
         if name in page.groups:
@@ -644,10 +645,11 @@ def _index_text(pages: tuple[Page, ...]) -> str:
         "",
         "<!-- Generated by `python -m tests.api_reference --write`; do not edit. -->",
         "",
-        "Every public symbol of `kumo.pytorch.api`, `kumo.pytorch.build` and "
+        "Every public symbol of `kumo.pytorch`, `kumo.pytorch.build` and "
         "`kumo.pytorch.datasets`, with its signature, parameters, behavior and refusals, "
         "generated from the docstrings. "
-        "Import declarations and lifecycle functions from `kumo.pytorch.api`.",
+        "Import declarations and lifecycle functions from `kumo.pytorch`; "
+        "the guide and examples use `import kumo.pytorch as kp`.",
         "",
         "The [guide](../README.md) explains the concepts in order. The behavior spec, with "
         "tested golden examples, is in "
@@ -673,7 +675,7 @@ def generate() -> dict[str, str]:
     """The ``docs/api/`` files, by name, as the docstrings currently define them."""
     pages = _pages()
     _check_coverage(pages)
-    api = importlib.import_module("kumo.pytorch.api")
+    package = importlib.import_module("kumo.pytorch")
     _PUBLIC_CLASSES.clear()
     for page in pages:
         module = importlib.import_module(page.module)
@@ -681,7 +683,7 @@ def generate() -> dict[str, str]:
             obj = getattr(module, name)
             if inspect.isclass(obj):
                 _PUBLIC_CLASSES.add(obj)
-    files = {page.file: _page_text(page, api) for page in pages}
+    files = {page.file: _page_text(page, package) for page in pages}
     files["README.md"] = _index_text(pages)
     return files
 

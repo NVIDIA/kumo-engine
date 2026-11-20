@@ -31,86 +31,86 @@ transactions. Times are whole seconds, and every example below predicts at
 second 30, so the transactions at seconds 35 and 40 are the future.
 
 ```python
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
-TS = api.DType(name="timestamp", unit="s", timezone="UTC")
+TS = kp.DType(name="timestamp", unit="s", timezone="UTC")
 
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="user_id",
             columns={
-                "user_id": api.DType(name="int64"),
-                "country": api.DType(name="string"),
-                "risk_segment": api.DType(name="string"),
+                "user_id": kp.DType(name="int64"),
+                "country": kp.DType(name="string"),
+                "risk_segment": kp.DType(name="string"),
             },
-            time_column=api.NON_TEMPORAL,
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="accounts",
             primary_key="account_id",
             columns={
-                "account_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "account_type": api.DType(name="string"),
+                "account_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "account_type": kp.DType(name="string"),
                 "opened_at": TS,
                 "closed_at": TS,
             },
             time_column="opened_at",
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="merchants",
             primary_key="merchant_id",
             columns={
-                "merchant_id": api.DType(name="int64"),
-                "risk_score": api.DType(name="float64"),
+                "merchant_id": kp.DType(name="int64"),
+                "risk_score": kp.DType(name="float64"),
             },
-            time_column=api.NON_TEMPORAL,
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="transactions",
             primary_key="transaction_id",
             columns={
-                "transaction_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "account_id": api.DType(name="int64"),
-                "merchant_id": api.DType(name="int64"),
+                "transaction_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "account_id": kp.DType(name="int64"),
+                "merchant_id": kp.DType(name="int64"),
                 "occurred_at": TS,
-                "amount": api.DType(name="float64"),
-                "transaction_type": api.DType(name="string"),
-                "currency": api.DType(name="string"),
-                "channel": api.DType(name="string"),
-                "mcc": api.DType(name="string"),
-                "status": api.DType(name="string"),
-                "description": api.DType(name="string"),
+                "amount": kp.DType(name="float64"),
+                "transaction_type": kp.DType(name="string"),
+                "currency": kp.DType(name="string"),
+                "channel": kp.DType(name="string"),
+                "mcc": kp.DType(name="string"),
+                "status": kp.DType(name="string"),
+                "description": kp.DType(name="string"),
             },
             time_column="occurred_at",
         ),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_transactions",
             left_table="users",
             left_key="user_id",
             right_table="transactions",
             right_key="user_id",
         ),
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_accounts",
             left_table="users",
             left_key="user_id",
             right_table="accounts",
             right_key="user_id",
         ),
-        api.RelationSpec(
+        kp.RelationSpec(
             name="account_transactions",
             left_table="accounts",
             left_key="account_id",
             right_table="transactions",
             right_key="account_id",
         ),
-        api.RelationSpec(
+        kp.RelationSpec(
             name="transaction_merchant",
             left_table="transactions",
             left_key="merchant_id",
@@ -238,18 +238,18 @@ rows = {
         ),
     ],
 }
-dataset = api.Dataset(tables={name: api.InMemoryRows(rows=table) for name, table in rows.items()})
-past = api.Rows(path=("user_transactions",), time=api.TimeWindow(column="occurred_at", stop=0))
+dataset = kp.Dataset(tables={name: kp.InMemoryRows(rows=table) for name, table in rows.items()})
+past = kp.Rows(path=("user_transactions",), time=kp.TimeWindow(column="occurred_at", stop=0))
 users_at_30 = (
-    api.SampleRequest(sample_id="user-1-at-30", entity_id=1, as_of_time=30, split="train"),
-    api.SampleRequest(sample_id="user-2-at-30", entity_id=2, as_of_time=30, split="train"),
+    kp.SampleRequest(sample_id="user-1-at-30", entity_id=1, as_of_time=30, split="train"),
+    kp.SampleRequest(sample_id="user-2-at-30", entity_id=2, as_of_time=30, split="train"),
 )
 
 
 def first_batch(sample, batch, anchors=users_at_30):
-    contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+    contract = kp.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
     # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-    with api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan:
+    with kp.prepare(contract=contract, dataset=dataset, engine=kp.InMemoryEngine()) as plan:
         with plan.materialize(anchors=anchors, fit_split="train") as task:
             return next(task.batches(requests=anchors, seed=17))
 ```
@@ -274,26 +274,24 @@ calculations. They reach the model only because two inputs ask for them, and
 `history` kept.
 
 ```python
-pragma_sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
+pragma_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
     entity_values={
-        "country": api.Field(column="country"),
-        "risk_segment": api.Field(column="risk_segment"),
-        "transaction_count": api.Aggregate(source=past, operation="count"),
+        "country": kp.Field(column="country"),
+        "risk_segment": kp.Field(column="risk_segment"),
+        "transaction_count": kp.Aggregate(source=past, operation="count"),
     },
     events={
-        "transactions": api.EventSpec(
+        "transactions": kp.EventSpec(
             rows=past,
             fields={
-                "amount": api.Field(column="amount"),
-                "channel": api.Field(column="channel"),
-                "description": api.Field(column="description"),
-                "time": api.Field(column="occurred_at"),
-                "hour": api.Derived(operation=api.CalendarPart(part="hour"), inputs=("time",)),
-                "weekday": api.Derived(
-                    operation=api.CalendarPart(part="weekday"), inputs=("time",)
-                ),
-                "age_seconds": api.EventTimeDelta(unit="seconds", dtype=api.DType(name="float64")),
+                "amount": kp.Field(column="amount"),
+                "channel": kp.Field(column="channel"),
+                "description": kp.Field(column="description"),
+                "time": kp.Field(column="occurred_at"),
+                "hour": kp.Derived(operation=kp.CalendarPart(part="hour"), inputs=("time",)),
+                "weekday": kp.Derived(operation=kp.CalendarPart(part="weekday"), inputs=("time",)),
+                "age_seconds": kp.EventTimeDelta(unit="seconds", dtype=kp.DType(name="float64")),
             },
         )
     },
@@ -301,23 +299,23 @@ pragma_sample = api.SampleSpec(
 
 
 def pragma_tokens(*fields):
-    return api.Fields(
+    return kp.Fields(
         fields=fields,
-        row=api.Tokens(max_tokens=8),
+        row=kp.Tokens(max_tokens=8),
         field_names="fields",  # a field ID beside every value piece
         field_space="pragma",  # in the same ID space as the values
     )
 
 
 def into_pragma(field, encoding):
-    return api.Encode(field=field, encoding=encoding, id_space="pragma")
+    return kp.Encode(field=field, encoding=encoding, id_space="pragma")
 
 
-pragma_batch = api.BatchSpec(
+pragma_batch = kp.BatchSpec(
     # Country, risk segment and channel share one category mapping on purpose.
-    encodings={"strings": api.Vocabulary(), "description": api.Text(vocabulary_size=64)},
+    encodings={"strings": kp.Vocabulary(), "description": kp.Text(vocabulary_size=64)},
     id_spaces={
-        "pragma": api.IdSpace(
+        "pragma": kp.IdSpace(
             specials={
                 "pad": "[PAD]",
                 "unknown": "[UNK]",
@@ -328,46 +326,44 @@ pragma_batch = api.BatchSpec(
             }
         )
     },
-    field_names={"fields": api.FieldNames()},
+    field_names={"fields": kp.FieldNames()},
     inputs={
-        "entity": api.Input(
-            source=api.EntitySource(),
+        "entity": kp.Input(
+            source=kp.EntitySource(),
             representation=pragma_tokens(
-                into_pragma("country", api.UseEncoding(name="strings")),
-                into_pragma("risk_segment", api.UseEncoding(name="strings")),
-                into_pragma("transaction_count", api.Buckets(bins=4, separate_zero=True)),
+                into_pragma("country", kp.UseEncoding(name="strings")),
+                into_pragma("risk_segment", kp.UseEncoding(name="strings")),
+                into_pragma("transaction_count", kp.Buckets(bins=4, separate_zero=True)),
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         ),
-        "history": api.Input(
-            source=api.EventSource(events=("transactions",), max_events=16),
+        "history": kp.Input(
+            source=kp.EventSource(events=("transactions",), max_events=16),
             representation=pragma_tokens(
-                into_pragma("amount", api.Buckets(bins=4, separate_zero=True)),
-                into_pragma("channel", api.UseEncoding(name="strings")),
-                into_pragma("description", api.UseEncoding(name="description")),
+                into_pragma("amount", kp.Buckets(bins=4, separate_zero=True)),
+                into_pragma("channel", kp.UseEncoding(name="strings")),
+                into_pragma("description", kp.UseEncoding(name="description")),
             ),
-            layout=api.Nested(fields=api.Packed(), events=api.Padded()),
+            layout=kp.Nested(fields=kp.Packed(), events=kp.Padded()),
         ),
-        "history_calendar": api.Input(
-            source=api.EventsOf(input="history"),
-            representation=api.Fields(
+        "history_calendar": kp.Input(
+            source=kp.EventsOf(input="history"),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="hour", encoding=api.Raw()),
-                    api.Encode(field="weekday", encoding=api.Raw()),
+                    kp.Encode(field="hour", encoding=kp.Raw()),
+                    kp.Encode(field="weekday", encoding=kp.Raw()),
                 )
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         ),
-        "history_timing": api.Input(
-            source=api.EventsOf(input="history"),
-            representation=api.Fields(
-                fields=(api.Encode(field="age_seconds", encoding=api.Raw()),)
-            ),
-            layout=api.Padded(),
+        "history_timing": kp.Input(
+            source=kp.EventsOf(input="history"),
+            representation=kp.Fields(fields=(kp.Encode(field="age_seconds", encoding=kp.Raw()),)),
+            layout=kp.Padded(),
         ),
     },
     targets={
-        "masked_values": api.MaskedValuesTarget(
+        "masked_values": kp.MaskedValuesTarget(
             input="history",
             token_probability=0.15,
             event_probability=0.1,
@@ -376,7 +372,7 @@ pragma_batch = api.BatchSpec(
             ensure_at_least_one=True,
         )
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
 
 batch = first_batch(pragma_sample, pragma_batch)
@@ -424,18 +420,18 @@ causal model. Direction and magnitude are two sample calculations, not two
 encodings of one value.
 
 ```python
-nuformer_sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
+nuformer_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
     events={
-        "transactions": api.EventSpec(
+        "transactions": kp.EventSpec(
             rows=past,
             fields={
-                "amount": api.Field(column="amount"),
-                "transaction_type": api.Field(column="transaction_type"),
-                "description": api.Field(column="description"),
-                "time": api.Field(column="occurred_at"),
-                "direction": api.Derived(
-                    operation=api.MapValues(
+                "amount": kp.Field(column="amount"),
+                "transaction_type": kp.Field(column="transaction_type"),
+                "description": kp.Field(column="description"),
+                "time": kp.Field(column="occurred_at"),
+                "direction": kp.Derived(
+                    operation=kp.MapValues(
                         groups={
                             "inflow": ("deposit", "interest"),
                             "outflow": ("withdrawal", "fee"),
@@ -443,13 +439,11 @@ nuformer_sample = api.SampleSpec(
                         unknown="error",  # don't guess a direction for another type
                     ),
                     inputs=("transaction_type",),
-                    dtype=api.DType(name="string"),
+                    dtype=kp.DType(name="string"),
                 ),
-                "absolute_amount": api.Derived(operation="abs", inputs=("amount",)),
-                "month": api.Derived(operation=api.CalendarPart(part="month"), inputs=("time",)),
-                "weekday": api.Derived(
-                    operation=api.CalendarPart(part="weekday"), inputs=("time",)
-                ),
+                "absolute_amount": kp.Derived(operation="abs", inputs=("amount",)),
+                "month": kp.Derived(operation=kp.CalendarPart(part="month"), inputs=("time",)),
+                "weekday": kp.Derived(operation=kp.CalendarPart(part="weekday"), inputs=("time",)),
             },
         )
     },
@@ -457,12 +451,12 @@ nuformer_sample = api.SampleSpec(
 
 
 def into_tokens(field, encoding):
-    return api.Encode(field=field, encoding=encoding, id_space="tokens")
+    return kp.Encode(field=field, encoding=encoding, id_space="tokens")
 
 
-nuformer_batch = api.BatchSpec(
+nuformer_batch = kp.BatchSpec(
     id_spaces={
-        "tokens": api.IdSpace(
+        "tokens": kp.IdSpace(
             specials={
                 "pad": "[PAD]",
                 "unknown": "[UNK]",
@@ -472,31 +466,29 @@ nuformer_batch = api.BatchSpec(
         )
     },
     inputs={
-        "history": api.Input(
-            source=api.EventSource(events=("transactions",)),
-            representation=api.Fields(
+        "history": kp.Input(
+            source=kp.EventSource(events=("transactions",)),
+            representation=kp.Fields(
                 fields=(
-                    into_tokens(
-                        "direction", api.Vocabulary(values=(("inflow", 2), ("outflow", 3)))
-                    ),
-                    into_tokens("absolute_amount", api.Buckets(bins=4)),
+                    into_tokens("direction", kp.Vocabulary(values=(("inflow", 2), ("outflow", 3)))),
+                    into_tokens("absolute_amount", kp.Buckets(bins=4)),
                     # Fixed entries cover months and weekdays the fitting data never saw.
                     into_tokens(
-                        "month", api.Vocabulary(values=tuple((m, m + 1) for m in range(1, 13)))
+                        "month", kp.Vocabulary(values=tuple((m, m + 1) for m in range(1, 13)))
                     ),
                     into_tokens(
-                        "weekday", api.Vocabulary(values=tuple((d, d + 2) for d in range(7)))
+                        "weekday", kp.Vocabulary(values=tuple((d, d + 2) for d in range(7)))
                     ),
-                    into_tokens("description", api.Text(vocabulary_size=64)),
+                    into_tokens("description", kp.Text(vocabulary_size=64)),
                 ),
-                row=api.Tokens(missing="skip_event"),
-                history=api.Flatten(max_tokens=128, separator="separator", keep="last"),
+                row=kp.Tokens(missing="skip_event"),
+                history=kp.Flatten(max_tokens=128, separator="separator", keep="last"),
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         )
     },
-    targets={"next_token": api.NextTokenTarget(input="history")},
-    batching=api.Batching(max_samples=2),
+    targets={"next_token": kp.NextTokenTarget(input="history")},
+    batching=kp.Batching(max_samples=2),
 )
 
 batch = first_batch(nuformer_sample, nuformer_batch)
@@ -536,60 +528,60 @@ amount bucket, merchant category, merchant risk), not for a source row. The
 merchant's risk is joined onto each transaction during sampling.
 
 ```python
-panther_sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
-    entity_values={"country": api.Field(column="country")},
+panther_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
+    entity_values={"country": kp.Field(column="country")},
     events={
-        "transactions": api.EventSpec(
+        "transactions": kp.EventSpec(
             rows=past,
             fields={
-                "channel": api.Field(column="channel"),
-                "amount": api.Field(column="amount"),
-                "mcc": api.Field(column="mcc"),
-                "merchant_risk": api.Field(column="risk_score", path=("transaction_merchant",)),
+                "channel": kp.Field(column="channel"),
+                "amount": kp.Field(column="amount"),
+                "mcc": kp.Field(column="mcc"),
+                "merchant_risk": kp.Field(column="risk_score", path=("transaction_merchant",)),
             },
         )
     },
 )
 
 specials = {"pad": "[PAD]", "unknown": "[UNK]", "missing": "[MISSING]"}
-panther_batch = api.BatchSpec(
+panther_batch = kp.BatchSpec(
     id_spaces={
-        "profile": api.IdSpace(specials=specials),
-        "behaviors": api.IdSpace(specials=specials),
+        "profile": kp.IdSpace(specials=specials),
+        "behaviors": kp.IdSpace(specials=specials),
     },
     inputs={
-        "entity": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
-                fields=(api.Encode(field="country", encoding=api.Vocabulary(), id_space="profile"),)
+        "entity": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
+                fields=(kp.Encode(field="country", encoding=kp.Vocabulary(), id_space="profile"),)
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
-        "history": api.Input(
-            source=api.EventSource(events=("transactions",), max_events=16),
-            representation=api.Fields(
+        "history": kp.Input(
+            source=kp.EventSource(events=("transactions",), max_events=16),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="channel", encoding=api.Vocabulary()),
-                    api.Encode(field="amount", encoding=api.Buckets(bins=4)),
-                    api.Encode(field="mcc", encoding=api.Vocabulary()),
-                    api.Encode(field="merchant_risk", encoding=api.Buckets(bins=4)),
+                    kp.Encode(field="channel", encoding=kp.Vocabulary()),
+                    kp.Encode(field="amount", encoding=kp.Buckets(bins=4)),
+                    kp.Encode(field="mcc", encoding=kp.Vocabulary()),
+                    kp.Encode(field="merchant_risk", encoding=kp.Buckets(bins=4)),
                 ),
-                row=api.Composite(
+                row=kp.Composite(
                     top_k=16,  # the 16 most frequent tuples get their own ID
                     required_fields=("channel", "amount", "mcc", "merchant_risk"),
                     id_space="behaviors",
                 ),
-                history=api.Flatten(max_tokens=16),
+                history=kp.Flatten(max_tokens=16),
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         ),
     },
     targets={
-        "next_behavior": api.NextTokenTarget(input="history", prefix_input="entity"),
-        "entity_match": api.MatchingGroupTarget(input="entity", fields=("country",)),
+        "next_behavior": kp.NextTokenTarget(input="history", prefix_input="entity"),
+        "entity_match": kp.MatchingGroupTarget(input="entity", fields=("country",)),
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
 
 batch = first_batch(panther_sample, panther_batch)
@@ -633,87 +625,85 @@ history and returned aligned with it. A second target is the account's first
 transaction after the prediction time.
 
 ```python
-account_past = api.Rows(
-    path=("account_transactions",), time=api.TimeWindow(column="occurred_at", stop=0)
+account_past = kp.Rows(
+    path=("account_transactions",), time=kp.TimeWindow(column="occurred_at", stop=0)
 )
-account_future = api.Rows(
-    path=("account_transactions",), time=api.TimeWindow(column="occurred_at", start=0, stop=None)
+account_future = kp.Rows(
+    path=("account_transactions",), time=kp.TimeWindow(column="occurred_at", start=0, stop=None)
 )
-event_fields = {
-    name: api.Field(column=name) for name in ("amount", "currency", "channel", "status")
-}
-treasure_sample = api.SampleSpec(
-    entity=api.EntitySpec(
+event_fields = {name: kp.Field(column=name) for name in ("amount", "currency", "channel", "status")}
+treasure_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(
         table="accounts",
         entity_type="card_account",
-        filters=(api.RowFilter(column="account_type", operation="equal", value="credit_card"),),
+        filters=(kp.RowFilter(column="account_type", operation="equal", value="credit_card"),),
         available_from="opened_at",
     ),
-    entity_values={"country": api.Field(column="country", path=("user_accounts",))},
-    events={"transactions": api.EventSpec(rows=account_past, fields=event_fields)},
+    entity_values={"country": kp.Field(column="country", path=("user_accounts",))},
+    events={"transactions": kp.EventSpec(rows=account_past, fields=event_fields)},
     targets={
-        "next_transaction": api.RowTarget(
+        "next_transaction": kp.RowTarget(
             rows=account_future, fields=event_fields, selection="first"
         )
     },
 )
 
-currency = api.Vocabulary(values=(("USD", 2), ("GBP", 3)))
-channel = api.Vocabulary(values=(("online", 2), ("store", 3)))
-status = api.Vocabulary(values=(("approved", 2), ("declined", 3)))
-treasure_batch = api.BatchSpec(
+currency = kp.Vocabulary(values=(("USD", 2), ("GBP", 3)))
+channel = kp.Vocabulary(values=(("online", 2), ("store", 3)))
+status = kp.Vocabulary(values=(("approved", 2), ("declined", 3)))
+treasure_batch = kp.BatchSpec(
     inputs={
-        "entity": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
-                fields=(api.Encode(field="country", encoding=api.Vocabulary()),)
+        "entity": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
+                fields=(kp.Encode(field="country", encoding=kp.Vocabulary()),)
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
-        "events": api.Input(
-            source=api.EventSource(events=("transactions",), max_events=64),
-            representation=api.Fields(
+        "events": kp.Input(
+            source=kp.EventSource(events=("transactions",), max_events=64),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="amount", encoding=api.Raw()),
-                    api.Encode(field="currency", encoding=currency),
-                    api.Encode(field="channel", encoding=channel),
+                    kp.Encode(field="amount", encoding=kp.Raw()),
+                    kp.Encode(field="currency", encoding=currency),
+                    kp.Encode(field="channel", encoding=channel),
                 ),
-                row=api.Columns(),
+                row=kp.Columns(),
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         ),
     },
     targets={
-        "event_labels": api.AlignedEventTarget(
+        "event_labels": kp.AlignedEventTarget(
             input="events",
-            fields=(api.Encode(field="status", encoding=status),),
+            fields=(kp.Encode(field="status", encoding=status),),
             derived=(
-                api.ThresholdEventLabel(
+                kp.ThresholdEventLabel(
                     name="large",
                     field="amount",
-                    dtype=api.DType(name="string"),
+                    dtype=kp.DType(name="string"),
                     threshold=50.0,
                     below="normal",
                     above="large",
-                    encoding=api.Vocabulary(values=(("normal", 2), ("large", 3))),
+                    encoding=kp.Vocabulary(values=(("normal", 2), ("large", 3))),
                 ),
             ),
         ),
-        "next_event": api.StructuredTarget(
+        "next_event": kp.StructuredTarget(
             source="next_transaction",
             fields=(
-                api.Encode(field="amount", encoding=api.Raw()),
-                api.Encode(field="currency", encoding=currency),
-                api.Encode(field="status", encoding=status),
+                kp.Encode(field="amount", encoding=kp.Raw()),
+                kp.Encode(field="currency", encoding=currency),
+                kp.Encode(field="status", encoding=status),
             ),
         ),
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
 
 accounts_at_30 = (
-    api.SampleRequest(sample_id="account-11-at-30", entity_id=11, as_of_time=30, split="train"),
-    api.SampleRequest(sample_id="account-21-at-30", entity_id=21, as_of_time=30, split="train"),
+    kp.SampleRequest(sample_id="account-11-at-30", entity_id=11, as_of_time=30, split="train"),
+    kp.SampleRequest(sample_id="account-21-at-30", entity_id=21, as_of_time=30, split="train"),
 )
 batch = first_batch(treasure_sample, treasure_batch, accounts_at_30)
 events = batch.inputs["events"]

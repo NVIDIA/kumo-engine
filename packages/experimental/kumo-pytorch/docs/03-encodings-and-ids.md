@@ -56,34 +56,34 @@ Our example is a single users table with a currency column and a country column
 that happen to share a value (`"USD"`), plus a balance.
 
 ```python
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="id",
-            time_column=api.NON_TEMPORAL,
+            time_column=kp.NON_TEMPORAL,
             columns={
-                "id": api.DType(name="int64"),
-                "currency": api.DType(name="string"),
-                "country": api.DType(name="string"),
-                "balance": api.DType(name="float64"),
+                "id": kp.DType(name="int64"),
+                "currency": kp.DType(name="string"),
+                "country": kp.DType(name="string"),
+                "balance": kp.DType(name="float64"),
             },
         ),
     )
 )
-sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users"),
+sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users"),
     entity_values={
-        "currency": api.Field(column="currency"),
-        "country": api.Field(column="country"),
-        "balance": api.Field(column="balance"),
+        "currency": kp.Field(column="currency"),
+        "country": kp.Field(column="country"),
+        "balance": kp.Field(column="balance"),
     },
 )
-dataset = api.Dataset(
+dataset = kp.Dataset(
     tables={
-        "users": api.InMemoryRows(
+        "users": kp.InMemoryRows(
             rows=[
                 {"id": 1, "currency": "USD", "country": "USD", "balance": 12.5},
                 {"id": 2, "currency": "EUR", "country": "GB", "balance": 30.0},
@@ -92,8 +92,8 @@ dataset = api.Dataset(
     }
 )
 anchors = (
-    api.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),
-    api.SampleRequest(sample_id="two", entity_id=2, as_of_time=0),
+    kp.SampleRequest(sample_id="one", entity_id=1, as_of_time=0),
+    kp.SampleRequest(sample_id="two", entity_id=2, as_of_time=0),
 )
 ```
 
@@ -102,54 +102,54 @@ with local IDs and once translated into the ID space `model`. The country
 field has two private vocabularies, one per input.
 
 ```python
-batch = api.BatchSpec(
-    encodings={"currencies": api.Vocabulary()},
+batch = kp.BatchSpec(
+    encodings={"currencies": kp.Vocabulary()},
     id_spaces={
-        "model": api.IdSpace(
+        "model": kp.IdSpace(
             specials={"pad": "[PAD]", "unknown": "[UNK]", "missing": "[MISSING]", "mask": "[MASK]"}
         )
     },
-    field_names={"names": api.FieldNames()},
+    field_names={"names": kp.FieldNames()},
     inputs={
-        "local": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
+        "local": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="currency", encoding=api.UseEncoding(name="currencies")),
-                    api.Encode(field="balance", encoding=api.Raw()),
+                    kp.Encode(field="currency", encoding=kp.UseEncoding(name="currencies")),
+                    kp.Encode(field="balance", encoding=kp.Raw()),
                 )
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
-        "tokens": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
+        "tokens": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(
+                    kp.Encode(
                         field="currency",
-                        encoding=api.UseEncoding(name="currencies"),
+                        encoding=kp.UseEncoding(name="currencies"),
                         id_space="model",
                     ),
-                    api.Encode(field="country", encoding=api.Vocabulary(), id_space="model"),
+                    kp.Encode(field="country", encoding=kp.Vocabulary(), id_space="model"),
                 ),
-                row=api.Tokens(),
+                row=kp.Tokens(),
                 field_names="names",
                 field_space="model",
             ),
-            layout=api.Packed(),
+            layout=kp.Packed(),
         ),
-        "country_again": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
-                fields=(api.Encode(field="country", encoding=api.Vocabulary(), id_space="model"),),
+        "country_again": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
+                fields=(kp.Encode(field="country", encoding=kp.Vocabulary(), id_space="model"),),
                 field_names="names",
                 field_space="model",
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
     },
 )
-contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+contract = kp.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
 ```
 
 ## Inspecting fitted encoders
@@ -161,7 +161,7 @@ exactly as that output does:
 ```python
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
+    kp.prepare(contract=contract, dataset=dataset, engine=kp.InMemoryEngine()) as plan,
     plan.materialize(anchors=anchors) as task,
 ):
     local = task.output(name="local").field(name="currency")
@@ -216,7 +216,7 @@ ordinary entries follow. If your model expects particular numbers, such as
 `pad` at 0 and `mask` at 1, declare every role's final ID with `special_ids`:
 
 ```python
-chosen = api.IdSpace(
+chosen = kp.IdSpace(
     specials={"pad": "[PAD]", "mask": "[MASK]", "unknown": "[UNK]", "missing": "[MISSING]"},
     special_ids={"pad": 0, "mask": 1, "unknown": 2, "missing": 5},
 )

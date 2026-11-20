@@ -8,7 +8,7 @@ The contract, validation, preparation, anchors, fitting, batch iteration and pre
 
 ### `DataLoaderSpec`
 
-*class* · `kumo.pytorch.api.DataLoaderSpec`
+*class* · `kumo.pytorch.DataLoaderSpec`
 
 ```python
 class DataLoaderSpec(
@@ -139,7 +139,7 @@ A readable multi-line summary of the contract.
 
 ### `check`
 
-*function* · `kumo.pytorch.api.check`
+*function* · `kumo.pytorch.check`
 
 ```python
 def check(
@@ -164,7 +164,7 @@ The whole contract must still be well formed.
 
 ### `prepare`
 
-*function* · `kumo.pytorch.api.prepare`
+*function* · `kumo.pytorch.prepare`
 
 ```python
 def prepare(
@@ -188,7 +188,7 @@ not the targets can score the contract. Its tasks are inference tasks.
 
 ### `preview`
 
-*function* · `kumo.pytorch.api.preview`
+*function* · `kumo.pytorch.preview`
 
 ```python
 def preview(
@@ -216,7 +216,7 @@ Called as `preview(task, requests)` or
 
 ### `Plan`
 
-*class* · `kumo.pytorch.api.Plan`
+*class* · `kumo.pytorch.Plan`
 
 ```python
 class Plan(
@@ -301,7 +301,7 @@ Release the engine binding. Idempotent.
 
 ### `Task`
 
-*class* · `kumo.pytorch.api.Task`
+*class* · `kumo.pytorch.Task`
 
 ```python
 class Task(
@@ -474,7 +474,7 @@ Release the materialized anchors. The plan's binding stays open.
 
 ### `TaskBatches`
 
-*class* · `kumo.pytorch.api.TaskBatches`
+*class* · `kumo.pytorch.TaskBatches`
 
 ```python
 class TaskBatches(
@@ -514,7 +514,7 @@ Continue after the batches `state` records, before iteration starts.
 
 ### `PreviewResult`
 
-*class* · `kumo.pytorch.api.PreviewResult`
+*class* · `kumo.pytorch.PreviewResult`
 
 ```python
 class PreviewResult(
@@ -542,7 +542,7 @@ JSON-compatible form of the whole result.
 
 ### `PreparedBatchPlan`
 
-*class* · `kumo.pytorch.api.PreparedBatchPlan`
+*class* · `kumo.pytorch.PreparedBatchPlan`
 
 ```python
 class PreparedBatchPlan(
@@ -645,7 +645,7 @@ Encode `values` into batches under the frozen state; see `Task.batches`.
 
 ### `prepare_batch_spec`
 
-*function* · `kumo.pytorch.api.prepare_batch_spec`
+*function* · `kumo.pytorch.prepare_batch_spec`
 
 ```python
 def prepare_batch_spec(
@@ -667,7 +667,7 @@ The lower-level path behind `Plan.materialize`.
 
 ### `AnchorTable`
 
-*class* · `kumo.pytorch.api.AnchorTable`
+*class* · `kumo.pytorch.AnchorTable`
 
 ```python
 class AnchorTable(
@@ -718,7 +718,7 @@ JSON-compatible form; refused for in-memory rows, which are not a storage refere
 
 ### `CandidateColumn`
 
-*class* · `kumo.pytorch.api.CandidateColumn`
+*class* · `kumo.pytorch.CandidateColumn`
 
 ```python
 class CandidateColumn(column: str, entity_id: str, targets: Mapping[str, str] = {})
@@ -750,7 +750,7 @@ Struct fields this binding reads, in a stable order.
 
 ### `ALL_ANCHORS`
 
-*constant* · `kumo.pytorch.api.ALL_ANCHORS`
+*constant* · `kumo.pytorch.ALL_ANCHORS`
 
 ```python
 ALL_ANCHORS: AllAnchors
@@ -760,7 +760,7 @@ The `AllAnchors` selector: pass it as `fit_split` or `split` to select every anc
 
 ### `AllAnchors`
 
-*class* · `kumo.pytorch.api.AllAnchors`
+*class* · `kumo.pytorch.AllAnchors`
 
 ```python
 class AllAnchors()
@@ -773,7 +773,7 @@ than a string such as `"all"`, which could be a real split name.
 
 ### `shard_positions`
 
-*function* · `kumo.pytorch.api.shard_positions`
+*function* · `kumo.pytorch.shard_positions`
 
 ```python
 def shard_positions(
@@ -803,7 +803,7 @@ table, seed, epoch and rank.
 
 ### `padded_positions`
 
-*function* · `kumo.pytorch.api.padded_positions`
+*function* · `kumo.pytorch.padded_positions`
 
 ```python
 def padded_positions(
@@ -824,7 +824,7 @@ repeat trains on that anchor twice.
 
 ### `ValidationError`
 
-*exception* · `kumo.pytorch.api.ValidationError`
+*exception* · `kumo.pytorch.ValidationError`
 
 All problems found before opening an engine's data source.
 
@@ -837,7 +837,7 @@ the same issues without raising.
 
 ### `ValidationIssue`
 
-*class* · `kumo.pytorch.api.ValidationIssue`
+*class* · `kumo.pytorch.ValidationIssue`
 
 ```python
 class ValidationIssue(

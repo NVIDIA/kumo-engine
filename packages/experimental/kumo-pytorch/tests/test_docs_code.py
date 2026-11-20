@@ -251,7 +251,7 @@ def test_user_docs_use_the_package_name() -> None:
     assert not offenders, "say 'kumo-pytorch' or 'this package': " + ", ".join(offenders)
 
 
-PUBLIC_MODULES = {"kumo.pytorch.api", "kumo.pytorch.build", "kumo.pytorch.datasets"}
+PUBLIC_MODULES = {"kumo.pytorch.build", "kumo.pytorch.datasets"}
 FROM_IMPORT = re.compile(r"^\s*from\s+(kumo.pytorch[\w.]*)\s+import\s+([\w, ]+)", re.MULTILINE)
 
 

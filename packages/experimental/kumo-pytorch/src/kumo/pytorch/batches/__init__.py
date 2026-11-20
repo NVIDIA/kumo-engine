@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batch declarations and fitting, also available through :mod:`kumo.pytorch.api`."""
+"""Batch declarations and fitting, also available through :mod:`kumo.pytorch`."""
 
 from kumo.pytorch.contract.batch import *  # noqa: F403
 from kumo.pytorch.contract.batch import __all__ as _batch_api
