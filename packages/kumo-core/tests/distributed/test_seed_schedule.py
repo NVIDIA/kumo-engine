@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
-import orjson
 import pytest
 from diskgraph import DiskgraphConfigError
 from kumo_core.diskgraph.seed_schedule import make_seed_schedule
@@ -165,12 +165,12 @@ def test_sidecar_schedules_use_qualified_stage_identity(
     import diskgraph._c as native
     import diskgraph.runtime_batch_iterator as runtime
 
-    captured: list[dict[str, Any]] = []
+    captured: list[Any] = []
     schedule = Mock()
     schedule.num_samples.return_value = 5
 
-    def construct(config: str) -> Mock:
-        captured.append(orjson.loads(config))
+    def construct(config: object) -> Mock:
+        captured.append(config)
         return schedule
 
     monkeypatch.setattr(native, "SeedSchedule", construct)
@@ -181,8 +181,8 @@ def test_sidecar_schedules_use_qualified_stage_identity(
         options["weighted_seed_sampling"] = {"num_samples": 5}
     actual, count = make_seed_schedule("runtime.json", options)
     assert actual is schedule and count == 5
-    assert captured[0]["stage_key"] == "task/seeds"
-    assert captured[0]["bucket_extension_root"] == (
-        "/snapshot/train_tables/task" if grouped else None
+    assert captured[0].stage_key == "task/seeds"
+    assert captured[0].bucket_extension_root == (
+        Path("/snapshot/train_tables/task") if grouped else None
     )
-    assert captured[0]["weighted_seed_sampling_json"] == weighted.return_value
+    assert captured[0].weighted_seed_sampling_json == weighted.return_value
