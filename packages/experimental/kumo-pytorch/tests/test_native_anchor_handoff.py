@@ -249,8 +249,17 @@ def test_native_batch_padding_partial_drop_last_and_resume(native_task, world_si
     assert [batch.metadata["sample_ids"] for batch in restored] == [
         batch.metadata["sample_ids"] for batch in first
     ]
-    dropped = list(task.batches(drop_last=True, output_format="model"))
-    assert sum(len(batch.metadata["sample_ids"]) for batch in dropped) == 6
+    expected = [
+        (("a", "b"), [1.0, 2.0]),
+        (("d", "f"), [4.0, 6.0]),
+        (("c", "g"), [3.0, 7.0]),
+        (("e",), [5.0]),
+    ]
+    for drop_last, survivors in ((False, expected), (True, expected[:-1])):
+        assert [
+            (batch.metadata["sample_ids"], batch.targets["label"]["values"].tolist())
+            for batch in task.batches(drop_last=drop_last, output_format="model")
+        ] == survivors
 
 
 @pytest.mark.parametrize("world_size", [2, 3, 10])
