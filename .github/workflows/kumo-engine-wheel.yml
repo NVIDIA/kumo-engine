@@ -108,6 +108,26 @@ jobs:
           fi
           python scripts/stamp_version.py --check
 
+      - name: Bootstrap rustup on Windows
+        if: ${{ matrix.arch == 'windows-x86_64' }}
+        run: |
+          set -euo pipefail
+          if command -v rustup >/dev/null 2>&1; then
+            exit 0
+          fi
+          cargo_bin="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin"
+          if [ ! -x "$cargo_bin/rustup.exe" ]; then
+            installer="$(cygpath -u "$RUNNER_TEMP")/rustup-init.sh"
+            curl --proto '=https' --tlsv1.2 -fsSL \
+              https://raw.githubusercontent.com/rust-lang/rustup/d95a37b6ab92cc1e455d1576039333c97ca3e2c5/rustup-init.sh \
+              -o "$installer"
+            sh "$installer" -y --default-host x86_64-pc-windows-msvc \
+              --default-toolchain none --no-modify-path
+          fi
+          export PATH="$cargo_bin:$PATH"
+          rustup --version
+          echo "$(cygpath -w "$cargo_bin")" >> "$GITHUB_PATH"
+
       - name: Set up Rust
         uses: ./.github/actions/rust-toolchain
 
