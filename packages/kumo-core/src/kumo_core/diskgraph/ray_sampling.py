@@ -13,7 +13,7 @@ import logging
 import math
 import os
 import time
-from collections import OrderedDict, deque
+from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -348,7 +348,7 @@ class _SamplerReplica:
                     ref["index_path"],
                 )
             )
-        self.contexts: OrderedDict[str, BatchContext] = OrderedDict()
+        self.contexts: list[tuple[SamplingOptions, BatchContext]] = []
 
     def ready(self) -> ReplicaConfig:
         """Return the verified local placement after native engines are opened."""
@@ -366,16 +366,16 @@ class _SamplerReplica:
         ):
             raise SamplingContractError("request does not match replica artifacts/RNG")
         options = request.validate()
-        context_key = options.digest
-        context = self.contexts.get(context_key)
-        if context is None:
+        for index, (cached_options, context) in enumerate(self.contexts):
+            if cached_options == options:
+                self.contexts.append(self.contexts.pop(index))
+                break
+        else:
             native_context, _ = self.index.iter(**options.to_native_kwargs())
             context = cast(BatchContext, native_context)
-            self.contexts[context_key] = context
+            self.contexts.append((options, context))
             if len(self.contexts) > self.config.context_capacity:
-                self.contexts.popitem(last=False)
-        else:
-            self.contexts.move_to_end(context_key)
+                self.contexts.pop(0)
         started = time.monotonic()
         batch = context.sample_request(list(request.seed_ids))
         payload = BatchPayload(request, batch, time.monotonic() - started)
@@ -539,7 +539,11 @@ class RayRuntimeIndex:
                 payload = self.samplers.get(ref)
             except (ray.exceptions.ActorDiedError, ray.exceptions.ObjectLostError):
                 logger.error(
-                    "Sampling attempt failed for request %s", request.request_id
+                    "Sampling attempt failed: consumer=%s epoch=%d shard=%d batch=%d",
+                    request.consumer,
+                    request.epoch,
+                    request.logical_shard,
+                    request.batch_ordinal,
                 )
                 if attempt == self.config.max_retries:
                     raise

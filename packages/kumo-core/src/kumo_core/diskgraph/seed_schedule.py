@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from kumo_core.diskgraph.batch_contract import SamplingOptions
 
@@ -72,7 +72,7 @@ def make_seed_schedule(
 
     manifest, split_info = _manifest_view(dataset_ref)
     stage = options.stage
-    ref: SeedStageRef | None = _stage_tables(manifest).get(stage)
+    ref = cast(SeedStageRef | None, _stage_tables(manifest).get(stage))
     if ref is None or not split_info["stage_counts"].get(stage):
         raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
     parent = _graph_index_path(manifest)
@@ -80,8 +80,9 @@ def make_seed_schedule(
     root = os.path.join(parent, extension)
     rhs_type = options.rhs_seed_node_type
     table_name = (rhs_type or ref["table_name"]).rsplit("/", 1)[-1]
-    metadata: SeedIndexMetadata = _load_json(
-        os.path.join(parent if rhs_type else root, "index_metadata.json")
+    metadata = cast(
+        SeedIndexMetadata,
+        _load_json(os.path.join(parent if rhs_type else root, "index_metadata.json")),
     )
     table = next(
         (node for node in metadata["node_types"] if node["name"] == table_name), None
