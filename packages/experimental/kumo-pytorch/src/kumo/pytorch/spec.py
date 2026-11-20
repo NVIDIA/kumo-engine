@@ -15,6 +15,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
+from kumo.pytorch.contract._columns import _column_name_suggestion
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.batch import BatchSpec, Fields, Graph, UseEncoding
 from kumo.pytorch.contract.dtypes import DType
@@ -428,7 +429,7 @@ class _Validator:
         self,
         path: str,
         message: str,
-        suggestion: str = "correct the declaration",
+        suggestion: str | None = "correct the declaration",
     ) -> None:
         self.issues.append(ValidationIssue(path, message, suggestion))
 
@@ -521,7 +522,11 @@ class _Validator:
     def _column(self, table: str, column: str, path: str) -> DType | None:
         spec = self.tables.get(table)
         if spec is None or column not in spec.columns:
-            self.add(path, f"unknown column {table}.{column}")
+            self.add(
+                path,
+                f"unknown column {table}.{column}",
+                _column_name_suggestion((column,), spec.columns) if spec else None,
+            )
             return None
         return spec.columns[column]
 
