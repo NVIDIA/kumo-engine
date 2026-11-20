@@ -550,3 +550,24 @@ def test_cancellation_drains_native_work_before_reuse(
         ray.get(gate.release.remote(), timeout=10)
         stop_sampling_replicas((replica,))
         ray.kill(gate, no_restart=True)
+
+
+def test_replica_context_key_tracks_the_current_plan_dictionary() -> None:
+    """An owned plan edit must not reuse a context under its previous cached identity."""
+    from collections import OrderedDict
+
+    request = _request()
+    context = MagicMock()
+    context.sample_request.return_value = _batch(request)
+    index = MagicMock()
+    index.iter.return_value = (context, 2)
+    replica = _SamplerReplica.__new__(_SamplerReplica)
+    replica.config, replica.index, replica.contexts = _config(), index, OrderedDict()
+    original_key = request.options.digest
+    replica.sample(request)
+    request.options.sampling_plan["layers"] = [{"fanouts": {}}]
+    updated_key = request.options.digest
+    replica.sample(request)
+    assert original_key != updated_key
+    assert index.iter.call_count == 2
+    assert list(replica.contexts) == [original_key, updated_key]

@@ -12,12 +12,13 @@ layers. It does not change the existing DataLoader implementation.
 
 - `batch_contract.py` defines immutable artifact identities, consumer generations,
   explicit seed requests, and validated batch envelopes.
-  `SamplingOptions` and `WeightedSeedSampling` are frozen dataclasses. Use
-  `SamplingOptions.from_kwargs(...)` to snapshot native-style inputs; nested plans,
-  selected IDs, and projections become immutable objects and tuples.
-  `BatchRequest.options` carries that typed value directly. Its canonical digest
-  is cached for request identity and actor-context lookup; validation does not
-  decode JSON. Native dictionaries are created only at adapter boundaries.
+  `SamplingOptions` and `WeightedSeedSampling` are frozen dataclasses.
+  The sampling plan stays a normal dictionary, copied when configuration takes
+  ownership; nested edits are allowed. Selected IDs and projections use tuples.
+  `BatchRequest.options` carries the typed value directly. Context keys are
+  computed from the current configuration, so edits cannot leave a stale cached
+  digest. Treat request options as read-only while requests are in flight.
+  JSON conversion remains an internal hashing/native-API detail.
   Request identity includes the ordered seeds and sampling configuration, so
   retries preserve the same logical batch regardless of actor placement.
   Wire version 2 rejects the previous JSON-bytes request format. All participants

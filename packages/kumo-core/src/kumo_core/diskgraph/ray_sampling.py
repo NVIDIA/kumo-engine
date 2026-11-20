@@ -366,15 +366,16 @@ class _SamplerReplica:
         ):
             raise SamplingContractError("request does not match replica artifacts/RNG")
         options = request.validate()
-        context = self.contexts.get(request.options.digest)
+        context_key = options.digest
+        context = self.contexts.get(context_key)
         if context is None:
             native_context, _ = self.index.iter(**options.to_native_kwargs())
             context = cast(BatchContext, native_context)
-            self.contexts[request.options.digest] = context
+            self.contexts[context_key] = context
             if len(self.contexts) > self.config.context_capacity:
                 self.contexts.popitem(last=False)
         else:
-            self.contexts.move_to_end(request.options.digest)
+            self.contexts.move_to_end(context_key)
         started = time.monotonic()
         batch = context.sample_request(list(request.seed_ids))
         payload = BatchPayload(request, batch, time.monotonic() - started)
