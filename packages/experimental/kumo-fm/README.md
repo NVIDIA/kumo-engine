@@ -34,6 +34,7 @@ operation. Classification requires an explicit two-entry raw-label-to-name
 `classes` map; regression accepts a numeric aggregate. Unsupported types,
 timeless destinations and uniform sampling fail explicitly. Native labels and
 graphs remain separate materializations over the adopted snapshot.
+The snapshot path and `import kumo.fm` do not require DuckDB.
 
 ## Frozen bundle compatibility
 
@@ -55,6 +56,11 @@ uv build --wheel dist/kumo_fm-*.tar.gz --out-dir dist
 uv pip install --python /path/to/venv/bin/python --torch-backend cpu \
   /path/to/matching/diskgraph-*.whl dist/kumo_pytorch-*.whl dist/kumo_fm-*.whl
 ```
+
+The frozen-bundle comparison path uses DuckDB for source validation and
+compatibility checks. Install `duckdb==2.0.0` (the `kumo-fm[benchmark]` extra)
+only in that benchmark environment. The connector snapshot path uses the base
+wheel without DuckDB.
 
 ```python
 from kumo import fm

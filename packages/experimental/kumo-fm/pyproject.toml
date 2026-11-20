@@ -14,7 +14,6 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
-  "duckdb==2.0.0",
   "kumo-pytorch>=0.1.0a1",
   "numpy>=1.26,<3",
   "pyarrow==24.0.0",
@@ -22,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+benchmark = ["duckdb==2.0.0"]
 relbench = ["PyYAML>=6,<7"]
 
 [tool.uv.sources]
