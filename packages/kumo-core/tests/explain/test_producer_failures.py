@@ -189,6 +189,7 @@ def test_empty_categories_preserve_cohorts(tmp_path, values, stage):
     analyzer.explain_end(module, None, outputs, stage)
     result = load_json(str(tmp_path / stage / 'column_analysis.json'),
                        ColumnAnalysisOutput)
+    assert result is not None
     assert analyzer.completed
     assert analyzer.failure is None
     assert result['USER', 0, 'VALUE'].predictions == [20.0]
@@ -204,6 +205,7 @@ def test_empty_categories_preserve_cohorts(tmp_path, values, stage):
     assert all(cohort.cohorts for cohort in result.cohorts)
     for cohort in result.cohorts:
         assert sum(cohort.populations) == pytest.approx(1.0)
+        assert isinstance(cohort.predictions, list)
         assert np.isfinite(cohort.predictions).all()
 
 
