@@ -69,7 +69,7 @@ jobs:
             platform: manylinux_2_34_aarch64
           - arch: windows-x86_64
             machine: x86_64
-            runner: windows-amd64-cpu4
+            runner: windows-2022
             platform: win_amd64
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -108,26 +108,6 @@ jobs:
           fi
           python scripts/stamp_version.py --check
 
-      - name: Bootstrap rustup on Windows
-        if: ${{ matrix.arch == 'windows-x86_64' }}
-        run: |
-          set -euo pipefail
-          if command -v rustup >/dev/null 2>&1; then
-            exit 0
-          fi
-          cargo_bin="$(cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}")/bin"
-          if [ ! -x "$cargo_bin/rustup.exe" ]; then
-            installer="$(cygpath -u "$RUNNER_TEMP")/rustup-init.sh"
-            curl --proto '=https' --tlsv1.2 -fsSL \
-              https://raw.githubusercontent.com/rust-lang/rustup/d95a37b6ab92cc1e455d1576039333c97ca3e2c5/rustup-init.sh \
-              -o "$installer"
-            sh "$installer" -y --default-host x86_64-pc-windows-msvc \
-              --default-toolchain none --no-modify-path
-          fi
-          export PATH="$cargo_bin:$PATH"
-          rustup --version
-          echo "$(cygpath -w "$cargo_bin")" >> "$GITHUB_PATH"
-
       - name: Set up Rust
         uses: ./.github/actions/rust-toolchain
 
@@ -135,42 +115,10 @@ jobs:
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: |
-          $vswhereCommand = Get-Command vswhere.exe -ErrorAction SilentlyContinue
-          $vswhere = if ($vswhereCommand) { $vswhereCommand.Source } else {
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          }
-          $installation = $null
-          if (Test-Path $vswhere) {
-            $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if ($LASTEXITCODE -ne 0) { throw 'Visual Studio discovery failed.' }
-          }
-          $roots = @("$env:ProgramFiles\Microsoft Visual Studio",
-                     "${env:ProgramFiles(x86)}\Microsoft Visual Studio", 'C:\BuildTools')
-          if (-not $installation) {
-            # Build Tools images can omit vswhere or install under C:\BuildTools.
-            $candidates = foreach ($root in $roots) {
-              if (Test-Path $root) {
-                $root
-                $children = @(Get-ChildItem $root -Directory)
-                $children.FullName
-                $children | Get-ChildItem -Directory | Select-Object -ExpandProperty FullName
-              }
-            }
-            $installation = $candidates | Where-Object {
-              (Test-Path "$_\Common7\Tools\Launch-VsDevShell.ps1") -and
-              (Test-Path "$_\VC\Tools\MSVC")
-            } | Select-Object -First 1
-          }
-          if (-not $installation) {
-            Get-Command vswhere.exe, cl.exe, link.exe, cmake.exe -ErrorAction SilentlyContinue |
-              Select-Object Name, Source | Format-Table
-            foreach ($root in $roots) {
-              Write-Host "Visual Studio candidate root: $root"
-              Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Select-Object FullName
-            }
-            Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\VisualStudio\SxS\VS7',
-              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\SxS\VS7' -ErrorAction SilentlyContinue
-            throw 'No Visual Studio C++ installation found. The Windows runner image needs MSVC x64 build tools and the Windows SDK.'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $installation) {
+            throw 'Runner image needs Visual Studio x64 C++ tools and the Windows SDK.'
           }
           & "$installation\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
           foreach ($name in @('cl', 'link', 'cmake')) {
