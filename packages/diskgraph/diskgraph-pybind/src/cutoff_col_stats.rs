@@ -110,16 +110,37 @@ fn from_index(index_dir: &Path, output_dir: &Path, request: &CutoffColStatsReque
     request.publish(output_dir, clock, tables)
 }
 
-/// Recomputes statistics from stored rows into `output_dir/col_stats/<dir>/`.
-/// The output defaults to the index directory for existing callers.
+/// Recomputes statistics from stored rows into `index_dir/col_stats/<dir>/`.
 #[pyfunction]
-#[pyo3(signature = (index_dir, request_json, num_threads=None, *, output_dir=None))]
+#[pyo3(signature = (index_dir, request_json, num_threads=None))]
 pub fn cutoff_col_stats(
     py: Python<'_>,
     index_dir: &str,
     request_json: &str,
     num_threads: Option<usize>,
-    output_dir: Option<&str>,
+) -> PyResult<()> {
+    compute_cutoff_col_stats(py, index_dir, index_dir, request_json, num_threads)
+}
+
+/// Internal managed-cache writer; callers derive the destination from the root.
+#[pyfunction]
+#[pyo3(signature = (index_dir, output_dir, request_json, num_threads=None))]
+fn _cutoff_col_stats_at(
+    py: Python<'_>,
+    index_dir: &str,
+    output_dir: &str,
+    request_json: &str,
+    num_threads: Option<usize>,
+) -> PyResult<()> {
+    compute_cutoff_col_stats(py, index_dir, output_dir, request_json, num_threads)
+}
+
+fn compute_cutoff_col_stats(
+    py: Python<'_>,
+    index_dir: &str,
+    output_dir: &str,
+    request_json: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<()> {
     let request: CutoffColStatsRequest = serde_json::from_str(request_json)
         .map_err(|e| DiskgraphConfigError::new_err(format!("invalid request_json: {e}")))?;
@@ -128,11 +149,7 @@ pub fn cutoff_col_stats(
             .num_threads(num_threads.unwrap_or(0))
             .build()?;
         pool.install(|| {
-            from_index(
-                Path::new(index_dir),
-                Path::new(output_dir.unwrap_or(index_dir)),
-                &request,
-            )
+            from_index(Path::new(index_dir), Path::new(output_dir), &request)
         })
     })
     .map_err(map_anyhow_err)
@@ -482,6 +499,7 @@ fn chunk_lengths(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cutoff_col_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(_cutoff_col_stats_at, m)?)?;
     m.add_function(wrap_pyfunction!(write_column_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(train_tokenizer, m)?)?;
     m.add_function(wrap_pyfunction!(token_lengths, m)?)?;

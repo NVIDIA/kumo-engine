@@ -178,9 +178,10 @@ path if the ID was preallocated.
 An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
 IDs by default, even for the same source.
 
-The low-level path arguments remain available to DiskGraph internals. Kumo's
-public FM loader will derive these paths from its configured root and task ID
-in companion PR #403.
+The managed-cache writer and external-extension opener are private bindings.
+Kumo derives their paths from its configured root and task ID in companion PR
+#403. Public `cutoff_col_stats` writes into the index, and the native
+`RuntimeIndex` constructor accepts index-local extension references.
 
 [`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
 and worker-sharded batch generation without Python or transport dependencies. The

@@ -147,8 +147,11 @@ def test_recompute_into_external_directory(data, ingested, tmp_path):
     index = tmp_path / "index"
     shutil.copytree(ingested, index, ignore=shutil.ignore_patterns("col_stats"))
     output = tmp_path / "cache"
-    diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), output_dir=str(output),
-                               num_threads=2)
+    from diskgraph._c import _cutoff_col_stats_at
+
+    with pytest.raises(TypeError, match="output_dir"):
+        diskgraph.cutoff_col_stats(str(index), json.dumps(REQUEST), output_dir=str(output))
+    _cutoff_col_stats_at(str(index), str(output), json.dumps(REQUEST), num_threads=2)
     assert _stats(str(output)) == _stats(ingested)
     assert not (index / "col_stats").exists()
 

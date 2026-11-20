@@ -336,12 +336,14 @@ class RuntimeIndex:
         idx = self._indexes.get(extension_ref)
         if idx is None:
             from ._c import RuntimeIndex as _RuntimeIndex
-            idx = _RuntimeIndex(
-                self._parent_root,
-                extension_ref,
-                self._rnd_seed,
-                self._num_threads,
-            )
+            if Path(extension_ref).is_absolute():
+                idx = _RuntimeIndex._from_extension_path(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
+            else:
+                idx = _RuntimeIndex(
+                    self._parent_root, extension_ref, self._rnd_seed, self._num_threads,
+                )
             self._indexes[extension_ref] = idx
         return idx
 
