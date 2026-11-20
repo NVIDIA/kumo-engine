@@ -100,9 +100,12 @@ async function alter(filename, change) {
             const picker = page.locator('.kx-history-controls select');
             await picker.selectOption({index: (await picker.locator('option').count()) - 1});
             metric = await picker.inputValue();
-            // A single experiment has no legend; otherwise flip the first one.
+            // Keep another experiment visible when toggling the selected best.
             const box = page.locator('.kx-history-legend input').nth(1);
-            if (await box.count()) { flipped = !(await box.isChecked()); await box.setChecked(flipped); }
+            if (await box.count()) {
+              if (await box.isChecked()) await page.locator('.kx-history-legend input').nth(2).check();
+              flipped = !(await box.isChecked()); await box.setChecked(flipped);
+            }
             /* Every split row of the Training Table is complete. */
             assert.ok(await page.locator('[data-card="training_table"] table').evaluate(table =>
               table.tBodies[0].rows.length > 0 && [...table.tBodies[0].rows].every(

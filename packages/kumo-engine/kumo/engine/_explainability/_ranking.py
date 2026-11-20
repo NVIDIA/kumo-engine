@@ -8,19 +8,19 @@ model's holdout scores, and the original run's validation and last-epoch
 training scores.
 """
 
-import re
 from typing import Any, Optional
 
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability._metrics import (
+    _family,
     _holdout,
     _prefixed,
+    _top_k,
     display_name,
 )
 from kumo.engine._explainability._run import LINK_PREDICTION, Run
 
 _FAMILIES = ('recall', 'precision', 'map', 'ndcg', 'f1')
-_AT_K = re.compile(r'([a-z0-9_]+)@(\d+)')
 
 
 def _splits(run: Run) -> list[tuple[str, str, dict[str, float]]]:
@@ -36,13 +36,14 @@ def card(run: Run) -> Optional[dict[str, Any]]:
     splits = _splits(run)
     by_family: dict[str, set[int]] = {}
     for metric in run.metric_names:
-        match = _AT_K.fullmatch(metric)
-        if match:
-            by_family.setdefault(match[1], set()).add(int(match[2]))
-    tuned = _AT_K.fullmatch(run.tune or '')
+        k = _top_k(metric)
+        if k is not None:
+            by_family.setdefault(_family(metric), set()).add(k)
+    tuned = _family(run.tune or '') if _top_k(run.tune
+                                              or '') is not None else None
     order = sorted(
         by_family, key=lambda family:
-        (family != (tuned and tuned[1]), _FAMILIES.index(family)
+        (family != tuned, _FAMILIES.index(family)
          if family in _FAMILIES else len(_FAMILIES), family))
     views = []
     for family in order:
@@ -61,7 +62,7 @@ def card(run: Run) -> Optional[dict[str, Any]]:
             views.append(
                 dict(id=family, label=name, ks=ks, series=series,
                      x='K (number of items ranked)', y=name,
-                     tune=bool(tuned and tuned[1] == family)))
+                     tune=family == tuned))
     if not views:
         return None
     return dict(title='Ranking quality by cutoff K', views=views,
