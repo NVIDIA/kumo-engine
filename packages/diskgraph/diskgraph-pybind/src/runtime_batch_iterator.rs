@@ -269,10 +269,27 @@ pub struct SeedSchedule {
 #[pymethods]
 impl SeedSchedule {
     #[new]
-    fn new(py: Python<'_>, config_json: String) -> PyResult<Self> {
+    fn new(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let config = diskgraph_runtime::SeedScheduleConfig {
+            stage_key: config.getattr("stage_key")?.extract()?,
+            ranges: config.getattr("ranges")?.extract()?,
+            num_workers: config.getattr("num_workers")?.extract()?,
+            worker_id: config.getattr("worker_id")?.extract()?,
+            shuffle: config.getattr("shuffle")?.extract()?,
+            rnd_seed: config.getattr("rnd_seed")?.extract()?,
+            epoch: config.getattr("epoch")?.extract()?,
+            batch_size: config.getattr("batch_size")?.extract()?,
+            drop_last: config.getattr("drop_last")?.extract()?,
+            rhs: config.getattr("rhs")?.extract()?,
+            selected_stage_node_ids: config.getattr("selected_stage_node_ids")?.extract()?,
+            weighted_seed_sampling_json: config
+                .getattr("weighted_seed_sampling_json")?
+                .extract()?,
+            bucket_extension_root: config.getattr("bucket_extension_root")?.extract()?,
+        };
         Ok(Self {
             inner: py
-                .detach(|| diskgraph_runtime::SeedSchedule::from_json(&config_json))
+                .detach(|| diskgraph_runtime::SeedSchedule::new(config))
                 .map_err(map_runtime_err)?,
         })
     }
@@ -284,6 +301,7 @@ impl SeedSchedule {
             .map_err(map_runtime_err)
     }
 }
+
 #[pyclass]
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,

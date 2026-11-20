@@ -11,16 +11,38 @@ index and engine. `RuntimeBatchIterator::next_batch` returns a native batch or
 `None` at exhaustion. `next_seed_ids` separates logical selection from sampling;
 `sample_request` samples explicit canonical stage/RHS IDs without advancing that
 cursor. Local iteration and explicit requests use the same sampling operation.
-`SeedSchedule::from_json` constructs the same scheduler from seed-side metadata
-and sidecars without opening graph adjacency or feature files. Construction,
+`SeedSchedule::new(SeedScheduleConfig)` constructs the same scheduler from typed
+seed-side metadata and sidecars without opening graph adjacency or feature files. Construction,
 selection, and sampling return typed `RuntimeError`s.
 
 The Python binding retains its constructor arguments, iterator protocol, and
 Arrow output conversion. It releases the GIL around native batch generation and
 maps runtime errors to the existing DiskGraph Python exception classes.
 
-The low-level Python schedule is available as `diskgraph._c.SeedSchedule`.
-Its constructor accepts JSON with these fields:
+Local iteration and standalone scheduling share this typed initializer and its
+validation, including checking all selected IDs before worker sharding. There is
+no JSON schedule constructor.
+
+The low-level Python schedule is available as `diskgraph._c.SeedSchedule` and
+accepts a typed `diskgraph.SeedScheduleConfig`:
+
+```python
+from diskgraph import SeedScheduleConfig
+from diskgraph._c import SeedSchedule
+
+schedule = SeedSchedule(SeedScheduleConfig(
+    stage_key="train_seeds",
+    ranges=[(0, 99)],
+    batch_size=32,
+    shuffle=True,
+    rnd_seed=42,
+))
+seed_ids = schedule.next_seed_ids()
+```
+
+The Rust configuration and Python dataclass have these fields. Python defaults
+to one worker, worker zero, epoch zero, no shuffle, no tail dropping, and no
+optional mode:
 
 | Field | Meaning |
 | --- | --- |

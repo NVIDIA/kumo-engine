@@ -1462,72 +1462,6 @@ impl RuntimeBatchIterator {
         // See `RuntimeIndex::iter`; `None` => select-all, `[]` per key => skip.
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> Result<Self> {
-        if batch_size == 0 {
-            return Err(RuntimeError::config("batch_size must be >= 1"));
-        }
-        if selected_stage_node_ids.is_some() {
-            if shuffle {
-                return Err(RuntimeError::config(
-                    "selected_stage_node_ids is incompatible with shuffle=True",
-                ));
-            }
-            if drop_last {
-                return Err(RuntimeError::config(
-                    "selected_stage_node_ids is incompatible with drop_last=True",
-                ));
-            }
-            if group_by_timestamp {
-                return Err(RuntimeError::config(
-                    "selected_stage_node_ids is incompatible with group_by_timestamp=True",
-                ));
-            }
-            if rhs_seed_node_type.is_some() {
-                return Err(RuntimeError::config(
-                    "selected_stage_node_ids is incompatible with rhs_seed_node_type (NodeRange mode)",
-                ));
-            }
-        }
-        if weighted_seed_sampling_json.is_some() {
-            if selected_stage_node_ids.is_some() {
-                return Err(RuntimeError::config(
-                    "weighted_seed_sampling is incompatible with selected_stage_node_ids",
-                ));
-            }
-            if drop_last {
-                return Err(RuntimeError::config(
-                    "weighted_seed_sampling is incompatible with drop_last=True",
-                ));
-            }
-            if group_by_timestamp {
-                return Err(RuntimeError::config(
-                    "weighted_seed_sampling is incompatible with group_by_timestamp=True",
-                ));
-            }
-            if rhs_seed_node_type.is_some() {
-                return Err(RuntimeError::config(
-                    "weighted_seed_sampling is incompatible with rhs_seed_node_type (NodeRange mode)",
-                ));
-            }
-        }
-        if group_by_timestamp && rhs_seed_node_type.is_some() {
-            return Err(RuntimeError::config(
-                "group_by_timestamp is incompatible with rhs_seed_node_type (NodeRange mode)",
-            ));
-        }
-        if group_by_timestamp && shuffle && rnd_seed.is_none() {
-            return Err(RuntimeError::config(
-                "rnd_seed is required when group_by_timestamp=True (used for the \
-                 bucket-order + within-bucket shuffle)",
-            ));
-        }
-        if num_workers == 0 {
-            return Err(RuntimeError::config("num_workers must be >= 1"));
-        }
-        if worker_id >= num_workers {
-            return Err(RuntimeError::config(format!(
-                "worker_id {worker_id} out of range for num_workers {num_workers}"
-            )));
-        }
         if rhs_seed_node_type.is_some() && rhs_seed_time.is_none() {
             return Err(RuntimeError::config(
                 "rhs_seed_time is required when rhs_seed_node_type is set (NodeRange mode)",
@@ -1558,103 +1492,54 @@ impl RuntimeBatchIterator {
                 "unknown stage table in merged catalog: {stage_catalog_key}"
             ))
         })?;
-        let selected_stage_node_ids = if let Some(ids) = selected_stage_node_ids {
-            let mut local_ids = Vec::new();
-            for (idx, node_id) in ids.into_iter().enumerate() {
-                if (idx as u64) % num_workers == worker_id {
-                    if stage_table_arc.shard_for_node(node_id).is_none() {
-                        return Err(RuntimeError::data(format!(
-                            "selected_stage_node_ids[{idx}]={node_id} is not a valid node id for stage table `{stage_catalog_key}`"
-                        )));
-                    }
-                    local_ids.push(node_id);
-                }
-            }
-            Some(local_ids)
+        let rhs = rhs_seed_node_type.is_some();
+        let ranges = if let Some(rhs_type) = rhs_seed_node_type.as_deref() {
+            vec![engine
+                .node_type_id_range(rhs_type)
+                .map_err(RuntimeError::from)?]
+        } else {
+            (0..stage_table_arc.shard_count())
+                .filter_map(|i| stage_table_arc.shard_id_range(i))
+                .collect()
+        };
+        let stage_key = if let Some(rhs_type) = rhs_seed_node_type.as_ref() {
+            rhs_type.clone()
+        } else if group_by_timestamp || weighted_seed_sampling_json.is_some() {
+            stage_catalog_key.clone()
+        } else {
+            stage_table.clone()
+        };
+        let bucket_extension_root = if group_by_timestamp {
+            Some(
+                reader
+                    .tt_extension_root()
+                    .ok_or_else(|| {
+                        RuntimeError::config(
+                            "group_by_timestamp=True but reader has no TT extension root",
+                        )
+                    })?
+                    .to_path_buf(),
+            )
         } else {
             None
         };
-        let weighted_stage_node_ids = if let Some(config_json) = weighted_seed_sampling_json {
-            Some(make_weighted_stage_node_ids(
-                &config_json,
-                |id| stage_table_arc.shard_for_node(id).is_some(),
-                &stage_catalog_key,
-                num_workers,
-                worker_id,
-                rnd_seed,
-                epoch,
-            )?)
-        } else {
-            None
-        };
+        let seeds = SeedSchedule::new(SeedScheduleConfig {
+            stage_key,
+            ranges,
+            num_workers,
+            worker_id,
+            shuffle,
+            rnd_seed,
+            epoch,
+            batch_size,
+            drop_last,
+            rhs,
+            selected_stage_node_ids,
+            weighted_seed_sampling_json,
+            bucket_extension_root,
+        })?;
         let sampling_plan: SamplingPlan = serde_json::from_str(&sampling_plan_json)
             .map_err(|e| RuntimeError::config(format!("Invalid plan JSON: {e}")))?;
-        // Grouped (single-timestamp) path: build the lazy bucket schedule from
-        // the per-stage `bucket_index.bin` the ingest side recorded. `offsets`
-        // is unused in this mode (left empty); FAILS LOUD on a missing artifact.
-        let bucket_schedule = if group_by_timestamp {
-            let ext_root = reader.tt_extension_root().ok_or_else(|| {
-                RuntimeError::config("group_by_timestamp=True but reader has no TT extension root")
-            })?;
-            let bare_table = stage_catalog_key
-                .rsplit('/')
-                .next()
-                .unwrap_or(&stage_catalog_key);
-            let (bin_path, raw_buckets) = read_bucket_index(ext_root, bare_table)?;
-            Some(BucketSchedule::build(
-                raw_buckets,
-                bin_path,
-                rnd_seed.unwrap_or(0),
-                epoch,
-                stage_catalog_key.clone(),
-                batch_size,
-                num_workers,
-                worker_id,
-            )?)
-        } else {
-            None
-        };
-        // NodeRange mode: seeds are the RHS catalog node-ids `[lo, hi]` (dense by
-        // ingest guarantee), NOT stage-table row offsets. Build the offsets over
-        // the dense range and add `lo` so each offset IS the global node-id. The
-        // stage table is ignored for seeding in this mode.
-        let stream = if selected_stage_node_ids.is_some() || weighted_stage_node_ids.is_some() {
-            ShardStream::empty()
-        } else if group_by_timestamp {
-            // Grouped path drives iteration from `bucket_schedule`, not the stream.
-            ShardStream::empty()
-        } else if let Some(rhs_type) = rhs_seed_node_type.as_deref() {
-            let (lo, hi) = engine
-                .node_type_id_range(rhs_type)
-                .map_err(RuntimeError::from)?;
-            let num_rhs = hi - lo + 1;
-            // `base = lo` so each emitted value IS the global node id, which is
-            // what the materialised path achieved with a post-pass over the Vec.
-            ShardStream::new(
-                num_rhs,
-                num_workers,
-                worker_id,
-                shuffle,
-                rnd_seed,
-                epoch,
-                rhs_type,
-                lo,
-            )?
-        } else {
-            ShardStream::new(
-                stage_table_arc.node_count(),
-                num_workers,
-                worker_id,
-                shuffle,
-                rnd_seed,
-                epoch,
-                // The caller's logical stage identifies its random stream.
-                // The catalog namespace may be a fresh temporary TT directory;
-                // including that path would reseed identical reopened tasks.
-                &stage_table,
-                0,
-            )?
-        };
         let pseudo_time = PseudoTimeSeed::for_stage(
             reader.as_ref(),
             &stage_table,
@@ -1706,14 +1591,6 @@ impl RuntimeBatchIterator {
         // iterator instead of once per batch.
         let feature_projection =
             std::sync::Arc::new(engine.resolve_projection(&projections.unwrap_or_default()));
-        let mut grouped_ranges = if group_by_timestamp {
-            (0..stage_table_arc.shard_count())
-                .filter_map(|i| stage_table_arc.shard_id_range(i))
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        grouped_ranges.sort_unstable();
         Ok(Self {
             reader,
             engine,
@@ -1731,21 +1608,7 @@ impl RuntimeBatchIterator {
                 fused_feature_fetching: chosen_fused,
                 swap_edge_direction,
             },
-            seeds: SeedSchedule {
-                stream,
-                selected_stage_node_ids,
-                weighted_stage_node_ids,
-                cursor: 0,
-                batch_size,
-                drop_last,
-                offset_ranges: SeedSchedule::offset_ranges(
-                    (0..stage_table_arc.shard_count())
-                        .filter_map(|i| stage_table_arc.shard_id_range(i)),
-                ),
-                grouped_ranges,
-                rhs: rhs_seed_node_type.is_some(),
-                bucket_schedule,
-            },
+            seeds,
             negatives,
             entity_node_type,
             target_node_type,
@@ -1947,22 +1810,35 @@ impl RuntimeBatchIterator {
             .transpose()
     }
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SeedScheduleConfig {
-    stage_key: String,
-    ranges: Vec<(u64, u64)>,
-    num_workers: u64,
-    worker_id: u64,
-    shuffle: bool,
-    rnd_seed: Option<u64>,
-    epoch: u64,
-    batch_size: usize,
-    drop_last: bool,
-    rhs: bool,
-    selected_stage_node_ids: Option<Vec<u64>>,
-    weighted_seed_sampling_json: Option<String>,
-    bucket_extension_root: Option<String>,
+/// Immutable seed-side inputs shared by local and standalone scheduling.
+#[derive(Clone, Debug)]
+pub struct SeedScheduleConfig {
+    /// Exact stage-table, namespaced catalog, or RHS key for this mode's RNG.
+    pub stage_key: String,
+    /// Disjoint inclusive ID ranges in traversal order.
+    pub ranges: Vec<(u64, u64)>,
+    /// Number of worker shards; must be positive.
+    pub num_workers: u64,
+    /// Zero-based worker shard identity.
+    pub worker_id: u64,
+    /// Whether to shuffle flat/RHS seed order.
+    pub shuffle: bool,
+    /// Base random seed; required when shuffling.
+    pub rnd_seed: Option<u64>,
+    /// Epoch mixed into the random seed.
+    pub epoch: u64,
+    /// Maximum positive number of seeds per batch.
+    pub batch_size: usize,
+    /// Drop partial flat/RHS batches; invalid for selected/weighted modes.
+    pub drop_last: bool,
+    /// Interpret the single nonempty range as an RHS candidate domain.
+    pub rhs: bool,
+    /// Ordered stage IDs to shard, preserving duplicates.
+    pub selected_stage_node_ids: Option<Vec<u64>>,
+    /// Existing weighted-sampling settings and sidecar paths.
+    pub weighted_seed_sampling_json: Option<String>,
+    /// Local extension containing timestamp bucket metadata and IDs.
+    pub bucket_extension_root: Option<std::path::PathBuf>,
 }
 
 impl SeedSchedule {
@@ -1979,34 +1855,46 @@ impl SeedSchedule {
             .collect()
     }
 
-    /// Construct a schedule from immutable seed-side metadata and local sidecars.
-    /// Returns a typed configuration/data error for invalid metadata or sidecars.
-    pub fn from_json(config_json: &str) -> Result<Self> {
-        let c: SeedScheduleConfig = serde_json::from_str(config_json)
-            .map_err(|e| RuntimeError::config(format!("Invalid seed schedule: {e}")))?;
-        if c.batch_size == 0 || c.num_workers == 0 || c.worker_id >= c.num_workers {
+    /// Construct a schedule from typed seed-side metadata and local sidecars.
+    ///
+    /// Returns a configuration error for invalid worker assignments, ranges,
+    /// or mode combinations, and a data/system error for invalid sidecars.
+    pub fn new(config: SeedScheduleConfig) -> Result<Self> {
+        if config.batch_size == 0
+            || config.num_workers == 0
+            || config.worker_id >= config.num_workers
+        {
             return Err(RuntimeError::config(
                 "invalid seed batch size or worker assignment",
             ));
         }
-        if c.rhs && (c.ranges.len() != 1 || c.ranges[0].0 > c.ranges[0].1) {
+        if config.rhs && (config.ranges.len() != 1 || config.ranges[0].0 > config.ranges[0].1) {
             return Err(RuntimeError::config(
                 "RHS requires one nonempty dense node range",
             ));
         }
-        if c.shuffle && c.rnd_seed.is_none() {
+        if config.shuffle && config.rnd_seed.is_none() {
             return Err(RuntimeError::config("shuffle requires rnd_seed"));
         }
-        let grouped = c.bucket_extension_root.is_some();
-        let selected = c.selected_stage_node_ids.is_some();
-        let weighted = c.weighted_seed_sampling_json.is_some();
-        if (selected && (c.shuffle || c.drop_last || grouped || c.rhs || weighted))
-            || (weighted && (c.drop_last || grouped || c.rhs))
-            || (grouped && c.rhs)
-        {
-            return Err(RuntimeError::config("incompatible seed schedule modes"));
+        let grouped = config.bucket_extension_root.is_some();
+        let selected = config.selected_stage_node_ids.is_some();
+        let weighted = config.weighted_seed_sampling_json.is_some();
+        if selected && (config.shuffle || config.drop_last || grouped || config.rhs || weighted) {
+            return Err(RuntimeError::config(
+                "selected_stage_node_ids is incompatible with shuffle, drop_last, grouped, RHS, or weighted sampling",
+            ));
         }
-        let mut membership_ranges: Vec<_> = c
+        if weighted && (config.drop_last || grouped || config.rhs) {
+            return Err(RuntimeError::config(
+                "weighted_seed_sampling is incompatible with drop_last, grouped, or RHS sampling",
+            ));
+        }
+        if grouped && config.rhs {
+            return Err(RuntimeError::config(
+                "group_by_timestamp is incompatible with RHS sampling",
+            ));
+        }
+        let mut membership_ranges: Vec<_> = config
             .ranges
             .iter()
             .copied()
@@ -2023,56 +1911,62 @@ impl SeedSchedule {
             let end = membership_ranges.partition_point(|(lo, _)| *lo <= id);
             end > 0 && id <= membership_ranges[end - 1].1
         };
-        let selected_stage_node_ids = c
+        let selected_stage_node_ids = config
             .selected_stage_node_ids
             .map(|ids| {
                 if ids.iter().any(|id| !contains(*id)) {
-                    return Err(RuntimeError::data("selected seed id outside stage table"));
+                    return Err(RuntimeError::data(
+                        "selected_stage_node_ids contains seed id outside stage table",
+                    ));
                 }
                 Ok(ids
                     .into_iter()
                     .enumerate()
-                    .filter(|(i, _)| *i as u64 % c.num_workers == c.worker_id)
+                    .filter(|(i, _)| *i as u64 % config.num_workers == config.worker_id)
                     .map(|(_, id)| id)
                     .collect::<Vec<_>>())
             })
             .transpose()?;
-        let weighted_stage_node_ids = c
+        let weighted_stage_node_ids = config
             .weighted_seed_sampling_json
             .as_deref()
-            .map(|config| {
+            .map(|config_json| {
                 make_weighted_stage_node_ids(
-                    config,
+                    config_json,
                     contains,
-                    &c.stage_key,
-                    c.num_workers,
-                    c.worker_id,
-                    c.rnd_seed,
-                    c.epoch,
+                    &config.stage_key,
+                    config.num_workers,
+                    config.worker_id,
+                    config.rnd_seed,
+                    config.epoch,
                 )
             })
             .transpose()?;
-        let bucket_schedule = c
+        let bucket_schedule = config
             .bucket_extension_root
             .as_deref()
             .map(|root| {
                 let (path, buckets) = read_bucket_index(
-                    std::path::Path::new(root),
-                    c.stage_key.rsplit('/').next().unwrap_or(&c.stage_key),
+                    root,
+                    config
+                        .stage_key
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&config.stage_key),
                 )?;
                 BucketSchedule::build(
                     buckets,
                     path,
-                    c.rnd_seed.unwrap_or(0),
-                    c.epoch,
-                    c.stage_key.clone(),
-                    c.batch_size,
-                    c.num_workers,
-                    c.worker_id,
+                    config.rnd_seed.unwrap_or(0),
+                    config.epoch,
+                    config.stage_key.clone(),
+                    config.batch_size,
+                    config.num_workers,
+                    config.worker_id,
                 )
             })
             .transpose()?;
-        let count = c.ranges.iter().try_fold(0u64, |count, (lo, hi)| {
+        let count = config.ranges.iter().try_fold(0u64, |count, (lo, hi)| {
             let len = if hi >= lo {
                 hi.checked_sub(*lo).and_then(|n| n.checked_add(1))
             } else {
@@ -2086,13 +1980,13 @@ impl SeedSchedule {
         } else {
             ShardStream::new(
                 count,
-                c.num_workers,
-                c.worker_id,
-                c.shuffle,
-                c.rnd_seed,
-                c.epoch,
-                &c.stage_key,
-                if c.rhs { c.ranges[0].0 } else { 0 },
+                config.num_workers,
+                config.worker_id,
+                config.shuffle,
+                config.rnd_seed,
+                config.epoch,
+                &config.stage_key,
+                if config.rhs { config.ranges[0].0 } else { 0 },
             )?
         };
         Ok(Self {
@@ -2100,15 +1994,15 @@ impl SeedSchedule {
             selected_stage_node_ids,
             weighted_stage_node_ids,
             cursor: 0,
-            batch_size: c.batch_size,
-            drop_last: c.drop_last,
-            offset_ranges: Self::offset_ranges(c.ranges.into_iter()),
+            batch_size: config.batch_size,
+            drop_last: config.drop_last,
+            offset_ranges: Self::offset_ranges(config.ranges.into_iter()),
             grouped_ranges: if grouped {
                 membership_ranges
             } else {
                 Vec::new()
             },
-            rhs: c.rhs,
+            rhs: config.rhs,
             bucket_schedule,
         })
     }

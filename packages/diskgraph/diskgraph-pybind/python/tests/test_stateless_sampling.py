@@ -16,6 +16,7 @@ from diskgraph import (
     DiskgraphDataError,
     RuntimeIndex,
     SamplerEngine,
+    SeedScheduleConfig,
 )
 from diskgraph._c import SeedSchedule
 from test_runtime_batch_iterator_e2e import (
@@ -65,9 +66,12 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2
     )
+    sampling_plan = _sampling_plan()
+    for layer in sampling_plan["layers"]:
+        layer["default_fanout"]["fanout"] = 1
     options = {
         "stage": "train",
-        "sampling_plan": _sampling_plan(),
+        "sampling_plan": sampling_plan,
         "entity_node_type": "users",
         "num_workers": 1,
         "worker_id": 0,
@@ -114,6 +118,11 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             }
             current.with_history(sampler, "users", json.dumps(plan), "[]")
     first = next(iterator)
+    full_iterator, _ = index.iter(**{**options, "sampling_plan": _sampling_plan()})
+    full = next(full_iterator)
+    assert len(first["graphs"]["main"]["node_ids"]["orders"]) < len(
+        full["graphs"]["main"]["node_ids"]["orders"]
+    )
     if extras == "neighborhood":
         assert "context" in first["graphs"]
     elif extras == "history":
@@ -161,25 +170,19 @@ def test_seed_only_schedule_matches_native_iterator(
     elif mode == "rhs":
         options.update(rhs_seed_node_type="users", rhs_seed_time=1000)
     size = seed_table_fixture["n_users" if mode == "rhs" else "n_seeds"]
-    config = {
-        "stage_key": "users" if mode == "rhs" else "train_seeds",
-        "ranges": [[0, size - 1]],
-        **{
-            name: options[name]
-            for name in (
-                "num_workers",
-                "worker_id",
-                "shuffle",
-                "rnd_seed",
-                "epoch",
-                "batch_size",
-            )
-        },
-        "drop_last": False,
-        "rhs": mode == "rhs",
-        "selected_stage_node_ids": options.get("selected_stage_node_ids"),
-    }
-    schedule = SeedSchedule(json.dumps(config))
+    config = SeedScheduleConfig(
+        stage_key="users" if mode == "rhs" else "train_seeds",
+        ranges=[(0, size - 1)],
+        num_workers=options["num_workers"],
+        worker_id=options["worker_id"],
+        shuffle=options["shuffle"],
+        rnd_seed=options["rnd_seed"],
+        epoch=options["epoch"],
+        batch_size=options["batch_size"],
+        rhs=mode == "rhs",
+        selected_stage_node_ids=options.get("selected_stage_node_ids"),
+    )
+    schedule = SeedSchedule(config)
     count = schedule.num_samples()
     iterator, expected_count = index.iter(**options)
     assert count == expected_count
@@ -193,19 +196,10 @@ def test_seed_only_schedule_matches_native_iterator(
 
 def test_seed_only_schedule_needs_no_graph_index() -> None:
     """Metadata alone is enough to enumerate canonical seed ids."""
-    config = {
-        "stage_key": "train",
-        "ranges": [[10, 12], [20, 21]],
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "rnd_seed": None,
-        "epoch": 0,
-        "batch_size": 2,
-        "drop_last": False,
-        "rhs": False,
-    }
-    schedule = SeedSchedule(json.dumps(config))
+    config = SeedScheduleConfig(
+        stage_key="train", ranges=[(10, 12), (20, 21)], batch_size=2
+    )
+    schedule = SeedSchedule(config)
     assert schedule.num_samples() == 5
     assert [schedule.next_seed_ids() for _ in range(4)] == [
         [10, 11],
@@ -213,3 +207,34 @@ def test_seed_only_schedule_needs_no_graph_index() -> None:
         [21],
         None,
     ]
+
+
+@pytest.mark.parametrize("worker_id", [0, 1])
+def test_local_and_standalone_validate_all_selected_ids(
+    seed_table_fixture: dict[str, Any],  # noqa: F811 -- imported pytest fixture
+    worker_id: int,
+) -> None:
+    """Both constructors reject invalid IDs assigned to either worker."""
+    config = SeedScheduleConfig(
+        stage_key="train_seeds",
+        ranges=[(0, seed_table_fixture["n_seeds"] - 1)],
+        batch_size=2,
+        num_workers=2,
+        worker_id=worker_id,
+        selected_stage_node_ids=[0, 999],
+    )
+    with pytest.raises(DiskgraphDataError, match="selected_stage_node_ids"):
+        SeedSchedule(config)
+    index = RuntimeIndex(seed_table_fixture["manifest_path"], rnd_seed=42)
+    with pytest.raises(DiskgraphDataError, match="selected_stage_node_ids"):
+        index.iter(
+            stage="train",
+            sampling_plan=_sampling_plan(),
+            entity_node_type="users",
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+            worker_id=worker_id,
+            shuffle=False,
+            epoch=config.epoch,
+            selected_stage_node_ids=config.selected_stage_node_ids,
+        )
