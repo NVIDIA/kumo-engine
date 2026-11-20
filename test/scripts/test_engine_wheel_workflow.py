@@ -310,7 +310,7 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     assert job['runs-on'] == 'windows-amd64-cpu4'
     native_build = next(row for row in BUILDS
                         if row['arch'] == 'windows-x86_64')
-    assert native_build['runner'] == 'windows-amd64-cpu4'
+    assert native_build['runner'] == 'windows-2022'
     cleanup_step = _step('build', 'Verify native Windows process cleanup')
     assert cleanup_step['if'] == "${{ matrix.arch == 'windows-x86_64' }}"
     assert cleanup_step['run'] == (
@@ -318,27 +318,7 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     steps = [step['name'] for step in JOBS['build']['steps']]
     assert (steps.index('Set up Python') <
             steps.index('Verify native Windows process cleanup') <
-            steps.index('Bootstrap rustup on Windows') <
             steps.index('Set up Rust') < steps.index('Build wheel'))
-    bootstrap = _step('build', 'Bootstrap rustup on Windows')
-    assert bootstrap['if'] == "${{ matrix.arch == 'windows-x86_64' }}"
-    assert 'command -v rustup' in bootstrap['run']
-    assert 'if [ ! -x "$cargo_bin/rustup.exe" ]' in bootstrap['run']
-    assert ('rust-lang/rustup/d95a37b6ab92cc1e455d1576039333c97ca3e2c5/'
-            'rustup-init.sh') in bootstrap['run']
-    assert '--default-host x86_64-pc-windows-msvc' in bootstrap['run']
-    assert '--default-toolchain none --no-modify-path' in bootstrap['run']
-    assert 'cygpath -u "${CARGO_HOME:-$USERPROFILE/.cargo}"' in bootstrap['run']
-    assert 'cygpath -w "$cargo_bin"' in bootstrap['run']
-    assert 'export PATH="$cargo_bin:$PATH"' in bootstrap['run']
-    assert '>> "$GITHUB_PATH"' in bootstrap['run']
-    msvc = _step('build', 'Activate installed MSVC build tools')['run']
-    assert 'Get-Command vswhere.exe -ErrorAction SilentlyContinue' in msvc
-    assert 'if (Test-Path $vswhere)' in msvc
-    assert "'C:\\BuildTools'" in msvc
-    assert 'Test-Path "$_\\Common7\\Tools\\Launch-VsDevShell.ps1"' in msvc
-    assert 'Test-Path "$_\\VC\\Tools\\MSVC"' in msvc
-    assert 'No Visual Studio C++ installation found.' in msvc
     smoke_targets = {row['platform']: row['runner'] for row in
                      workflow['jobs']['smoke']['strategy']['matrix']['target']}
     assert smoke_targets['windows-native'] == 'windows-amd64-cpu4'
