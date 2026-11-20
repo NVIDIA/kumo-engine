@@ -93,8 +93,10 @@ class _Source:
         *,
         num_threads: int | None,
         paths=None,
+        identity: str | None = None,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
+        self.artifact_identity = identity
 
 
 def _write(schema: DataSchema, tables: Tables, directory: Path, parts: int = 1) -> Dataset:

@@ -219,12 +219,14 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
                     },
                 )
             )
-    legacy = _DiskGraphIndex.open(root).manifest if (root / "index_manifest.json").is_file() else {}
+    manifest = (
+        _DiskGraphIndex.open(root).manifest if (root / "index_manifest.json").is_file() else {}
+    )
     relations = []
     for physical_relation, mapping in physical:
         aliases = [
             (alias, entry)
-            for alias, entry in legacy.get("relation_mapping", {}).items()
+            for alias, entry in manifest.get("relation_mapping", {}).items()
             if entry["forward"] in (mapping["forward"], mapping["reverse"])
         ]
         if not aliases:

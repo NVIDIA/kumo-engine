@@ -210,7 +210,7 @@ class DiskGraphEngine:
     step, before any data is read.
 
     :param index: source-ingestion index directory. A path under the configured
-        root's ``indexes/`` uses managed storage; other paths retain legacy layout.
+        root's ``indexes/`` uses managed storage; other paths retain index-local layout.
         Omit to allocate a new managed build.
     :param index_build_id: physical build to create or reuse under the configured root.
         Omit to allocate a new ID. Cannot be combined with ``index``.
@@ -220,12 +220,6 @@ class DiskGraphEngine:
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
     :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
-    :param source_versions: optional table-to-identity mapping for source ingestion/reuse.
-        Each entry has nonempty ``source`` (connector plus source identity) and ``version``
-        strings. These trusted connector versions replace file path/size/mtime identity;
-        missing versions are never treated as equal. Omit for legacy file validation.
-        The caller must change the version whenever source data changes: reuse does
-        not compare Parquet contents, file sizes or mtimes in this opt-in mode.
     """
 
     name = "diskgraph"
@@ -241,7 +235,6 @@ class DiskGraphEngine:
         ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
         index_build_id: str | None = None,
-        source_versions: Mapping[str, Mapping[str, str]] | None = None,
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
@@ -259,11 +252,6 @@ class DiskGraphEngine:
             self._paths = managed_paths(resolved.name) if resolved.parent == managed_root else None
         self.index = self._paths.index_dir if self._paths is not None else Path(index)
         self.index_build_id = self._paths.index_build_id if self._paths is not None else None
-        self.source_versions = (
-            None
-            if source_versions is None
-            else {name: dict(entry) for name, entry in source_versions.items()}
-        )
         self._binding = None
         self.num_threads = num_threads
         self.num_shards = num_shards
@@ -282,8 +270,8 @@ class DiskGraphEngine:
         DiskGraph's managed path resolver. A path to the same managed base is
         accepted. The build ID is physical identity,
         independent of schema/data-version identity. No original sources are read.
-        Legacy ID-less indexes cannot be adopted; the existing index= constructor
-        remains available for legacy source ingestion and reuse.
+        ID-less indexes cannot be adopted; the existing index= constructor
+        remains available for source ingestion and reuse.
         """
         if isinstance(index_build_id, Path) or "/" in index_build_id or "\\" in index_build_id:
             import kumo.settings
@@ -304,7 +292,7 @@ class DiskGraphEngine:
 
         The original base stays in place. Tasks and caches use sibling managed paths
         under kumo.settings.scratch_dir(); no public work/output directories are needed.
-        Cross-root imports and legacy snapshots without a build ID are refused.
+        Cross-root imports and snapshots without a build ID are refused.
         """
         base = Path(snapshot.index_path).resolve()
         import kumo.settings
@@ -325,7 +313,7 @@ class DiskGraphEngine:
     def schema(self) -> DataSchema:
         """Resolved stored schema for a from_index/from_snapshot engine."""
         if self._binding is None:
-            raise ValueError("schema is available on from_index/from_snapshot engines")
+            raise AttributeError("schema is available on from_index/from_snapshot engines")
         return self._binding.schema
 
     def _resolve_index_schema(self, schema: DataSchema) -> DataSchema:
@@ -532,7 +520,6 @@ class DiskGraphEngine:
             num_threads=self.num_threads,
             if_missing=self.ingest == "if_missing",
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
-            source_versions=self.source_versions,
             index_build_id=self.index_build_id,
         )
         if self._paths is not None:
@@ -542,13 +529,22 @@ class DiskGraphEngine:
             schema,
             num_threads=self.num_threads,
             paths=self._paths,
-            **({"identity": self.index_build_id} if self._paths is not None else {}),
+            identity=self.index_build_id or _artifact_identity(artifact),
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
         # anchors are read from Parquet independently of the graph index: an anchor
         # table is per task, the index is per dataset
         return ParquetAnchors(table)
+
+
+def _artifact_identity(artifact: _DiskGraphIndex) -> str:
+    """Identify one physical build for fitted and materialized task state."""
+    metadata = json.loads((Path(artifact.path) / "index_metadata.json").read_text())
+    build_id = metadata.get("index_build_id")
+    if isinstance(build_id, str) and build_id:
+        return build_id
+    return hashlib.sha256((Path(artifact.path) / "index_manifest.json").read_bytes()).hexdigest()
 
 
 class DiskGraphSource:
