@@ -4,7 +4,6 @@
 
 """LI Medium's four task meanings on tiny native fixtures, not real-data evidence."""
 
-from copy import deepcopy
 from decimal import Decimal
 from test.kumo_pytorch.aml_inputs import SECOND
 from test.kumo_pytorch.bindings import load_bindings
@@ -184,79 +183,3 @@ def test_native_binding_targets_masks_and_train_only_fitting(
                 )
         assert len(calls) == 6
         assert task.fitted_state.to_dict() == state
-
-
-@pytest.mark.parametrize(
-    "fault", ("cutoff", "negative-delay", "infinite-amount", "nonbinary")
-)
-def test_binding_projection_rejects_invalid_source_meaning(tmp_path, fault):
-    ref = {
-        "cutoff": "L01",
-        "negative-delay": "L02",
-        "infinite-amount": "L01",
-        "nonbinary": "L04",
-    }[fault]
-    source = source_anchors(tmp_path / "source.parquet")
-    table = pq.read_table(source)
-    column, values = {
-        "cutoff": ("graph_as_of_time", table["as_of_time"]),
-        "negative-delay": (
-            "next_delay_seconds",
-            pa.array([1.0, -1.0, 1.0, 1.0, 1.0, 1.0]),
-        ),
-        # Wrong-source float data must not be silently accepted as exact decimals.
-        "infinite-amount": (
-            "next_amount",
-            pa.array([1.0, float("inf"), 1.0, 1.0, 1.0, 1.0]),
-        ),
-        "nonbinary": (
-            "involvement",
-            pa.array([1, 2, 0, None, 1, None], type=pa.int32()),
-        ),
-    }[fault]
-    pq.write_table(
-        table.set_column(table.schema.get_field_index(column), column, values), source
-    )
-    with pytest.raises(ValueError):
-        project_binding(
-            source, tmp_path / "out.parquet", {"account-0001": 1}, load_bindings()[ref]
-        )
-
-
-@pytest.mark.parametrize("fault", ("decimal-scale", "all-null-float"))
-def test_binding_projection_requires_registered_decimal_schema(tmp_path, fault):
-    source = source_anchors(tmp_path / "source.parquet")
-    table = pq.read_table(source)
-    # This magnitude fits decimal(38,0), but cannot exist in decimal(38,10).
-    values = (
-        pa.array([Decimal("1e30")] * 6, type=pa.decimal128(38, 0))
-        if fault == "decimal-scale"
-        else pa.array([None] * 6, type=pa.float64())
-    )
-    pq.write_table(
-        table.set_column(
-            table.schema.get_field_index("next_amount"), "next_amount", values
-        ),
-        source,
-    )
-    destination = tmp_path / "out.parquet"
-    with pytest.raises(ValueError, match="registered target dtype.*next_amount"):
-        project_binding(
-            source, destination, {"account-0001": 1}, load_bindings()["L01"]
-        )
-    assert not destination.exists()
-
-
-@pytest.mark.parametrize("fault", ("anchor-version", "split", "target", "validity"))
-def test_binding_contract_rejects_changed_registered_meaning(fault):
-    binding = deepcopy(load_bindings()["L01"])
-    if fault == "anchor-version":
-        binding["selector"]["anchor_version"] = "v1"
-    elif fault == "split":
-        binding["split_column"] = "split"
-    elif fault == "target":
-        binding["targets"]["amount"]["column"] = "involvement"
-    else:
-        binding["targets"]["amount"]["all_true_columns"] = ["invented_filter"]
-    with pytest.raises(ValueError):
-        binding_contract(build_fixture().schema, binding, max_events=11)

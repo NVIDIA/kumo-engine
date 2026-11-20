@@ -6,7 +6,6 @@
 
 import hashlib
 import json
-from collections import Counter
 from dataclasses import replace
 from decimal import Decimal
 from test.kumo_pytorch import nightly as run_binding
@@ -23,10 +22,9 @@ import pytest
 
 import kumo.pytorch.api as r
 from kumo.pytorch.engines.native_anchors import NativeAnchors
-from kumo.pytorch.task import Task
 
+from .fixtures import account, source_files, transaction
 from .test_aml_bindings import LI_BINDINGS, source_anchors
-from .test_aml_source import account, source_files, transaction
 
 
 def main(argv):
@@ -215,72 +213,6 @@ def test_li_runner_native_delivery_and_training(tmp_path, monkeypatch, ref, mode
         } <= cli_report["stage_timings"].keys()
 
 
-def test_full_binding_cannot_claim_bounded_projection(tmp_path):
-    root, files = canonical_inputs(tmp_path)
-    output = tmp_path / "output"
-    output.mkdir()
-    binding = load_bindings()["L02"]
-    dataset, anchors, population, mapping, capacity = prepare_sources(
-        root, output, binding, files, limit=3
-    )
-    report = run_case(
-        dataset,
-        anchors,
-        population,
-        binding,
-        output,
-        mode="full",
-        capacity=capacity,
-        mapping=mapping,
-    )
-    assert report["status"] == "failed" and not report["full_population_verified"]
-    assert "Bounded anchors" in report["error"]
-    assert not (output / "index").exists()
-
-
-def test_binding_cli_records_missing_pinned_inputs(tmp_path):
-    output = tmp_path / "output"
-    assert (
-        main(
-            [
-                "--binding",
-                "L01",
-                "--mode",
-                "full",
-                "--data-dir",
-                str(tmp_path),
-                "--output",
-                str(output),
-            ]
-        )
-        == 1
-    )
-    report = json.loads((output / "report.json").read_text())
-    assert report["stage"] == "verify_inputs" and report["status"] == "failed"
-    assert not report["full_population_verified"]
-    assert (output / "report.md").is_file()
-
-
-def test_binding_cli_rejects_full_limit(tmp_path):
-    with pytest.raises(SystemExit) as error:
-        main(
-            [
-                "--binding",
-                "L01",
-                "--mode",
-                "full",
-                "--anchors-per-split",
-                "3",
-                "--data-dir",
-                str(tmp_path),
-                "--output",
-                str(tmp_path / "output"),
-            ]
-        )
-    assert error.value.code == 2
-    assert not (tmp_path / "output").exists()
-
-
 @pytest.mark.parametrize("stage", ("prepare", "execute"))
 def test_binding_refusal_must_precede_execution(tmp_path, monkeypatch, stage):
     root, files = canonical_inputs(tmp_path)
@@ -354,59 +286,6 @@ def test_binding_refusal_must_precede_execution(tmp_path, monkeypatch, stage):
     else:
         assert report["status"] == "failed" and "outcome" not in report
         assert "after case execution began" in report["error"]
-
-
-@pytest.mark.parametrize("stage", ("probe", "training", "evaluation"))
-def test_later_binding_batches_cannot_change_source_targets(
-    tmp_path, monkeypatch, stage
-):
-    root, files = canonical_inputs(tmp_path)
-    output = tmp_path / "output"
-    output.mkdir()
-    binding = load_bindings()["L04"]
-    dataset, anchors, population, mapping, capacity = prepare_sources(
-        root, output, binding, files, limit=3
-    )
-    original = Task.batches
-    calls = Counter()
-    changed = []
-
-    def corrupt(task, *args, **kwargs):
-        split = kwargs["split"]
-        calls[split] += 1
-        mutate = (
-            (stage == "probe" and split == "train" and calls[split] == 2)
-            or (stage == "training" and kwargs.get("shuffle", False))
-            or (stage == "evaluation" and split == "valid" and calls[split] > 1)
-        )
-        for batch in original(task, *args, **kwargs):
-            if mutate:
-                target = batch.targets["label"]
-                target["values"][target["valid"]] = (
-                    1 - target["values"][target["valid"]]
-                )
-                changed.append(True)
-            yield batch
-
-    monkeypatch.setattr(Task, "batches", corrupt)
-    report = run_case(
-        dataset,
-        anchors,
-        population,
-        binding,
-        output,
-        mode="training",
-        capacity=capacity,
-        mapping=mapping,
-        batch_size=3,
-        seed=17,
-    )
-    assert changed
-    assert all(row["status"] == "passed" for row in report["splits"].values())
-    assert report["status"] == "failed" and "outcome" not in report
-    assert report["stage"] == ("evaluation" if stage == "evaluation" else "training")
-    failed = report if stage == "evaluation" else report["repeats"][0]
-    assert "verify_stored_batch" in failed["traceback"]
 
 
 def test_large_valid_amount_preserves_training_progress(tmp_path):

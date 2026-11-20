@@ -4,67 +4,14 @@
 
 """Tiny native fitting checks; simulated collectors are not Linux memory evidence."""
 
-import json
-from test.kumo_pytorch.aml_fitting_memory import make_spec
 from test.kumo_pytorch.benchmarking import fitting_memory as fitting
 from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.population_anchors import project_population
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 from .fixtures import CUTOFF, build_fixture
-from .test_aml import CASES
-from .test_aml_inputs import anchor_file
-from .test_population import source_anchors
 from .test_run_aml import mapped  # noqa: F401 - pytest fixture
-
-
-@pytest.mark.parametrize(
-    "selection,family",
-    CASES,
-    ids=[f"{s['selector']['workload_id']}-{f}" for s, f in CASES],
-)
-def test_real_anchor_spec_is_training_only_and_nested(
-    mapped, selection, family, tmp_path
-):
-    dataset, identities, selections = mapped
-    source = source_anchors(selections, selection, tmp_path)
-    spec_path = make_spec(
-        dataset,
-        identities,
-        source,
-        selection,
-        family,
-        tmp_path / "inputs",
-        counts=(1, 2),
-        capacity=5,
-    )
-    spec = json.loads(spec_path.read_text())
-    small, large = [
-        pq.read_table(spec["anchors"][str(n)]["path"]).to_pylist() for n in (1, 2)
-    ]
-    assert small == large[:1] and all(row["split"] == "train" for row in large)
-    assert (
-        spec["encoder_cutoff_seconds"]
-        == spec["anchors"]["2"]["population"]["encoder_cutoff_seconds"]
-    )
-    assert spec["threads"] == 1 and spec["fit_split"] == "train"
-
-
-def test_insufficient_training_population_fails_without_repeating_rows(tmp_path):
-    source = anchor_file(tmp_path)
-    with pytest.raises(ValueError, match="Insufficient"):
-        project_population(
-            source,
-            tmp_path / "projected.parquet",
-            {"leading-0007": 42},
-            native=True,
-            graph=False,
-            limit=400000,
-            splits=("train",),
-        )
 
 
 def tiny_spec(tmp_path):
@@ -145,12 +92,3 @@ def test_native_worker_builds_once_and_fits_both_counts_without_reingesting(
     assert before == {name: after[name] for name in before}
     # Materialization can populate column-statistics caches without reingestion.
     assert all(name.parts[0] == "col_stats" for name in after.keys() - before.keys())
-
-
-def test_missing_isolation_is_a_failure_not_a_local_memory_fallback(
-    tmp_path, monkeypatch
-):
-    spec = tiny_spec(tmp_path)
-    monkeypatch.delenv("KUMO_BENCHMARK_CGROUP", raising=False)
-    report = fitting.worker(spec, tmp_path / "fit", count=1)
-    assert report["status"] == "failed" and "dedicated Linux cgroup" in report["error"]

@@ -57,7 +57,7 @@ python -m test.kumo_pytorch.nightly plan --seed-start 240 --output /tmp/suite-pl
 ```
 
 Streaming 25B / T01 GraphSAGE real-data campaigns are **on demand only**, including
-for manual full-suite runs. Its fixtures/acquisition checks remain required.
+for manual full-suite runs. Its package fixture checks remain required.
 Use **PyTorch — On-Demand Bindings** with `all`, `smoke`, `training`, `lifecycle`
 or `full`. It reuses the catalog, wheel, worker and reports. The declared runner
 and storage preflight still apply.
@@ -138,13 +138,6 @@ labels or evaluation data, not input features. [Anchor rules](anchors/README.md)
 retain HI Small v2 clocks for GraphSAGE/Combined and v1 for sequence-only models.
 
 ## Tests and workload selections
-
-Harness checks require `pytest>=8,<10` but no AWS/native runtime:
-
-```sh
-python -m pytest -c test/kumo_pytorch/pytest.ini \
-  --confcutdir=test/kumo_pytorch test/kumo_pytorch/checks -q
-```
 
 With the repository's PyTorch environment and a matching DiskGraph build:
 

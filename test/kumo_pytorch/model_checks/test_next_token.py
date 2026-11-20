@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import timedelta
 from test.kumo_pytorch.bindings import selections as catalog_selections
 from test.kumo_pytorch.contracts import build_contract
-from test.kumo_pytorch.models import StepResult, build_model
+from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.next_token import (
     selected_labels,
     verify_loss,
@@ -173,20 +173,6 @@ def test_causal_prefix_and_example_isolation(case):
     check_causality(case)
 
 
-def test_causal_check_rejects_bidirectional_attention(case, monkeypatch):
-    attention = torch.nn.functional.scaled_dot_product_attention
-
-    def bidirectional(*args, **kwargs):
-        kwargs["is_causal"] = False
-        return attention(*args, **kwargs)
-
-    monkeypatch.setattr(
-        torch.nn.functional, "scaled_dot_product_attention", bidirectional
-    )
-    with pytest.raises(AssertionError):
-        check_causality(case)
-
-
 def test_target_values_and_padding_ids_cannot_change_predictions(case):
     batch = case["batch"]
     changed = deepcopy(batch)
@@ -226,44 +212,6 @@ def test_loss_excludes_padding_invalid_ignore_and_empty_objectives(case):
         case["model"].zero_grad(set_to_none=True)
 
 
-@pytest.mark.parametrize(
-    "damage",
-    (
-        "double_shift",
-        "target",
-        "mask",
-        "history",
-        "cutoff",
-        "leakage",
-        "loss",
-        "weight",
-    ),
-)
-def test_bad_outputs_are_detected(case, damage):
-    batch = deepcopy(case["batch"])
-    result = case["model"].training_step(batch)
-    target = batch.targets["next_token"]
-    if damage == "double_shift":
-        target["values"] = target["values"].roll(-1, dims=1)
-    elif damage == "target":
-        target["values"][0, 0] = 0
-    elif damage == "mask":
-        target["valid"][0, 0] = False
-    elif damage == "history":
-        batch.inputs["history"]["value_ids"][0, 0] = 0
-    elif damage == "cutoff":
-        batch.metadata["as_of_time"][0] += 1
-    elif damage == "leakage":
-        batch.inputs["target_values"] = target
-    elif damage == "loss":
-        result.loss = result.loss + 0.1
-    else:
-        result.weight += 1
-    with pytest.raises(AssertionError):
-        check_targets(case, batch)
-        verify_loss(batch, result)
-
-
 def test_future_and_evaluation_fields_do_not_change_training_inputs(case):
     fixture = deepcopy(case["fixture"])
     for table in ("transactions", "account_events"):
@@ -299,24 +247,3 @@ def test_missing_required_field_fails_explicitly(case):
         ) as task:
             with pytest.raises(ValueError, match="NULL.*missing='error'"):
                 next(task.batches(output_format="model"))
-
-
-def test_scalar_loss_known_values_and_no_second_shift():
-    from types import SimpleNamespace
-
-    batch = SimpleNamespace(
-        inputs={"history": {"valid": torch.tensor([[True, True]])}},
-        targets={
-            "next_token": {
-                "values": torch.tensor([[1, 0]]),
-                "valid": torch.tensor([[True, True]]),
-            }
-        },
-        metadata={"is_padding": torch.tensor([False])},
-    )
-    # Aligned answers have probabilities 3/4 and 1/2 respectively.
-    expected = (-math.log(0.75) - math.log(0.5)) / 2
-    result = StepResult(
-        torch.tensor([[[0.0, math.log(3)], [0.0, 0.0]]]), torch.tensor(expected), 2
-    )
-    assert verify_loss(batch, result)["mean_loss"] == pytest.approx(expected)

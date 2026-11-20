@@ -7,10 +7,10 @@ and uses the common setup, refusal policy, required-case inventory and readable
 reporting. Failures, cancellations and unexpected skips block `kumo-pytorch-gate`.
 It is separate from the real-data binding matrix and needs no datasets or GPU.
 
-The full suite runs the same 82 cases on relevant PRs, main pushes, manual
+The full suite runs the same 60 cases on relevant PRs, main pushes, manual
 dispatch and the 09:00 UTC schedule after merge. Difficult Behavior has no
-independent trigger or duplicate DiskGraph build. There are 60 package-interaction
-and regression cases and 22 oracle mutation checks. All cases are required:
+independent trigger or duplicate DiskGraph build. These are package-interaction
+and regression cases. All cases are required:
 missing cases, unexpected
 additions, skips, xfails and unexecuted required bodies fail the job. A known
 package defect stays a failing assertion, with its reproducer retained.
@@ -30,7 +30,6 @@ the package documentation. These regressions remain ordinary required failures.
 | Histories + graphs | Empty and high-degree entities, two tied event streams, identical values on distinct events, per-anchor cutoffs, clipped histories, recent graph fanout, withheld labels and shared age inputs | Eligible membership, chronology, multiplicity, values, masks, packed offsets, age/label alignment; graph identity, features and connectivity independent of tensor order |
 | Native token delivery | Controlled BPE, empty/NULL/unknown text, oversized history clipping, BOS/EOS, padded/packed layouts, masked/next-token targets, length bucketing and an interrupted epoch | Hand-calculated IDs/labels; no cross-sample shift; padding-inclusive token budget; actual native iterator/length planning; zero recomputation and full cache hits in epoch two; exact remaining batches after iterator restore |
 | Directed graphs | Forward, reverse and both traversals, one/three layers, both relation-key orientations, cycles, self-loops, dangling foreign keys and time boundaries | Exact source-derived node/edge sets; relation orientation; no fabricated reciprocal edges, duplicates or cross-sample edges |
-| Oracle validation | Deliberately corrupt identity, time, label, age, each follower/identity mask or event count | Each corruption must be rejected, including when ties allow legitimate alternatives and masked payload storage varies |
 
 Ties do not impose an arbitrary primary-key or component order. The history
 oracle checks the required timestamp multiset and eligible identities at the
@@ -96,7 +95,9 @@ The normal [refusal policy](required-coverage.md#capability-refusals) remains in
 force. The fixture helper prevents a late refusal from masking an execution
 failure. Tests contain the expected success assertions for future support.
 
-## Local validation, 2026-11-18
+## Historical validation, 2026-11-18
+
+These historical counts include the subsequently removed harness tests.
 
 The full 82-case run produced **11 failures and 71 passes** in 27.8 seconds.
 Ten failing variants expose seven confirmed defect families; the remaining

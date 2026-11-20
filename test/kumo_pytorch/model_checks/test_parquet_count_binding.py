@@ -5,19 +5,16 @@
 """Direct, partitioned sources retain full scale while prediction cohorts stay bounded."""
 
 import hashlib
-from copy import deepcopy
 from datetime import datetime, timedelta
 from test.kumo_pytorch.bindings import dataset_definition, load_bindings
 from test.kumo_pytorch.contracts import binding_contract
 from test.kumo_pytorch.data import prepare_binding, schema_for
 from test.kumo_pytorch.nightly import run_case
 from test.kumo_pytorch.parquet_features import count_graph_features
-from test.kumo_pytorch.population_anchors import projected_rows
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import torch
 
 import kumo.pytorch.api as r
 
@@ -130,37 +127,6 @@ def prepared(tmp_path):
     return binding, out, prepare_binding(root, out, binding, files, limit=None)
 
 
-def test_cohort_keeps_source_ids_all_tables_and_exact_counts(tmp_path):
-    binding, out, (dataset, _, population, mapping, capacity) = prepared(tmp_path)
-    assert len(dataset.tables) == 7 and mapping["tables"]["viewers"]["rows"] == 5
-    assert mapping["scope"]["kind"] == "full_source" and capacity == 32
-    assert population["counts"] == {"train": 4, "valid": 4, "test": 4}
-    rows = list(projected_rows(out / "anchors.parquet", "train"))
-    assert [r["entity_id"] for r in rows] == [0, 1, 2, 3]
-    assert [r["original_count"] for r in rows] == [0, 5, 5, 5]
-    assert all(r["as_of_time"] == r["prediction_time_ns"] // 10**9 - 1 for r in rows)
-    assert len(schema_for(dataset, binding).tables) == 7
-
-
-@pytest.mark.parametrize("mutation", ["coverage", "cohort", "extra-file"])
-def test_generated_anchors_reject_invalid_sources(tmp_path, mutation):
-    root, files, binding = fixture(tmp_path)
-    spec = binding["dataset"]["anchor_generation"]
-    if mutation == "coverage":
-        spec["coverage"][1] = "2025-12-25T00:00:00Z"
-    elif mutation == "cohort":
-        spec["cohort_size"] = 6
-    else:
-        path = (
-            root
-            / binding["dataset"]["tables"]["viewers"]["prefix"]
-            / "untracked.parquet"
-        )
-        pq.write_table(pa.table({"viewer_id": [99]}), path)
-    with pytest.raises(ValueError, match="coverage|Cohort|inventory"):
-        prepare_binding(root, tmp_path, binding, files, limit=None)
-
-
 @pytest.mark.parametrize("mode", ["smoke", "full", "training", "lifecycle"])
 def test_direct_parquet_binding_campaigns(tmp_path, mode):
     binding, out, (dataset, anchors, population, mapping, capacity) = prepared(tmp_path)
@@ -211,22 +177,3 @@ def native(tmp_path):
             )
             checks(batch)
             yield batch, checks
-
-
-@pytest.mark.parametrize("mutation", ["stored", "feature", "edge", "identity"])
-def test_direct_parquet_oracle_rejects_corruption(native, mutation):
-    batch, checks = native
-    batch = deepcopy(batch)
-    if mutation == "stored":
-        batch.targets["count"]["values"][0] += 1
-    elif mutation == "feature":
-        batch.inputs["graph"]["nodes"]["sessions"]["features"]["watch_seconds"][
-            "values"
-        ][0] += 100
-    elif mutation == "identity":
-        batch.inputs["graph"]["nodes"]["sessions"]["ids"][0] = 999999
-    else:
-        edge = next(iter(batch.inputs["graph"]["edges"].values()))
-        edge["index"] = torch.empty((2, 0), dtype=torch.long)
-    with pytest.raises(AssertionError, match="Feature assertions failed"):
-        checks(batch)

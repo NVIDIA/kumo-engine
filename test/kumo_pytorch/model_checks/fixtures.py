@@ -10,9 +10,14 @@ features use native relations; no sender/receiver indicator columns are added.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 def probe_anchor_table(plan, expected):
@@ -279,3 +284,53 @@ def verify_sweep_targets(
         [by_id[sid] for sid in batch.metadata["sample_ids"]],
         state,
     )
+
+
+def account(bank, number, variant="hi-small"):
+    return json.dumps([variant, "account", str(bank), number], separators=(",", ":"))
+
+
+def transaction(**overrides):
+    row = {
+        "timestamp": "2022/09/01 00:20",
+        "from_bank": "001",
+        "from_account": "0007",
+        "to_bank": "2",
+        "to_account": "0008",
+        "amount_paid": "12.1234567890",
+        "payment_currency": "USD",
+        "amount_received": "10.0000000001",
+        "receiving_currency": "EUR",
+        "payment_format": "Wire",
+        "is_laundering": "DO_NOT_READ",
+    }
+    return {**row, **overrides}
+
+
+def source_files(tmp_path, rows=None, members=None):
+    tx, binding = tmp_path / "source.parquet", tmp_path / "binding.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            rows if rows is not None else [transaction()],
+            schema=pa.schema([pa.field(name, pa.string()) for name in transaction()]),
+        ),
+        tx,
+        row_group_size=2,
+    )
+    members = (
+        members if members is not None else [account(1, "0007"), account(2, "0008")]
+    )
+    pq.write_table(
+        pa.table(
+            {
+                "entity_id": members,
+                "first_observed_time": [datetime(2022, 9, 1)] * len(members),
+            }
+        ),
+        binding,
+    )
+    checksums = {
+        "transactions": hashlib.sha256(tx.read_bytes()).hexdigest(),
+        "accounts_binding": hashlib.sha256(binding.read_bytes()).hexdigest(),
+    }
+    return tx, binding, checksums

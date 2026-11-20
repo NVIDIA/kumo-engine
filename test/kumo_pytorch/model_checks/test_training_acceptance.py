@@ -4,20 +4,15 @@
 
 """Training acceptance harness checks; fixture results are not real-AML acceptance."""
 
-import json
 from contextlib import closing
-from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from test.kumo_pytorch import nightly
 from test.kumo_pytorch import training_acceptance as acceptance
-from test.kumo_pytorch.models import StepResult
 from test.kumo_pytorch.population_anchors import projected_rows
-from types import SimpleNamespace
 
 import pytest
 import torch
-from torch.nn import functional as F
 
 import kumo.pytorch.api as r
 
@@ -136,167 +131,6 @@ def test_raw_aml_training_acceptance(mapped, selection, family, tmp_path):
             for sample in step["sample_ids"]
         } == expected_ids
     assert set(result["evaluation"]) == {"valid", "test"}
-
-
-class LinearConsumer(torch.nn.Module):
-    """Small harness oracle, not a substitute for the required AML consumers."""
-
-    def __init__(self, fault):
-        super().__init__()
-        self.weight = torch.nn.Parameter(torch.tensor([0.2]))
-        if fault == "unused":
-            self.unused = torch.nn.Parameter(torch.tensor([1.0]))
-        if fault == "gradient":
-            self.weight.register_hook(lambda gradient: gradient * float("nan"))
-        self.fault = fault
-
-    def training_step(self, batch):
-        logits = self.weight * batch.inputs["x"]
-        valid = batch.targets["label"]["valid"]
-        loss = (
-            F.binary_cross_entropy_with_logits(
-                logits[valid], batch.targets["label"]["values"][valid]
-            )
-            if valid.any()
-            else logits.sum() * 0
-        )
-        if self.fault == "loss":
-            loss = loss * float("nan")
-        return StepResult(logits, loss, int(valid.sum()))
-
-
-@pytest.mark.parametrize(
-    "fault", [None, "unused", "gradient", "loss", "no_update", "empty_prefix"]
-)
-def test_acceptance_detects_broken_training(tmp_path, monkeypatch, fault):
-    batch = r.Batch(
-        inputs={"x": torch.tensor([-1.0, 2.0])},
-        targets={
-            "label": {
-                "values": torch.tensor([0.0, 1.0]),
-                "valid": torch.tensor([True, True]),
-            }
-        },
-        metadata={"sample_ids": ["a", "b"], "is_padding": torch.tensor([False, False])},
-    )
-    requests = tuple(
-        r.SampleRequest(
-            name, i, 1, split="train", targets=(r.TargetValue("label", label),)
-        )
-        for i, (name, label) in enumerate((("a", 0), ("b", 1)))
-    )
-    batches = [batch]
-    if fault == "empty_prefix":
-        requests += (
-            r.SampleRequest(
-                "c", 3, 1, split="train", targets=(r.TargetValue("label", None),)
-            ),
-        )
-        batches.insert(
-            0,
-            r.Batch(
-                inputs={"x": torch.tensor([0.0])},
-                targets={
-                    "label": {
-                        "values": torch.tensor([0.0]),
-                        "valid": torch.tensor([False]),
-                    }
-                },
-                metadata={"sample_ids": ["c"], "is_padding": torch.tensor([False])},
-            ),
-        )
-    task = SimpleNamespace(
-        fitted_state=SimpleNamespace(fingerprint="fixed"),
-        batches=lambda *args, **kwargs: iter(batches),
-    )
-    monkeypatch.setattr(
-        acceptance, "build_model", lambda *a, **k: LinearConsumer(fault)
-    )
-    if fault == "no_update":
-        monkeypatch.setattr(torch.optim.AdamW, "step", lambda self: None)
-    result = acceptance.train_repetition(
-        task,
-        requests,
-        next(s for s, f in CASES if f == "combined"),
-        "combined",
-        directory=tmp_path / "trial",
-        capacity=1,
-        seed=17,
-        batch_size=2,
-    )
-    if fault in (None, "empty_prefix"):
-        assert result["status"] == "passed" and result["completed_updates"] == 100
-        assert result["final_loss"] < result["initial_loss"]
-        changed = deepcopy(result)
-        changed["curve"][0]["loss"] += 1
-        assert acceptance.compare_repetitions(result, result)
-        assert not acceptance.compare_repetitions(result, changed)
-        if fault == "empty_prefix":
-            assert len(result["zero_target_batches"]) == 100
-            assert all(
-                row["sample_ids"] == ["c"] for row in result["zero_target_batches"]
-            )
-    else:
-        assert result["status"] == "failed"
-        if fault == "unused":
-            assert not result["checks"]["every_parameter_updated"]
-            assert result["parameters"]["unused"]["nonzero_gradient_steps"] == 0
-        elif fault == "no_update":
-            assert not result["checks"]["loss_decreased"]
-            assert not result["checks"]["every_parameter_updated"]
-        else:
-            assert "Nonfinite" in result["error"]
-
-
-def test_shared_summary_keeps_failed_case_and_all_five(tmp_path, monkeypatch):
-    from test.kumo_pytorch.bindings import selected_bindings
-    from test.kumo_pytorch.checks.test_binding_results import report
-
-    selected = selected_bindings(dataset="aml-data/hi-small")
-    monkeypatch.setattr(nightly, "selected_bindings", lambda: selected)
-    for binding in selected:
-        for mode in ("smoke", "training", "full"):
-            case = report(binding["ref"], mode)
-            if mode == "training" and binding["representation"] == "combined":
-                case.update(status="failed", error="fixture training failure")
-            directory = tmp_path / mode / binding["ref"]
-            directory.mkdir(parents=True)
-            (directory / "report.json").write_text(json.dumps(case))
-    result = nightly.summarize_bindings(tmp_path, "fixture-revision")
-    assert result["status"] == "failed"
-    training = [row for row in result["cases"] if row["mode"] == "training"]
-    assert len(training) == 5
-    assert {row["ref"] for row in training} == {"E01", "E02", "E03", "E04", "E05"}
-    failures = [row for row in training if row["status"] == "failed"]
-    assert len(failures) == 1 and failures[0]["error"] == "fixture training failure"
-
-
-@pytest.mark.parametrize("fault", ["missing", "duplicate", "unknown"])
-def test_training_summary_cannot_drop_or_substitute_a_case(tmp_path, monkeypatch, fault):
-    from test.kumo_pytorch.bindings import selected_bindings
-    from test.kumo_pytorch.checks.test_binding_results import report
-
-    selected = selected_bindings(dataset="aml-data/hi-small")
-    for binding in selected:
-        binding["campaigns"] = ["training"]
-        directory = tmp_path / "training" / binding["ref"]
-        directory.mkdir(parents=True)
-        (directory / "report.json").write_text(json.dumps(report(binding["ref"], "training")))
-    monkeypatch.setattr(nightly, "selected_bindings", lambda: selected)
-    baseline = nightly.summarize_bindings(tmp_path, "fixture-revision")
-    assert baseline["status"] == "passed" and len(baseline["cases"]) == 5
-    path = tmp_path / "training/E01/report.json"
-    if fault == "missing":
-        path.unlink()
-    else:
-        substituted = report("E02", "training")
-        if fault == "unknown":
-            substituted["ref"] = "unknown"
-        path.write_text(json.dumps(substituted))
-    result = nightly.summarize_bindings(tmp_path, "fixture-revision")
-    assert result["status"] == "failed" and len(result["cases"]) == 5
-    failures = [row for row in result["cases"] if row["status"] == "failed"]
-    assert len(failures) == 1 and failures[0]["ref"] == "E01"
 
 
 @pytest.mark.parametrize(

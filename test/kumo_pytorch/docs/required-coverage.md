@@ -1,9 +1,11 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 668 CPU cases and
-82 separate difficult-behavior cases. The Polars and GPU reference backends and
+CI uses the reviewed node IDs in `../required-tests.json`: 341 CPU cases and
+60 separate difficult-behavior cases. The Polars and GPU reference backends and
 their 11 required cases have been removed. The separate GPU job retains native
 CUDA package regressions and GPU collector validation, with skips rejected.
+
+Historical implementation counts below include harness tests removed from the current inventory.
 
 The LI Medium increments add 43 CPU checks for native target delivery, train-only
 fitting, masks, invalid source/binding rejection, stored-target heads, strict

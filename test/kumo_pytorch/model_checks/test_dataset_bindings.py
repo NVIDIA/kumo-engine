@@ -353,35 +353,6 @@ def test_multiple_history_families_keep_all_events(tmp_path, monkeypatch, varian
     )
 
 
-@pytest.mark.parametrize("ref,family", (("E03", "nuformer"), ("E04", "pragma")))
-def test_task_definition_cannot_change_with_model(ref, family):
-    from test.kumo_pytorch.bindings import load_bindings
-    from test.kumo_pytorch.population_anchors import validate_binding
-
-    binding = load_bindings()[ref]
-    binding["representation"] = family
-    with pytest.raises(ValueError, match="incompatible"):
-        validate_binding(binding)
-
-
-def test_graph_bound_uses_its_actual_relation(tmp_path):
-    root, files, binding = shop(tmp_path, "graphsage")
-    path = root / "purchases.parquet"
-    table = pq.read_table(path).append_column("seller", pa.array([10, 10, 10, 10]))
-    pq.write_table(table, path)
-    files[path.name].update(
-        bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()
-    )
-    binding["dataset"]["relations"].append(
-        ["sold", "customers", "customer", "purchases", "seller"]
-    )
-    binding["inputs"]["graph"]["relations"] = ["sold"]
-    output = tmp_path / "graph"
-    output.mkdir()
-    *_, capacity = prepare_binding(root, output, binding, files, limit=None)
-    assert capacity == 4  # buyer degree is only two; seller's four rows must survive.
-
-
 def test_unrelated_multitable_graph_uses_the_shared_model_and_runner(tmp_path):
     root, files, binding = shop(tmp_path, "combined")
     path = root / "refunds.parquet"

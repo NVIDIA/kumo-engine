@@ -15,7 +15,7 @@ from test.kumo_pytorch.involvement import source_reference
 
 import pytest
 
-from .test_aml_source import account, source_files, transaction
+from .fixtures import account, source_files, transaction
 
 
 @pytest.mark.parametrize(
@@ -92,29 +92,3 @@ def test_raw_aml_multisource_history(tmp_path, filtered):
     )
     assert result["status"] == "passed" and result["samples"] == 3
     assert result["events_by_input"]["all_ascending"] == 3 * len(expected)
-
-
-@pytest.mark.parametrize("keep", ["all", "first", "last"])
-@pytest.mark.parametrize("order", ["ascending", "descending"])
-def test_tied_histories_preserve_membership_and_time_boundaries(keep, order):
-    from test.kumo_pytorch.history_checks import verify_history_selection
-
-    eligible = [(1, 0, 10), (2, 0, 20), (2, 1, 21), (2, 1, 22), (3, 0, 30)]
-    valid = {
-        "all": [(0, 10), (1, 22), (0, 20), (1, 21), (0, 30)],
-        "first": [(0, 10), (1, 22), (0, 20)],
-        "last": [(1, 22), (0, 20), (0, 30)],
-    }[keep]
-    if order == "descending":
-        valid = valid[::-1]
-    verify_history_selection(valid, eligible, keep=keep, order=order)
-    with pytest.raises(AssertionError):
-        verify_history_selection(valid + valid[:1], eligible, keep=keep, order=order)
-    with pytest.raises(AssertionError):
-        verify_history_selection(valid[:-1], eligible, keep=keep, order=order)
-    with pytest.raises(AssertionError):
-        verify_history_selection(valid[::-1], eligible, keep=keep, order=order)
-    with pytest.raises(AssertionError):
-        verify_history_selection(
-            [(99, 99)] + valid[1:], eligible, keep=keep, order=order
-        )

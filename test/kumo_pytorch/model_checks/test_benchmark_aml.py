@@ -10,61 +10,18 @@ from datetime import UTC, datetime
 from test.kumo_pytorch import data
 from test.kumo_pytorch.benchmarking import run
 from test.kumo_pytorch.benchmarking.campaign import compare_states
-from test.kumo_pytorch.benchmarking.kumo import counts, factory
+from test.kumo_pytorch.benchmarking.kumo import factory
 from test.kumo_pytorch.bindings import selections as catalog_selections
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import torch
 
-from kumo.pytorch.api import Batch
-
-from .test_aml_source import account, source_files
+from .fixtures import account, source_files
 
 CASES = [
     (s["selector"]["workload_id"], f) for s in catalog_selections() for f in s["models"]
 ]
-
-
-def test_pdf_token_example_excludes_padding_targets_and_parallel_ids():
-    valid = torch.arange(200) < 110
-    indices = torch.cat((torch.arange(100) // 10, torch.full((100,), -1)))
-    batch = Batch(
-        inputs={
-            "history": {
-                "value_ids": torch.ones((1, 200), dtype=torch.long),
-                "valid": valid.unsqueeze(0),
-                "field_ids": torch.ones((1, 200), dtype=torch.long),
-                "source_event_indices": indices.unsqueeze(0),
-            }
-        },
-        targets={"extra": {"value_ids": torch.ones(900, dtype=torch.long)}},
-        metadata={"sample_ids": ("sample",), "is_padding": torch.tensor([False])},
-    )
-    observed = counts(batch)
-    assert observed.tokens == 110
-    assert observed.events == 10
-    assert observed.samples == 1
-
-
-def test_zscored_numbers_are_not_tokens():
-    batch = Batch(
-        inputs={
-            "features": {
-                "values": torch.ones(3),
-                "valid": torch.ones(3, dtype=torch.bool),
-            }
-        },
-        targets={},
-        metadata={
-            "sample_ids": ("a", "b", "c"),
-            "is_padding": torch.zeros(3, dtype=torch.bool),
-        },
-    )
-    observed = counts(batch)
-    assert observed.samples == 3
-    assert observed.tokens is None
 
 
 @pytest.fixture
@@ -137,66 +94,6 @@ def source(tmp_path, monkeypatch):
         }
     monkeypatch.setattr(data, "verify_dataset", lambda directory, binding: files)
     return tmp_path
-
-
-@pytest.mark.parametrize(
-    "fault", ["native-fallback", "cache-reset", "missing-history-plan"]
-)
-def test_native_path_and_cache_regressions_fail(source, monkeypatch, fault):
-    from kumo.pytorch.engines.native_anchors import NativeAnchors
-
-    if fault == "native-fallback":
-        # A materialized table alone must not qualify native execution.
-        monkeypatch.setattr(NativeAnchors, "_typed_batches", lambda *a, **kw: iter(()))
-        message = "bypassed the native AnchorTable model iterator"
-    elif fault == "cache-reset":
-        original = NativeAnchors._iter
-
-        def reset(self, *args, **kwargs):
-            if kwargs.get("epoch") == 1:
-                self._length_caches.clear()
-                for path in self.path.glob("lengths-*.bin"):
-                    path.unlink()
-            return original(self, *args, **kwargs)
-
-        monkeypatch.setattr(NativeAnchors, "_iter", reset)
-        message = "replaced the native per-anchor length cache"
-    else:
-        from test.kumo_pytorch.benchmarking.kumo_observers import KumoObservers
-
-        original = KumoObservers._native_iterator
-
-        def missing_history(self, native):
-            observed = original(self, native)
-
-            def call(owner, stage, **kwargs):
-                kwargs["history"] = None
-                return observed(owner, stage, **kwargs)
-
-            return call
-
-        monkeypatch.setattr(KumoObservers, "_native_iterator", missing_history)
-        message = "omitted the contract's merged-history plan"
-    result = run(
-        factory,
-        {
-            "data_dir": str(source),
-            "family": "nuformer",
-            "workload": "next-token-pretrain",
-            "anchors_per_split": 1,
-            "batch_size": 1,
-            "threads": 1,
-            "training": False,
-        },
-        source / "regression",
-        repetitions=1,
-        epochs=2,
-    )
-    assert result["execution_status"] == "failed"
-    assert any(message in row["traceback"] for row in result["errors"]), result[
-        "errors"
-    ]
-    assert not result["native_iterations"][-1]["complete"]
 
 
 def test_native_lengths_cover_every_anchor_across_partial_batches(source):

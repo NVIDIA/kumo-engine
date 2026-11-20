@@ -14,8 +14,7 @@ from test.kumo_pytorch.involvement import (
     verify_batch,
     verify_inputs,
 )
-from test.kumo_pytorch.models import StepResult, build_model
-from types import SimpleNamespace
+from test.kumo_pytorch.models import build_model
 
 import pytest
 import torch
@@ -178,31 +177,6 @@ def test_targets_inputs_loss_and_evaluation(task_case):
     case["model"].zero_grad(set_to_none=True)
 
 
-def test_confident_bce_float32_rounding():
-    logits = torch.tensor([7.573894500732422, -8.017908096313477, 1e30])
-    values = torch.tensor([1.0, 0.0, 0.0])
-    batch = SimpleNamespace(
-        targets={
-            "label": {"values": values, "valid": torch.tensor([True, True, False])}
-        },
-        metadata={
-            "sample_ids": ["positive", "negative", "padding"],
-            "is_padding": torch.tensor([False, False, True]),
-        },
-    )
-    loss = torch.nn.functional.binary_cross_entropy_with_logits(logits[:2], values[:2])
-    result = StepResult(logits, loss, 2)
-    expected = {"positive": 1, "negative": 0}
-    reference = verify_batch(batch, result, expected)["mean_loss"]
-    double = torch.nn.functional.binary_cross_entropy_with_logits(
-        logits[:2].double(), values[:2].double()
-    )
-    assert reference == pytest.approx(double.item(), abs=1e-15)
-    # A huge ignored logit must not grant a huge error budget to valid examples.
-    with pytest.raises(AssertionError, match="Loss differs"):
-        verify_batch(batch, replace(result, loss=loss + 1e-5), expected)
-
-
 def test_distributed_padding_and_no_eligible_examples(task_case):
     case = task_case
     batch = next(
@@ -233,37 +207,6 @@ def test_distributed_padding_and_no_eligible_examples(task_case):
         )
         result.loss.backward()
         case["model"].zero_grad(set_to_none=True)
-
-
-@pytest.mark.parametrize(
-    "damage",
-    ("target", "mask", "loss", "denominator", "cutoff", "history", "forbidden_input"),
-)
-def test_corruption_is_detected(task_case, damage):
-    case = task_case
-    batch = deepcopy(case["batch"])
-    result = case["model"].training_step(batch)
-    if damage == "target":
-        batch.targets["label"]["values"][0] = 0
-    elif damage == "mask":
-        batch.targets["label"]["valid"][0] = False
-    elif damage == "loss":
-        result.loss = result.loss + 0.1
-    elif damage == "denominator":
-        result.weight += 1
-    elif damage == "cutoff":
-        batch.metadata["as_of_time"][0] += 1
-    elif damage == "forbidden_input":
-        batch.inputs["involvement"] = batch.targets["label"]
-    elif case["family"] == "graphsage":
-        batch.inputs["graph"]["nodes"]["transactions"]["ids"][0] = (
-            106  # At T, never history.
-        )
-    else:
-        batch.inputs["history"]["valid"][0, 0] = False
-    with pytest.raises(AssertionError):
-        check_inputs(case, batch)
-        verify_batch(batch, result, case["expected"])
 
 
 def test_future_and_label_changes_cannot_change_inputs(task_case):

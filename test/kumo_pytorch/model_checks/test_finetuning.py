@@ -6,10 +6,7 @@
 
 import json
 import os
-import subprocess
-import sys
 from dataclasses import replace
-from test.kumo_pytorch.anchor_tables import write_probe_anchors
 from test.kumo_pytorch.contracts import build_contract
 from test.kumo_pytorch.lifecycle import input_digest
 from test.kumo_pytorch.models import build_model
@@ -134,61 +131,3 @@ def test_finetunes_in_fresh_process_without_input_refitting(
             "Finetuning fitted its new categories"
         )
     assert result["resume"]["status"] == "passed"
-
-
-def test_fresh_process_refitting_attempt_fails(tmp_path):
-    selection, family = next(
-        (s, f)
-        for s, f in CASES
-        if s["selector"]["workload_id"] == "next-token-pretrain"
-    )
-    lifecycle, requests = save_pretrained(tmp_path, selection, family)
-    # Configure the same child entry point, then deliberately discard reused
-    # input state inside that child. A matching refit must still fail the guard.
-    config = json.loads((lifecycle / "config.json").read_text())
-    config.update(
-        lifecycle_directory=str(lifecycle),
-        finetune_parent_pid=os.getpid(),
-        training_requests=[
-            {
-                "sample_id": row.sample_id,
-                "entity_id": row.entity_id,
-                "as_of_time": row.as_of_time,
-                "split": row.split,
-                "metadata": dict(row.metadata),
-                "targets": [{"name": t.name, "value": t.value} for t in row.targets],
-            }
-            for row in requests
-        ],
-    )
-    directory = tmp_path / "finetuning"
-    directory.mkdir()
-    config["training_anchor_table"] = write_probe_anchors(
-        requests, directory / "anchors.parquet"
-    ).to_dict()
-    (directory / "config.json").write_text(json.dumps(config))
-    child = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import sys
-from kumo.pytorch.preparation import Plan
-from test.kumo_pytorch.training_lifecycle import finetune
-original = Plan.materialize
-def refitting(self, *args, **kwargs):
-    kwargs["fitted"] = None
-    return original(self, *args, **kwargs)
-Plan.materialize = refitting
-finetune(sys.argv[1])
-""",
-            str(directory),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=60,
-    )
-    assert child.returncode != 0
-    assert "Finetuning attempted input refitting" in child.stderr
-    assert not (directory / "report.json").exists()

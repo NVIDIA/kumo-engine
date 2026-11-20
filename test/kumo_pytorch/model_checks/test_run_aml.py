@@ -25,7 +25,7 @@ import torch
 
 import kumo.pytorch.api as r
 
-from .test_aml_source import account, source_files, transaction
+from .fixtures import account, source_files, transaction
 
 
 @pytest.fixture(scope="module")

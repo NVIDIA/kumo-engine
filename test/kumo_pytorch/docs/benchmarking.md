@@ -402,17 +402,14 @@ the fixture's overall benchmark report correctly remains incomplete.
 
 ## Validation
 
-Dependency-free runner/report checks join the existing nightly tooling job;
-Kumo adapter checks join its existing model-check job. The PR trigger is unchanged.
+Native Kumo adapter checks run in the existing model-check job. The PR trigger is unchanged.
 
 ```sh
-python -m pytest -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
-  test/kumo_pytorch/checks/test_benchmark.py -q
 python -m pytest -c test/kumo_pytorch/pytest.ini --confcutdir=test/kumo_pytorch \
   test/kumo_pytorch/model_checks/test_benchmark_kumo.py -q
 ```
 
-The second command requires compatible Kumo/DiskGraph and PyTorch dependencies.
+The command requires compatible Kumo/DiskGraph and PyTorch dependencies.
 No datasets or remote services are required by these fixtures. CPU validation
 does not establish GPU measurement correctness.
 

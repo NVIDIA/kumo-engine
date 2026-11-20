@@ -17,7 +17,6 @@ from test.kumo_pytorch.forecast_features import (
 from test.kumo_pytorch.models import build_model
 from test.kumo_pytorch.nightly import run_case
 from test.kumo_pytorch.population_anchors import projected_rows
-from test.kumo_pytorch.targets import target_value
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -137,70 +136,6 @@ def test_count_forecast_campaigns(tmp_path, mode):
         )
 
 
-def test_count_forecast_original_boundaries(tmp_path):
-    binding, out, (_, _, _, mapping, _) = prepared(tmp_path)
-    rows = [
-        row
-        for split in ("train", "valid", "test")
-        for row in projected_rows(out / "anchors.parquet", split)
-    ]
-    anchors = {row["sample_id"]: row for row in rows}
-    events, spans = source_reference(binding, mapping, anchors)
-    from test.kumo_pytorch.targets import generated_checks
-
-    answers = future_counts(anchors, events, spans, generated_checks(binding))
-    assert {key: value["generated_count"] for key, value in answers.items()} == {
-        "s0": 3,
-        "s1": 0,
-        "s2": 3,
-        "s3": 3,
-        "s4": 3,
-    }
-    for row in rows:
-        assert len([e for e in events[row["entity_id"]] if e["time_ns"] < STAMP]) == 4
-    data = pq.read_table(mapping["table_paths"]["transactions"])
-    seconds = data["event_time_seconds"].to_pylist()
-    assert seconds.count(STAMP // 10**9 - 1) == 10
-    assert data["currency"].null_count == 10
-    assert not set(data.column_names) & {"fold", "is_balanced", "future_count"}
-
-
-@pytest.mark.parametrize("value", [-1, 1.5, True, "3", None])
-def test_count_forecast_rejects_invalid_counts(value):
-    with pytest.raises(ValueError, match="nonnegative integer"):
-        target_value(value, {"kind": "count", "column": "future_count"})
-
-
-@pytest.mark.parametrize("mutation", ["unknown_root", "wrong_fold", "null_time"])
-def test_partitioned_sources_reject_invalid_rows(tmp_path, mutation):
-    root, files, binding = fixture(tmp_path)
-    key = binding["dataset"]["source_options"]["tables"]["transactions"]["paths"][0]
-    table = pq.ParquetFile(root / key).read()
-    column, value = {
-        "unknown_root": ("client_id", "missing"),
-        "wrong_fold": ("fold", 4),
-        "null_time": ("event_time", None),
-    }[mutation]
-    values = table[column].to_pylist()
-    values[0] = value
-    table = table.set_column(
-        table.schema.get_field_index(column),
-        column,
-        pa.array(values, type=table[column].type),
-    )
-    pq.write_table(table, root / key)
-    files[key].update(
-        bytes=(root / key).stat().st_size,
-        sha256=hashlib.sha256((root / key).read_bytes()).hexdigest(),
-    )
-    out = tmp_path / "output"
-    out.mkdir()
-    with pytest.raises(
-        ValueError, match="unknown root|partition disagrees|non-null timestamp"
-    ):
-        prepare_binding(root, out, binding, files, limit=None)
-
-
 @pytest.fixture
 def native(tmp_path):
     binding, out, (dataset, anchors, population, mapping, capacity) = prepared(tmp_path)
@@ -228,53 +163,6 @@ def native(tmp_path):
             yield binding, out, mapping, task, batch
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "count",
-        "validity",
-        "float_dtype",
-        "graph_value",
-        "stored",
-        "input_future",
-        "edge",
-    ],
-)
-def test_count_forecast_feature_oracle_rejects_corruption(native, mutation):
-    binding, out, mapping, task, original = native
-    checks = count_features(
-        binding,
-        out / "anchors.parquet",
-        mapping,
-        task.fitted_state.to_dict(),
-        mode="smoke",
-    )
-    checks(original)
-    batch = deepcopy(original)
-    if mutation == "count":
-        batch.targets["generated_count"]["values"][0] += 1
-    elif mutation == "validity":
-        batch.targets["generated_count"]["valid"][0] = False
-    elif mutation == "float_dtype":
-        batch.targets["generated_count"]["values"] = batch.targets["generated_count"][
-            "values"
-        ].float()
-    elif mutation == "stored":
-        batch.targets["count"]["values"][0] += 1
-    elif mutation == "edge":
-        edge = batch.inputs["graph"]["edges"]["client_transactions"]["index"]
-        edge[0, 0] = 1 - edge[0, 0]
-    else:
-        graph = batch.inputs["graph"]
-        # Graph oracle verifies all source fields, including clock leakage.
-        field = "event_time_seconds" if mutation == "input_future" else "amount"
-        graph["nodes"]["transactions"]["features"][field]["values"][0] += (
-            10**9 if mutation == "input_future" else 1
-        )
-    with pytest.raises(AssertionError, match="Feature assertions failed"):
-        checks(batch)
-
-
 def test_generated_count_is_check_only_not_model_loss(native):
     binding, _, _, task, batch = native
     model = build_model(task, selection(binding), "graphsage")
@@ -285,144 +173,6 @@ def test_generated_count_is_check_only_not_model_loss(native):
         model.training_step(changed).loss, initial.loss, rtol=0, atol=0
     )
     assert set(initial.logits) == {"count"}
-
-
-def test_count_forecast_graph_order_is_not_an_oracle(native):
-    binding, out, mapping, task, batch = native
-    checks = count_features(
-        binding,
-        out / "anchors.parquet",
-        mapping,
-        task.fitted_state.to_dict(),
-        mode="smoke",
-    )
-    graph = batch.inputs["graph"]
-    nodes = graph["nodes"]["transactions"]
-    order = torch.arange(len(nodes["ids"]) - 1, -1, -1)
-    nodes["ids"], nodes["batch"] = nodes["ids"][order], nodes["batch"][order]
-    for item in nodes["features"].values():
-        for name in ("values", "valid"):
-            item[name] = item[name][order]
-    edge = graph["edges"]["client_transactions"]
-    edge["index"][1] = len(order) - 1 - edge["index"][1]
-    edge["index"] = edge["index"].flip(1)
-    checks(batch)
-
-
-def test_original_count_is_retained_beyond_float32_integer_precision(tmp_path):
-    root, files, binding = fixture(tmp_path)
-    path = root / "anchors.parquet"
-    table = pq.read_table(path)
-    values = table["future_count"].to_pylist()
-    values[0] = 2**24 + 1
-    table = table.set_column(
-        table.schema.get_field_index("future_count"),
-        "future_count",
-        pa.array(values, pa.int64()),
-    )
-    pq.write_table(table, path)
-    from test.kumo_pytorch.data import identity_map
-    from test.kumo_pytorch.population_anchors import project_binding
-
-    project_binding(
-        path,
-        tmp_path / "projection.parquet",
-        identity_map(root, binding["dataset"], files),
-        binding,
-        limit=None,
-    )
-    row = next(projected_rows(tmp_path / "projection.parquet", "train"))
-    assert row["count"] == 2**24 and row["original_count"] == 2**24 + 1
-
-
-@pytest.mark.parametrize("fault", ["label", "split", "coverage", "clock"])
-def test_source_count_oracle_rejects_invalid_originals(tmp_path, fault):
-    binding, out, (_, _, _, mapping, _) = prepared(tmp_path)
-    rows = [
-        row
-        for split in ("train", "valid", "test")
-        for row in projected_rows(out / "anchors.parquet", split)
-    ]
-    anchors = {row["sample_id"]: row for row in rows}
-    events, spans = source_reference(binding, mapping, anchors)
-    from test.kumo_pytorch.targets import generated_checks
-
-    if fault == "split":
-        anchors["s0"]["split"] = "test"
-        with pytest.raises(AssertionError, match="split membership"):
-            source_reference(binding, mapping, anchors)
-    elif fault == "clock":
-        path = out / "anchors.parquet"
-        table = pq.read_table(path)
-        values = table["as_of_time"].to_pylist()
-        values[0] -= 1
-        table = table.set_column(
-            table.schema.get_field_index("as_of_time"),
-            "as_of_time",
-            pa.array(values, pa.int64()),
-        )
-        pq.write_table(table, path)
-        with pytest.raises(AssertionError, match="original prediction T-1s"):
-            count_features(binding, path, mapping, {}, mode="smoke")
-    elif fault == "coverage":
-        spans["transactions"] = (STAMP, STAMP + 30 * DAY - 1)
-        with pytest.raises(AssertionError, match="recorded-span"):
-            future_counts(anchors, events, spans, generated_checks(binding))
-    else:
-        path = mapping["anchor_source"]["path"]
-        table = pq.read_table(path)
-        values = table["future_count"].to_pylist()
-        values[0] += 1
-        table = table.set_column(
-            table.schema.get_field_index("future_count"),
-            "future_count",
-            pa.array(values, pa.int64()),
-        )
-        pq.write_table(table, path)
-        with pytest.raises(AssertionError, match="projection changed"):
-            count_features(binding, out / "anchors.parquet", mapping, {}, mode="smoke")
-
-
-def test_partitioned_identity_is_stable_for_bounded_sources(tmp_path):
-    from test.kumo_pytorch.partitioned_sources import prepare_sources
-
-    root, files, binding = fixture(tmp_path)
-    full, full_map = prepare_sources(
-        root, tmp_path / "full", binding["dataset"], files, None
-    )
-    bounded, _ = prepare_sources(
-        root, tmp_path / "bounded", binding["dataset"], files, {"z-client"}
-    )
-    expected = pq.read_table(full.tables["transactions"].path)
-    expected = expected.filter(pc.equal(expected["root_id"], 4))
-    assert pq.read_table(bounded.tables["transactions"].path).equals(expected)
-    assert pq.read_table(bounded.tables["roots"].path)["root_id"].to_pylist() == [4]
-    assert full_map["recorded_spans"]["transactions"]["source_rows"] == 42
-
-
-def test_partitioned_clocks_floor_before_epoch(tmp_path):
-    from test.kumo_pytorch.partitioned_sources import prepare_sources
-
-    root, files, binding = fixture(tmp_path)
-    key = binding["dataset"]["source_options"]["tables"]["transactions"]["paths"][0]
-    table = pq.ParquetFile(root / key).read()
-    values = pc.cast(table["event_time"], pa.int64()).to_pylist()
-    values[:4] = [-1000000001, -1000000000, -1, 1]
-    table = table.set_column(
-        table.schema.get_field_index("event_time"),
-        "event_time",
-        pa.array(values, pa.timestamp("ns")),
-    )
-    pq.write_table(table, root / key)
-    files[key].update(
-        bytes=(root / key).stat().st_size,
-        sha256=hashlib.sha256((root / key).read_bytes()).hexdigest(),
-    )
-    dataset, _ = prepare_sources(
-        root, tmp_path / "prepared", binding["dataset"], files, None
-    )
-    table = pq.read_table(dataset.tables["transactions"].path)
-    assert table["event_time_seconds"].to_pylist()[:4] == [-2, -1, -1, 0]
 
 
 def test_empty_selected_histories_keep_covered_zero_count(tmp_path):

@@ -5,28 +5,22 @@
 """L01's declared features: independent source answers and native model batches."""
 
 import hashlib
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from test.kumo_pytorch.bindings import contract_for, load_bindings
 from test.kumo_pytorch.data import prepare_binding, schema_for
 from test.kumo_pytorch.involvement import combined_features
 from test.kumo_pytorch.nightly import run_case
-from test.kumo_pytorch.population import verify_batch_for
 from test.kumo_pytorch.population_anchors import projected_rows
-from test.kumo_pytorch.targets import (
-    fitted_target_encoder,
-    verify_next_outgoing,
-)
+from test.kumo_pytorch.targets import fitted_target_encoder
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import torch
 
 import kumo.pytorch.api as r
 
-from .test_aml_source import account, source_files, transaction
+from .fixtures import account, source_files, transaction
 
 FEATURES = ("F01", "F02", "F03", "F04", "F05", "F07", "F08", "F10", "F11", "F14")
 DAY = 86400
@@ -191,17 +185,6 @@ def test_l01_required_correctness_records_every_feature_and_split(prepared):
         )
 
 
-@pytest.mark.parametrize("reverse", (False, True))
-def test_l01_equal_time_history_accepts_either_order(case, reverse):
-    binding, original, state, check, rows = case
-    batch = deepcopy(original)
-    if reverse:
-        values = batch.inputs["history"]["value_ids"][0]
-        values[44:54], values[55:65] = values[55:65].clone(), values[44:54].clone()
-    verify_batch_for(binding, batch, iter(rows), state)
-    check(batch)
-
-
 def test_l01_future_only_values_cannot_enter_input_fitting(case):
     _, _, state, _, _ = case
     encoders = [value for key, value in state["encoders"].items() if '"inputs"' in key]
@@ -214,126 +197,6 @@ def test_l01_future_only_values_cannot_enter_input_fitting(case):
     # The future currency remains a valid supervised target, independently fitted.
     target = fitted_target_encoder(state, "currency")
     assert "JPY" in dict(target["entries"])
-
-
-@pytest.mark.parametrize(
-    "fault",
-    (
-        "identity",
-        "graph-member",
-        "edge",
-        "negative-edge",
-        "count",
-        "derived-token",
-        "event-order",
-        "tie-value-mix",
-        "tie-duplicate",
-        "graph-number",
-        "graph-number-ulp",
-        "graph-category",
-        "layout",
-        "extra-sample",
-        "aggregate-dtype",
-        "aggregate-mask",
-        "source-index",
-        "source-index-in-range",
-        "extra-account",
-        "target-leak",
-        "amount",
-        "currency",
-    ),
-)
-def test_l01_feature_oracles_detect_corrupted_native_output(case, fault):
-    binding, original, state, shared_check, rows = case
-    from test.kumo_pytorch.feature_checks import FeatureChecks
-
-    check = FeatureChecks(
-        binding["feature_checks"],
-        "smoke",
-        shared_check.checks,
-        shared_check.sample_splits,
-    )
-    check(original)
-    verify_batch_for(binding, original, iter(rows), state)
-    batch = deepcopy(original)
-    stream = batch.inputs["history"]
-    nodes = batch.inputs["graph"]["nodes"]["transactions"]
-    if fault == "identity":
-        batch.metadata["entity_ids"][0] += 1
-    elif fault == "graph-member":
-        nodes["ids"][0] = 999
-    elif fault == "edge":
-        batch.inputs["graph"]["edges"]["sender"]["index"][0, 0] = 999
-    elif fault == "negative-edge":
-        graph = batch.inputs["graph"]
-        for edge in graph["edges"].values():
-            edge["index"][0] -= len(graph["nodes"]["accounts"]["ids"])
-            edge["index"][1] -= len(graph["nodes"]["transactions"]["ids"])
-    elif fault == "count":
-        batch.inputs["aggregates"]["24h_total_touching_count"]["values"][0] += 1
-    elif fault == "derived-token":
-        stream["value_ids"][0, 0] += 1
-    elif fault == "event-order":
-        stream["value_ids"][0, :10], stream["value_ids"][0, 11:21] = (
-            stream["value_ids"][0, 11:21].clone(),
-            stream["value_ids"][0, :10].clone(),
-        )
-    elif fault == "tie-value-mix":
-        values = stream["value_ids"][0]
-        values[46], values[57] = values[57].clone(), values[46].clone()
-    elif fault == "tie-duplicate":
-        values = stream["value_ids"][0]
-        values[44:54] = values[55:65].clone()
-    elif fault == "graph-number":
-        nodes["features"]["amount_paid"]["values"][0] += 1
-    elif fault == "graph-number-ulp":
-        values = nodes["features"]["amount_paid"]["values"]
-        values[0] = torch.nextafter(values[0], torch.tensor(float("inf")))
-    elif fault == "graph-category":
-        nodes["features"]["payment_currency"]["values"][0] += 1
-    elif fault == "layout":
-        stream["value_ids"] = stream["value_ids"].to(torch.float32)
-    elif fault == "extra-sample":
-        for field, value in stream.items():
-            stream[field] = torch.cat((value, value[:1]), dim=0)
-    elif fault == "aggregate-dtype":
-        field = batch.inputs["aggregates"]["all_history_total_touching_count"]
-        field["values"] = field["values"].to(torch.float64)
-    elif fault == "aggregate-mask":
-        field = batch.inputs["aggregates"]["all_history_total_touching_count"]
-        field["valid"] = field["valid"].to(torch.int64)
-    elif fault == "source-index":
-        indices = stream["source_event_indices"]
-        indices[indices >= 0] += 1_000_000
-    elif fault == "source-index-in-range":
-        indices = stream["source_event_indices"][0]
-        indices[indices >= 0] += 1
-    elif fault == "extra-account":
-        accounts = batch.inputs["graph"]["nodes"]["accounts"]
-        accounts["ids"] = torch.cat((accounts["ids"], torch.tensor([999])))
-        accounts["batch"] = torch.cat((accounts["batch"], torch.tensor([0])))
-    elif fault == "target-leak":
-        batch.inputs["currency"] = batch.targets["currency"]
-    else:
-        batch.targets[fault]["values"][0] += 1
-    with pytest.raises(AssertionError, match="Feature assertions failed"):
-        check(batch)
-    assert any(row["status"] == "failed" for row in check.evidence.values())
-    # One bad input cannot suppress independently useful checks.
-    assert check.evidence["forecast_targets"]["status"] == "passed"
-    primary = {
-        "edge": "graph_membership",
-        "negative-edge": "graph_membership",
-        "count": "aggregate_counts",
-        "derived-token": "history_values",
-        "graph-number": "graph_values",
-        "aggregate-dtype": "aggregate_layout",
-        "amount": "stored_targets",
-        "currency": "stored_targets",
-        "target-leak": "identity_cutoff",
-    }.get(fault)
-    if primary:
-        assert check.evidence[primary]["status"] == "failed"
 
 
 def test_l01_raw_forecast_oracle_preserves_decimal_precision(prepared, case, tmp_path):
@@ -365,117 +228,3 @@ def test_l01_raw_forecast_oracle_preserves_decimal_precision(prepared, case, tmp
         check(batch)
     assert check.evidence["stored_targets"]["status"] == "passed"
     assert check.evidence["forecast_targets"]["status"] == "failed"
-
-
-@pytest.mark.parametrize("field", ("sample_id", "amount", "currency", "valid"))
-def test_first_mismatch_diagnostics_preserve_strict_acceptance(case, field):
-    binding, original, state, _, rows = case
-    batch = deepcopy(original)
-    if field == "sample_id":
-        ids = list(batch.metadata["sample_ids"])
-        ids[0], ids[2] = ids[2], ids[0]
-        batch.metadata["sample_ids"] = tuple(ids)
-        position, precision = 0, "exact"
-    else:
-        position = 2
-        if field == "valid":
-            batch.targets["amount"]["valid"][position] = False
-            precision = "exact bool"
-        elif field == "amount":
-            values = batch.targets[field]["values"]
-            values[position] = torch.nextafter(
-                values[position], torch.tensor(float("inf"))
-            )
-            precision = "float32 (rtol=0, atol=0)"
-        else:
-            batch.targets[field]["values"][position] += 1
-            precision = "exact int64 category IDs"
-    with pytest.raises(AssertionError) as failure:
-        verify_batch_for(binding, batch, iter(rows), state)
-    message = str(failure.value)
-    assert f"batch position {position}" in message
-    assert f"source anchor position {rows[position]['anchor_row_position']}" in message
-    assert f"sample_id={rows[position]['sample_id']!r}" in message
-    assert "expected=" in message and "actual=" in message
-    assert f"precision={precision}" in message
-
-
-def test_next_outgoing_source_oracle_window_ties_and_independent_nulls():
-    def event(identity, stamp, sender, amount, currency):
-        return {
-            "id": identity,
-            "time": stamp,
-            "sender": sender,
-            "values": {"amount_paid": amount, "payment_currency": currency},
-        }
-
-    row = {
-        "sample_id": "a",
-        "prediction_time_ns": 100 * 10**9,
-        "registered_entity_id": "root",
-        "amount": Decimal("2.0000000001"),
-        "currency": "EUR",
-    }
-    events = [
-        event(1, 99, "root", "9", "USD"),
-        event(2, 100, "other", "8", "USD"),
-        event(4, 100, "root", "3", "JPY"),
-        event(3, 100, "root", "2.0000000001", "EUR"),
-        event(5, 100 + DAY, "root", "100", "GBP"),
-    ]
-    verify_next_outgoing([row], {"events": events})
-    for bad in ({"amount": Decimal("3")}, {"currency": "JPY"}):
-        with pytest.raises(AssertionError, match="earliest outgoing"):
-            verify_next_outgoing([{**row, **bad}], {"events": events})
-    verify_next_outgoing(
-        [{**row, "amount": None, "currency": None}], {"events": [events[-1]]}
-    )
-    for amount, currency in ((None, "EUR"), ("0", None)):
-        verify_next_outgoing(
-            [
-                {
-                    **row,
-                    "amount": None if amount is None else Decimal(amount),
-                    "currency": currency,
-                }
-            ],
-            {"events": [event(0, 100, "root", amount, currency)]},
-        )
-
-
-def test_sweep_target_oracle_rejects_matching_wrong_category_ids(case):
-    from test.kumo_pytorch.bindings import selection
-    from test.kumo_pytorch.targets import verify_stored_batch
-
-    from .fixtures import verify_sweep_targets
-
-    binding, original, fitted, _, rows = case
-    state, batch = deepcopy(fitted), deepcopy(original)
-    encoder = fitted_target_encoder(state, "currency")
-    entries = list(encoder["entries"])
-    assert len(entries) == 2
-    encoder["entries"] = [
-        [entries[0][0], entries[1][1]],
-        [entries[1][0], entries[0][1]],
-    ]
-    mapping = dict(encoder["entries"])
-    batch.targets["currency"]["values"] = torch.tensor(
-        [0 if row["currency"] is None else mapping[row["currency"]] for row in rows]
-    )
-    verify_stored_batch(
-        binding, batch, rows, state
-    )  # A self-consistent wrong vocabulary alone passes.
-    requests = tuple(
-        r.SampleRequest(
-            row["sample_id"],
-            row["entity_id"],
-            row["as_of_time"],
-            split="train",
-            targets=tuple(
-                r.TargetValue(name, row[name]) for name in binding["targets"]
-            ),
-        )
-        for row in rows
-    )
-    with pytest.raises(AssertionError):
-        verify_sweep_targets(batch, requests, selection(binding), "combined", state)

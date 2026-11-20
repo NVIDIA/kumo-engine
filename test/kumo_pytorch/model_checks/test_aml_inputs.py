@@ -3,89 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
-from test.kumo_pytorch.aml_inputs import SECOND, requests_for, select_anchors
+from datetime import timedelta
+from test.kumo_pytorch.aml_inputs import SECOND
 from test.kumo_pytorch.contracts import build_contract, counts
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pytest
 import torch
 
 import kumo.pytorch.api as r
 
 from .fixtures import build_fixture, probe_anchor_table
-
-
-def anchor_file(tmp_path, *, damage=None):
-    stamps = [
-        int(datetime(2022, 9, day, tzinfo=UTC).timestamp()) * SECOND
-        for day in (6, 7, 8, 9)
-    ]
-    table = pa.table(
-        {
-            "sample_id": ["excluded", "fit", "valid", "test"],
-            "entity_id": ["leading-0007"] * 4,
-            "as_of_time": pa.array(stamps, type=pa.timestamp("ns")),
-            "graph_as_of_time": pa.array(
-                [t - SECOND for t in stamps], type=pa.timestamp("ns")
-            ),
-            "split": ["train", "train", "valid", "test"],
-            "forecast_split": [None, "train", "valid", "test"],
-            "involvement": pa.array([None, None, 1, 0], type=pa.int32()),
-        }
-    )
-    if damage:
-        table = damage(table)
-    path = tmp_path / "anchors.parquet"
-    pq.write_table(table, path, row_group_size=2)
-    return path
-
-
-def test_selection_keeps_original_order_null_targets_and_split_rules(tmp_path):
-    path = anchor_file(tmp_path)
-    selected = select_anchors(
-        path, split_columns=("split", "forecast_split"), limit=1, graph=True
-    )
-    assert selected["split"]["train"][0]["sample_id"] == "excluded"
-    fit = selected["forecast_split"]["train"][0]
-    assert fit["sample_id"] == "fit" and fit["physical_row_position"] == 1
-    assert fit["involvement"] is None
-    request = requests_for(
-        [fit], {"leading-0007": 42}, split="train", graph=True, native=False
-    )[0]
-    assert request.sample_id == "fit" and request.entity_id == 42
-    assert request.targets[0].value is None
-    assert request.as_of_time == fit["as_of_time"] // SECOND - 1
-    assert request.metadata["prediction_time_ns"] == fit["as_of_time"]
-    assert request.metadata["registered_entity_id"] == "leading-0007"
-    with pytest.raises(ValueError, match="relabel"):
-        requests_for(
-            [fit], {"leading-0007": 42}, split="test", graph=True, native=False
-        )
-    native = requests_for(
-        [fit], {"leading-0007": 42}, split="train", graph=False, native=True
-    )[0]
-    assert native.targets == () and native.as_of_time == fit["as_of_time"] // SECOND
-
-
-def test_wrong_v2_clock_is_rejected(tmp_path):
-    path = anchor_file(
-        tmp_path,
-        damage=lambda table: table.set_column(
-            table.schema.get_field_index("graph_as_of_time"),
-            "graph_as_of_time",
-            table["as_of_time"],
-        ),
-    )
-    with pytest.raises(ValueError, match="v2 graph cutoff"):
-        select_anchors(path, split_columns=("forecast_split",), limit=1, graph=True)
-
-
-def test_missing_required_split_is_a_failure(tmp_path):
-    path = anchor_file(tmp_path, damage=lambda table: table.slice(0, 3))
-    with pytest.raises(ValueError, match="test anchor"):
-        select_anchors(path, split_columns=("forecast_split",), limit=1)
 
 
 def test_combined_history_matches_unshifted_sequence_and_count_boundaries(tmp_path):

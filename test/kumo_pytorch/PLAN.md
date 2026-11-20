@@ -54,7 +54,7 @@ See [feature requirements and assertion owners](docs/binding-coverage.md).
 | Source/anchor mapping, task targets, model consumption and feature checks | `model_checks/`, binding campaigns and independent source oracles |
 | Difficult feature interactions and documentation ambiguities | `difficult_behavior/` with authored evidence and expected outcomes |
 | Fixed-fixture learning vs real-data 100-update acceptance | `model_checks/test_learning.py` vs shared `training_acceptance.py` |
-| Data acquisition, orchestration, reporting and refusal guards | `checks/`; CPU/difficult inventories reject missing or skipped cases |
+| Required execution | CPU/difficult inventories reject missing or skipped package cases |
 | Stage metrics, cache/state/index comparisons and collector validity | `benchmarking/`, native benchmark fixtures, Linux/GPU validation jobs |
 
 Preserve the [selective Arena golden-case mapping](docs/arena-golden-audit.md).

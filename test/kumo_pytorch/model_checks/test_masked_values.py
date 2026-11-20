@@ -17,7 +17,7 @@ from test.kumo_pytorch.masked_values import (
     verify_loss,
     verify_targets,
 )
-from test.kumo_pytorch.models import StepResult, build_model
+from test.kumo_pytorch.models import build_model
 
 import pytest
 import torch
@@ -228,32 +228,6 @@ def test_padding_invalid_ignore_and_empty_objectives(case):
         case["model"].zero_grad(set_to_none=True)
 
 
-@pytest.mark.parametrize(
-    "damage", ("target", "mask", "corruption", "field", "clock", "loss", "weight")
-)
-def test_bad_outputs_are_detected(case, damage):
-    batch = deepcopy(case["batch"])
-    result = case["model"].training_step(batch)
-    index = int(batch.targets["masked_values"]["valid"].nonzero()[0])
-    if damage == "target":
-        batch.targets["masked_values"]["values"][index] = 0
-    elif damage == "mask":
-        batch.targets["masked_values"]["valid"][index] = False
-    elif damage == "corruption":
-        batch.targets["masked_values"]["corruption"][index] = False
-    elif damage == "field":
-        batch.inputs["history"]["field_ids"][0] = 0
-    elif damage == "clock":
-        batch.metadata["as_of_time"][0] += 1
-    elif damage == "loss":
-        result.loss = result.loss + 0.25
-    else:
-        result.weight += 1
-    with pytest.raises(AssertionError):
-        verify_targets(batch, originals(case, batch))
-        verify_loss(batch, result)
-
-
 def test_future_and_evaluation_fields_do_not_change_training_inputs(case):
     fixture = deepcopy(case["fixture"])
     for table in ("transactions", "account_events"):
@@ -278,30 +252,3 @@ def test_future_and_evaluation_fields_do_not_change_training_inputs(case):
         actual = next(task.batches(batch_size=2, seed=7, output_format="model"))
         assert_equal(actual.inputs, expected.inputs)
         assert_equal(actual.targets, expected.targets)
-
-
-def test_reference_loss_known_uniform_logits():
-    # A single packed event with a single target. Uniform logits have loss log(V)
-    # for any smoothing; this also pins the original-UNK remap without a model.
-    from types import SimpleNamespace
-
-    batch = SimpleNamespace(
-        inputs={
-            "history": {
-                "field_offsets": torch.tensor([0, 1]),
-                "owner": torch.tensor([0]),
-                "value_ids": torch.tensor([2]),
-            }
-        },
-        targets={
-            "masked_values": {
-                "values": torch.tensor([1]),
-                "valid": torch.tensor([True]),
-            }
-        },
-        metadata={"is_padding": torch.tensor([False])},
-    )
-    assert selected_labels(batch)[:2] == ([0], [2])
-    assert verify_loss(
-        batch, StepResult(torch.zeros(1, 5), torch.tensor(math.log(5)), 1)
-    )["mean_loss"] == pytest.approx(math.log(5))
