@@ -204,10 +204,9 @@ fn ingest_binary() -> &'static str {
 }
 
 /// Run the ingest binary against `config_path`, watching for the
-/// `_phase_complete_<stop_after>` marker. The instant it appears, SIGKILL
-/// the child so on-disk state freezes there: `_tmp/` is preserved (no
-/// `cleanup_temp`), the predecessor + stop_after markers are present, and
-/// no successor phase has begun. Returns once the child is reaped.
+/// `_phase_complete_<stop_after>` marker. Once observed, SIGKILL the child so
+/// `_tmp/` survives and the predecessor markers are present. The worker may
+/// have started successor phases before the kill lands. Returns once reaped.
 fn run_partial(
     config_path: &Path,
     output_root: &Path,
@@ -811,6 +810,15 @@ fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
         let split_root = tmp.path().join(format!("split-{resumed_with}"));
         set_shards(2)?;
         run_partial(&config_path, &split_root, IngestPhase::Encode)?;
+        // The worker can reach finalization before the test observes Encode's
+        // marker. Keep the saved Encode state, but model an interrupted build
+        // by removing any publication files before testing the restart.
+        for name in ["index_metadata.json", "_SUCCESS"] {
+            let path = split_root.join(name);
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
+        }
         let state: serde_json::Value =
             serde_json::from_slice(&fs::read(split_root.join("_tmp/encode_state.json"))?)?;
         let encoded_id = state["index_build_id"]

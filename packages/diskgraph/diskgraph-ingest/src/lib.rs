@@ -1597,8 +1597,19 @@ mod tests_resume_phase {
         fs::write(output.join("index_metadata.json"), br#"{"index_build_id":"build-a"}"#)
             .unwrap();
         fs::write(output.join("_SUCCESS"), b"published").unwrap();
-        let source: GraphConfig =
-            serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
+        let mut table = tests_repopulate_helpers::node_table("nodes", Some("id"));
+        table.source = crate::graph_config::DataSource::Parquet {
+            paths: vec![directory.path().join("source.parquet").to_string_lossy().into_owned()],
+        };
+        let source = GraphConfig {
+            timestamp_unit: Default::default(),
+            dataset_name: "test".to_owned(),
+            tables: vec![table],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        };
         let error = ingest_with_stats_from_source(
             source,
             None,
