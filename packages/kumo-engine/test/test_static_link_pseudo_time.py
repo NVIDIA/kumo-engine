@@ -4,28 +4,26 @@
 
 import random
 
+import kumo.engine as kumo
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
+from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
+from kumo.engine.table import TableDefinition
 from kumoapi.graph import Edge
 from kumoapi.table import Column
 from kumoapi.typing import Dtype, Stype
 
-import kumo.engine as kumo
-from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
-from kumo.engine.table import TableDefinition
-
 QUERY = ('PREDICT LIST_DISTINCT(orders.item_id) RANK TOP 10 '
          'FOR EACH users.id')
-LAYER = {
-    'fanouts': {},
-    'default_fanout': {
-        'fanout': 1000,
-        'mode': 'uniform',
-        'absent_key_policy': 'uniform_fallback',
-    },
-}
+LAYER = LayerSpec(
+    fanouts={},
+    default_fanout=FanoutSpec(
+        fanout=1000, mode="uniform", absent_key_policy="uniform_fallback"
+    ),
+)
 
 
 def _snapshot(tmp_path, num_users=60, num_items=40, per_user=8):
@@ -102,7 +100,7 @@ def datamodule(request, tmp_path):
     return DiskgraphLightningDataModule(
         task.manifest_path,
         {},
-        sampling_plan={'layers': [LAYER, LAYER]},
+        sampling_plan=SamplingPlan([LAYER, LAYER]),
         train_batch_size=16,
         eval_batch_size=16,
         task_type='static_link_prediction',
@@ -208,7 +206,7 @@ def test_native_iterator_infers_cutoff_without_loader_options(datamodule):
     def sample(stage, **options):
         iterator, _ = index.iter(
             stage=stage,
-            sampling_plan={'layers': [LAYER, LAYER]},
+            sampling_plan=SamplingPlan([LAYER, LAYER]),
             num_workers=1,
             worker_id=0,
             shuffle=False,

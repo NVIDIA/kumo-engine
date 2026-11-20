@@ -27,14 +27,16 @@ from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 import pytorch_lightning as pl
+from diskgraph.sampling_plan import SamplingPlan
+from torch._utils import ExceptionWrapper
+from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+
 from kumo_core.diskgraph.runtime_adapter import (
     MapperBank,
     engine_int64_to_ns,
     runtime_batch_to_hetero,
 )
 from kumo_core.task_dataset import DiskgraphTaskManifest
-from torch._utils import ExceptionWrapper
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 if TYPE_CHECKING:
     import torch
@@ -1323,7 +1325,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         *,
         manifest_path: str,
         stage: str | tuple[str, ...],
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         batch_size: int,
         shuffle: bool,
         drop_last: bool,
@@ -1812,7 +1814,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         manifest: DiskgraphTaskManifest | str,
         mapper_bank: MapperBank,
         *,
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         train_batch_size: int,
         eval_batch_size: int,
         shuffle_train: bool = True,

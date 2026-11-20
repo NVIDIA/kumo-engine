@@ -12,6 +12,7 @@ from dataclasses import is_dataclass
 from typing import TypedDict
 
 import diskgraph
+import orjson
 import pytest
 from diskgraph import DiskgraphConfigError, RuntimeIndex
 from diskgraph.runtime_batch_iterator import _sampling_plan_json
@@ -29,7 +30,6 @@ from diskgraph.sampling_plan import (
 from test_runtime_batch_iterator_e2e import (
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
 )
-from test_stateless_sampling import _assert_equal
 
 
 class SeedTableFixture(TypedDict):
@@ -115,7 +115,7 @@ def test_basic_modes_and_relation_overrides_keep_native_shape(
         ]
     }
     assert plan.to_dict() == expected
-    assert _sampling_plan_json(plan) == _sampling_plan_json(expected)
+    assert orjson.loads(_sampling_plan_json(plan)) == expected
 
 
 @pytest.mark.parametrize("temporal", [False, True])
@@ -166,14 +166,26 @@ def test_plan_remains_editable_and_export_is_independent() -> None:
     assert restored.to_dict() == plan.to_dict()
 
 
-def test_existing_dictionary_string_and_none_inputs_are_unchanged() -> None:
-    """The dataclass is additive to the existing runtime plan input forms."""
-    expected: dict[str, list[object]] = {"layers": []}
-    assert _sampling_plan_json(SamplingPlan()) == _sampling_plan_json(expected)
-    assert _sampling_plan_json(None) == _sampling_plan_json(expected)
-    assert _sampling_plan_json({}) == _sampling_plan_json(expected)
-    serialized = '{"layers":[]}'
-    assert _sampling_plan_json(serialized) == serialized
+@pytest.mark.parametrize(
+    "invalid_plan", [{"layers": []}, {}, '{"layers":[]}', None, [], 1, object()]
+)
+def test_iter_rejects_untyped_plans_before_accessing_the_manifest(
+    invalid_plan: object,
+) -> None:
+    """Reject all legacy input forms before opening manifests or native indexes."""
+    index = RuntimeIndex("manifest-must-not-be-opened.json")
+    with pytest.raises(
+        TypeError, match="sampling_plan must be a diskgraph.SamplingPlan"
+    ):
+        index.iter(
+            stage="train",
+            sampling_plan=invalid_plan,  # type: ignore[arg-type]
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=2,
+        )
 
 
 def test_public_plan_construction_does_not_import_training_or_open_graphs() -> None:
@@ -220,11 +232,11 @@ assert "kumo_core" not in sys.modules
         WeightedSampling(CustomExpression("score"), temporal=True),
     ],
 )
-def test_typed_plans_preserve_native_batches_and_unsupported_mode_errors(
+def test_typed_plans_produce_native_batches_and_unsupported_mode_errors(
     seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
     mode: SamplingMode,
 ) -> None:
-    """Typed plans retain both supported outputs and native unsupported-mode errors."""
+    """Typed plans execute supported modes and preserve native unsupported errors."""
     plan = _plan(mode)
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
@@ -239,28 +251,14 @@ def test_typed_plans_preserve_native_batches_and_unsupported_mode_errors(
         epoch=0,
         batch_size=2,
     )
-    reference, reference_count = index.iter(
-        stage="train",
-        entity_node_type="users",
-        sampling_plan=plan.to_dict(),
-        num_workers=1,
-        worker_id=0,
-        shuffle=False,
-        epoch=0,
-        batch_size=2,
-    )
-    assert typed_count == reference_count == seed_table_fixture["n_seeds"]
+    assert typed_count == seed_table_fixture["n_seeds"]
     if isinstance(mode, WeightedSampling):
-        with pytest.raises(DiskgraphConfigError, match="not supported") as actual_error:
+        with pytest.raises(DiskgraphConfigError, match="not supported"):
             next(typed)
-        with pytest.raises(
-            DiskgraphConfigError, match="not supported"
-        ) as expected_error:
-            next(reference)
-        assert str(actual_error.value) == str(expected_error.value)
     else:
-        for actual, expected in zip(typed, reference, strict=True):
-            _assert_equal(actual, expected)
+        batches = list(typed)
+        assert sum(len(batch["task"]["input_ids"]) for batch in batches) == typed_count
+        assert all("main" in batch["graphs"] for batch in batches)
 
 
 def test_native_validation_rejects_invalid_dataclass_fanout(

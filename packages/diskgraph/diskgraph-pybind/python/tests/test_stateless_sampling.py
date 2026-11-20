@@ -68,8 +68,8 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2
     )
     sampling_plan = _sampling_plan()
-    for layer in sampling_plan["layers"]:
-        layer["default_fanout"]["fanout"] = 1
+    for layer in sampling_plan.layers:
+        layer.default_fanout.fanout = 1
     options = {
         "stage": "train",
         "sampling_plan": sampling_plan,
@@ -85,7 +85,9 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
     for current in (iterator, reference):
         if extras == "neighborhood":
             current.with_neighborhoods(
-                json.dumps({"context": {"plan": _sampling_plan(), "projections": {}}})
+                json.dumps(
+                    {"context": {"plan": _sampling_plan().to_dict(), "projections": {}}}
+                )
             )
         elif extras == "history":
             sampler = SamplerEngine(seed_table_fixture["parent_root"])

@@ -16,6 +16,7 @@ version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26,<3",
+    "orjson>=3,<4",
     # Parquet and Arrow IPC reads/writes in the Python artifact helpers.
     "pyarrow>=16,<25",
 ]

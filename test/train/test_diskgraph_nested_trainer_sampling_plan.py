@@ -7,6 +7,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
 from kumo_core.training.config import LinkPredModuleType
 from kumo_core.types import TaskType
@@ -108,72 +109,72 @@ def test_ttng_sampling_plan_resolves_kumo_edge_types_for_sparse_fanouts(
 
     plan = _build_plan(num_neighbors, tmp_path)
 
-    assert plan == {
-        "layers": [
-            {
-                "fanouts": {
-                    "impressions_CONSUMER_ID_to_users_CONSUMER_ID": {
-                        "fanout": 1,
-                        "mode": "temporal_most_recent",
-                        "absent_key_policy": "uniform_fallback",
-                    },
-                    "impressions_TEMPLATE_ID_to_templates_TEMPLATE_ID": {
-                        "fanout": 1,
-                        "mode": "temporal_most_recent",
-                        "absent_key_policy": "uniform_fallback",
-                    },
+    assert plan == SamplingPlan(
+        [
+            LayerSpec(
+                fanouts={
+                    "impressions_CONSUMER_ID_to_users_CONSUMER_ID": FanoutSpec(
+                        fanout=1,
+                        mode="temporal_most_recent",
+                        absent_key_policy="uniform_fallback",
+                    ),
+                    "impressions_TEMPLATE_ID_to_templates_TEMPLATE_ID": FanoutSpec(
+                        fanout=1,
+                        mode="temporal_most_recent",
+                        absent_key_policy="uniform_fallback",
+                    ),
                 },
-                "default_fanout": None,
-            },
-            {
-                "fanouts": {
-                    "clicks_CONSUMER_ID_to_users_CONSUMER_ID_reverse": {
-                        "fanout": 32,
-                        "mode": "temporal_most_recent",
-                        "absent_key_policy": "uniform_fallback",
-                    },
-                    "orders_CONSUMER_ID_to_users_CONSUMER_ID_reverse": {
-                        "fanout": 32,
-                        "mode": "temporal_most_recent",
-                        "absent_key_policy": "uniform_fallback",
-                    },
+                default_fanout=None,
+            ),
+            LayerSpec(
+                fanouts={
+                    "clicks_CONSUMER_ID_to_users_CONSUMER_ID_reverse": FanoutSpec(
+                        fanout=32,
+                        mode="temporal_most_recent",
+                        absent_key_policy="uniform_fallback",
+                    ),
+                    "orders_CONSUMER_ID_to_users_CONSUMER_ID_reverse": FanoutSpec(
+                        fanout=32,
+                        mode="temporal_most_recent",
+                        absent_key_policy="uniform_fallback",
+                    ),
                 },
-                "default_fanout": None,
-            },
-            {
-                "fanouts": {
-                    "clicks_TEMPLATE_ID_to_templates_TEMPLATE_ID": {
-                        "fanout": 1,
-                        "mode": "temporal_most_recent",
-                        "absent_key_policy": "uniform_fallback",
-                    },
+                default_fanout=None,
+            ),
+            LayerSpec(
+                fanouts={
+                    "clicks_TEMPLATE_ID_to_templates_TEMPLATE_ID": FanoutSpec(
+                        fanout=1,
+                        mode="temporal_most_recent",
+                        absent_key_policy="uniform_fallback",
+                    ),
                 },
-                "default_fanout": None,
-            },
-        ],
-    }
+                default_fanout=None,
+            ),
+        ]
+    )
 
 
 def test_ttng_sampling_plan_keeps_default_fanout_behavior(tmp_path):
     plan = _build_plan(NumNeighbors([5, 3]), tmp_path)
 
-    assert plan["layers"] == [
-        {
-            "fanouts": {},
-            "default_fanout": {
-                "fanout": 5,
-                "mode": "temporal_most_recent",
-                "absent_key_policy": "uniform_fallback",
-            },
-        },
-        {
-            "fanouts": {},
-            "default_fanout": {
-                "fanout": 3,
-                "mode": "temporal_most_recent",
-                "absent_key_policy": "uniform_fallback",
-            },
-        },
+    assert plan.layers == [
+        LayerSpec(
+            fanouts={},
+            default_fanout=FanoutSpec(
+                fanout=5,
+                mode="temporal_most_recent",
+                absent_key_policy="uniform_fallback",
+            ),
+        ),
+        LayerSpec(
+            fanouts={},
+            default_fanout=FanoutSpec(
+                fanout=3,
+                mode="temporal_most_recent",
+                absent_key_policy="uniform_fallback",
+            ),
+        ),
     ]
 
 
@@ -235,12 +236,10 @@ def _lp_plan(num_neighbors, module, rhs_emb_mode, tmp_path):
     return DiskgraphNestedTrainer._build_ttng_sampling_plan(trainer, manifest)
 
 
-def _fanout(n):
-    return {
-        "fanout": n,
-        "mode": "temporal_most_recent",
-        "absent_key_policy": "uniform_fallback",
-    }
+def _fanout(n: int) -> FanoutSpec:
+    return FanoutSpec(
+        fanout=n, mode="temporal_most_recent", absent_key_policy="uniform_fallback"
+    )
 
 
 LP_MODULES = [
@@ -258,33 +257,27 @@ def test_lp_plan_keeps_hops_through_target_table(module, rhs_emb_mode,
     plan = _lp_plan(NumNeighbors(LP_NUM_NEIGHBORS, [0, 0, 0, 0]), module,
                     rhs_emb_mode, tmp_path)
 
-    assert plan["layers"] == [
-        {
-            "fanouts": {
-                "interactions_entity_id_to_entities_entity_id_reverse":
-                _fanout(128)
+    assert plan.layers == [
+        LayerSpec(
+            fanouts={
+                "interactions_entity_id_to_entities_entity_id_reverse": _fanout(128)
             },
-            "default_fanout": None,
-        },
-        {
-            "fanouts": {
-                "interactions_item_id_to_items_item_id": _fanout(128)
-            },
-            "default_fanout": None,
-        },
-        {
-            "fanouts": {
-                "item_categories_item_id_to_items_item_id_reverse":
-                _fanout(3)
-            },
-            "default_fanout": None,
-        },
-        {
-            "fanouts": {
+            default_fanout=None,
+        ),
+        LayerSpec(
+            fanouts={"interactions_item_id_to_items_item_id": _fanout(128)},
+            default_fanout=None,
+        ),
+        LayerSpec(
+            fanouts={"item_categories_item_id_to_items_item_id_reverse": _fanout(3)},
+            default_fanout=None,
+        ),
+        LayerSpec(
+            fanouts={
                 "item_categories_category_name_to_categories_category_name": _fanout(1)
             },
-            "default_fanout": None,
-        },
+            default_fanout=None,
+        ),
     ]
 
 
@@ -293,15 +286,9 @@ def test_lp_list_plan_uses_default_fanout_on_every_hop(module, rhs_emb_mode,
                                                        tmp_path):
     plan = _lp_plan(NumNeighbors([12, 8]), module, rhs_emb_mode, tmp_path)
 
-    assert plan["layers"] == [
-        {
-            "fanouts": {},
-            "default_fanout": _fanout(12)
-        },
-        {
-            "fanouts": {},
-            "default_fanout": _fanout(8)
-        },
+    assert plan.layers == [
+        LayerSpec(fanouts={}, default_fanout=_fanout(12)),
+        LayerSpec(fanouts={}, default_fanout=_fanout(8)),
     ]
 
 
@@ -311,19 +298,9 @@ def test_explicit_zero_overrides_default_fanout(tmp_path):
                      [12, 12]), LinkPredModuleType.ID, "lookup", tmp_path)
 
     rel = "interactions_entity_id_to_entities_entity_id_reverse"
-    assert plan["layers"] == [
-        {
-            "fanouts": {
-                rel: _fanout(0)
-            },
-            "default_fanout": _fanout(12)
-        },
-        {
-            "fanouts": {
-                rel: _fanout(5)
-            },
-            "default_fanout": _fanout(12)
-        },
+    assert plan.layers == [
+        LayerSpec(fanouts={rel: _fanout(0)}, default_fanout=_fanout(12)),
+        LayerSpec(fanouts={rel: _fanout(5)}, default_fanout=_fanout(12)),
     ]
 
 
@@ -338,10 +315,46 @@ def test_unresolved_entry_is_reported(tmp_path, caplog):
         plan = _lp_plan(num_neighbors, LinkPredModuleType.SHALLOW_RHS, "fusion",
                         tmp_path)
 
-    assert plan["layers"] == [{
-        "fanouts": {
-            "interactions_entity_id_to_entities_entity_id_reverse": _fanout(4)
-        },
-        "default_fanout": None,
-    }]
+    assert plan.layers == [LayerSpec(
+        fanouts={"interactions_entity_id_to_entities_entity_id_reverse": _fanout(4)},
+        default_fanout=None,
+    )]
     assert "('missing', 'EDGE', 'items')" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "plan, expected",
+    [
+        (SamplingPlan(), 2),
+        (SamplingPlan([LayerSpec()]), 2),
+        (
+            SamplingPlan([
+                LayerSpec(default_fanout=FanoutSpec(0, "uniform", "reject_plan"))
+            ]),
+            0,
+        ),
+        (
+            SamplingPlan([
+                LayerSpec(fanouts={"edge": FanoutSpec(0, "uniform", "reject_plan")})
+            ]),
+            0,
+        ),
+        (
+            SamplingPlan([
+                LayerSpec(
+                    fanouts={"edge": FanoutSpec(5, "uniform", "reject_plan")},
+                    default_fanout=FanoutSpec(2, "uniform", "reject_plan"),
+                ),
+                LayerSpec(default_fanout=FanoutSpec(2, "uniform", "reject_plan")),
+            ]),
+            20,
+        ),
+    ],
+)
+def test_typed_plan_edge_estimate_preserves_fallbacks(
+    plan: SamplingPlan, expected: int
+) -> None:
+    """Estimate edges from typed overrides, defaults, zero fanouts, and empty hops."""
+    from kumo_core.train.diskgraph_nested_trainer import _ttng_estimated_edges
+
+    assert _ttng_estimated_edges(plan, batch_size=8) == expected

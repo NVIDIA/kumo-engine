@@ -1545,6 +1545,7 @@ version = "0.2.0"
 source = { editable = "packages/diskgraph" }
 dependencies = [
     { name = "numpy" },
+    { name = "orjson" },
     { name = "pyarrow" },
 ]
 
@@ -1563,6 +1564,7 @@ requires-dist = [
     { name = "kumo-api", marker = "extra == 'kumo'", editable = "packages/kumo-api" },
     { name = "kumo-api", marker = "extra == 'test'", editable = "packages/kumo-api" },
     { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "orjson", specifier = ">=3,<4" },
     { name = "pyarrow", specifier = ">=16,<25" },
     { name = "pyarrow", marker = "extra == 'test'" },
     { name = "pytest", marker = "extra == 'test'" },

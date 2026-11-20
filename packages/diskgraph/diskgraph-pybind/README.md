@@ -79,7 +79,8 @@ uv pip install .
 ### Typed runtime sampling plans
 
 `diskgraph.SamplingPlan` is a Python dataclass matching the native traversal
-schema. It uses ordinary lists and dictionaries:
+schema. DiskGraph owns this contract so the native package remains independent
+of `kumo-core`. It uses ordinary lists and dictionaries:
 
 ```python
 from diskgraph import FanoutSpec, LayerSpec, RuntimeIndex, SamplingPlan
@@ -100,9 +101,11 @@ batches, sample_count = index.iter(
 `LayerSpec.fanouts` keys are native relation names. A relation uses its override
 or the layer's `default_fanout`; `None` skips relations without an override.
 `SamplingPlan.to_dict()` exports the existing native representation. `RuntimeIndex`
-converts typed plans at the existing JSON boundary; dictionary, JSON-string, and
-`None` inputs remain accepted. Plan construction does not open an index or load
-Torch/training modules. The dataclasses are mutable; edits affect subsequent
+accepts only `SamplingPlan` and converts it at the native JSON boundary;
+dictionaries, JSON strings, `None`, and other types raise `TypeError`. Use
+`SamplingPlan()` for zero-hop iteration. Kumo trainer and DataModule callers pass
+the dataclass throughout the call stack. Plan construction does not open an
+index or load Torch/training modules. The dataclasses are mutable; edits affect subsequent
 exports and iterator construction.
 
 `WeightedSampling(weighting, temporal=False)` represents the native `weighted`
@@ -110,8 +113,8 @@ variant; `temporal=True` selects `temporal_weighted`. Weightings are
 `ExponentialDecay(rate)` (per-second rate, native `lambda`),
 `LinearDecay(half_life_seconds)`, or `CustomExpression(id)`. These types describe
 the existing Rust schema and do not enable unsupported engine modes. The current
-engine rejects weighted modes at sampling time, just as it does for dictionary
-plans. Native validation remains authoritative.
+engine rejects weighted modes at sampling time. Native validation remains
+authoritative.
 
 `lookup_node_ids` and `canonical_node_mask` parse and query one key at a time
 within the supplied Arrow batch. Neither retains a second batch of parsed keys;
