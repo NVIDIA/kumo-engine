@@ -328,6 +328,29 @@ def _manifest(
     )
 
 
+def _eval_runtime_manifest(
+    tmp_path: Path,
+    stage: str,
+    labels: list[int] | None = None,
+) -> str:
+    stage_ref: dict[str, Any] = {
+        "table_name": f"{stage}_seeds",
+        "index_path": str(tmp_path),
+    }
+    if labels is not None:
+        index: dict[str, Any] = {}
+        for name, value in (("false", 0), ("true", 1)):
+            ids = [i for i, label in enumerate(labels) if label == value]
+            (tmp_path / f"{name}.bin").write_bytes(b"".join(
+                i.to_bytes(8, "little") for i in ids))
+            index[f"{name}_node_ids"] = f"{name}.bin"
+            index[f"{name}_count"] = len(ids)
+        stage_ref["binary_label_index"] = index
+    path = tmp_path / "runtime_manifest.json"
+    path.write_text(json.dumps({"stages": {stage: stage_ref}}))
+    return str(path)
+
+
 def _runtime_batch(input_ids: list[int] | None = None) -> dict[str, Any]:
     input_ids = input_ids or [0, 1, 2]
     num_rows = len(input_ids)
@@ -947,7 +970,9 @@ def test_eval_dataloader_honors_max_steps_without_replay(
     calls = _install_fake_diskgraph(monkeypatch,
                                     batch_input_ids_by_stage={stage: input_ids})
     dm = DiskgraphLightningDataModule(
-        _manifest(tmp_path=tmp_path, stage_counts={stage: 20}),
+        _manifest(tmp_path=tmp_path, stage_counts={stage: 20},
+                  runtime_manifest_path=_eval_runtime_manifest(tmp_path,
+                                                               stage)),
         _mapper_bank(),
         sampling_plan={"layers": []},
         train_batch_size=2,
@@ -963,6 +988,47 @@ def test_eval_dataloader_honors_max_steps_without_replay(
     assert sum(batch["train_table"].input_id.numel()
                for batch in batches) == num_rows
     assert len(calls["history"]) == 1
+    assert "selected_stage_node_ids" not in calls["kwargs"]
+
+
+@pytest.mark.parametrize("stage", ["val", "test"])
+@pytest.mark.parametrize("positive_every, expected_positives", [
+    (40, 10),
+    (2, 20),
+])
+def test_capped_binary_eval_reads_seeded_rows_with_positives(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stage: str,
+    positive_every: int,
+    expected_positives: int,
+) -> None:
+    labels = [int(i % positive_every == 1) for i in range(400)]
+    runtime_path = _eval_runtime_manifest(tmp_path, stage, labels)
+    calls = _install_fake_diskgraph(monkeypatch)
+
+    def selected_rows(seed: int) -> list[int]:
+        dm = DiskgraphLightningDataModule(
+            _manifest(tmp_path=tmp_path, stage_counts={stage: 400},
+                      runtime_manifest_path=runtime_path),
+            _mapper_bank(),
+            sampling_plan={"layers": []},
+            train_batch_size=4,
+            eval_batch_size=4,
+            base_seed=seed,
+            **{f"max_{stage}_steps": 10},
+        )
+        loader = getattr(dm, f"{stage}_dataloader")()
+        assert len(loader) == 10
+        list(loader)
+        return calls["kwargs"]["selected_stage_node_ids"]
+
+    rows = selected_rows(1)
+
+    assert rows == sorted(set(rows)) and len(rows) == 40
+    assert sum(labels[i] for i in rows) == expected_positives
+    assert selected_rows(1) == rows
+    assert selected_rows(2) != rows
 
 
 def test_predict_dataloader_len_counts_local_worker_shards(tmp_path) -> None:
