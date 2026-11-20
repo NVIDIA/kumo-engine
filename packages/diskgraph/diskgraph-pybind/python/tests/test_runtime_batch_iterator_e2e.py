@@ -452,6 +452,19 @@ def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp
     assert count == seed_table_fixture["n_seeds"]
     assert len(list(iterator)) == 2
 
+    # Moving the same extension outside the base changes its catalog namespace
+    # from the index-local alias to the external directory's basename.
+    assert _extension_ref_from_stage_path(str(parent), str(target)) == str(target.resolve())
+    manifest["stages"]["train"]["index_path"] = str(target)
+    path.write_text(json.dumps(manifest))
+    iterator, count = make_runtime_batch_iterator(
+        str(path), stage="train", entity_node_type="users", sampling_plan=_sampling_plan(),
+        num_workers=1, worker_id=0, shuffle=False, rnd_seed=17, epoch=0,
+        batch_size=3, drop_last=False,
+    )
+    assert count == seed_table_fixture["n_seeds"]
+    assert len(list(iterator)) == 2
+
 
 @pytest.mark.parametrize("path_input", ["stage", "parent"])
 def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, path_input):
