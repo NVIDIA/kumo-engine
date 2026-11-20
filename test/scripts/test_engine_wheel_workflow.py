@@ -333,6 +333,13 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     assert 'cygpath -w "$cargo_bin"' in bootstrap['run']
     assert 'export PATH="$cargo_bin:$PATH"' in bootstrap['run']
     assert '>> "$GITHUB_PATH"' in bootstrap['run']
+    msvc = _step('build', 'Activate installed MSVC build tools')['run']
+    assert 'Get-Command vswhere.exe -ErrorAction SilentlyContinue' in msvc
+    assert 'if (Test-Path $vswhere)' in msvc
+    assert "'C:\\BuildTools'" in msvc
+    assert 'Test-Path "$_\\Common7\\Tools\\Launch-VsDevShell.ps1"' in msvc
+    assert 'Test-Path "$_\\VC\\Tools\\MSVC"' in msvc
+    assert 'No Visual Studio C++ installation found.' in msvc
     smoke_targets = {row['platform']: row['runner'] for row in
                      workflow['jobs']['smoke']['strategy']['matrix']['target']}
     assert smoke_targets['windows-native'] == 'windows-amd64-cpu4'
