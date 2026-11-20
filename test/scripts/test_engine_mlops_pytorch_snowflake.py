@@ -102,3 +102,41 @@ def test_native_alias_promotion_restores_previous_version_on_failure(failure):
 def test_snowflake_module_loads_the_same_customer_recipe():
     assert workload.recipe().PHASES == workload.PHASES
     assert workload.recipe().METRICS == ('train/mse', 'validation/rmse')
+
+
+def test_cpu_training_does_not_publish_cuda_only_registry_requirements(tmp_path, monkeypatch):
+    torch = pytest.importorskip('torch')
+    pytest.importorskip('kumo.pytorch.api')
+    # A CUDA-enabled installation does not make this CPU workload a GPU model.
+    monkeypatch.setattr(torch.version, 'cuda', '13.2')
+    calls = []
+
+    class Tracking:
+        def start_run(self, name):
+            pass
+
+        def log_metrics(self, metrics, *, step):
+            assert set(metrics) == {'train/mse', 'validation/rmse'}
+
+        def log_params(self, params):
+            pass
+
+        def log_model(self, model, **kwargs):
+            assert next(model.parameters()).device.type == 'cpu'
+            calls.append(kwargs)
+            return SimpleNamespace(version_name=kwargs['version_name'])
+
+        def end_run(self, *, status):
+            assert status == 'FINISHED'
+
+    version = SimpleNamespace(set_alias=lambda name: None)
+    registry = SimpleNamespace(get_model=lambda name: SimpleNamespace(version=lambda name: version))
+    stage = Stage()
+    profile = SimpleNamespace(model='CUSTOMER_MODEL', artifact_root='@DB.SCHEMA.STAGE/attempt')
+    monkeypatch.setattr(workload, 'native', lambda p: (None, SimpleNamespace(file=stage), registry, Tracking()))
+    result = workload.run_phase('train', tmp_path, profile)
+    assert len(result['versions']) == len(calls) == 2
+    for call in calls:
+        assert call['options'] == {'cuda_version': None}
+        assert call['pip_requirements'] == [f'torch=={torch.__version__.split("+")[0]}']
+        assert call['target_platforms'] == ['SNOWPARK_CONTAINER_SERVICES']
