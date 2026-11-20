@@ -751,12 +751,13 @@ class TrackingSession:
                error: Optional[BaseException]) -> None:
         r"""Ends the run, failed if error."""
         worker = self._worker
-        if self.spec is None or worker is None:
+        initial_spec = self.spec
+        if initial_spec is None or worker is None:
             return
 
         def build_record() -> Optional[RunRecord]:
             try:
-                final = self.spec if spec is None else spec()
+                final = initial_spec if spec is None else spec()
                 selected = (None if self._search is None else
                             self._search.best)
                 if error is None and selected is not None:
