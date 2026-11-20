@@ -194,8 +194,8 @@ def materialize_values(
         from kumo.pytorch.dataset import _local_parquet_files
 
         original = pq.read_schema(_local_parquet_files(anchors.source.path)[0])
-        renamed = dict(anchors.source.columns)
-        types = {renamed.get(field.name, field.name): field.type for field in original}
+        binding = anchors.source._bind_columns(tuple(anchors.columns))
+        types = {name: original.field(physical).type for name, physical in binding.items()}
     else:
         types = {
             field.name: field.type for field in pa.Table.from_pylist(anchors.source.rows).schema

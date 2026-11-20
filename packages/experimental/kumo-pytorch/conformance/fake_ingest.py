@@ -70,6 +70,7 @@ class FKey(TypedDict, total=False):
 
 class ColumnConfig(TypedDict, total=False):
     name: str
+    source_name: str
     ingested_dtype: str
     precision: int
     scale: int
@@ -293,8 +294,14 @@ def config_violations(
         columns = [column["name"] for column in table["columns"]]
         if columns != sorted(spec.columns):
             problems.append(f"{label}: columns {columns} != declared {sorted(spec.columns)}")
+        source = dataset.tables[label]
+        assert isinstance(source, Parquet)
+        physical_of = {source.columns.get(name, name): name for name in arrow_types[label]}
         for column in table["columns"]:
-            arrow = arrow_types[label].get(column["name"])
+            physical = column.get("source_name", column["name"])
+            if physical != physical_of.get(column["name"]):
+                problems.append(f"{label}.{column['name']}: source_name {physical}")
+            arrow = arrow_types[label].get(physical)
             expected = None if arrow is None else ingested_dtype(arrow)
             if expected is None:
                 problems.append(f"{label}.{column['name']}: Arrow type {arrow} is not in the table")
@@ -304,8 +311,6 @@ def config_violations(
             problems.append(f"{label}: primary key {table['primary_key']}")
         if table.get("create_time") != table_clock(spec):
             problems.append(f"{label}: create_time {table.get('create_time')}")
-        source = dataset.tables[label]
-        assert isinstance(source, Parquet)
         if table["source"] != {"type": "parquet", "paths": parquet_files(source)}:
             problems.append(f"{label}: source {table['source']}")
     declared = {foreign_key(relation, tables)[:2] for relation in schema.relations}

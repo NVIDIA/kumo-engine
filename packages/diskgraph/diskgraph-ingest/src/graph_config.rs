@@ -294,6 +294,9 @@ pub enum SemanticType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSpec {
     pub name: String,
+    /// Physical Parquet column name; defaults to the logical name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_dtype: Option<String>,
     #[serde(alias = "dtype")]
@@ -320,6 +323,19 @@ pub struct ColumnSpec {
     /// parquet), or supplied by the user on the upstream Kumo config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicategorical_delimiter: Option<String>,
+}
+
+impl ColumnSpec {
+    pub fn source_column(&self) -> &str {
+        self.source_name.as_deref().unwrap_or(&self.name)
+    }
+
+    pub fn source_description(&self) -> String {
+        match &self.source_name {
+            Some(source) => format!("column '{}' (stored as '{}')", self.name, source),
+            None => format!("column '{}'", self.name),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -784,6 +800,13 @@ impl GraphConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_synthetic_columns(&HashSet::new())
+    }
+
+    pub(crate) fn validate_with_synthetic_columns(
+        &self,
+        synthetic_columns: &HashSet<(&str, &str)>,
+    ) -> Result<()> {
         let mut errors = Vec::new();
         if self.dataset_name.trim().is_empty() {
             errors.push("dataset_name is required".to_string());
@@ -870,6 +893,7 @@ impl GraphConfig {
                 errors.push(format!("table {} has no columns", table.name));
             }
             let mut col_names = HashSet::new();
+            let mut source_columns: HashMap<&str, &ColumnSpec> = HashMap::new();
             // Track per-table path types: a single table must not mix
             // local and cloud paths, but different tables CAN use
             // different path types (e.g. one table local, another S3).
@@ -909,6 +933,38 @@ impl GraphConfig {
                         "table {} has duplicate column {}",
                         table.name, col.name
                     ));
+                }
+                if let Some(source_name) = &col.source_name {
+                    if source_name.is_empty() {
+                        errors.push(format!(
+                            "table {} {} has empty source_name",
+                            table.name,
+                            col.source_description()
+                        ));
+                    }
+                    if !matches!(
+                        table.source,
+                        DataSource::Parquet { .. } | DataSource::ObjectStoreParquet { .. }
+                    ) {
+                        errors.push(format!(
+                            "table {} {}: source_name requires a Parquet source",
+                            table.name,
+                            col.source_description()
+                        ));
+                    }
+                }
+                if !synthetic_columns.contains(&(table.name.as_str(), col.name.as_str())) {
+                    if let Some(other) = source_columns
+                        .insert(col.source_column(), col)
+                        .filter(|other| other.name != col.name)
+                    {
+                        errors.push(format!(
+                            "table {} {} and {} read the same source column",
+                            table.name,
+                            other.source_description(),
+                            col.source_description()
+                        ));
+                    }
                 }
                 if col.fixed_len.is_some()
                     && !matches!(
@@ -1594,6 +1650,7 @@ mod tests {
 
     fn make_column(name: &str, dtype: IngestedType) -> ColumnSpec {
         ColumnSpec {
+            source_name: None,
             name: name.to_string(),
             source_dtype: None,
             ingested_dtype: dtype,
@@ -2010,6 +2067,7 @@ mod tests {
 
     fn make_multicat_column(name: &str, dtype: IngestedType, delim: Option<&str>) -> ColumnSpec {
         ColumnSpec {
+            source_name: None,
             name: name.to_string(),
             source_dtype: None,
             ingested_dtype: dtype,

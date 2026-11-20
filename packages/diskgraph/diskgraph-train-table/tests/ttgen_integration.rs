@@ -721,6 +721,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                     mk_col("category", IngestedType::String),
                     mk_col("segment", IngestedType::Int64),
                     ColumnSpec {
+                        source_name: None,
                         name: "labels".to_string(),
                         source_dtype: None,
                         ingested_dtype: IngestedType::StringArray,
@@ -833,6 +834,7 @@ fn build_graph1(root: &Path) -> PathBuf {
 
 fn mk_col(name: &str, dtype: IngestedType) -> ColumnSpec {
     ColumnSpec {
+        source_name: None,
         name: name.to_string(),
         source_dtype: None,
         ingested_dtype: dtype,
@@ -9757,6 +9759,7 @@ fn build_multicat_graph(
 
     // ── Tags column with multicat semantics ──
     let tags_col = ColumnSpec {
+        source_name: None,
         name: "tags".to_string(),
         source_dtype: None,
         ingested_dtype: shape.ingested_dtype(),
@@ -10126,6 +10129,7 @@ fn build_scalar_status_graph(root: &Path) -> PathBuf {
     write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
 
     let status_col = ColumnSpec {
+        source_name: None,
         name: "status".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::String,
@@ -10331,6 +10335,7 @@ fn build_multicat_with_empty_list(root: &Path) -> PathBuf {
     write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
 
     let tags_col = ColumnSpec {
+        source_name: None,
         name: "tags".to_string(),
         source_dtype: None,
         ingested_dtype: IngestedType::StringArray,

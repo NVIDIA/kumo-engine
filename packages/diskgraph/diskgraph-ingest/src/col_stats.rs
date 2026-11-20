@@ -3820,6 +3820,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, s)| ColumnSpec {
+                source_name: None,
                 name: format!("c{i}"),
                 source_dtype: None,
                 ingested_dtype: IngestedType::String,
@@ -3843,6 +3844,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, (stype, dtype, delim))| ColumnSpec {
+                source_name: None,
                 name: format!("c{i}"),
                 source_dtype: None,
                 ingested_dtype: dtype.clone(),
