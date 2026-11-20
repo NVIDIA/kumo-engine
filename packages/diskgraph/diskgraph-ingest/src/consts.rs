@@ -20,9 +20,13 @@ pub const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 pub const PK_MAP_MEM_BUDGET_FRAC: f64 = 0.9;
 pub const PK_MAP_LOAD_FACTOR_NUM: u64 = 8;
 pub const PK_MAP_LOAD_FACTOR_DEN: u64 = 7;
-pub const PK_MAP_MPHF_FACTOR_NUM: u64 = 125;
-pub const PK_MAP_MPHF_FACTOR_DEN: u64 = 100;
-pub const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
+pub const PK_MAP_MPHF_FACTOR_NUM: u64 = 100;
+pub const PK_MAP_MPHF_FACTOR_DEN: u64 = 99;
+pub const PTRHASH_BUCKET_BYTES_PER_KEY: u64 = 2;
+pub const PK_MAP_TASK_FIXED_BYTES: u64 = 8 << 20;
+pub const VAR_KEY_HEAP_HEADER_BYTES: u64 = 8;
+pub const VAR_KEY_HEAP_ALIGN_BYTES: u64 = 16;
+pub const VAR_KEY_HEAP_MIN_BYTES: u64 = 32;
 pub const INVALID_LOCAL_ID: u32 = u32::MAX;
 pub const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
 /// Column name whose value seeds TT-NG temporal-LP timestamp grouping. Matches

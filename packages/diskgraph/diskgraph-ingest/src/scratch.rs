@@ -119,14 +119,23 @@ pub fn reserve_map<K: std::cmp::Eq + std::hash::Hash, V, S: std::hash::BuildHash
     }
 }
 
+fn var_key_heap_bytes(avg_var_bytes: u64) -> u64 {
+    avg_var_bytes
+        .saturating_add(VAR_KEY_HEAP_HEADER_BYTES)
+        .div_ceil(VAR_KEY_HEAP_ALIGN_BYTES)
+        .saturating_mul(VAR_KEY_HEAP_ALIGN_BYTES)
+        .max(VAR_KEY_HEAP_MIN_BYTES)
+}
+
 pub fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u64) -> u64 {
     if row_count == 0 {
         return 0;
     }
-    let capacity = row_count
+    let buckets = row_count
         .saturating_mul(PK_MAP_LOAD_FACTOR_NUM)
-        .saturating_add(PK_MAP_LOAD_FACTOR_DEN - 1)
-        / PK_MAP_LOAD_FACTOR_DEN;
+        .div_ceil(PK_MAP_LOAD_FACTOR_DEN)
+        .checked_next_power_of_two()
+        .unwrap_or(u64::MAX);
     let entry_size = match key_type {
         KeyType::Int64 => std::mem::size_of::<(u64, u32)>(),
         KeyType::VarBytes => std::mem::size_of::<(Vec<u8>, u32)>(),
@@ -134,24 +143,24 @@ pub fn estimate_pk_map_bytes(row_count: u64, key_type: KeyType, avg_var_bytes: u
         KeyType::Uuid256 => std::mem::size_of::<([u8; 32], u32)>(),
         KeyType::Ip => std::mem::size_of::<([u8; 16], u32)>(),
     } as u64;
-    let ctrl_bytes = capacity;
-    let map_bytes = capacity
-        .saturating_mul(entry_size)
-        .saturating_add(ctrl_bytes);
+    let map_bytes = buckets.saturating_mul(entry_size + 1);
     let key_bytes = if matches!(key_type, KeyType::VarBytes) {
-        row_count.saturating_mul(avg_var_bytes)
+        row_count.saturating_mul(var_key_heap_bytes(avg_var_bytes))
     } else {
         0
     };
     let slots = row_count
         .saturating_mul(PK_MAP_MPHF_FACTOR_NUM)
-        .saturating_add(PK_MAP_MPHF_FACTOR_DEN - 1)
-        / PK_MAP_MPHF_FACTOR_DEN;
+        .div_ceil(PK_MAP_MPHF_FACTOR_DEN);
     let entries_bytes = slots.saturating_mul(std::mem::size_of::<(u64, u32)>() as u64);
-    let base = map_bytes
+    let ptrhash_bytes = row_count.saturating_mul(
+        (2 * std::mem::size_of::<PkPtrHashOutput>()) as u64 + PTRHASH_BUCKET_BYTES_PER_KEY,
+    );
+    map_bytes
         .saturating_add(key_bytes)
-        .saturating_add(entries_bytes);
-    base.saturating_mul(100 + PK_MAP_ESTIMATE_PAD_PCT) / 100
+        .saturating_add(entries_bytes)
+        .saturating_add(ptrhash_bytes)
+        .saturating_add(PK_MAP_TASK_FIXED_BYTES)
 }
 
 pub fn estimate_varbytes_avg_len_multi(row_count: u64, max_row_len: u32, paths: &[PathBuf]) -> u64 {

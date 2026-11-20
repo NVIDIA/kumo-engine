@@ -9515,7 +9515,11 @@ impl IngestContext {
                         } else {
                             0
                         };
-                        let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
+                        let estimate = estimate_pk_map_bytes(
+                            union_rows.max(reserve_rows),
+                            key_type,
+                            avg_var_bytes,
+                        );
                         // Track this task's estimate so we can compare the
                         // sum-of-estimates vs the actual peak RSS at end of pk_map.
                         estimate_sum.fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);

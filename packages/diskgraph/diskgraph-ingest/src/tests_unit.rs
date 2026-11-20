@@ -649,6 +649,66 @@ fn pk_map_estimate_varbytes_respects_avg_len() {
     assert!(large > small);
 }
 
+fn vec_bytes<T>(values: &Vec<T>) -> usize {
+    values.capacity() * std::mem::size_of::<T>()
+}
+
+fn pk_map_build_bytes(keys: u64) -> (u64, u64) {
+    use crate::mapping::{KeyType, PkPtrHash, PkPtrHashOutput};
+    use crate::scratch::{estimate_pk_map_bytes, new_pk_map, reserve_map, PkMapHashMap};
+    use ptr_hash::{DefaultPtrHash, PtrHashParams, PtrHashScratch};
+    let reserve_rows = (keys * 110).div_ceil(100);
+    let mut seen: PkMapHashMap<u64, u32> = new_pk_map();
+    reserve_map(&mut seen, reserve_rows as usize);
+    for i in 0..keys {
+        seen.insert(i.wrapping_mul(0x9e37_79b9_7f4a_7c15), i as u32);
+    }
+    let mut scratch = PtrHashScratch::<PkPtrHashOutput>::new();
+    let mphf = DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
+        &seen,
+        PtrHashParams::default(),
+        &mut scratch,
+    )
+    .expect("ptrhash build");
+    let entries = vec![(0u64, 0u32); mphf.max_index()];
+    let map_bytes = seen.capacity() / 7 * 8 * (std::mem::size_of::<(u64, u32)>() + 1);
+    let ptrhash_bytes = vec_bytes(&scratch.hashes)
+        + vec_bytes(&scratch.hashes_tmp)
+        + vec_bytes(&scratch.part_starts)
+        + 2 * vec_bytes(&scratch.pilots)
+        + vec_bytes(&scratch.taken)
+        + scratch
+            .taken
+            .iter()
+            .map(|bits| bits.capacity().div_ceil(8))
+            .sum::<usize>()
+        + vec_bytes(&scratch.bucket_starts)
+        + vec_bytes(&scratch.bucket_order)
+        + vec_bytes(&scratch.bucket_len_cnt)
+        + vec_bytes(&scratch.slots)
+        + vec_bytes(&scratch.slots_tmp)
+        + scratch.stack.capacity() * std::mem::size_of::<(usize, u32)>();
+    let real = (map_bytes + ptrhash_bytes + vec_bytes(&entries)) as u64;
+    (real, estimate_pk_map_bytes(reserve_rows, KeyType::Int64, 0))
+}
+
+#[test]
+fn pk_map_estimate_covers_a_real_int64_build() {
+    for keys in [20_000, 300_000, 1_100_000] {
+        let (real, estimate) = pk_map_build_bytes(keys);
+        assert!(
+            estimate >= real,
+            "keys={keys} estimate={estimate} real={real}"
+        );
+        if keys > 1_000_000 {
+            assert!(
+                estimate <= real + real / 4,
+                "keys={keys} estimate={estimate} real={real}"
+            );
+        }
+    }
+}
+
 #[test]
 fn shard_assignment_consistent_for_same_pk() {
     // Verifies that same PK bytes always produce the same shard, enabling per-shard deduplication.
