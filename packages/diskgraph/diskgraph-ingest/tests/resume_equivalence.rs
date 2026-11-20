@@ -811,10 +811,41 @@ fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
         let split_root = tmp.path().join(format!("split-{resumed_with}"));
         set_shards(2)?;
         run_partial(&config_path, &split_root, IngestPhase::Encode)?;
+        let state: serde_json::Value =
+            serde_json::from_slice(&fs::read(split_root.join("_tmp/encode_state.json"))?)?;
+        let encoded_id = state["index_build_id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("partial Encode state lacks index_build_id"))?
+            .to_owned();
         set_shards(resumed_with)?;
-        ingest(&split_root, Some(IngestPhase::PkMap))?;
+        if resumed_with == 4 {
+            let error = ingest_with_stats(
+                &config_path,
+                split_root.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some("different-build".into()),
+                    ..options(Some(IngestPhase::PkMap))
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("index_build_id already has output"));
+            assert!(marker_path(&split_root, IngestPhase::Encode).exists());
+            ingest_with_stats(
+                &config_path,
+                split_root.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    index_build_id: Some(encoded_id.clone()),
+                    ..options(Some(IngestPhase::PkMap))
+                },
+            )?;
+        } else {
+            ingest(&split_root, Some(IngestPhase::PkMap))?;
+        }
         let metadata: serde_json::Value =
             serde_json::from_slice(&fs::read(split_root.join("index_metadata.json"))?)?;
+        assert_eq!(metadata["index_build_id"].as_str(), Some(encoded_id.as_str()));
         let shards = metadata["node_types"][0]["shards"].as_array().map(Vec::len);
         assert_eq!(shards, Some(expected_shards));
     }
