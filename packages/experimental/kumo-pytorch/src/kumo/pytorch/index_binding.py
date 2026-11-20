@@ -247,27 +247,11 @@ def open_index(path: str | Path, *, snapshot_id: str | None = None) -> IndexBind
     recorded_id = provenance.get("id")
     if snapshot_id and recorded_id and snapshot_id != recorded_id:
         raise ValueError("snapshot identity differs from persisted provenance")
-    identity = snapshot_id or recorded_id
-    if not identity and legacy:
-        identity = _fingerprint(
-            {
-                key: legacy[key]
-                for key in ("dataset_fingerprint", "schema_fingerprint", "config_fingerprint")
-            }
+    identity = metadata.get("index_build_id")
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError(
+            "snapshot has no physical index_build_id; legacy indexes cannot be adopted"
         )
-    if not identity:
-        # Bare native indexes have no guaranteed producer identity. Hash the existing
-        # artifact once, rather than equating same-sized files or inventing metadata.
-        digest = hashlib.sha256()
-        for entry in sorted(_read(root, "_MANIFEST.json")["files"], key=lambda e: e["rel_path"]):
-            file = root / entry["rel_path"]
-            if not file.resolve().is_relative_to(root):
-                raise ValueError("native manifest contains a path outside the index")
-            digest.update(entry["rel_path"].encode())
-            with file.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        identity = digest.hexdigest()
     binding = IndexBinding(
         _DiskGraphIndex(str(root), {}),
         schema,

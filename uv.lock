@@ -3710,6 +3710,7 @@ name = "kumo-pytorch"
 source = { editable = "packages/experimental/kumo-pytorch" }
 dependencies = [
     { name = "diskgraph" },
+    { name = "kumo-settings" },
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "tokenizers" },
@@ -3731,6 +3732,7 @@ examples = [
 [package.metadata]
 requires-dist = [
     { name = "diskgraph", editable = "packages/diskgraph" },
+    { name = "kumo-settings", editable = "packages/kumo-settings" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pyarrow", specifier = ">=15,<25" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },

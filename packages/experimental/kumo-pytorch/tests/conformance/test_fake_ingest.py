@@ -92,7 +92,7 @@ class _Source:
         schema: DataSchema,
         *,
         num_threads: int | None,
-        work_dir: Path | None = None,
+        paths=None,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
 

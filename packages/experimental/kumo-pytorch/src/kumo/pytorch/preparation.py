@@ -273,14 +273,11 @@ class Plan:
                 )
             )
         ):
-            import tempfile
             from pathlib import Path
 
             from kumo.pytorch.aggregate_materialization import materialize_values
 
-            parent = Path(source._work_dir) / "tasks"
-            parent.mkdir(parents=True, exist_ok=True)
-            directory = tempfile.TemporaryDirectory(prefix="task-", dir=parent)
+            directory = source.new_task_directory()
             try:
                 values = materialize_values(
                     self,

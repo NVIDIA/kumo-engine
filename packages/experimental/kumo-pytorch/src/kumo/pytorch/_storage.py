@@ -6,28 +6,54 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 
-def normalize_work_dir(
-    index: str | Path, work_dir: str | Path | None, *, external_only: bool = False
-) -> Path | None:
-    """Use the legacy layout for an omitted or explicitly equal index path."""
+def managed_paths(index_build_id: str | None = None):
+    """Resolve one physical build under the process-wide Kumo scratch root."""
+    try:
+        from diskgraph import new_index_build_id
+        from diskgraph.managed_paths import ManagedIndexPaths
+    except ImportError as error:
+        raise RuntimeError(
+            "Managed indexes require DiskGraph build-identity support; install "
+            "DiskGraph from the matching kumo-engine revision"
+        ) from error
+    import kumo.settings
+
+    return ManagedIndexPaths(
+        kumo.settings.scratch_dir().resolve(),
+        new_index_build_id() if index_build_id is None else index_build_id,
+    )
+
+
+def verify_managed_roots(paths, index: str | Path) -> None:
+    """Keep consumer writes in this build's managed task and cache roots."""
     base = Path(index).resolve()
-    work = None if work_dir is None else Path(work_dir).resolve()
-    if not external_only and (work is None or work == base):
-        return None
-    if work is None:
-        raise ValueError("work_dir must be outside the base index")
-    # Validate every writable root before creating any of them, including symlinks.
-    for destination in (work, work / "tasks", work / "train_tables", work / "cache"):
+    for destination in (paths.task_dir("probe").parent, paths.cache_dir):
         resolved = destination.resolve()
         if resolved.is_relative_to(base) or base.is_relative_to(resolved):
-            raise ValueError(
-                "work_dir and its writable roots must be outside and disjoint from the base index"
-            )
-    return work
+            raise ValueError("managed task/cache paths must be disjoint from the base index")
+        if resolved != destination:
+            raise ValueError("managed task/cache paths must not redirect to another location")
+
+
+class TaskDirectory:
+    """An exclusively owned loader task directory; never adopt another task's files."""
+
+    def __init__(self, paths, task_id: str | None = None):
+        import uuid
+
+        self.task_id = uuid.uuid4().hex if task_id is None else task_id
+        path = paths.task_dir(self.task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()  # Refuse a live task or leftover state with the same ID.
+        self.name = str(path)
+
+    def cleanup(self):
+        import shutil
+
+        shutil.rmtree(self.name, ignore_errors=True)
 
 
 class ColumnCache:
@@ -39,15 +65,6 @@ class ColumnCache:
         self.external = self.root.resolve() != self.index.resolve()
         if not self.external:
             self.root = self.index
-
-    @classmethod
-    def for_work_dir(cls, index: str | Path, work_dir: Path | None, identity: str):
-        root = (
-            None
-            if work_dir is None
-            else work_dir / "cache" / hashlib.sha256(identity.encode()).hexdigest()
-        )
-        return cls(index, root)
 
     def destination(self, name: str) -> Path:
         return self.root / "col_stats" / name
