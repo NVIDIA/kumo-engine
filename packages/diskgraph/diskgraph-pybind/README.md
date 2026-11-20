@@ -100,13 +100,13 @@ batches, sample_count = index.iter(
 
 `LayerSpec.fanouts` keys are native relation names. A relation uses its override
 or the layer's `default_fanout`; `None` skips relations without an override.
-`SamplingPlan.to_dict()` exports the existing native representation. `RuntimeIndex`
-accepts only `SamplingPlan` and converts it at the native JSON boundary;
-dictionaries, JSON strings, `None`, and other types raise `TypeError`. Use
+`RuntimeIndex.iter` accepts only `SamplingPlan`; PyO3 reads its dataclass fields
+directly into the Rust sampling structs. Dictionaries, JSON strings, `None`,
+and other types raise `TypeError`. Use
 `SamplingPlan()` for zero-hop iteration. Kumo trainer and DataModule callers pass
 the dataclass throughout the call stack. Plan construction does not open an
-index or load Torch/training modules. The dataclasses are mutable; edits affect subsequent
-exports and iterator construction.
+index or load Torch/training modules. The dataclasses are mutable; edits affect
+subsequent iterator construction.
 
 `WeightedSampling(weighting, temporal=False)` represents the native `weighted`
 variant; `temporal=True` selects `temporal_weighted`. Weightings are

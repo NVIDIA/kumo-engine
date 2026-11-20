@@ -1295,7 +1295,7 @@ impl RuntimeIndex {
     pub fn iter(
         &self,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: SamplingPlan,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1325,7 +1325,7 @@ impl RuntimeIndex {
         // will actually consume`. Resolved ONCE in `build()` into a
         // `ResolvedProjection` shared by every batch this iterator yields.
         //
-        // A plain parameter rather than a key inside `sampling_plan_json`:
+        // A separate parameter rather than a field of `SamplingPlan`:
         // `SamplingPlan` describes the TRAVERSAL, is embedded in
         // `BatchSamplingRequest`, is deep-cloned per batch and is bincode-
         // serialized -- none of which should be true of a caller-intent hint
@@ -1355,7 +1355,7 @@ impl RuntimeIndex {
             Arc::clone(&self.engine),
             self.namespace.clone(),
             stage_table,
-            sampling_plan_json,
+            sampling_plan,
             num_workers,
             worker_id,
             shuffle,
@@ -1393,7 +1393,7 @@ impl RuntimeBatchIterator {
         engine: Arc<DiskGraphEngine>,
         namespace: String,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: SamplingPlan,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1538,8 +1538,6 @@ impl RuntimeBatchIterator {
             weighted_seed_sampling_json,
             bucket_extension_root,
         })?;
-        let sampling_plan: SamplingPlan = serde_json::from_str(&sampling_plan_json)
-            .map_err(|e| RuntimeError::config(format!("Invalid plan JSON: {e}")))?;
         let pseudo_time = PseudoTimeSeed::for_stage(
             reader.as_ref(),
             &stage_table,

@@ -193,6 +193,7 @@ mod custom_tt_entry;
 mod exact_quantiles;
 mod index_metadata;
 mod runtime_batch_iterator;
+mod sampling_plan;
 mod string_lookup;
 mod success_marker;
 mod temporal;

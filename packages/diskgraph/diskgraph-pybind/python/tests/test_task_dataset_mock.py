@@ -264,10 +264,11 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
 
     monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
 
+    plan = SamplingPlan()
     iterator, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan=SamplingPlan(),
+        sampling_plan=plan,
         num_workers=2,
         worker_id=1,
         shuffle=True,
@@ -279,7 +280,7 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
 
     # RuntimeIndex ctor args: 0=parent_root, 1=tt_ref, 2=rnd_seed,
     #   3=num_threads.
-    # RuntimeIndex.iter args: 0=stage_table, 1=plan_json, 2=num_workers,
+    # RuntimeIndex.iter args: 0=stage_table, 1=sampling_plan, 2=num_workers,
     #   3=worker_id, 4=shuffle, 5=rnd_seed, 6=epoch, 7=batch_size,
     #   8=drop_last
     assert isinstance(iterator, FakeIterator)
@@ -287,6 +288,7 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
     assert captured.index_args[0] == "/idx"
     assert captured.index_args[1] == "train_tables/tt_user"
     assert captured.args[0] == "tt_user__train"
+    assert captured.args[1] is plan
     assert captured.args[4:8] == (True, 123, 7, 4)
     assert captured.args[8] is True
 

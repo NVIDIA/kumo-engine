@@ -135,12 +135,6 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     )
 
 
-def _sampling_plan_json(sampling_plan: SamplingPlan) -> str:
-    if not isinstance(sampling_plan, SamplingPlan):
-        raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
-    return json.dumps(sampling_plan.to_dict(), sort_keys=True)
-
-
 def _weighted_seed_sampling_json(
     ref: Mapping[str, Any],
     stage: str,
@@ -415,7 +409,8 @@ class RuntimeIndex:
         Raises:
             TypeError: If ``sampling_plan`` is not a ``SamplingPlan``.
         """
-        plan_json = _sampling_plan_json(sampling_plan)
+        if not isinstance(sampling_plan, SamplingPlan):
+            raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
         seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
         _validate_worker_iterator_inputs(
             batch_size=batch_size,
@@ -439,7 +434,7 @@ class RuntimeIndex:
         )
         iterator = self._index_for(extension_ref).iter(
             ref["table_name"],
-            plan_json,
+            sampling_plan,
             int(num_workers),
             int(worker_id),
             bool(shuffle),

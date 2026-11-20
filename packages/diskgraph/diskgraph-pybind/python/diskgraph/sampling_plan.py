@@ -14,7 +14,7 @@ class ExponentialDecay:
     """Weight edges by ``exp(-rate * delta_seconds)``.
 
     Args:
-        rate: Decay rate per second, serialized as Rust's ``lambda`` field.
+        rate: Decay rate per second, corresponding to Rust's ``lambda`` field.
     """
 
     rate: float
@@ -106,50 +106,3 @@ class SamplingPlan:
     """
 
     layers: list[LayerSpec] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, list[dict[str, object]]]:
-        """Return the existing native sampling-plan representation.
-
-        Returns:
-            Fresh dictionaries/lists suitable for the native JSON boundary.
-        """
-        return {
-            "layers": [
-                {
-                    "fanouts": {
-                        name: _fanout_dict(spec) for name, spec in layer.fanouts.items()
-                    },
-                    "default_fanout": (
-                        _fanout_dict(layer.default_fanout)
-                        if layer.default_fanout is not None
-                        else None
-                    ),
-                }
-                for layer in self.layers
-            ]
-        }
-
-
-def _fanout_dict(spec: FanoutSpec) -> dict[str, object]:
-    mode = spec.mode
-    return {
-        "fanout": spec.fanout,
-        "mode": (
-            {
-                "temporal_weighted" if mode.temporal else "weighted": {
-                    "weighting": _weighting_dict(mode.weighting)
-                }
-            }
-            if isinstance(mode, WeightedSampling)
-            else mode
-        ),
-        "absent_key_policy": spec.absent_key_policy,
-    }
-
-
-def _weighting_dict(weighting: Weighting) -> dict[str, dict[str, float | int | str]]:
-    if isinstance(weighting, ExponentialDecay):
-        return {"exponential_decay": {"lambda": weighting.rate}}
-    if isinstance(weighting, LinearDecay):
-        return {"linear_decay": {"half_life_seconds": weighting.half_life_seconds}}
-    return {"custom_expression": {"id": weighting.id}}

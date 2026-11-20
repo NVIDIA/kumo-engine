@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import asdict
 from typing import Any
 
 import pyarrow as pa
@@ -86,7 +87,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         if extras == "neighborhood":
             current.with_neighborhoods(
                 json.dumps(
-                    {"context": {"plan": _sampling_plan().to_dict(), "projections": {}}}
+                    {"context": {"plan": asdict(_sampling_plan()), "projections": {}}}
                 )
             )
         elif extras == "history":

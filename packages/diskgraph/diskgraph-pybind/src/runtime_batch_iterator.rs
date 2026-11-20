@@ -827,7 +827,7 @@ impl RuntimeIndex {
     /// once per chunk when work is handed out dynamically.
     #[pyo3(signature = (
         stage_table,
-        sampling_plan_json,
+        sampling_plan,
         num_workers,
         worker_id,
         shuffle,
@@ -859,7 +859,7 @@ impl RuntimeIndex {
     pub fn iter(
         &self,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: &Bound<'_, PyAny>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -887,6 +887,7 @@ impl RuntimeIndex {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
+        let sampling_plan = crate::sampling_plan::extract_sampling_plan(sampling_plan)?;
         Ok(RuntimeBatchIterator {
             history: None,
             planning: None,
@@ -894,7 +895,7 @@ impl RuntimeIndex {
                 .inner
                 .iter(
                     stage_table,
-                    sampling_plan_json,
+                    sampling_plan,
                     num_workers,
                     worker_id,
                     shuffle,
@@ -989,7 +990,7 @@ impl RuntimeBatchIterator {
         parent_root,
         tt_id,
         stage_table,
-        sampling_plan_json,
+        sampling_plan,
         num_workers,
         worker_id,
         shuffle,
@@ -1023,7 +1024,7 @@ impl RuntimeBatchIterator {
         parent_root: String,
         tt_id: String,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: &Bound<'_, PyAny>,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1052,6 +1053,7 @@ impl RuntimeBatchIterator {
         disable_pseudo_time: bool,
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
+        let sampling_plan = crate::sampling_plan::extract_sampling_plan(sampling_plan)?;
         Ok(Self {
             history: None,
             planning: None,
@@ -1059,7 +1061,7 @@ impl RuntimeBatchIterator {
                 .map_err(map_runtime_err)?
                 .iter(
                     stage_table,
-                    sampling_plan_json,
+                    sampling_plan,
                     num_workers,
                     worker_id,
                     shuffle,

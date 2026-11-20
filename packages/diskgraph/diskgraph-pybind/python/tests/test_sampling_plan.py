@@ -5,17 +5,16 @@
 
 from __future__ import annotations
 
-import json
 import pickle
 import subprocess
 import sys
 from dataclasses import is_dataclass
+from types import SimpleNamespace
 from typing import TypedDict
 
 import diskgraph
 import pytest
 from diskgraph import DiskgraphConfigError, RuntimeIndex
-from diskgraph.runtime_batch_iterator import _sampling_plan_json
 from diskgraph.sampling_plan import (
     CustomExpression,
     ExponentialDecay,
@@ -25,7 +24,6 @@ from diskgraph.sampling_plan import (
     SamplingMode,
     SamplingPlan,
     WeightedSampling,
-    Weighting,
 )
 from test_runtime_batch_iterator_e2e import (
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
@@ -74,100 +72,36 @@ def test_empty_plan_defaults_and_public_exports() -> None:
     first_layer, second_layer = LayerSpec(), LayerSpec()
     first_layer.fanouts["relation"] = FanoutSpec(0, "uniform", "reject_plan")
     assert second_layer.fanouts == {}
-    assert SamplingPlan().to_dict() == {"layers": []}
-    assert SamplingPlan([LayerSpec()]).to_dict() == {
-        "layers": [{"fanouts": {}, "default_fanout": None}]
-    }
+    assert SamplingPlan().layers == []
+    assert SamplingPlan([LayerSpec()]).layers == [LayerSpec()]
 
 
-@pytest.mark.parametrize(
-    "mode", ["uniform", "deterministic_uniform", "temporal_most_recent"]
-)
-def test_basic_modes_and_relation_overrides_keep_native_shape(
-    mode: SamplingMode,
-) -> None:
-    """Hop order, relation names, defaults, and missing-key policies are explicit."""
-    plan = _plan(mode)
-    expected = {
-        "layers": [
-            {
-                "fanouts": {},
-                "default_fanout": {
-                    "fanout": 4,
-                    "mode": mode,
-                    "absent_key_policy": "uniform_fallback",
-                },
-            },
-            {
-                "fanouts": {
-                    "users__orders": {
-                        "fanout": 0,
-                        "mode": "uniform",
-                        "absent_key_policy": "reject_plan",
-                    }
-                },
-                "default_fanout": {
-                    "fanout": 2,
-                    "mode": mode,
-                    "absent_key_policy": "uniform_fallback",
-                },
-            },
-        ]
-    }
-    assert plan.to_dict() == expected
-    assert json.loads(_sampling_plan_json(plan)) == expected
-
-
-@pytest.mark.parametrize("temporal", [False, True])
-@pytest.mark.parametrize(
-    "weighting, expected",
-    [
-        (ExponentialDecay(0.125), {"exponential_decay": {"lambda": 0.125}}),
-        (LinearDecay(3600), {"linear_decay": {"half_life_seconds": 3600}}),
-        (CustomExpression("score"), {"custom_expression": {"id": "score"}}),
-    ],
-)
-def test_weighted_modes_keep_rust_variant_tags(
-    temporal: bool,
-    weighting: Weighting,
-    expected: dict[str, dict[str, float | int | str]],
-) -> None:
-    """Both weighted modes preserve all three native weighting representations."""
-    mode = WeightedSampling(weighting, temporal=temporal)
-    kind = "temporal_weighted" if temporal else "weighted"
-    assert SamplingPlan(
-        [LayerSpec(default_fanout=FanoutSpec(3, mode, "reject_plan"))]
-    ).to_dict() == {
-        "layers": [
-            {
-                "fanouts": {},
-                "default_fanout": {
-                    "fanout": 3,
-                    "mode": {kind: {"weighting": expected}},
-                    "absent_key_policy": "reject_plan",
-                },
-            }
-        ]
-    }
-
-
-def test_plan_remains_editable_and_export_is_independent() -> None:
-    """Ordinary dataclass/list/dict edits affect future exports without stale state."""
+def test_plan_remains_editable_and_picklable() -> None:
+    """Dataclass fields remain mutable and survive worker-process serialization."""
     plan = _plan("uniform")
-    exported = plan.to_dict()
+    original = pickle.loads(pickle.dumps(plan))
     default = plan.layers[0].default_fanout
     assert default is not None
     default.fanout = 8
     plan.layers[1].fanouts.clear()
-    assert plan.to_dict() != exported
+    assert plan != original
     restored = pickle.loads(pickle.dumps(plan))
     assert isinstance(restored, SamplingPlan)
     assert restored == plan
-    assert restored.to_dict() == plan.to_dict()
 
 
 @pytest.mark.parametrize(
-    "invalid_plan", [{"layers": []}, {}, '{"layers":[]}', None, [], 1, object()]
+    "invalid_plan",
+    [
+        {"layers": []},
+        {},
+        '{"layers":[]}',
+        None,
+        [],
+        1,
+        object(),
+        SimpleNamespace(layers=[]),
+    ],
 )
 def test_iter_rejects_untyped_plans_before_accessing_the_manifest(
     invalid_plan: object,
@@ -183,6 +117,20 @@ def test_iter_rejects_untyped_plans_before_accessing_the_manifest(
             num_workers=1,
             worker_id=0,
             shuffle=False,
+            epoch=0,
+            batch_size=2,
+        )
+
+    with pytest.raises(TypeError, match="diskgraph.SamplingPlan"):
+        diskgraph.RuntimeBatchIterator(
+            parent_root="index-must-not-be-opened",
+            tt_id="unused",
+            stage_table="train",
+            sampling_plan=invalid_plan,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            rnd_seed=None,
             epoch=0,
             batch_size=2,
         )
@@ -205,7 +153,7 @@ with patch.object(
     plan = SamplingPlan([
         LayerSpec(default_fanout=FanoutSpec(4, "uniform", "reject_plan"))
     ])
-    assert plan.to_dict()["layers"]
+    assert plan.layers
 assert "diskgraph.runtime_batch_iterator" not in sys.modules
 assert "torch" not in sys.modules
 assert "pytorch_lightning" not in sys.modules
@@ -271,7 +219,7 @@ def test_native_validation_rejects_invalid_dataclass_fanout(
     index = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
-    with pytest.raises(DiskgraphConfigError, match="invalid value"):
+    with pytest.raises(DiskgraphConfigError, match="invalid fanout"):
         index.iter(
             stage="train",
             sampling_plan=plan,
@@ -281,3 +229,39 @@ def test_native_validation_rejects_invalid_dataclass_fanout(
             epoch=0,
             batch_size=2,
         )
+
+
+def test_native_iterator_snapshots_mutable_plan_fields(
+    seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
+) -> None:
+    """Each iterator owns the plan values extracted when it was constructed."""
+    index = RuntimeIndex(
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
+    )
+    plan = _plan("uniform")
+    before, _ = index.iter(
+        stage="train",
+        sampling_plan=plan,
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+        entity_node_type="users",
+    )
+    plan.layers.clear()
+    after, _ = index.iter(
+        stage="train",
+        sampling_plan=plan,
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        epoch=0,
+        batch_size=2,
+        entity_node_type="users",
+    )
+
+    before_nodes = next(before)["graphs"]["main"]["node_ids"]
+    after_nodes = next(after)["graphs"]["main"]["node_ids"]
+    assert len(before_nodes["orders"]) > 0
+    assert "orders" not in after_nodes or len(after_nodes["orders"]) == 0
