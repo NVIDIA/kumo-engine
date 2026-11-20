@@ -31,6 +31,7 @@ import diskgraph
 import pyarrow as pa
 import pyarrow.parquet as pq
 from diskgraph import RuntimeIndex
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
@@ -51,8 +52,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
-
+    return index.iter(SamplingOptions(**kwargs))
 
 
 def _peak_rss_mb() -> float:

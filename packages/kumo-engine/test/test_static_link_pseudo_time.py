@@ -8,6 +8,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumoapi.graph import Edge
 from kumoapi.table import Column
@@ -206,16 +207,18 @@ def test_native_iterator_infers_cutoff_without_loader_options(datamodule):
 
     def sample(stage, **options):
         iterator, _ = index.iter(
-            stage=stage,
-            sampling_plan=SamplingPlan([LAYER, LAYER]),
-            num_workers=1,
-            worker_id=0,
-            shuffle=False,
-            epoch=0,
-            batch_size=16,
-            entity_node_type='users',
-            target_node_type='items',
-            **options,
+            SamplingOptions(
+                stage=stage,
+                sampling_plan=SamplingPlan([LAYER, LAYER]),
+                num_workers=1,
+                worker_id=0,
+                shuffle=False,
+                epoch=0,
+                batch_size=16,
+                entity_node_type="users",
+                target_node_type="items",
+                **options,
+            )
         )
         return list(iterator)
 

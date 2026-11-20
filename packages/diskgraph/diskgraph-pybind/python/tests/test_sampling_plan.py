@@ -15,6 +15,7 @@ from typing import TypedDict
 import diskgraph
 import pytest
 from diskgraph import DiskgraphConfigError, RuntimeIndex
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import (
     CustomExpression,
     ExponentialDecay,
@@ -153,13 +154,15 @@ def test_iter_rejects_untyped_plans_before_accessing_the_manifest(
         TypeError, match="sampling_plan must be a diskgraph.SamplingPlan"
     ):
         index.iter(
-            stage="train",
-            sampling_plan=invalid_plan,  # type: ignore[arg-type]
-            num_workers=1,
-            worker_id=0,
-            shuffle=False,
-            epoch=0,
-            batch_size=2,
+            SamplingOptions(
+                stage="train",
+                sampling_plan=invalid_plan,  # type: ignore[arg-type]
+                num_workers=1,
+                worker_id=0,
+                shuffle=False,
+                epoch=0,
+                batch_size=2,
+            )
         )
 
     with pytest.raises(TypeError, match="SamplingPlan"):
@@ -231,14 +234,16 @@ def test_typed_plans_produce_native_batches_and_unsupported_mode_errors(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
     typed, typed_count = index.iter(
-        stage="train",
-        entity_node_type="users",
-        sampling_plan=plan,
-        num_workers=1,
-        worker_id=0,
-        shuffle=False,
-        epoch=0,
-        batch_size=2,
+        SamplingOptions(
+            stage="train",
+            entity_node_type="users",
+            sampling_plan=plan,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=2,
+        )
     )
     assert typed_count == seed_table_fixture["n_seeds"]
     if isinstance(mode, WeightedSampling):
@@ -266,25 +271,29 @@ def test_native_iterators_keep_values_when_the_plan_is_replaced(
     )
     plan = _plan("uniform")
     before, _ = index.iter(
-        stage="train",
-        sampling_plan=plan,
-        num_workers=1,
-        worker_id=0,
-        shuffle=False,
-        epoch=0,
-        batch_size=2,
-        entity_node_type="users",
+        SamplingOptions(
+            stage="train",
+            sampling_plan=plan,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=2,
+            entity_node_type="users",
+        )
     )
     plan = SamplingPlan()
     after, _ = index.iter(
-        stage="train",
-        sampling_plan=plan,
-        num_workers=1,
-        worker_id=0,
-        shuffle=False,
-        epoch=0,
-        batch_size=2,
-        entity_node_type="users",
+        SamplingOptions(
+            stage="train",
+            sampling_plan=plan,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=2,
+            entity_node_type="users",
+        )
     )
 
     before_nodes = next(before)["graphs"]["main"]["node_ids"]

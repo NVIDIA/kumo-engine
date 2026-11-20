@@ -19,9 +19,14 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Mapping, Optional
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ._c import RuntimeBatchIterator
 
 from ._exceptions import DiskgraphConfigError
+from .sampling_options import InheritEngineSeed, SamplingOptions, WeightedSeedSampling
 from .sampling_plan import SamplingPlan
 
 TaskDatasetRef = str
@@ -138,12 +143,14 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
 def _weighted_seed_sampling_json(
     ref: Mapping[str, Any],
     stage: str,
-    weighted_seed_sampling: Any,
-) -> Optional[str]:
+    weighted_seed_sampling: WeightedSeedSampling | None,
+) -> str | None:
     if weighted_seed_sampling is None:
         return None
-    if not isinstance(weighted_seed_sampling, Mapping):
-        raise DiskgraphConfigError("weighted_seed_sampling must be a mapping")
+    if not isinstance(weighted_seed_sampling, WeightedSeedSampling):
+        raise TypeError(
+            "weighted_seed_sampling must be a diskgraph.WeightedSeedSampling"
+        )
     root = str(ref["index_path"])
 
     def _path(value: Any, *, context: str) -> str:
@@ -192,12 +199,21 @@ def _weighted_seed_sampling_json(
             "mass": count * class_weight,
         }
 
-    use_sample_weights = bool(
-        weighted_seed_sampling.get("use_sample_weights", False))
-    has_class_weights = ("false_weight" in weighted_seed_sampling
-                         or "true_weight" in weighted_seed_sampling)
-    false_weight = float(weighted_seed_sampling.get("false_weight", 1.0))
-    true_weight = float(weighted_seed_sampling.get("true_weight", 1.0))
+    use_sample_weights = weighted_seed_sampling.use_sample_weights
+    has_class_weights = (
+        weighted_seed_sampling.false_weight is not None
+        or weighted_seed_sampling.true_weight is not None
+    )
+    false_weight = (
+        1.0
+        if weighted_seed_sampling.false_weight is None
+        else weighted_seed_sampling.false_weight
+    )
+    true_weight = (
+        1.0
+        if weighted_seed_sampling.true_weight is None
+        else weighted_seed_sampling.true_weight
+    )
 
     buckets: list[dict[str, Any]]
     if use_sample_weights:
@@ -229,12 +245,9 @@ def _weighted_seed_sampling_json(
 
     payload = {
         "buckets": buckets,
-        "num_samples": int(weighted_seed_sampling["num_samples"]),
+        "num_samples": weighted_seed_sampling.num_samples,
     }
     return json.dumps(payload, sort_keys=True)
-
-
-_UNSET: Any = object()
 
 
 def _validate_worker_iterator_inputs(
@@ -243,7 +256,7 @@ def _validate_worker_iterator_inputs(
     num_workers: int,
     worker_id: int,
     shuffle: bool,
-    rnd_seed: Optional[int],
+    rnd_seed: int | None,
     epoch: int,
 ) -> None:
     if batch_size <= 0:
@@ -292,8 +305,8 @@ class RuntimeIndex:
     def __init__(
         self,
         dataset_ref: TaskDatasetRef,
-        rnd_seed: Optional[int] = None,
-        num_threads: Optional[int] = None,
+        rnd_seed: int | None = None,
+        num_threads: int | None = None,
     ) -> None:
         # Resolved lazily, on first iter(). Reading the manifest in the
         # constructor would put file I/O ahead of argument validation, and a
@@ -344,36 +357,7 @@ class RuntimeIndex:
         self._resolve()
         return int((self._split_info.get("stage_counts") or {}).get(stage, 0))
 
-    def iter(
-        self,
-        stage: str,
-        sampling_plan: SamplingPlan,
-        num_workers: int,
-        worker_id: int,
-        shuffle: bool,
-        epoch: int,
-        batch_size: int,
-        rnd_seed: Optional[int] = _UNSET,
-        drop_last: bool = False,
-        fused: Optional[bool] = None,
-        swap_edge_direction: bool = True,
-        neg_rhs_node_type: Optional[str] = None,
-        neg_amount_m: Optional[int] = None,
-        neg_rnd_seed: Optional[int] = None,
-        replace: bool = False,
-        disjoint: bool = True,
-        adaptive: bool = False,
-        entity_node_type: Optional[str] = None,
-        target_node_type: Optional[str] = None,
-        rhs_seed_node_type: Optional[str] = None,
-        rhs_seed_time: Optional[int] = None,
-        group_by_timestamp: bool = False,
-        weighted_seed_sampling: Any = None,
-        selected_stage_node_ids: Any = None,
-        pseudo_seed_time: Optional[int] = None,
-        disable_pseudo_time: bool = False,
-        projections: dict[str, list[str]] | None = None,
-    ) -> tuple[Any, int]:
+    def iter(self, options: SamplingOptions) -> tuple[RuntimeBatchIterator, int]:
         """Iterate one (stage, epoch, shard) of this index.
 
         ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
@@ -406,61 +390,80 @@ class RuntimeIndex:
         caller against an old wheel fail loudly instead of silently reverting
         to select-all.
 
+        Args:
+            options: Typed sampling and seed scheduling configuration.
+
+        Returns:
+            Native iterator and worker-local sample or timestamp-bucket count.
+
         Raises:
-            TypeError: If ``sampling_plan`` is not a ``SamplingPlan``.
+            TypeError: If options or the traversal plan has the wrong type.
+            DiskgraphConfigError: If the stage or worker configuration is invalid.
         """
-        if not isinstance(sampling_plan, SamplingPlan):
+        if not isinstance(options, SamplingOptions):
+            raise TypeError("options must be a diskgraph.SamplingOptions")
+        if not isinstance(options.sampling_plan, SamplingPlan):
             raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
-        seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
+        seed = (
+            self._rnd_seed
+            if options.rnd_seed is InheritEngineSeed.DEFAULT
+            else options.rnd_seed
+        )
         _validate_worker_iterator_inputs(
-            batch_size=batch_size,
-            num_workers=num_workers,
-            worker_id=worker_id,
-            shuffle=shuffle,
+            batch_size=options.batch_size,
+            num_workers=options.num_workers,
+            worker_id=options.worker_id,
+            shuffle=options.shuffle,
             rnd_seed=seed,
-            epoch=epoch,
+            epoch=options.epoch,
         )
         self._resolve()
-        ref = self._tables.get(stage)
+        ref = self._tables.get(options.stage)
         if ref is None:
             raise DiskgraphConfigError(
-                f"stage {stage!r} not present in manifest.stages"
+                f"stage {options.stage!r} not present in manifest.stages"
             )
-        if self.stage_size(stage) == 0:
-            raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
+        if self.stage_size(options.stage) == 0:
+            raise DiskgraphConfigError(
+                f"stage {options.stage!r} not available on this dataset"
+            )
 
         extension_ref = _extension_ref_from_stage_path(
             self._parent_root, ref["index_path"]
         )
         iterator = self._index_for(extension_ref).iter(
             ref["table_name"],
-            sampling_plan,
-            int(num_workers),
-            int(worker_id),
-            bool(shuffle),
+            options.sampling_plan,
+            int(options.num_workers),
+            int(options.worker_id),
+            bool(options.shuffle),
             int(seed) if seed is not None else None,
-            int(epoch),
-            int(batch_size),
-            bool(drop_last),
-            fused if fused is None else bool(fused),
-            bool(swap_edge_direction),
-            neg_rhs_node_type,
-            int(neg_amount_m) if neg_amount_m is not None else None,
-            int(neg_rnd_seed) if neg_rnd_seed is not None else None,
-            bool(replace),
-            bool(disjoint),
-            bool(adaptive),
-            entity_node_type,
-            target_node_type,
-            rhs_seed_node_type,
-            int(rhs_seed_time) if rhs_seed_time is not None else None,
-            bool(group_by_timestamp),
-            _weighted_seed_sampling_json(ref, stage, weighted_seed_sampling),
-            selected_stage_node_ids,
+            int(options.epoch),
+            int(options.batch_size),
+            bool(options.drop_last),
+            options.fused if options.fused is None else bool(options.fused),
+            bool(options.swap_edge_direction),
+            options.neg_rhs_node_type,
+            int(options.neg_amount_m) if options.neg_amount_m is not None else None,
+            int(options.neg_rnd_seed) if options.neg_rnd_seed is not None else None,
+            bool(options.replace),
+            bool(options.disjoint),
+            bool(options.adaptive),
+            options.entity_node_type,
+            options.target_node_type,
+            options.rhs_seed_node_type,
+            int(options.rhs_seed_time) if options.rhs_seed_time is not None else None,
+            bool(options.group_by_timestamp),
+            _weighted_seed_sampling_json(
+                ref, options.stage, options.weighted_seed_sampling
+            ),
+            options.selected_stage_node_ids,
             _use_seed_timestamps(self._manifest),
-            int(pseudo_seed_time) if pseudo_seed_time is not None else None,
-            bool(disable_pseudo_time),
-            projections,
+            int(options.pseudo_seed_time)
+            if options.pseudo_seed_time is not None
+            else None,
+            bool(options.disable_pseudo_time),
+            options.projections,
         )
         return iterator, iterator.num_samples()
 

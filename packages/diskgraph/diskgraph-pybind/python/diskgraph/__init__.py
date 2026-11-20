@@ -75,6 +75,8 @@ from .sampling_plan import (
     WeightedSampling,
 )
 
+from .sampling_options import InheritEngineSeed, SamplingOptions, WeightedSeedSampling
+
 # Lazy imports for modules that have external dependencies (kumoapi)
 def __getattr__(name):
     if name == "DiskGraphPlanCompiler":
@@ -212,6 +214,9 @@ __all__ = [
     "TASK_DATASET_IMPLEMENTATION_KIND",
     "RuntimeIndex",
     "SeedScheduleConfig",
+    "SamplingOptions",
+    "WeightedSeedSampling",
+    "InheritEngineSeed",
     "SamplingPlan",
     "LayerSpec",
     "FanoutSpec",
