@@ -4,8 +4,7 @@
 
 """Selected dataset/task/model bindings and their pinned Arena provenance.
 
-Registration describes the requested workload, not successful execution. The
-suite's existing required-test inventory remains the execution authority.
+Registration describes the requested workload, not successful execution.
 """
 
 import importlib
@@ -45,19 +44,13 @@ def selected_bindings(*, dataset=None, campaign=None, on_demand=False):
 
 def selection(binding):
     """The existing contract/model/check interfaces consume this catalog view."""
-    catalog = _catalog()
-    details = deepcopy(catalog["semantics"].get(binding.get("semantics"), {}))
-    details.setdefault(
-        "anchor_binding",
-        {
+    return {
+        "anchor_binding": {
             "split_column": binding["split_column"],
             "targets": {
                 name: value["column"] for name, value in binding["targets"].items()
             },
         },
-    )
-    return {
-        **details,
         "case_name": binding.get("case", binding["ref"]),
         "selector": deepcopy(binding["selector"]),
         "models": [binding["representation"]],
@@ -67,10 +60,9 @@ def selection(binding):
 
 def selections(dataset="aml-data/hi-small"):
     """Group shared selectors for existing fixtures and campaign implementations."""
-    catalog = _catalog()
     records = selected_bindings(dataset=dataset)
-    order = {key: i for i, key in enumerate(catalog["semantics"])}
-    records.sort(key=lambda b: order.get(b.get("semantics"), len(order)))
+    workloads = list(dict.fromkeys(b["selector"]["workload_id"] for b in records))
+    records.sort(key=lambda b: workloads.index(b["selector"]["workload_id"]))
     grouped = {}
     for binding in records:
         row = selection(binding)

@@ -2,9 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Opt-in CI enforcement of the reviewed test inventory and execution."""
+"""Require complete pytest collection and execution for each CI profile."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,7 @@ def pytest_addoption(parser):
     parser.addoption(
         "--required-coverage",
         choices=("cpu", "difficult"),
-        help="Require the reviewed test cases; reject missing cases, skips and xfails",
+        help="Require the complete test directory; reject filtering, skips and xfails",
     )
 
 
@@ -24,35 +23,27 @@ def pytest_configure(config):
     config.pluginmanager.register(pytest_plugin(), "capability-refusals")
     profile = config.getoption("--required-coverage")
     if profile:
-        manifest = json.loads(
-            Path(__file__).with_name("required-tests.json").read_text()
-        )
         config.pluginmanager.register(
-            RequiredCoverage(profile, manifest), "dataset-required-coverage"
+            RequiredCoverage(profile, config), "dataset-required-coverage"
         )
 
 
 class RequiredCoverage:
-    def __init__(self, profile, manifest):
+    def __init__(self, profile, config):
         self.profile = profile
-        self.expected = set(manifest[profile])
-        self.other = {
-            node
-            for owner, nodes in manifest.items()
-            if owner != profile
-            for node in nodes
-        }
         self.prefix = (
             "difficult_behavior/" if profile == "difficult" else "model_checks/"
         )
-        if (
-            not self.expected
-            or self.expected & self.other
-            or len(self.expected) != len(manifest[profile])
-        ):
+        self.root = Path(__file__).resolve().parent / self.prefix
+        self.other = self.root.parent / (
+            "model_checks" if profile == "difficult" else "difficult_behavior"
+        )
+        if self.root.resolve() not in {Path(arg).resolve() for arg in config.args}:
             raise pytest.UsageError(
-                "Required test inventory must be nonempty, unique and have disjoint owners"
+                f"Required coverage must collect the entire {self.root} directory"
             )
+        if any(config.getoption(name) for name in ("ignore", "ignore_glob", "deselect")):
+            raise pytest.UsageError("Required coverage cannot exclude test paths")
         self.collected = set()
         self.calls = set()
         self.problems = []
@@ -66,20 +57,28 @@ class RequiredCoverage:
     @pytest.hookimpl(trylast=True)
     def pytest_collection_modifyitems(self, config, items):
         # Other profiles execute in their own jobs.
-        delegated = [item for item in items if self.identity(item.nodeid) in self.other]
+        delegated = [item for item in items if item.path.is_relative_to(self.other)]
         if delegated:
             config.hook.pytest_deselected(items=delegated)
             items[:] = [item for item in items if item not in delegated]
 
+    def pytest_deselected(self, items):
+        self.problems.extend(
+            f"Required test deselected: {item.nodeid}"
+            for item in items
+            if item.path.is_relative_to(self.root)
+        )
+
     def pytest_collection_finish(self, session):
+        if any(not item.path.is_relative_to(self.root) for item in session.items):
+            raise pytest.UsageError(f"Unexpected tests outside {self.root}")
         self.collected = {self.identity(item.nodeid) for item in session.items}
-        missing = self.expected - self.collected
-        extra = self.collected - self.expected
-        if missing or extra:
+        if not self.collected or len(self.collected) != len(session.items):
             raise pytest.UsageError(
-                f"Required test {self.profile} inventory differs: "
-                f"missing={sorted(missing)}, unreviewed={sorted(extra)}"
+                f"Required {self.profile} collection must be nonempty and unique"
             )
+        if self.problems:
+            raise pytest.UsageError("\n".join(self.problems))
 
     def pytest_collectreport(self, report):
         if report.skipped:
@@ -94,7 +93,7 @@ class RequiredCoverage:
     def pytest_sessionfinish(self, session, exitstatus):
         if session.config.option.collectonly:
             return
-        missing = self.expected - self.calls
+        missing = self.collected - self.calls
         if missing:
             self.problems.append(
                 f"Required test bodies not executed: {sorted(missing)}"

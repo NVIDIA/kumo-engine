@@ -56,6 +56,10 @@ def load_manifest(path: Path = MANIFEST) -> dict:
             raise ValueError("Invalid dataset S3 bucket")
         if not re.fullmatch(r"[0-9]{12}", location["expected_bucket_owner"]):
             raise ValueError("Invalid dataset bucket owner")
+        if "inventory" in manifest:
+            if type(entry["file_count"]) is not int or entry["file_count"] < 1:
+                raise ValueError("Expected a positive file count")
+            continue
         shared = entry.get("file_sets", ())
         unknown = set(shared) - manifest.get("file_sets", {}).keys()
         if unknown:
@@ -80,6 +84,31 @@ def load_manifest(path: Path = MANIFEST) -> dict:
             if previous != (location, item):
                 raise ValueError(f"Conflicting identity: {item['key']}")
     return manifest
+
+
+def resolve_inventory(manifest, root, *, fetch=False, source_dir=None, client=None):
+    """Load the checksum-pinned inventory using the same verified download path."""
+    if "inventory" not in manifest:
+        return manifest
+    pin = manifest["inventory"]
+    result = acquire(pin, pin, root, fetch=fetch, source_dir=source_dir, client=client)
+    if result["status"] == "failed":
+        raise ValueError(f"Pinned input inventory: {result['error']}")
+    resolved = load_manifest(safe_path(root, pin["key"]))
+    if "inventory" in resolved:
+        raise ValueError("Nested inventory pointers are not supported")
+    # Keep offline catalog metadata consistent with the pinned file inventory.
+    catalog = {k: v for k, v in resolved.items() if k != "file_sets"}
+    catalog["datasets"] = {
+        name: {
+            **{k: v for k, v in entry.items() if k not in ("files", "file_sets")},
+            "file_count": len(entry["files"]),
+        }
+        for name, entry in resolved["datasets"].items()
+    }
+    if catalog != {k: v for k, v in manifest.items() if k != "inventory"}:
+        raise ValueError("Dataset catalog differs from the pinned input inventory")
+    return resolved
 
 
 def verify_file(path: Path, item: dict) -> int:
@@ -183,7 +212,7 @@ def inventory(manifest: dict, dataset: str) -> dict:
         dataset_version=entry["dataset_version"],
         population=entry["population"],
         anchor_versions=entry["anchor_versions"],
-        files=len(entry["files"]),
+        files=len(entry["files"]) if "files" in entry else entry["file_count"],
         source_bytes=entry["source_bytes"],
         coverage="file_integrity_only",
     )
@@ -217,6 +246,9 @@ def execute(
     jobs: int = 4,
 ) -> dict:
     started = time.perf_counter()
+    manifest = resolve_inventory(
+        manifest, root, fetch=command == "fetch", source_dir=source_dir, client=client
+    )
     entry = manifest["datasets"][dataset]
     files = entry["files"]
     location = {
@@ -298,16 +330,13 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps([inventory(manifest, d) for d in manifest["datasets"]], indent=2)
         )
         return 0
+    pin = manifest.get("inventory")
     if args.report:
         roots = [args.data_dir] + ([args.source_dir] if args.source_dir else [])
-        protected = {MANIFEST.resolve()} | {
-            safe_path(root, f["key"]).resolve()
-            for root in roots
-            for v in manifest["datasets"].values()
-            for f in v["files"]
-        }
-        if args.report.resolve() in protected:
-            parser.error("Report would overwrite an input or manifest")
+        if args.report.resolve() == MANIFEST.resolve() or any(
+            args.report.resolve().is_relative_to(root.resolve()) for root in roots
+        ):
+            parser.error("Keep reports outside input directories and manifests")
     try:
         client = None
         if args.command == "fetch" and args.source_dir is None:
@@ -330,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             "results": [],
         }
     report["manifest_sha256"] = hashlib.sha256(MANIFEST.read_bytes()).hexdigest()
+    if pin:
+        report["inventory_sha256"] = pin["sha256"]
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
@@ -345,7 +376,8 @@ def verify_dataset(data_dir, binding):
     from .bindings import dataset_definition
 
     definition = dataset_definition(binding)
-    entry = load_manifest()["datasets"][definition["inventory"]]
+    manifest = resolve_inventory(load_manifest(), Path(data_dir))
+    entry = manifest["datasets"][definition["inventory"]]
     if any(
         entry[key] != binding["selector"][key]
         for key in ("dataset_id", "dataset_version", "population")

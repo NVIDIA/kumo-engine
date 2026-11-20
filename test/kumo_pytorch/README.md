@@ -118,10 +118,14 @@ python test/kumo_pytorch/data.py fetch --dataset hi-small \
 python test/kumo_pytorch/data.py verify --dataset hi-small
 ```
 
-The [inventory](datasets/inputs.json) pins source, identity and anchor objects.
-Each object occupies one line to keep the inventory reviewable; all fields,
-versions, sizes and SHA-256 pins remain explicit. Only the selected dataset
-is downloaded. Use `--profile NAME` for an existing AWS profile or the normal
+The [dataset catalog](datasets/inputs.json) pins one S3 inventory by SHA-256.
+That inventory retains every source, identity and anchor object's size and hash.
+Fetching a dataset first downloads the small inventory into the same data directory;
+verification reuses it offline. `data list` reads only the local catalog. Local
+mirrors must include the inventory at its pinned key. Keep download reports outside
+the input directories.
+Only the selected dataset is downloaded. Use `--profile NAME` for an existing
+AWS profile or the normal
 credential chain; `--source-dir DIR` reads a local mirror. See [AWS access](datasets/ACCESS.md).
 
 Payloads retain S3 keys under ignored `.data/`; `--data-dir` selects another disk.

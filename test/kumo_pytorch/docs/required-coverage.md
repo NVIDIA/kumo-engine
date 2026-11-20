@@ -1,8 +1,9 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 341 CPU cases and
-60 separate difficult-behavior cases. The Polars and GPU reference backends and
-their 11 required cases have been removed. The separate GPU job retains native
+CI uses pytest collection of the complete `model_checks/` and
+`difficult_behavior/` directories. There is no separate list of test IDs to maintain.
+The Polars and GPU reference backends and their 11 required cases have been
+removed. The separate GPU job retains native
 CUDA package regressions and GPU collector validation, with skips rejected.
 
 Historical implementation counts below include harness tests removed from the current inventory.
@@ -14,10 +15,10 @@ LI Medium campaign execution remains pending in the
 [binding expansion plan](binding-coverage.md).
 
 `--required-coverage=cpu` or
-`--required-coverage=difficult` requires the corresponding inventory. The last
-profile belongs to the required [Difficult Behavior group](difficult-behavior.md).
-Missing/deleted cases, unexpected additions, collection-time skips,
-missing imports, deselection of required cases, runtime skips and xfails fail
+`--required-coverage=difficult` requires collection of the corresponding directory.
+The last profile belongs to the required [Difficult Behavior group](difficult-behavior.md).
+Partial-directory selection, empty/duplicate collections, path exclusions,
+collection-time skips, missing imports, deselection, runtime skips and xfails fail
 execution. A required case must execute or verify a declared preflight refusal
 as described below. Other setup failures remain failures. Expected output
 assertions are unchanged. Local focused runs may omit the option.
@@ -90,10 +91,10 @@ python -m pytest -c test/kumo_pytorch/pytest.ini \
   --confcutdir=test/kumo_pytorch test/kumo_pytorch/model_checks --collect-only -q
 ```
 
-Review the collected IDs against `required-tests.json` and update the inventory
-in the same change as the tests. Keep IDs starting with `model_checks/` (or `difficult_behavior/` for that
-profile), sorted within each owner. Never remove a required case merely to pass enforcement.
-Collection alone does not establish execution acceptance.
+New parametrized cases join the required profile automatically. Review test
+deletions in the code diff: collection cannot identify a test removed from source.
+Never remove a required case merely to pass enforcement. Collection alone does
+not establish execution acceptance.
 
 ## DiskGraph-only scope
 
@@ -236,6 +237,6 @@ The required inventory includes 19 dataset-general checks: unrelated table/ID/cl
 schemas through all four models and the shared profiler, all five existing HI
 bindings through the common population runner, multi-family/alternate-join
 history bounds, graph degrees and incompatible native objective/model pairs.
-The current reviewed inventory is listed at the top of this document.
+Pytest collects the complete directories listed at the top of this document.
 Dataset registration alone does not add execution coverage; enabled campaigns
-and required test IDs remain explicit.
+and executed test assertions determine coverage.
