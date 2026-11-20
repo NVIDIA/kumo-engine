@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, replace
-from functools import cached_property
+from copy import deepcopy
+from dataclasses import dataclass, field, fields, replace
 from hashlib import sha256
 from typing import NotRequired, TypedDict, Unpack, cast
 
@@ -30,7 +30,7 @@ class SamplingArguments(TypedDict, total=False):
     """Native keyword argument dictionaries accepted at the compatibility boundary."""
 
     stage: str
-    sampling_plan: dict[str, JsonValue] | str
+    sampling_plan: dict[str, JsonValue]
     num_workers: int
     worker_id: int
     shuffle: bool
@@ -56,59 +56,6 @@ class SamplingArguments(TypedDict, total=False):
     pseudo_seed_time: int | None
     disable_pseudo_time: bool
     projections: dict[str, list[str]] | None
-
-
-@dataclass(frozen=True)
-class FrozenJsonObject:
-    """An immutable JSON object whose array children are tuples.
-
-    Args:
-        entries: Object keys and values; nested containers are copied and frozen.
-
-    Raises:
-        TypeError: If keys or values are not JSON-compatible.
-        ValueError: If object keys are duplicated.
-    """
-
-    entries: tuple[tuple[str, FrozenJsonValue], ...]
-
-    def __post_init__(self) -> None:
-        if any(not isinstance(key, str) for key, _ in self.entries):
-            raise TypeError("sampling plan keys must be strings")
-        if len({key for key, _ in self.entries}) != len(self.entries):
-            raise ValueError("sampling plan keys must be unique")
-        object.__setattr__(
-            self,
-            "entries",
-            tuple(sorted((key, _freeze_json(value)) for key, value in self.entries)),
-        )
-
-
-FrozenJsonValue = (
-    None | bool | int | float | str | tuple["FrozenJsonValue", ...] | FrozenJsonObject
-)
-
-
-def _freeze_json(value: object) -> FrozenJsonValue:
-    if isinstance(value, FrozenJsonObject):
-        return value
-    if isinstance(value, dict):
-        return FrozenJsonObject(
-            tuple((key, _freeze_json(item)) for key, item in value.items())
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze_json(item) for item in value)
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    raise TypeError("sampling plans require JSON-compatible values")
-
-
-def _thaw_json(value: FrozenJsonValue) -> JsonValue:
-    if isinstance(value, FrozenJsonObject):
-        return {key: _thaw_json(item) for key, item in value.entries}
-    if isinstance(value, tuple):
-        return [_thaw_json(item) for item in value]
-    return value
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -138,18 +85,15 @@ class WeightedSeedSampling:
 
 @dataclass(frozen=True, kw_only=True)
 class SamplingOptions:
-    """Owned immutable sampling configuration, independent of native dictionaries.
+    """Sampling settings with fixed fields and an owned copy of the native plan.
 
-    Use ``from_kwargs`` to snapshot existing native iterator arguments. Nested
-    plans, projections, selections, and weights cannot change after construction.
-
-    Raises:
-        TypeError: If a plan or weight configuration is not immutable.
+    The plan stays a normal dictionary. Field reassignment is blocked, but nested
+    plan edits are allowed; treat request options as read-only while in flight.
     """
 
     stage: str
     batch_size: int
-    sampling_plan: FrozenJsonObject | str = FrozenJsonObject((("layers", ()),))
+    sampling_plan: dict[str, JsonValue] = field(default_factory=lambda: {"layers": []})
     num_workers: int = 1
     worker_id: int = 0
     shuffle: bool = False
@@ -176,14 +120,7 @@ class SamplingOptions:
     projections: tuple[tuple[str, tuple[str, ...]], ...] | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.sampling_plan, (FrozenJsonObject, str)):
-            raise TypeError(
-                "use SamplingOptions.from_kwargs to snapshot a mutable plan"
-            )
-        if self.weighted_seed_sampling is not None and not isinstance(
-            self.weighted_seed_sampling, WeightedSeedSampling
-        ):
-            raise TypeError("weights must be an immutable WeightedSeedSampling")
+        object.__setattr__(self, "sampling_plan", deepcopy(self.sampling_plan))
         if self.selected_stage_node_ids is not None:
             object.__setattr__(
                 self, "selected_stage_node_ids", tuple(self.selected_stage_node_ids)
@@ -199,7 +136,7 @@ class SamplingOptions:
 
     @classmethod
     def from_kwargs(cls, **arguments: Unpack[SamplingArguments]) -> SamplingOptions:
-        """Copy native keyword arguments into an immutable owned configuration.
+        """Copy native keyword arguments into owned configuration fields.
 
         Args:
             **arguments: Existing native iterator keyword arguments.
@@ -209,11 +146,10 @@ class SamplingOptions:
 
         Raises:
             KeyError: If stage or batch size is missing.
-            TypeError: If the sampling plan is not a JSON object or string.
         """
-        plan = _freeze_json(arguments.get("sampling_plan", {"layers": []}))
-        if not isinstance(plan, (FrozenJsonObject, str)):
-            raise TypeError("sampling_plan must be an object or string")
+        plan = arguments.get("sampling_plan")
+        if plan is None:
+            plan = {"layers": []}
         weights = arguments.get("weighted_seed_sampling")
         selected = arguments.get("selected_stage_node_ids")
         projections = arguments.get("projections")
@@ -254,17 +190,15 @@ class SamplingOptions:
         )
 
     def to_native_kwargs(self) -> SamplingArguments:
-        """Return fresh native dictionaries and lists without exposing owned state.
+        """Return native arguments, borrowing the plan dictionary for read-only use.
 
         Returns:
-            Native iterator keyword arguments; mutating them cannot alter this object.
+            Native keyword arguments with list/dictionary views of tuple fields.
         """
         arguments = cast(
             SamplingArguments,
             {item.name: getattr(self, item.name) for item in fields(self) if item.init},
         )
-        plan = _thaw_json(self.sampling_plan)
-        arguments["sampling_plan"] = cast(dict[str, JsonValue] | str, plan)
         arguments["selected_stage_node_ids"] = (
             list(self.selected_stage_node_ids)
             if self.selected_stage_node_ids is not None
@@ -282,9 +216,9 @@ class SamplingOptions:
         )
         return arguments
 
-    @cached_property
+    @property
     def digest(self) -> str:
-        """Canonical identity, computed only for configurations needing a cache key."""
+        """Compute identity from the current plan without retaining a stale key."""
         return content_digest(canonical_json(self.to_native_kwargs()))
 
     @property
@@ -302,7 +236,7 @@ class SamplingOptions:
         )
 
     def sampling_only(self) -> SamplingOptions:
-        """Return immutable traversal settings without trainer-owned seed selection.
+        """Return traversal settings without trainer-owned seed selection.
 
         Returns:
             This object when already sampling-only, otherwise a normalized copy.
@@ -444,11 +378,6 @@ class BatchRequest:
     num_threads: int
     wire_version: int = WIRE_VERSION
     sampling_version: int = SAMPLING_VERSION
-
-    def __post_init__(self) -> None:
-        if isinstance(self.options, SamplingOptions):
-            # Carry the cached key through Ray, avoiding per-batch plan serialization.
-            _ = self.options.digest
 
     @property
     def request_id(self) -> str:

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Owned configurations remain immutable across native and serialization boundaries."""
+"""Sampling configuration owns a plain plan dictionary without stale cache keys."""
 
 from __future__ import annotations
 
@@ -14,18 +14,16 @@ from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
     BatchRequest,
     ConsumerToken,
-    FrozenJsonObject,
     JsonValue,
     SamplingContractError,
     SamplingOptions,
     WeightedSeedSampling,
     WeightedSeedSamplingArguments,
-    _freeze_json,
 )
 
 
 def test_sampling_options_copy_nested_inputs_and_exports() -> None:
-    """Mutable caller/native containers cannot alter the owned request configuration."""
+    """Copy caller inputs once and expose the normal owned plan to the native adapter."""
     fanout: dict[str, JsonValue] = {"fanout": 4, "mode": "uniform"}
     layers: list[JsonValue] = [{"default_fanout": fanout}]
     projections = {"users": ["age"]}
@@ -65,18 +63,17 @@ def test_sampling_options_copy_nested_inputs_and_exports() -> None:
 
 
 def test_dataclasses_are_frozen_and_pickle_roundtrip_preserves_identity() -> None:
-    """Configuration, weights, and plan objects cannot be assigned after construction."""
+    """Configuration fields and scalar weights are frozen; plans remain ordinary dicts."""
     options = SamplingOptions.from_kwargs(
         stage="train",
         batch_size=2,
         sampling_plan={"layers": []},
         weighted_seed_sampling={"num_samples": 4, "use_sample_weights": True},
     )
-    assert isinstance(options.sampling_plan, FrozenJsonObject)
+    assert isinstance(options.sampling_plan, dict)
     assert options.weighted_seed_sampling is not None
     for obj, name, value in (
         (options, "batch_size", 3),
-        (options.sampling_plan, "entries", ()),
         (options.weighted_seed_sampling, "num_samples", 10),
     ):
         with pytest.raises(FrozenInstanceError):
@@ -88,8 +85,8 @@ def test_dataclasses_are_frozen_and_pickle_roundtrip_preserves_identity() -> Non
     assert restored.to_native_kwargs() == options.to_native_kwargs()
 
 
-def test_canonical_identity_ignores_mapping_order_and_is_cached() -> None:
-    """Equivalent plans/projections have equal immutable values and cached digests."""
+def test_canonical_identity_ignores_mapping_order_and_tracks_plan_edits() -> None:
+    """Equivalent inputs have equal keys, and editing the owned plan changes its key."""
     first = SamplingOptions.from_kwargs(
         stage="train",
         batch_size=2,
@@ -105,11 +102,9 @@ def test_canonical_identity_ignores_mapping_order_and_is_cached() -> None:
     assert first == second
     expected = first.digest
     assert second.digest == expected
-    with patch(
-        "kumo_core.diskgraph.batch_contract.canonical_json",
-        side_effect=AssertionError("digest must be cached"),
-    ):
-        assert first.digest == second.digest == expected
+    first.sampling_plan["version"] = 2
+    assert first.digest != expected
+    assert second.digest == expected
 
 
 def test_sampling_only_removes_schedule_without_mutating_original() -> None:
@@ -176,23 +171,6 @@ def test_request_keeps_typed_options_and_validates_without_json_decoding() -> No
         replace(request, wire_version=1).validate()
 
 
-@pytest.mark.parametrize("value", [object(), {"bad": object()}, {1: "bad key"}, {1, 2}])
-def test_plans_reject_non_json_values(value: object) -> None:
-    """A plan cannot retain mutable or unsupported opaque objects."""
-    with pytest.raises(TypeError):
-        _freeze_json(value)
-
-
-def test_frozen_json_rejects_duplicate_keys_and_freezes_direct_array_inputs() -> None:
-    """Direct immutable-plan construction rejects ambiguous object keys."""
-    with pytest.raises(ValueError, match="unique"):
-        FrozenJsonObject((("key", 1), ("key", 2)))
-    source = [1, {"flag": True}, None, "value", 2.0]
-    frozen = _freeze_json(source)
-    source.clear()
-    assert isinstance(frozen, tuple) and len(frozen) == 5
-
-
 def test_trainer_selection_is_not_serialized_for_an_unused_digest() -> None:
     """Metadata-only scheduling should not serialize a potentially large ID selection."""
     with patch(
@@ -215,12 +193,19 @@ def test_trainer_selection_is_not_serialized_for_an_unused_digest() -> None:
         42,
         1,
     )
-    with patch(
-        "kumo_core.diskgraph.batch_contract.canonical_json",
-        side_effect=AssertionError(
-            "request must carry its cached configuration digest"
-        ),
-    ):
-        restored = pickle.loads(pickle.dumps(request))
-        assert isinstance(restored, BatchRequest)
-        assert restored.sampling_plan_digest == request.sampling_plan_digest
+    expected = request.sampling_plan_digest
+    restored = pickle.loads(pickle.dumps(request))
+    assert isinstance(restored, BatchRequest)
+    assert restored.sampling_plan_digest == expected
+    request.options.sampling_plan["version"] = 2
+    assert request.sampling_plan_digest != expected
+    assert restored.sampling_plan_digest == expected
+
+
+def test_direct_configuration_construction_copies_the_plan() -> None:
+    """The ordinary dataclass constructor takes ownership without a wrapper API."""
+    plan: dict[str, JsonValue] = {"layers": [], "metadata": {"label": "original"}}
+    options = SamplingOptions(stage="train", batch_size=2, sampling_plan=plan)
+    plan["metadata"] = "caller edit"
+    assert options.sampling_plan == {"layers": [], "metadata": {"label": "original"}}
+    assert options.to_native_kwargs()["sampling_plan"] is options.sampling_plan
