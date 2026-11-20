@@ -33,10 +33,10 @@ def test_pdf_token_example_excludes_padding_targets_and_parallel_ids():
     batch = Batch(
         inputs={
             "history": {
-                "value_ids": torch.ones(200, dtype=torch.long),
-                "valid": valid,
-                "field_ids": torch.ones(200, dtype=torch.long),
-                "source_event_indices": indices,
+                "value_ids": torch.ones((1, 200), dtype=torch.long),
+                "valid": valid.unsqueeze(0),
+                "field_ids": torch.ones((1, 200), dtype=torch.long),
+                "source_event_indices": indices.unsqueeze(0),
             }
         },
         targets={"extra": {"value_ids": torch.ones(900, dtype=torch.long)}},

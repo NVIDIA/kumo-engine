@@ -7,6 +7,9 @@ use crate::state::SamplingState;
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
+    /// Count decoded source rows before expanding duplicate requested IDs.
+    fn record_decoded_rows(&mut self, _rows: u64) {}
+
     /// Called when an edge is traversed.
     fn handle_edge(
         &mut self,
@@ -312,6 +315,10 @@ impl RuntimeBatchOutput {
 }
 
 impl OutputHandler for RuntimeBatchOutput {
+    fn record_decoded_rows(&mut self, rows: u64) {
+        self.batch.profile.rows_decoded += rows;
+    }
+
     fn handle_edge(
         &mut self,
         _hop: usize,

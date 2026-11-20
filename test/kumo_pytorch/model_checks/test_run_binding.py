@@ -15,6 +15,7 @@ from test.kumo_pytorch.data import prepare_binding as prepare_sources
 from test.kumo_pytorch.data import schema_for
 from test.kumo_pytorch.nightly import main as nightly_main
 from test.kumo_pytorch.nightly import run_case
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -326,7 +327,30 @@ def test_binding_refusal_must_precede_execution(tmp_path, monkeypatch, stage):
     if stage == "prepare":
         assert report["status"] == "passed" and report["outcome"] == "refused"
         assert report["refusal"]["issues"][0]["code"] == "DG-ROW-FILTER"
-        assert "splits" not in report
+        assert report["splits"] == {
+            split: {
+                "status": "not_executed",
+                "expected": count,
+                "delivered": 0,
+                "batches": 0,
+                "eligible_targets": {},
+            }
+            for split, count in population["counts"].items()
+        }
+        monkeypatch.setattr(
+            "test.kumo_pytorch.data.verify_dataset", lambda *args: files
+        )
+        cli_output = tmp_path / "cli-refusal"
+        assert run_binding.run_binding(
+            SimpleNamespace(
+                binding="L03", mode="full", data_dir=root, output=cli_output,
+                anchors_per_split=None, batch_size=4, threads=1, seed=17,
+            )
+        ) == 0
+        saved = json.loads((cli_output / "report.json").read_text())
+        assert saved["splits"] == report["splits"]
+        assert not saved["full_population_verified"]
+        assert "refused" in (cli_output / "report.md").read_text()
     else:
         assert report["status"] == "failed" and "outcome" not in report
         assert "after case execution began" in report["error"]

@@ -222,6 +222,7 @@ def test_runner_collects_each_gpu_epoch_and_reports_coverage(monkeypatch, tmp_pa
         def step(batch, recorder):
             with recorder.span("transfer.host"):
                 pass
+            backend.sampled.clear()
             assert backend.sampled.wait(1)
             time.sleep(0.003)
             return True

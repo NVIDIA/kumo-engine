@@ -1,6 +1,6 @@
 # Required dataset/model coverage
 
-CI uses the reviewed node IDs in `../required-tests.json`: 665 CPU cases and
+CI uses the reviewed node IDs in `../required-tests.json`: 668 CPU cases and
 82 separate difficult-behavior cases. The Polars and GPU reference backends and
 their 11 required cases have been removed. The separate GPU job retains native
 CUDA package regressions and GPU collector validation, with skips rejected.
@@ -234,6 +234,6 @@ The required inventory includes 19 dataset-general checks: unrelated table/ID/cl
 schemas through all four models and the shared profiler, all five existing HI
 bindings through the common population runner, multi-family/alternate-join
 history bounds, graph degrees and incompatible native objective/model pairs.
-The current reviewed inventory is 406 CPU cases and five GPU reference cases.
+The current reviewed inventory is listed at the top of this document.
 Dataset registration alone does not add execution coverage; enabled campaigns
 and required test IDs remain explicit.

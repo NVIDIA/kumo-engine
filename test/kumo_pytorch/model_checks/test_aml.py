@@ -158,6 +158,30 @@ def check_graph_v2_clock_and_tensor_adapter_parity(fitted):
     bad.metadata.pop("request_metadata")
     with pytest.raises(ValueError, match="prediction_time_ns"):
         model(bad)
+    graph_config = model.backbone.config if family == "graphsage" else model.backbone.config.graph
+    graph_adapter = KumoGraphAdapter(graph_config, input_name="graph")
+    for ordinary in (False, True):
+        boundary = deepcopy(batch)
+        if ordinary:
+            boundary.metadata.pop("request_metadata")
+        checked = 0
+        for name, spec in graph_config.node_features.items():
+            if not spec.timestamp:
+                continue
+            node = boundary.inputs["graph"]["nodes"][name]
+            node["features"][spec.timestamp]["values"] = boundary.metadata["as_of_time"][node["batch"]]
+            checked += len(node["batch"])
+        assert checked > 0
+        graph_adapter(boundary)
+        with torch.no_grad():
+            model.backbone.forward_kumo(boundary)
+        for name, spec in graph_config.node_features.items():
+            if spec.timestamp:
+                boundary.inputs["graph"]["nodes"][name]["features"][spec.timestamp]["values"] += 1
+        with pytest.raises(ValueError, match="sampling cutoff"):
+            graph_adapter(boundary)
+        with pytest.raises(ValueError, match="sampling cutoff"):
+            model.backbone.forward_kumo(boundary)
 
 
 def test_wrong_anchor_version_is_rejected(fitted):

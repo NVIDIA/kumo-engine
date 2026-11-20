@@ -9,7 +9,9 @@ import os
 import pwd
 import subprocess
 import sys
+from pathlib import Path
 from test.kumo_pytorch.benchmarking.campaign import run_campaign
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,6 +58,72 @@ def test_unimplemented_reuse_does_not_pass(tmp_path):
         epochs=1,
     )
     assert all(c["status"] == "incomplete" for c in result["fitting_comparisons"])
+
+
+def test_complete_workers_do_not_require_unrequested_fitting(monkeypatch, tmp_path):
+    def worker(command, **kwargs):
+        output = Path(command[command.index("--output") + 1])
+        output.mkdir()
+        (output / "results.json").write_text(json.dumps({
+            "status": "complete", "execution_status": "completed",
+            "metric_coverage": {"complete": 26, "total": 26},
+            "experiments": {
+                name: {"status": "measured"}
+                for name in ("steady_state", "first_and_later_epochs", "cold_and_warm_caches")
+            },
+        }))
+        (output / "config.json").write_text(json.dumps({"runtime": {"pid": 123}}))
+        return SimpleNamespace(pid=123, wait=lambda timeout: 0)
+
+    monkeypatch.setattr(subprocess, "Popen", worker)
+    result = run_campaign("fixture:complete", {}, tmp_path / "runs", repetitions=2)
+    assert result["status"] == "complete"
+    assert result["fitting_comparisons"] == []
+    assert [row["mode"] for row in result["runs"]] == ["fresh", "fresh"]
+
+
+@pytest.mark.parametrize("isolate_memory,code,expected", ((True, 124, True), (True, 7, False), (False, 124, False)))
+def test_supervisor_timeout_is_reported(monkeypatch, tmp_path, isolate_memory, code, expected):
+    monkeypatch.setattr(
+        subprocess, "Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=123, wait=lambda timeout: code),
+    )
+    result = run_campaign(
+        "fixture:unused", {}, tmp_path / "runs", repetitions=2,
+        isolate_memory=isolate_memory,
+    )
+    assert result["status"] == "failed"
+    assert all(row["timed_out"] is expected for row in result["runs"])
+
+
+@pytest.mark.parametrize("existing", ("symlink", "file"))
+def test_privileged_validation_report_does_not_overwrite_worker_files(monkeypatch, tmp_path, existing):
+    from test.kumo_pytorch.benchmarking import validate_isolation
+
+    output = tmp_path / "output"
+    target = tmp_path / "protected"
+    target.write_text("unchanged")
+    calls = []
+
+    def execute(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            return 124
+        (output / "worker-validation.json").write_text(json.dumps({"uid": 65534, "checks": []}))
+        report = output / "isolation-validation.json"
+        if existing == "symlink":
+            report.symlink_to(target)
+        else:
+            report.write_text("worker-owned")
+        return 0
+
+    monkeypatch.setattr(validate_isolation, "execute", execute)
+    with pytest.raises(FileExistsError):
+        validate_isolation.main(["--output", str(output), "--parent", str(tmp_path)])
+    assert target.read_text() == "unchanged"
+    assert (output / "isolation-validation.json").read_text() == (
+        "unchanged" if existing == "symlink" else "worker-owned"
+    )
 
 
 @pytest.mark.parametrize("timeout", (0.001, 30))

@@ -108,7 +108,12 @@ def main(argv=None):
         "checks": worker["checks"]
         + ["unprivileged_worker", "timeout_kills_descendants", "cgroup_cleanup"],
     }
-    (args.output / "isolation-validation.json").write_text(json.dumps(result, indent=2))
+    report = args.output / "isolation-validation.json"
+    descriptor = os.open(
+        report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644
+    )
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(json.dumps(result, indent=2))
     print(json.dumps(result))
     return 0
 

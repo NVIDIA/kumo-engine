@@ -91,7 +91,9 @@ histories and executes the complete selected train split. This is a bounded
 population, not a full-AML benchmark. Graph workloads retain v2 anchors and the
 original prediction time; sequence workloads use v1. The adapter downloads no data.
 
-Source rows/bytes include the selected source tables. Observations retain
+Source rows/bytes include the selected source tables. Byte counts are encoded
+Parquet file lengths, not decoded Arrow array sizes or physical SSD I/O.
+Converted byte counts use the same file-length scope. Observations retain
 source, prepared-table and anchor identities. Read timing covers checksum
 verification; conversion includes its own source reads and output validation.
 These enclosing measurements are not exclusive costs. Events count emitted
@@ -208,6 +210,16 @@ backends and their comparison metrics were removed at the user's request.
 See the [complete checklist](../PLAN.md#complete-metric-checklist).
 
 ## Internal observations
+
+Native graph profiling is always collected, including NodeRange batches.
+The runtime batch's `native_profile` dictionary exposes `sampling_ns`,
+`retrieval_ns`, `rows_examined`, `rows_decoded` and `fused`. Sampling/fetch
+iterators expose their operation's subset through the `native_profile` property
+after exhaustion. Collection adds two timer start/stop pairs per native graph call
+and row-counter updates during existing decoding; it performs no extra source
+scan. Fused retrieval shares the sampling interval and must not be added to it.
+Decode counts precede duplicate-output expansion. This cost has not been
+isolated in a production-scale overhead measurement.
 
 The [scoped observers](../benchmarking/kumo_observers.py) install only during a
 Kumo workload and restore module/class/instance functions when it closes, including

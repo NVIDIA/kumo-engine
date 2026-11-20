@@ -359,6 +359,10 @@ impl PyOutputHandler {
 }
 
 impl OutputHandler for PyOutputHandler {
+    fn record_decoded_rows(&mut self, rows: u64) {
+        self.decoded_rows += rows;
+    }
+
     fn handle_edge(
         &mut self,
         _hop: usize,
@@ -395,7 +399,6 @@ impl OutputHandler for PyOutputHandler {
     }
 
     fn handle_feature_batch(&mut self, batch: RecordBatch) -> diskgraph_engine::errors::Result<()> {
-        self.decoded_rows += batch.num_rows() as u64;
         let _ = self
             .sender
             .send(SampleEvent::FeatureBatch { type_id: 0, batch });
@@ -407,7 +410,6 @@ impl OutputHandler for PyOutputHandler {
         type_id: usize,
         batch: RecordBatch,
     ) -> diskgraph_engine::errors::Result<()> {
-        self.decoded_rows += batch.num_rows() as u64;
         let _ = self
             .sender
             .send(SampleEvent::FeatureBatch { type_id, batch });

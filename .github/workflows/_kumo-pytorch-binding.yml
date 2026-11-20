@@ -50,7 +50,8 @@ jobs:
       ${{ inputs.label }}${{ inputs.executor == 'aml-prototype' && ' / All models' || '' }} /
       ${{ fromJSON('{"smoke":"Inputs, targets & features","histories":"History feature sweeps","training":"100 CPU steps x 2 runs","lifecycle":"Reload, inference, finetune & resume","full":"All anchors & splits"}')[inputs.mode] || inputs.mode }}
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 180 }}
+    # Use GitHub's runner limit: 5 days self-hosted, capped at 6 hours hosted.
+    timeout-minutes: ${{ inputs.executor == 'aml-prototype' && 45 || 7200 }}
     environment:
       name: gha-kumo-workflow-tests
       deployment: false

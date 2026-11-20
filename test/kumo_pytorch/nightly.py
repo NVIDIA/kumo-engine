@@ -735,6 +735,7 @@ def run_case(
                     "expected": count,
                     "delivered": 0,
                     "batches": 0,
+                    "eligible_targets": {},
                 }
                 for split, count in population["counts"].items()
             }

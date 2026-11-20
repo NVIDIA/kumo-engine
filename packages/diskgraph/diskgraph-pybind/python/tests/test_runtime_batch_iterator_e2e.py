@@ -2452,14 +2452,22 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
     )
 
 
-def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_table_fixture):
+@pytest.mark.parametrize("fused", [True, False])
+def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_table_fixture, fused):
     iterator, count = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"], stage="train",
         sampling_plan=_sampling_plan(), num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0, batch_size=3, drop_last=False,
-        rhs_seed_node_type="users", rhs_seed_time=100,
+        rhs_seed_node_type="users", rhs_seed_time=100, fused=fused,
     )
     assert count == seed_table_fixture["n_users"]
     batches = list(iterator)
     roots = [int(value) for batch in batches for value in batch["task"]["seed_node_ids"].to_pylist()]
     assert roots == list(range(seed_table_fixture["n_users"]))
+    for batch in batches:
+        profile = batch["native_profile"]
+        assert profile["sampling_ns"] > 0 and profile["retrieval_ns"] > 0
+        assert profile["fused"] is fused
+        assert profile["rows_examined"] >= profile["rows_decoded"] > 0
+        if fused:
+            assert profile["retrieval_ns"] == profile["sampling_ns"]

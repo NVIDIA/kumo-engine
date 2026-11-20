@@ -145,6 +145,33 @@ def test_runtime_graph_cannot_borrow_temporal_measurement_coverage():
     assert "sample_graph_batch" not in vars(source)
 
 
+def test_multiple_graph_inputs_do_not_repeat_native_profile():
+    class Source:
+        last_graph_profile = None
+
+        def sample_graph_batch(self, runtime):
+            return runtime["answer"]
+
+    stream = io.StringIO()
+    observer = KumoObservers(Recorder(stream))
+    source = Source()
+    observer.attach_source(source)
+    profile = {"sampling_ns": 11, "retrieval_ns": 17, "rows_decoded": 3, "rows_examined": 5}
+    try:
+        for answer in ("first", "next"):
+            runtime = {"answer": answer, "native_profile": dict(profile)}
+            # Native delivery records one profile; two Graph inputs consume the same work.
+            observer._capture_runtime_profile(runtime, "native_iterator")
+            assert source.sample_graph_batch(runtime) == answer
+            assert source.sample_graph_batch(runtime) == answer
+    finally:
+        observer.close()
+    measured = [row for row in records(stream) if row["kind"] == "measurement"]
+    assert len([row for row in records(stream) if row["kind"] == "backend_profile"]) == 2
+    assert sum(row["value"] for row in measured if row["metric"] == "rows.decoded") == 6
+    assert sum(row["value"] for row in measured if row["metric"] == "native.sample.elapsed_ns") == 22
+
+
 def test_real_native_queries_and_python_phases(tmp_path):
     fixture = build_fixture()
     dataset = fixture.parquet_dataset(tmp_path / "source")
@@ -167,7 +194,7 @@ def test_real_native_queries_and_python_phases(tmp_path):
                     with observers.native_epoch(0, history=True):
                         for batch in task.batches(batch_size=1, output_format="model"):
                             assert len(batch.metadata["sample_ids"]) == 1
-                            digests.append(input_digest(batch))
+                            digests.append(input_digest(batch.inputs))
         observed = {
             row["metric"] for row in records(stream) if row["kind"] == "measurement"
         }
@@ -183,7 +210,7 @@ def test_real_native_queries_and_python_phases(tmp_path):
         ) as task,
     ):
         baseline = [
-            input_digest(batch)
+            input_digest(batch.inputs)
             for batch in task.batches(batch_size=1, output_format="model")
         ]
     assert digests == baseline * 2

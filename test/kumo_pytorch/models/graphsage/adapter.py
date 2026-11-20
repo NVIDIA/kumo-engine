@@ -196,6 +196,7 @@ class KumoGraphAdapter:
         seed_time = _cpu_tensor(metadata["as_of_time"], "metadata.as_of_time", torch.long)
         if seed_time.shape != (batch_size,):
             raise ValueError("metadata.as_of_time must have one timestamp per entity ID")
+        sampling_cutoff = seed_time
         from ._kumo import prediction_time
         seed_time = prediction_time(metadata)
 
@@ -252,8 +253,8 @@ class KumoGraphAdapter:
                         raise ValueError(f"{name} timestamps and validity must have shape [{count}]")
                     if not valid.all().item():
                         raise ValueError(f"{name} contains missing temporal values")
-                    if (node_time >= seed_time[owners]).any().item():
-                        raise ValueError(f"{name} timestamps must be strictly before the owning request's as_of_time")
+                    if (node_time > sampling_cutoff[owners]).any().item():
+                        raise ValueError(f"{name} timestamps must not exceed the owning request's sampling cutoff")
                 time_dict[node_type] = node_time
 
         root_lookup = node_lookup[self.config.root_type]

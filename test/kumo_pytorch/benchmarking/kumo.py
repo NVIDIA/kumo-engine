@@ -209,8 +209,17 @@ def counts(batch, *, event_tables=()):
         if "sequence" in history:
             events = int(history["sequence"]["valid"].sum())
         else:
-            indices = history["source_event_indices"][history["valid"]]
-            events = int(indices[indices >= 0].unique().numel())
+            indices = history["source_event_indices"]
+            if indices.ndim == 2:
+                owners = torch.arange(len(indices), device=indices.device)[:, None]
+                owners = owners.expand_as(indices)
+            else:
+                offsets = history["offsets"]
+                owners = torch.arange(len(offsets) - 1, device=indices.device)
+                owners = owners.repeat_interleave(offsets[1:] - offsets[:-1])
+            valid = history["valid"] & (indices >= 0)
+            occurrences = torch.stack((owners[valid], indices[valid]), dim=1)
+            events = int(occurrences.unique(dim=0).shape[0])
     if graph is not None:
         nodes = sum(len(node["ids"]) for node in graph["nodes"].values())
         edges = sum(edge["index"].shape[1] for edge in graph["edges"].values())
@@ -485,7 +494,7 @@ def factory(config, workdir):
         recorder.measure(
             "source.bytes",
             sum(item["bytes"] for item in manifest["sources"].values()),
-            scope="declared source tables; anchor files recorded separately",
+            scope="encoded Parquet file lengths for declared source tables; anchors excluded; not decoded arrays or physical device I/O",
         )
         recorder.measure(
             "converted.rows", sum(t["rows"] for t in manifest["tables"].values())
@@ -493,6 +502,7 @@ def factory(config, workdir):
         recorder.measure(
             "converted.bytes",
             sum(Path(path).stat().st_size for path in manifest["table_paths"].values()),
+            scope="encoded Parquet file lengths for converted tables; not decoded arrays or physical device I/O",
         )
         graph = family in {"graphsage", "combined"}
         recorder.write(

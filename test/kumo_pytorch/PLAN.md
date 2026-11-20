@@ -109,7 +109,7 @@ alongside durations, never inferred from configured batch limits.
 | Metric | Required definition |
 | --- | --- |
 | Source rows | Actual source/input and converted-output row counts, with table identity |
-| Source bytes | Source/input and converted-output logical bytes, with scope; not mislabelled as physical device I/O |
+| Source bytes | Logical file lengths of encoded source and converted Parquet, with scope; distinct from decoded array bytes and physical device I/O |
 | Index size | Measured index bytes after construction and on reuse |
 | Rows examined | Actual rows considered by the observed operation, including filtered-out work; count at the relevant source/native boundary |
 | Rows decoded | Actual decoded rows at the relevant boundary; distinguish repeated decoding from unique source rows |

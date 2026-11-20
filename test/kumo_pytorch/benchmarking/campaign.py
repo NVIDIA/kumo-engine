@@ -205,6 +205,7 @@ def run_campaign(
                     code = process.wait(
                         timeout=timeout + 15 if isolate_memory else timeout
                     )
+                    timed_out = isolate_memory and code == 124
                 except subprocess.TimeoutExpired:
                     code = stop(process)
                     timed_out = True
@@ -297,10 +298,8 @@ def run_campaign(
         row["metric_coverage_complete"] and row["epoch_experiments_complete"]
         for row in runs
     )
-    fitting_complete = (
-        index_lifecycle
-        or compare_fitting
-        and all(c["status"] == "measured" for c in comparisons)
+    fitting_complete = not compare_fitting or all(
+        c["status"] == "measured" for c in comparisons
     )
     result = {
         "measurement_profile": measurement_profile,

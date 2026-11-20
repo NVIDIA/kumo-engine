@@ -29,6 +29,7 @@ class KumoObservers:
         self.locked = False
         self.epoch_observation = None
         self.length_caches = {}
+        self.runtime_profile = None
 
     @contextmanager
     def native_epoch(self, epoch, *, length_planning=False, history=False):
@@ -161,6 +162,8 @@ class KumoObservers:
                         row["complete"] = True
                         raise
                     row["batches"] += 1
+                    if runtime.get("native_profile") is not None:
+                        observer._capture_runtime_profile(runtime, "native_iterator")
                     if history:
                         assert "history" in runtime and "history_merges" in runtime, (
                             "Native merged-history iterator output is missing"
@@ -351,7 +354,7 @@ class KumoObservers:
             if threading.get_ident() == self.thread:
                 runtime = signature.bind(*args, **kwargs).arguments.get("runtime", {})
                 if runtime.get("native_profile") is not None:
-                    self.capture_native(runtime["native_profile"], original.__name__)
+                    self._capture_runtime_profile(runtime, original.__name__)
                 else:
                     self.capture(
                         {"instrumentation_gap": "Native graph profile absent"},
@@ -361,6 +364,13 @@ class KumoObservers:
             return result
 
         return call
+
+    def _capture_runtime_profile(self, runtime, method):
+        profile = runtime["native_profile"]
+        if profile is not self.runtime_profile:
+            self.capture_native(profile, method)
+            # This scalar-only profile owns no graph tensors or native buffers.
+            self.runtime_profile = profile
 
     def _source_call(self, source, profile_name):
         def decorate(original):
@@ -483,6 +493,7 @@ class KumoObservers:
 
     def close(self):
         try:
+            self.runtime_profile = None
             while self.patches:
                 owner, name, saved = self.patches.pop()
                 if saved is _ABSENT:

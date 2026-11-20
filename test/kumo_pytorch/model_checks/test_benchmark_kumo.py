@@ -6,7 +6,12 @@
 
 import json
 from test.kumo_pytorch.benchmarking import BatchCounts, run
-from test.kumo_pytorch.benchmarking.kumo import KumoInputs, kumo_workload
+from test.kumo_pytorch.benchmarking.kumo import (
+    KumoInputs,
+    counts,
+    kumo_workload,
+)
+from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -14,6 +19,24 @@ import pytest
 import torch
 
 from kumo.pytorch import api as r
+
+
+@pytest.mark.parametrize("packed", (False, True))
+def test_repeated_events_count_once_per_history(packed):
+    indices = torch.tensor([[10, 10, 11, -1], [10, 12, 12, 11]])
+    valid = torch.tensor([[True, True, True, True], [True, True, False, False]])
+    history = {"source_event_indices": indices, "valid": valid}
+    if packed:
+        history = {name: value.flatten() for name, value in history.items()}
+        history["offsets"] = torch.tensor([0, 4, 8])
+    batch = SimpleNamespace(
+        inputs={"history": history}, targets={},
+        metadata={"sample_ids": ["a", "b"], "is_padding": torch.tensor([False, False])},
+    )
+    result = counts(batch)
+    assert result.events == 4  # Event 10 occurs in both histories; masked slots and markers do not count.
+    assert result.tokens == 6
+    assert result.samples == 2
 
 
 def product_anchors(directory, prefix, count):

@@ -3,6 +3,13 @@
 These models belong to the repository testing suite, outside the installed
 `kumo.pytorch` package. They require no Arena checkout or imports.
 
+The package's `models/` provides its own causal, hierarchical and tabular-fusion
+encoders. These consumers retain the selected GraphSAGE, nuFormer, PRAGMA and
+graph/history/aggregate Fusion architectures and their acceptance objectives.
+Package `JointFusionEncoder` is tabular fusion, not this graph-based model.
+Replacing these consumers with package models would change the tested bindings;
+the package models remain covered by the package tests.
+
 | Workload | Consumer | Native inputs | Objective |
 | --- | --- | --- | --- |
 | account-involvement-next24h | GraphSAGE | graph | Binary cross-entropy |

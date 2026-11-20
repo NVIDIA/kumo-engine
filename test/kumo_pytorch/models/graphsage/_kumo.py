@@ -118,6 +118,7 @@ def inspect(batch, config, input_name, *, check_values, device=None, cpu=False):
     seed_time = tensor(metadata["as_of_time"], "metadata.as_of_time", dtype=torch.long, device=device, cpu=cpu)
     if seed_time.shape != (batch_size,):
         raise ValueError("metadata.as_of_time must have one timestamp per entity ID")
+    sampling_cutoff = seed_time
     seed_time = prediction_time(metadata, check_values=check_values)
     unknown = set(nodes) - set(config.node_features)
     if unknown:
@@ -178,8 +179,8 @@ def inspect(batch, config, input_name, *, check_values, device=None, cpu=False):
                 if check_values and key == spec.timestamp:
                     if not valid.all().item():
                         raise ValueError(f"{label} contains missing temporal values")
-                    if (values >= seed_time[owners]).any().item():
-                        raise ValueError(f"{label} timestamps must be strictly before the owning request's as_of_time")
+                    if (values > sampling_cutoff[owners]).any().item():
+                        raise ValueError(f"{label} timestamps must not exceed the owning request's sampling cutoff")
                 elif check_values:
                     observed = values[valid]
                     if ((observed < 0) | (observed >= spec.categorical[key])).any().item():
