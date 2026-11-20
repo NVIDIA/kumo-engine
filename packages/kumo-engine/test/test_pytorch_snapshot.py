@@ -155,7 +155,11 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
 
         expected, identity = run(snapshot)
         assert identity == build_id
+        exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
+        location = snapshot.export(kumo.SnapshotOutputConfig(exports, 'snapshot'))
         shutil.rmtree(data)
+        loaded = kumo.GraphSnapshot.load_from_connector(exports, path=location)
+        assert loaded.id == snapshot.id
         import diskgraph
 
         original = diskgraph.ingest
@@ -165,6 +169,6 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
             return original(*args, **kwargs)
 
         monkeypatch.setattr(diskgraph, 'ingest', extension_only)
-        assert run(snapshot) == (expected, identity)
+        assert run(loaded) == (expected, identity)
     finally:
         kumo.configure(scratch_dir=previous)

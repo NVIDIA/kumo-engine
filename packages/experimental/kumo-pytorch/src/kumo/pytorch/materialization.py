@@ -56,9 +56,9 @@ class _DiskGraphIndex:
             raise ValueError(f"{root} is missing DiskGraph index_metadata.json")
         return cls(str(root), manifest)
 
-    def validate_binding(self, schema: DataSchema, dataset: Dataset, source_versions=None) -> None:
+    def validate_binding(self, schema: DataSchema, dataset: Dataset) -> None:
         expected_schema = _fingerprint(_schema_payload(schema))
-        expected_dataset = _fingerprint(_dataset_payload(dataset, source_versions))
+        expected_dataset = _fingerprint(_dataset_payload(dataset))
         if self.manifest.get("schema_fingerprint") != expected_schema:
             raise ValueError("DiskGraph index was materialized from a different schema")
         if self.manifest.get("dataset_fingerprint") != expected_dataset:
@@ -75,7 +75,6 @@ def ensure_diskgraph_index(
     dataset_name: str = "default",
     if_missing: bool = True,
     column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
-    source_versions: Mapping[str, Mapping[str, str]] | None = None,
     index_build_id: str | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
@@ -107,7 +106,7 @@ def ensure_diskgraph_index(
             metadata = json.loads((output / "index_metadata.json").read_text())
             if metadata.get("index_build_id") != index_build_id:
                 raise ValueError("index build ID mismatch")
-        artifact.validate_binding(schema, dataset, source_versions)
+        artifact.validate_binding(schema, dataset)
         _warn_dropped_rows(output)
         return artifact
     if not if_missing:
@@ -116,9 +115,6 @@ def ensure_diskgraph_index(
 
     diskgraph = _import_diskgraph()
     physical_snapshot = _dataset_payload(dataset)
-    source_snapshot = (
-        physical_snapshot if source_versions is None else _dataset_payload(dataset, source_versions)
-    )
     config, relation_mapping, source_types = _compile_diskgraph_config(
         schema,
         dataset,
@@ -171,7 +167,7 @@ def ensure_diskgraph_index(
             "manifest_version": _MANIFEST_VERSION,
             "artifact_kind": "diskgraph_base_index",
             "schema_fingerprint": _fingerprint(_schema_payload(schema)),
-            "dataset_fingerprint": _fingerprint(source_snapshot),
+            "dataset_fingerprint": _fingerprint(physical_snapshot),
             "config_fingerprint": hashlib.sha256(config_json.encode()).hexdigest(),
             "relation_mapping": relation_mapping,
             "column_types": {
@@ -458,20 +454,7 @@ def _schema_payload(schema: DataSchema) -> dict[str, Any]:
     }
 
 
-def _dataset_payload(dataset: Dataset, source_versions=None) -> dict[str, Any]:
-    if source_versions is not None:
-        if set(source_versions) != set(dataset.tables):
-            raise ValueError("source_versions must identify every dataset table exactly once")
-        result = {}
-        for name, entry in source_versions.items():
-            if set(entry) != {"source", "version"} or any(
-                not isinstance(value, str) or not value for value in entry.values()
-            ):
-                raise ValueError(
-                    "source_versions entries require nonempty source and version strings"
-                )
-            result[name] = dict(entry)
-        return {"source_versions": result}
+def _dataset_payload(dataset: Dataset) -> dict[str, Any]:
     payload = {}
     for name, source in sorted(dataset.tables.items()):
         if not isinstance(source, Parquet):

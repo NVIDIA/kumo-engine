@@ -20,9 +20,27 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from kumo.pytorch._storage import ColumnCache
 from kumo.pytorch.column_stats import TableColumnEncoder, read_token_lengths
 
 diskgraph = pytest.importorskip("diskgraph")
+
+
+def test_unbound_engine_has_no_schema(tmp_path):
+    engine = api.DiskGraphEngine(index=tmp_path / "unbound")
+    assert not hasattr(engine, "schema")
+
+
+def test_external_cache_refuses_redirected_cutoff(tmp_path):
+    index = tmp_path / "index"
+    (index / "col_stats").mkdir(parents=True)
+    cache = tmp_path / "cache"
+    (cache / "col_stats").mkdir(parents=True)
+    (cache / "col_stats" / "cutoff").symlink_to(
+        index / "col_stats", target_is_directory=True
+    )
+    with pytest.raises(ValueError, match="col_stats path must not redirect"):
+        ColumnCache(index, cache).destination("cutoff/table.col_stats.json")
 
 
 def inventory(root):
@@ -467,41 +485,14 @@ def test_incompatible_artifacts_fail_before_sampling(indexed, tmp_path, change, 
         api.DiskGraphEngine.from_index(index.name)
 
 
-def test_connector_versions_allow_restage_but_reject_changes(indexed, tmp_path):
-    legacy, source, dataset, spec, _ = indexed
-    versions = {
-        name: {"source": f"connector/catalog/{name}", "version": "v1"} for name in dataset.tables
-    }
-    path = tmp_path / "versioned"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path, source_versions=versions)):
-        pass
-    # Version-aware reuse explicitly trusts the connector, even if its token is stale.
-    # A caller that needs file-change detection must keep the default legacy binding.
-    event_path = source / "events.parquet"
-    events = pq.read_table(event_path)
-    pq.write_table(
-        events.set_column(
-            events.schema.get_field_index("value"), "value", pa.array([200.0, 400.0, 10000.0, None])
-        ),
-        event_path,
-    )
-    with pytest.raises(ValueError, match="different dataset"):
-        api.prepare(spec, dataset, api.DiskGraphEngine(index=legacy))
-    moved = tmp_path / "new_sources"
-    shutil.move(source, moved)
-    restaged = api.Dataset(
-        {name: api.Parquet(str(moved / f"{name}.parquet")) for name in dataset.tables}
-    )
-    before = inventory(path)
-    with api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions=versions)):
-        pass
-    assert inventory(path) == before
-    for field in ("source", "version"):
-        changed = {name: {**entry, field: "different"} for name, entry in versions.items()}
-        with pytest.raises(ValueError, match="different dataset"):
-            api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions=changed))
-    with pytest.raises(ValueError, match="every dataset table"):
-        api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions={}))
+def test_rebuilt_explicit_index_changes_plan_identity(indexed, tmp_path):
+    _, _, dataset, spec, _ = indexed
+    path = tmp_path / "explicit"
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path)) as first:
+        identity = first._dataset_fingerprint
+    shutil.rmtree(path)
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path)) as second:
+        assert second._dataset_fingerprint != identity
 
 
 def test_managed_layout_and_physical_identity(indexed, tmp_path):
@@ -531,6 +522,30 @@ def test_managed_layout_and_physical_identity(indexed, tmp_path):
         pass
     assert second.index_build_id != build
     assert second.index.parent == index.parent
+
+
+def test_independent_builds_keep_node_indexed_caches_separate(indexed, tmp_path):
+    first_index, _, dataset, spec, _ = indexed
+    second = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(spec, dataset, second):
+        pass
+    roots = []
+    for index in (first_index, second.index):
+        with api.prepare(contract=spec, engine=api.DiskGraphEngine.from_index(index.name)) as plan:
+            source = plan._source
+            encoder = TableColumnEncoder(
+                api.Text(vocabulary_size=300, min_frequency=1),
+                api.DType("string"),
+                (("events", "note"),),
+            )
+            tokenizer, _ = source.column_text(encoder, 20 * 10**9)
+            file = source.token_lengths("events", [("note", tokenizer, 0)], [], 20 * 10**9)
+            root = source._cache_root
+            _, lengths = read_token_lengths(index, {"file": file, "constant": 0}, cache_root=root)
+            assert len(lengths) == 4
+            roots.append(root)
+    assert roots == [tmp_path / "cache" / first_index.name, tmp_path / "cache" / second.index.name]
+    assert roots[0] != roots[1]
 
 
 @pytest.mark.parametrize("alias", ["absolute", "relative", "symlink"])
@@ -594,6 +609,15 @@ def test_managed_writable_roots_cannot_overlap_base(indexed, tmp_path, root):
         api.DiskGraphEngine.from_index(index.name)
 
 
+def test_managed_col_stats_redirect_is_refused(indexed, tmp_path):
+    index, _, _, _, _ = indexed
+    cache = tmp_path / "cache" / index.name
+    cache.mkdir(parents=True)
+    (cache / "col_stats").symlink_to(index / "col_stats", target_is_directory=True)
+    with pytest.raises(ValueError, match="col_stats path must not redirect"):
+        api.DiskGraphEngine.from_index(index.name)
+
+
 def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monkeypatch):
     index, _, _, spec, _ = indexed
     known = ("events", "value", "numerical")
@@ -620,11 +644,10 @@ def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monke
         assert len(calls) == 1
 
 
-def test_trusted_reuse_refuses_column_renames(indexed, tmp_path):
+def test_source_ingest_refuses_column_renames(indexed, tmp_path):
     _, _, dataset, spec, _ = indexed
-    versions = {name: {"source": name, "version": "v1"} for name in dataset.tables}
-    index = tmp_path / "trusted"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, source_versions=versions)):
+    index = tmp_path / "explicit"
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index)):
         pass
     renamed = api.Dataset(
         {
@@ -635,7 +658,7 @@ def test_trusted_reuse_refuses_column_renames(indexed, tmp_path):
         }
     )
     with pytest.raises(ValueError, match="DG-COLUMN-RENAME"):
-        api.prepare(spec, renamed, api.DiskGraphEngine(index=index, source_versions=versions))
+        api.prepare(spec, renamed, api.DiskGraphEngine(index=index))
 
 
 def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_path, monkeypatch):

@@ -461,6 +461,8 @@ The first `prepare` builds the index under `shop-data/index`. A scheduled
 scoring job usually passes `ingest="never"`, so that it fails if the index it
 expects is missing instead of building a new one. See
 [building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
+To score from a completed build without source tables, [open its snapshot or
+managed index](04-engines-and-data.md#open-an-existing-snapshot-or-index).
 
 ### What inference mode changes
 

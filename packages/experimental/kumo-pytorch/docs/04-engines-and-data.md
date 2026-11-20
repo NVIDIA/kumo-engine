@@ -195,12 +195,7 @@ fitted encoders, so several contracts can share one base. The managed layout is:
 <scratch_root>/cache/<index_build_id>/
 ```
 
-The build ID identifies one physical ingest, independently of schema and data
-version. New ingests of the same data get different IDs. `engine.index_build_id`
-exposes the allocated ID; pass `index_build_id=...` to the constructor to reuse
-the same managed build with its source dataset, or call `from_index(id)` to use
-it without sources. The existing `DiskGraphEngine(index=...)` constructor still
-supports source ingestion and reuse at an explicit legacy path.
+The build ID identifies one physical ingest, independently of schema and data version. New ingests of the same data get different IDs. `engine.index_build_id` exposes the allocated ID; pass `index_build_id=...` to the constructor to reuse the same managed build with its source dataset, or call `from_index(id)` to use it without sources. `DiskGraphEngine(index=...)` supports source ingestion and reuse at an explicit index-local path.
 
 Fitting reads any statistics already stored under the base's `col_stats/` and
 writes missing statistics, tokenizers and token lengths under the managed
@@ -217,15 +212,7 @@ with. With `ingest="never"`, `prepare` requires an existing index.
 
 ### Open an existing snapshot or index
 
-`DiskGraphEngine.from_index(index_build_id)` opens a completed managed build
-under the configured Kumo root, with no original sources. An explicit path
-resolving to that same `indexes/<index_build_id>` directory also works. It verifies the
-base's stored build ID. `DiskGraphEngine.from_snapshot(snapshot)` consumes an
-existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots still
-live under `snapshots/<graph>/<version>`; the loader reads the base there and
-places its tasks and caches in the managed locations keyed by its physical ID.
-Older snapshots without a physical build ID cannot be adopted. Cross-root
-snapshot import is outside this interface.
+`DiskGraphEngine.from_index(index_build_id)` opens a completed managed build under the configured Kumo root, without original sources. An explicit path resolving to that same `indexes/<index_build_id>` directory also works. It verifies the base's stored build ID. `DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots live under `snapshots/<graph>/<version>`; the loader reads the base there and places its tasks and caches in managed locations keyed by its physical ID. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
 
 <!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
 ```python
@@ -241,39 +228,13 @@ with api.prepare(contract=contract, engine=engine) as plan:
             graph = batch.inputs["graph"]
 ```
 
-`SampleSpec` and `BatchSpec` retain their usual meaning. `engine.schema` derives
-stored types, keys, clocks and relationships from the native config and
-metadata. PyTorch-produced indexes retain logical relation aliases; core
-snapshots initially use native FK names. A compatible schema projection may
-rename those relations: binding checks endpoints, FK columns and direction.
-`prepare` rejects a Dataset alongside an existing-index engine. Anchors select
-entity/time requests; neighborhoods are sampled during iteration.
+`SampleSpec` and `BatchSpec` describe sampling and output encoding. `engine.schema` derives stored types, keys, clocks and relationships from native config and metadata. PyTorch-produced indexes expose logical relation aliases; core snapshots use native FK names. A compatible schema projection may rename those relations: binding checks endpoints, FK columns and direction. `prepare` rejects a Dataset alongside an existing-index engine. Anchors select entity/time requests; neighborhoods are sampled during iteration.
 
-The base may be read-only. Task extensions and scalar-materialization scratch
-are temporary; closing a task removes them. Derived caches remain for reuse.
-The loader writes no new base metadata. Native extension metadata records the
-parent build ID, so opening a task against a different base is refused.
-Statistics may contain diagnostic paths to reused base files; those paths are
-not needed to restore fitted encoders. Concurrent requests may duplicate
-computation but do not discard published keys. Install DiskGraph from the
-matching kumo-engine revision for managed build and external cache support.
+The base may be read-only. Task extensions and scalar-materialization scratch are temporary; closing a task removes them. Derived caches remain for reuse. The loader writes no new base metadata. Native extension metadata records the parent build ID, so opening a task against a different base is refused. Statistics may contain diagnostic paths to reused base files; those paths are not needed to restore fitted encoders. Concurrent requests may duplicate computation but do not discard published keys. Install DiskGraph from the matching kumo-engine revision for managed build and external cache support.
 
-Opening requires the resolved `diskgraph_config.json` and the producer's
-completion metadata. Core snapshots use native inventory/integrity checks;
-PyTorch indexes use their manifest, published after ingest. Older artifacts
-missing resolved config are refused. Native edge-table layouts, end-time
-validity and unsupported stored types (including lists) are refused explicitly.
+Opening requires the resolved `diskgraph_config.json` and the producer's completion metadata. Core snapshots use native inventory/integrity checks; PyTorch indexes use their manifest, published after ingest. Artifacts missing resolved config are refused. Native edge-table layouts, end-time validity and unsupported stored types (including lists) are refused explicitly.
 
-For **source ingestion/reuse** after connector restaging, pass
-`DiskGraphEngine(index_build_id=..., source_versions=...)` (or the legacy
-`index=...` constructor). Map every table to
-`{"source": "connector/source-coordinate", "version": "connector-version"}`.
-Equal trusted identities/versions and schema permit reuse across source paths;
-a changed identity/version or schema refuses reuse. Without trustworthy
-versions, use file validation. This opt-in trusts the caller to change the
-version when source data changes; reuse does not compare Parquet contents,
-sizes or mtimes. An already materialized index never checks whether sources
-now have a newer version; refreshing sources is a producer operation.
+For source ingestion and reuse, pass `index_build_id=...` with the dataset or use the explicit `index=...` constructor. The manifest checks source paths, file sizes and modification times; a changed source or schema refuses reuse. To use a producer-managed snapshot after sources move, open it with `from_snapshot` or `from_index` without a dataset.
 
 `output_format="model"` lets the DiskGraph engine build the batch's tensors
 column by column, without building a Python record per event. It refuses raw types

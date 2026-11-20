@@ -294,7 +294,6 @@ def read_column_stats(
     cutoff = _cutoff_dir(ticks, unit)
     # Native publication locks, merges existing keys, and atomically replaces files.
     # Sharing a cutoff directory lets overlapping requests reuse prior statistics.
-    relative = cutoff
     paths = {table: f"{file_name_part(table)}.col_stats.json" for table, _, _ in requests}
 
     files = set()
@@ -302,7 +301,7 @@ def read_column_stats(
     def read() -> dict:
         found = {}
         for table, name in paths.items():
-            for candidate in cache.candidates(f"{relative}/{name}", base_name=f"{cutoff}/{name}"):
+            for candidate in cache.candidates(f"{cutoff}/{name}"):
                 if candidate.is_file():
                     files.add(candidate)
                     data = json.loads(candidate.read_text())[table]
@@ -318,7 +317,6 @@ def read_column_stats(
     ]
     if missing:
         request = stats_request(missing, [ticks], unit)
-        request["dirs"] = [relative]
         options = {"output_dir": str(cache.root)} if cache.external else {}
         diskgraph.cutoff_col_stats(
             str(index), json.dumps(request), num_threads=num_threads, **options

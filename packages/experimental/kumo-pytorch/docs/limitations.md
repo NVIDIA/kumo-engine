@@ -306,9 +306,11 @@ distributed training is up to your training loop.
 
 ## Engine support
 
-`DiskGraphEngine` reads an index built from local Parquet files and builds
-model output column by column. It raises an error for the joins, filters, graph
-strategies and sampling features it doesn't support; see
+`DiskGraphEngine` builds indexes from local Parquet files or opens a completed
+[snapshot or managed index](04-engines-and-data.md#open-an-existing-snapshot-or-index)
+without the original sources. It builds model output column by column. It
+raises an error for the joins, filters, graph strategies and sampling features
+it doesn't support; see
 [DiskGraph](#diskgraph). Where both engines support a contract, DiskGraph's
 batches can still differ from the in-memory engine's, and so from serving's, in
 a few ways: the order of graph nodes within a layer, `std`, `var` and `mean`

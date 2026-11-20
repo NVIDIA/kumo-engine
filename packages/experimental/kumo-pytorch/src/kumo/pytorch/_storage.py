@@ -36,6 +36,9 @@ def verify_managed_roots(paths, index: str | Path) -> None:
             raise ValueError("managed task/cache paths must be disjoint from the base index")
         if resolved != destination:
             raise ValueError("managed task/cache paths must not redirect to another location")
+    stats = paths.cache_dir / "col_stats"
+    if stats.resolve() != stats:
+        raise ValueError("managed col_stats path must not redirect to another location")
 
 
 class TaskDirectory:
@@ -67,7 +70,10 @@ class ColumnCache:
             self.root = self.index
 
     def destination(self, name: str) -> Path:
-        return self.root / "col_stats" / name
+        destination = self.root / "col_stats" / name
+        if self.external and destination.resolve() != destination:
+            raise ValueError("external col_stats path must not redirect to another location")
+        return destination
 
     def candidates(self, name: str, *, base_name: str | None = None) -> tuple[Path, ...]:
         base = self.index / "col_stats" / (name if base_name is None else base_name)
