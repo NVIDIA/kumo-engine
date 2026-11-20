@@ -21,10 +21,14 @@ The contract doesn't say where your data lives or what reads it. A `Dataset`
 says where each table's data is (Parquet files or in-memory rows), and an
 engine reads it and builds the batches.
 
-Use `DiskGraphEngine` with Parquet files for examples, training and batch inference.
-The guide and tests exercise native execution even for tiny fixtures. The deprecated
-`InMemoryEngine` remains in the package API but is not a supported test backend or
-reference for correctness. [Engines and data](04-engines-and-data.md) covers native binding.
+The package ships two engines, both implementations of the `Engine` interface.
+You'll use the DiskGraph engine (`DiskGraphEngine`) for real data; it's built on
+kumo-engine's DiskGraph, which the
+[kumo-engine README](https://github.com/NVIDIA/kumo-engine#readme) describes.
+The in-memory engine (`InMemoryEngine`) runs the contract in plain Python over a
+few rows, for trying things out on toy data. The guide's small examples use it so
+they can print their results. You always choose the engine yourself when you
+call `prepare`, and [engines and data](04-engines-and-data.md) covers both.
 
 ## What is stored
 

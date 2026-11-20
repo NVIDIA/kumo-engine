@@ -59,7 +59,9 @@ batch prediction, without keeping the full graph index in RAM. The
 [kumo-engine README](https://github.com/NVIDIA/kumo-engine#readme) has more on
 how it works.
 
-The guide and test suite use DiskGraph with Parquet fixtures, including tiny examples.
+There's also a small in-memory engine that works on Python lists of rows. The
+guide uses it to keep examples tiny and easy to print; it isn't meant for real
+data.
 
 ## How it works
 

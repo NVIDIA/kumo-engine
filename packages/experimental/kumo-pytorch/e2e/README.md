@@ -19,7 +19,7 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 | `baselines/hm-s.json`, `baselines/hm-m.json` | The recorded baselines at S and M |
 | `flows/hm_gnn.py`, `flows/hm_pragma.py` | The two flows: a GNN, and a model in the style of the published PRAGMA paper, pre-trained and then fine-tuned with LoRA |
 | `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
-| `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_correctness.py`, `test_training.py`, `test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
+| `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
 ## The H&M-shaped dataset
 
@@ -229,13 +229,3 @@ It trains on all 400,000 train anchors, but its pinned plan caps an epoch at 64
 batches of 512 (10 epochs ran), so it sees fewer examples than the kumo-pytorch GNN's
 125,000-anchor sample over its epochs. kumo-engine's own labels
 equal the generator's at all 700,000 anchors.
-
-### CI ownership
-
-H&M setup produces each flow/seed run once. Correctness, training/evaluation and
-lifecycle modules then read those saved runs. Existing tier workflows select
-`tests/e2e` so all three modules execute.
-`tests/e2e/conftest.py` registers their shared fixtures once; `hm_support.py`
-holds native helpers. Check jobs set
-`KUMO_PYTORCH_E2E_REUSE_ONLY=1`, so missing artifacts fail without retraining.
-Local `pytest --t2a tests/e2e` still runs all three groups; `--t2b` selects Medium.

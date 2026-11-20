@@ -35,11 +35,7 @@ def main() -> int:
         default=0,
         help="first extra seed batch; the nightly run derives it from the date",
     )
-    parser.add_argument("--shards", type=int, default=1)
-    parser.add_argument("--shard", type=int, default=0)
     args = parser.parse_args()
-    if args.shards < 1 or not 0 <= args.shard < args.shards:
-        parser.error("Expected 0 <= shard < shards and shards > 0")
     if args.no_in_memory and args.engine != "diskgraph":
         parser.error("--no-in-memory requires --engine diskgraph")
     if args.seeds is not None:
@@ -63,8 +59,6 @@ def main() -> int:
             "tests/conformance",
             f"--conformance-engine={args.engine}",
             "--conformance-complete",
-            f"--conformance-shards={args.shards}",
-            f"--conformance-shard={args.shard}",
             *(["--conformance-no-in-memory"] if args.no_in_memory else []),
             *([f"--conformance-seeds={args.seeds}"] if args.seeds is not None else []),
             f"--conformance-seed-start={args.seed_start}",

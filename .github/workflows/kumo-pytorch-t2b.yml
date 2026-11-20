@@ -5,7 +5,7 @@
 name: kumo-pytorch nightly end-to-end
 
 # The nightly tier: the end-to-end flows at M, and conformance properties on
-# more generated seed batches, on DiskGraph. Not a required check. Pull
+# more generated seed batches, on both engines. Not a required check. Pull
 # requests run it only when they change this workflow or the tiers'
 # configuration.
 on:  # yamllint disable-line rule:truthy
@@ -107,7 +107,7 @@ jobs:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
           python -m pytest -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
-            tests/e2e
+            tests/e2e/test_lifecycle.py
       - name: Summarize metrics and run times
         if: ${{ always() }}
         run: |

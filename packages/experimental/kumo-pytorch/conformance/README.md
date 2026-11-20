@@ -5,11 +5,17 @@ cases (small inputs with answers calculated by hand), and the test helpers that
 check them. It is not included in the `kumo-pytorch` wheel and does not decide
 runtime engine support. The guarantees live in `spec/guarantees/`.
 
-The suite executes DiskGraph and checks it against hand-calculated golden answers,
-fixture calculations and declared invariants. No other engine supplies expected
-answers. Fault-injection tests corrupt native requests or outputs to prove the
-assertions detect errors. The runtime guard rejects deprecated InMemory execution,
-including calls reached indirectly through package APIs.
+kumo-pytorch defines engines through its `Engine` interface and ships two: the
+DiskGraph engine, for real data, and a small in-memory engine for trying things
+out on tiny data. The guarantees bind the DiskGraph engine, and the conformance tests check
+them on the DiskGraph engine. Each golden answer is calculated by hand from its rule
+and is the normative check; where the DiskGraph engine falls short of a rule,
+`expectations.json` records its refusal or `registry.py` records a known gap.
+The guarantees say nothing about the in-memory engine. The conformance tests
+run the same golden cases and generated properties on it and compare the two
+engines, as described under
+[Differential testing](#differential-testing). A discrepancy is judged against
+the rule, never against either engine's output.
 
 ```text
 conformance/spec/guarantees/
@@ -24,14 +30,6 @@ tests/conformance/
   test_assertions.py        # wrong answers/refusals must fail
 conformance/expectations.json  # independent engine assertions, not support declarations
 ```
-
-Feature interactions, directed graphs, native token planning and documented
-regressions are ordinary Python tests under `tests/conformance/`, alongside the
-goldens and generated properties. All 82 added variants are independently pinned
-in its conftest and assigned to the existing shards. They retain their success
-assertions; known defects and the explicit contract ambiguity remain failures,
-not expected-failure entries. See the
-[case map and documentation evidence](feature-interactions.md).
 
 ## English file
 
@@ -129,7 +127,7 @@ them against the same approved answer or refusal. Arrays are never shuffled.
 and identity rules; focused tests cover token layouts and calculated dependencies
 that the raw-value golden format cannot fully certify.
 
-DiskGraph gets temporary
+The in-memory engine uses the listed rows directly. DiskGraph gets temporary
 Parquet and an isolated index. Every column is written using its declared Arrow dtype,
 including empty and all-NULL tables. Clock fixtures use integer epoch seconds
 stored in the declared second-resolution UTC timestamp columns. Explicit
@@ -145,11 +143,13 @@ fill in the expected answer.
 An obligation is one required check on one engine: a golden case, a generated
 property on a seed batch, or a recorded gap. Every discovered case must occur in
 [expectations.json](expectations.json), with one assertion
-for `diskgraph`:
+for each of `diskgraph`, the DiskGraph engine, whose assertion checks the spec,
+and `in_memory`, whose assertion is the differential cross-check:
 
 ```json
 {
     "C-TOPIC-001": {
+        "in_memory": "answer",
         "diskgraph": {
             "path": "sample.some_field",
             "message_contains": "specific unsupported condition"
@@ -158,35 +158,23 @@ for `diskgraph`:
 }
 ```
 
-`"answer"` calls real `check()` and either verifies a declared preflight refusal
-under the policy below or executes `prepare()` → `materialize()` → `preview()`
-and compares every named raw value
+`"answer"` calls real `check()`, requires acceptance, executes
+`prepare()` → `materialize()` → `preview()`, and compares every named raw value
 by sample ID plus all selected batch/state projections. Batch assertions execute
 one batch containing the case's anchors in declared order. Missing/duplicate
 samples or wrong named values fail.
 
-The test policy permits an explicit unsupported-capability refusal
-as a pass. `refusals.py` requires a real `prepare()` preflight `ValidationError`,
-with every issue declared by the engine as refused at `check()`, identifying the
-path, reason and next step. `check()` and `prepare()` must agree; engine opening
-is trapped when checking rejected contracts. Malformed contracts, unexpected or
-chained exceptions, wrong outputs, silent fallback and execution failures do not
-qualify. Terminal summaries and JUnit properties retain the refusal evidence.
-Required coverage counts these as exercised refusal checks, never skips or
-proof that the unsupported behavior executed. Generated/corpus cases continue
-after each refusal, preserving any other failures and the expected answers.
-
 A refusal object calls real `check()`, requires exactly the specified path/reason
 and a useful suggestion, then requires real `prepare()` to raise the same
-`ValidationError`. Engine opening is trapped;
+`ValidationError`. Engine opening is trapped. In-memory row access raises;
 Parquet files deliberately do not exist, so attempts to read them cannot serve
 as passing refusals. An unexpected additional error also fails.
 
 These expectations are ordinary test assertions. They do not generate runtime
 checks, claim a complete support matrix, or choose an answer from engine output.
 The catalog check fails if a JSON file is added without an obligation or an engine
-decision is missing. The default local and CI commands execute DiskGraph.
-The complete command independently
+decision is missing. The normal local command executes in-memory obligations;
+CI explicitly executes all obligations. The complete command independently
 enumerates the required case/engine test IDs and fails if any did not pass,
 even if other tests passed. Skips, expected failures, unexpected passes, and
 reported deselections also fail. Ordinary targeted `pytest` runs remain useful
@@ -208,45 +196,38 @@ python -m conformance
 python -m conformance --engine all
 ```
 
-## DiskGraph-only CI conformance
+## Differential testing
 
-Conformance defaults to DiskGraph. The nightly
-**Correctness / Conformance** job adds the daily seeds:
+The in-memory engine runs the same golden cases as the DiskGraph engine and,
+where they apply, the same generated properties, and the differential
+properties compare the two engines' outputs case by case. Neither engine is the
+reference: a discrepancy is triaged against the rule. If the DiskGraph engine
+disagrees with the golden answer or the guarantee, it is a DiskGraph bug, which
+is fixed or recorded as a known gap. If the DiskGraph engine follows the rule
+and the in-memory engine does not, it is an in-memory bug, which is fixed in the
+in-memory engine or recorded as a known in-memory divergence; it never changes a
+guarantee or a golden answer. If the rule leaves the behavior open, the
+discrepancy is allowed, and the comparison tolerates exactly that, with the
+reason written beside the tolerance. If no rule covers the behavior, it is a
+question for the spec, settled by a reviewed rule and golden case rather than by
+copying either engine's output.
 
-```bash
-python -m conformance --engine diskgraph --no-in-memory --seeds 12 --seed-start K
-```
+Known gaps (`registry.KNOWN_GAPS`, repros in `known_gaps/`) list the DiskGraph
+engine's shortfalls against the spec. Known in-memory divergences
+(`registry.IN_MEMORY_DIVERGENCES`, repros in `in_memory_divergences/`) list the
+in-memory engine's bugs; they are not spec gaps. The allowed discrepancies are
+the tolerances in this table, each named in the comparison code:
 
-This selects DiskGraph golden answers/refusals, dtype/encoder pairs, field
-semantics, batch boundaries, generated native properties and applicable corpus
-and known-gap replays. Pinned seeds and all 12 daily seed batches remain required.
-Anchor-split checks execute only their selected engine. A runtime guard fails
-if a test constructs or opens InMemoryEngine or materializes its anchors.
+| Tolerance | Where | Room left by |
+|---|---|---|
+| Mean, variance and standard deviation (`SUMMATION_DEPENDENT`) compare within `MOMENT_TOLERANCE`, relative and absolute 1e-12; the engines sum in different orders, and the largest measured difference is 4 ULP (relative 5e-16) | `properties.py` | G-CALC-001: floating means and moments are approximate |
+| Fitted-state floats compare within the same `MOMENT_TOLERANCE` (`state_differences` in `fitted_state`) | `properties.py` | G-CALC-001: the fitted means and moments are approximate floating results |
+| Buckets cuts over stored columns compare by rank among the values they fit on, within `BUCKET_RANKS` = 3 (`fitted_state`); they are t-digest quantiles, each within 1.5 ranks of the exact cut, and the digest depends on the index's shard count | `properties.py` | Buckets fits on DiskGraph's approximate t-digest quantiles |
+| A sample with a tie at a fanout limit compares the clocks of the root's first-layer neighbors, not which tied neighbors are kept (`_same_up_to_ties`) | `graph_cases.py` | G-GRAPH-001 rule 2: which tied neighbor is kept is unspecified |
 
-All native behavior properties run, including independently calculated aggregate
-answers, fitted statistics, graph expansion and sequence selection. The optional
-`--no-in-memory` flag selects the nightly behavior modules without harness self-tests;
-it does not remove any behavior property. Package CI also runs the harness self-tests
-on native execution. The deprecated engine is forbidden in both modes.
-
-The flag requires `--engine diskgraph`. Its pytest equivalent is
-`--conformance-engine=diskgraph --conformance-no-in-memory --conformance-complete`.
-Required native cases still fail on missing execution, skips and xfails; the
-scope change does not alter golden answers or convert package failures to passes.
-
-## Independent expected answers
-
-Golden answers are calculated from guarantees and fixture rows. Generated aggregate
-answers use relational joins, window inequalities and elementary reductions in
-`expected.py`. Fitted vocabularies and moments use that declared population; quantile
-checks retain the documented rank tolerance. Sequence answers independently select,
-order and truncate fixture events. Graph checks validate each layer against eligible
-fixture edges, recency and fanout, allowing only the choices the guarantee leaves open.
-
-Invariants such as reload, resume, permutation and repeated execution compare native
-runs to check the stated invariant. They do not establish correctness by agreement
-with another engine. `registry.KNOWN_GAPS` retains existing native defect replays;
-no new gap, skip or xfail is introduced to conceal a migrated failure.
+The in-memory engine builds no index, reads no Parquet binding and has no model
+output format (`registry.INAPPLICABLE`), so the properties about those run on
+the DiskGraph engine alone.
 
 ## Generated cases and properties
 
@@ -255,10 +236,10 @@ expected answer.
 
 | File | Content |
 |---|---|
-| `registry.py` | Typed, versioned dimensions (source files, time, values, schema shape, contract, execution), what each contract feature or reduction is sensitive to, `KNOWN_GAPS` and `ENGINE_REFUSALS` |
+| `registry.py` | Typed, versioned dimensions (source files, time, values, schema shape, contract, execution), what each contract feature or reduction is sensitive to, `KNOWN_GAPS`, `IN_MEMORY_DIVERGENCES` and `ENGINE_REFUSALS` |
 | `tests/conformance/test_dtype_matrix.py` | All 17 scalar types × five encoders: real binding/execution for accepted pairs and pre-open refusals for incompatible declarations, on each selected engine. This fixed matrix is separate from the generated row/time dimensions. |
-| `generate.py` | Seeded cases built with the real API: a pairwise covering array per seed batch over the sensitive dimensions; every case declares every reduction and window; S rows on DiskGraph; valid and deliberately invalid contract strategies |
-| `properties.py` | Point-in-time invariance, refusal timing, independent aggregate answers, permutation, partition into Parquet files, time shift, irrelevance, delivery (sharding, resume, determinism, shuffling), epoch work trend, truncated Parquet |
+| `generate.py` | Seeded cases built with the real API: a pairwise covering array per seed batch over the sensitive dimensions; every case declares every reduction and window; XS rows in memory, S rows on DiskGraph; valid and deliberately invalid contract strategies |
+| `properties.py` | Point-in-time invariance, refusal timing, differential (DiskGraph vs the in-memory engine), permutation, partition into Parquet files, time shift, irrelevance, delivery (sharding, resume, determinism, shuffling), epoch work trend, truncated Parquet |
 | `repro.py` | Repro files and the corpus loader |
 | `outputs.py` | Readers for targets and batches, and the variants the functional-area properties build: planted label-window rows, packing and fitting contracts, split anchors, `available_from` |
 | `variants.py` | Refusal-timing strategies that also add a table, change the binding (Parquet types, renames, paths) or need batches to run |
@@ -268,7 +249,7 @@ expected answer.
 Each property runs through the real `check()` → `prepare()` → `materialize()`
 path and compares samples as sets keyed by `sample_id`, with the same exact
 comparison as golden cases, except for the allowed discrepancies listed under
-[Independent expected answers](#independent-expected-answers).
+[Differential testing](#differential-testing).
 
 DiskGraph cases also vary `execution.num_shards` {1, 3} and
 `execution.num_threads` {1, 4}. Generators assign the combinations by case
@@ -296,9 +277,12 @@ property checks it, and GAP-INDEX-LAYOUT-DG records it.
 Point-in-time invariance covers the destination table and a static
 intermediate table. No passing obligation checks a cutoff at a timed
 intermediate yet: DiskGraph refuses it at `check()`, which the refusal-timing
-property keeps checking. Migrated fixtures requiring timed intermediates may
-pass by verifying that declared preflight refusal; they do not establish native
-execution support. Once accepted, their fixture-derived answers must match.
+property keeps checking, and the in-memory engine leaks rows there, the known
+in-memory divergence `DIV-TIMED-HOP-MEM`.
+
+The in-memory engine's window boundaries are checked by golden cases and by the
+DiskGraph differential, so the CPU-only job alone can't see a boundary
+regression in the in-memory engine.
 
 Functional areas widen the same cases:
 
@@ -314,9 +298,9 @@ Functional areas widen the same cases:
   sides of every target edge and checks each target moves exactly as the
   window rule says (start exclusive, stop inclusive); for rows tied for first
   or last, their time is judged, not which row is chosen.
-- **Model path:** `execution.output_format=model` makes the aggregate-answer and
+- **Model path:** `execution.output_format=model` makes the differential and
   point-in-time checks read DiskGraph's `batches(output_format="model")`,
-  decoded and checked against the independently calculated fixture answers.
+  decoded to the same answers, against the in-memory engine's inspectable batches.
   `model_delivery` and `model_epoch_trend` rerun delivery and the epoch work
   trend on model batches. `packing` checks token budgets, bucketing, Padded
   against Packed, model against inspectable, over histories that are empty,
@@ -324,13 +308,14 @@ Functional areas widen the same cases:
   `chunk_batches`; under a token budget, `drop_last` may drop only the final
   batch (`execution.drop_last`).
 - **Anchors, roots, fitted state:** `anchor_splits` (split names, unions and
-  the null split, in table order, plus seeded native shuffle),
+  the null split, in table order; DiskGraph's shuffle equals the in-memory engine's),
   `root_availability` (an anchor at `available_from` is refused, a second later
-  accepted; a missing root key is a clean error), `fitted_state` (vocabulary entries,
-  moments and quantiles calculated independently from the fitting population) and `contract_transfer` (a bound contract gives
+  accepted; a missing root key is a clean error), `fitted_state` (the same fit
+  inputs and fitted structure as the in-memory engine: vocabulary entries, not their
+  IDs, and types exactly) and `contract_transfer` (a bound contract gives
   identical batches in a fresh process). Both use fitted encoders over entity
   columns and field tokens (`Fields` with `Tokens` rows), which DiskGraph fits
-  straight from typed columns (`build_model`).
+  straight from typed columns (`build_model`) and the in-memory engine from records.
 - **Refusal timing:** strategies DiskGraph refuses at `check()` by design, each
   refusal naming its construct at a path as specific as
   `properties.REFUSAL_CONSTRUCTS` records; the late refusals recorded as known
@@ -341,18 +326,20 @@ Functional areas widen the same cases:
 
 Compared outputs are answers, never encoded values.
 
-Every (property × engine × seed batch), the corpus and each known gap is a required obligation, like a golden case/engine pair: `--conformance-complete`
+Every (property × engine × seed batch), the corpus and each known gap and
+in-memory divergence is a required obligation, like a golden case/engine pair: `--conformance-complete`
 fails if one is missing, skipped, filtered or expected to fail. The property and
-seed set is pinned in `tests/conformance/conftest.py`. CI conformance selects
-the DiskGraph-only scope described above. A conformance test
+seed set is pinned in `tests/conformance/conftest.py`. The CPU job runs the
+in-memory obligations; the DiskGraph job runs both engines. A conformance test
 that needs one engine is marked `@pytest.mark.engine("diskgraph")`: it isn't
 created unless that engine is selected, and then it calls `require_engine`, so a
 missing native package fails it instead of skipping it.
 
 Longer runs check the same properties on more seed batches:
-`python -m conformance --engine diskgraph --no-in-memory --seeds 12 --seed-start K`
-runs batches K .. K+11 on DiskGraph, on top of the pinned ones, which always run.
-Every selected batch is required, so `--seeds` can only add. The nightly workflow picks a new window
+`python -m conformance --engine all --seeds 12 --seed-start K` runs batches
+K .. K+11 on each engine, on top of the pinned ones, which always run (415 checks
+in about 12 minutes on an Apple M-series laptop). Every batch it runs is
+required, so `--seeds` can only add. The nightly workflow picks a new window
 each day (K = days since 1970 × 12) and logs K in its step summary, so a failure
 reproduces with the same command. Rotating these seeds only
 changes which generated cases are checked; the e2e flows' model-training seeds
@@ -368,10 +355,12 @@ on each selected engine its property applies to. It starts empty.
 
 When a property exposes a DiskGraph defect, the gap is recorded in
 `registry.KNOWN_GAPS` with its engine, property, the dimension values it covers,
-a reason, a repro under `known_gaps/` and the failure it shows. Existing records
-remain visible. This migration adds no gap records, skips or xfails for native
-behavior that previously ran only through the deprecated engine.
-
+a reason, a repro under `known_gaps/` and the failure it shows. An in-memory
+defect is recorded the same way in `registry.IN_MEMORY_DIVERGENCES`, with its
+repro under `in_memory_divergences/`. Generators stay
+out of that region, and a required test replays each repro and expects that
+failure, so a fix shows up as a failing test that lifts the gap. Never narrow a
+generator silently. The same holds for in-memory divergences.
 
 The assertions call the package's actual runtime checks. Expected answers and refusals
 remain independent test assertions; they do not grant runtime support or
@@ -386,38 +375,22 @@ those dimensions.
 
 | Property | Checks |
 |---|---|
-| `graph_expected` | native nodes and edges satisfy the fixture's eligible layer-by-layer expansion (below) |
+| `graph_differential` | DiskGraph's node sets and distinct edges equal the in-memory engine's; a sample with a tie at a fanout limit compares the clocks of the root's first-layer neighbors; both engines' graphs are layer-by-layer expansions (below) |
 | `graph_inference_exact` | what batch inference needs (G-INFERENCE-001): rows dated after every cutoff change none of DiskGraph's graphs, tied neighbors included; where the index build isn't deterministic (several shards and several threads), samples with a tie at a fanout limit are left out, the known gap GAP-GRAPH-TIES-DG |
 | `graph_point_in_time` | no neighbor dated after its cutoff, except events reached through a static traversal; future rows change nothing (tied samples as above), and the run with them is a layer-by-layer expansion over the changed tables |
 | `graph_structure` | fanout bound, `recent` keeps the most recent eligible neighbors, unique nodes, edge orientation, layer-by-layer expansion; DiskGraph refuses static traversals at `check()` |
 | `graph_edge_uniqueness` | no edge repeats within a sample |
 | `graph_determinism` | sampling one prepared index twice more gives the same graphs in the same order; separate builds are rule 2, checked by `graph_tie_invariance` |
 | `graph_tie_invariance` | row order, file splits and another `num_shards` don't change the graphs |
-| `sequence_expected` | both native output formats satisfy source membership, values, multiplicity, chronology and both component/merged limits; equal-time permutations and eligible boundary alternatives are allowed |
-| `sequence_point_in_time` | no event after its cutoff; each `EventTimeDelta` is the cutoff minus the event time, in its unit; original and future-augmented sources satisfy the same selection rules |
-| `sequence_permutation` | each independent preparation satisfies those source rules after row/request permutation; tied selections may differ |
-
-Sequences are materialized from Parquet AnchorTables and read through native
-batching. The decoder also checks field dtypes, padded layout and validity.
-The serving drift suite reuses this source oracle for generated sequences;
-it never uses another engine's output as the expected answer.
-
-Serving graph comparisons match declared node identities and remap edge indices.
-Each graph independently checks source features at the encoder's output dtype,
-relation orientation, cutoff, recency and a complete layer-by-layer selection.
-Revisited relations require a valid combination of selections explaining exactly
-the emitted nodes and edges. Equal-time fanout alternatives are permitted, while
-missing/extra nodes, edges and values fail. Tied choices are searched lazily, with
-required-edge pruning; the checker never accepts an unchecked graph to save time.
-Only declared float64 aggregate means and moments use the existing
-`MOMENT_TOLERANCE` (1e-12 absolute and relative). Counts, masks, IDs and structure
-remain exact. Generated aggregate results are also checked against raw source rows.
+| `sequence_differential` | DiskGraph's sequences equal the in-memory engine's on both output formats |
+| `sequence_point_in_time` | no event after its cutoff; each `EventTimeDelta` is the cutoff minus the event time, in its unit; future rows change nothing |
+| `sequence_permutation` | a second run, and row and request order, give the same sequences |
 
 [G-GRAPH-001](spec/guarantees/G-GRAPH-001/guarantee.md) states the graph rules.
 A layer-by-layer expansion is rebuilt from the engine's own output, so it holds
 whichever tied neighbor was kept: layer 0's frontier is the root, a frontier
 node's kept neighbors are the traversal's edges at it, and the next frontier is
-every kept neighbor, expanded again if reached before. At
+every kept neighbor, expanded again if reached before, as the in-memory engine does. At
 each frontier node the kept neighbors must be candidates (keys join, dated at or
 before the cutoff unless static) with the clocks of the `fanout` most recent candidates;
 every node is the root or an edge's end, and every edge leaves the frontier. A
@@ -425,6 +398,10 @@ relation traversed more than once (`REVISITING` paths) can't say which layer mad
 an edge, so there the kept clocks need only include the most recent candidates',
 and each edge must be a candidate of some traversal of it from the frontier.
 The model output format is decoded from the same `Padded` layout as the
-inspectable one; both are checked against fixture answers. Each property shares one
+inspectable one, so both compare against the in-memory engine. Each property shares one
 covering array; a known gap removes cases only from the property that found it,
 which adds rows for any pairs those cases alone covered.
+
+The package tests now use DiskGraph and independent expected answers.
+Additional regression cases and their documented expectations are listed in
+[documented regressions](documented-regressions.md).
