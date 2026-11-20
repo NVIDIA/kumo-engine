@@ -33,7 +33,7 @@ Mitigation: Review and scan skill before deployment. <br>
 **Output Type(s):** [Analysis, Code] <br>
 **Output Format:** [Markdown with inline Python code blocks] <br>
 **Output Parameters:** [1D] <br>
-**Other Properties Related to Output:** [None] <br>
+**Other Properties Related to Output:** [Reports run, task, stage and file paths read, plus the selected trainer/refit for training runs or the recorded run ID and checkpoint for prediction runs; distinguishes observations, hypotheses, and missing evidence.] <br>
 
 ## Evaluation Agents Used: <br>
 - Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`) <br>
