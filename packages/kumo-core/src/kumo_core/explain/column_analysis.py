@@ -634,6 +634,9 @@ class ColumnAnalysis(Explainer):
         cohorts = [value.split(':')[-1] for value in col_names]
         # Population count is given by the frequency of categories:
         count = freq_mat.sum(dim=0)
+        mask = count > 0
+        if not mask.any():
+            return None
 
         # For predictions/targets, we weight the relative frequency of a
         # (entity, category) by the score of its entity, and divide that by the
@@ -650,7 +653,6 @@ class ColumnAnalysis(Explainer):
             targets = (freq_mat * targets).sum(dim=0) / freq_mat.sum(dim=0)
 
         # Filter out all categories with zero/NaN population count:
-        mask = count > 0
         cohorts = [val for val, keep in zip(cohorts, mask.tolist()) if keep]
         count = count[mask]
         predictions = predictions[mask]
