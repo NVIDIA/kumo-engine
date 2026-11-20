@@ -294,13 +294,13 @@ Release whatever the task holds. Must tolerate repeat calls.
 ```python
 class DiskGraphEngine(
     *,
-    index: str | Path,
+    index: str | Path | None = None,
     num_threads: int | None = None,
     random_seed: int | None = 0,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
-    work_dir: str | Path | None = None,
+    index_build_id: str | None = None,
     source_versions: Mapping[str, Mapping[str, str]] | None = None,
 )
 ```
@@ -328,13 +328,13 @@ step, before any data is read.
 
 **Parameters**
 
-- `index`: directory of the base index.
+- `index`: source-ingestion index directory. A path under the configured root's `indexes/` uses managed storage; other paths retain legacy layout. Omit to allocate a new managed build.
+- `index_build_id`: physical build to create or reuse under the configured root. Omit to allocate a new ID. Cannot be combined with `index`.
 - `num_threads`: native sampling threads.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
-- `work_dir`: task/cache directory. Omit it or pass the index path (including an alias resolving to it) for the original index-local layout and cache reuse. Other paths must be outside the index; existing-index factories require an external directory.
 - `source_versions`: optional table-to-identity mapping for source ingestion/reuse. Each entry has nonempty `source` (connector plus source identity) and `version` strings. These trusted connector versions replace file path/size/mtime identity; missing versions are never treated as equal. Omit for legacy file validation. The caller must change the version whenever source data changes: reuse does not compare Parquet contents, file sizes or mtimes in this opt-in mode.
 
 #### `DiskGraphEngine.from_index`
@@ -343,20 +343,20 @@ step, before any data is read.
 
 ```python
 DiskGraphEngine.from_index(
-    index: str | Path,
+    index_build_id: str | Path,
     *,
-    work_dir: str | Path,
     num_threads: int | None = None,
 ) -> DiskGraphEngine
 ```
 
-Open a complete native index without its original sources or any base writes.
+Open a completed managed build under the configured Kumo scratch root.
 
-Read schema/relations from existing metadata. Older indexes without the
-resolved native config are refused. Native edge tables and non-scalar
-stored columns are not supported. Bare indexes without producer identity
-are hashed in full on each open; engine provenance and PyTorch manifests avoid that scan.
-`work_dir` holds task extensions and derived caches outside the base.
+Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
+DiskGraph's managed path resolver. A path to the same managed base is
+accepted. The build ID is physical identity,
+independent of schema/data-version identity. No original sources are read.
+Legacy ID-less indexes cannot be adopted; the existing index= constructor
+remains available for legacy source ingestion and reuse.
 
 #### `DiskGraphEngine.from_snapshot`
 
@@ -366,16 +366,15 @@ are hashed in full on each open; engine provenance and PyTorch manifests avoid t
 DiskGraphEngine.from_snapshot(
     snapshot: Any,
     *,
-    work_dir: str | Path,
     num_threads: int | None = None,
 ) -> DiskGraphEngine
 ```
 
-Bind a kumo.engine GraphSnapshot using its existing index and identity.
+Attach to an existing same-root Kumo snapshot by physical build identity.
 
-Uses public `index_path` and `id` fields; importing kumo.engine is
-unnecessary. Load exported snapshots through the existing engine loader.
-No source export, base ingestion or additional metadata file is needed.
+The original base stays in place. Tasks and caches use sibling managed paths
+under kumo.settings.scratch_dir(); no public work/output directories are needed.
+Cross-root imports and legacy snapshots without a build ID are refused.
 
 #### `DiskGraphEngine.schema`
 

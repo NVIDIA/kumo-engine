@@ -93,7 +93,7 @@ class _Source:
         *,
         num_threads: int | None,
         random_seed: int | None,
-        work_dir: Path | None = None,
+        paths=None,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
         self.random_seed = random_seed

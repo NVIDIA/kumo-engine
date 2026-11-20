@@ -158,12 +158,16 @@ The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 ### Building and reusing the index
 
 The first time `prepare` runs, `DiskGraphEngine` builds an index from the
-Parquet files in the directory you give it. Later runs find the index there and
-reuse it.
+Parquet files in the dataset. By default it allocates a physical build ID and
+writes the base under the configured Kumo scratch root at
+`indexes/<index_build_id>`. Pass that ID to `from_index` to reopen the same build.
 
 <!-- test: diskgraph -->
 ```python
-engine = api.DiskGraphEngine(index=root / "index", ingest="if_missing", num_shards=1)
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=root)
+engine = api.DiskGraphEngine(ingest="if_missing", num_shards=1)
 with (
     api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
@@ -183,40 +187,49 @@ The January 12 order is after the January 10 prediction time, so it is not
 read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
-fitted encoders, so several contracts over the same tables can share one index.
-By default, fitting keeps column statistics of encoders over stored columns in
-the index's `col_stats/`, so that directory must be writable. For the ordinary
-`DiskGraphEngine(index=...)` constructor, omitting `work_dir` or explicitly setting
-it to the index path uses this same layout and reuses the same caches. Paths that
-resolve to the index, including symlinks, are equivalent. Other paths inside the
-index are rejected. External work directories and their writable roots must be
-disjoint from the base, including after resolving symlinks. Supply an external
-`work_dir` to put newly computed statistics and task state there instead. Each encoder
-cutoff has one directory there, with a `<table>.col_stats.json` file per table.
-A later fit at the same cutoff computes only the columns and statistics those
-files lack, and adds them. Ingest computes the statistics for the cutoffs in
-`DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
-tokenizer is trained on the first fit at its cutoff and kept beside them as
-`<table>.<column>.text-<settings>.tokenizer.json`.
-Its manifest records the schema, the files and their resolved types. If the
-manifest doesn't match the dataset and schema you pass, `prepare` refuses the
-index rather than reusing it, and it never overwrites it. The shard count isn't
-part of that check: an index opened with a different `num_shards` is reused as
-it was built. With
-`ingest="never"`, `prepare` requires an index that already exists, which is
-what you usually want in a scoring job.
+fitted encoders, so several contracts can share one base. The managed layout is:
+
+```text
+<scratch_root>/indexes/<index_build_id>/
+<scratch_root>/tasks/<index_build_id>/<task_id>/
+<scratch_root>/cache/<index_build_id>/
+```
+
+The build ID identifies one physical ingest, independently of schema and data
+version. New ingests of the same data get different IDs. `engine.index_build_id`
+exposes the allocated ID; pass `index_build_id=...` to the constructor to reuse
+the same managed build with its source dataset, or call `from_index(id)` to use
+it without sources. The existing `DiskGraphEngine(index=...)` constructor still
+supports source ingestion and reuse at an explicit legacy path.
+
+Fitting reads any statistics already stored under the base's `col_stats/` and
+writes missing statistics, tokenizers and token lengths under the managed
+`cache/<index_build_id>/col_stats/`. Each encoder cutoff has a directory with a
+`<table>.col_stats.json` file per table. A later fit at the same cutoff computes
+only missing columns or statistics. Ingest computes statistics for the cutoffs
+in `DiskGraphEngine(..., encoder_cutoffs=["2024-01-08"])`. A `Text` encoder's
+tokenizer is trained on the first fit at its cutoff and saved beside them.
+
+The manifest binds the schema, source files and resolved types. If it differs
+from the dataset and schema you pass, `prepare` refuses reuse. The shard count
+is not part of that check; an existing index keeps the shard count it was built
+with. With `ingest="never"`, `prepare` requires an existing index.
 
 ### Open an existing snapshot or index
 
-`DiskGraphEngine.from_snapshot(snapshot, work_dir=...)` consumes an existing
-`kumo.engine.GraphSnapshot`. Use the engine's existing snapshot loader to
-restore an exported snapshot first. `DiskGraphEngine.from_index(index_path,
-work_dir=...)` opens the native index directory directly, including a
-PyTorch-produced index. Neither factory exports sources or ingests the base.
+`DiskGraphEngine.from_index(index_build_id)` opens a completed managed build
+under the configured Kumo root, with no original sources. An explicit path
+resolving to that same `indexes/<index_build_id>` directory also works. It verifies the
+base's stored build ID. `DiskGraphEngine.from_snapshot(snapshot)` consumes an
+existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots still
+live under `snapshots/<graph>/<version>`; the loader reads the base there and
+places its tasks and caches in the managed locations keyed by its physical ID.
+Older snapshots without a physical build ID cannot be adopted. Cross-root
+snapshot import is outside this interface.
 
 <!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
 ```python
-engine = api.DiskGraphEngine.from_snapshot(snapshot, work_dir="/scratch/loader")
+engine = api.DiskGraphEngine.from_snapshot(snapshot)
 contract = api.DataLoaderSpec(
     schema=engine.schema,
     sample=sample_spec,
@@ -229,50 +242,38 @@ with api.prepare(contract=contract, engine=engine) as plan:
 ```
 
 `SampleSpec` and `BatchSpec` retain their usual meaning. `engine.schema` derives
-stored types, keys, clocks and relationships from the existing native config
-and metadata. PyTorch-produced indexes retain their logical relation aliases;
-engine/native indexes initially use native FK names. A caller can provide a
-compatible schema projection and relation aliases: binding checks endpoints,
-FK columns and direction against the actual index. `prepare` rejects a Dataset
-alongside an existing-index engine. Anchors still select entity/time requests;
-neighborhoods are sampled during iteration.
+stored types, keys, clocks and relationships from the native config and
+metadata. PyTorch-produced indexes retain logical relation aliases; core
+snapshots initially use native FK names. A compatible schema projection may
+rename those relations: binding checks endpoints, FK columns and direction.
+`prepare` rejects a Dataset alongside an existing-index engine. Anchors select
+entity/time requests; neighborhoods are sampled during iteration.
 
-The base may be read-only. Task extensions, scalar-materialization scratch,
-new statistics, tokenizers and token-length caches go under the external work
-directory; existing immutable base caches can be read in place. Closing a task
-cleans up its temporary files. Derived caches remain for reuse. No new base
-metadata file is written. Fitted-state statistics provenance records absolute paths
-in external mode (including reused base files); these are diagnostic references,
-not inputs used when restoring fitted encoders. They can refer to the old location
-after relocation. External statistics share one directory per artifact and cutoff;
-the native writer locks, merges existing keys, and atomically replaces each file.
-Concurrent requests may duplicate computation but do not discard published keys.
-External storage requires a DiskGraph build supporting `cutoff_col_stats(output_dir=...)`;
-preparation checks that capability because older and newer development builds can
-share version 0.2.0. Install DiskGraph from the matching repository revision.
-Existing snapshot identity or PyTorch producer fingerprints survive relocation. A bare completed native index without producer
-identity is hashed in full on each opening, which can be expensive for large artifacts.
+The base may be read-only. Task extensions and scalar-materialization scratch
+are temporary; closing a task removes them. Derived caches remain for reuse.
+The loader writes no new base metadata. Native extension metadata records the
+parent build ID, so opening a task against a different base is refused.
+Statistics may contain diagnostic paths to reused base files; those paths are
+not needed to restore fitted encoders. Concurrent requests may duplicate
+computation but do not discard published keys. Install DiskGraph from the
+matching kumo-engine revision for managed build and external cache support.
 
 Opening requires the resolved `diskgraph_config.json` and the producer's
-completion metadata. Engine snapshots use the native inventory/integrity check;
-PyTorch indexes use their existing manifest, published after ingestion. Older
-artifacts missing resolved config are refused. Native edge-table layouts,
-end-time validity and unsupported stored types (including lists) are refused
-explicitly. Snapshot adoption does not recover relations omitted during ingestion
-or enable additional sampling strategies.
+completion metadata. Core snapshots use native inventory/integrity checks;
+PyTorch indexes use their manifest, published after ingest. Older artifacts
+missing resolved config are refused. Native edge-table layouts, end-time
+validity and unsupported stored types (including lists) are refused explicitly.
 
 For **source ingestion/reuse** after connector restaging, pass
-`DiskGraphEngine(index=..., work_dir=..., source_versions=...)`. Map every table
-to `{"source": "connector/source-coordinate", "version": "connector-version"}`.
-Equal trusted identities/versions and schema permit reuse across export paths;
-a changed identity/version or schema refuses reuse. Without trustworthy versions,
-keep the existing file-validation mode. This opt-in trusts the caller to change
-the version whenever source data changes; reuse does not check Parquet contents,
-file sizes or mtimes. Reusing a stale version token therefore reuses the old index.
-Physical file checks still detect source changes during initial ingestion.
-Opening an already materialized index
-never checks whether its sources now have a newer version; refreshing sources
-remains an explicit producer operation.
+`DiskGraphEngine(index_build_id=..., source_versions=...)` (or the legacy
+`index=...` constructor). Map every table to
+`{"source": "connector/source-coordinate", "version": "connector-version"}`.
+Equal trusted identities/versions and schema permit reuse across source paths;
+a changed identity/version or schema refuses reuse. Without trustworthy
+versions, use file validation. This opt-in trusts the caller to change the
+version when source data changes; reuse does not compare Parquet contents,
+sizes or mtimes. An already materialized index never checks whether sources
+now have a newer version; refreshing sources is a producer operation.
 
 `output_format="model"` lets the DiskGraph engine build the batch's tensors
 column by column, without building a Python record per event. It refuses raw types

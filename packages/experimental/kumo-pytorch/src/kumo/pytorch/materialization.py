@@ -76,6 +76,7 @@ def ensure_diskgraph_index(
     if_missing: bool = True,
     column_stats: tuple[Sequence[StatRequest], Sequence[int | None]] | None = None,
     source_versions: Mapping[str, Mapping[str, str]] | None = None,
+    index_build_id: str | None = None,
 ) -> _DiskGraphIndex:
     """Reuse or build the base index while opening a DiskGraph engine.
 
@@ -102,6 +103,10 @@ def ensure_diskgraph_index(
     output = Path(destination).resolve()
     if output.exists():
         artifact = _DiskGraphIndex.open(output)
+        if index_build_id is not None:
+            metadata = json.loads((output / "index_metadata.json").read_text())
+            if metadata.get("index_build_id") != index_build_id:
+                raise ValueError("index build ID mismatch")
         artifact.validate_binding(schema, dataset, source_versions)
         _warn_dropped_rows(output)
         return artifact
@@ -156,6 +161,7 @@ def ensure_diskgraph_index(
             cat_count_strategy="none",
             **stats_options,
             **thread_options,
+            **({"index_build_id": index_build_id} if index_build_id is not None else {}),
         )
         elapsed = time.perf_counter() - started
         if _dataset_payload(dataset) != physical_snapshot:

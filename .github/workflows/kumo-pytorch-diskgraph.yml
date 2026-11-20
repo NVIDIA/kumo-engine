@@ -124,7 +124,9 @@ jobs:
           path: ${{ runner.temp }}/diskgraph-wheel
       # The wheel is built from the sdist, so this also checks the sdist is complete.
       - name: Build the sdist, then the wheel from it
-        run: uv build --package kumo-pytorch --out-dir "$RUNNER_TEMP/dist"
+        run: |
+          uv build --package kumo-pytorch --out-dir "$RUNNER_TEMP/dist"
+          uv build --wheel --package kumo-settings --out-dir "$RUNNER_TEMP/dist"
       # Outside the workspace, so neither the source tree nor the workspace's uv
       # settings take part: the install a user gets from the two wheels.
       - name: Install the wheel and DiskGraph's into a fresh environment
@@ -134,7 +136,8 @@ jobs:
           uv venv --python 3.12 fresh
           wheel=$(ls dist/kumo_pytorch-*.whl)
           uv pip install --python fresh/bin/python --torch-backend cpu \
-            "kumo-pytorch[dev,examples] @ file://$RUNNER_TEMP/$wheel" diskgraph-wheel/diskgraph-*.whl \
+            "kumo-pytorch[dev,examples] @ file://$RUNNER_TEMP/$wheel" \
+            dist/kumo_settings-*.whl diskgraph-wheel/diskgraph-*.whl \
             nbclient==0.11.0 ipykernel==7.4.0
       # The README, docs, tests, conformance harness and examples, without src/:
       # kumo.pytorch can only come from the installed wheel.

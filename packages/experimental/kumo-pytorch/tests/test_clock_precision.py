@@ -760,9 +760,12 @@ def test_timestamp_lifecycle_without_pandas(tmp_path):
     import sys
     from pathlib import Path
 
+    import kumo.settings
+
+    kumo_paths = [str(Path(api.__file__).parents[1]), str(Path(kumo.settings.__file__).parent)]
     code = (
         "import sys,types\nk=types.ModuleType('kumo');k.__path__=["
-        + repr(str(Path(api.__file__).parents[1]))
+        + ",".join(repr(path) for path in kumo_paths)
         + "];sys.modules['kumo']=k\nsys.path.insert(0, "
         + repr(str(Path(__file__).parents[1]))
         + ")\n"
