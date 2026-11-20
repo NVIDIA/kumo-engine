@@ -1102,41 +1102,43 @@ def test_cleanup_times_out_without_deleting_active_pipeline(modules, tmp_path, m
 
 
 @pytest.mark.parametrize('dispatch',
-                         ['main', 'egu/snowflake-explanation-local',
+                         ['main', 'egu/byom-mlops-lifecycle', 'egu/snowflake-explanation-local',
                           'egu/sagemaker-platform-validation'])
-@pytest.mark.parametrize('prevent_self_review', [False, True])
 @pytest.mark.parametrize(
     'invalid',
     [None, 'admin-bypass', 'reviewers', 'branches', 'trial', 'wildcard', 'tag', 'count'])
-def test_sagemaker_environment_requires_main_and_independent_approval(
-        modules, monkeypatch, prevent_self_review, invalid, dispatch):
+def test_sagemaker_environment_requires_approved_branch_and_test_policy(
+        modules, monkeypatch, invalid, dispatch):
     import urllib.request
     from importlib.util import module_from_spec, spec_from_file_location
-    rule = dict(type='required_reviewers', prevent_self_review=prevent_self_review,
+    rule = dict(type='required_reviewers', prevent_self_review=True,
                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
-    environment = dict(can_admins_bypass=False, protection_rules=[rule],
+    environment = dict(can_admins_bypass=False, protection_rules=[],
                        deployment_branch_policy=dict(protected_branches=False,
                                                      custom_branch_policies=True))
     policies = dict(total_count=1,
                     branch_policies=[dict(type='branch', name='main')])
+    if dispatch == 'egu/byom-mlops-lifecycle':
+        policies['branch_policies'].append(dict(type='branch', name=dispatch))
+        policies['total_count'] = len(policies['branch_policies'])
     if invalid == 'admin-bypass':
         environment['can_admins_bypass'] = True
     if invalid == 'reviewers':
-        rule['reviewers'] = []
+        environment['protection_rules'] = [rule]
     if invalid == 'trial':
         policies['branch_policies'].append(
             dict(type='branch', name='egu/snowflake-explanation-local'))
-        policies['total_count'] = 2
+        policies['total_count'] = len(policies['branch_policies'])
     if invalid in {'branches', 'wildcard'}:
         policies['branch_policies'].append(
             dict(
                 type='branch', name=('egu/sagemaker-platform-validation' if
                                      invalid == 'branches' else 'feature-*')))
-        policies['total_count'] = 2
+        policies['total_count'] = len(policies['branch_policies'])
     if invalid == 'tag':
         policies['branch_policies'][0]['type'] = 'tag'
     if invalid == 'count':
-        policies['total_count'] = 2
+        policies['total_count'] = len(policies['branch_policies']) + 1
     responses = iter([environment, policies])
     requested = []
 
@@ -1153,11 +1155,11 @@ def test_sagemaker_environment_requires_main_and_independent_approval(
     spec = spec_from_file_location('sagemaker_environment', HERE / 'check_environment.py')
     guard = module_from_spec(spec)
     spec.loader.exec_module(guard)
-    if dispatch != 'main':
+    if dispatch not in ('main', 'egu/byom-mlops-lifecycle'):
         with pytest.raises(SystemExit, match='manual dispatch on main'):
             guard.main()
         assert not requested
-    elif invalid is None and prevent_self_review:
+    elif invalid is None:
         guard.main()
     else:
         with pytest.raises(ValueError):

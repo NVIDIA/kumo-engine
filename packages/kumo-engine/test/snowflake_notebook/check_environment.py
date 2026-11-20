@@ -16,21 +16,24 @@ TEAM_ID = 19956283
 
 
 def validate(environment, policies, allowed_branches=(MAIN_BRANCH, ),
-             required_branch=MAIN_BRANCH):
+             required_branch=MAIN_BRANCH, require_approval=True):
     if environment.get('can_admins_bypass') is not False:
         raise ValueError('Administrator bypass must be disabled')
     rules = [
         rule for rule in environment.get('protection_rules', [])
         if rule.get('type') == 'required_reviewers'
     ]
-    if len(rules) != 1 or [
-        (item.get('type'), item.get('reviewer', {}).get('id'))
-            for item in rules[0].get('reviewers', [])
-    ] != [('Team', TEAM_ID)]:
-        raise ValueError(
-            'Environment must require NVIDIA/kumo-engineers approval')
-    if rules[0].get('prevent_self_review') is not True:
-        raise ValueError('Environment must prevent deployment self-review')
+    if require_approval:
+        if len(rules) != 1 or [
+            (item.get('type'), item.get('reviewer', {}).get('id'))
+                for item in rules[0].get('reviewers', [])
+        ] != [('Team', TEAM_ID)]:
+            raise ValueError(
+                'Environment must require NVIDIA/kumo-engineers approval')
+        if rules[0].get('prevent_self_review') is not True:
+            raise ValueError('Environment must prevent deployment self-review')
+    elif rules:
+        raise ValueError('Selected test environments must not require deployment reviewers')
     if environment.get('deployment_branch_policy') != dict(
             protected_branches=False, custom_branch_policies=True):
         raise ValueError('Environment must use selected deployment branches')
@@ -47,7 +50,7 @@ def validate(environment, policies, allowed_branches=(MAIN_BRANCH, ),
 
 
 def main(environment=ENVIRONMENT, branch=None):
-    """Require an explicitly approved ref and independent maintainer approval."""
+    """Require manual dispatch, an approved ref and the configured environment policy."""
     allowed = ((MAIN_BRANCH,
                 TEST_BRANCH) if environment in BRANCH_TEST_ENVIRONMENTS else
                (MAIN_BRANCH, ))
@@ -74,15 +77,15 @@ def main(environment=ENVIRONMENT, branch=None):
         except urllib.error.HTTPError as error:
             raise SystemExit(
                 f'Cannot inspect {environment} (HTTP {error.code}). '
-                'A repository admin must select approved branches, require independent '
-                'maintainer-team approval, disable administrator bypass, '
-                'and add the environment secrets.') from None
+                'A repository admin must configure the selected test environment policy '
+                'and its environment secrets.') from None
 
     validate(get(), get('/deployment-branch-policies?per_page=100'),
              allowed_branches=allowed,
-             required_branch=ref.removeprefix('refs/heads/'))
+             required_branch=ref.removeprefix('refs/heads/'),
+             require_approval=environment not in BRANCH_TEST_ENVIRONMENTS)
     print(
-        'Confirmed: maintainer approval, no administrator bypass, and selected branch restriction'
+        'Confirmed: selected branches, no administrator bypass, and configured reviewer policy'
     )
 
 

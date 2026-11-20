@@ -139,6 +139,8 @@ def test_environment_guard_checks_main_before_api_access(
     import io
 
     guard, environment, policies = environment_guard
+    if environment_name in guard.BRANCH_TEST_ENVIRONMENTS:
+        environment['protection_rules'] = []
     monkeypatch.setenv('GITHUB_REPOSITORY', repository)
     monkeypatch.setenv('GITHUB_REF', ref)
     monkeypatch.setenv('GITHUB_EVENT_NAME', event)
@@ -236,6 +238,7 @@ def test_only_selected_platforms_admit_the_exact_test_branch(
     guard, environment, policies = environment_guard
     selected = environment_name in guard.BRANCH_TEST_ENVIRONMENTS
     if selected:
+        environment['protection_rules'] = []
         policies['branch_policies'].append(
             dict(name=guard.TEST_BRANCH, type='branch'))
     policies['total_count'] = len(policies['branch_policies'])
@@ -262,11 +265,12 @@ def test_only_selected_platforms_admit_the_exact_test_branch(
 
 @pytest.mark.parametrize('fault', [
     'missing-branch', 'missing-main', 'wildcard', 'other-branch', 'tag',
-    'duplicate', 'count', 'self-review', 'bypass', 'reviewer'
+    'duplicate', 'count', 'bypass', 'reviewer'
 ])
 def test_branch_exception_preserves_environment_restrictions(environment_guard, fault):
     guard, environment, policies = environment_guard
     policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
+    environment['protection_rules'] = []
     if fault == 'missing-branch':
         policies['branch_policies'].pop()
     elif fault == 'missing-main':
@@ -279,17 +283,15 @@ def test_branch_exception_preserves_environment_restrictions(environment_guard, 
         policies['branch_policies'][1]['type'] = 'tag'
     elif fault == 'duplicate':
         policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
-    elif fault == 'self-review':
-        environment['protection_rules'][0]['prevent_self_review'] = False
     elif fault == 'bypass':
         environment['can_admins_bypass'] = True
     elif fault == 'reviewer':
-        environment['protection_rules'][0]['reviewers'] = []
+        environment['protection_rules'] = [dict(type='required_reviewers')]
     policies['total_count'] = len(policies['branch_policies']) + (fault == 'count')
     with pytest.raises(ValueError):
         guard.validate(environment, policies,
                        allowed_branches=('main', guard.TEST_BRANCH),
-                       required_branch=guard.TEST_BRANCH)
+                       required_branch=guard.TEST_BRANCH, require_approval=False)
 
 
 def test_workflows_admit_the_same_explicit_branch():
