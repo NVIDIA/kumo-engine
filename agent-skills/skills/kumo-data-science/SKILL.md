@@ -16,6 +16,12 @@ Targets the local `kumo.engine` API; the baseline bundle is `20261007+2e1eb12`.
 Graph visualization requires a source build including [NVIDIA/kumo-engine#134](https://github.com/NVIDIA/kumo-engine/pull/134); it is absent from that bundle and the `1.0.0` release.
 One SDK, no variants.
 
+## Paths in these files
+
+A path that starts with a skill's name — `kumo-data-science/`, `kumoai-reference/`, or a skill in
+*Routing* below — is in that skill's directory, which sits inside this one or beside it. Any other
+path, such as `accept/` or `hosts/`, is relative to the skill whose file names it.
+
 ## Read the host adapter first
 
 Before you answer any request this skill covers — a new model, scoring, a request routed to a
@@ -232,7 +238,7 @@ generated before the task is confirmed:
 - Task type: <temporal binary classification | link prediction | ...>
 - Output: predictions written to <destination, verbatim> in the same notebook | notebook only, no predictions written
 - Scoring population (static tasks): rows whose <target> is NULL | all <entity> rows, staged at <DB.SCHEMA.TABLE>
-- Threshold (binary classification, predictions written): <the user's value [supplied] | 0.5 [default]>
+- Threshold (binary classification, written or local): <the user's value [supplied] | 0.5 [default]>
 - Embeddings: <included, if explicitly requested>
 ```
 
@@ -240,9 +246,23 @@ generated before the task is confirmed:
 target is NULL (`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1). If the user wants rows that
 already have a target scored (for example "every order"), the notebook stages an explicit
 population table. That is a write, and it goes in the source's system, so name it here: next to the confirmed
-destination by default (`<DESTINATION>_POPULATION`) when the destination is in the source's
-system; otherwise, or when there is no destination, ask for a schema or path in the source's
-system. Never stage it in the source schema.
+destination by default when the destination is in the source's system but not in the source schema
+or under the source path — the table
+`<DESTINATION>_POPULATION`, or for a path the sibling directory
+`<destination without its trailing / or file suffix>_population/` (`s3://b/scores/` →
+`s3://b/scores_population/`), never inside the destination, which must stay empty; otherwise, or
+when there is no destination, ask for a schema or path in the source's system. Never stage it in
+the source schema or under the source path, where it would read as a source table.
+
+**Name what a run replaces.** The notebook writes predictions with `OVERWRITE` and stages a
+population with `CREATE OR REPLACE` (a file: overwritten), on every run. Check from the catalog
+whether the destination and the population already exist, and say so on their lines —
+`<DB.SCHEMA.TABLE> (exists: replaced on every run)` — so confirming them approves the
+replacement. When the user does not want an existing table replaced, ask for another name, or
+for a destination, APPEND (`kumoai-reference/references/outputs.md`). If the check cannot run,
+say that instead. The approval covers the confirmed population name only: the notebook carries it
+as `POPULATION_CONFIRMED` and stops before staging if the name it would replace differs
+(`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1).
 
 | Condition | Transition |
 |---|---|

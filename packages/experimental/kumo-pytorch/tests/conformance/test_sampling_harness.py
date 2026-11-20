@@ -278,8 +278,8 @@ def _graph_case(name: str, **dimensions: object) -> GeneratedCase:
     )
 
 
-UNTIED = {"time.graph_ties": "distinct", "contract.graph_temporal": "inherit"}
-TIED = {"time.graph_ties": "tied", "contract.graph_temporal": "inherit"}
+UNTIED = {"time.graph_ties": "distinct"}
+TIED = {"time.graph_ties": "tied"}
 #: Property -> (case dimensions, engine replaced, defect, expected failure).
 WRONG_ENGINES = {
     "graph_expected": (
@@ -447,7 +447,6 @@ DEFECT_CASES = {
     ("graph_expected", "older_on_ties"): {**TIED, "schema_shape.graph_path": "one_hop"},
     ("graph_point_in_time", "late_after_shops"): {
         "schema_shape.graph_path": "fan_in",
-        "contract.graph_temporal": "inherit",
     },
 }
 
@@ -468,20 +467,20 @@ def _check(name: str, defect: str) -> None:
         PROPERTIES[name].check(case, replaces, 0)
 
 
-#: Tied samples' later hops deleted (the review's g0-c10), or dated after the cutoff in the
+#: Tied samples' later hops deleted, or dated after the cutoff in the
 #: run with future rows: first-hop clocks stay the same, the layer-by-layer expansion doesn't.
 LATER_HOPS = (
-    ("graph_structure", "g0-c10", "diskgraph", "tied_second_hop_dropped", EXPANSION),
+    ("graph_structure", "fan_in", "diskgraph", "tied_second_hop_dropped", EXPANSION),
     (
         "graph_expected",
-        "g0-c10",
+        "fan_in",
         "diskgraph",
         "tied_second_hop_dropped",
         EXPANSION,
     ),
     (
         "graph_point_in_time",
-        "g0-c15",
+        "fan_in",
         "diskgraph",
         "late_beyond_tied_first_hop",
         f"future rows: with future rows: {EXPANSION}",
@@ -489,9 +488,14 @@ LATER_HOPS = (
 )
 
 
-@pytest.mark.parametrize("name,case_id,replaces,defect,expected", LATER_HOPS)
-def test_tied_samples_are_checked_at_every_layer(name, case_id, replaces, defect, expected):
-    case = next(case for case in graph_batch(0, "diskgraph", name) if case.id == case_id)
+@pytest.mark.parametrize("name,path,replaces,defect,expected", LATER_HOPS)
+def test_tied_samples_are_checked_at_every_layer(name, path, replaces, defect, expected):
+    case = next(
+        case
+        for case in graph_batch(0, "diskgraph", name)
+        if case.dimensions["schema_shape.graph_path"] == path
+        and case.dimensions["time.graph_ties"] == "tied"
+    )
     assert case.dimensions["time.graph_ties"] == "tied"
     # The generator deliberately places fanout-boundary ties at a0/a1. Other
     # roots must not satisfy this probe by failing an untied expansion instead.
@@ -612,9 +616,6 @@ def test_graph_cases_realize_their_dimensions(case):
         PATHS[dims["schema_shape.graph_path"]]
     )
     assert {s.fanout for s in samples} == {fanout}
-    to_events = {("user_events", "forward"), ("event_user", "reverse")}
-    static = {s.temporal for s in samples if (s.relation, s.direction) in to_events}
-    assert static == {"static" if dims["contract.graph_temporal"] == "static" else "inherit"}
     relations = {r.name: r for r in case.contract.schema.relations}
     shop = relations.get("event_shop") or relations["shop_event"]
     assert (shop.left_table == "events") == (dims["schema_shape.graph_orientation"] == "aligned")

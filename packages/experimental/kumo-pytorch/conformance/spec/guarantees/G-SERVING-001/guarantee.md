@@ -94,3 +94,7 @@ Deployment, request routing and fetching rows online are outside this package.
   and 9 and user 2's are events at 2 and 12, so the counts are 2 for user 1 at
   5, 3 for user 1 at 10 and 1 for user 2 at 10, whether each user's rows are
   supplied alone or the whole table is.
+
+Native DiskGraph uniform draws use physical index identities and can differ
+from in-memory serving draws even for keyed tables with equal seeds. Exact
+neighbor equality across those samplers is outside this guarantee.

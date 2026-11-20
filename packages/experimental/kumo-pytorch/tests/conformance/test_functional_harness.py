@@ -292,7 +292,7 @@ def test_refusal_timing_fails_when_a_declared_refusal_is_accepted():
     """M25–M28: DiskGraph accepting a strategy it declares refused fails the property."""
 
     declared = {r.strategy for r in ENGINE_REFUSALS if r.engine == "diskgraph"}
-    for strategy in ("active_interval", "clock_override", "dated_values", "static_traversal"):
+    for strategy in ("active_interval", "clock_override", "dated_values"):
         assert strategy in declared
         case = next(case for case in CASES if case.dimensions["contract.strategy"] == strategy)
         with patch("conformance.properties.bound_tables", _binding(native=Asked("accept_refusal"))):

@@ -124,75 +124,88 @@ def _contract(neighborhood: NeighborhoodSpec, schema: DataSchema = SCHEMA) -> Da
     )
 
 
-class TestGraphTemporalSafety:
-    """D2 — the default traversal must not read the anchor's future."""
-
-    def test_default_traversal_inherits_the_declared_clock(self) -> None:
+class TestGraphSampling:
+    def test_timed_default_is_recent_and_filters_the_anchor_future(self):
+        contract = _contract(_neighborhood()).resolve()
+        traversal = contract.sample.neighborhoods["history"].layers[0].samples[0]
+        assert traversal.strategy == "recent"
         assert _sampled_event_ids(_neighborhood()) == {1, 2}
 
-    def test_explicit_time_column_still_wins(self) -> None:
-        assert _sampled_event_ids(_neighborhood(time_column="occurred_at")) == {1, 2}
+    def test_clockless_default_is_uniform(self):
+        contract = _contract(_neighborhood(), SCHEMA_NO_CLOCK).resolve()
+        contract.validate()
+        traversal = contract.sample.neighborhoods["history"].layers[0].samples[0]
+        assert traversal.strategy == "uniform"
+        assert _sampled_event_ids(_neighborhood(), SCHEMA_NO_CLOCK) == {1, 2, 3}
 
-    def test_reading_the_future_requires_saying_so(self) -> None:
-        assert _sampled_event_ids(_neighborhood(temporal="static")) == {1, 2, 3}
+    def test_diskgraph_rejects_unresolved_strategy(self):
+        with prepare_rows(_contract(_neighborhood()), ROWS) as plan:
+            with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
+                plan._source._sampling_plan(_neighborhood())
 
-    def test_being_unfiltered_is_never_something_that_just_happens(self) -> None:
-        with pytest.raises(ValidationError) as error:
-            _contract(_neighborhood(), SCHEMA_NO_CLOCK).validate()
-        issue = next(item for item in error.value.issues if item.path.endswith(".temporal"))
-        assert "does not say it is intentionally non-temporal" in issue.message
-        assert 'temporal="static"' in (issue.suggestion or "")
+    def test_serving_reads_reject_unresolved_strategy(self):
+        from kumo.pytorch.serving_rows import _BatchNames, _collect
 
-    def test_declaring_static_makes_it_expressible_again(self) -> None:
-        static = _neighborhood(strategy="uniform", temporal="static")
-        _contract(static, SCHEMA_NO_CLOCK).validate()
-        assert _sampled_event_ids(static, SCHEMA_NO_CLOCK) == {1, 2, 3}
+        contract = _contract(_neighborhood())
+        with pytest.raises(ValueError, match="resolve GraphSample.strategy"):
+            _collect(contract, contract.sample, _BatchNames(contract.sample, contract.batch))
 
-    def test_recent_without_any_clock_is_refused(self) -> None:
+    @pytest.mark.parametrize("schema, expected", ((SCHEMA, "recent"), (SCHEMA_NO_CLOCK, "uniform")))
+    def test_default_uses_the_traversal_destination_in_reverse(self, schema, expected):
+        schema = DataSchema(
+            tables=schema.tables,
+            relations=(RelationSpec("user_events", "events", "user_id", "users", "user_id"),),
+        )
+        contract = _contract(_neighborhood(direction="reverse"), schema).resolve()
+        assert contract.sample.neighborhoods["history"].layers[0].samples[0].strategy == expected
+
+    @pytest.mark.parametrize("schema", (SCHEMA, SCHEMA_NO_CLOCK))
+    def test_explicit_uniform_ignores_real_time(self, schema):
+        neighborhood = _neighborhood(strategy="uniform")
+        _contract(neighborhood, schema).validate()
+        assert _sampled_event_ids(neighborhood, schema) == {1, 2, 3}
+
+    def test_explicit_recent_requires_a_declared_clock(self):
         with pytest.raises(ValidationError) as error:
             _contract(_neighborhood(strategy="recent"), SCHEMA_NO_CLOCK).validate()
-        issue = next(item for item in error.value.issues if "strategy" in item.path)
-        assert "no time column" in issue.message
-        assert "TableSpec" in (issue.suggestion or "")
+        assert any(issue.path.endswith(".strategy") for issue in error.value.issues)
 
-    def test_recent_inherits_a_declared_clock_without_repeating_it(self) -> None:
-        _contract(_neighborhood(strategy="recent")).validate()
-        assert _sampled_event_ids(_neighborhood(strategy="recent")) == {1, 2}
-
-    def test_ordering_and_filtering_are_separate(self) -> None:
-        neighborhood = _neighborhood(strategy="recent", temporal="static")
-        _contract(neighborhood).validate()
-        assert _sampled_event_ids(neighborhood) == {1, 2, 3}
-
-    def test_recent_with_no_clock_at_all_is_refused_not_raised(self) -> None:
-        with pytest.raises(ValidationError) as error:
+    def test_clock_override_does_not_make_a_clockless_table_temporal(self):
+        with pytest.raises(ValidationError):
             _contract(
-                _neighborhood(strategy="recent", temporal="static"), SCHEMA_NO_CLOCK
+                _neighborhood(strategy="recent", time_column="occurred_at"), SCHEMA_NO_CLOCK
             ).validate()
-        assert any(item.path.endswith(".strategy") for item in error.value.issues)
 
-    def test_an_unknown_temporal_mode_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="temporal must be"):
-            GraphSample("user_events", fanout=2, temporal="sometimes")
+    def test_explicit_time_column_still_works(self):
+        assert _sampled_event_ids(_neighborhood(time_column="occurred_at")) == {1, 2}
 
-    def test_a_declared_time_column_must_exist(self) -> None:
-        with pytest.raises(ValueError, match="not a declared column"):
-            TableSpec("events", "event_id", {"event_id": DType("int64")}, time_column="missing")
+    def test_resolved_strategy_is_serialized(self):
+        contract = _contract(_neighborhood(), SCHEMA_NO_CLOCK)
+        loaded = DataLoaderSpec.from_json(contract.to_json())
+        assert loaded.sample.neighborhoods["history"].layers[0].samples[0].strategy == "uniform"
+        assert loaded.fingerprint == contract.fingerprint
 
+    @pytest.mark.parametrize("strategy", (None, "recent", "uniform"))
+    def test_serving_requests_every_candidate_for_uniform(self, strategy):
+        from kumo.pytorch.api import ServingRowsSpec
 
-class TestUniformSampling:
-    """Uniform graph sampling is a valid contract, refused by DiskGraph before data is read."""
+        rows = ServingRowsSpec.from_contract(_contract(_neighborhood(strategy=strategy)))
+        events = rows.tables["events"]
+        if strategy == "uniform":
+            assert events.time_column is None
+            assert events.limit is None
+        else:
+            assert events.time_column == "occurred_at"
+            assert events.limit.count == 10
 
-    def test_the_contract_is_valid(self) -> None:
-        _contract(_neighborhood(strategy="uniform")).validate()
+    def test_removed_temporal_argument_is_not_silently_ignored(self):
+        with pytest.raises(TypeError, match="temporal"):
+            GraphSample("user_events", fanout=2, temporal="static")
 
-    def test_diskgraph_refuses_it_with_its_code(self) -> None:
-        contract = _contract(_neighborhood(strategy="uniform"))
-        issues = DiskGraphEngine(index="/i").check_contract(contract.resolve())
-        issue = next(item for item in issues if item.path.endswith(".strategy"))
-        assert issue.code == "DG-UNIFORM-GRAPH"
-        assert "uniform" in issue.message
-        assert issue.suggestion
+    def test_diskgraph_accepts_uniform_before_reading_data(self):
+        assert not DiskGraphEngine(index="/i").check_contract(
+            _contract(_neighborhood(strategy="uniform")).resolve()
+        )
 
 
 class TestReductions:

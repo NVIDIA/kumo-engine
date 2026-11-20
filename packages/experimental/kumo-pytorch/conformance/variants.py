@@ -227,10 +227,6 @@ VARIANTS: Mapping[str, Callable[[GeneratedCase], Variant]] = {
             )
         },
     ),
-    "static_traversal": lambda case: _device_variant(
-        case,
-        neighborhoods=_graph(GraphSample("user_devices", 2, strategy="recent", temporal="static")),
-    ),
     "uniform_graph": lambda case: _device_variant(
         case, neighborhoods=_graph(GraphSample("user_devices", 2, strategy="uniform"))
     ),

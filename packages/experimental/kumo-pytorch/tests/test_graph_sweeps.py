@@ -30,7 +30,6 @@ def degree_case(profile, path, fanout):
         "schema_shape.graph_orientation": "aligned",
         "contract.graph_direction": "forward",
         "contract.graph_fanout": fanout,
-        "contract.graph_temporal": "inherit",
         "time.graph_ties": "distinct",
         "time.cutoffs": "shared",
     }

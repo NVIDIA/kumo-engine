@@ -111,6 +111,27 @@ def test_graph_allows_reordering_and_eligible_boundary_ties(selected):
     validate(graph_fixture(selected))
 
 
+@pytest.mark.parametrize("selected", [(10, 14), (14, 10), (11, 15), (11,), (11, 11)])
+def test_graph_uniform_membership_and_fanout_ignore_recency(selected):
+    graph, contract, requests, source, state = graph_fixture(selected)
+    contract = replace(
+        contract,
+        sample=replace(
+            contract.sample,
+            neighborhoods={
+                "recent": r.NeighborhoodSpec(
+                    (r.GraphLayer((r.GraphSample("activity", 2, strategy="uniform"),)),)
+                )
+            },
+        ),
+    )
+    if set(selected) == {10, 14}:
+        assert_graph(graph, contract, "graph", requests, source, state)
+    else:
+        with pytest.raises(AssertionError):
+            assert_graph(graph, contract, "graph", requests, source, state)
+
+
 @pytest.mark.parametrize("count", [32, 33])
 def test_graph_revisited_tied_relation_uses_lazy_complete_witness(count):
     graph, contract, requests, source, state = graph_fixture(tuple(range(100, 100 + count)))

@@ -159,6 +159,7 @@ DIMENSIONS: tuple[Dimension, ...] = (
             "row_filter",
             "timed_intermediate",
             "valid",
+            "uniform_graph",
             "window_on_value_column",
             # Refused by DiskGraph at check() by design (ENGINE_REFUSALS).
             "active_interval",
@@ -166,8 +167,6 @@ DIMENSIONS: tuple[Dimension, ...] = (
             "current_events",
             "dated_values",
             "non_direct_field",
-            "static_traversal",
-            "uniform_graph",
             # Accepted at check(), then refused later on DiskGraph (KNOWN_GAPS).
             "column_rename",
             "duplicate_layer_relation",
@@ -293,12 +292,6 @@ SAMPLING_DIMENSIONS: tuple[Dimension, ...] = (
     ),
     Dimension("contract.graph_fanout", Group.CONTRACT, (1, 2), "fanout of every traversal"),
     Dimension(
-        "contract.graph_temporal",
-        Group.CONTRACT,
-        ("inherit", "static"),
-        "users-to-events traversals filter by the cutoff, or are static ('recent' still orders)",
-    ),
-    Dimension(
         "time.graph_ties",
         Group.TIME,
         ("distinct", "tied"),
@@ -344,7 +337,6 @@ GRAPH_DIMENSIONS: tuple[str, ...] = (
     "schema_shape.graph_orientation",
     "contract.graph_direction",
     "contract.graph_fanout",
-    "contract.graph_temporal",
     "time.graph_ties",
     "time.cutoffs",
 )
@@ -532,7 +524,7 @@ KNOWN_GAPS += (
         "3 shards and 4 threads differs across fresh builds of the same data, while sampling "
         "one built index repeats (G-GRAPH-001 rule 2); graph_inference_exact leaves tied "
         "samples out where builds aren't deterministic (G-INFERENCE-001 boundaries)",
-        "conformance/known_gaps/repro-7657161068432210.json",
+        "conformance/known_gaps/repro-7b174d231411d046.json",
         "num_shards=3 changed graphs",
     ),
 )
@@ -572,8 +564,6 @@ ENGINE_REFUSALS: tuple[EngineRefusal, ...] = (
             ("dated_values", "DiskGraph does not build dated entity values"),
             ("non_direct_field", "DiskGraph event fields read the event row only"),
             ("object_store", "DiskGraph reads local Parquet paths only"),
-            ("static_traversal", "DiskGraph cannot disable filtering of a timed table"),
-            ("uniform_graph", "DiskGraph samples graphs by recency only"),
         )
     ),
 )
@@ -623,15 +613,6 @@ INAPPLICABLE: tuple[Inapplicable, ...] = (
                 "requires inspectable output or an explicit encoder",
             ),
         )
-    ),
-)
-
-ENGINE_REFUSALS += (
-    EngineRefusal(
-        "diskgraph",
-        {"contract.graph_temporal": ("static",)},
-        "DiskGraph refuses a static traversal into a timed table",
-        "graph_static",
     ),
 )
 

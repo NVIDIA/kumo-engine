@@ -285,9 +285,7 @@ REFUSAL_CONSTRUCTS: Mapping[str, tuple[str, tuple[str, ...]]] = {
     "non_direct_field": ("sample", ("'owner'",)),
     "object_store": ("dataset.users.path", ("local parquet",)),
     "row_filter": ("sample.entity_values.filtered.source.filters", ("filter",)),
-    "static_traversal": (f"{_DEVICE_GRAPH}.temporal", ("temporal",)),
     "timed_intermediate": ("sample.entity_values.count.source.path[0]", ("intermediate",)),
-    "uniform_graph": (f"{_DEVICE_GRAPH}.strategy", ("uniform",)),
     "window_on_value_column": ("sample.entity_values.broken.source.time.column", ("amount",)),
 }
 

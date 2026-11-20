@@ -356,7 +356,6 @@ def test_graph_neighborhood_is_an_input_shape_over_the_same_relations():
                                 relation="user_accounts",
                                 fanout=2,
                                 strategy="uniform",
-                                temporal="static",
                             ),
                         )
                     ),

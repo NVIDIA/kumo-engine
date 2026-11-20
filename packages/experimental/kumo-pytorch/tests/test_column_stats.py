@@ -244,6 +244,7 @@ def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate
         with plan.materialize(anchors) as task:
             fitted = task.encoders["amounts"]
     source = engine.open(dataset, contract.schema)
+    sample = contract.resolve().sample
     roots = [
         GraphRoot(
             anchor.sample_id,

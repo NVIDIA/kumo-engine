@@ -296,6 +296,7 @@ class DiskGraphEngine(
     *,
     index: str | Path,
     num_threads: int | None = None,
+    random_seed: int | None = 0,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
@@ -318,7 +319,7 @@ NULL clocks and other rejected rows are dropped and counted.
 
 Supported: direct entity fields, historical event fields, typed scalar
 calculations, aggregates and comparisons, nested grouping, generated scalar
-and row labels, recent graph neighborhoods with node fields, and columnar
+and row labels, recent or uniform graph neighborhoods with node fields, and columnar
 `output_format="model"` batches. What it doesn't support yet is listed in
 `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
 step, before any data is read.
@@ -327,6 +328,7 @@ step, before any data is read.
 
 - `index`: directory of the base index.
 - `num_threads`: native sampling threads.
+- `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.

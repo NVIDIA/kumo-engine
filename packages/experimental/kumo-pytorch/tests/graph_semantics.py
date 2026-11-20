@@ -206,9 +206,8 @@ def _explains(layers, relations, source, request, root, actual_nodes, actual_edg
         )
         clock = sample.time_column or source.schema[right].time_column
         key = source.schema[right].primary_key
-        assert key is not None and sample.strategy == "recent", (
-            "Oracle requires keyed recent sampling"
-        )
+        strategy = sample.strategy or ("recent" if isinstance(clock, str) else "uniform")
+        assert key is not None and strategy in {"recent", "uniform"}, "Unsupported graph oracle"
         candidates = {}
         for row in source.matching(right, right_key, source.row(left, origin)[left_key]):
             time = (
@@ -216,11 +215,10 @@ def _explains(layers, relations, source, request, root, actual_nodes, actual_edg
                 if isinstance(clock, str) and row[clock] is not None
                 else None
             )
-            if isinstance(clock, str) and (
-                time is None or (sample.temporal == "inherit" and time > cutoff)
-            ):
+            if strategy == "recent" and (time is None or time > cutoff):
                 continue
-            candidates[row[key]] = time if time is not None else 0
+            # Uniform sampling admits any subset, including events after the cutoff.
+            candidates[row[key]] = time if strategy == "recent" else 0
         count = min(sample.fanout, len(candidates))
         boundary = sorted(candidates.values(), reverse=True)[count - 1] if count else None
         mandatory = {

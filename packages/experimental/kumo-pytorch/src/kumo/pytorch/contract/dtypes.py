@@ -61,6 +61,16 @@ def _cutoff_seconds(value: dt.date | dt.datetime) -> int:
     return delta.days * 86_400 + delta.seconds
 
 
+def _strip_utc_timezone(value: Any) -> Any:
+    """Give Arrow temporal kernels the same UTC ticks without a timezone lookup."""
+    import pyarrow as pa
+
+    dtype = value.type
+    if pa.types.is_timestamp(dtype) and dtype.tz == "UTC":
+        return value.cast(pa.timestamp(dtype.unit))
+    return value
+
+
 @dataclass(frozen=True)
 class DType:
     """The stored scalar type, independent of its eventual model encoding.
@@ -139,44 +149,46 @@ class DType:
         """Whether it can be compared with an anchor time: ``timestamp`` or ``date32``."""
         return self.name in {"timestamp", "date32"}
 
+    def _invalid_value(self, value: Any, path: str) -> ValueError:
+        return ValueError(f"{path}: {value!r} is not a valid {self} value")
+
     def normalize(self, value: Any, *, path: str = "value") -> Any:
         """Validate a scalar; only the declared storage normalization is applied."""
 
         if value is None:
             return None
-        error = f"{path}: {value!r} is not a valid {self} value"
         if self.integer:
             width, signed = _INTEGER_WIDTHS[self.name]
             minimum = -(1 << (width - 1)) if signed else 0
             maximum = (1 << (width - int(signed))) - 1
             if type(value) is not int or not minimum <= value <= maximum:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "bool":
             if type(value) is not bool:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name.startswith("float"):
             if isinstance(value, bool) or not isinstance(value, (float, int)):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             try:
                 result = float(value)
                 if self.name == "float32":
                     result = struct.unpack("!f", struct.pack("!f", result))[0]
             except (OverflowError, struct.error) as exc:
-                raise ValueError(error) from exc
+                raise self._invalid_value(value, path) from exc
             return result
         if self.name == "string":
             if not isinstance(value, str):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "bytes":
             if not isinstance(value, bytes):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "date32":
             if not isinstance(value, dt.date) or isinstance(value, dt.datetime):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             return value
         if self.name == "timestamp":
             if self.unit == "s" and (type(value) is int or isinstance(value, dt.datetime)):
@@ -185,12 +197,12 @@ class DType:
                     seconds = value if type(value) is int else _timestamp_seconds(value)
                     return dt.datetime(1970, 1, 1, tzinfo=dt.UTC) + dt.timedelta(seconds=seconds)
                 except (OverflowError, ValueError) as exc:
-                    raise ValueError(error) from exc
+                    raise self._invalid_value(value, path) from exc
             import pyarrow as pa
             import pyarrow.compute as pc
 
             if type(value) is not int and not isinstance(value, (dt.datetime, pa.TimestampScalar)):
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
             try:
                 if type(value) is int:
                     scalar = pa.scalar(value, type=self.to_arrow())
@@ -207,7 +219,7 @@ class DType:
                     )
                     scalar = pc.cast(
                         pc.ceil_temporal(
-                            scalar,
+                            _strip_utc_timezone(scalar),
                             unit={
                                 "s": "second",
                                 "ms": "millisecond",
@@ -219,14 +231,17 @@ class DType:
                     )
                 return _arrow_scalar_value(scalar)
             except (OverflowError, ValueError) as exc:
-                raise ValueError(error) from exc
+                # Arrow's timestamp repr resolves the timezone. Report the ticks directly.
+                if isinstance(value, pa.TimestampScalar):
+                    value = f"{value.value} ticks ({value.type})"
+                raise self._invalid_value(value, path) from exc
         if not isinstance(value, Decimal) or not value.is_finite():
-            raise ValueError(error)
+            raise self._invalid_value(value, path)
         with localcontext() as context:
             context.prec = max(100, self.precision + abs(self.scale) + 1)
             scaled = value.scaleb(self.scale)
             if scaled != scaled.to_integral_value() or abs(scaled) >= 10**self.precision:
-                raise ValueError(error)
+                raise self._invalid_value(value, path)
         return value
 
     def to_arrow(self) -> Any:
