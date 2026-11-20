@@ -102,6 +102,17 @@ def is_missing(value: Any) -> bool:
     return value is None or (isinstance(value, str) and value in NA_TOKENS)
 
 
+#: :data:`NA_TOKENS` in any case, compared after trimming, for reporting
+#: what a text column keeps.
+MISSING_LIKE = frozenset(token.casefold() for token in NA_TOKENS)
+
+
+def looks_missing(value: Any) -> bool:
+    """:func:`is_missing` is pandas' exact rule and decides types; this
+    one reads the value the way a person does and only reports."""
+    return (isinstance(value, str) and value.strip().casefold() in MISSING_LIKE)
+
+
 def present(values: Sequence[Any]) -> list[Any]:
     return [value for value in values if not is_missing(value)]
 

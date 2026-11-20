@@ -61,10 +61,14 @@ remote/durable cache, e.g. a Snowflake stage) -- out of scope for now.
 
 import json
 import logging
+import math
+import struct
+import sys
 import threading
 import time
 import warnings
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from functools import cached_property, partial
 from pathlib import Path
 from typing import (
@@ -76,14 +80,21 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Tuple,
 )
 
 from kumo_core.artifacts import PROVENANCE_FILE
+from kumo_core.csv_rules import looks_missing
 from kumo_core.pquery import NativeGraph, normalize_graph
 from kumoapi.graph import Edge
-from kumoapi.typing import TimestampPrecision, validate_timestamp_precision
+from kumoapi.typing import (
+    Dtype,
+    TimestampPrecision,
+    validate_timestamp_precision,
+)
 
 from kumo.engine._events import Event, EventEmitter
+from kumo.engine._infer import _PLAIN_NUMBER, _SAMPLE_ROWS
 from kumo.engine._manifest import (
     RECONSTRUCTED,
     BuildCost,
@@ -156,7 +167,298 @@ def _warn_low_fk_match_rates(stats: Dict[str, Any],
                 )
 
 
-def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
+_FLOAT32_EXACT_BITS = 24
+_FLOAT32_DTYPES = frozenset({Dtype.float, Dtype.float32})
+_FLOAT64_DIGITS = sys.float_info.dig
+_FLOAT64_PLACES = math.ceil(
+    (sys.float_info.mant_dig - sys.float_info.min_exp) * math.log10(2))
+_FLOAT32_SMALLEST = 2.0**-149
+_SAMPLE_BUFFER_SIZE = 1 << 20
+_NUMERICAL = 'kumo.numerical'
+
+
+def _read_column_stats(kumo_stats_dir: Any, table: str) -> Dict[str, Any]:
+    try:
+        path = Path(kumo_stats_dir) / 'col_stats_min' / f'{table}.json'
+        column_stats = json.loads(path.read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    return column_stats if isinstance(column_stats, dict) else {}
+
+
+def _by_column(column_stats: Mapping[str, Any],
+               stype: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    r"""The ``__False`` statistics of each column, keyed by statistic name;
+    ``stype`` keeps only the columns DiskGraph collected under that key."""
+    stats: Dict[str, Dict[str, Any]] = {}
+    for key, entry in column_stats.items():
+        parts = key.rsplit('__', 3)
+        if (isinstance(entry, dict) and len(parts) == 4 and parts[3] == 'False'
+                and stype in (None, parts[1])):
+            stats.setdefault(parts[0], {})[parts[2]] = entry.get('value')
+    return stats
+
+
+def _count(stat: Mapping[str, Any], key: str) -> int:
+    value = stat.get(key)
+    return value if type(value) is int and value > 0 else 0
+
+
+def _non_finite(stat: Mapping[str, Any]) -> int:
+    fraction = stat.get('INVALID_FRACTION')
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)):
+        return 0
+    return round(fraction * _count(stat, 'COUNT')) if fraction > 0 else 0
+
+
+def invalid_value_counts(kumo_stats_dir: Any,
+                         tables: Sequence[str]) -> Dict[str, Dict[str, int]]:
+    r"""Per table and column, how many values the declared type could not
+    use at ingest: values it could not read, stored as missing, and
+    non-finite numbers, stored as is but left out of the statistics."""
+    counts: Dict[str, Dict[str, int]] = {}
+    for table in sorted(tables):
+        column_stats = _read_column_stats(kumo_stats_dir, table)
+        numerical = _by_column(column_stats, _NUMERICAL)
+        for column, stat in sorted(_by_column(column_stats).items()):
+            count = (_count(stat, 'NUM_PARSE_FAILURES') +
+                     _non_finite(numerical.get(column, {})))
+            if count:
+                counts.setdefault(table, {})[column] = count
+    return counts
+
+
+def _float32_limit(places: int) -> float:
+    r"""The magnitude from which float32 no longer resolves a step of
+    ``places`` decimal places; 0 when the step is finer than float32's
+    fixed subnormal spacing, which no magnitude escapes."""
+    if 10**-places < _FLOAT32_SMALLEST:
+        return 0.0
+    return float(2**(_FLOAT32_EXACT_BITS - math.ceil(places * math.log2(10))))
+
+
+def _places(number: Decimal) -> int:
+    r"""Decimal places after the trailing zeros, read off the digits so the
+    caller's decimal context cannot round or trap. A step below the smallest
+    float64 is zero in every float and so is no step."""
+    digits, exponent = number.as_tuple()[1:]
+    if not number.is_finite() or not any(digits):
+        return 0
+    zeros = 0
+    for digit in reversed(digits):
+        if digit:
+            break
+        zeros += 1
+    places = max(0, -(exponent + zeros))
+    return places if places <= _FLOAT64_PLACES else 0
+
+
+def _float32_zero(number: Decimal) -> bool:
+    r"""Whether float32 stores the value as 0, decided by the round trip
+    itself, so a value that rounds up to the smallest subnormal does not
+    count."""
+    value = float(number) if number.is_finite() else 0.0
+    return (0 < abs(value) < _FLOAT32_SMALLEST
+            and struct.unpack('f', struct.pack('f', value))[0] == 0)
+
+
+def _float32_infinite(number: Decimal) -> bool:
+    r"""Whether float32 stores a finite value as infinity, decided by the
+    round trip itself."""
+    value = float(number) if number.is_finite() else 0.0
+    if not math.isfinite(value):
+        return False
+    try:
+        return math.isinf(struct.unpack('f', struct.pack('f', value))[0])
+    except OverflowError:
+        return True
+
+
+def _sampled_precision(values: Any) -> Tuple[int, int, int]:
+    r"""The most decimal places among the values, each read as the shortest
+    decimal that names it, so a declared scale no value uses does not
+    count, and how many of them float32 stores as 0 and as infinity. Bytes
+    are the UTF-8 text DiskGraph decodes them to, and text counts only in
+    the ASCII grammar its parser reads; anything else fails that parse and
+    counts for nothing here either."""
+    places = underflows = overflows = 0
+    for value in values.to_pylist():
+        try:
+            if isinstance(value, bytes):
+                value = value.decode()
+            if isinstance(value, str):
+                value = value.strip()
+                if not _PLAIN_NUMBER.fullmatch(value):
+                    continue
+            number = Decimal(
+                value if isinstance(value, Decimal) else str(value))
+        except (InvalidOperation, UnicodeDecodeError):
+            continue
+        places = max(places, _places(number))
+        underflows += _float32_zero(number)
+        overflows += _float32_infinite(number)
+    return places, underflows, overflows
+
+
+def _reads_as_number(physical: Any) -> bool:
+    r"""Whether DiskGraph parses the physical type into a float32 column:
+    numbers, decimals and text or bytes it decodes as text. Anything else,
+    such as a date, becomes missing with a parse-failure count of its own,
+    and the sampler cannot read every value of it either."""
+    import pyarrow as pa
+
+    if pa.types.is_dictionary(physical):
+        return _reads_as_number(physical.value_type)
+    return (pa.types.is_floating(physical) or pa.types.is_integer(physical)
+            or pa.types.is_decimal(physical) or pa.types.is_string(physical)
+            or pa.types.is_large_string(physical)
+            or pa.types.is_binary(physical)
+            or pa.types.is_large_binary(physical))
+
+
+def _narrowed_float_columns(
+        alias: str, table: Table, paths: Sequence[str],
+        source_path: Any) -> Dict[Tuple[str, str], Tuple[str, int, int, int]]:
+    r"""Each float32 column staged from a wider type DiskGraph reads as a
+    number, with that type, the decimal places its values are written with
+    and how many float32 stores as 0 and as infinity, read from the table's
+    first ``_SAMPLE_ROWS`` rows across its parts, all such columns together
+    and through a bounded buffer rather than whole column chunks. A backend
+    that names a directory instead of its parts has it globbed, only when
+    the table has a float32 column; a part of any other kind, such as the
+    CSV a custom backend may stage, is left to DiskGraph's own reading."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    assert table.definition is not None
+    columns = [
+        column.name for column in table.definition.cols
+        if column.dtype in _FLOAT32_DTYPES
+    ]
+    if not columns:
+        return {}
+    narrowed: Dict[Tuple[str, str], Tuple[str, int, int, int]] = {}
+    budget = _SAMPLE_ROWS
+    parts = [path for path in paths if Path(path).suffix.lower() == '.parquet']
+    if not paths:
+        parts = sorted(
+            str(part) for part in Path(source_path).rglob('*.parquet'))
+    for path in parts:
+        parquet = pq.ParquetFile(path, pre_buffer=False,
+                                 buffer_size=_SAMPLE_BUFFER_SIZE)
+        schema = parquet.schema_arrow
+        sampled = []
+        for column in columns:
+            if column not in schema.names:
+                continue
+            physical = schema.field(column).type
+            if (pa.types.is_float32(physical) or pa.types.is_float16(physical)
+                    or not _reads_as_number(physical)):
+                continue
+            narrowed.setdefault((alias, column), (str(physical), 0, 0, 0))
+            if not pa.types.is_integer(physical):
+                sampled.append(column)
+        if budget <= 0 or not sampled:
+            continue
+        for batch in parquet.iter_batches(budget, columns=sampled,
+                                          use_threads=False):
+            for column in sampled:
+                physical, places, zeros, infinities = narrowed[alias, column]
+                more, below, above = _sampled_precision(batch.column(column))
+                narrowed[alias, column] = (physical, max(places, more),
+                                           zeros + below, infinities + above)
+            budget -= batch.num_rows
+            break
+    return narrowed
+
+
+def _warn_missing_like_text(table: str, column: Mapping[str, Any],
+                            stat: Mapping[str, Any]) -> None:
+    if (column.get('dtype') != 'string'
+            or column.get('stype') != 'categorical'):
+        return
+    counts = stat.get('CATEGORY_COUNTS')
+    if not isinstance(counts, list):
+        return
+    found = {
+        entry[0]: entry[1]
+        for entry in counts if isinstance(entry, list) and len(entry) == 2
+        and looks_missing(entry[0]) and type(entry[1]) is int and entry[1] > 0
+    }
+    if not found:
+        return
+    listed = sum(entry[1] for entry in counts if isinstance(entry, list)
+                 and len(entry) == 2 and type(entry[1]) is int)
+    present = _count(stat, 'COUNT') - _count(stat, 'NUM_NA')
+    bound = 'at least ' if listed < present else ''
+    tokens = ', '.join(repr(value) for value in sorted(found))
+    warnings.warn(
+        f"{table}.{column['name']} holds {bound}{sum(found.values())} "
+        f"value(s) that look like missing ({tokens}); they are kept as text. "
+        "If they mean missing, replace them with nulls at the source; a "
+        "number or date column reads them as missing.", UserWarning,
+        stacklevel=3)
+
+
+def _magnitude(stat: Mapping[str, Any]) -> Optional[float]:
+    values = [stat.get('MIN'), stat.get('MAX')]
+    counts = stat.get('CATEGORY_COUNTS')
+    if isinstance(counts, list):
+        values += [
+            entry[0] for entry in counts if isinstance(entry, list) and entry
+        ]
+    numbers = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(value, bool) and math.isfinite(number):
+            numbers.append(abs(number))
+    return max(numbers, default=None)
+
+
+def _warn_float32_narrowing(
+        table: str, column: Mapping[str, Any], stat: Mapping[str, Any],
+        source: Optional[Tuple[str, int, int, int]]) -> None:
+    if source is None:
+        return
+    physical, places, underflows, overflows = source
+    if underflows:
+        warnings.warn(
+            f"{table}.{column['name']} is stored as float32 but comes from "
+            f"{physical} and holds {underflows} sampled value(s) too small "
+            "for float32, which stores them as 0. Declare dtype=Dtype.float64 "
+            "for the column to keep them.", UserWarning, stacklevel=3)
+    if overflows:
+        warnings.warn(
+            f"{table}.{column['name']} is stored as float32 but comes from "
+            f"{physical} and holds {overflows} sampled value(s) too large "
+            "for float32, which stores them as infinity. Declare "
+            "dtype=Dtype.float64 for the column to keep them.", UserWarning,
+            stacklevel=3)
+    magnitude = _magnitude(stat)
+    limit = _float32_limit(places)
+    if not magnitude or magnitude < limit:
+        return
+    step = ('every whole number'
+            if places == 0 else f"steps of {10**-places:g}")
+    reaches = (f"{magnitude:,.{places}f}" if places <= _FLOAT64_DIGITS else
+               f"{magnitude:.{_FLOAT64_DIGITS}g}")
+    warnings.warn(
+        f"{table}.{column['name']} is stored as float32 but comes from "
+        f"{physical} and reaches {reaches}; from {limit:,.0f} on "
+        f"float32 no longer resolves {step}, so values are rounded. Declare "
+        "dtype=Dtype.float64 for the column to keep full precision.",
+        UserWarning, stacklevel=3)
+
+
+def _warn_ingest_data_loss(
+    result: Any,
+    graph_config: Dict[str, Any],
+    narrowed: Optional[Mapping[Tuple[str, str], Tuple[str, int, int,
+                                                      int]]] = None,
+) -> None:
     from kumo_core.diskgraph.validation import parse_failure_warning
 
     for table in graph_config.get('tables', []):
@@ -178,6 +480,22 @@ def _warn_ingest_data_loss(result: Any, graph_config: Dict[str, Any]) -> None:
                 column = key.rsplit('__', 3)[0]
                 warnings.warn(parse_failure_warning(name, column, count),
                               UserWarning, stacklevel=3)
+        stats = _by_column(column_stats)
+        numerical = _by_column(column_stats, _NUMERICAL)
+        for column, stat in sorted(numerical.items()):
+            count = _non_finite(stat)
+            if count:
+                warnings.warn(
+                    f"{count} non-finite value(s) (inf, -inf or NaN) found "
+                    f"in {name}.{column}. They are stored as is and left out "
+                    "of the column statistics. Infinity usually comes from a "
+                    "division by zero upstream; replace non-finite values at "
+                    "the source.", UserWarning, stacklevel=3)
+        for column in table.get('cols', []):
+            stat = stats.get(column['name'], {})
+            _warn_missing_like_text(name, column, stat)
+            _warn_float32_narrowing(name, column, stat, (narrowed or {}).get(
+                (name, column['name'])))
 
     try:
         stats = json.loads(Path(result.ingest_stats_path).read_text())['stats']
@@ -537,6 +855,16 @@ class GraphSnapshot:
         return read_manifest(Path(self.index_path) / PROVENANCE_FILE,
                              SnapshotManifest)
 
+    @property
+    def invalid_value_counts(self) -> Dict[str, Dict[str, int]]:
+        r"""Per table and column, the number of values the declared type
+        could not use at ingest: values it could not read, which are stored
+        as missing, and non-finite numbers, which are stored as is and left
+        out of the statistics. Columns with none are left out."""
+        return invalid_value_counts(
+            Path(self.index_path) / 'kumo_col_stats',
+            [table['table_name'] for table in self.graph_config['tables']])
+
 
 def _write_snapshot_manifest(result: Any, snapshot_id: str,
                              source_tables: Dict[str, SourceTableEntry],
@@ -875,6 +1203,7 @@ class Graph:
         table_data_versions: Dict[str, str] = {}
         source_paths: Dict[str, str] = {}
         source_tables: Dict[str, SourceTableEntry] = {}
+        narrowed: Dict[Tuple[str, str], Tuple[str, int, int, int]] = {}
 
         started = start() if timed else None
         try:
@@ -928,6 +1257,9 @@ class Graph:
                 else:
                     source_paths[alias] = str(
                         prepared.source.get('path') or dest_dir)
+                narrowed.update(
+                    _narrowed_float_columns(alias, table, paths,
+                                            source_paths[alias]))
 
             version_parts = [
                 json.dumps(table_data_versions, sort_keys=True).encode()
@@ -975,7 +1307,7 @@ class Graph:
                                      record_sources, fresh=existing is None,
                                      build=build)
 
-            _warn_ingest_data_loss(result, graph_config)
+            _warn_ingest_data_loss(result, graph_config, narrowed)
             if events is not None:
                 events.emit('snapshot_ended', params={
                     'snapshot_id': snapshot_id, 'reused': existing is not None})
