@@ -13,7 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from conformance.assertions import UnreadableRows, bound_case
+from conformance.assertions import bound_case
 from conformance.cases import discover_cases
 from kumo.pytorch import api
 from kumo.pytorch.contract.sample import reduction_dtype
@@ -96,20 +96,6 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
             contract=api.DataLoaderSpec.from_json(saved),
             dataset=dataset,
             engine=api.DiskGraphEngine(index=tmp_path / "changed"),
-        )
-
-
-@pytest.mark.parametrize("columns", [None, {"id": api.DType(name="int64"), "value": None}])
-def test_memory_types_are_required_before_any_row_read(columns):
-    dataset = api.Dataset(tables={"users": api.InMemoryRows(rows=UnreadableRows())})
-    issues = api.check(
-        contract=_source_contract(columns), dataset=dataset, engine=api.InMemoryEngine()
-    )
-    assert len(issues) == 1
-    assert "declare every DType for InMemoryRows" in issues[0].message
-    with pytest.raises(api.ValidationError, match="type inference requires Parquet"):
-        api.prepare(
-            contract=_source_contract(columns), dataset=dataset, engine=api.InMemoryEngine()
         )
 
 
@@ -201,10 +187,9 @@ def test_inference_preserves_invalid_scope_and_duplicate_occurrence_errors():
 
 
 @pytest.mark.parametrize("case_id", ["C-CALC-001", "C-CALC-002", "C-HISTORY-002"])
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 def test_inferred_calculations_have_the_same_saved_contract_and_output(case_id, engine_name):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     case = discover_cases()[case_id]
     explicit = case.contract
     if case_id == "C-HISTORY-002":
@@ -310,7 +295,7 @@ def test_sum_infers_exact_integer_or_floating_result(source, result):
             reduction_dtype(api.Reduce("sum", "value", dtype=api.DType(name="float64")), columns)
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 @pytest.mark.parametrize(
     "left_type,right_type,left,right,operation,expected",
     [
@@ -349,8 +334,7 @@ def test_sum_infers_exact_integer_or_floating_result(source, result):
 def test_numeric_promotion_and_overflow_match_in_both_output_forms(
     engine_name, left_type, right_type, left, right, operation, expected
 ):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     case = discover_cases()["C-CALC-001"]
     table = replace(
         case.contract.schema.tables[0],

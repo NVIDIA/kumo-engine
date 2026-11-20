@@ -188,7 +188,7 @@ DIMENSIONS: tuple[Dimension, ...] = (
     Dimension(
         "execution.engine",
         Group.EXECUTION,
-        ("in_memory", "diskgraph"),
+        ("diskgraph",),
         "the engine executing the case",
     ),
     # -- Functional areas: aggregation shapes, outputs, model path ----------
@@ -209,7 +209,7 @@ DIMENSIONS: tuple[Dimension, ...] = (
         "execution.output_format",
         Group.EXECUTION,
         ("inspectable", "model"),
-        "batches(output_format=...) the differential and point-in-time checks read",
+        "batches(output_format=...) the aggregate_answers and point-in-time checks read",
     ),
     Dimension("execution.world_size", Group.EXECUTION, (1, 2, 7), "ranks sharing one epoch"),
     Dimension("execution.epochs", Group.EXECUTION, (1, 2, 3), "passes over the anchors"),
@@ -428,7 +428,7 @@ class KnownGap:
         return all(name in values and values[name] in self.when[name] for name in self.when)
 
 
-_ENGINE_TAG = {"in_memory": "REF", "diskgraph": "DG"}
+_ENGINE_TAG = {"diskgraph": "DG"}
 
 #: DiskGraph's shortfalls against the spec, each replayed from conformance/known_gaps/.
 KNOWN_GAPS: tuple[KnownGap, ...] = (
@@ -530,23 +530,8 @@ KNOWN_GAPS += (
 )
 
 
-#: In-memory engine bugs (conformance/README.md, Differential testing): replayed like
-#: known gaps, but not spec gaps.
-IN_MEMORY_DIVERGENCES: tuple[KnownGap, ...] = (
-    KnownGap(
-        "DIV-TIMED-HOP-MEM",
-        "in_memory",
-        "point_in_time",
-        {"schema_shape.path": ("depth2_timed",)},
-        "the cutoff applies only at the destination, so rows reached through an "
-        "intermediate row dated after the cutoff leak (engines/in_memory/samples.py _select_rows)",
-        "conformance/in_memory_divergences/repro-aec68015a13dd97d.json",
-        "a0: {'count': 16, 'count_distinct': 3",
-    ),
-)
-
-#: Every recorded defect whose repro must still fail as recorded.
-REPLAYED: tuple[KnownGap, ...] = KNOWN_GAPS + IN_MEMORY_DIVERGENCES
+#: Only DiskGraph defects are execution obligations.
+REPLAYED: tuple[KnownGap, ...] = KNOWN_GAPS
 
 
 @dataclass(frozen=True)
@@ -605,30 +590,6 @@ class Inapplicable:
 
 
 INAPPLICABLE: tuple[Inapplicable, ...] = (
-    Inapplicable(
-        "in_memory",
-        {"execution.output_format": ("model",)},
-        "the reference builds inspectable batches only; output_format='model' is DiskGraph's",
-    ),
-    Inapplicable(
-        "in_memory",
-        {
-            "contract.strategy": (
-                "column_rename",
-                "int64_clock",
-                "missing_column",
-                "model_format_limit",
-                "object_store",
-                "unsupported_type",
-            )
-        },
-        "Parquet bindings and the model path don't exist for in-memory rows",
-    ),
-    Inapplicable(
-        "in_memory",
-        {"execution.index_layout": ("other_shards",)},
-        "the reference builds no index",
-    ),
     # -- batches() arguments check() never sees; refused there, eagerly --
     *(
         Inapplicable(
@@ -646,12 +607,6 @@ INAPPLICABLE: tuple[Inapplicable, ...] = (
                 "Batching.max_tokens with world_size > 1 is not supported yet",
             ),
             (
-                "in_memory",
-                "max_tokens_world_size",
-                "Batching.max_tokens with world_size > 1 (shared task code)",
-                "Batching.max_tokens with world_size > 1 is not supported yet",
-            ),
-            (
                 "diskgraph",
                 "model_format_limit",
                 "output_format='model' refuses a Raw string column",
@@ -663,11 +618,11 @@ INAPPLICABLE: tuple[Inapplicable, ...] = (
 
 
 def known_gaps(engine: str, *, property: str | None = None) -> tuple[KnownGap, ...]:
-    """Known gaps and in-memory divergences on ``engine``."""
+    """Known gaps on ``engine``."""
 
     return tuple(
         gap
-        for gap in KNOWN_GAPS + IN_MEMORY_DIVERGENCES
+        for gap in KNOWN_GAPS
         if gap.applies(engine) and (property is None or gap.property == property)
     )
 

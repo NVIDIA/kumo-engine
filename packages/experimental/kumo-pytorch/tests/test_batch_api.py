@@ -11,8 +11,9 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.assembly import prepare_batch_spec
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
-from tests.helpers import plan_in_memory
+from tests.graph_semantics import SourceRows, assert_graph
+from tests.helpers import plan_diskgraph
+from tests.native_fixtures import NativeSamples
 
 INT, FLOAT, STRING = api.DType("int64"), api.DType("float64"), api.DType("string")
 TIME = api.DType("timestamp", unit="s", timezone="UTC")
@@ -156,7 +157,7 @@ def test_supplied_label_vocabulary_produces_embedding_indices():
         replace(request, targets=(api.TargetValue(name="churn", value=label),))
         for request, label in zip(requests, ("no", "yes"), strict=True)
     )
-    built = InMemorySampleBuilder(schema, rows).build(sample, requests)
+    built = NativeSamples(schema, rows).build(sample, requests)
     plan = prepare_batch_spec(sample, batch, built, contract=contract)
     output = next(plan.batches(built, batch_size=2))
     assert output.targets["churn"]["values"].tolist() == [2, 3]
@@ -191,7 +192,7 @@ def test_packed_and_padded_sequences_contain_the_same_tokens():
             },
             id_spaces=_spaces(),
         )
-        task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, batch), requests)
+        task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, batch), requests)
         outputs.append(next(task.batches(requests, batch_size=2)).inputs["history"])
     padded, packed = outputs
     assert torch.equal(padded["value_ids"][padded["valid"]], packed["value_ids"])
@@ -224,7 +225,7 @@ def test_typed_entity_and_event_inputs_are_separate():
             )
         },
     )
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
     batch = next(task.batches(requests, batch_size=2))
     assert tuple(batch.inputs) == ("entity", "events")
     assert batch.inputs["entity"]["country"]["values"].tolist() == [7, 7]
@@ -243,7 +244,7 @@ def test_typed_event_fields_work_without_a_prediction_target():
             )
         }
     )
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
     batch = next(task.batches(requests, batch_size=2))
     assert tuple(batch.inputs) == ("events",)
     assert not batch.targets
@@ -285,7 +286,7 @@ def test_packed_prefixed_targets_keep_separate_offsets():
         id_spaces=_spaces(),
         targets={"next_behavior": api.NextTokenTarget(input="history", prefix_input="entity")},
     )
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
     batch = next(task.batches(requests, batch_size=2))
     assert torch.equal(
         batch.targets["next_behavior"]["offsets"].diff(),
@@ -432,13 +433,27 @@ def test_graph_neighborhood_is_an_input_shape_over_the_same_relations():
         )
         for name in ("u1", "u1-again")
     ]
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    contract = api.DataLoaderSpec(schema, sample, spec)
+    task = plan_diskgraph(schema, rows, contract, requests)
     batch = next(task.batches(requests, batch_size=2, seed=7))
     graph = batch.inputs["neighborhood"]
-    assert graph["nodes"]["users"]["ids"].tolist() == [1, 1]
-    assert graph["nodes"]["users"]["batch"].tolist() == [0, 1]
-    assert graph["nodes"]["accounts"]["ids"].tolist() == [10, 11, 10, 11]
-    assert graph["nodes"]["transactions"]["ids"].tolist() == [102, 103, 102, 103]
+    assert_graph(
+        graph,
+        contract,
+        "neighborhood",
+        requests,
+        SourceRows(schema, rows),
+        task.fitted_state.to_dict(),
+    )
+    for table, expected_ids in (
+        ("users", [1]),
+        ("accounts", [10, 11]),
+        ("transactions", [102, 103]),
+    ):
+        node = graph["nodes"][table]
+        assert sorted(zip(node["batch"].tolist(), node["ids"].tolist(), strict=True)) == [
+            (owner, key) for owner in range(2) for key in expected_ids
+        ]
     assert graph["nodes"]["users"]["features"]["country"]["values"].tolist() == [2, 2]
     assert graph["edges"]["account_transactions"]["index"].shape == (2, 4)
     assert 101 not in graph["nodes"]["transactions"]["ids"].tolist()
@@ -468,7 +483,7 @@ def test_entity_input_can_expose_calculated_values():
             )
         }
     )
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
     batch = next(task.batches(requests, batch_size=2))
     assert batch.inputs["entity"]["country"]["values"].tolist() == [2, 2]
     assert batch.inputs["entity"]["count"]["values"].shape == (2,)
@@ -485,7 +500,7 @@ def test_entity_values_can_mix_aggregates_and_derived_values():
             "log_count": api.Derived(operation="log1p", inputs=("count",), dtype=FLOAT),
         },
     )
-    built = InMemorySampleBuilder(schema, rows).build(sample, requests)[0]
+    built = NativeSamples(schema, rows).build(sample, requests)[0]
     values = {field.key: field.value for field in built.history.entity.values}
     assert values["count"] == 2
     assert values["log_count"] == pytest.approx(torch.log1p(torch.tensor(2.0)).item())
@@ -523,7 +538,7 @@ def test_relational_label_uses_a_separate_future_window(boolean):
         api.SampleRequest(sample_id="positive", entity_id=1, as_of_time=100),
         api.SampleRequest(sample_id="negative", entity_id=2, as_of_time=100),
     ]
-    task = plan_in_memory(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
+    task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
     result = next(task.batches(requests, batch_size=2)).targets["future"]
     assert result["values"].tolist() == ([True, False] if boolean else [2, 0])
     assert result["values"].dtype == (torch.bool if boolean else torch.int64)

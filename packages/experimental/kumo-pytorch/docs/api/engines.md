@@ -439,9 +439,9 @@ Unsupported.error(detail: str) -> ValueError
 
 The refusal raised outside `check`, naming the code and the next step.
 
-## For trying things out
+## Deprecated engine
 
-`InMemoryEngine` runs a contract over a handful of rows you hold in memory. It's for playing with the library: print a batch or a contract to see what it looks like, or train a small model on a toy dataset. The tests use it too. It isn't meant for real data or production use; use `DiskGraphEngine` for that.
+`InMemoryEngine` remains importable for compatibility. Tests and examples use `DiskGraphEngine` with Parquet, and never use this engine as a correctness oracle.
 
 ### `InMemoryEngine`
 

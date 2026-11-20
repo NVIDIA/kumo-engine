@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-ENGINES = ("in_memory", "diskgraph")
+ENGINES = ("diskgraph",)
 EXPECTATIONS = Path(__file__).with_name("expectations.json")
 
 

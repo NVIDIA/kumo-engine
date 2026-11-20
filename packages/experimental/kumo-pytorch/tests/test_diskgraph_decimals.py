@@ -16,6 +16,19 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from tests.native_fixtures import request_anchor_table
+
+
+def feature_source(dtype, values):
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
+    source._sampler_context = SimpleNamespace(
+        fetch_features=lambda requests: iter(
+            [{"type": "feature", "batch": pa.record_batch({"amount": values})}]
+        )
+    )
+    return source
 
 
 @pytest.mark.parametrize("precision", [38, 76])
@@ -94,25 +107,11 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         bindings[name] = api.Parquet(str(path))
     request = api.SampleRequest("one", 1, start + timedelta(days=1), split="train")
     outputs = []
-    for engine in (
-        api.InMemoryEngine(),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
-    ):
-        dataset = api.Dataset(
-            {name: api.InMemoryRows(table.to_pylist()) for name, table in tables.items()}
-            if isinstance(engine, api.InMemoryEngine)
-            else bindings
-        )
+    for engine in (api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),):
+        dataset = api.Dataset(bindings)
         with api.prepare(contract, dataset, engine) as plan:
-            task = plan.materialize((request,), fit_split="train")
-            batch = next(
-                task.batches(
-                    batch_size=1,
-                    output_format="inspectable"
-                    if isinstance(engine, api.InMemoryEngine)
-                    else output_format,
-                )
-            )
+            task = plan.materialize(request_anchor_table((request,)), fit_split="train")
+            batch = next(task.batches(batch_size=1, output_format=output_format))
             event = batch.inputs["history"]["amount"]
             nodes = batch.inputs["graph"]["nodes"]["events"]
             graph = nodes["features"]["amount"]
@@ -128,8 +127,15 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
                 assert event["valid"].tolist() == [[True, True, False, True]]
             assert dict(zip(ids, graph["valid"].tolist())) == {1: True, 2: True, 3: False, 4: True}
     if encoding == "zscore":
-        torch.testing.assert_close(outputs[0][0], outputs[1][0])
-        assert outputs[0][1] == pytest.approx(outputs[1][1])
+        # Population moments of the three non-null fixture amounts; no engine supplies the oracle.
+        values = [float(value) for value in amounts if value is not None]
+        mean = sum(values) / len(values)
+        std = (sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5
+        expected = [(float(value) - mean) / std if value is not None else 0.0 for value in amounts]
+        torch.testing.assert_close(
+            outputs[0][0], torch.tensor([expected], dtype=outputs[0][0].dtype)
+        )
+        assert outputs[0][1] == pytest.approx(dict(enumerate(expected, 1)))
 
 
 @pytest.mark.parametrize(
@@ -163,3 +169,29 @@ def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
     source._pa, source._pc = pa, pc
     source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
     assert source._decode_decimal_array("events", "amount", values) is values
+
+
+@pytest.mark.parametrize(
+    "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
+)
+def test_decimal_feature_fetch_rejects_invalid_or_lossy_values(text):
+    source = feature_source(api.DType("decimal128", precision=38, scale=10), pa.array([text]))
+    with pytest.raises(pa.ArrowInvalid):
+        source._feature_arrays("events", [1], ("amount",))
+
+
+@pytest.mark.parametrize(
+    "dtype,values",
+    [
+        (api.DType("string"), pa.array(["10.0300000000", None])),
+        (api.DType("int64"), pa.array([1, None])),
+        (
+            api.DType("decimal128", precision=38, scale=10),
+            pa.array([Decimal("10.0300000000"), None], type=pa.decimal128(38, 10)),
+        ),
+    ],
+)
+def test_decimal_feature_fetch_leaves_other_arrays_unchanged(dtype, values):
+    source = feature_source(dtype, values)
+    result = source._feature_arrays("events", list(range(len(values))), ("amount",))["amount"]
+    assert result.equals(values)

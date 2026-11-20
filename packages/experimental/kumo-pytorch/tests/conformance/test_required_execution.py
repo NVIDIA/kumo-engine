@@ -16,22 +16,47 @@ from conformance.cases import ENGINES, REPOSITORY
 from conformance.expectations import load_expectations
 from conformance.properties import obligation_id, obligations
 from conformance.registry import REPLAYED
-from tests.conformance.conftest import PINNED_DTYPES, PINNED_ENCODERS
+from conformance.sharding import owner
+from tests.conformance.conftest import (
+    PINNED_BATCH_BOUNDARIES,
+    PINNED_DTYPES,
+    PINNED_ENCODERS,
+    PINNED_FIELD_SEMANTICS,
+    PINNED_INTERACTIONS,
+    interaction_ids,
+)
 
 
 def run_pytest(command, directory):
     # A parent's debugging filter must not change the scenario being tested.
     env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
-    if env.get("PYTHONPATH"):
-        # The child changes directory. Keep testing this checkout's package,
-        # not a different editable install found after relative paths move.
-        env["PYTHONPATH"] = os.pathsep.join(
-            str((REPOSITORY / entry).resolve()) if not Path(entry).is_absolute() else entry
-            for entry in env["PYTHONPATH"].split(os.pathsep)
-        )
+    # The temporary child's conftest imports this checkout's conformance helpers
+    # even in CI, where the package is installed without an editable test path.
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(REPOSITORY)]
+        + [
+            str((REPOSITORY / entry).resolve())
+            for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+            if entry
+        ]
+    )
     return subprocess.run(
         command, cwd=directory, env=env, capture_output=True, text=True, timeout=30
     )
+
+
+@pytest.mark.parametrize("pythonpath", (None, "src"))
+def test_child_imports_checkout_without_editable_install(tmp_path, monkeypatch, pythonpath):
+    if pythonpath is None:
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+    else:
+        monkeypatch.setenv("PYTHONPATH", pythonpath)
+    result = run_pytest(
+        [sys.executable, "-S", "-c", "import conformance; print(conformance.__file__)"],
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).resolve() == REPOSITORY / "conformance/__init__.py"
 
 
 @pytest.mark.parametrize("scenario", ("skip", "empty"))
@@ -68,9 +93,24 @@ def test_required_tests_cannot_become_skipped_success(tmp_path, scenario):
         "skip_known_gap",
         "skip_dtype",
         "missing_dtype",
+        "skip_boundary",
+        "xfail_boundary",
+        "missing_boundary",
+        "ignored_boundary",
+        "deselected_boundary",
+        "pass_interaction",
+        "missing_interaction",
+        "skip_interaction",
+        "xfail_interaction",
+        "deselected_interaction",
+        "ignored_interaction",
+        "import_interaction",
+        "extra_interaction",
     ),
 )
-def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
+@pytest.mark.parametrize("native_only", (False, True), ids=("all-engines", "native-only"))
+def test_complete_run_requires_actual_case_execution(tmp_path, scenario, native_only):
+    selected_engines = ("diskgraph",) if native_only else ENGINES
     shutil.copytree(REPOSITORY / "conformance", tmp_path / "conformance")
     tests = tmp_path / "tests/conformance"
     tests.mkdir(parents=True)
@@ -79,6 +119,7 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         f"{case_id}-{engine}-{'answer' if decision == 'answer' else 'refusal'}"
         for case_id, engines in load_expectations().items()
         for engine, decision in engines.items()
+        if engine in selected_engines
     ]
     if scenario == "missing_case":
         ids.pop()
@@ -94,17 +135,21 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         + f"def test_public_behavior(case):\n    {action}\n"
         + "def test_catalog():\n    pass\n"
     )
-    properties = [obligation_id(*item) for item in obligations(ENGINES)]
+    properties = [
+        obligation_id(*item)
+        for item in obligations(selected_engines, include_comparisons=not native_only)
+    ]
     if scenario == "missing_property":
         properties.pop()
     if scenario == "dropped_seed":
         # The property module itself drops a batch; the conftest pin still requires it.
         module = tmp_path / "conformance/properties.py"
         text = module.read_text()
-        assert '"in_memory": (0, 1, 2)' in text
-        module.write_text(text.replace('"in_memory": (0, 1, 2)', '"in_memory": (0, 1)'))
-        properties = [item for item in properties if not item.endswith("in_memory-seed2")]
-    gaps = [gap.id for gap in REPLAYED]
+        before, after, suffix = ('"diskgraph": (0,)', '"diskgraph": ()', "diskgraph-seed0")
+        assert before in text
+        module.write_text(text.replace(before, after))
+        properties = [item for item in properties if not item.endswith(suffix)]
+    gaps = [gap.id for gap in REPLAYED if gap.engine in selected_engines]
     body = {name: "pass" for name in ("test_property", "test_corpus", "test_known_gap")}
     if scenario in ("skip_property", "skip_corpus", "skip_known_gap"):
         body[f"test_{scenario.removeprefix('skip_')}"] = "pytest.skip('required obligation')"
@@ -112,14 +157,14 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         "import pytest\n"
         f"@pytest.mark.parametrize('obligation', {properties!r}, ids=lambda item: item)\n"
         f"def test_property(obligation):\n    {body['test_property']}\n"
-        f"@pytest.mark.parametrize('corpus_engine', {list(ENGINES)!r})\n"
+        f"@pytest.mark.parametrize('corpus_engine', {list(selected_engines)!r})\n"
         f"def test_corpus(corpus_engine):\n    {body['test_corpus']}\n"
         f"@pytest.mark.parametrize('gap', {gaps!r}, ids=lambda item: item)\n"
         f"def test_known_gap(gap):\n    {body['test_known_gap']}\n"
     )
     dtype_ids = [
         f"{engine}-{family}-{dtype}"
-        for engine in ENGINES
+        for engine in selected_engines
         for family in PINNED_ENCODERS
         for dtype in PINNED_DTYPES
     ]
@@ -131,6 +176,52 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         f"@pytest.mark.parametrize('cell', {dtype_ids!r}, ids=lambda item: item)\n"
         f"def test_scalar_compatibility_and_real_execution(cell):\n    {dtype_body}\n"
     )
+    boundary_source = ["import pytest\n"]
+    for test, variants in PINNED_BATCH_BOUNDARIES.items():
+        boundary_ids = [
+            f"{engine}{'-' + variant if variant else ''}"
+            for engine in selected_engines
+            if engine == "diskgraph"
+            for variant in variants
+        ]
+        if scenario == "missing_boundary":
+            boundary_ids.pop()
+        body = {
+            "skip_boundary": "pytest.skip('required boundary')",
+            "xfail_boundary": "pytest.xfail('required answer is unsupported')",
+        }.get(scenario, "pass")
+        boundary_source.append(
+            f"@pytest.mark.parametrize('case', {boundary_ids!r}, ids=lambda case: case)\n"
+            f"def {test}(case):\n    {body}\n"
+        )
+    (tests / "test_batch_boundaries.py").write_text("".join(boundary_source))
+    (tests / "test_field_semantics.py").write_text(
+        "import pytest\n"
+        + "".join(
+            f"@pytest.mark.parametrize('engine_name', {list(selected_engines)!r})\n"
+            f"def {name}(engine_name):\n    pass\n"
+            for name in PINNED_FIELD_SEMANTICS
+        )
+    )
+    for module, interactions in PINNED_INTERACTIONS.items():
+        source = ["import pytest\n"]
+        if scenario == "import_interaction":
+            source.append("pytest.importorskip('absent_conformance_dependency')\n")
+        for test, variants in interactions.items():
+            variants = list(variants)
+            if scenario == "missing_interaction":
+                variants.pop()
+            body = {
+                "skip_interaction": "pytest.skip('required interaction')",
+                "xfail_interaction": "pytest.xfail('required interaction')",
+            }.get(scenario, "pass")
+            source.append(
+                f"@pytest.mark.parametrize('variant', {variants!r}, ids=lambda item: item)\n"
+                f"def {test}(variant):\n    {body}\n"
+            )
+        if scenario == "extra_interaction":
+            source.append("def test_unreviewed():\n    pass\n")
+        (tests / module).write_text("".join(source))
     # Retain a passing test even if the entire public-behavior file is ignored.
     (tests / "test_other.py").write_text("def test_other():\n    pass\n")
     command = [
@@ -139,23 +230,83 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         "pytest",
         "-q",
         "tests/conformance",
-        "--conformance-engine=all",
+        f"--conformance-engine={'diskgraph' if native_only else 'all'}",
         "--conformance-complete",
     ]
+    if native_only:
+        command.append("--conformance-no-in-memory")
     if scenario == "deselect":
         command.extend(["-k", "not test_public_behavior"])
     elif scenario == "ignored":
         command.append("--ignore=tests/conformance/test_guarantees.py")
+    elif scenario == "ignored_boundary":
+        command.append("--ignore=tests/conformance/test_batch_boundaries.py")
+    elif scenario == "deselected_boundary":
+        command.extend(["-k", "not test_batch_boundaries"])
+    elif scenario == "deselected_interaction":
+        command.extend(["-k", f"not {next(iter(PINNED_INTERACTIONS)).removesuffix('.py')}"])
+    elif scenario == "ignored_interaction":
+        command.append(f"--ignore=tests/conformance/{next(iter(PINNED_INTERACTIONS))}")
     elif scenario == "empty":
         command.extend(["-k", "does_not_exist"])
     result = run_pytest(command, tmp_path)
-    assert result.returncode == (0 if scenario == "pass" else 1), result.stdout + result.stderr
+    expected = 0 if scenario in ("pass", "pass_interaction") else 1
+    if scenario == "extra_interaction":
+        expected = pytest.ExitCode.USAGE_ERROR
+    assert result.returncode == expected, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("fault", (None, "missing", "skip", "xfail"))
+@pytest.mark.parametrize("family", ("field", "interaction"))
+def test_shards_require_their_assigned_checks(tmp_path, fault, family):
+    test_complete_run_requires_actual_case_execution(tmp_path, "pass", False)
+    if family == "field":
+        name = PINNED_FIELD_SEMANTICS[0]
+        nodeid = f"tests/conformance/test_field_semantics.py::{name}[diskgraph]"
+        parameter, variant = "engine_name", "diskgraph"
+    else:
+        nodeid = sorted(interaction_ids())[0]
+        name = nodeid.split("::")[1].split("[")[0]
+        parameter, variant = "variant", nodeid.split("[", 1)[1][:-1]
+    path = tmp_path / nodeid.split("::")[0]
+    if fault == "missing" and family == "field":
+        path.write_text(path.read_text().replace(f"def {name}(", "def test_removed_check("))
+    elif fault == "missing":
+        path.write_text(
+            path.read_text().replace(repr(variant), "", 1).replace("[,", "[").replace(", ]", "]")
+        )
+    elif fault:
+        path.write_text(
+            path.read_text().replace(
+                f"def {name}({parameter}):\n    pass",
+                f"def {name}({parameter}):\n"
+                f"    if {parameter} == {variant!r}: pytest.{fault}('required check')",
+            )
+        )
+    for shard in range(3):
+        result = run_pytest(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/conformance",
+                "--conformance-engine=diskgraph",
+                "--conformance-complete",
+                "--conformance-shards=3",
+                f"--conformance-shard={shard}",
+            ],
+            tmp_path,
+        )
+        expected = int(fault is not None and owner(nodeid, 3) == shard)
+        assert result.returncode == expected, result.stdout + result.stderr
+        if expected:
+            assert nodeid in result.stdout
 
 
 @pytest.mark.parametrize(
     "engine,body,returncode,passed",
     (
-        ("in_memory", "pass", 0, 1),
         ("all", "pass", 0, 2),
         ("diskgraph", "pass", 0, 2),
         ("all", "raise ImportError('no diskgraph')", 1, 1),
@@ -180,3 +331,93 @@ def test_engine_harness_tests_follow_the_selected_engines(
     output = result.stdout + result.stderr
     assert result.returncode == returncode, output
     assert f"{passed} passed" in output and "skipped" not in output and "deselected" not in output
+
+
+@pytest.mark.parametrize("operation", ("construct", "open", "anchors"))
+def test_native_only_forbids_in_memory_execution(tmp_path, operation):
+    tests = tmp_path / "tests/conformance"
+    tests.mkdir(parents=True)
+    (tests / "conftest.py").write_text(Path(__file__).with_name("conftest.py").read_text())
+    call = {
+        "construct": "InMemoryEngine()",
+        "open": "InMemoryEngine.open(object(), None, None)",
+        "anchors": "InMemoryEngine.materialize_anchors(object(), None)",
+    }[operation]
+    (tests / "test_field_semantics.py").write_text(
+        f"from kumo.pytorch.api import InMemoryEngine\ndef test_forbidden():\n    {call}\n"
+    )
+    result = run_pytest(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tests/conformance",
+            "--conformance-engine=diskgraph",
+            "--conformance-no-in-memory",
+        ],
+        tmp_path,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "InMemoryEngine is forbidden" in result.stdout
+
+
+def test_native_only_requires_diskgraph(tmp_path):
+    result = run_pytest(
+        [
+            sys.executable,
+            "-m",
+            "conformance",
+            "--engine",
+            "all",
+            "--no-in-memory",
+        ],
+        REPOSITORY,
+    )
+    assert result.returncode == 2 and "requires --engine diskgraph" in result.stderr
+
+
+@pytest.mark.parametrize("daily_seeds", (False, True), ids=("pinned", "daily"))
+def test_native_only_collects_behavior_without_reference_obligations(daily_seeds):
+    result = run_pytest(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/conformance",
+            "--conformance-engine=diskgraph",
+            "--conformance-no-in-memory",
+            *(["--conformance-seeds=12", "--conformance-seed-start=100"] if daily_seeds else []),
+        ],
+        REPOSITORY,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nodes = [line for line in result.stdout.splitlines() if "::test_" in line]
+    assert nodes and not any("in_memory" in node for node in nodes)
+    assert any("fitted_state-" in node for node in nodes)
+    assert {node.split("::")[0] for node in nodes} == {
+        f"tests/conformance/{name}"
+        for name in (
+            "test_guarantees.py",
+            "test_properties.py",
+            "test_dtype_matrix.py",
+            "test_field_semantics.py",
+            "test_batch_boundaries.py",
+            *PINNED_INTERACTIONS,
+        )
+    }
+    assert any("anchor_splits-diskgraph" in node for node in nodes)
+    assert any("contract_transfer-diskgraph" in node for node in nodes)
+
+    if daily_seeds:
+        from tests.conformance.conftest import PINNED_NATIVE_PROPERTIES
+
+        actual = {node for node in nodes if "::test_property[" in node}
+        expected = {
+            f"tests/conformance/test_properties.py::test_property[{name}-diskgraph-seed{seed}]"
+            for name in PINNED_NATIVE_PROPERTIES
+            for seed in (0, *range(100, 112))
+        }
+        assert actual == expected

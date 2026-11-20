@@ -13,16 +13,16 @@ import pytest
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import api, build
+from tests.native_fixtures import preview_rows
 
 
 def _case():
     return load_case(GUARANTEES / "G-ENTITY-001/golden/C-ENTITY-001.json")
 
 
-@pytest.fixture(params=("in_memory", "diskgraph"))
+@pytest.fixture(params=("diskgraph",))
 def engine_name(request):
-    if request.param == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     return request.param
 
 
@@ -48,11 +48,11 @@ def test_table_only_entity_defaults_its_type_and_preserves_optional_settings():
     )
     contract = replace(case.contract, schema=api.DataSchema((table,), ()), sample=sample)
     dataset = api.Dataset({"users": api.InMemoryRows([{"pk": 1, "external": 2, "created": 5}])})
-    result = api.preview(contract, dataset, api.InMemoryEngine(), case.requests[:1])
+    result = preview_rows(contract, dataset, case.requests[:1])
     assert result.samples[0]["entity"]["type"] == "customer"
     assert result.to_dict()["samples"][0]["entity"]["values"] == {"external": 2}
     with pytest.raises(ValueError, match="did not exist"):
-        api.preview(contract, dataset, api.InMemoryEngine(), (api.SampleRequest("early", 1, 5),))
+        preview_rows(contract, dataset, (api.SampleRequest("early", 1, 5),))
     rejected = replace(
         contract,
         sample=replace(
@@ -60,7 +60,7 @@ def test_table_only_entity_defaults_its_type_and_preserves_optional_settings():
         ),
     )
     with pytest.raises(ValueError, match="filters"):
-        api.preview(rejected, dataset, api.InMemoryEngine(), case.requests[:1])
+        preview_rows(rejected, dataset, case.requests[:1])
 
 
 def test_entity_and_builder_key_overrides_are_not_accepted():
@@ -176,7 +176,7 @@ def test_candidates_use_their_own_tables_primary_key():
             ),
         }
     )
-    result = api.preview(contract, dataset, api.InMemoryEngine(), requests).batch
+    result = preview_rows(contract, dataset, requests).batch
     assert result.inputs["items"]["external"]["values"].tolist() == [[1, 2]]
     assert result.metadata["candidate_entity_ids"]["items"] == ((2, 1),)
 

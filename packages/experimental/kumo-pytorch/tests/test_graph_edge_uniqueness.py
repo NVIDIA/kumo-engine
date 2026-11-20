@@ -59,10 +59,9 @@ def _contract() -> api.DataLoaderSpec:
     )
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 def test_revisited_edges_appear_once_per_sample(engine_name):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     contract = api.DataLoaderSpec.from_json(_contract().to_json())
     # Two samples of user 1 share the stored edges; each keeps its own copy.
     requests = [

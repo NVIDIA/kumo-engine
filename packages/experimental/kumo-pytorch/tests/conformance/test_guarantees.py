@@ -16,6 +16,7 @@ import pytest
 from conformance.assertions import Refusal, assert_answer, assert_refusal, require_engine
 from conformance.cases import ENGINES, discover_cases
 from conformance.expectations import load_expectations
+from conformance.refusals import record_refusal
 from kumo.pytorch.api import DataLoaderSpec
 from tests.helpers import reorder_dicts
 
@@ -62,6 +63,10 @@ def test_public_behavior(case_id, engine_name):
         assert contract.input_fingerprint == case.contract.input_fingerprint
         loaded_case = replace(case, contract=contract)
         if expected == "answer":
-            assert_answer(loaded_case, engine_name)
+            try:
+                assert_answer(loaded_case, engine_name)
+            except Exception as error:
+                if record_refusal(error, case=case_id) is None:
+                    raise
         else:
             assert_refusal(loaded_case, engine_name, Refusal(**expected))

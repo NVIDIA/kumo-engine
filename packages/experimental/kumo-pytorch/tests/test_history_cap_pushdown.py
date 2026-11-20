@@ -12,6 +12,7 @@ import pytest
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.native_fixtures import native_anchor_table
 
 pytest.importorskip("diskgraph")
 
@@ -89,7 +90,7 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
     )
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"id": [1, 2], "at": [100, 100]}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
+    anchors = native_anchor_table(api.Parquet(str(path)), "id", "at")
     observed = []
     original = NativeAnchors._iter
 

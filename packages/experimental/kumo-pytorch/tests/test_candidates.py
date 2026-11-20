@@ -44,6 +44,7 @@ from kumo.pytorch.api import (
     Vocabulary,
 )
 from tests.helpers import Plans
+from tests.native_fixtures import check_rows_or_refuse
 
 SCHEMA = DataSchema(
     (
@@ -258,6 +259,7 @@ def test_packed_candidates_use_offsets_instead_of_padding() -> None:
 
 def test_unknown_candidate_groups_and_duplicate_candidates_are_refused() -> None:
     contract = _contract()
+    check_rows_or_refuse(contract, TABLES)
     unknown = SampleRequest("bad", 1, 100, candidates={"missing": (CandidateRequest(10),)})
     with pytest.raises(ValueError, match="unknown candidate set"):
         next(PLANS.prepare(contract, (unknown,)).batches((unknown,), batch_size=1))

@@ -100,7 +100,7 @@ GPU skip without one. Pass `--require-imports` to make a skip caused by a
 missing dependency, such as DiskGraph in a partial environment, fail instead. GPU tests still
 skip without CUDA.
 
-To check the behavior guarantees on both engines, run
+To check the behavior guarantees on DiskGraph, run
 `python -m conformance --engine all` from the same directory. The example
 notebooks run with `python -m pytest -m notebook`. The end-to-end training and
 serving runs are opt-in, and [e2e/README.md](../e2e/README.md) explains how to

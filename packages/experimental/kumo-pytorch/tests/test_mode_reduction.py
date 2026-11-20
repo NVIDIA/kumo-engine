@@ -23,7 +23,7 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.sample import ALL_REDUCTIONS
 from kumo.pytorch.contract.schema import DataSchema
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 SCHEMA = DataSchema(
     (
@@ -56,7 +56,7 @@ def _mode(rows: list[dict[str, object]]) -> str | None:
             )
         },
     )
-    built = InMemorySampleBuilder(SCHEMA, {"users": [{"user_id": 1}], "events": rows}).build(
+    built = NativeSamples(SCHEMA, {"users": [{"user_id": 1}], "events": rows}).build(
         sample, (SampleRequest("s1", 1, 100),)
     )[0]
     return next(

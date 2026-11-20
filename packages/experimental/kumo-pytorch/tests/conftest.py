@@ -49,6 +49,9 @@ E2E_TIERS = ("t2a", "t2b")
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from conformance.refusals import pytest_plugin
+
+    config.pluginmanager.register(pytest_plugin(), "capability-refusals")
     config.addinivalue_line("markers", "t2a: end-to-end lifecycle tier at S; runs only with --t2a")
     config.addinivalue_line("markers", "t2b: nightly end-to-end tier at M; runs only with --t2b")
 
@@ -150,3 +153,27 @@ def sample_histories() -> list[EntityHistory]:
         EntityHistory(1, 3_000, entity, events),
         EntityHistory(2, 3_000, entity, events),
     ]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _native_session_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _native_fixture_resources():
+    from tests.native_fixtures import native_resources
+
+    with native_resources():
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_deprecated_engine():
+    from tests.native_fixtures import forbid_deprecated_engine
+
+    with forbid_deprecated_engine():
+        yield

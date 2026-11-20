@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from conformance.refusals import record_child_refusal
+
 ROOT = Path(__file__).parents[1]
 CODE_PAGES = (ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md")))
 EXCLUDED_FROM_EXPORT = (
@@ -91,16 +93,27 @@ import contextlib, io, json, sys
 blocks = json.load(sys.stdin)
 namespace = {"__name__": "__main__"}
 outputs = []
-for name, line, code in blocks:
-    buffer = io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        exec(compile("\\n" * (line - 1) + code, name, "exec"), namespace)
-    outputs.append(buffer.getvalue())
-print(json.dumps(outputs))
+from tests.native_fixtures import forbid_deprecated_engine
+from conformance.refusals import clean_refusal
+refusal = None
+with forbid_deprecated_engine():
+    for name, line, code in blocks:
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                exec(compile("\\n" * (line - 1) + code, name, "exec"), namespace)
+        except Exception as error:
+            refusal = clean_refusal(error)
+            if refusal is None:
+                raise
+            refusal.update(page=name, line=line)
+            break
+        outputs.append(buffer.getvalue())
+print(json.dumps({"outputs": outputs, "refusal": refusal}))
 """
 
 
-def _run(path: Path, segment: list[Block], cwd: Path) -> list[str]:
+def _run(path: Path, segment: list[Block], cwd: Path) -> dict:
     payload = [(str(path.relative_to(ROOT)), block.line, block.code) for block in segment]
     env = {**os.environ, "PYTHONPATH": str(ROOT)}
     result = subprocess.run(
@@ -144,7 +157,15 @@ def test_page_code_runs_in_order(path: Path, tmp_path: Path) -> None:
     segments, skipped = _segments(blocks, diskgraph)
     printed: dict[int, str] = {}
     for segment in segments:
-        for block, output in zip(segment, _run(path, segment, tmp_path), strict=True):
+        result = _run(path, segment, tmp_path)
+        outputs, refusal = result["outputs"], result["refusal"]
+        if refusal is not None:
+            assert len(outputs) < len(segment)
+            assert refusal["line"] == segment[len(outputs)].line
+            record_child_refusal(refusal)
+        else:
+            assert len(outputs) == len(segment)
+        for block, output in zip(segment[: len(outputs)], outputs, strict=True):
             printed[block.line] = output
     previous: Block | None = None
     for block in blocks:

@@ -6,14 +6,9 @@ is what builds it. You give `prepare` a contract, a `Dataset` that says where
 each table's bytes are, and an engine, and the engine reads the rows and
 produces the batches. There's no default engine, so you always pass one.
 
-kumo-pytorch ships two engines. The DiskGraph engine (`DiskGraphEngine`), from
-[kumo-engine](https://github.com/NVIDIA/kumo-engine#readme), is the one to use
-for real data. The in-memory engine (`InMemoryEngine`) runs the contract in
-plain Python over a few rows held in memory. It's meant for trying the library
-out on toy data you want to print and inspect, which is why most of this
-guide's small examples use it. This page explains what an engine does, shows
-how to bind your data, covers each of the two engines, and ends with how to
-choose one and what happens when it can't run your contract.
+Use `DiskGraphEngine` from [kumo-engine](https://github.com/NVIDIA/kumo-engine#readme)
+for both small examples and real data. This page explains the engine boundary,
+Parquet bindings and explicit refusals for unsupported contracts.
 
 ## What an engine is
 
@@ -26,7 +21,7 @@ the [limitations](limitations.md#diskgraph) page shows the same list.
 The contract, the dataset and the engine change independently. Moving your
 files changes the dataset, pointing the DiskGraph engine at a different index
 directory changes the engine, and neither touches the contract. The same
-contract runs on both engines that ship with the package. Because the engine is
+contract is bound to DiskGraph for execution. Because the engine is
 an interface, other implementations are possible too, for example in a fork of
 the repository, although we don't offer a stable API for writing them yet.
 
@@ -134,8 +129,7 @@ request = api.SampleRequest(
 
 Each table in the schema is bound to one Parquet source, which can be a single
 file, a directory or a glob. A dataset binds exactly the contract's tables, and
-it doesn't name an engine. The DiskGraph engine reads `Parquet` sources, and the
-in-memory engine reads `InMemoryRows`, which we'll come to below.
+it doesn't name an engine. DiskGraph reads `Parquet` sources.
 
 You don't have to repeat column types that the files already record. With
 Parquet, you can omit `TableSpec.columns`, or give a column's type as `None`,
@@ -284,8 +278,8 @@ task-owned native seed extension. The base graph stays unchanged. TT-NG then
 owns bounded reads, deterministic epoch order and rank partitioning, and
 produces topology and projected node features together. The existing fitted
 encoders and batch layouts still apply. Original row positions supply omitted
-sample IDs; repeated entity/time pairs remain separate examples. Native order
-may differ from the in-memory engine, and padding remains explicitly marked.
+sample IDs; repeated entity/time pairs remain separate examples. Padding remains
+explicitly marked.
 Closing the task removes its temporary seed extension, not the base graph.
 
 For eligible sequence contracts, the native model iterator reads histories and
@@ -350,56 +344,19 @@ fitting lifecycle retain reference adapters. Fitting can still require
 population-sized samples. Fixed anchor chunks do not bound the degree or group
 cardinality of an individual anchor.
 
-## The in-memory engine
-
-`InMemoryEngine` runs the contract in plain Python over rows held in memory.
-It's handy for trying out a contract on a few rows and printing what comes
-back. It isn't built for real datasets, so use the DiskGraph engine for
-those.
-
-It reads `InMemoryRows` rather than Parquet. Python rows carry no type
-metadata, so every column needs an explicit type in the schema.
-
-```python
-in_memory = api.Dataset(
-    tables={"users": api.InMemoryRows(rows=users), "orders": api.InMemoryRows(rows=orders)}
-)
-# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-with (
-    api.prepare(contract=contract, dataset=in_memory, engine=api.InMemoryEngine()) as plan,
-    plan.materialize(anchors=(request,)) as task,
-):
-    batch = next(task.batches())
-print("spend:", batch.inputs["user"]["spend"]["values"].tolist())
-print("amounts:", batch.inputs["orders"]["amount"]["values"].tolist())
-```
-
-<!-- test: output -->
-```text
-spend: [55.0]
-amounts: [[20.0, 35.0]]
-```
-
-The batch is the same one the DiskGraph engine built from the Parquet files
-above. Anchor tables work the same way on the in-memory engine, with
-`api.InMemoryRows` as their source.
-
 ## Choosing an engine, and early refusal
 
-Use the DiskGraph engine for real data, and the in-memory engine for tests and
-toy examples. Most code constructs the engine directly, as the examples above
+Use DiskGraph for datasets of every size, including small examples and tests. Most code constructs the engine directly, as the examples above
 do. When the choice comes from a configuration file or an environment variable,
 you can resolve a registered name to the same class instead:
 
 ```python
-print("engines:", api.available_engines())
 configured = api.engine_from_name("diskgraph", index=root / "index", ingest="never")
 print(type(configured).__name__)
 ```
 
 <!-- test: output -->
 ```text
-engines: ('diskgraph', 'in_memory')
 DiskGraphEngine
 ```
 

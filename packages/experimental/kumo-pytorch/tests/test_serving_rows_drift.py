@@ -8,7 +8,7 @@ If it were ever narrower than inference, serving code that fetches what it lists
 would silently build other batches. For every golden case and each generated
 family (tabular, graph, sequence), this fetches per anchor exactly the rows the
 spec selects (`tests.serving_fetch`), assembles them with `ServingAssembler`, and
-compares the result with reference (in-memory) batch inference over the whole
+compares the result with DiskGraph batch inference over the whole
 dataset.
 """
 
@@ -21,17 +21,19 @@ import pytest
 
 from conformance.assertions import bound_tables, case_settings
 from conformance.cases import discover_cases
+from conformance.expected import aggregate_answer
 from conformance.generate import PHYSICAL_TYPES, GeneratedCase, generate_batch
 from conformance.graph_cases import graph_batch
 from conformance.properties import SEEDS
 from conformance.registry import KNOWN_GAPS
 from conformance.sequence_cases import sequence_batch
 from kumo.pytorch import api
+from tests.serving_assertions import assert_serving_batches
 from tests.serving_fetch import Tables, fetch
 from tests.test_inference_lifecycle import assert_same_batches
 
 SEED = 7
-ENGINE = "in_memory"
+ENGINE = "diskgraph"
 #: Properties whose generated batch is the shared covering array of its family:
 #: no known gap removes rows from it.
 GRAPH_PROPERTY, SEQUENCE_PROPERTY = "graph_structure", "sequence_point_in_time"
@@ -116,12 +118,21 @@ def _served(server: api.ServingAssembler, case: DriftCase, request: api.SampleRe
 
 
 @pytest.mark.parametrize("case_id", sorted(CASES))
-def test_serving_what_the_spec_lists_equals_reference_batch_inference(case_id: str) -> None:
+def test_serving_what_the_spec_lists_equals_diskgraph_batch_inference(case_id: str) -> None:
     case = CASES[case_id]
     artifact, expected = _run(case)
     server = api.ServingAssembler(artifact)
+    entity_answers = aggregate_answer(case.generated) if case.family == "tabular" else None
     for request in case.requests:
-        assert_same_batches([_served(server, case, request)], [expected[request.sample_id]])
+        assert_serving_batches(
+            [_served(server, case, request)],
+            [expected[request.sample_id]],
+            artifact,
+            case.tables,
+            [request],
+            entity_answers=entity_answers,
+            sequence_case=case.generated if case.family == "sequence" else None,
+        )
 
 
 def test_dropping_a_row_the_spec_lists_changes_some_batches() -> None:

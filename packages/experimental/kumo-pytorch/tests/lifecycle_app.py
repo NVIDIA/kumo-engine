@@ -24,10 +24,30 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from torch import nn
 
 from kumo.pytorch import api
+from tests.native_fixtures import forbid_deprecated_engine, native_resources, prepare_rows
+
+
+def parquet_data(rows, schema):
+    """Write this example's small, explicitly typed fixture tables."""
+    root = Path("data")
+    root.mkdir(exist_ok=True)
+    sources = {}
+    for table in schema.tables:
+        arrow_schema = pa.schema(
+            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
+        )
+        path = root / f"{table.name}.parquet"
+        if not path.exists():
+            pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
+        sources[table.name] = api.Parquet(str(path))
+    return api.Dataset(sources)
+
 
 DAY = 86_400
 TRAIN_AT, SCORE_AT = 20 * DAY, 34 * DAY
@@ -167,7 +187,7 @@ def anchors(at: int, *, split: str | None) -> list[api.SampleRequest]:
 
 
 def dataset(rows: Tables) -> api.Dataset:
-    return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
+    return parquet_data({name: values for (name, values) in rows.items()}, contract().schema)
 
 
 def rows_for(user_id: int, as_of: int) -> Tables:
@@ -183,7 +203,7 @@ def rows_for(user_id: int, as_of: int) -> Tables:
 
 def train(workdir: Path) -> None:
     torch.manual_seed(0)
-    with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
+    with prepare_rows(contract(), dataset(tables())) as plan:
         with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
             model = ActivityModel(task.output_schema)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
@@ -229,7 +249,7 @@ def load_model(workdir: Path) -> tuple[api.Artifact, ActivityModel]:
 def infer(workdir: Path) -> None:
     artifact, model = load_model(workdir)
     predictions: dict[str, float] = {}
-    with api.prepare(artifact.contract, dataset(tables()), api.InMemoryEngine()) as plan:
+    with prepare_rows(artifact.contract, dataset(tables())) as plan:
         scoring = anchors(SCORE_AT, split=None)
         with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
             with torch.no_grad():
@@ -278,4 +298,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with native_resources(), forbid_deprecated_engine():
+        main()

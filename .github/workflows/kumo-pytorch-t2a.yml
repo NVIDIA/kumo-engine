@@ -110,7 +110,7 @@ jobs:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
           python -m pytest -q --t2a --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
-            tests/e2e/test_lifecycle.py
+            tests/e2e
       - name: Summarize metrics and run times
         if: ${{ always() }}
         run: |

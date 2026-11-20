@@ -209,12 +209,10 @@ API_PAGES: tuple[Page, ...] = (
         ),
         groups={
             "InMemoryEngine": (
-                "For trying things out",
-                "`InMemoryEngine` runs a contract over a handful of rows you hold in memory. "
-                "It's for playing with the library: print a batch or a contract to see what "
-                "it looks like, or train a small model on a toy dataset. The tests use it "
-                "too. It isn't meant for real data or production use; use `DiskGraphEngine` "
-                "for that.",
+                "Deprecated engine",
+                "`InMemoryEngine` remains importable for compatibility. Tests and examples "
+                "use `DiskGraphEngine` with Parquet, and never use this engine as a "
+                "correctness oracle.",
             ),
         },
     ),

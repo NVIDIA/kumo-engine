@@ -18,7 +18,7 @@ meet one yet. The [API reference](api/README.md) covers each declaration.
 | Encodings, fitting, layouts, targets, previews | Implemented |
 | Artifacts, inference mode, serving from caller-supplied rows | Implemented. Serving builds batches in Python, the same way the in-memory engine does |
 | `DiskGraphEngine` over local Parquet | Graphs with node features, event sequences, aggregates, generated labels and columnar model batches; see [DiskGraph](#diskgraph) |
-| `InMemoryEngine` over `InMemoryRows` | Implemented, for trying things out on tiny data |
+| `InMemoryEngine` over `InMemoryRows` | Deprecated; forbidden as a test backend or reference oracle |
 | Streaming, prefetch, caching, remote storage | Not implemented |
 | Artifact and schema migration | Not implemented: an artifact loads only in the version that wrote it |
 
@@ -309,10 +309,9 @@ distributed training is up to your training loop.
 `DiskGraphEngine` reads an index built from local Parquet files and builds
 model output column by column. It raises an error for the joins, filters, graph
 strategies and sampling features it doesn't support; see
-[DiskGraph](#diskgraph). Where both engines support a contract, DiskGraph's
-batches can still differ from the in-memory engine's, and so from serving's, in
-a few ways: the order of graph nodes within a layer, `std`, `var` and `mean`
-values within floating-point rounding, and which tied neighbor a `recent`
-fanout keeps, as described under [Time](#time).
-`InMemoryEngine` runs the contract in Python over `InMemoryRows`, for trying
-things out on tiny data.
+[DiskGraph](#diskgraph). Native graph node order and tied neighbor choices follow
+[Time](#time); floating-point moments use the documented rounding tolerance.
+`InMemoryEngine` remains importable for compatibility but is deprecated. Tests and
+examples bind Parquet to DiskGraph. `ServingAssembler` still depends on the legacy
+implementation internally; the testing suite allows that package-owned dependency,
+while continuing to check serving outputs and failures.

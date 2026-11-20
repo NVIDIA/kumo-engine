@@ -2,13 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared test fixtures for running a contract in memory.
+"""Shared test fixtures for running a contract on DiskGraph.
 
 Tests care about what a contract produces, not about binding storage, so this
 collapses `prepare` and `materialize` into one call over the requests that
 vary. It is a convenience for tests only — the public path is
-`prepare(contract, dataset, engine).materialize(anchors)`. The plan is left
-open for the task's lifetime; in memory there is nothing to release.
+`prepare(contract, dataset, engine).materialize(anchors)`. The test resource
+fixture closes plans and removes temporary indexes after each test.
 """
 
 from __future__ import annotations
@@ -24,16 +24,15 @@ from kumo.pytorch.api import (
     BatchSpec,
     DataLoaderSpec,
     Dataset,
-    InMemoryEngine,
     InMemoryRows,
     SampleRequest,
     SampleSpec,
     Task,
-    prepare,
 )
 from kumo.pytorch.assembly import WRITTEN_BESIDE_STATE
+from tests.native_fixtures import prepare_rows
 
-__all__ = ["in_memory_dataset", "plan_in_memory"]
+__all__ = ["fixture_rows", "plan_diskgraph"]
 
 
 def reorder_dicts(value: Any, *, shuffled: bool = False) -> Any:
@@ -56,18 +55,18 @@ def reorder_dicts(value: Any, *, shuffled: bool = False) -> Any:
     return reorder(value)
 
 
-def in_memory_dataset(tables: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dataset:
+def fixture_rows(tables: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dataset:
     return Dataset({name: InMemoryRows(rows) for name, rows in tables.items()})
 
 
-def plan_in_memory(
+def plan_diskgraph(
     schema: Any,
     tables: Mapping[str, Sequence[Mapping[str, Any]]],
     contract_or_sample: DataLoaderSpec | SampleSpec,
     requests_or_spec: Sequence[SampleRequest] | BatchSpec,
     requests: Sequence[SampleRequest] | None = None,
 ) -> Task:
-    """Prepare and materialize a task over in-memory rows.
+    """Write fixture Parquet, then prepare and materialize a real DiskGraph task.
 
     Accepts either a complete contract, or a sample and batch spec that are
     assembled into one, so tests that predate `DataLoaderSpec` read the same.
@@ -79,17 +78,15 @@ def plan_in_memory(
     else:
         contract = DataLoaderSpec(schema, contract_or_sample, requests_or_spec)
         fitting = requests
-    return prepare(contract, in_memory_dataset(tables), InMemoryEngine()).materialize(
-        fitting, fit_split=_fit_everything(fitting)
-    )
+    return prepare_rows(contract, tables).materialize(fitting, fit_split=_fit_everything(fitting))
 
 
 class Plans:
-    """Bind in-memory rows once, prepare many plans from them."""
+    """Keep fixture rows for preparing native plans."""
 
     def __init__(self, schema: Any, tables: Mapping[str, Sequence[Mapping[str, Any]]]):
         self.schema = schema
-        self._dataset = in_memory_dataset(tables)
+        self._dataset = fixture_rows(tables)
 
     def prepare(
         self,
@@ -102,7 +99,7 @@ class Plans:
         else:
             contract = DataLoaderSpec(self.schema, contract_or_sample, requests_or_spec)
             fitting = requests
-        return prepare(contract, self._dataset, InMemoryEngine()).materialize(
+        return prepare_rows(contract, self._dataset).materialize(
             fitting, fit_split=_fit_everything(fitting)
         )
 

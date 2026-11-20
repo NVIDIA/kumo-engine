@@ -50,7 +50,7 @@ def _anchors():
     ]
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("markers", (False, True))
 def test_masked_flattened_answers_follow_clipping_markers_and_empty_samples(
@@ -146,14 +146,14 @@ def test_ensure_masked_supervision_uses_retained_positions_after_history_clippin
             },
         ),
     )
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
         with prepare(contract, dataset, backend) as plan, plan.materialize(_anchors()) as task:
             batch = next(task.batches(_anchors(), batch_size=2))
             assert batch.targets["masked"]["valid"].sum().item() == 1
             assert batch.targets["masked"]["corruption"].sum().item() == 1
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 def test_input_only_reuse_resolves_new_aligned_label_fields_without_refitting(engine):
     if engine == "diskgraph":
         pytest.importorskip("diskgraph")
@@ -231,7 +231,7 @@ def test_padded_aligned_target_uses_declared_pad_id() -> None:
         ),
     )
     anchors = _anchors()
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
         with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
             target = next(task.batches(anchors, batch_size=2)).targets["heldout"]["currency"]
     assert target["values"][1].tolist() == [5, 5, 5]
@@ -250,7 +250,7 @@ def _text():
     return Text(state=tokenizer.to_str())
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("packed", (False, True))
 def test_aligned_text_targets_keep_piece_and_sample_boundaries(engine, packed):
     if engine == "diskgraph":
@@ -336,7 +336,7 @@ def test_candidate_text_targets_keep_piece_and_sample_boundaries(packed):
     ]
     tables = _tables()
     tables["users"].append({"id": 3})
-    with bound_tables(contract, tables, "in_memory") as (dataset, backend):
+    with bound_tables(contract, tables, "diskgraph") as (dataset, backend):
         with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
             batch = next(task.batches(anchors, batch_size=2))
             target = batch.targets["description"]
@@ -385,7 +385,7 @@ def test_bound_contract_pins_target_members_of_input_used_spaces_only():
         replace(anchor, targets=(TargetValue(name="label", value=label),))
         for anchor, label in zip(_anchors(), ("a", "b"), strict=True)
     ]
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
         with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
             bound = task.bound_contract()
             frozen_space = task.spaces["model"].state_dict()

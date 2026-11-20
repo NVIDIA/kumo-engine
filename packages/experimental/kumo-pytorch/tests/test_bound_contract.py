@@ -26,7 +26,6 @@ from kumo.pytorch.api import (
     EntitySpec,
     Field,
     IdSpace,
-    InMemoryEngine,
     Input,
     Padded,
     RelationSpec,
@@ -42,7 +41,7 @@ from kumo.pytorch.api import (
 )
 from kumo.pytorch.contract.batch import Encode, Fields
 from tests.helpers import Plans as _Plans
-from tests.helpers import in_memory_dataset
+from tests.native_fixtures import prepare_rows
 
 USERS = TableSpec(
     name="users",
@@ -167,7 +166,7 @@ class TestBoundContract:
         _prepare(PRETRAIN_ROWS, CONTRACT).bound_contract().validate()
 
     def test_binding_needs_a_complete_contract(self) -> None:
-        source = InMemoryEngine().open(in_memory_dataset(PRETRAIN_ROWS), SCHEMA)
+        source = prepare_rows(CONTRACT, PRETRAIN_ROWS)._source
         built = source.build(CONTRACT.sample, REQUESTS)
         plan = prepare_batch_spec(CONTRACT.sample, CONTRACT.batch, built)
         with pytest.raises(ValueError, match="complete DataLoaderSpec"):

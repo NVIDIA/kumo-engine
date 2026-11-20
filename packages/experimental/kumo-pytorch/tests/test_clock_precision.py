@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import native_anchor_table
 from tests.test_model_history_limits import history_data as history_data
 
 pytest.importorskip("diskgraph")
@@ -385,7 +386,7 @@ def test_fractional_cutoffs_values_merge_and_deltas_survive_native_iteration(
     path = tmp_path / "anchors.parquet"
     times = pa.array([base + step, base + 3 * step], type=pa.timestamp(unit, tz="UTC"))
     pq.write_table(pa.table({"id": [1, 1], "at": times, "sid": ["first", "second"]}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at", sample_id="sid")
+    anchors = native_anchor_table(api.Parquet(str(path)), "id", "at", sample_id="sid")
     with api.prepare(
         contract, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
@@ -715,7 +716,7 @@ def _timestamp_lifecycle(directory, unit):
     pq.write_table(
         pa.table({"entity": [1], "at": pa.array([3], type=dtype.to_arrow())}), anchors_path
     )
-    anchors = api.AnchorTable(api.Parquet(str(anchors_path)), "entity", "at")
+    anchors = native_anchor_table(api.Parquet(str(anchors_path)), "entity", "at")
     dataset = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
 
     def ticks(encoder):
@@ -839,7 +840,7 @@ def test_integer_timestamp_labels_use_target_units(
             batching=api.Batching(max_samples=2),
         ),
     )
-    table = api.AnchorTable(api.Parquet(str(path)), "entity", "at", targets={"label": "label"})
+    table = native_anchor_table(api.Parquet(str(path)), "entity", "at", targets={"label": "label"})
     with api.prepare(
         contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     ) as plan:
@@ -906,7 +907,7 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
     if native_anchors:
         path = tmp_path / "anchors.parquet"
         pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
-        anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "at")
+        anchors = native_anchor_table(api.Parquet(str(path)), "entity", "at")
     with api.prepare(
         contract,
         api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}),

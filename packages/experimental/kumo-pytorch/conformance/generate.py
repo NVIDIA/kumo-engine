@@ -90,7 +90,7 @@ TARGET_SPAN = 300
 AHEAD = (60, 240)
 #: Shapes whose events hang off an account rather than the user directly.
 ACCOUNT_EVENTS = ("depth2_static", "depth2_timed")
-ENGINE_SCALE: Mapping[str, Scale] = {"in_memory": "XS", "diskgraph": "S"}
+ENGINE_SCALE: Mapping[str, Scale] = {"diskgraph": "S"}
 INT64 = DType("int64")
 FLOAT64 = DType("float64")
 TIMESTAMP = DType("timestamp", unit="s", timezone="UTC")
