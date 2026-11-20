@@ -40,6 +40,7 @@ from kumo.engine._manifest import (
 from kumo.engine._tracking import (
     DROPPED_METRICS,
     DROPPED_PARAMS,
+    RunSpec,
     TrackingSession,
     _Search,
     prediction_record,
