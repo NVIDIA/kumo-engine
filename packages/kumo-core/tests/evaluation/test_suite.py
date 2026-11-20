@@ -247,3 +247,53 @@ def test_validate_diversity() -> None:
         stype_dict,
         entity_table_names=['users', 'articles'],
     )
+
+
+def _thresholded_metrics(store: MetricStore, pred: torch.Tensor,
+                         target: torch.Tensor) -> dict[str, float]:
+    store.init_metrics(['acc', 'precision', 'recall', 'f1'], torch.nn.Module())
+    collection = store.get_metric_collection(TrainingStage.TEST)
+    collection.update(pred, target)
+    return {
+        name.removeprefix('test_'): value.item()
+        for name, value in collection.compute().items()
+    }
+
+
+def test_binary_thresholded_metrics_treat_predictions_as_logits() -> None:
+    # Logits that happen to lie in [0, 1] must not be read as probabilities:
+    # sigmoid(0.1) > 0.5, so every row is a positive prediction.
+    logits = torch.tensor([0.1, 0.2, 0.3, 0.9])
+    target = torch.tensor([1, 0, 1, 1])
+
+    out = _thresholded_metrics(MetricStore(TaskType.BINARY_CLASSIFICATION),
+                               logits, target)
+
+    assert out == pytest.approx(
+        dict(acc=0.75, precision=0.75, recall=1.0, f1=6 / 7))
+
+
+def test_binary_thresholded_metrics_use_the_binary_threshold() -> None:
+    logits = torch.tensor([-1.0, 0.5, 1.0, 2.0])  # sigmoid: .27 .62 .73 .88
+    target = torch.tensor([0, 1, 1, 1])
+    store = MetricStore(TaskType.BINARY_CLASSIFICATION, binary_threshold=0.7)
+
+    out = _thresholded_metrics(store, logits, target)
+
+    assert out == pytest.approx(
+        dict(acc=0.75, precision=1.0, recall=2 / 3, f1=0.8))
+
+
+def test_multilabel_thresholded_metrics_treat_predictions_as_logits() -> None:
+    encoder = Index()
+    encoder._stats = {ColStatType.CATEGORY_COUNTS: [['A', 1], ['B', 1]]}
+    target_encoder = TargetEncoder.from_encoder(
+        TaskType.MULTILABEL_CLASSIFICATION, encoder)
+    store = MetricStore(TaskType.MULTILABEL_CLASSIFICATION, target_encoder)
+    logits = torch.tensor([[0.1, 0.2], [0.3, 0.4]])  # All positive.
+    target = torch.tensor([[1, 1], [1, 1]])
+
+    out = _thresholded_metrics(store, logits, target)
+
+    assert out == pytest.approx(dict(acc=1.0, precision=1.0, recall=1.0,
+                                     f1=1.0))
