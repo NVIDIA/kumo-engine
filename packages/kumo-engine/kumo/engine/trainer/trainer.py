@@ -948,8 +948,9 @@ def _validate_model_plan(model_plan: CoreModelPlan,
 
 
 def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
+    failure = None
     try:
-        best_trainer.explain(
+        producers = best_trainer.explain(
             explain_methods=[
                 ExplainMethod.COLUMN_ANALYSIS,
                 ExplainMethod.GRADIENT,
@@ -957,6 +958,8 @@ def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
             ],
             stage='test',
         )
+        failure = next((producer.failure for producer in producers
+                        if producer.failure is not None), None)
         aggregate_subgraph_features(
             str(Path(best_trainer.subgraph_collector_dir()) / 'test'),
             TrainingStage.TEST)
@@ -965,8 +968,12 @@ def _explain(best_trainer: Any, run_id: str) -> Optional[str]:
             'Training succeeded, but post-training explanations '
             'failed for run %s. The trained model remains available.',
             run_id)
-        return f'{type(error).__name__}: {error}'
-    return None
+        return failure or f'{type(error).__name__}: {error}'
+    if failure:
+        logger.warning('Training succeeded, but post-training explanations '
+                       'failed for run %s: %s. The trained model remains '
+                       'available.', run_id, failure)
+    return failure
 
 
 def _stage_model_bundle(artifacts: Mapping[str, str], dest: Path) -> Path:

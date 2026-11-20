@@ -35,6 +35,7 @@ from torch_geometric.utils.sparse import index2ptr
 
 from kumo_core.io import filesystem as fsutil
 from kumo_core.io.json import save_json
+from kumo_core.training.config import LinkPredModuleType
 from kumo_core.encoders.tensor_mapper import CategoricalTensorMapper, MultiCategoricalTensorMapper
 from kumo_core.explain.base import Explainer, continue_on_error
 from kumo_core.features.time import to_datetime
@@ -96,6 +97,17 @@ class SubgraphCollector(Explainer):
     # Whether this explainer requires gradients to be computed:
     requires_grad: bool = True
 
+    @classmethod
+    def supports(cls, task_type: TaskType,
+                 module: LinkPredModuleType | None = None) -> bool:
+        """Check eligibility; an omitted module checks task eligibility only."""
+        return task_type in cls.supported_task_types and (
+            not task_type.is_link_pred or module is None or module in {
+                LinkPredModuleType.HYBRID,
+                LinkPredModuleType.ID,
+                LinkPredModuleType.SHALLOW_RHS,
+            })
+
     def __init__(
         self,
         task_type: TaskType,
@@ -132,6 +144,25 @@ class SubgraphCollector(Explainer):
 
     @continue_on_error
     def explain_post_step(
+        self,
+        batch: HeteroData,
+        module: torch.nn.Module,
+        datamodule: Any,
+        step_output: dict[str, Tensor],
+        stage: TrainingStage,
+        batch_idx: int,
+    ) -> None:
+        seed_table = batch.input_type
+        assert isinstance(seed_table, str)
+        batch_size = batch[seed_table].batch_size
+        try:
+            self._collect_batch(batch, module, datamodule, step_output, stage,
+                                batch_idx)
+        finally:
+            # Failed rows leave gaps; later graphs retain their selected row IDs.
+            self._idx += batch_size
+
+    def _collect_batch(
         self,
         batch: HeteroData,
         module: torch.nn.Module,
@@ -282,7 +313,6 @@ class SubgraphCollector(Explainer):
                     step_output, module)
             else:
                 raise ValueError(f"Found unsupported format '{format}'")
-        self._idx += len(seed_entities)
 
     @continue_on_error
     def explain_end(
@@ -299,6 +329,7 @@ class SubgraphCollector(Explainer):
                 osp.join(self.remote_sync_dir, stage.value),
                 overwrite=True,
             )
+        self.completed = self.failure is None
 
     # Formatting ##############################################################
 

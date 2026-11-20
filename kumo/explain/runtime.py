@@ -3,7 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Monolith implementation of the portable explainability capability."""
 
-from typing import Any
+from __future__ import annotations
+
+from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
+    from torch import Tensor
 
 from kumo.explain.select import (
     PRED_NUM_SELECTION_NODES,
@@ -23,6 +30,16 @@ class MonolithExplainRuntime:
     max_batches = MAX_NUM_BATCHES
     max_facts = MAX_NUM_FACTS
     mapping_file_name = MAPPING_FILE_NAME
+
+    def get_prediction_inputs(
+        self, datamodule: DiskgraphLightningDataModule, limit: int,
+    ) -> tuple[Tensor, Tensor]:
+        return datamodule.prediction_inputs(limit)
+
+    def prediction_rows(
+        self, datamodule: DiskgraphLightningDataModule, rows: Tensor,
+    ) -> AbstractContextManager[None]:
+        return datamodule.selected_prediction_rows(rows)
 
     def get_explain_node_inputs(self, *args: Any, **kwargs: Any) -> Any:
         return get_explain_node_inputs(*args, **kwargs)
