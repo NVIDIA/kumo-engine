@@ -28,6 +28,7 @@ from google.auth import impersonated_credentials
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport import requests
 from google.cloud import storage
+from kumo_gcs.clients import ThreadClients
 from kumo_gcs.download import GCSDownloader
 from smart_open import open as smart_open
 
@@ -40,8 +41,8 @@ from io_utils.fsutil.common import (
     should_include,
 )
 from io_utils.fsutil.credentials import (
+    FilesystemCredentialScope,
     credentials_for_provider,
-    scoped_cache_key,
 )
 from io_utils.fsutil.logging_policy import logging_policy
 from io_utils.fsutil.uri import GCSURI, AnyURI, LocalURI, ParseURI
@@ -81,18 +82,18 @@ def gcs_retry_policy():
                  backoff=2, max_delay=2, logger=None)
 
 
-class ThreadLocalGCSClient(threading.local):
+class ThreadLocalGCSClient:
     """Thread-safe GCS client wrapper.
 
-    The google-cloud-storage client is not thread-safe due to underlying
-    httplib2 dependencies. This wrapper ensures each thread gets its own
-    client instance.
+    The google-cloud-storage client is not shared across threads, so each
+    thread gets its own client. Clients are closed when their thread exits;
+    clients built for a credential scope are also closed when it exits.
 
     Reference: https://github.com/googleapis/google-cloud-python/issues/5685
     """
     def __init__(self) -> None:
-        super().__init__()
-        self._client = None
+        self._ambient = ThreadClients(lambda: storage.Client())
+        self._scoped_lock = threading.Lock()
 
     def client(self) -> storage.Client:
         """Get or create a GCS client for the current thread.
@@ -105,29 +106,32 @@ class ThreadLocalGCSClient(threading.local):
         4. Compute Engine metadata service
         """
         scope = credentials_for_provider('gcs')
-        if scope is not None:
-            key = scoped_cache_key('gcs', 'client')
-            client = scope.cache.get(key)
-            if client is None:
+        if scope is None:
+            return self._ambient.get()
+        return self._scoped_clients(scope).get()
+
+    def _scoped_clients(self,
+                        scope: FilesystemCredentialScope) -> ThreadClients:
+        key = ('gcs', 0, 'clients')
+        with self._scoped_lock:
+            clients = scope.cache.get(key)
+            if clients is None:
                 credentials = scope.credentials or {}
                 credential = credentials.get('credential')
                 if credential is None:
                     raise RuntimeError(
                         'Missing federated GCS credential for GCS identity')
-                client = storage.Client(
+                clients = ThreadClients(lambda: storage.Client(
                     project=credentials.get('project'),
                     credentials=credential,
-                )
-                scope.cache[key] = client
-            return client
-        if self._client is None:
-            # Let google-cloud-storage handle credential discovery
-            self._client = storage.Client()
-        return self._client
+                ))
+                scope.cache[key] = clients
+                scope.close_on_exit(clients.close)
+            return clients
 
     def _reset(self) -> None:
-        """Reset the client (useful for testing)."""
-        self._client = None
+        """Close and drop the ambient clients (useful for testing)."""
+        self._ambient.close()
 
 
 # Global thread-safe client instance
@@ -1088,6 +1092,7 @@ def _download_client() -> GCSDownloader:
                 credentials=credential, project=material.get('project'),
                 requester_pays_project=material.get('requester_pays_project'))
             scope.cache[key] = downloader
+            scope.close_on_exit(downloader.close)
         return downloader
 
 

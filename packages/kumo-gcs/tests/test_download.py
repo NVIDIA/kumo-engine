@@ -225,3 +225,54 @@ def test_object_identity_does_not_reuse_a_pinned_blob(monkeypatch):
     assert downloader.object_identity('bucket', 'key') == ('1', '100')
     assert downloader.object_identity('bucket', 'key') == ('2', '100')
     assert created[0] is not created[1]
+
+
+def test_downloader_closes_a_worker_client_when_the_worker_exits(monkeypatch):
+    client = mock.Mock()
+    monkeypatch.setattr(download.storage, 'Client',
+                        mock.Mock(return_value=client))
+    downloader = GCSDownloader(credentials=AnonymousCredentials())
+
+    thread = threading.Thread(target=downloader._blob, args=('bucket', 'key'))
+    thread.start()
+    thread.join()
+
+    client.close.assert_called_once_with()
+
+
+def test_downloader_close_releases_its_clients(monkeypatch):
+    client = mock.Mock()
+    monkeypatch.setattr(download.storage, 'Client',
+                        mock.Mock(return_value=client))
+    downloader = GCSDownloader(credentials=AnonymousCredentials())
+    downloader._blob('bucket', 'key')
+
+    downloader.close()
+
+    client.close.assert_called_once_with()
+
+
+def test_a_discarded_downloader_is_freed_without_the_cycle_collector():
+    import gc
+    import weakref
+
+    downloader = GCSDownloader(credentials=AnonymousCredentials())
+    alive = weakref.ref(downloader)
+    gc.disable()
+    try:
+        del downloader
+        assert alive() is None
+    finally:
+        gc.enable()
+
+
+def test_downloader_close_drops_its_arrow_filesystem(monkeypatch):
+    monkeypatch.setattr(download.pafs, 'GcsFileSystem',
+                        mock.Mock(side_effect=lambda **kwargs: object()))
+    downloader = GCSDownloader(credentials=AnonymousCredentials())
+    first = downloader.filesystem()
+
+    downloader.close()
+
+    assert downloader._ambient_filesystem is None
+    assert downloader.filesystem() is not first
