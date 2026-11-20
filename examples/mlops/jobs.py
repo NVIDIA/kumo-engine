@@ -100,9 +100,9 @@ def source(args: argparse.Namespace) -> Connector:
                                    schema_name=args.schema,
                                    warehouse_id=args.warehouse)
     if args.source == 'snowflake':
-        return SnowflakeConnector.from_spcs_env(warehouse=args.warehouse,
-                                                database=args.catalog,
-                                                schema_name=args.schema)
+        return SnowflakeConnector(warehouse=args.warehouse,
+                                  database=args.catalog,
+                                  schema_name=args.schema)
     return connector_for_root(args.source)
 
 

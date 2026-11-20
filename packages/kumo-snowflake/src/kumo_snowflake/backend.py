@@ -169,7 +169,7 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
             connector, table_name))
         # One span for both statements: the columns and the rows they name
         # have to come from the same warehouse.
-        with self._session(connector) as session:
+        with self._session(connector, sql=query is not None) as session:
             columns = self._columns(connector, table_name, query)
             from kumo_snowflake.results import sample
             frame = sample(session.connection, source, sample_rows,
@@ -235,10 +235,8 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         # tables sharing a `dest_dir` would leave the second holding only its
         # own files.
         destination = staging_dir(dest_dir, table_name)
-        # Held for the whole unload, not just to select the warehouse: the
-        # reader runs on the connection behind this session, so a connector
-        # that took it mid-read would move the unload to its own warehouse.
-        with self._session(connector) as session:
+        # Validate SQL context on the session used for the unload.
+        with self._session(connector, sql=query is not None) as session:
             staged = read_table(
                 self._reader(connector, session), table_name, str(destination),
                 columns=self._declared(connector, table_name, dtypes, query),
@@ -310,7 +308,7 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
 
     def _described(self, connector: SourceConnector,
                    sql: str) -> List[SourceColumn]:
-        with self._session(connector) as session:
+        with self._session(connector, sql=True) as session:
             _require_snowpark(session)
             cursor = session.connection.cursor()
             try:

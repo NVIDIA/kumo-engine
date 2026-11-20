@@ -9,28 +9,28 @@ That is what keeps one identity rule for both directions of the connection. A
 reader that resolved an identity differently from the writer beside it is the
 drift this arrangement exists to prevent.
 
-A session is *built here* from the credentials an identity holds, rather than
-handed in by the caller. That is what lets the warehouse, database, schema and
-role a connector names be set when the connection is made. The alternative --
-adopting a session the caller already had and issuing ``USE WAREHOUSE`` on it
--- meant mutating an object shared with whoever else held it, which had to be
-serialized with a lock, left the caller's session pointing somewhere it had
-not asked for, and could not apply ``role`` at all.
+Identity-owned sessions are built here so the target is set at connect time
+and no other caller moves their context. They are cached per (identity,
+target), because warehouse, role, database and schema are baked into the
+connection.
 
-Sessions are cached per ``(identity, target)``. Two connectors that name the
-same identity but different warehouses therefore get one connection each and
-do not contend; two that name the same target share one. The target is in the
-key because it is baked into the connection: a warehouse, role, database and
-schema chosen at connect time are properties of that connection, so two
-targets are necessarily two connections.
+Without an explicit or backend-default identity, a connector's carried
+Snowpark session or the process's active session is shared. Shared sessions
+must match the connector's warehouse and optional role; database and schema
+may differ for table access. Kumo never changes their context, closes them,
+or reconnects them. Kumo's DDL commits any open transaction on a shared session.
 """
 
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from weakref import WeakSet
 
 from kumo_core.sources.principals import IdentityRef, Principal, resolve
-from kumo_core.sources.sql import resolve_snowflake_identifier
+from kumo_core.sources.sql import (
+    SNOWFLAKE_UNQUOTED_IDENTIFIER,
+    resolve_snowflake_identifier,
+)
 from kumo_snowflake.keys import load_private_key, private_key_bytes
 from kumoapi.data_source import (
     SnowflakeAuthenticationKind,
@@ -42,6 +42,8 @@ from kumoapi.data_source import (
 from kumoapi.plugin import SourceConnector
 from pydantic import SecretStr
 from snowflake.snowpark import Session
+from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark.exceptions import SnowparkSessionException
 
 #: What this module builds and hands upward.
 SnowflakeSession = Session
@@ -88,24 +90,10 @@ def _quoted(name: str) -> str:
     return f'"{escaped}"'
 
 
-def _quoted_literal(value: str) -> str:
-    r"""Escapes a value for use inside a single-quoted SQL literal.
-
-    ``COPY FILES ... FILES = (...)`` takes a list of names, not a bind, so a
-    staged path is interpolated; doubling any quote is what keeps a name
-    containing one from ending the literal early.
-    """
-    return value.replace("'", "''")
-
-
 def _require_snowpark(session: object) -> None:
     r"""Refuses anything that is not a Snowpark session.
 
-    This module builds its own sessions, so a failure here means a caller
-    reached in with something else -- a bare DB-API connection, most likely.
-    Staging unloads a table and then reads back what landed, and Snowpark is
-    what carries a session's warehouse, role and database context through
-    those statements.
+    Staging and transfers require Snowpark's connection and session context.
     """
     if not isinstance(session, Session):
         raise TypeError(
@@ -140,6 +128,17 @@ def _rows(session: SnowflakeSession, sql: str,
 
 def resolved(value: str) -> str:
     return resolve_snowflake_identifier(value)
+
+
+def _session_identifier(name: Optional[str]) -> Optional[str]:
+    """Use unquoted spelling only when it preserves the session's identifier."""
+    if name is None:
+        return None
+    value = resolved(name)
+    if (value == value.upper()
+            and SNOWFLAKE_UNQUOTED_IDENTIFIER.fullmatch(value)):
+        return value
+    return name
 
 
 def _private_key_der(pem: str, passphrase: Optional[str]) -> bytes:
@@ -232,9 +231,8 @@ def _authentication(principal: Principal) -> _ConnectSettings:
 def _target(connector: Optional[SourceConnector]) -> Dict[str, str]:
     r"""The connect parameters that say *where* statements run.
 
-    Set at connect time, which is the whole reason this module builds its own
-    session: a warehouse selected here belongs to this connection, so no other
-    caller can move it and nothing has to be restored afterwards.
+    Identity-owned sessions select their context at connect time. Shared
+    sessions are checked against the target without changing their context.
     """
     if connector is None:
         return {}
@@ -336,6 +334,81 @@ class _SessionCache:
 
 
 _sessions = _SessionCache()
+# Track uncached retry/probe sessions as well as cached sessions.
+_kumo_sessions: WeakSet[Session] = WeakSet()
+_ownership_lock = threading.RLock()
+
+
+def _require_shared_session(session: object) -> None:
+    """Require a Snowpark session whose lifetime belongs to its caller."""
+    _require_snowpark(session)
+    with _ownership_lock:
+        if session in _kumo_sessions:
+            raise ValueError(
+                'This Snowpark session is owned by Kumo and may be closed or '
+                'refreshed. Supply an externally owned session, or keep using '
+                'the identity-backed connector.')
+
+
+def _active_session(*, hint: str = '') -> Session:
+    try:
+        session = get_active_session()
+    except SnowparkSessionException as error:
+        if error.error_code == '1409':
+            raise ValueError(
+                f'More than one active Snowpark session exists. {hint}'
+                .rstrip()) from None
+        if error.error_code != '1403':
+            raise
+        session = None
+    with _ownership_lock:
+        if session is None or session in _kumo_sessions:
+            raise ValueError(
+                'No Snowflake identity or shared Snowpark session is '
+                f'available. {hint}'.rstrip())
+    return session
+
+
+def _check_shared_context(session: Session, connector: SourceConnector, *,
+                          sql: bool = False) -> None:
+    config = _target_config(connector)
+    for field in ('warehouse', 'role', 'database', 'schema'):
+        if field in ('database', 'schema') and not sql:
+            continue
+        expected = getattr(config,
+                           'schema_name' if field == 'schema' else field)
+        if expected is None:
+            continue
+        current = getattr(session, f'get_current_{field}')()
+        if current is not None and resolved(expected) == resolved(current):
+            continue
+        expected = _session_identifier(expected)
+        current = _session_identifier(current)
+        if field in ('database', 'schema'):
+            if current is None:
+                reason = (
+                    f'The shared Snowpark session has no current {field}; '
+                    f'SQL sources require the connector {field} {expected!r}.')
+            else:
+                reason = (
+                    f'SQL sources require the shared session {field} '
+                    f'{current!r} to match the connector {field} {expected!r}.')
+            remedy = ('Call session.use_database(...) and '
+                      'session.use_schema(...)')
+            hint = getattr(connector, '_snowpark_sql_hint', '')
+            if hint:
+                remedy += f', {hint}'
+            raise ValueError(f'{reason} {remedy}.')
+        if current is None:
+            reason = (f'The shared Snowpark session has no current {field}; '
+                      f'the connector requires {expected!r}.')
+        else:
+            reason = (f'Connector {field} {expected!r} differs from the shared '
+                      f'Snowpark session {field} {current!r}.')
+        raise ValueError(
+            f'{reason} Switch the session {field}, or supply an identity for '
+            'a separate session. '
+            f"{getattr(connector, '_snowpark_mismatch_hint', '')}".rstrip())
 
 
 @contextmanager
@@ -365,7 +438,10 @@ def _connect(principal: Principal,
         'ocsp_fail_open': True,
     }
     try:
-        return Session.builder.configs(settings).create()
+        with _ownership_lock:
+            session = Session.builder.configs(settings).create()
+            _kumo_sessions.add(session)
+        return session
     except Exception as error:
         where = f' for {connector.id!r}' if connector is not None else ''
         raise RuntimeError(
@@ -442,20 +518,37 @@ class _SnowflakeSessions:
 
     @contextmanager
     def _session(self, connector: SourceConnector, *,
-                 fresh: bool = False) -> Iterator[SnowflakeSession]:
-        r"""Yields a session already pointed at this connector's target.
+                 fresh: bool = False,
+                 sql: bool = False) -> Iterator[SnowflakeSession]:
+        r"""Yields an identity-owned or context-checked shared session."""
+        principal = self._principal(connector, optional=True)
+        if principal is not None:
+            yield _sessions.get(principal, connector, fresh=fresh)
+            return
+        session = getattr(connector, '_snowpark_session', None)
+        if session is None:
+            hint = getattr(connector, '_snowpark_session_hint', '')
+            try:
+                session = _active_session(hint=hint)
+            except ValueError:
+                if not hint:
+                    self._principal(connector)
+                raise
+        _require_shared_session(session)
+        _check_shared_context(session, connector, sql=sql)
+        if fresh:
+            raise ValueError(
+                'A shared Snowpark session cannot be refreshed by Kumo; '
+                'refresh it in the notebook runtime.')
+        yield session
 
-        No lock and nothing to restore: the session belongs to this
-        ``(identity, target)`` pair, so no other caller can move it out from
-        under the statements run here.
-        """
-        yield _sessions.get(self._principal(connector), connector, fresh=fresh)
-
-    def _principal(self, connector: SourceConnector) -> Principal:
+    def _principal(self, connector: SourceConnector, *,
+                   optional: bool = False) -> Optional[Principal]:
         return resolve(
             (getattr(connector, 'identity', None),
              getattr(connector, 'identity_id', None), self._identity),
             connector=connector,
+            optional=optional,
             config_example='SnowflakeIdentityConfig(...), credentials=...',
             connector_example='SnowflakeConnector(identity=identity, ...)',
             fallback=(f'A default for sources that name none is also '
@@ -466,7 +559,9 @@ class _SnowflakeSessions:
                        table_name: str) -> str:
         """``account/"DB"."SCHEMA"."TABLE"``; the account when it resolves."""
         try:
-            account = _snowflake_config(self._principal(connector)).account
+            principal = self._principal(connector)
+            assert principal is not None
+            account = _snowflake_config(principal).account
         except Exception:
             account = None
         qualified = self._qualified(connector, table_name)

@@ -72,6 +72,7 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         serving_options: Optional[Mapping[str, str]] = None,
     ) -> None:
         from kumo.engine.connector.base import Connector
+        from kumo.engine.connector.snowflake import SnowflakeConnector
 
         self._module = import_provider('snowflake.ml.experiment', 'snowflake')
         if source is None:
@@ -81,6 +82,10 @@ class SnowflakeTracking(SingleRunHooks, TrackingBase):
         self.session = (source.session()
                         if self.connector is not None else source)
         self.experiment_name = experiment_name
+        if isinstance(source, SnowflakeConnector):
+            database = database if database is not None else source.database
+            schema_name = (schema_name if schema_name is not None else
+                           source.schema_name)
         self.database = database
         self.schema = schema_name
         self.run_name = run_name

@@ -11,7 +11,7 @@ Not answerable from anything on hand. Do not guess.
 **Blocking (answer these first):**
 
 - **Is Kumo present in the CoCo runtime — does `import kumo.engine` succeed?** If not, this path is dead (`runtime.md` §0, §1.1).
-- **Does the CoCo runtime expose `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_HOST`, and `/snowflake/session/token`?** A Snowpark session alone is explicitly insufficient. If no, generated code falls back to `connections.toml`, then to a key pair from secrets (`runtime.md` §0, §3).
+- **Does the CoCo runtime provide a usable authenticated Snowpark session?** Shared-session deployments use `from_session()`. A separate-session deployment needs the mounted SPCS credentials, a `connections.toml` entry, or a key pair from secrets (`runtime.md` §0, §3).
 - **Which paths in a CoCo session are writable, and what is backed by fast local storage?** (`runtime.md` §1.2)
 
 **Non-blocking but required before shipping:**
@@ -45,9 +45,9 @@ Not answerable from anything on hand. Do not guess.
 - [ ] `import kumo.engine` succeeds in the CoCo runtime; version printed.
 - [ ] Generated code begins at `import kumo.engine`; no environment-setup step anywhere in it.
 - [ ] Scratch and artifact directories exist and are writable.
-- [ ] One authentication option available, in priority order: the SPCS token (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_HOST`, `/snowflake/session/token`), a `connections.toml` entry, or key-pair secrets attached to the notebook.
+- [ ] A usable authenticated Snowpark session is available for shared-session deployments; separate-session deployments have mounted SPCS credentials, a `connections.toml` entry, or key-pair secrets.
 - [ ] `kumo.configure(scratch_dir=...)` called once, before any `Graph` or `Trainer`.
-- [ ] Connector built by `from_spcs_env()`, else `from_connection_toml()`, else `SnowflakeIdentity` from secrets — with explicit warehouse, database, schema_name.
+- [ ] Connector built by `from_session()` in notebooks and ML Jobs; warehouse and role come from the runtime session, with database and schema overrides for table access.
 - [ ] `connector.table_names()` asserted — then separately verify the output write.
 - [ ] No call from `kumoai-reference/references/kumo_finetuning_sdk.md` §11.1 appears anywhere.
 - [ ] No credential literal anywhere in generated code.

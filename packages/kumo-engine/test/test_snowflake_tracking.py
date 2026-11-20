@@ -545,3 +545,30 @@ def test_completed_run_reference_is_captured_before_tracker_reuse(
     session = _replay(tracking)
     assert session.final.run_id != 'later-run'
     assert fake._instance.runs[session.final.run_id]['status'] == 'FINISHED'
+
+
+@pytest.mark.parametrize('overrides,expected', [
+    ({}, ('TARGET_DB', 'TARGET_SCHEMA')),
+    ({'database': 'TRACK_DB', 'schema_name': 'TRACK_SCHEMA'},
+     ('TRACK_DB', 'TRACK_SCHEMA')),
+])
+def test_shared_connector_tracking_uses_its_target(
+        monkeypatch, overrides, expected):
+    pytest.importorskip('snowflake.snowpark.mock')
+    from snowflake.snowpark import Session
+
+    from kumo.engine.connector.snowflake import SnowflakeConnector
+
+    fake = _snowflake_experiment_fake.install(monkeypatch)
+    session = Session.builder.config('local_testing', True).create()
+    try:
+        connector = SnowflakeConnector.from_session(
+            session, database='TARGET_DB', schema_name='TARGET_SCHEMA')
+        # Experiment Tracking is faked; preserve the real session's getters and
+        # resolution while supplying the schema-existence result it needs.
+        monkeypatch.setattr(session, 'sql', lambda _: SimpleNamespace(
+            collect=lambda: [{'name': expected[1]}]))
+        _replay(_tracking(connector, **overrides))
+        assert ('set_experiment', 'ents', *expected) in fake._instance.calls
+    finally:
+        session.close()
