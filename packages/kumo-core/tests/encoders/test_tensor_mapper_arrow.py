@@ -244,7 +244,7 @@ def test_mapper_rejects_non_arrow_input(mapper: TensorMapper) -> None:
     series = pd.Series([1, 2])
     for values in (series, series.to_numpy()):
         with pytest.raises(TypeError, match="Arrow array"):
-            mapper(values)
+            mapper(values)  # type: ignore[arg-type]
 
 
 def test_categorical_float_arrow_preserves_zero_and_unknown_categories() -> None:

@@ -243,5 +243,4 @@ Incremental capture keeps one prediction batch in memory, and sink failures leav
 
 ## Durable original prediction evidence
 
-The separate [prediction-evidence guide](../../docs/evidence-bundles.md) covers original scoring graphs, signed numerical derivatives, portable bundles, controlled record removals and operator-managed interval calibration.
 These families have their own support boundaries and retained statuses; training or replay diagnostics never substitute for missing original-pass evidence.

@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import subprocess
-import sys
 from email.parser import BytesParser
 from pathlib import Path
 from zipfile import ZipFile
@@ -11,34 +10,24 @@ from zipfile import ZipFile
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-from tests.support.package_source import copy_package_source
-
 
 def _build_wheel(tmp_path: Path) -> Path:
-    # Build a copy, so no build output lands in the source tree, with the
-    # interpreter running the tests (its setuptools), so the result does not
-    # depend on which environment is active; run from tmp_path, so no
-    # repository-local tool configuration applies.
-    package_root = copy_package_source(tmp_path / "source")
-    out_dir = tmp_path / "dist"
+    package_root = Path(__file__).parents[1]
     subprocess.run(
         [
             "uv",
             "build",
             "--wheel",
             "--no-build-isolation",
-            "--python",
-            sys.executable,
             "--out-dir",
-            str(out_dir),
+            str(tmp_path),
             str(package_root),
         ],
         check=True,
         capture_output=True,
         text=True,
-        cwd=tmp_path,
     )
-    wheel = next(out_dir.glob("kumo_core-*.whl"))
+    wheel = next(tmp_path.glob("kumo_core-*.whl"))
     return wheel
 
 

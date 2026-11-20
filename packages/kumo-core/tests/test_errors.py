@@ -10,8 +10,6 @@ from pathlib import Path
 import pytest
 from kumo_core.errors import PublicError
 
-from tests.support.package_source import copy_package_source
-
 PACKAGE_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = PACKAGE_ROOT / "src"
 
@@ -68,9 +66,6 @@ def test_fresh_wheel_imports_without_platform_packages(tmp_path: Path) -> None:
     if importlib.util.find_spec("pip") is None:
         pytest.skip("building the wheel needs pip, absent from a uv venv")
     wheel_dir = tmp_path / "wheel"
-    # pip builds a local directory in place, so build a copy: no build/ or
-    # *.egg-info may land in the source tree.
-    package_copy = copy_package_source(tmp_path / "source")
     result = subprocess.run(
         [
             sys.executable,
@@ -81,12 +76,11 @@ def test_fresh_wheel_imports_without_platform_packages(tmp_path: Path) -> None:
             "--no-deps",
             "--wheel-dir",
             str(wheel_dir),
-            str(package_copy),
+            str(PACKAGE_ROOT),
         ],
         capture_output=True,
         text=True,
         check=False,
-        cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
 
