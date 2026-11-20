@@ -433,3 +433,53 @@ def test_object_store_retry_keeps_export_identity_and_bypasses_preflight(
         _ArrowExportFiles, 'copy_file',
         lambda *a, **kw: pytest.fail('recopied a complete export'))
     result.export(output)
+
+
+def test_xai_starts_after_completed_export_and_cleanup(prepared_prediction,
+                                                       monkeypatch):
+    from unittest.mock import Mock
+
+    from kumo_core.prediction_explanation_result import (
+        PredictionExplanationSupport,
+    )
+
+    from kumo.engine.explain import _prediction as lifecycle
+    from kumo.engine.trainer import trainer as module
+
+    trainer, table, _, snapshot = prepared_prediction
+    trainer._training_result.id = 'published-model'
+    events = []
+    finish = module._run_manifest.finish
+
+    def finished(*args):
+        result = finish(*args)
+        events.append('finished')
+        return result
+
+    monkeypatch.setattr(module._run_manifest, 'finish', finished)
+    monkeypatch.setattr(module, '_collect_garbage',
+                        lambda stage: events.append('cleanup'))
+    monkeypatch.setattr(lifecycle, 'prediction_model_support',
+                        lambda task, model: PredictionExplanationSupport(True, True))
+
+    def replay(**kwargs):
+        assert events == ['finished', 'cleanup']
+        raise RuntimeError('post-export replay failed')
+
+    call = Mock(side_effect=replay)
+    monkeypatch.setattr(lifecycle, 'explain_prediction', call)
+    result = trainer.predict(table, snapshot=snapshot, explanations=True,
+                             binary_classification_threshold=.5)
+    call.assert_called_once()
+    assert result.num_rows == len(result.frame) == 8
+    assert result.manifest.status == 'succeeded'
+    assert result.explanations.availability['cohorts'].reason == 'failed'
+    assert events == ['finished', 'cleanup', 'cleanup']
+
+    # The same successful scoring path stays the default with no replay.
+    call.reset_mock()
+    result = trainer.predict(table, snapshot=snapshot,
+                             binary_classification_threshold=.5)
+    call.assert_not_called()
+    assert result.num_rows == 8
+    assert result.explanations.availability['cohorts'].reason == 'disabled'
