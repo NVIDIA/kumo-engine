@@ -1,7 +1,7 @@
 # Ray Core sampling backend
 
 The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants must use
-that version and a DiskGraph build with `SeedSchedule` and
+that version and a DiskGraph build with `SeedScheduleConfig`, `SeedSchedule`, and
 `RuntimeBatchIterator.sample_request` support.
 
 This backend returns complete native Arrow batches. Feature encoding, hetero

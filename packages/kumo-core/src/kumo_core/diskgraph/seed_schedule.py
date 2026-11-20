@@ -9,8 +9,6 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-import orjson
-
 
 def make_seed_schedule(
     dataset_ref: str,
@@ -39,6 +37,7 @@ def make_seed_schedule(
         _stage_tables,
         _weighted_seed_sampling_json,
     )
+    from diskgraph.seed_schedule import SeedScheduleConfig
 
     manifest, split_info = _manifest_view(dataset_ref)
     stage = options["stage"]
@@ -89,5 +88,5 @@ def make_seed_schedule(
         "weighted_seed_sampling_json": weighted_sampling,
         "bucket_extension_root": root if options.get("group_by_timestamp") else None,
     }
-    schedule = SeedSchedule(orjson.dumps(config).decode())
+    schedule = SeedSchedule(SeedScheduleConfig(**config))
     return schedule, schedule.num_samples()
