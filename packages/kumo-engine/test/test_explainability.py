@@ -26,7 +26,7 @@ from test_explanation_artifacts import _gradient, _graph
 from test_explanation_artifacts import _run as _retained_run
 
 from kumo.engine import _explainability
-from kumo.engine._explainability import _classification, _columns, _forecasting
+from kumo.engine._explainability import _classification, _columns
 from kumo.engine._explainability import _format as fmt
 from kumo.engine._explainability import (
     _metrics,
@@ -771,11 +771,29 @@ def test_equal_count_groups_break_ties_by_entity():
     assert list(groups) == [3, 1, 2, 4, 0]
 
 
-@pytest.mark.parametrize('days, word', [(1, 'day'), (7, 'week'), (31, 'month'),
-                                        (3, 'step')])
-def test_forecast_period_word(days, word):
-    steps = pd.Series(pd.date_range('2024-01-01', periods=4, freq=f'{days}D'))
-    assert _forecasting.period(steps) == word
+@pytest.mark.parametrize('overlap', [True, False])
+def test_forecast_widget_groups_mae_by_horizon(tmp_path, overlap):
+    anchors = ['2024-01-01', '2024-01-02' if overlap else '2024-01-01']
+    dates = ['2024-01-03', '2024-01-03' if overlap else '2024-01-02']
+    holdout = pd.DataFrame(
+        dict(ENTITY=[1, 1], ANCHOR_TIMESTAMP=pd.to_datetime(anchors),
+             TIMESTAMP=pd.to_datetime(dates), TARGET=[20., 20.],
+             TARGET_PRED=[20., 30.]))
+    result = _result(tmp_path, 'forecasting', test_rows=2, holdout=holdout)
+
+    horizon, totals, _ = _cards(result)['forecast']['views']
+    assert [s['values'] for s in horizon['steps']] == [[10., 20.], [0., 20.]]
+    assert [s['label'] for s in horizon['steps']] == ['1', '2']
+    assert horizon['x'] == 'days from anchor'
+    assert [s['sub'] for s in horizon['steps']] == ['bias +10.0', 'bias 0']
+    assert totals['x'] == 'target date'
+    if overlap:
+        expected_totals = [('2024-01-03', [40., 50.])]
+    else:
+        expected_totals = [('2024-01-02', [20., 30.]),
+                           ('2024-01-03', [20., 20.])]
+    assert [(s['label'], s['values'])
+            for s in totals['steps']] == expected_totals
 
 
 def test_cutoff_card_counts_scores_above_the_cutoff(tmp_path):

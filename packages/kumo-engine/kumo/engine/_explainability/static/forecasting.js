@@ -27,7 +27,7 @@ function totalsView(host, width, view) {
       {points: view.steps.map((s, i) => [i, s.values[0]]), color: ROLE.actual, width: 2.6, markers: true},
       {points: view.steps.map((s, i) => [i, s.values[1]]), color: ROLE.model, width: 2.6, markers: true},
     ],
-    xTitle: view.x, yTitle: view.y, label: 'Weekly totals',
+    xTitle: view.x, yTitle: view.y, label: view.label,
     xFmt: v => (Number.isInteger(v) && view.steps[v] ? view.steps[v].label : ''),
     yFmt: v => v.toLocaleString('en-US')});
   const {x, y, space, notes} = c;
