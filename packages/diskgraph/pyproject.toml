@@ -26,7 +26,6 @@ kumo = [
 ]
 test = [
     "pytest",
-    "orjson>=3.10",
     "pyarrow",
     "kumo-api>=3.0.0b1,<4",
 ]

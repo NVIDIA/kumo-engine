@@ -5,10 +5,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
-import orjson
 import pyarrow as pa
 import pytest
 from diskgraph import (
@@ -80,13 +80,11 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
     for current in (iterator, reference):
         if extras == "neighborhood":
             current.with_neighborhoods(
-                orjson.dumps(
-                    {"context": {"plan": _sampling_plan(), "projections": {}}}
-                ).decode()
+                json.dumps({"context": {"plan": _sampling_plan(), "projections": {}}})
             )
         elif extras == "history":
             sampler = SamplerEngine(seed_table_fixture["parent_root"])
-            relations = orjson.loads(sampler.get_type_mapping())["edge_relations"]
+            relations = json.loads(sampler.get_type_mapping())["edge_relations"]
             relation = next(
                 item["name"] for item in relations if item["src_type"] == "users"
             )
@@ -114,7 +112,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
                 ],
                 "aggregates": [],
             }
-            current.with_history(sampler, "users", orjson.dumps(plan).decode(), "[]")
+            current.with_history(sampler, "users", json.dumps(plan), "[]")
     first = next(iterator)
     if extras == "neighborhood":
         assert "context" in first["graphs"]
@@ -181,7 +179,7 @@ def test_seed_only_schedule_matches_native_iterator(
         "rhs": mode == "rhs",
         "selected_stage_node_ids": options.get("selected_stage_node_ids"),
     }
-    schedule = SeedSchedule(orjson.dumps(config).decode())
+    schedule = SeedSchedule(json.dumps(config))
     count = schedule.num_samples()
     iterator, expected_count = index.iter(**options)
     assert count == expected_count
@@ -207,7 +205,7 @@ def test_seed_only_schedule_needs_no_graph_index() -> None:
         "drop_last": False,
         "rhs": False,
     }
-    schedule = SeedSchedule(orjson.dumps(config).decode())
+    schedule = SeedSchedule(json.dumps(config))
     assert schedule.num_samples() == 5
     assert [schedule.next_seed_ids() for _ in range(4)] == [
         [10, 11],

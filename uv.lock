@@ -1554,7 +1554,6 @@ kumo = [
 ]
 test = [
     { name = "kumo-api" },
-    { name = "orjson" },
     { name = "pyarrow" },
     { name = "pytest" },
 ]
@@ -1564,7 +1563,6 @@ requires-dist = [
     { name = "kumo-api", marker = "extra == 'kumo'", editable = "packages/kumo-api" },
     { name = "kumo-api", marker = "extra == 'test'", editable = "packages/kumo-api" },
     { name = "numpy", specifier = ">=1.26,<3" },
-    { name = "orjson", marker = "extra == 'test'", specifier = ">=3.10" },
     { name = "pyarrow", specifier = ">=16,<25" },
     { name = "pyarrow", marker = "extra == 'test'" },
     { name = "pytest", marker = "extra == 'test'" },
