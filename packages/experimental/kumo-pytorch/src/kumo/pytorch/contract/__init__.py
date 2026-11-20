@@ -15,7 +15,7 @@ artifact. `Dataset` says where the bytes are and `Engine` says what reads them;
 both are deliberately outside this package, because the same contract must be
 executable by more than one engine over more than one physical layout.
 
-Import from `kumo.pytorch.api` for the supported public surface. This package is
+Import from `kumo.pytorch` for the supported public surface. This package is
 the internal organization behind it.
 """
 

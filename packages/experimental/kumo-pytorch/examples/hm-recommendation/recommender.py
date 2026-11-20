@@ -15,7 +15,7 @@ from torch import nn
 from torch_geometric.nn import HeteroConv, SAGEConv
 from torch_geometric.utils import scatter
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 WIDTH = 32
 EDGE_TYPES = (
@@ -51,7 +51,7 @@ class Recommender(nn.Module):
     def articles(self, fields: Mapping[str, Mapping[str, torch.Tensor]]) -> torch.Tensor:
         return sum(self.embeddings[name](fields[name]["values"]) for name in self.article_fields)
 
-    def forward(self, batch: api.Batch) -> torch.Tensor:
+    def forward(self, batch: kp.Batch) -> torch.Tensor:
         customer, graph, candidates = (
             batch.inputs["customer"],
             batch.inputs["graph"],
