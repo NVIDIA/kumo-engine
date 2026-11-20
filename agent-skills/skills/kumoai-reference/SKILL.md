@@ -18,6 +18,8 @@ This skill provides reference docs for translating a validated, structured ML re
 | `kumoai-reference/references/graph_construction.md` | How to map tables → Kumo nodes and edges |
 | `kumoai-reference/references/pql_writing.md` | Writing Prediction Query Language for the validated task |
 | `kumoai-reference/references/kumo_finetuning_sdk.md` | Kumo Predict SDK API and version-matched code generation |
+| `kumoai-reference/references/task_journeys.md` | Per-task flow: options for `predict`, forecasting's generation plan, embeddings |
+| `kumoai-reference/references/outputs.md` | Write modes, APPEND columns, embeddings, read-back |
 | `kumoai-reference/references/troubleshooting_signals.md` | Known errors at graph/PQL generation time |
 
 ---
@@ -73,6 +75,11 @@ Reference `kumoai-reference/references/kumo_finetuning_sdk.md`. Generate:
 - `graph.snapshot()`, then `generate_training_table` / `generate_prediction_table`
 - `Trainer.fit(training_table, snapshot=snapshot)` and `Trainer.predict(prediction_table, snapshot=snapshot, output_config=...)` — **`snapshot=` is required on both**
 - `kumo.PredictionOutputConfig(connector=, artifact_type=, table_name=, write_mode=)` built from the output destination in the validated payload
+
+Then follow the task's section of `kumoai-reference/references/task_journeys.md` (forecasting sets
+`forecast_length` in a generation plan, not the model plan), and
+`kumoai-reference/references/outputs.md` for the write mode and requested embeddings, which are a
+separate `predict` call.
 
 Emit only signatures that appear in `kumoai-reference/references/kumo_finetuning_sdk.md`. Do not infer or invent them.
 
