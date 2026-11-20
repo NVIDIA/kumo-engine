@@ -262,6 +262,126 @@ fn raw_feature_bank_to_pydict<'py>(
 pub struct RuntimeIndex {
     inner: diskgraph_runtime::RuntimeIndex,
 }
+/// Rust-owned configuration for graph-independent seed scheduling.
+///
+/// Fields are read-only. See the native batch runtime's configuration contract
+/// for stage keys, worker sharding, and supported sampling-mode combinations.
+///
+/// Args:
+///     stage_key: Exact stage-table, catalog, or RHS key for this mode's RNG.
+///     ranges: Disjoint inclusive ID ranges in traversal order.
+///     batch_size: Maximum positive number of seeds per batch.
+///     num_workers: Positive worker count.
+///     worker_id: Zero-based worker shard identity.
+///     shuffle: Shuffle flat/RHS seed order.
+///     rnd_seed: Base random seed, required when shuffling.
+///     epoch: Epoch mixed into the random seed.
+///     drop_last: Drop partial flat/RHS batches.
+///     rhs: Use one nonempty RHS candidate range.
+///     selected_stage_node_ids: Ordered stage IDs, preserving duplicates.
+///     weighted_seed_sampling_json: Weighted-sampling settings and sidecars.
+///     bucket_extension_root: Extension containing timestamp buckets.
+#[pyclass(frozen, module = "diskgraph._c")]
+pub struct SeedScheduleConfig {
+    inner: diskgraph_runtime::SeedScheduleConfig,
+}
+#[pymethods]
+impl SeedScheduleConfig {
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        *, stage_key, ranges, batch_size, num_workers=1, worker_id=0,
+        shuffle=false, rnd_seed=None, epoch=0, drop_last=false, rhs=false,
+        selected_stage_node_ids=None, weighted_seed_sampling_json=None,
+        bucket_extension_root=None,
+    ))]
+    fn new(
+        stage_key: String,
+        ranges: Vec<(u64, u64)>,
+        batch_size: usize,
+        num_workers: u64,
+        worker_id: u64,
+        shuffle: bool,
+        rnd_seed: Option<u64>,
+        epoch: u64,
+        drop_last: bool,
+        rhs: bool,
+        selected_stage_node_ids: Option<Vec<u64>>,
+        weighted_seed_sampling_json: Option<String>,
+        bucket_extension_root: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            inner: diskgraph_runtime::SeedScheduleConfig {
+                stage_key,
+                ranges,
+                num_workers,
+                worker_id,
+                shuffle,
+                rnd_seed,
+                epoch,
+                batch_size,
+                drop_last,
+                rhs,
+                selected_stage_node_ids,
+                weighted_seed_sampling_json,
+                bucket_extension_root,
+            },
+        }
+    }
+    #[getter]
+    fn stage_key(&self) -> &str {
+        &self.inner.stage_key
+    }
+    #[getter]
+    fn ranges(&self) -> &[(u64, u64)] {
+        &self.inner.ranges
+    }
+    #[getter]
+    fn batch_size(&self) -> usize {
+        self.inner.batch_size
+    }
+    #[getter]
+    fn num_workers(&self) -> u64 {
+        self.inner.num_workers
+    }
+    #[getter]
+    fn worker_id(&self) -> u64 {
+        self.inner.worker_id
+    }
+    #[getter]
+    fn shuffle(&self) -> bool {
+        self.inner.shuffle
+    }
+    #[getter]
+    fn rnd_seed(&self) -> Option<u64> {
+        self.inner.rnd_seed
+    }
+    #[getter]
+    fn epoch(&self) -> u64 {
+        self.inner.epoch
+    }
+    #[getter]
+    fn drop_last(&self) -> bool {
+        self.inner.drop_last
+    }
+    #[getter]
+    fn rhs(&self) -> bool {
+        self.inner.rhs
+    }
+    #[getter]
+    fn selected_stage_node_ids(&self) -> Option<&[u64]> {
+        self.inner.selected_stage_node_ids.as_deref()
+    }
+    #[getter]
+    fn weighted_seed_sampling_json(&self) -> Option<&str> {
+        self.inner.weighted_seed_sampling_json.as_deref()
+    }
+    #[getter]
+    fn bucket_extension_root(&self) -> Option<&std::path::Path> {
+        self.inner.bucket_extension_root.as_deref()
+    }
+}
+
 #[pyclass]
 pub struct SeedSchedule {
     inner: diskgraph_runtime::SeedSchedule,
@@ -269,27 +389,11 @@ pub struct SeedSchedule {
 #[pymethods]
 impl SeedSchedule {
     #[new]
-    fn new(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let config = diskgraph_runtime::SeedScheduleConfig {
-            stage_key: config.getattr("stage_key")?.extract()?,
-            ranges: config.getattr("ranges")?.extract()?,
-            num_workers: config.getattr("num_workers")?.extract()?,
-            worker_id: config.getattr("worker_id")?.extract()?,
-            shuffle: config.getattr("shuffle")?.extract()?,
-            rnd_seed: config.getattr("rnd_seed")?.extract()?,
-            epoch: config.getattr("epoch")?.extract()?,
-            batch_size: config.getattr("batch_size")?.extract()?,
-            drop_last: config.getattr("drop_last")?.extract()?,
-            rhs: config.getattr("rhs")?.extract()?,
-            selected_stage_node_ids: config.getattr("selected_stage_node_ids")?.extract()?,
-            weighted_seed_sampling_json: config
-                .getattr("weighted_seed_sampling_json")?
-                .extract()?,
-            bucket_extension_root: config.getattr("bucket_extension_root")?.extract()?,
-        };
+    fn new(py: Python<'_>, config: PyRef<'_, SeedScheduleConfig>) -> PyResult<Self> {
+        let config = &config.inner;
         Ok(Self {
             inner: py
-                .detach(|| diskgraph_runtime::SeedSchedule::new(config))
+                .detach(|| diskgraph_runtime::SeedSchedule::new(config.clone()))
                 .map_err(map_runtime_err)?,
         })
     }
@@ -1170,6 +1274,7 @@ fn discover_tts(parent_root: String) -> PyResult<Vec<String>> {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeIndex>()?;
     m.add_class::<RuntimeLengthCache>()?;
+    m.add_class::<SeedScheduleConfig>()?;
     m.add_class::<SeedSchedule>()?;
     m.add_class::<RuntimeBatchIterator>()?;
     m.add_function(wrap_pyfunction!(discover_tts, m)?)?;

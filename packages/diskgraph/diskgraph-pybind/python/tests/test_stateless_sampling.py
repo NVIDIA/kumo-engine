@@ -19,6 +19,7 @@ from diskgraph import (
     SeedScheduleConfig,
 )
 from diskgraph._c import SeedSchedule
+from diskgraph._c import SeedScheduleConfig as NativeSeedScheduleConfig
 from test_runtime_batch_iterator_e2e import (
     _sampling_plan,
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
@@ -207,6 +208,53 @@ def test_seed_only_schedule_needs_no_graph_index() -> None:
         [21],
         None,
     ]
+
+
+def test_schedule_config_is_native_and_owns_its_inputs() -> None:
+    """The native config is read-only and independent of Python input lists."""
+    ranges = [(10, 14)]
+    selected = [10, 11, 12]
+    config = SeedScheduleConfig(
+        stage_key="train",
+        ranges=ranges,
+        batch_size=2,
+        num_workers=2,
+        worker_id=1,
+        rnd_seed=42,
+        epoch=3,
+        selected_stage_node_ids=selected,
+    )
+    assert SeedScheduleConfig is NativeSeedScheduleConfig
+    assert config.stage_key == "train"
+    assert config.batch_size == 2
+    assert config.num_workers == 2
+    assert config.worker_id == 1
+    assert config.rnd_seed == 42
+    assert config.epoch == 3
+    assert config.shuffle is False
+    assert config.drop_last is False
+    assert config.rhs is False
+    assert config.weighted_seed_sampling_json is None
+    assert config.bucket_extension_root is None
+    schedule = SeedSchedule(config)
+    ranges.append((20, 21))
+    selected.append(13)
+    config.ranges.append((30, 31))
+    config.selected_stage_node_ids.append(14)
+    assert config.ranges == [(10, 14)]
+    assert config.selected_stage_node_ids == [10, 11, 12]
+    with pytest.raises(AttributeError):
+        config.batch_size = 4
+    assert schedule.next_seed_ids() == [11]
+    assert SeedSchedule(config).next_seed_ids() == [11]
+
+
+def test_schedule_requires_native_configuration() -> None:
+    """Native argument conversion rejects generic Python configuration objects."""
+    with pytest.raises(TypeError, match="SeedScheduleConfig"):
+        SeedSchedule(object())
+    with pytest.raises(TypeError):
+        SeedScheduleConfig(stage_key="train", ranges=[(0, 1)], batch_size="2")
 
 
 @pytest.mark.parametrize("worker_id", [0, 1])

@@ -40,7 +40,14 @@ schedule = SeedSchedule(SeedScheduleConfig(
 seed_ids = schedule.next_seed_ids()
 ```
 
-The Rust configuration and Python dataclass have these fields. Python defaults
+`diskgraph.SeedScheduleConfig` re-exports the Rust-owned PyO3 class. It stores the
+runtime configuration directly, exposes read-only fields, and is accepted by
+the sampler through a typed native reference. There is no Python dataclass or
+dynamic attribute extraction. A schedule owns a snapshot of its configuration.
+Mutating an input list or a list returned by a getter does not change the
+configuration.
+
+The configuration has these fields. Python defaults
 to one worker, worker zero, epoch zero, no shuffle, no tail dropping, and no
 optional mode:
 
