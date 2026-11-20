@@ -78,7 +78,10 @@ def contract(schema):
 
 
 @pytest.fixture
-def indexed(tmp_path):
+def indexed(tmp_path, monkeypatch):
+    import kumo.settings
+
+    monkeypatch.setattr(kumo.settings, "_configured", tmp_path)
     source = tmp_path / "sources"
     source.mkdir()
     data = {
@@ -114,9 +117,10 @@ def indexed(tmp_path):
         ),
     )
     dataset = api.Dataset({name: api.Parquet(str(source / f"{name}.parquet")) for name in data})
-    index = tmp_path / "index"
     spec = contract(schema)
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=1)):
+    engine = api.DiskGraphEngine(num_threads=1)
+    index = engine.index
+    with api.prepare(spec, dataset, engine):
         pass
     anchor_path = tmp_path / "anchors.parquet"
     pq.write_table(
@@ -151,26 +155,22 @@ def sample(engine, spec, anchors):
             return graph
 
 
-def test_relocated_index_without_sources_or_base_writes(indexed, tmp_path, monkeypatch):
+def test_managed_index_without_sources_or_base_writes(indexed, tmp_path, monkeypatch):
     index, source, dataset, spec, anchors = indexed
-    relocated = tmp_path / "relocated"
-    shutil.move(str(index), relocated)
     shutil.rmtree(source)
-    before = inventory(relocated)
+    before = inventory(index)
     original_ingest = diskgraph.ingest
     extensions = []
 
     def ingest(*args, **kwargs):
-        assert kwargs.get("parent_index_path") == str(relocated)
-        assert not str(args[1]).startswith(str(relocated))
+        assert kwargs.get("parent_index_path") == str(index)
+        assert Path(args[1]).parent == tmp_path / "tasks" / index.name
         extensions.append(args[1])
         return original_ingest(*args, **kwargs)
 
     monkeypatch.setattr(diskgraph, "ingest", ingest)
-    with read_only(relocated):
-        engine = api.DiskGraphEngine.from_index(
-            relocated, work_dir=tmp_path / "work", num_threads=1
-        )
+    with read_only(index):
+        engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
         assert engine.schema == spec.schema
         sample(engine, spec, anchors)
         assert extensions
@@ -183,17 +183,19 @@ def test_relocated_index_without_sources_or_base_writes(indexed, tmp_path, monke
                 """
 import sys
 from pathlib import Path
+import kumo.settings
 from kumo.pytorch import api
-index, work, spec, anchors = sys.argv[1:]
-engine = api.DiskGraphEngine.from_index(index, work_dir=work, num_threads=1)
+root, build, spec, anchors = sys.argv[1:]
+kumo.settings.configure(scratch_dir=root)
+engine = api.DiskGraphEngine.from_index(build, num_threads=1)
 contract = api.DataLoaderSpec.from_json(Path(spec).read_text())
 with api.prepare(contract=contract, engine=engine) as plan:
     with plan.materialize(api.AnchorTable(api.Parquet(anchors), 'user', 'at', 'sample')) as task:
         graph = next(iter(task.batches(output_format='columnar'))).inputs['graph']
         assert set(graph.nodes['events'].ids.to_pylist()) == {'a', 'b', 'd'}
 """,
-                str(relocated),
-                str(tmp_path / "fresh-process"),
+                str(tmp_path),
+                index.name,
                 str(spec_path),
                 anchors.source.path,
             ],
@@ -201,19 +203,22 @@ with api.prepare(contract=contract, engine=engine) as plan:
             capture_output=True,
             text=True,
         )
-    assert inventory(relocated) == before
+    assert inventory(index) == before
     assert all(not Path(path).exists() for path in extensions)
-    assert not (relocated / "tasks").exists()
+    assert not (index / "tasks").exists()
 
 
 def test_snapshot_binding_needs_no_pytorch_manifest(indexed, tmp_path):
     index, source, _, spec, anchors = indexed
     config = (index / "diskgraph_config.json").read_text()
-    index = tmp_path / "engine-index"
-    diskgraph.ingest(config, str(index), col_stats=False, success_marker_content="{}")
+    index = tmp_path / "snapshots" / "graph" / "version"
+    diskgraph.ingest(
+        config, str(index), col_stats=False, success_marker_content="{}",
+        index_build_id=diskgraph.new_index_build_id(),
+    )
     # The real engine integration test covers connector -> GraphSnapshot creation.
     snapshot = SimpleNamespace(index_path=index, id="graph@version", graph_config={})
-    engine = api.DiskGraphEngine.from_snapshot(snapshot, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=1)
     shutil.rmtree(source)
     before = inventory(index)
     sample(engine, spec, anchors)  # Custom logical relation aliases resolve by endpoint AND key.
@@ -223,7 +228,7 @@ def test_snapshot_binding_needs_no_pytorch_manifest(indexed, tmp_path):
 def test_external_fitting_statistics_tokenizer_and_lengths(indexed, tmp_path):
     index, _, _, spec, _ = indexed
     before = inventory(index)
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         stats = source.column_stats([("events", "value", "numerical")], 20 * 10**9)
@@ -256,7 +261,7 @@ def test_existing_base_statistics_are_reused_and_reported(indexed, tmp_path, mon
         pytest.fail("the requested statistics already exist in the base")
 
     monkeypatch.setattr(diskgraph, "cutoff_col_stats", unexpected_compute)
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work")
+    engine = api.DiskGraphEngine.from_index(index.name)
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         reused = plan._source.column_stats(requests, 20 * 10**9)
         assert reused.columns == stored.columns
@@ -283,7 +288,7 @@ def test_external_statistics_compute_only_missing_requests(indexed, tmp_path, mo
         return original(index_path, request_json, **options)
 
     monkeypatch.setattr(diskgraph, "cutoff_col_stats", compute)
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -315,14 +320,17 @@ def test_native_clock_precision_preserves_cutoff(indexed, tmp_path, unit, clock)
     pq.write_table(table, path)
     config = json.loads((index / "diskgraph_config.json").read_text())
     config["timestamp_unit"] = clock
-    native = tmp_path / "native"
-    diskgraph.ingest(json.dumps(config), str(native), col_stats=False, success_marker_content="{}")
+    native = tmp_path / "indexes" / diskgraph.new_index_build_id()
+    diskgraph.ingest(
+        json.dumps(config), str(native), col_stats=False,
+        success_marker_content="{}", index_build_id=native.name,
+    )
     shutil.rmtree(source)
     anchor_path = tmp_path / "precise-anchors.parquet"
     pq.write_table(
         pa.table({"user": [-2, 7], "at": pa.array([1002, 1002], pa.timestamp(unit))}), anchor_path
     )
-    engine = api.DiskGraphEngine.from_index(native, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_index(native.name, num_threads=1)
     schema = replace(engine.schema, relations=spec.schema.relations)
     with api.prepare(contract=contract(schema), engine=engine) as plan:
         with plan.materialize(api.AnchorTable(api.Parquet(str(anchor_path)), "user", "at")) as task:
@@ -339,7 +347,7 @@ def test_concurrent_consumers_keep_task_cleanup_separate(indexed, tmp_path):
 
     def run(_):
         return sample(
-            api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "shared", num_threads=1),
+            api.DiskGraphEngine.from_index(index.name, num_threads=1),
             spec,
             anchors,
         )
@@ -351,7 +359,7 @@ def test_concurrent_consumers_keep_task_cleanup_separate(indexed, tmp_path):
 
 def test_projection_alias_validation_and_bad_bindings(indexed, tmp_path):
     index, _, dataset, spec, anchors = indexed
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work")
+    engine = api.DiskGraphEngine.from_index(index.name)
     assert api.check(spec, engine=engine) == ()
     with pytest.raises(api.ValidationError, match="does not accept Dataset"):
         api.prepare(spec, dataset, engine)
@@ -386,14 +394,12 @@ def test_projection_alias_validation_and_bad_bindings(indexed, tmp_path):
     assert api.check(
         replace(spec, schema=replace(spec.schema, relations=(missing,))), engine=engine
     )
-    with pytest.raises(ValueError, match="outside"):
-        api.DiskGraphEngine.from_index(index, work_dir=index / "work")
 
 
 def test_physically_present_self_relation(indexed, tmp_path):
     index, source, _, spec, anchors = indexed
     shutil.rmtree(source)
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
     spec = replace(
         spec,
         sample=replace(
@@ -458,7 +464,7 @@ def test_incompatible_artifacts_fail_before_sampling(indexed, tmp_path, change, 
                     entry["size_bytes"] = path.stat().st_size
             manifest_path.write_text(json.dumps(manifest))
     with pytest.raises((ValueError, RuntimeError), match=match):
-        api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work")
+        api.DiskGraphEngine.from_index(index.name)
 
 
 def test_connector_versions_allow_restage_but_reject_changes(indexed, tmp_path):
@@ -498,105 +504,101 @@ def test_connector_versions_allow_restage_but_reject_changes(indexed, tmp_path):
         api.prepare(spec, restaged, api.DiskGraphEngine(index=path, source_versions={}))
 
 
-@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink"])
-@pytest.mark.parametrize("explicit_first", [False, True])
-def test_explicit_index_work_dir_reuses_legacy_state(
-    indexed, tmp_path, monkeypatch, alias, explicit_first
-):
+def test_managed_layout_and_physical_identity(indexed, tmp_path):
     index, _, dataset, spec, anchors = indexed
+    build = index.name
+    assert index.parent == tmp_path / "indexes"
+    assert json.loads((index / "index_metadata.json").read_text())["index_build_id"] == build
+    before = inventory(index)
+    engine = api.DiskGraphEngine.from_index(build, num_threads=1)
+    with api.prepare(contract=spec, engine=engine) as plan:
+        source = plan._source
+        source.column_stats([("events", "value", "categorical")], 20 * 10**9)
+        assert (tmp_path / "cache" / build / "col_stats").is_dir()
+        with plan.materialize(anchors) as task:
+            task_root = tmp_path / "tasks" / build
+            task_dirs = [
+                path for path in task_root.iterdir() if not path.name.startswith("scratch-")
+            ]
+            assert len(task_dirs) == 1
+            metadata = json.loads((task_dirs[0] / "index_metadata.json").read_text())
+            assert metadata["parent_index_build_id"] == build
+            assert next(iter(task.batches(output_format="columnar"))).inputs["graph"]
+        assert not list(task_root.iterdir())
+    assert inventory(index) == before
+    second = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(spec, dataset, second):
+        pass
+    assert second.index_build_id != build
+    assert second.index.parent == index.parent
+
+
+@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink"])
+def test_explicit_managed_index_path_reuses_same_cache(indexed, tmp_path, monkeypatch, alias):
+    index, _, dataset, spec, _ = indexed
     if alias == "relative":
         monkeypatch.chdir(tmp_path)
-        work = Path("index")
+        path = Path("indexes") / index.name
     elif alias == "symlink":
-        work = tmp_path / "index-alias"
-        work.symlink_to(index, target_is_directory=True)
+        path = tmp_path / "alias"
+        path.symlink_to(index, target_is_directory=True)
     else:
-        work = index
-    encoder = TableColumnEncoder(
-        api.Text(vocabulary_size=300, min_frequency=1),
-        api.DType("string"),
-        (("events", "note"),),
-    )
-
-    def run(explicit):
-        options = {"work_dir": work} if explicit else {}
-        engine = api.DiskGraphEngine(index=index, num_threads=1, **options)
-        with api.prepare(spec, dataset, engine) as plan:
-            source = plan._source
-            stats = source.column_stats([("events", "value", "numerical")], 20 * 10**9)
-            tokenizer, name = source.column_text(encoder, 20 * 10**9)
-            lengths = source.token_lengths("events", [("note", tokenizer, 0)], [], 20 * 10**9)
-            _, values = read_token_lengths(index, {"file": lengths, "constant": 0})
-            assert all((index / "col_stats" / path).is_file() for path in stats.files)
-            assert (index / "col_stats" / name).is_file()
-            with plan.materialize(anchors) as task:
-                assert any((index / "train_tables").iterdir())
-                assert any((index / "tasks").iterdir())
-                graph = next(iter(task.batches(output_format="columnar"))).inputs["graph"]
-                assert set(graph.nodes["events"].ids.to_pylist()) == {"a", "b", "d"}
-            assert not list((index / "train_tables").iterdir())
-            assert not list((index / "tasks").iterdir())
-            return stats, tokenizer, name, lengths, values.tolist()
-
-    expected = run(explicit_first)
-    before = inventory(index)
-
-    def unexpected_compute(*args, **kwargs):
-        pytest.fail("existing in-index cache must be reused")
-
-    for function in ("cutoff_col_stats", "train_tokenizer", "token_lengths"):
-        monkeypatch.setattr(diskgraph, function, unexpected_compute)
-    assert run(not explicit_first) == expected
-    assert inventory(index) == before
-    assert not (index / "cache").exists()
+        path = index
+    assert api.DiskGraphEngine.from_index(path).index_build_id == index.name
+    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path, num_threads=1)) as plan:
+        source = plan._source
+        source.column_stats([("events", "value", "categorical")], 20 * 10**9)
+        assert source._cache_root == tmp_path / "cache" / index.name
+        assert source.artifact_identity == index.name
+    assert (tmp_path / "cache" / index.name / "col_stats").is_dir()
 
 
-@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink", "nested"])
-def test_adopted_indexes_require_external_work_dir(indexed, tmp_path, monkeypatch, alias):
+def test_managed_binding_refuses_mismatched_or_legacy_build(indexed, tmp_path):
     index, _, _, _, _ = indexed
-    if alias == "relative":
-        monkeypatch.chdir(tmp_path)
-        work = Path("index")
-    elif alias == "symlink":
-        work = tmp_path / "index-alias"
-        work.symlink_to(index, target_is_directory=True)
-    else:
-        work = index if alias == "absolute" else index / "work"
-    with pytest.raises(ValueError, match="outside"):
-        api.DiskGraphEngine.from_index(index, work_dir=work)
-    with pytest.raises(ValueError, match="outside"):
-        api.DiskGraphEngine.from_snapshot(
-            SimpleNamespace(index_path=index, id="test"), work_dir=work
-        )
-    if alias == "nested":
-        with pytest.raises(ValueError, match="outside"):
-            api.DiskGraphEngine(index=index, work_dir=work)
+    with pytest.raises((FileNotFoundError, ValueError), match="index_metadata|build ID"):
+        api.DiskGraphEngine.from_index("unknown-build")
+    metadata = index / "index_metadata.json"
+    value = json.loads(metadata.read_text())
+    value["index_build_id"] = "wrong-build"
+    metadata.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="build ID mismatch"):
+        api.DiskGraphEngine.from_index(index.name)
+    value.pop("index_build_id")
+    metadata.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="build ID mismatch"):
+        api.DiskGraphEngine.from_index(index.name)
 
 
-@pytest.mark.parametrize("root", ["tasks", "train_tables", "cache"])
-@pytest.mark.parametrize("symlink", [False, True])
-def test_external_writable_roots_cannot_overlap_base(indexed, tmp_path, root, symlink):
+def test_core_snapshot_requires_same_root_and_physical_id(indexed, tmp_path):
     index, _, _, _, _ = indexed
-    work = tmp_path / "work"
-    work.mkdir()
-    if symlink:
-        (work / root).symlink_to(index, target_is_directory=True)
-    else:
-        moved = work / root
-        shutil.move(index, moved)
-        index = moved
-    before = inventory(index)
-    with pytest.raises(ValueError, match="outside"):
-        api.DiskGraphEngine.from_index(index, work_dir=work)
-    assert inventory(index) == before
-    assert set(p.name for p in work.iterdir()) == {root}
+    outside = tmp_path.parent / "outside-snapshot"
+    with pytest.raises(ValueError, match="configured Kumo root"):
+        api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=outside, id="old"))
+    with pytest.raises(ValueError, match="cannot be adopted"):
+        legacy = tmp_path / "legacy"
+        shutil.copytree(index, legacy)
+        metadata = legacy / "index_metadata.json"
+        value = json.loads(metadata.read_text())
+        value.pop("index_build_id")
+        metadata.write_text(json.dumps(value))
+        api.DiskGraphEngine.from_snapshot(SimpleNamespace(index_path=legacy, id="old"))
+
+
+@pytest.mark.parametrize("root", ["tasks", "cache"])
+def test_managed_writable_roots_cannot_overlap_base(indexed, tmp_path, root):
+    index, _, _, _, _ = indexed
+    path = tmp_path / root / index.name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.symlink_to(index, target_is_directory=True)
+    with pytest.raises(ValueError, match="disjoint"):
+        api.DiskGraphEngine.from_index(index.name)
 
 
 def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monkeypatch):
     index, _, _, spec, _ = indexed
     known = ("events", "value", "numerical")
     missing = ("events", "value", "categorical")
-    engine = api.DiskGraphEngine.from_index(index, work_dir=tmp_path / "work", num_threads=1)
+    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
     with api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         initial = source.column_stats([known], 20 * 10**9)
@@ -658,22 +660,6 @@ def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_p
     with pytest.raises(ValueError, match="changed while DiskGraph was ingesting"):
         api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=1))
     assert not index.exists()
-
-
-def test_external_storage_refuses_old_native_api_before_task_writes(indexed, tmp_path, monkeypatch):
-    index, _, dataset, spec, _ = indexed
-
-    def old_cutoff_col_stats(index_dir, request_json, num_threads=None):
-        pytest.fail("compatibility check must not execute statistics")
-
-    monkeypatch.setattr(diskgraph, "cutoff_col_stats", old_cutoff_col_stats)
-    work = tmp_path / "work"
-    engine = api.DiskGraphEngine.from_index(index, work_dir=work)
-    with pytest.raises(RuntimeError, match="matching kumo-engine revision"):
-        api.prepare(contract=spec, engine=engine)
-    assert not work.exists()
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index)):
-        pass
 
 
 def test_index_local_statistics_read_each_file_once(indexed, tmp_path, monkeypatch):

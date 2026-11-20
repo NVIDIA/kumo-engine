@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import inspect
 import json
 import os
 import time
@@ -22,7 +21,7 @@ from typing import Any, Literal
 import numpy as np
 import torch
 
-from kumo.pytorch._storage import ColumnCache, normalize_work_dir
+from kumo.pytorch._storage import ColumnCache, TaskDirectory, managed_paths, verify_managed_roots
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
     ColumnStats,
@@ -210,17 +209,17 @@ class DiskGraphEngine:
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
-    :param index: directory of the base index.
+    :param index: source-ingestion index directory. A path under the configured
+        root's ``indexes/`` uses managed storage; other paths retain legacy layout.
+        Omit to allocate a new managed build.
+    :param index_build_id: physical build to create or reuse under the configured root.
+        Omit to allocate a new ID. Cannot be combined with ``index``.
     :param num_threads: native sampling threads.
     :param num_shards: index shards.
     :param ingest: ``"if_missing"`` builds the index when absent; ``"never"``
         requires an existing one. A mismatching manifest is an error, never
         permission to reuse.
     :param encoder_cutoffs: ``encoder_cutoff`` values whose column statistics an ingest computes.
-    :param work_dir: task/cache directory. Omit it or pass the index path (including
-        an alias resolving to it) for the original index-local layout and cache reuse.
-        Other paths must be outside the index; existing-index factories require an
-        external directory.
     :param source_versions: optional table-to-identity mapping for source ingestion/reuse.
         Each entry has nonempty ``source`` (connector plus source identity) and ``version``
         strings. These trusted connector versions replace file path/size/mtime identity;
@@ -236,20 +235,30 @@ class DiskGraphEngine:
     def __init__(
         self,
         *,
-        index: str | Path,
+        index: str | Path | None = None,
         num_threads: int | None = None,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
-        work_dir: str | Path | None = None,
+        index_build_id: str | None = None,
         source_versions: Mapping[str, Mapping[str, str]] | None = None,
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
-        self.index = Path(index)
-        self.work_dir = normalize_work_dir(self.index, work_dir)
+        if index is not None and index_build_id is not None:
+            raise ValueError("index and index_build_id cannot be combined")
+        if index is None:
+            self._paths = managed_paths(index_build_id)
+        else:
+            import kumo.settings
+
+            resolved = Path(index).resolve()
+            managed_root = kumo.settings.scratch_dir().resolve() / "indexes"
+            self._paths = managed_paths(resolved.name) if resolved.parent == managed_root else None
+        self.index = self._paths.index_dir if self._paths is not None else Path(index)
+        self.index_build_id = self._paths.index_build_id if self._paths is not None else None
         self.source_versions = (
             None
             if source_versions is None
@@ -265,36 +274,51 @@ class DiskGraphEngine:
 
     @classmethod
     def from_index(
-        cls, index: str | Path, *, work_dir: str | Path, num_threads: int | None = None
+        cls, index_build_id: str | Path, *, num_threads: int | None = None
     ) -> DiskGraphEngine:
-        """Open a complete native index without its original sources or any base writes.
+        """Open a completed managed build under the configured Kumo scratch root.
 
-        Read schema/relations from existing metadata. Older indexes without the
-        resolved native config are refused. Native edge tables and non-scalar
-        stored columns are not supported. Bare indexes without producer identity
-        are hashed in full on each open; engine provenance and PyTorch manifests avoid that scan.
-        ``work_dir`` holds task extensions and derived caches outside the base.
+        Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
+        DiskGraph's managed path resolver. A path to the same managed base is
+        accepted. The build ID is physical identity,
+        independent of schema/data-version identity. No original sources are read.
+        Legacy ID-less indexes cannot be adopted; the existing index= constructor
+        remains available for legacy source ingestion and reuse.
         """
-        work_dir = normalize_work_dir(index, work_dir, external_only=True)
-        result = cls(index=index, ingest="never", work_dir=work_dir, num_threads=num_threads)
-        result._binding = open_index(index)
+        if isinstance(index_build_id, Path) or "/" in index_build_id or "\\" in index_build_id:
+            import kumo.settings
+
+            path = Path(index_build_id).resolve()
+            if path.parent != kumo.settings.scratch_dir().resolve() / "indexes":
+                raise ValueError("index path must be under the configured Kumo root's indexes")
+            index_build_id = path.name
+        result = cls(index_build_id=index_build_id, ingest="never", num_threads=num_threads)
+        result._paths.verify_index()
+        verify_managed_roots(result._paths, result.index)
+        result._binding = open_index(result.index)
         return result
 
     @classmethod
-    def from_snapshot(
-        cls, snapshot: Any, *, work_dir: str | Path, num_threads: int | None = None
-    ) -> DiskGraphEngine:
-        """Bind a kumo.engine GraphSnapshot using its existing index and identity.
+    def from_snapshot(cls, snapshot: Any, *, num_threads: int | None = None) -> DiskGraphEngine:
+        """Attach to an existing same-root Kumo snapshot by physical build identity.
 
-        Uses public ``index_path`` and ``id`` fields; importing kumo.engine is
-        unnecessary. Load exported snapshots through the existing engine loader.
-        No source export, base ingestion or additional metadata file is needed.
+        The original base stays in place. Tasks and caches use sibling managed paths
+        under kumo.settings.scratch_dir(); no public work/output directories are needed.
+        Cross-root imports and legacy snapshots without a build ID are refused.
         """
-        work_dir = normalize_work_dir(snapshot.index_path, work_dir, external_only=True)
-        result = cls(
-            index=snapshot.index_path, ingest="never", work_dir=work_dir, num_threads=num_threads
-        )
-        result._binding = open_index(snapshot.index_path, snapshot_id=snapshot.id)
+        base = Path(snapshot.index_path).resolve()
+        import kumo.settings
+
+        if not base.is_relative_to(kumo.settings.scratch_dir().resolve()):
+            raise ValueError(
+                "snapshot must belong to the configured Kumo root; "
+                "cross-root import is unsupported"
+            )
+        binding = open_index(base, snapshot_id=snapshot.id)
+        result = cls(index_build_id=binding.identity, ingest="never", num_threads=num_threads)
+        result.index = base
+        result._binding = binding
+        verify_managed_roots(result._paths, base)
         return result
 
     @property
@@ -483,19 +507,8 @@ class DiskGraphEngine:
         *,
         column_stats: Sequence[StatRequest] = (),
     ) -> SampleSource:
-        if self.work_dir is not None:
-            import diskgraph
-
-            try:
-                inspect.signature(diskgraph.cutoff_col_stats).bind(
-                    str(self.index), "{}", output_dir=str(self.work_dir)
-                )
-            except (TypeError, ValueError) as error:
-                raise RuntimeError(
-                    "External work_dir requires a DiskGraph build with "
-                    "cutoff_col_stats(output_dir=...) support; rebuild/install DiskGraph "
-                    "from the matching kumo-engine revision"
-                ) from error
+        if self._paths is not None:
+            verify_managed_roots(self._paths, self.index)
         if self._binding is not None:
             if dataset is not None:
                 raise ValueError("an existing-index engine does not accept Dataset")
@@ -505,7 +518,7 @@ class DiskGraphEngine:
                 artifact,
                 schema,
                 num_threads=self.num_threads,
-                work_dir=self.work_dir,
+                paths=self._paths,
                 identity=self._binding.identity,
             )
         if dataset is None:
@@ -520,12 +533,16 @@ class DiskGraphEngine:
             if_missing=self.ingest == "if_missing",
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
             source_versions=self.source_versions,
+            index_build_id=self.index_build_id,
         )
+        if self._paths is not None:
+            self._paths.verify_index()
         return DiskGraphSource(
             artifact,
             schema,
             num_threads=self.num_threads,
-            work_dir=self.work_dir,
+            paths=self._paths,
+            **({"identity": self.index_build_id} if self._paths is not None else {}),
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
@@ -543,7 +560,7 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
-        work_dir: Path | None = None,
+        paths: Any = None,
         identity: str | None = None,
     ) -> None:
         try:
@@ -561,14 +578,10 @@ class DiskGraphSource:
         self.schema = schema
         self._index_path = artifact.path
         self.artifact_identity = identity
-        self._work_dir = Path(artifact.path) if work_dir is None else work_dir
-        cache_id = (
-            identity
-            or hashlib.sha256(
-                json.dumps(dict(artifact.manifest), sort_keys=True).encode()
-            ).hexdigest()
+        self._paths = paths
+        self._column_cache = ColumnCache(
+            artifact.path, None if paths is None else paths.cache_dir
         )
-        self._column_cache = ColumnCache.for_work_dir(artifact.path, work_dir, cache_id)
         self._cache_root = self._column_cache.root
         metadata = json.loads(Path(artifact.path, "index_metadata.json").read_text())
         self._clock = metadata.get("timestamp_unit", "seconds")
@@ -590,6 +603,18 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+
+    def new_task_directory(self, task_id: str | None = None):
+        if self._paths is not None:
+            verify_managed_roots(self._paths, self._index_path)
+            return TaskDirectory(self._paths, task_id)
+        if task_id is not None:
+            raise ValueError("task_id requires a managed index")
+        import tempfile
+
+        parent = Path(self._index_path) / "tasks"
+        parent.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix="task-", dir=parent)
 
     @property
     def _sampler(self):
