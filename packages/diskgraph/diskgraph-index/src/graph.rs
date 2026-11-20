@@ -41,6 +41,11 @@ fn invalid_extension(message: impl Into<String>) -> anyhow::Error {
     InvalidExtensionPath(message.into()).into()
 }
 
+fn read_index_metadata(path: &Path) -> Result<DatasetMetadata> {
+    let bytes = fs::read(path).context("read index_metadata.json")?;
+    serde_json::from_slice(&bytes).context("parse index_metadata.json")
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct IndexShardCommit {
     version: u32,
@@ -1004,7 +1009,7 @@ pub struct GraphIndexReader {
 
 impl GraphIndexReader {
     pub fn open(metadata_path: &Path, root: &Path) -> Result<Self> {
-        Self::open_impl(metadata_path, root, &[], None)
+        Self::open_impl(read_index_metadata(metadata_path)?, root, &[], None)
     }
 
     /// Open ONLY the named tables of an index (mmaps, pk maps, and rowpack
@@ -1020,7 +1025,7 @@ impl GraphIndexReader {
         root: &Path,
         only_tables: &std::collections::HashSet<String>,
     ) -> Result<Self> {
-        Self::open_impl(metadata_path, root, &[], Some(only_tables))
+        Self::open_impl(read_index_metadata(metadata_path)?, root, &[], Some(only_tables))
     }
 
     /// Open an index but augment its `node_types` with the supplied
@@ -1031,22 +1036,19 @@ impl GraphIndexReader {
     /// would fall back to `dst_bits=64` and the read view would not match
     /// the on-disk byte width Phase 1 produced.
     pub(crate) fn open_with_external_node_types(
-        metadata_path: &Path,
+        metadata: DatasetMetadata,
         root: &Path,
         external_node_types: &[NodeTypeMetadata],
     ) -> Result<Self> {
-        Self::open_impl(metadata_path, root, external_node_types, None)
+        Self::open_impl(metadata, root, external_node_types, None)
     }
 
     fn open_impl(
-        metadata_path: &Path,
+        metadata: DatasetMetadata,
         root: &Path,
         external_node_types: &[NodeTypeMetadata],
         only_tables: Option<&std::collections::HashSet<String>>,
     ) -> Result<Self> {
-        let bytes = fs::read(metadata_path).context("read index_metadata.json")?;
-        let metadata: DatasetMetadata =
-            serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
         let mut tables = HashMap::new();
         tracing::info!(
             node_types = metadata.node_types.len(),
@@ -1361,6 +1363,13 @@ fn merge_extension_into(
     tt_id: &str,
 ) -> Result<()> {
     let ext_meta_path = subdir.join("index_metadata.json");
+    let ext_metadata = read_index_metadata(&ext_meta_path)?;
+    if ext_metadata.parent_index_build_id != reader.metadata.index_build_id {
+        return Err(invalid_extension(format!(
+            "extension `{tt_id}` belongs to index build {:?}, not {:?}",
+            ext_metadata.parent_index_build_id, reader.metadata.index_build_id,
+        )));
+    }
     // Coordinated layout fix (read side): the extension's seed→parent edges
     // were written with `dst_bits = bits_for_id(parent.users.max_id)` at
     // ingest time. To decode them we MUST re-compute the layout with the
@@ -1369,17 +1378,11 @@ fn merge_extension_into(
     // and reads garbage from the (smaller) on-disk packed edges.
     let parent_node_types = reader.metadata.node_types.clone();
     let ext = GraphIndexReader::open_with_external_node_types(
-        &ext_meta_path,
+        ext_metadata,
         subdir,
         &parent_node_types,
     )
     .with_context(|| format!("open extension {tt_id} at {}", subdir.display()))?;
-    if ext.metadata.parent_index_build_id != reader.metadata.index_build_id {
-        return Err(invalid_extension(format!(
-            "extension `{tt_id}` belongs to index build {:?}, not {:?}",
-            ext.metadata.parent_index_build_id, reader.metadata.index_build_id,
-        )));
-    }
     for (bare_name, table_arc) in ext.tables.iter() {
         let namespaced = format!("{tt_id}/{bare_name}");
         if reader.tables.contains_key(&namespaced) {
@@ -2025,6 +2028,51 @@ mod extension_path_tests {
             let result = GraphIndexReader::open_with_extension_subdir(base.path(), extension, "task");
             assert!(result.err().unwrap().to_string().contains("base index"));
         }
+    }
+
+    #[test]
+    fn rejects_wrong_parent_before_opening_extension_data() {
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("base");
+        let extension = root.path().join("task");
+        fs::create_dir(&base).unwrap();
+        fs::create_dir(&extension).unwrap();
+        fs::write(
+            base.join("index_metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "dataset_name": "base",
+                "index_build_id": "build-a",
+                "node_types": [],
+                "edge_relations": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            extension.join("index_metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "dataset_name": "task",
+                "parent_index_build_id": "build-b",
+                "node_types": [{
+                    "name": "seed",
+                    "max_id": 1,
+                    "shards": [{"min_id": 0, "max_id": 1}]
+                }],
+                "edge_relations": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = GraphIndexReader::open_with_extension_subdir(
+            &base,
+            extension.to_str().unwrap(),
+            "task",
+        )
+        .err()
+        .unwrap();
+        assert!(error.is::<InvalidExtensionPath>());
+        assert!(error.to_string().contains("belongs to index build"));
     }
 
     #[cfg(unix)]
