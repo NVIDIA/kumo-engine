@@ -43,7 +43,7 @@ jobs:
       - name: Test the source package against the current native stack
         run: |
           uv sync --locked --inexact --no-install-package diskgraph --no-install-package torch \
-            --package kumo-fm --extra test
+            --package kumo-fm --extra test --extra benchmark
           uv run --no-sync --package kumo-fm python -m pytest -q \
             packages/experimental/kumo-fm/tests
       - name: Build both finished wheels
@@ -59,11 +59,17 @@ jobs:
             /tmp/diskgraph-wheel/diskgraph-*.whl dist/kumo_pytorch-*.whl \
             dist/kumo_fm-*.whl 'pytest>=8,<10'
           uv pip check --python fresh/bin/python
-      - name: Run tests using only installed runtime packages
+      - name: Verify the base FM install does not need DuckDB
         run: |
           mkdir "$RUNNER_TEMP/stage"
           cp -R packages/experimental/kumo-fm/tests \
             packages/experimental/kumo-fm/examples "$RUNNER_TEMP/stage/"
+          cd "$RUNNER_TEMP/stage"
+          ../fresh/bin/python -I -c 'import importlib.util; assert importlib.util.find_spec("duckdb") is None; import kumo.fm'
+          ../fresh/bin/python -m pytest -q tests/test_snapshot_api.py
+          uv pip install --python ../fresh/bin/python 'duckdb==2.0.0'
+      - name: Run tests using only installed runtime packages
+        run: |
           cd "$RUNNER_TEMP/stage"
           ../fresh/bin/python -I -c 'import kumo.fm, kumo.pytorch, diskgraph; print(kumo.fm.__file__)'
           ../fresh/bin/python -m pytest -q tests

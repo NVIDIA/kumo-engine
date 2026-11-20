@@ -4,6 +4,8 @@
 fm-dataloader DuckDB reference on the same frozen bundle, workload, and
 selected instances. Install the reference checkout only in the benchmark
 environment; it is not a `kumo-fm` runtime dependency.
+Install `duckdb==2.0.0` in that environment as well (`kumo-fm[benchmark]`
+when installing the standalone wheel). The base FM wheel does not require it.
 
 Run correctness first, then warmups and interleaved measured draws:
 

@@ -4,7 +4,7 @@
 
 """Validated Parquet bundle metadata, shared by every backend.
 
-Full validation uses streaming file hashes and spillable DuckDB constraints;
+Full frozen-bundle validation uses streaming file hashes and spillable DuckDB constraints;
 only task rows and sampled graph rows need to become Python objects.
 """
 from __future__ import annotations
@@ -14,7 +14,6 @@ import json
 import re
 from pathlib import Path
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -124,6 +123,8 @@ class Bundle:
 
     def validate(self, *, memory_limit: str = "1GB", threads: int = 2) -> dict:
         """Full source validation; preparation cost, never timed as retrieval."""
+        import duckdb  # Optional frozen-bundle benchmark dependency.
+
         if getattr(self, "dataset_manifest", None) is not None:
             from ._dataset_support.validate import validate
             validate(self.root)

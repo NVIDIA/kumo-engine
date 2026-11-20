@@ -3,8 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Preparation-time native sampling compatibility checks."""
-import duckdb
-
 from ._phase import phase
 from .bundle import quote
 
@@ -19,6 +17,8 @@ def validate_contract(workload):
     destinations = {workload.bundle.endpoint(s)[1] for layer in workload.layers for s in layer
                     if s['fanout'] != 0}
     bundle = workload.bundle
+    import duckdb  # Optional frozen-bundle benchmark dependency.
+
     with phase('multihop_contract_validation', 'preparation'):
         with duckdb.connect(config={'threads': 2, 'memory_limit': '1GB'}) as con:
             for name in sorted(destinations):

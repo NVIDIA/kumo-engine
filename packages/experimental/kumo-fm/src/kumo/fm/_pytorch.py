@@ -9,7 +9,6 @@ import json
 from contextlib import ExitStack
 from pathlib import Path
 
-import duckdb
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -105,6 +104,8 @@ class KumoPytorchBackend:
         self.derived_source_bytes = 0
         self._stack, self._tasks = ExitStack(), {}
         self._workload = workload
+        import duckdb  # Optional frozen-bundle benchmark dependency.
+
         with duckdb.connect(config={"threads": threads}) as con:
             for name in workload.table_names:
                 table = self.bundle.tables[name]
