@@ -500,3 +500,14 @@ def test_custom_phase_runs_in_a_fresh_isolated_process(tmp_path):
             [sys.executable, '-I', '-c',
              program.replace('PHASE', repr(name))], check=True)
     assert runner.read(tmp_path / 'recover.json')['result']['previous'] is True
+
+
+def test_customer_worker_records_the_loaded_phase_list(tmp_path, monkeypatch):
+    path = customer_module(tmp_path, phases="['train']")
+    path.write_text(path.read_text() + "PHASES.append('recover')\n")
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'x',
+                           expected_version='1', phase='train', workload=path)
+    assert runner.phase(args) == 0
+    receipt = runner.read(tmp_path / 'train.json')
+    assert receipt['workload']['phases'] == ['train', 'recover']

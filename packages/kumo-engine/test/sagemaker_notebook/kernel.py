@@ -134,6 +134,11 @@ def execute(config):
                     path = lifecycle / (phase + '.json')
                     result = json.loads(path.read_text())
                     result['returncode'] = code
+                    if custom and result.get(
+                            'workload', {}).get('phases') != custom['phases']:
+                        result.update(
+                            status='failed',
+                            error='Runtime workload phases differ from admission')
                     if code and result['status'] == 'passed':
                         result.update(status='failed',
                                       error='Nonzero worker exit after receipt')

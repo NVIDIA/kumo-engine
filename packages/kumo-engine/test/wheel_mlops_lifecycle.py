@@ -890,7 +890,8 @@ def phase(args):
                 f'Unknown workload phase: {args.phase}')
         if custom is not None:
             report['workload'] = dict(path=str(args.workload),
-                                      sha256=digest(args.workload))
+                                      sha256=digest(args.workload),
+                                      phases=list(custom.PHASES))
             if args.phase == 'platform-prerequisite':
                 report['result'] = profile.negative()
             else:
