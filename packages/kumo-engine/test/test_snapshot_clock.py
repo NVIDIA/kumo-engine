@@ -53,7 +53,8 @@ def _graph():
 
     table: Any = SimpleNamespace(
         table_name='events',
-        definition=SimpleNamespace(cols=[], source_table=None),
+        definition=SimpleNamespace(cols=[], source_table=None, time_col=None,
+                                   end_time_col=None),
         connector=SimpleNamespace(source_backend=Source(),
                                   validate_scratch_dir=lambda path: None))
     return Graph(tables=[table])
@@ -70,6 +71,26 @@ def test_seconds_snapshot_keeps_the_existing_cache_key(ingests):
     data_version = fingerprint(
         json.dumps({'events': 'v1'}, sort_keys=True).encode())
     assert snapshot.id == f'graph-key@{data_version[:16]}'
+
+
+def test_a_settled_time_column_has_its_own_snapshot(ingests, monkeypatch):
+    import kumo.engine.graph as graph_module
+
+    outcomes = iter([({}, []), ({
+        'ts': 's'
+    }, []), ({}, ['ts']), ({
+        'ts': 's'
+    }, ['ts'])])
+    monkeypatch.setattr(
+        graph_module, 'resolve_time_columns',
+        lambda alias, definition, paths, dest_dir: (*next(outcomes), paths))
+    ids = [_graph().snapshot().id for _ in range(4)]
+    assert len(set(ids)) == 4
+    data_version = fingerprint(
+        json.dumps({
+            'events': 'v1'
+        }, sort_keys=True).encode())
+    assert ids[0] == f'graph-key@{data_version[:16]}'
 
 
 def test_each_clock_has_its_own_snapshot(ingests):
