@@ -1505,7 +1505,7 @@ mod tests_resume_phase {
         fs::write(output.join("sentinel"), b"keep").unwrap();
         let source: GraphConfig =
             serde_json::from_str(r#"{"dataset_name": "test", "tables": []}"#).unwrap();
-        for bad_id in [" ", ".", "..", "nested/build", "nested\\build"] {
+        for bad_id in [" ", ".", "..", "nested/build", "nested\\build", "D:build"] {
             let error = ingest_with_stats_from_source(
                 source.clone(),
                 None,
@@ -13049,7 +13049,11 @@ fn validate_profile_dir(profile_dir: Option<&Path>) -> Result<()> {
 fn validate_index_build_id(id: &str) -> Result<()> {
     ensure!(!id.trim().is_empty(), "index_build_id must not be empty");
     ensure!(
-        id != "." && id != ".." && !id.contains('/') && !id.contains('\\'),
+        id != "."
+            && id != ".."
+            && !id.contains('/')
+            && !id.contains('\\')
+            && !id.contains(':'),
         "index_build_id must be a single path component"
     );
     Ok(())
