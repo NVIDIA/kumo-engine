@@ -26,9 +26,14 @@ from kumo.pytorch.column_stats import TableColumnEncoder, read_token_lengths
 diskgraph = pytest.importorskip("diskgraph")
 
 
-def test_unbound_engine_has_no_schema(tmp_path):
-    engine = api.DiskGraphEngine(index=tmp_path / "unbound")
+def test_unbound_engine_has_no_schema():
+    engine = api.DiskGraphEngine()
     assert not hasattr(engine, "schema")
+
+
+def test_explicit_index_must_be_managed(tmp_path):
+    with pytest.raises(ValueError, match="configured Kumo root's indexes"):
+        api.DiskGraphEngine(index=tmp_path / "outside")
 
 
 def test_external_cache_refuses_redirected_cutoff(tmp_path):
@@ -36,9 +41,7 @@ def test_external_cache_refuses_redirected_cutoff(tmp_path):
     (index / "col_stats").mkdir(parents=True)
     cache = tmp_path / "cache"
     (cache / "col_stats").mkdir(parents=True)
-    (cache / "col_stats" / "cutoff").symlink_to(
-        index / "col_stats", target_is_directory=True
-    )
+    (cache / "col_stats" / "cutoff").symlink_to(index / "col_stats", target_is_directory=True)
     with pytest.raises(ValueError, match="col_stats path must not redirect"):
         ColumnCache(index, cache).destination("cutoff/table.col_stats.json")
 
@@ -231,7 +234,10 @@ def test_snapshot_binding_needs_no_pytorch_manifest(indexed, tmp_path):
     config = (index / "diskgraph_config.json").read_text()
     index = tmp_path / "snapshots" / "graph" / "version"
     diskgraph.ingest(
-        config, str(index), col_stats=False, success_marker_content="{}",
+        config,
+        str(index),
+        col_stats=False,
+        success_marker_content="{}",
         index_build_id=diskgraph.new_index_build_id(),
     )
     # The real engine integration test covers connector -> GraphSnapshot creation.
@@ -340,8 +346,11 @@ def test_native_clock_precision_preserves_cutoff(indexed, tmp_path, unit, clock)
     config["timestamp_unit"] = clock
     native = tmp_path / "indexes" / diskgraph.new_index_build_id()
     diskgraph.ingest(
-        json.dumps(config), str(native), col_stats=False,
-        success_marker_content="{}", index_build_id=native.name,
+        json.dumps(config),
+        str(native),
+        col_stats=False,
+        success_marker_content="{}",
+        index_build_id=native.name,
     )
     shutil.rmtree(source)
     anchor_path = tmp_path / "precise-anchors.parquet"
@@ -485,13 +494,14 @@ def test_incompatible_artifacts_fail_before_sampling(indexed, tmp_path, change, 
         api.DiskGraphEngine.from_index(index.name)
 
 
-def test_rebuilt_explicit_index_changes_plan_identity(indexed, tmp_path):
+def test_rebuilt_managed_index_changes_plan_identity(indexed, tmp_path):
     _, _, dataset, spec, _ = indexed
-    path = tmp_path / "explicit"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path)) as first:
+    first_engine = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(spec, dataset, first_engine) as first:
         identity = first._dataset_fingerprint
-    shutil.rmtree(path)
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path)) as second:
+    shutil.rmtree(first_engine.index)
+    second_engine = api.DiskGraphEngine(num_threads=1)
+    with api.prepare(spec, dataset, second_engine) as second:
         assert second._dataset_fingerprint != identity
 
 
@@ -569,7 +579,7 @@ def test_explicit_managed_index_path_reuses_same_cache(indexed, tmp_path, monkey
 
 
 def test_managed_binding_refuses_mismatched_or_legacy_build(indexed, tmp_path):
-    index, _, _, _, _ = indexed
+    index, _, dataset, spec, _ = indexed
     with pytest.raises((FileNotFoundError, ValueError), match="index_metadata|build ID"):
         api.DiskGraphEngine.from_index("unknown-build")
     metadata = index / "index_metadata.json"
@@ -578,10 +588,14 @@ def test_managed_binding_refuses_mismatched_or_legacy_build(indexed, tmp_path):
     metadata.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="build ID mismatch"):
         api.DiskGraphEngine.from_index(index.name)
+    with pytest.raises(ValueError, match="index build ID mismatch"):
+        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, ingest="never"))
     value.pop("index_build_id")
     metadata.write_text(json.dumps(value))
     with pytest.raises(ValueError, match="build ID mismatch"):
         api.DiskGraphEngine.from_index(index.name)
+    with pytest.raises(ValueError, match="index build ID mismatch"):
+        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, ingest="never"))
 
 
 def test_core_snapshot_requires_same_root_and_physical_id(indexed, tmp_path):
@@ -646,7 +660,7 @@ def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monke
 
 def test_source_ingest_refuses_column_renames(indexed, tmp_path):
     _, _, dataset, spec, _ = indexed
-    index = tmp_path / "explicit"
+    index = tmp_path / "indexes" / "explicit"
     with api.prepare(spec, dataset, api.DiskGraphEngine(index=index)):
         pass
     renamed = api.Dataset(
@@ -679,7 +693,7 @@ def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_p
         return payload
 
     monkeypatch.setattr(materialization, "_dataset_payload", capture)
-    index = tmp_path / "new-index"
+    index = tmp_path / "indexes" / "new-index"
     with pytest.raises(ValueError, match="changed while DiskGraph was ingesting"):
         api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=1))
     assert not index.exists()

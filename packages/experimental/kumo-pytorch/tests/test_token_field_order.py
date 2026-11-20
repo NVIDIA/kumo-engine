@@ -73,7 +73,7 @@ def binding(request, tmp_path):
         pq.write_table(table, path)
         sources[name] = api.Parquet(str(path))
     return api.Dataset(sources), api.DiskGraphEngine(
-        index=tmp_path / "index", num_threads=1, num_shards=1
+        index=tmp_path / "indexes" / "index", num_threads=1, num_shards=1
     )
 
 

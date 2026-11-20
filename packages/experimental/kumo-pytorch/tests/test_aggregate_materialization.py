@@ -172,7 +172,9 @@ def test_actual_diskgraph_scalar_materialization_reuses_model_values(tmp_path):
     pq.write_table(pa.Table.from_pylist(ANCHORS), path)
     anchors = replace(_table(), source=Parquet(str(path)))
     with prepare(
-        _contract(), Dataset(sources), DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        _contract(),
+        Dataset(sources),
+        DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2),
     ) as plan:
         baseline = plan.materialize(anchors, fit_split="train")
         values = plan._materialize_values(anchors, tmp_path / "computed.parquet", batch_size=3)

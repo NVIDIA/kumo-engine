@@ -76,7 +76,7 @@ def test_a_later_file_cannot_change_the_declared_type(tmp_path):
         pa.table({"id": [1], "value": pa.array([1.5], type=pa.float64())}), tables / "one.parquet"
     )
     pq.write_table(pa.table({"id": [2], "value": ["not a number"]}), tables / "two.parquet")
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     with pytest.raises(ValueError, match=r"rows.value.*two.parquet.*declared.*physical"):
         prepare(
             contract=_contract(DType(name="float64")),
@@ -171,7 +171,7 @@ def test_untyped_all_null_source_is_not_guessed_from_a_declaration(tmp_path):
                     "rows": Parquet(path=str(source)),
                 }
             ),
-            engine=DiskGraphEngine(index=tmp_path / "index"),
+            engine=DiskGraphEngine(index=tmp_path / "indexes" / "index"),
         )
 
 
@@ -184,7 +184,7 @@ def test_timestamp_physical_metadata_and_resolved_seconds_are_both_recorded(tmp_
         type=pa.timestamp("us", tz="UTC"),
     )
     pq.write_table(pa.table({"id": [1], "value": values}), source)
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     contract = _contract(DType(name="timestamp", unit="s", timezone="UTC"))
     dataset = Dataset(tables={"rows": Parquet(path=str(source))})
     with prepare(contract=contract, dataset=dataset, engine=DiskGraphEngine(index=index)) as plan:
@@ -212,7 +212,7 @@ def test_corrupt_schema_reports_the_table_and_file(tmp_path):
                     "rows": Parquet(path=str(source)),
                 }
             ),
-            engine=DiskGraphEngine(index=tmp_path / "index"),
+            engine=DiskGraphEngine(index=tmp_path / "indexes" / "index"),
         )
 
 
@@ -306,7 +306,7 @@ def test_large_string_and_large_binary_parquet_match_the_reference(tmp_path, dec
     with prepare(
         contract=_wide_contract(types if declared else dict.fromkeys(types)),
         dataset=Dataset(tables={"rows": Parquet(path=str(source))}),
-        engine=DiskGraphEngine(index=tmp_path / "index"),
+        engine=DiskGraphEngine(index=tmp_path / "indexes" / "index"),
     ) as plan:
         actual = _batch_values(plan)
     with prepare(

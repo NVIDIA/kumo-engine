@@ -163,7 +163,9 @@ def test_materialized_values_native_anchors_and_history(
         metadata=("note",),
     )
     with api.prepare(
-        contract, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=4)
+        contract,
+        api.Dataset(sources),
+        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=4),
     ) as plan:
         source = plan._require_open()
         calls = {"temporal": [], "aggregate": [], "merge": 0, "prepare": 0}

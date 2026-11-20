@@ -50,6 +50,21 @@ from kumo.pytorch.api import (
 from kumo.pytorch.data.records import cutoff_to_epoch
 from kumo.pytorch.serving import RowLimit, ServingRowsSpec
 
+
+def managed_engine(root: Path) -> DiskGraphEngine:
+    """Use one managed build across the stages of a local example run."""
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=root)
+    root.mkdir(parents=True, exist_ok=True)
+    identity_file = root / "index_build_id"
+    if identity_file.exists():
+        return DiskGraphEngine(index_build_id=identity_file.read_text().strip(), ingest="never")
+    engine = DiskGraphEngine()
+    identity_file.write_text(engine.index_build_id)
+    return engine
+
+
 DAY = 86_400
 HORIZON_DAYS = 7
 TABLES = ("customers", "articles", "transactions")
@@ -398,7 +413,7 @@ def batch_inference(artifact: Artifact, model: nn.Module, data: Path, out: Path)
 
     clock = Stopwatch()
     out.mkdir(parents=True, exist_ok=True)
-    engine = DiskGraphEngine(index=out / "index")
+    engine = managed_engine(out)
     with prepare(artifact.contract, dataset(data), engine) as plan:
         with plan.materialize(anchors(data), fitted=artifact.fitted_state, inference=True) as task:
             predictions = score(model, task.batches(split="test", output_format="model"))

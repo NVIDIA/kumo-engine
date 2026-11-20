@@ -108,7 +108,10 @@ def _setup(engine_name: str, directory: Path):
     dataset = api.Dataset(
         {name: api.Parquet(str(directory / "parquet" / f"{name}.parquet")) for name in rows}
     )
-    return dataset, api.DiskGraphEngine(index=directory / "index", num_threads=2)
+    import kumo.settings
+
+    kumo.settings.configure(scratch_dir=directory)
+    return dataset, api.DiskGraphEngine(index=directory / "indexes" / "index", num_threads=2)
 
 
 def _encoders(contract, dataset, engine, **materialize):
@@ -240,7 +243,7 @@ def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate
     ]
     dataset, engine = (
         _write_parquet(rows, tmp_path / "parquet"),
-        api.DiskGraphEngine(index=tmp_path / "index"),
+        api.DiskGraphEngine(index=tmp_path / "indexes" / "index"),
     )
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(anchors) as task:
@@ -322,7 +325,7 @@ def test_statistics_keep_a_file_per_table_per_cutoff_and_compute_only_what_is_mi
         representation=api.Fields(fields=(api.Encode(field="amount", encoding=api.Vocabulary()),)),
     )
     _encoders(replace(contract, batch=replace(contract.batch, inputs=inputs)), dataset, engine)
-    (directory,) = (tmp_path / "index" / "col_stats").iterdir()
+    (directory,) = (tmp_path / "cache" / "index" / "col_stats").iterdir()
     assert sorted(path.name for path in directory.glob("*.json")) == [
         f"{table}.col_stats.json" for table in ("accounts", "card_transactions", "users")
     ]
@@ -437,7 +440,7 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
         types = pa.schema([(name, dtype.to_arrow()) for name, dtype in columns.items()])
         pq.write_table(pa.Table.from_pylist(rows, types), tmp_path / "items.parquet")
         dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
-        engine = api.DiskGraphEngine(index=tmp_path / "index")
+        engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index")
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
             for name, (_, values) in COLUMN_TYPES.items():
@@ -446,7 +449,7 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
                 entries = task.output("entity").field(name=name).encoder.entries
                 assert [value for value, _ in entries] == expected, name
     if engine_name == "diskgraph":
-        (path,) = (tmp_path / "index" / "col_stats").glob("*/*.col_stats.json")
+        (path,) = (tmp_path / "cache" / "index" / "col_stats").glob("*/*.col_stats.json")
         assert path.name == "%2E%2E%2Fitems%2Fx%20y.col_stats.json"
 
 

@@ -239,7 +239,7 @@ def _hand_shapes() -> list[Shape]:
 @pytest.mark.parametrize("shape", _generated_shapes() + _hand_shapes(), ids=lambda shape: shape.id)
 def test_ingest_config_says_what_the_schema_declares(shape: Shape, tmp_path: Path) -> None:
     dataset = _write(shape.schema, shape.tables, tmp_path)
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     engine = DiskGraphEngine(
         index=index, num_shards=shape.num_shards, num_threads=shape.num_threads
     )
@@ -268,7 +268,7 @@ def test_a_wrong_config_or_an_unknown_type_is_a_violation(tmp_path: Path) -> Non
 
     dataset = _write(SCHEMA, ROWS, tmp_path)
     fake = FakeDiskGraph()
-    _open(DiskGraphEngine(index=tmp_path / "index"), dataset, SCHEMA, fake)
+    _open(DiskGraphEngine(index=tmp_path / "indexes" / "index"), dataset, SCHEMA, fake)
     (call,) = fake.calls
     types = _arrow_types(dataset)
     assert types["events"]["at"] == "timestamp[ms, tz=UTC]"
@@ -301,7 +301,7 @@ def test_parallel_relation_emits_a_duplicate_fkey(tmp_path: Path) -> None:
     assert [r.left_key for r in schema.relations] == ["user_id", "user_id"]
     dataset = _write(schema, case.tables, tmp_path)
     fake = FakeDiskGraph()
-    _open(DiskGraphEngine(index=tmp_path / "index"), dataset, schema, fake)
+    _open(DiskGraphEngine(index=tmp_path / "indexes" / "index"), dataset, schema, fake)
     (call,) = fake.calls
     problems = config_violations(schema, dataset, call.config, _arrow_types(dataset), num_shards=1)
     assert problems == ["events.user_id: 2 fkeys"]
@@ -350,7 +350,7 @@ ROWS: dict[str, list[Row]] = {
 @contextmanager
 def _built(tmp_path: Path, parts: int = 1) -> Iterator[tuple[Dataset, Path]]:
     dataset = _write(SCHEMA, ROWS, tmp_path, parts=parts)
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     with recording(FakeDiskGraph()):
         ensure_diskgraph_index(SCHEMA, dataset, index)
     yield dataset, index
@@ -480,7 +480,7 @@ def test_a_failed_build_publishes_nothing(
     """M07 and the publish race: the index is complete or absent; no staging remains."""
 
     dataset = _write(SCHEMA, ROWS, tmp_path)
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     fake = {
         "source_changed": lambda: _changes_source(dataset),
         "destination_appeared": lambda: _creates_destination(index),
@@ -524,8 +524,8 @@ def test_a_missing_index_is_not_built_when_ingest_is_never(tmp_path: Path) -> No
     dataset = _write(SCHEMA, ROWS, tmp_path)
     fake = FakeDiskGraph()
     with recording(fake), pytest.raises(FileNotFoundError, match="does not exist"):
-        ensure_diskgraph_index(SCHEMA, dataset, tmp_path / "index", if_missing=False)
-    assert fake.calls == [] and not (tmp_path / "index").exists()
+        ensure_diskgraph_index(SCHEMA, dataset, tmp_path / "indexes" / "index", if_missing=False)
+    assert fake.calls == [] and not (tmp_path / "indexes" / "index").exists()
 
 
 def _always_rebuilt(schema: DataSchema, dataset: Dataset, index: Path, **keywords: int | bool):
@@ -568,7 +568,7 @@ def test_dropped_rows_are_reported(tmp_path: Path) -> None:
     dataset = _write(SCHEMA, ROWS, tmp_path)
     with recording(FakeDiskGraph(dropped={"events": 2, "users": 0})):
         with pytest.warns(UserWarning, match=r"dropped source rows \{'events': 2\}"):
-            ensure_diskgraph_index(SCHEMA, dataset, tmp_path / "index")
+            ensure_diskgraph_index(SCHEMA, dataset, tmp_path / "indexes" / "index")
 
 
 @pytest.mark.engine("diskgraph")

@@ -525,7 +525,9 @@ def test_named_dictionary_placement_preserves_columns_targets_and_graphs(tmp_pat
     if engine_name == "diskgraph":
         pytest.importorskip("diskgraph")
         dataset = _write_parquet(rows, tmp_path / "tables")
-        engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, num_shards=1)
+        engine = api.DiskGraphEngine(
+            index=tmp_path / "indexes" / "index", num_threads=1, num_shards=1
+        )
     else:
         dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
         engine = api.InMemoryEngine()
@@ -556,7 +558,7 @@ def test_diskgraph_flat_model_stream_matches_inspectable(tmp_path, monkeypatch, 
 
     rows, schema = (_fixture_rows(), _schema())
     parquet = _write_parquet(rows, tmp_path / "parquet")
-    artifact = _index_at(tmp_path / "index")
+    artifact = _index_at(tmp_path / "indexes" / "index")
     base = _pragma_contract(schema)
     requests = _requests()
     for layout in (api.Packed(), api.Padded()):
@@ -770,7 +772,7 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
         requests,
     )
     parquet = _write_parquet(rows, tmp_path / "parquet")
-    indexes = [tmp_path / f"index-{run}" for run in range(2)]
+    indexes = [tmp_path / "indexes" / f"index-{run}" for run in range(2)]
     batches = [
         _preview(contract, parquet, api.DiskGraphEngine(index=index, num_threads=1), requests)
         for index in indexes
@@ -847,7 +849,7 @@ def test_index_warns_about_rows_over_the_node_data_limit(tmp_path: Path) -> None
 def test_diskgraph_checks_graph_support_before_ingestion(tmp_path: Path) -> None:
     schema = _schema()
     dataset = api.Dataset({table.name: api.Parquet("/does/not/exist") for table in schema.tables})
-    engine = api.DiskGraphEngine(index=tmp_path / "not-created")
+    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "not-created")
     contract = _contract(schema)
     assert not api.check(contract, dataset, engine)
     uniform = api.DataLoaderSpec(
@@ -884,7 +886,7 @@ def test_diskgraph_checks_graph_support_before_ingestion(tmp_path: Path) -> None
         issue.path.startswith("anchors.source")
         for issue in api.check(contract, dataset, engine, anchors=anchor_table)
     )
-    assert not (tmp_path / "not-created").exists()
+    assert not (tmp_path / "indexes" / "not-created").exists()
 
 
 def test_diskgraph_check_refuses_timed_intermediate_rows(tmp_path: Path) -> None:
@@ -916,12 +918,12 @@ def test_diskgraph_check_refuses_timed_intermediate_rows(tmp_path: Path) -> None
         ),
     )
     dataset = api.Dataset({table.name: api.Parquet("/does/not/exist") for table in schema.tables})
-    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index"))
     assert {issue.path for issue in issues if "intermediate" in issue.message} == {
         "sample.entity_values.spend.source.path[0]",
         "sample.events.transactions.rows.path[0]",
     }
-    assert not (tmp_path / "index").exists()
+    assert not (tmp_path / "indexes" / "index").exists()
 
 
 def test_diskgraph_refuses_future_intermediate_edge_that_leaks_old_rows(tmp_path: Path) -> None:
@@ -1005,9 +1007,9 @@ def test_diskgraph_refuses_future_intermediate_edge_that_leaks_old_rows(tmp_path
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
         batch = next(plan.materialize((request,), fit_split="train").batches())
     assert batch.inputs["account"]["spend"]["values"].tolist() == [500.0]
-    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index"))
     assert any("intermediate" in issue.message for issue in issues)
-    assert not (tmp_path / "index").exists()
+    assert not (tmp_path / "indexes" / "index").exists()
 
 
 @pytest.mark.parametrize(
@@ -1040,12 +1042,12 @@ def test_diskgraph_check_refuses_non_fk_pk_relations(
             contract.batch,
         )
     dataset = api.Dataset({table.name: api.Parquet("/does/not/exist") for table in schema.tables})
-    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "index"))
+    issues = api.check(contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index"))
     index = next(
         index for index, relation in enumerate(schema.relations) if relation.name == "unsupported"
     )
     assert any(issue.path == f"schema.relations[{index}]" for issue in issues)
-    assert not (tmp_path / "index").exists()
+    assert not (tmp_path / "indexes" / "index").exists()
 
 
 def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_path: Path) -> None:
@@ -1100,7 +1102,7 @@ def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_
         ),
     )
     dataset = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
-    index = tmp_path / "index"
+    index = tmp_path / "indexes" / "index"
     engine = api.DiskGraphEngine(index=index, num_threads=1)
     request = api.SampleRequest("one", 1, datetime(2024, 2, 1))
     with pytest.raises(FileNotFoundError):
@@ -1191,7 +1193,7 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
     requests = _requests()
     memory_dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
     parquet = _write_parquet(rows, tmp_path / "parquet")
-    artifact = _index_at(tmp_path / "index")
+    artifact = _index_at(tmp_path / "indexes" / "index")
     reference_source = api.InMemoryEngine().open(memory_dataset, schema)
     diskgraph_source = api.DiskGraphEngine(index=artifact.path, num_threads=1).open(parquet, schema)
     try:
@@ -1326,7 +1328,7 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
     requests = _requests()
     memory_dataset = api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
     parquet = _write_parquet(rows, tmp_path / "parquet")
-    artifact = _index_at(tmp_path / "index")
+    artifact = _index_at(tmp_path / "indexes" / "index")
 
     def assert_equal(actual: object, expected: object) -> None:
         if isinstance(expected, torch.Tensor):
@@ -1385,7 +1387,7 @@ def test_diskgraph_model_uses_shared_anchor_shuffle(tmp_path: Path) -> None:
     )
     dataset = _write_parquet(_fixture_rows(), tmp_path / "parquet")
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
     ) as plan:
         task = plan.materialize(requests, fit_split="train")
         expected_ids = tuple(
@@ -1468,7 +1470,7 @@ def test_diskgraph_reads_parquet_anchor_tables_with_external_labels(tmp_path: Pa
         {"sample_id": "c", "user_id": 3, "as_of": cutoff, "split": "test", "is_fraud": 1.0},
     ]
     anchors = _anchor_parquet(tmp_path / "anchors", anchor_rows)
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
     assert not api.check(contract, parquet, engine, anchors=anchors)
     requests = tuple(
         api.SampleRequest(

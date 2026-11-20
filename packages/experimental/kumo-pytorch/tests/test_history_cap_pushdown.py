@@ -107,7 +107,9 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
             yield runtime
 
     with api.prepare(
-        contract, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        contract,
+        api.Dataset(sources),
+        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2),
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             monkeypatch.setattr(NativeAnchors, "_iter", checked_iter)

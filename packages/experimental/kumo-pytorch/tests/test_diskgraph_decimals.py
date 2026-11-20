@@ -96,7 +96,7 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
     outputs = []
     for engine in (
         api.InMemoryEngine(),
-        api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1),
     ):
         dataset = api.Dataset(
             {name: api.InMemoryRows(table.to_pylist()) for name, table in tables.items()}

@@ -327,7 +327,7 @@ step, before any data is read.
 
 **Parameters**
 
-- `index`: source-ingestion index directory. A path under the configured root's `indexes/` uses managed storage; other paths retain index-local layout. Omit to allocate a new managed build.
+- `index`: existing managed index path under the configured root's `indexes/` directory. Omit to allocate a new managed build.
 - `index_build_id`: physical build to create or reuse under the configured root. Omit to allocate a new ID. Cannot be combined with `index`.
 - `num_threads`: native sampling threads.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
@@ -353,8 +353,8 @@ Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
 DiskGraph's managed path resolver. A path to the same managed base is
 accepted. The build ID is physical identity,
 independent of schema/data-version identity. No original sources are read.
-ID-less indexes cannot be adopted; the existing index= constructor
-remains available for source ingestion and reuse.
+ID-less indexes cannot be adopted. Use index_build_id with a dataset
+for source ingestion and reuse.
 
 #### `DiskGraphEngine.from_snapshot`
 
@@ -434,8 +434,8 @@ def engine_from_name(name: str, **config: Any) -> Engine
 
 Resolve a registered name to a class and construct it.
 
-`engine_from_name("diskgraph", index=...)` is exactly
-`DiskGraphEngine(index=...)`. Nothing is opened, connected or
+`engine_from_name("diskgraph", index_build_id=...)` is exactly
+`DiskGraphEngine(index_build_id=...)`. Nothing is opened, connected or
 initialized — construction is inert, and resources are acquired by
 `Engine.open`. The two are named differently on purpose.
 

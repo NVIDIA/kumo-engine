@@ -213,7 +213,10 @@ dataset = api.Dataset(
         "purchases": api.Parquet(path=str(data / "purchases.parquet")),
     }
 )
-engine = api.DiskGraphEngine(index=data / "index", ingest="if_missing")
+import kumo.settings
+
+kumo.settings.configure(scratch_dir=data / "scratch")
+engine = api.DiskGraphEngine(ingest="if_missing")
 with (
     api.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
     plan.materialize(anchors=anchors, fit_split="train") as task,
