@@ -260,7 +260,7 @@ prediction = trainer.predict(
 )
 ```
 
-Each limit must be a positive integer. An omitted limit preserves its existing
+Each limit must be a positive integer. An omitted limit uses its
 default. Explicit limits cap rows exactly, including the final batch, and a
 smaller cohort limit does not reduce the sampled-graph limit.
 
@@ -303,9 +303,8 @@ Pass the complete engine prediction run root, including its compact versioned
 `xai/column_analysis/pred/` and `xai/subgraph_collector/pred/`.
 The status records the actual prediction run ID, whether explanations were
 enabled, completion state, independent producer outcomes and observed coverage.
-It is the authoritative explanation record; it does not duplicate the full
-prediction manifest or enumerate graph paths. Sample membership comes from the
-saved `strategy_mappings.json`. Unmapped graph files do not become samples.
+Sample membership comes from the saved `strategy_mappings.json`. Unmapped graph
+files do not become samples.
 
 Loading requires valid status; an arbitrary artifact directory is rejected.
 Disabled, unsupported and failed states survive reopening, including errors

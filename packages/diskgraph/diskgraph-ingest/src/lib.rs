@@ -736,6 +736,69 @@ fn validate_exact_category_count_options(options: &IngestOptions) -> Result<()> 
     Ok(())
 }
 
+#[cfg(unix)]
+const SOFT_OPEN_FILE_LIMIT_FOR_UNLIMITED_HARD: libc::rlim_t = 10240;
+
+#[cfg(unix)]
+fn soft_open_file_limit_target(hard: libc::rlim_t) -> libc::rlim_t {
+    if hard == libc::RLIM_INFINITY {
+        SOFT_OPEN_FILE_LIMIT_FOR_UNLIMITED_HARD
+    } else {
+        hard
+    }
+}
+
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let target = soft_open_file_limit_target(lim.rlim_max);
+    if lim.rlim_cur >= target {
+        return;
+    }
+    let old = lim.rlim_cur;
+    lim.rlim_cur = target;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } == 0 {
+        tracing::info!(old, new = target, "raised soft RLIMIT_NOFILE");
+    } else {
+        tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_open_file_limit() {}
+
+#[cfg(all(test, unix))]
+mod open_file_limit_tests {
+    use super::*;
+
+    #[test]
+    fn raise_open_file_limit_lifts_the_soft_limit_to_the_target() {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        let target = soft_open_file_limit_target(lim.rlim_max);
+        lim.rlim_cur = target - 1;
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) }, 0);
+        raise_open_file_limit();
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) }, 0);
+        assert_eq!(lim.rlim_cur, target);
+    }
+
+    #[test]
+    fn soft_open_file_limit_target_is_finite_when_the_hard_limit_is_unlimited() {
+        assert_eq!(soft_open_file_limit_target(libc::RLIM_INFINITY), 10240);
+        assert_eq!(soft_open_file_limit_target(4096), 4096);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     mut source: GraphConfig,
@@ -747,6 +810,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     success_marker_content: Option<&str>,
     stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    if std::env::var("KUMO_RAISE_NOFILE").as_deref() != Ok("0") {
+        raise_open_file_limit();
+    }
     validate_profile_dir(options.profile_dir.as_deref())?;
     // Validate the exact graph-feature statistics contract at the common
     // public-ingest boundary, before source normalization or output writes.

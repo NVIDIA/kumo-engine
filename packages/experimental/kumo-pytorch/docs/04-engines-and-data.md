@@ -140,9 +140,14 @@ in-memory engine reads `InMemoryRows`, which we'll come to below.
 You don't have to repeat column types that the files already record. With
 Parquet, you can omit `TableSpec.columns`, or give a column's type as `None`,
 and the types are read from the file metadata. `contract.resolve(dataset=...)`
-and `prepare` resolve them without reading any rows. The resolved contract is
-what gets saved and fingerprinted, so if a column's type in the files later
-changes, loading fails loudly instead of quietly reading a different type.
+and `prepare` resolve them without reading any rows. Files used to infer a
+column's type must agree on that type. The resolved contract is saved and
+fingerprinted, and rebinding checks that the source types are compatible.
+
+For a declared `int64` column, DiskGraph also accepts Parquet `int8`,
+`int16`, `int32`, and scale-zero `decimal128` or `decimal256` columns.
+The contract and batches use `int64`. Ingest fails if any decimal value
+falls outside the signed 64-bit range.
 
 ## The DiskGraph engine
 
