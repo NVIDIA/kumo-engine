@@ -212,9 +212,14 @@ Each file is a `kumoapi.explain.Subgraph`:
 List sampled graph references without loading their bodies:
 
 ```python
-samples = explanations.samples()
-if not samples:
-    print("No sampled graphs recorded:", explanations.availability.get("samples"))
+try:
+    samples = explanations.samples()
+except kumo.ExplanationUnavailableError as error:  # disabled, unsupported, failed, model_only
+    print("Sampled graphs unavailable:", error)
+    samples = ()
+else:
+    if not samples:
+        print("No sampled graphs recorded:", explanations.availability.get("samples"))
 for reference in samples:
     print(reference.artifact_id, reference.categories, reference.original_ids,
           reference.available)
