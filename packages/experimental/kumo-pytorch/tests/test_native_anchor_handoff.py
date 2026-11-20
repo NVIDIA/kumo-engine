@@ -358,17 +358,27 @@ def test_cross_split_shuffle_keeps_complete_native_stage_batches(
     assert orders[0] == orders[2]
 
 
-def test_empty_native_anchors_and_cleanup(native_task, tmp_path):
+@pytest.mark.parametrize(
+    "count,kept_with_drop", [(0, 0), (1, 0), (15, 0), (16, 16), (17, 16), (32, 32), (33, 32)]
+)
+def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count, kept_with_drop):
     plan, task, table = native_task
     data = pq.read_table(table.source.path)
-    empty = tmp_path / "empty.parquet"
-    pq.write_table(data.slice(0, 0), empty)
+    template = data.to_pylist()[0]
+    rows = [{**template, "sid": f"s{i}", "label": 100.0 + i} for i in range(count)]
+    path = tmp_path / "population.parquet"
+    pq.write_table(pa.Table.from_pylist(rows, schema=data.schema), path)
     with plan.materialize(
-        replace(table, source=api.Parquet(str(empty))), fitted=task.fitted_state
-    ) as empty_task:
-        assert isinstance(empty_task._anchors, NativeAnchors)
-        assert empty_task.count() == 0
-        assert list(empty_task.batches(output_format="model")) == []
+        replace(table, source=api.Parquet(str(path))), fitted=task.fitted_state
+    ) as population:
+        assert isinstance(population._anchors, NativeAnchors)
+        assert population.count() == count
+        for drop_last, kept in ((False, count), (True, kept_with_drop)):
+            batches = population.batches(batch_size=16, drop_last=drop_last, output_format="model")
+            for start, batch in zip(range(0, kept, 16), batches, strict=True):
+                group = rows[start : start + 16]
+                assert batch.metadata["sample_ids"] == tuple(row["sid"] for row in group)
+                assert batch.targets["label"]["values"].tolist() == [row["label"] for row in group]
     assert plan._source._sampler is not None
 
 
