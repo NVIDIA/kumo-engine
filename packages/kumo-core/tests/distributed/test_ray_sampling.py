@@ -15,12 +15,14 @@ from unittest.mock import MagicMock, patch
 import pyarrow as pa
 import pytest
 from kumo_core.diskgraph.batch_contract import (
+    WIRE_VERSION,
     ArtifactIdentity,
     BatchPayload,
     BatchRequest,
     ConsumerToken,
     NativeBatch,
     SamplingContractError,
+    SamplingOptions,
     canonical_json,
     content_digest,
 )
@@ -53,9 +55,7 @@ def _request() -> BatchRequest:
         1,
         0,
         (9, 14),
-        canonical_json(
-            {"stage": "train", "batch_size": 2, "sampling_plan": {"layers": []}}
-        ),
+        SamplingOptions(stage="train", batch_size=2),
         42,
         2,
     )
@@ -133,14 +133,18 @@ def test_request_identity_and_envelope_validation() -> None:
 @pytest.mark.parametrize(
     "changes",
     [
-        {"wire_version": 2},
+        {"wire_version": WIRE_VERSION + 1},
         {"sampling_version": 2},
         {"seed_ids": ()},
         {"seed_ids": (-1,)},
         {"num_threads": 0},
         {"batch_ordinal": -1},
         {"seed_ids": (1, 2, 3)},
-        {"options_json": canonical_json({"batch_size": 2, "neg_rhs_node_type": "rhs"})},
+        {
+            "options": SamplingOptions(
+                stage="train", batch_size=2, neg_rhs_node_type="rhs"
+            )
+        },
     ],
 )
 def test_request_rejects_invalid_contract(changes: dict[str, object]) -> None:
@@ -363,8 +367,8 @@ class _CancellationReplica(_SamplerReplica):
         {"seed_ids": (True, 14)},
         {"seed_ids": (9.0, 14)},
         {"epoch": True},
-        {"options_json": '{"batch_size": 2}'},
-        {"options_json": canonical_json({"batch_size": True})},
+        {"options": b'{"batch_size": 2}'},
+        {"options": SamplingOptions(stage="train", batch_size=True)},
     ],
 )
 def test_request_rejects_mutable_or_noninteger_identity(

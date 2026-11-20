@@ -71,14 +71,14 @@ def make_seed_schedule(
     from diskgraph.seed_schedule import SeedScheduleConfig
 
     manifest, split_info = _manifest_view(dataset_ref)
-    stage = options["stage"]
+    stage = options.stage
     ref: SeedStageRef | None = _stage_tables(manifest).get(stage)
     if ref is None or not split_info["stage_counts"].get(stage):
         raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
     parent = _graph_index_path(manifest)
     extension = _extension_ref_from_stage_path(parent, ref["index_path"])
     root = os.path.join(parent, extension)
-    rhs_type = options.get("rhs_seed_node_type")
+    rhs_type = options.rhs_seed_node_type
     table_name = (rhs_type or ref["table_name"]).rsplit("/", 1)[-1]
     metadata: SeedIndexMetadata = _load_json(
         os.path.join(parent if rhs_type else root, "index_metadata.json")
@@ -95,29 +95,33 @@ def make_seed_schedule(
             raise DiskgraphConfigError("empty RHS candidate domain")
         ranges = [(min(lo for lo, _ in nonempty), max(hi for _, hi in nonempty))]
     weighted_sampling = _weighted_seed_sampling_json(
-        ref, stage, options.get("weighted_seed_sampling")
+        ref,
+        stage,
+        options.weighted_seed_sampling.to_native_kwargs()
+        if options.weighted_seed_sampling is not None
+        else None,
     )
     stage_key = rhs_type or ref["table_name"]
     if (
         not rhs_type
-        and (weighted_sampling is not None or options.get("group_by_timestamp"))
+        and (weighted_sampling is not None or options.group_by_timestamp)
         and "/" not in stage_key
     ):
         stage_key = f"{extension.rsplit('/', 1)[-1]}/{stage_key}"
     config = SeedScheduleConfig(
         stage_key=stage_key,
         ranges=ranges,
-        num_workers=options["num_workers"],
-        worker_id=options["worker_id"],
-        shuffle=options["shuffle"],
-        rnd_seed=options["rnd_seed"],
-        epoch=options["epoch"],
-        batch_size=options["batch_size"],
-        drop_last=options.get("drop_last", False),
+        num_workers=options.num_workers,
+        worker_id=options.worker_id,
+        shuffle=options.shuffle,
+        rnd_seed=options.rnd_seed,
+        epoch=options.epoch,
+        batch_size=options.batch_size,
+        drop_last=options.drop_last,
         rhs=rhs_type is not None,
-        selected_stage_node_ids=options.get("selected_stage_node_ids"),
+        selected_stage_node_ids=options.selected_stage_node_ids,
         weighted_seed_sampling_json=weighted_sampling,
-        bucket_extension_root=root if options.get("group_by_timestamp") else None,
+        bucket_extension_root=root if options.group_by_timestamp else None,
     )
     schedule = SeedSchedule(config)
     return schedule, schedule.num_samples()

@@ -5,14 +5,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, Unpack
 from unittest.mock import Mock
 
 import pytest
 from diskgraph import DiskgraphConfigError
-from kumo_core.diskgraph.batch_contract import SamplingOptions
+from kumo_core.diskgraph.batch_contract import (
+    SamplingArguments,
+    SamplingOptions,
+    WeightedSeedSampling,
+)
 from kumo_core.diskgraph.seed_schedule import SeedIndexMetadata, make_seed_schedule
 
 if TYPE_CHECKING:
@@ -98,8 +102,8 @@ def metadata(monkeypatch: pytest.MonkeyPatch) -> MetadataFixture:
     return MetadataFixture(manifest, seed_index, rhs_index, reads, forbidden)
 
 
-def _options(**changes: Unpack[SamplingOptions]) -> SamplingOptions:
-    return {
+def _options(**changes: Unpack[SamplingArguments]) -> SamplingOptions:
+    arguments: SamplingArguments = {
         "stage": "train",
         "num_workers": 1,
         "worker_id": 0,
@@ -109,6 +113,7 @@ def _options(**changes: Unpack[SamplingOptions]) -> SamplingOptions:
         "batch_size": 2,
         **changes,
     }
+    return SamplingOptions.from_kwargs(**arguments)
 
 
 def test_stage_metadata_produces_canonical_ids(metadata: MetadataFixture) -> None:
@@ -169,13 +174,13 @@ def test_missing_seed_metadata_fails_before_sampling(
     """Invalid task/table metadata cannot silently select a different seed domain."""
     options = _options()
     if failure == "stage":
-        options["stage"] = "missing"
+        options = replace(options, stage="missing")
     elif failure == "empty":
         metadata.manifest["stages"]["train"]["row_count"] = 0
     elif failure == "table":
         metadata.seed_index["node_types"] = []
     else:
-        options["rhs_seed_node_type"] = "users"
+        options = replace(options, rhs_seed_node_type="users")
         metadata.rhs_index["node_types"][0]["shards"] = []
     with pytest.raises(DiskgraphConfigError):
         make_seed_schedule("runtime.json", options)
@@ -203,7 +208,9 @@ def test_sidecar_schedules_use_qualified_stage_identity(
     monkeypatch.setattr(runtime, "_weighted_seed_sampling_json", weighted)
     options = _options(group_by_timestamp=grouped)
     if not grouped:
-        options["weighted_seed_sampling"] = {"num_samples": 5}
+        options = replace(
+            options, weighted_seed_sampling=WeightedSeedSampling(num_samples=5)
+        )
     actual, count = make_seed_schedule("runtime.json", options)
     assert actual is schedule and count == 5
     assert captured[0].stage_key == "task/seeds"

@@ -28,9 +28,9 @@ from kumo_core.diskgraph.batch_contract import (
     BatchRequest,
     ConsumerToken,
     NativeBatch,
+    SamplingArguments,
     SamplingContractError,
     SamplingOptions,
-    canonical_json,
     content_digest,
 )
 
@@ -348,7 +348,7 @@ class _SamplerReplica:
                     ref["index_path"],
                 )
             )
-        self.contexts: OrderedDict[bytes, BatchContext] = OrderedDict()
+        self.contexts: OrderedDict[str, BatchContext] = OrderedDict()
 
     def ready(self) -> ReplicaConfig:
         """Return the verified local placement after native engines are opened."""
@@ -366,22 +366,15 @@ class _SamplerReplica:
         ):
             raise SamplingContractError("request does not match replica artifacts/RNG")
         options = request.validate()
-        context = self.contexts.get(request.options_json)
+        context = self.contexts.get(request.options.digest)
         if context is None:
-            context_options: SamplingOptions = {
-                **options,
-                "num_workers": 1,
-                "worker_id": 0,
-                "shuffle": False,
-                "epoch": 0,
-            }
-            native_context, _ = self.index.iter(**context_options)
+            native_context, _ = self.index.iter(**options.to_native_kwargs())
             context = cast(BatchContext, native_context)
-            self.contexts[request.options_json] = context
+            self.contexts[request.options.digest] = context
             if len(self.contexts) > self.config.context_capacity:
                 self.contexts.popitem(last=False)
         else:
-            self.contexts.move_to_end(request.options_json)
+            self.contexts.move_to_end(request.options.digest)
         started = time.monotonic()
         batch = context.sample_request(list(request.seed_ids))
         payload = BatchPayload(request, batch, time.monotonic() - started)
@@ -467,7 +460,7 @@ class RayRuntimeIndex:
         self.samplers = _SamplerPool(config)
 
     def iter(
-        self, **options: Unpack[SamplingOptions]
+        self, **options: Unpack[SamplingArguments]
     ) -> tuple[Iterator[NativeBatch], int]:
         """Create a seed iterator without opening local adjacency/features.
 
@@ -484,7 +477,7 @@ class RayRuntimeIndex:
         return map(self._sample, requests), count
 
     def iter_requests(
-        self, **options: Unpack[SamplingOptions]
+        self, **options: Unpack[SamplingArguments]
     ) -> tuple[Iterator[BatchRequest], int]:
         """Schedule logical requests without submitting remote sampling work.
 
@@ -508,38 +501,27 @@ class RayRuntimeIndex:
             if digest != self.config.artifacts.task_digest:
                 raise SamplingContractError("trainer task manifest digest differs")
             self._manifest_verified = True
-        options = {
-            **options,
-            "rnd_seed": options.get("rnd_seed", self.config.engine_seed),
-        }
-        schedule, count = make_seed_schedule(self.manifest_path, options)
-        # Selection is trainer-owned; feeders receive only fixed sampling options.
-        scheduling = {
-            "num_workers",
-            "worker_id",
-            "shuffle",
-            "epoch",
-            "drop_last",
-            "group_by_timestamp",
-            "weighted_seed_sampling",
-            "selected_stage_node_ids",
-        }
-        native_options = {
-            key: value for key, value in options.items() if key not in scheduling
-        }
-        return self._requests(schedule, options, canonical_json(native_options)), count
+        options["rnd_seed"] = options.get("rnd_seed", self.config.engine_seed)
+        configuration = SamplingOptions.from_kwargs(**options)
+        schedule, count = make_seed_schedule(self.manifest_path, configuration)
+        return self._requests(
+            schedule, configuration, configuration.sampling_only()
+        ), count
 
     def _requests(
-        self, schedule: SeedSchedule, options: SamplingOptions, native_options: bytes
+        self,
+        schedule: SeedSchedule,
+        options: SamplingOptions,
+        native_options: SamplingOptions,
     ) -> Iterator[BatchRequest]:
         ordinal = 0
         while (seeds := schedule.next_seed_ids()) is not None:
             yield BatchRequest(
                 self.config.artifacts,
                 self.consumer,
-                options["epoch"],
-                options["worker_id"],
-                options["num_workers"],
+                options.epoch,
+                options.worker_id,
+                options.num_workers,
                 ordinal,
                 tuple(seeds),
                 native_options,
