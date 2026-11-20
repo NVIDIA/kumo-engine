@@ -44,6 +44,12 @@ def execute(config, dbutils):
             dict(status='not implemented',
                  reason='Full epoch history is not available in model exports'),
         })
+    custom = config.get('workload')
+    if custom is not None:
+        report['workload'] = custom
+        report['required_gaps'] = {
+            'native_ui': report['required_gaps']['native_ui']
+        }
     try:
         from databricks.sdk import WorkspaceClient
 
@@ -54,7 +60,8 @@ def execute(config, dbutils):
         assert os.environ.get('DATABRICKS_RUNTIME_VERSION')
         workspace = WorkspaceClient()
         user = workspace.current_user.me().user_name
-        assert user == config['expected_user'], 'Notebook identity differs from the configured test principal'
+        assert user == config[
+            'expected_user'], 'Notebook identity differs from the configured test principal'
         authorization = workspace.config.authenticate()['Authorization']
         assert authorization.startswith('Bearer ')
         runtime_token = authorization.removeprefix('Bearer ')
@@ -88,6 +95,8 @@ def execute(config, dbutils):
                 'https://pypi.org/simple', 'pip',
                 str(wheel) + '[databricks,mlflow,s3]'
             ]
+            if custom is not None:
+                install += [str(payload / name) for name in custom['wheels']]
             if helpers.execute(install, root, log, 900):
                 raise RuntimeError(
                     'Clean environment installation failed; see install.log')
@@ -116,14 +125,18 @@ def execute(config, dbutils):
             config['candidate']['expected_version'], '--output-dir',
             str(lifecycle), '--phase-timeout', '600'
         ]
+        if custom is not None:
+            command += ['--workload', str(payload / custom['file'])]
         with (evidence / 'lifecycle.log').open('w') as log:
             helpers.execute(command, root, log, 3000, env=env)
         summary = json.loads((lifecycle / 'summary.json').read_text())
         report['lifecycle_status'] = summary['status']
         report['phases'] = summary['phases']
+        expected_phases = ({'platform-prerequisite', *custom['phases']} if
+                           custom else {'fit', 'score', 'evaluate', 'negative'})
         report['engine_checks'] = (
-            'passed' if report['lifecycle_status'] in ('passed', 'blocked') and
-            set(report['phases']) == {'fit', 'score', 'evaluate', 'negative'}
+            'passed' if report['lifecycle_status'] in ('passed', 'blocked')
+            and set(report['phases']) == expected_phases
             and all(p['status'] == 'passed'
                     for p in report['phases'].values()) else 'incomplete')
         report['status'] = (
