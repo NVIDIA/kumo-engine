@@ -9,18 +9,17 @@ Trainers select explicit seeds and receive complete Arrow batches directly.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import math
 import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
-from uuid import uuid4
 
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
@@ -110,13 +109,12 @@ class RayBackendConfig:
 
     connection: RayConnection
     # Delay deserializing actor handles until the receiving process connects.
-    session: object
+    replicas: object
     artifacts: ArtifactIdentity
     engine_seed: int
     num_threads: int
     job: str
     generation: int = 0
-    admission_timeout: float = 60.0
     request_timeout: float = 300.0
     max_retries: int = 1
 
@@ -127,236 +125,147 @@ class RayBackendConfig:
             or self.max_retries < 0
             or self.engine_seed < 0
             or self.num_threads < 1
-            or any(
-                not math.isfinite(value) or value <= 0
-                for value in (self.admission_timeout, self.request_timeout)
-            )
+            or not math.isfinite(self.request_timeout)
+            or self.request_timeout <= 0
         ):
             raise SamplingContractError("invalid Ray backend identity or limits")
-        if not isinstance(self.session, bytes):
-            object.__setattr__(self, "session", _ray().cloudpickle.dumps(self.session))
+        if not isinstance(self.replicas, bytes):
+            if not isinstance(self.replicas, tuple) or not self.replicas:
+                raise SamplingContractError(
+                    "sampling replicas must be a nonempty tuple"
+                )
+            object.__setattr__(
+                self, "replicas", _ray().cloudpickle.dumps(self.replicas)
+            )
 
 
-@dataclass(frozen=True)
-class ExecutionSlot:
-    """A reserved feeder; only its confirmed execution can release active work."""
+class _SamplerPool:
+    """Trainer-local actor availability for an exclusively owned replica set.
 
-    lease_id: str
-    replica_id: int
-    actor: Any
+    Callers consume a result before refilling its actor. No admission or delivery
+    RPC runs on a remote coordinator. Closing fences local delivery first, then
+    drains serial actors because Ray cancellation alone does not prove native exit.
+    """
 
-
-@dataclass
-class _Lease:
-    request_id: str
-    consumer: ConsumerToken
-    replica_id: int
-    expires: float
-    active: bool = False
-    watched: bool = False
-    cancelling: bool = False
-
-
-class _SamplingSession:
-    """Job-wide admission metadata; batch payloads never pass through this actor."""
-
-    def __init__(self, replicas: list[Any], config: ReplicaConfig) -> None:
-        self.replicas = dict(enumerate(replicas))
+    def __init__(self, config: RayBackendConfig) -> None:
+        config.connection.connect()
+        self.ray = _ray()
         self.config = config
-        self.available = list(self.replicas)
-        self.leases: dict[str, _Lease] = {}
-        self.generations: dict[tuple[str, int, str], int] = {}
-        self.condition = asyncio.Condition()
+        self.replicas = tuple(self.ray.cloudpickle.loads(config.replicas))
+        if not self.replicas:
+            raise SamplingContractError("at least one sampling replica is required")
+        self.available = deque(range(len(self.replicas)))
+        self.pending: dict[Any, int] = {}
+        self.lock = Lock()
+        self.close_lock = Lock()
         self.closed = False
 
-    def _validate(self, request: BatchRequest) -> None:
+    def submit(self, request: BatchRequest) -> Any:
+        """Submit directly to an idle actor; callers bound their request window.
+
+        Args:
+            request: Explicit logical sampling request.
+
+        Returns:
+            Ray result reference for the submitted request.
+
+        Raises:
+            SamplingContractError: If the request uses incompatible artifacts/RNG.
+            SamplingUnavailableError: If closed or all actors have outstanding work.
+        """
         request.validate()
-        if self.closed:
-            raise SamplingUnavailableError("sampling session is closed")
         if (
             request.artifacts != self.config.artifacts
             or request.engine_seed != self.config.engine_seed
             or request.num_threads != self.config.num_threads
         ):
-            raise SamplingContractError("request differs from sampler placement")
-        token = request.consumer
-        key = (token.job, token.trainer_rank, token.consumer_kind)
-        if token.generation != self.generations.get(key, token.generation):
-            raise SamplingContractError("obsolete consumer generation")
-        self.generations.setdefault(key, token.generation)
-
-    def _release(self, lease_id: str) -> None:
-        lease = self.leases.pop(lease_id)
-        if lease.replica_id in self.replicas:
-            self.available.append(lease.replica_id)
-
-    async def acquire(self, request: BatchRequest, timeout: float) -> ExecutionSlot:
-        """Wait for shared capacity, holding only small request metadata."""
-        deadline = time.monotonic() + timeout
-        async with self.condition:
-            while True:
-                self._validate(request)
-                now = time.monotonic()
-                # Reserved calls have not started. Expiry fences their late start.
-                for lease_id, lease in list(self.leases.items()):
-                    if not lease.active and not lease.watched and lease.expires <= now:
-                        self._release(lease_id)
-                if not self.replicas:
-                    raise SamplingUnavailableError("no healthy sampling replicas")
-                if self.available:
-                    replica_id = self.available.pop()
-                    lease_id = uuid4().hex
-                    self.leases[lease_id] = _Lease(
-                        request.request_id,
-                        request.consumer,
-                        replica_id,
-                        now + timeout,
-                    )
-                    return ExecutionSlot(
-                        lease_id, replica_id, self.replicas[replica_id]
-                    )
-                remaining = deadline - now
-                if remaining <= 0:
-                    raise SamplingUnavailableError(
-                        "sampling admission deadline exceeded"
-                    )
-                expiries = [
-                    lease.expires - now
-                    for lease in self.leases.values()
-                    if not lease.active and not lease.watched
-                ]
-                wait = min([remaining, *expiries])
-                try:
-                    await asyncio.wait_for(self.condition.wait(), timeout=wait)
-                except TimeoutError:
-                    continue
-
-    async def start(self, slot: ExecutionSlot, request: BatchRequest) -> None:
-        """Fence expired reservations before a feeder touches native state."""
-        async with self.condition:
-            self._validate(request)
-            lease = self.leases.get(slot.lease_id)
-            if (
-                lease is None
-                or lease.active
-                or lease.cancelling
-                or lease.expires <= time.monotonic()
-                or lease.request_id != request.request_id
-                or lease.replica_id != slot.replica_id
-            ):
-                raise SamplingContractError("expired or invalid feeder reservation")
-            lease.active = True
-
-    async def watch(self, lease_id: str, refs: list[Any]) -> None:
-        """Release capacity after publication without fetching the batch here."""
-        lease = self.leases.get(lease_id)
-        if lease is None:
-            return
-        lease.watched = True
-        # Nesting the ObjectRef avoids Ray's top-level argument dereferencing.
-        # wait(fetch_local=False) observes publication, without transferring data
-        # to the session or materializing the payload in this process.
-        ray = _ray()
-        await asyncio.to_thread(ray.wait, refs, num_returns=1, fetch_local=False)
-        replica = self.replicas.get(lease.replica_id)
-        if lease.cancelling and lease.active and replica is not None:
-            # A cancelled result can become ready while native code still runs.
-            # This method executes after that call on the same serial actor.
-            try:
-                await asyncio.to_thread(ray.get, replica.drain.remote())
-            except ray.exceptions.RayActorError:
-                logger.warning(
-                    "Cancelled sampler %s died while draining", lease.replica_id
+            raise SamplingContractError("request differs from sampler configuration")
+        with self.lock:
+            if self.closed:
+                raise SamplingUnavailableError("sampling dispatcher is closed")
+            if not self.available:
+                raise SamplingUnavailableError(
+                    "consume a result before refilling samplers"
                 )
-                await self.actor_failed(lease.replica_id)
-                return
-        await self.complete(lease_id)
+            replica_id = self.available[0]
+            result = self.replicas[replica_id].sample.remote(request)
+            self.available.popleft()
+            self.pending[result] = replica_id
+            return result
 
-    async def open_consumer(self, token: ConsumerToken) -> ConsumerToken:
-        """Join the current generation when opening a trainer-owned iterator.
+    def get(self, result: Any) -> Any:
+        """Receive a result and make only its completed actor available again.
 
         Args:
-            token: Configured consumer identity, possibly from an earlier iterator.
+            result: Reference previously returned by ``submit``.
 
         Returns:
-            Consumer identity with the session's current generation.
+            Unmodified sampler payload.
 
         Raises:
-            SamplingUnavailableError: If the session is closed.
+            SamplingUnavailableError: If this dispatcher has been cancelled.
+            ray.exceptions.RayError: On delivery failure; timeouts retain ownership.
         """
-        if self.closed:
-            raise SamplingUnavailableError("sampling session is closed")
-        key = (token.job, token.trainer_rank, token.consumer_kind)
-        generation = self.generations.setdefault(key, token.generation)
-        return replace(token, generation=generation)
+        with self.lock:
+            if self.closed:
+                raise SamplingUnavailableError("sampling dispatcher is closed")
+            if result not in self.pending:
+                raise SamplingContractError("unknown sampling result")
+        try:
+            payload = self.ray.get(result, timeout=self.config.request_timeout)
+        except self.ray.exceptions.ActorDiedError:
+            self._finished(result, failed=True)
+            raise
+        except (self.ray.exceptions.ObjectLostError, self.ray.exceptions.RayTaskError):
+            self._finished(result)
+            raise
+        # A timeout or other uncertain transport failure keeps the actor occupied.
+        self._finished(result)
+        with self.lock:
+            if self.closed:
+                raise SamplingUnavailableError("discarding cancelled sampling result")
+        return payload
 
-    async def cancel_consumers(self, consumers: list[ConsumerToken]) -> None:
-        """Fence iterators before their trainer cancels outstanding result refs.
+    def _finished(self, result: Any, failed: bool = False) -> None:
+        with self.lock:
+            if not self.closed:
+                replica_id = self.pending.pop(result)
+                if not failed:
+                    self.available.append(replica_id)
 
-        Active leases remain reserved until their completion watcher confirms
-        that native execution has exited. Unstarted leases cannot pass start().
-        Callers must await this acknowledgment before invoking ray.cancel(),
-        then await their completion watchers before releasing snapshot users.
+    def cancel(self) -> None:
+        """Fence local submissions/delivery before cancelling outstanding Ray calls.
 
-        Args:
-            consumers: Exact consumer generations being closed by the trainer.
+        Raises:
+            ray.exceptions.RayError: If cancellation cannot be issued.
         """
-        for token in consumers:
-            await self.fence(token)
-        cancelled = set(consumers)
-        async with self.condition:
-            for lease_id, lease in list(self.leases.items()):
-                if lease.consumer in cancelled:
-                    lease.cancelling = True
-                    if not lease.active:
-                        self._release(lease_id)
-            self.condition.notify_all()
-
-    async def complete(self, lease_id: str) -> None:
-        """Release a slot only after native execution and export have ended."""
-        async with self.condition:
-            if lease_id in self.leases:
-                self._release(lease_id)
-                self.condition.notify_all()
-
-    async def actor_failed(self, replica_id: int) -> None:
-        """Remove a confirmed dead actor and its execution slots."""
-        async with self.condition:
-            self.replicas.pop(replica_id, None)
-            self.available = [i for i in self.available if i != replica_id]
-            for lease_id, lease in list(self.leases.items()):
-                if lease.replica_id == replica_id:
-                    self.leases.pop(lease_id)
-            self.condition.notify_all()
-
-    async def validate_delivery(self, request: BatchRequest) -> None:
-        """Reject late delivery after cancellation, without fencing other consumers."""
-        self._validate(request)
-
-    async def fence(self, token: ConsumerToken) -> None:
-        """Stop admission/delivery for this generation; active slots stay occupied."""
-        async with self.condition:
-            key = (token.job, token.trainer_rank, token.consumer_kind)
-            self.generations[key] = max(
-                self.generations.get(key, token.generation),
-                token.generation + 1,
-            )
-            self.condition.notify_all()
-
-    async def stats(self) -> dict[str, int]:
-        """Return admission counters without inspecting or fetching batch data."""
-        return {
-            "replicas": len(self.replicas),
-            "available": len(self.available),
-            "reserved": sum(not lease.active for lease in self.leases.values()),
-            "active": sum(lease.active for lease in self.leases.values()),
-        }
-
-    async def close(self) -> None:
-        """Stop all admission/delivery; the launcher must drain or terminate actors."""
-        async with self.condition:
+        with self.lock:
             self.closed = True
-            self.condition.notify_all()
+            pending = tuple(self.pending)
+        for result in pending:
+            self.ray.cancel(result, force=False, recursive=False)
+
+    def close(self) -> None:
+        """Cancel and confirm native exit before another iterator reuses the actors.
+
+        Raises:
+            ray.exceptions.RayError: If live actors cannot drain before the deadline.
+        """
+        with self.close_lock:
+            self.cancel()
+            with self.lock:
+                actors = {replica_id for replica_id in self.pending.values()}
+            # Send every barrier before waiting; each runs after prior native work.
+            barriers = [self.replicas[index].drain.remote() for index in actors]
+            deadline = time.monotonic() + self.config.request_timeout
+            for barrier in barriers:
+                try:
+                    self.ray.get(barrier, timeout=max(0.0, deadline - time.monotonic()))
+                except self.ray.exceptions.ActorDiedError:
+                    logger.warning("Sampling actor died while draining cancelled work")
+            with self.lock:
+                self.pending.clear()
+                self.available.clear()
 
 
 class _SamplerReplica:
@@ -392,12 +301,8 @@ class _SamplerReplica:
     def drain(self) -> None:
         """Acknowledge that earlier sampling on this serial actor has exited."""
 
-    def sample(
-        self, request: BatchRequest, slot: ExecutionSlot, session: Any
-    ) -> BatchPayload:
+    def sample(self, request: BatchRequest) -> BatchPayload:
         """Return a complete Arrow/native envelope directly to the requesting trainer."""
-        ray = _ray()
-        ray.get(session.start.remote(slot, request))
         if (
             request.artifacts != self.config.artifacts
             or request.engine_seed != self.config.engine_seed
@@ -426,17 +331,17 @@ class _SamplerReplica:
         return payload
 
 
-def start_sampling_session(
+def start_sampling_replicas(
     configs: list[ReplicaConfig], placements: list[object]
-) -> tuple[Any, tuple[Any, ...]]:
-    """Create snapshot-local serial actors and a shared admission session.
+) -> tuple[Any, ...]:
+    """Create snapshot-local serial actors without a remote admission coordinator.
 
     Args:
         configs: Verified-manifest descriptors for complete local replicas.
         placements: Explicit Ray scheduling strategies, one per local placement.
 
     Returns:
-        Session handle and replica handles owned by the caller.
+        Replica handles exclusively owned by one trainer dispatcher.
 
     Raises:
         SamplingContractError: If replica identities/resources disagree.
@@ -472,36 +377,19 @@ def start_sampling_session(
             actors.append(actor)
             cleanup.callback(ray.kill, actor, no_restart=True)
         ray.get([actor.ready.remote() for actor in actors], timeout=300)
-        session = (
-            ray.remote(_SamplingSession)
-            .options(
-                num_cpus=0,
-                max_restarts=0,
-                max_task_retries=0,
-            )
-            .remote(actors, baseline)
-        )
         cleanup.pop_all()
-        return session, tuple(actors)
+        return tuple(actors)
 
 
-def stop_sampling_session(session: Any, replicas: tuple[Any, ...]) -> None:
-    """Fence the whole job and terminate its actors before releasing snapshot leases.
+def stop_sampling_replicas(replicas: tuple[Any, ...]) -> None:
+    """Terminate owned actors before releasing their snapshot leases.
 
     Args:
-        session: Admission session returned by ``start_sampling_session``.
         replicas: All sampler handles belonging to the job.
-
-    Raises:
-        RuntimeError: If the session cannot acknowledge shutdown.
     """
     ray = _ray()
-    try:
-        ray.get(session.close.remote(), timeout=30)
-    finally:
-        for actor in replicas:
-            ray.kill(actor, no_restart=True)
-        ray.kill(session, no_restart=True)
+    for actor in replicas:
+        ray.kill(actor, no_restart=True)
 
 
 class RayRuntimeIndex:
@@ -515,8 +403,7 @@ class RayRuntimeIndex:
         self.consumer = consumer
         self.pid = os.getpid()
         self._manifest_verified = False
-        config.connection.connect()
-        self.session = _ray().cloudpickle.loads(config.session)
+        self.samplers = _SamplerPool(config)
 
     def iter(self, **options: Any) -> tuple[Iterator[Mapping[str, Any]], int]:
         """Create a seed iterator without opening local adjacency/features.
@@ -598,41 +485,28 @@ class RayRuntimeIndex:
 
     def _sample(self, request: BatchRequest) -> Mapping[str, Any]:
         ray = _ray()
-        request.validate()
         for attempt in range(self.config.max_retries + 1):
-            slot = ray.get(
-                self.session.acquire.remote(
-                    request,
-                    self.config.admission_timeout,
-                )
-            )
-            ref = slot.actor.sample.remote(request, slot, self.session)
-            completion = self.session.watch.remote(slot.lease_id, [ref])
+            ref = self.samplers.submit(request)
             try:
-                payload = ray.get(ref, timeout=self.config.request_timeout)
-            except ray.exceptions.ActorDiedError:
-                # Restarts and automatic method retries are disabled. A terminal
-                # ActorDiedError confirms the previous attempt can no longer run.
-                ray.get(self.session.actor_failed.remote(slot.replica_id))
+                payload = self.samplers.get(ref)
+            except (ray.exceptions.ActorDiedError, ray.exceptions.ObjectLostError):
                 logger.error(
-                    "Sampling actor died during request %s", request.request_id
+                    "Sampling attempt failed for request %s", request.request_id
                 )
-                if attempt == self.config.max_retries:
-                    raise
-                continue
-            except ray.exceptions.ObjectLostError:
-                # Observe completion without fetching the payload at the session.
-                # The failed result has not been delivered to the optimizer.
-                ray.get(completion)
-                logger.error("Sampling result lost for request %s", request.request_id)
                 if attempt == self.config.max_retries:
                     raise
                 continue
             except ray.exceptions.GetTimeoutError:
-                # Slow is not dead: fence delivery and leave the slot owned by
-                # the executing actor. Recovery requires the job checkpoint.
-                ray.get(self.session.fence.remote(request.consumer))
+                # Keep ownership until close() confirms actual native exit.
+                self.samplers.cancel()
                 raise
-            ray.get(self.session.validate_delivery.remote(request))
             return payload.validate(request)
         raise SamplingUnavailableError("sampling attempts exhausted")
+
+    def close(self) -> None:
+        """Fence delivery and drain outstanding sampling before replica reuse.
+
+        Raises:
+            ray.exceptions.RayError: If remote work cannot drain before the deadline.
+        """
+        self.samplers.close()

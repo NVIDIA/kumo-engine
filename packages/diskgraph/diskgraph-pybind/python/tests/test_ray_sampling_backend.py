@@ -52,13 +52,13 @@ def remote_index(
             ray.get_runtime_context().get_node_id(), soft=False
         )
         replica = backend.ReplicaConfig(manifest, snapshot, artifacts, 42, 1)
-        session, actors = backend.start_sampling_session(
+        actors = backend.start_sampling_replicas(
             [replica, replica], [placement, placement]
         )
         try:
             config = backend.RayBackendConfig(
                 backend.RayConnection("auto", "native-sampling-tests"),
-                session,
+                actors,
                 artifacts,
                 42,
                 1,
@@ -68,7 +68,7 @@ def remote_index(
                 manifest, config, ConsumerToken("native-test", 0, "train", 0)
             )
         finally:
-            backend.stop_sampling_session(session, actors)
+            backend.stop_sampling_replicas(actors)
     finally:
         ray.shutdown()
 
