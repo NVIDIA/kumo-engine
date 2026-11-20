@@ -1172,6 +1172,7 @@ pub struct SeedSchedule {
     drop_last: bool,
 
     offset_ranges: Vec<(u64, u64, u64)>,
+    grouped_ranges: Vec<(u64, u64)>,
     rhs: bool,
     bucket_schedule: Option<BucketSchedule>,
 }
@@ -1705,6 +1706,14 @@ impl RuntimeBatchIterator {
         // iterator instead of once per batch.
         let feature_projection =
             std::sync::Arc::new(engine.resolve_projection(&projections.unwrap_or_default()));
+        let mut grouped_ranges = if group_by_timestamp {
+            (0..stage_table_arc.shard_count())
+                .filter_map(|i| stage_table_arc.shard_id_range(i))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        grouped_ranges.sort_unstable();
         Ok(Self {
             reader,
             engine,
@@ -1733,6 +1742,7 @@ impl RuntimeBatchIterator {
                     (0..stage_table_arc.shard_count())
                         .filter_map(|i| stage_table_arc.shard_id_range(i)),
                 ),
+                grouped_ranges,
                 rhs: rhs_seed_node_type.is_some(),
                 bucket_schedule,
             },
@@ -1979,6 +1989,11 @@ impl SeedSchedule {
                 "invalid seed batch size or worker assignment",
             ));
         }
+        if c.rhs && (c.ranges.len() != 1 || c.ranges[0].0 > c.ranges[0].1) {
+            return Err(RuntimeError::config(
+                "RHS requires one nonempty dense node range",
+            ));
+        }
         if c.shuffle && c.rnd_seed.is_none() {
             return Err(RuntimeError::config("shuffle requires rnd_seed"));
         }
@@ -2066,9 +2081,6 @@ impl SeedSchedule {
             len.and_then(|n| count.checked_add(n))
                 .ok_or_else(|| RuntimeError::config("seed range size overflow"))
         })?;
-        if c.rhs && c.ranges.len() != 1 {
-            return Err(RuntimeError::config("RHS requires one dense node range"));
-        }
         let stream = if selected || weighted || grouped {
             ShardStream::empty()
         } else {
@@ -2091,6 +2103,11 @@ impl SeedSchedule {
             batch_size: c.batch_size,
             drop_last: c.drop_last,
             offset_ranges: Self::offset_ranges(c.ranges.into_iter()),
+            grouped_ranges: if grouped {
+                membership_ranges
+            } else {
+                Vec::new()
+            },
             rhs: c.rhs,
             bucket_schedule,
         })
@@ -2099,7 +2116,16 @@ impl SeedSchedule {
     /// Return the next batch of canonical stage row IDs or RHS IDs, not offsets.
     pub fn next_seed_ids(&mut self) -> Result<Option<Vec<u64>>> {
         if let Some(schedule) = self.bucket_schedule.as_mut() {
-            return schedule.next_node_ids();
+            let batch = schedule.next_node_ids()?;
+            if let Some(ids) = batch.as_ref() {
+                for id in ids {
+                    let end = self.grouped_ranges.partition_point(|(lo, _)| lo <= id);
+                    if end == 0 || *id > self.grouped_ranges[end - 1].1 {
+                        return Err(RuntimeError::data("grouped seed id outside stage table"));
+                    }
+                }
+            }
+            return Ok(batch);
         }
         if let Some(ids) = self
             .selected_stage_node_ids
@@ -2134,7 +2160,7 @@ impl SeedSchedule {
                     .saturating_sub(1);
                 let (base, len, lo) = self.offset_ranges[i];
                 if offset - base < len {
-                    Ok(lo + offset - base)
+                    Ok(lo + (offset - base))
                 } else {
                     Err(RuntimeError::data("seed offset outside stage table"))
                 }

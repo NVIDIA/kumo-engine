@@ -24,23 +24,38 @@ Its constructor accepts JSON with these fields:
 
 | Field | Meaning |
 | --- | --- |
-| `stage_key` | Stage or RHS node-type name used for the shuffle seed. |
+| `stage_key` | Exact sampling-mode key used for the shuffle seed; see below. |
 | `ranges` | Disjoint inclusive `[min_id, max_id]` ranges, in traversal order. |
 | `num_workers`, `worker_id` | Worker count and zero-based shard identity. |
 | `shuffle`, `rnd_seed`, `epoch` | Shuffle settings; shuffling requires a seed. |
-| `batch_size`, `drop_last` | Positive batch bound and partial-tail policy. |
-| `rhs` | Whether the ranges describe one dense RHS candidate domain. |
+| `batch_size`, `drop_last` | Positive batch bound and mode-specific partial-tail policy; see below. |
+| `rhs` | Whether the ranges describe one nonempty dense RHS candidate domain. |
 | `selected_stage_node_ids` | Optional ordered selection, preserving duplicates. |
 | `weighted_seed_sampling_json` | Optional weighted-sampling settings and sidecars. |
 | `bucket_extension_root` | Optional extension containing timestamp buckets. |
+
+To reproduce local ordering, flat schedules must use the exact `stage_table`
+argument passed to the native iterator, such as `train_seeds`, rather than the
+Python stage name `train`. Weighted and timestamp-grouped schedules use the
+namespaced catalog key, such as `<namespace>/train_seeds`. RHS schedules use the
+RHS node-type name. These keys are part of the random seed calculation.
+
+Flat and RHS schedules honor `drop_last`. Timestamp-grouped schedules retain
+each bucket's partial tail even when `drop_last=true`. Selected and weighted
+schedules reject `drop_last=true`. RHS ranges must contain exactly one inclusive
+range with `min_id <= max_id`; a single-node range is valid, and reversed ranges
+are rejected rather than interpreted as an empty candidate domain. Grouped
+sidecar IDs outside the supplied stage ranges raise a data error when selected.
 
 `next_seed_ids()` returns canonical IDs or `None` at exhaustion. An explicit
 `sample_request(ids)` accepts a nonempty batch within the configured size and
 stage/RHS domain, including after local iteration is exhausted. Invalid requests
 raise the existing configuration/data exceptions and leave the cursor unchanged.
-The Python result includes configured neighborhoods and history, matching
-`next_batch()` for the same seeds. Existing length-planned iteration retains its
-planner and cache behavior.
+The Python result uses the same output fields and configured neighborhoods and
+history as `next_batch()`. Explicit requests do not make randomized sampling
+deterministic: for example, negative sampling with `neg_rnd_seed=None` draws
+fresh random negatives, so repeated requests for the same IDs can differ.
+Existing length-planned iteration retains its planner and cache behavior.
 
 Direct Cargo tests need the platform feature flags used by the wheel build.
 From `packages/diskgraph`, run on x86_64:

@@ -69,8 +69,8 @@ fn metadata_schedule_preserves_rhs_range_and_tail() {
     c["drop_last"] = json!(true);
     let mut schedule = SeedSchedule::from_json(&c.to_string()).unwrap();
     assert_eq!(schedule.worker_batch_count(), 2);
-    schedule.next_seed_ids().unwrap();
-    schedule.next_seed_ids().unwrap();
+    assert_eq!(schedule.next_seed_ids().unwrap(), Some(vec![20, 21]));
+    assert_eq!(schedule.next_seed_ids().unwrap(), Some(vec![22, 23]));
     assert_eq!(schedule.next_seed_ids().unwrap(), None);
 }
 
@@ -83,13 +83,54 @@ fn metadata_schedule_rejects_invalid_requests() {
         ("worker_id", json!(2)),
         ("rnd_seed", Value::Null),
         ("unexpected", json!(true)),
-        ("selected_stage_node_ids", json!([999])),
-        ("selected_stage_node_ids", json!([10, 999])),
     ] {
         let mut c = config();
         c[field] = value;
         assert!(SeedSchedule::from_json(&c.to_string()).is_err(), "{field}");
     }
+}
+
+#[test]
+fn metadata_schedule_rejects_selected_ids_before_worker_sharding() {
+    for ids in [json!([999]), json!([10, 999])] {
+        let mut c = config();
+        c["shuffle"] = json!(false);
+        c["selected_stage_node_ids"] = ids;
+        assert!(matches!(
+            SeedSchedule::from_json(&c.to_string()),
+            Err(super::RuntimeError::Data(message))
+                if message == "selected seed id outside stage table"
+        ));
+    }
+}
+
+#[test]
+fn metadata_schedule_maps_maximum_node_id_without_overflow() {
+    let mut c = config();
+    c["ranges"] = json!([[0, 0], [u64::MAX, u64::MAX]]);
+    c["shuffle"] = json!(false);
+    c["num_workers"] = json!(1);
+    let mut schedule = SeedSchedule::from_json(&c.to_string()).unwrap();
+    assert_eq!(schedule.next_seed_ids().unwrap(), Some(vec![0, u64::MAX]));
+    assert_eq!(schedule.next_seed_ids().unwrap(), None);
+}
+
+#[test]
+fn metadata_schedule_requires_nonempty_rhs_range() {
+    let mut c = config();
+    c["rhs"] = json!(true);
+    for ranges in [json!([]), json!([[24, 20]]), json!([[20, 21], [24, 25]])] {
+        c["ranges"] = ranges;
+        assert!(matches!(
+            SeedSchedule::from_json(&c.to_string()),
+            Err(super::RuntimeError::Config(message))
+                if message == "RHS requires one nonempty dense node range"
+        ));
+    }
+    c["ranges"] = json!([[24, 24]]);
+    let mut schedule = SeedSchedule::from_json(&c.to_string()).unwrap();
+    assert_eq!(schedule.next_seed_ids().unwrap(), Some(vec![24]));
+    assert_eq!(schedule.next_seed_ids().unwrap(), None);
 }
 
 #[test]
@@ -118,6 +159,7 @@ fn metadata_schedule_reuses_grouped_schedule() {
     .unwrap();
     let mut c = config();
     c["bucket_extension_root"] = json!(root.path().to_str().unwrap());
+    c["ranges"] = json!([[20, 32], [10, 12]]);
     let mut actual = SeedSchedule::from_json(&c.to_string()).unwrap();
     let mut reference = super::BucketSchedule::build(
         vec![(1, 0, 3), (2, 3, 2)],
@@ -138,6 +180,22 @@ fn metadata_schedule_reuses_grouped_schedule() {
         assert_eq!(actual.next_seed_ids().unwrap(), Some(expected));
     }
     assert_eq!(actual.next_seed_ids().unwrap(), None);
+    c["num_workers"] = json!(1);
+    c["drop_last"] = json!(true);
+    let mut tails = SeedSchedule::from_json(&c.to_string()).unwrap();
+    let mut sizes = Vec::new();
+    while let Some(ids) = tails.next_seed_ids().unwrap() {
+        sizes.push(ids.len());
+    }
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![1, 2, 2]);
+    c["ranges"] = json!([[999, 999]]);
+    let mut invalid = SeedSchedule::from_json(&c.to_string()).unwrap();
+    assert!(matches!(
+        invalid.next_seed_ids(),
+        Err(super::RuntimeError::Data(message))
+            if message == "grouped seed id outside stage table"
+    ));
 }
 
 #[test]

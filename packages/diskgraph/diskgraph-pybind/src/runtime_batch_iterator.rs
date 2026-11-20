@@ -269,9 +269,10 @@ pub struct SeedSchedule {
 #[pymethods]
 impl SeedSchedule {
     #[new]
-    fn new(config_json: String) -> PyResult<Self> {
+    fn new(py: Python<'_>, config_json: String) -> PyResult<Self> {
         Ok(Self {
-            inner: diskgraph_runtime::SeedSchedule::from_json(&config_json)
+            inner: py
+                .detach(|| diskgraph_runtime::SeedSchedule::from_json(&config_json))
                 .map_err(map_runtime_err)?,
         })
     }
