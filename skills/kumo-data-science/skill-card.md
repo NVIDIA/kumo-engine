@@ -39,7 +39,7 @@ Mitigation: Review and scan skill before deployment. <br>
 **Output Type(s):** [Analysis, Code, Files] <br>
 **Output Format:** [Markdown proposals and confirmations, plus one Python notebook or script] <br>
 **Output Parameters:** [1D] <br>
-**Other Properties Related to Output:** [Generates one artifact with exactly one blocking fit call; executes it only on explicit user request; predictions are written only to a confirmed destination.] <br>
+**Other Properties Related to Output:** [Training artifacts contain exactly one blocking fit call; saved-model scoring artifacts restore the trainer and call predict without fit; artifacts execute only on explicit user request; predictions are written only to a confirmed destination.] <br>
 
 ## Evaluation Agents Used: <br>
 - Claude Code (`aws/anthropic/bedrock-claude-opus-5-5`) <br>
