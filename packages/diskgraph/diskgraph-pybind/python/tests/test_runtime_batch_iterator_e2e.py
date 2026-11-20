@@ -388,7 +388,7 @@ def test_index_build_identity_and_managed_sibling_task(seed_table_fixture, tmp_p
         paths.verify_task("task-1")
     from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 
-    with pytest.raises(diskgraph.DiskgraphSystemError, match="belongs to index build"):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match="belongs to index build"):
         NativeRuntimeIndex(str(paths.index_dir), str(task), 17, 1)
 
     # Ingest against the chosen base; only the sibling task tree is writable.
@@ -420,7 +420,7 @@ def test_legacy_index_without_build_ids_remains_readable(seed_table_fixture, tmp
 
 
 @pytest.mark.parametrize("directory", ["train_tables", "pred_tables"])
-def test_extension_reference_preserves_legacy_layout(tmp_path, directory):
+def test_extension_reference_preserves_index_local_layout(tmp_path, directory):
     from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
 
     parent = tmp_path / "base"
@@ -479,7 +479,7 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
     match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
     if kind == "missing":
         match = "extension `stage`"
-    with pytest.raises(diskgraph.DiskgraphSystemError, match=match):
+    with pytest.raises(diskgraph.DiskgraphConfigError, match=match):
         if entrypoint == "native":
             from diskgraph._c import RuntimeIndex as NativeRuntimeIndex
 

@@ -118,7 +118,7 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
     or an absolute external extension path for a read-only base index. External
     paths require finalized index metadata; the native reader validates it.
     """
-    # Preserve filesystem semantics (symlinks before '..') and legacy references.
+    # Preserve filesystem semantics (symlinks before '..') and index-local refs.
     # Placement and finalized-metadata validation belong to the native reader.
     parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
     if stage.is_relative_to(parent):
@@ -451,4 +451,3 @@ class RuntimeIndex:
             projections,
         )
         return iterator, iterator.num_samples()
-

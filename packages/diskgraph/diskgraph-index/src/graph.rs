@@ -32,6 +32,15 @@ const TEMP_META_VERSION: u8 = 2;
 pub const INDEX_SHARD_COMMIT_DIR: &str = "_tmp/index_commits";
 const INDEX_SHARD_COMMIT_VERSION: u32 = 1;
 
+/// Invalid extension selection, distinct from index I/O or corrupt contents.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct InvalidExtensionPath(pub String);
+
+fn invalid_extension(message: impl Into<String>) -> anyhow::Error {
+    InvalidExtensionPath(message.into()).into()
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct IndexShardCommit {
     version: u32,
@@ -1192,7 +1201,7 @@ impl GraphIndexReader {
     }
 
     /// Open the parent DG index together with exactly one seed-table
-    /// extension. A bare `tt_ref` keeps legacy behavior and opens
+    /// extension. A bare `tt_ref` keeps the index-local behavior and opens
     /// `<parent_root>/train_tables/<tt_ref>/`; explicit
     /// `train_tables/<id>` and `pred_tables/<id>` refs open that subdir.
     /// This is the runtime API: kumo always opens parent + the one seed
@@ -1210,15 +1219,21 @@ impl GraphIndexReader {
     /// `discover_tts` first if they need to ask "what's available".
     pub fn open_with_tt(parent_root: &Path, tt_ref: &str) -> Result<Self> {
         if tt_ref.is_empty() {
-            return Err(anyhow!("empty tt_ref"));
+            return Err(invalid_extension("empty tt_ref"));
         }
         let (subdir_rel, namespace) = if let Some((prefix, id)) = tt_ref.split_once('/') {
             if id.is_empty() || id.contains('/') {
-                return Err(anyhow!("invalid extension reference `{tt_ref}`"));
+                return Err(invalid_extension(format!(
+                    "invalid extension reference `{tt_ref}`"
+                )));
             }
             match prefix {
                 "train_tables" | "pred_tables" => (tt_ref.to_string(), id.to_string()),
-                _ => return Err(anyhow!("invalid extension reference `{tt_ref}`")),
+                _ => {
+                    return Err(invalid_extension(format!(
+                        "invalid extension reference `{tt_ref}`"
+                    )))
+                }
             }
         } else {
             (format!("train_tables/{tt_ref}"), tt_ref.to_string())
@@ -1239,29 +1254,32 @@ impl GraphIndexReader {
         namespace: &str,
     ) -> Result<Self> {
         // All opening paths share this validation, including direct native
-        // callers and legacy relative references that traverse symlinks.
+        // callers and index-local references that traverse symlinks.
         let parent = fs::canonicalize(parent_root).context("resolve parent index path")?;
-        let subdir = fs::canonicalize(parent_root.join(subdir_rel))
-            .with_context(|| format!("resolve extension `{namespace}` index path: {subdir_rel}"))?;
-        ensure!(
-            subdir != parent,
-            "extension path must not identify the base index"
-        );
+        let subdir = fs::canonicalize(parent_root.join(subdir_rel)).map_err(|error| {
+            invalid_extension(format!(
+                "resolve extension `{namespace}` index path: {subdir_rel}: {error}"
+            ))
+        })?;
+        if subdir == parent {
+            return Err(invalid_extension("extension path must not identify the base index"));
+        }
         if let Ok(relative) = subdir.strip_prefix(&parent) {
             let parts: Vec<_> = relative.iter().collect();
-            ensure!(
-                parts.len() == 2 && (parts[0] == "train_tables" || parts[0] == "pred_tables"),
-                "an index-local extension must identify train_tables/<id> or pred_tables/<id>"
-            );
+            if parts.len() != 2 || (parts[0] != "train_tables" && parts[0] != "pred_tables") {
+                return Err(invalid_extension(
+                    "an index-local extension must identify train_tables/<id> or pred_tables/<id>",
+                ));
+            }
         }
         let parent_meta_path = parent.join("index_metadata.json");
         let mut reader = Self::open(&parent_meta_path, &parent)?;
         let ext_meta_path = subdir.join("index_metadata.json");
         if !ext_meta_path.is_file() {
-            return Err(anyhow!(
+            return Err(invalid_extension(format!(
                 "extension `{namespace}` has no finalized index at {}",
                 subdir.display()
-            ));
+            )));
         }
         merge_extension_into(&mut reader, &subdir, namespace)?;
         // Remember the extension root so sample-time helpers can locate
@@ -1356,12 +1374,12 @@ fn merge_extension_into(
         &parent_node_types,
     )
     .with_context(|| format!("open extension {tt_id} at {}", subdir.display()))?;
-    ensure!(
-        ext.metadata.parent_index_build_id == reader.metadata.index_build_id,
-        "extension `{tt_id}` belongs to index build {:?}, not {:?}",
-        ext.metadata.parent_index_build_id,
-        reader.metadata.index_build_id,
-    );
+    if ext.metadata.parent_index_build_id != reader.metadata.index_build_id {
+        return Err(invalid_extension(format!(
+            "extension `{tt_id}` belongs to index build {:?}, not {:?}",
+            ext.metadata.parent_index_build_id, reader.metadata.index_build_id,
+        )));
+    }
     for (bare_name, table_arc) in ext.tables.iter() {
         let namespaced = format!("{tt_id}/{bare_name}");
         if reader.tables.contains_key(&namespaced) {
