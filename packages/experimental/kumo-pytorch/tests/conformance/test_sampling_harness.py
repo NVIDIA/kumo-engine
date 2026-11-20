@@ -368,69 +368,6 @@ def _tied_sequence_fixture():
     return case, answer, event
 
 
-def test_sequences_accept_tied_permutations_and_boundary_alternatives():
-    from conformance.sequence_cases import assert_sequence_answers
-
-    case, answer, event = _tied_sequence_fixture()
-    assert_sequence_answers(case, answer, "base")
-    answer["a"]["merged"] = (event(7, "orders", 1), event(8, "clicks", 10), event(8, "orders", 4))
-    answer["a"]["pushed"] = (event(7, "recent", 1), event(8, "recent", 3))
-    assert_sequence_answers(case, answer, "allowed alternatives")
-
-
-@pytest.mark.parametrize(
-    "defect",
-    [
-        "order",
-        "selection",
-        "sample",
-        "input",
-        "future",
-        "values",
-        "multiplicity",
-        "component-limit",
-        "length",
-    ],
-)
-def test_sequence_oracle_rejects_semantic_errors(defect):
-    from conformance.sequence_cases import assert_sequence_answers
-
-    case, answer, event = _tied_sequence_fixture()
-    merged = answer["a"]["merged"]
-    if defect == "sample":
-        answer = {}
-    elif defect == "input":
-        answer["a"].pop("pushed")
-    elif defect == "order":
-        answer["a"]["merged"] = tuple(reversed(merged))
-    elif defect == "selection":
-        answer["a"]["merged"] = (merged[0], event(8, "orders", 99), merged[2])
-    elif defect == "future":
-        answer["a"]["merged"] = (*merged[:2], event(10, "orders", 5))
-    elif defect == "values":
-        fields = (("amount", True, 999.0), *merged[1][2][1:])
-        answer["a"]["merged"] = (merged[0], (8, "orders", fields), merged[2])
-    elif defect == "multiplicity":
-        answer["a"]["merged"] = (merged[0], merged[1], merged[1])
-    elif defect == "component-limit":
-        answer["a"]["merged"] = (merged[0], merged[1], event(8, "orders", 3))
-    else:
-        answer["a"]["merged"] = merged[:2]
-    with pytest.raises(PropertyFailure):
-        assert_sequence_answers(case, answer, defect)
-
-
-def test_sequence_failure_reports_both_output_formats(monkeypatch):
-    from conformance import sequence_cases
-
-    case = sequence_batch(0, "diskgraph", "sequence_expected")[0]
-    monkeypatch.setattr(sequence_cases, "_base", lambda *_: {"inspectable": {}, "model": {}})
-    with pytest.raises(PropertyFailure) as failure:
-        sequence_cases.sequence_expected(case, "diskgraph", 0)
-    assert "diskgraph inspectable fixture answers" in str(failure.value)
-    assert "diskgraph model fixture answers" in str(failure.value)
-
-
 MORE_DEFECTS = (
     ("graph_structure", "reversed_edges", "break orientation"),
     ("graph_structure", "older_on_ties", "recent kept other than the most recent"),

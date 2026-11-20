@@ -1314,22 +1314,16 @@ def seed_batches(engine: str, count: int | None = None, start: int = 0) -> tuple
     return tuple(sorted(set(SEEDS[engine]) | set(range(start, start + count))))
 
 
-COMPARISON_PROPERTIES = frozenset()
-
-
 def obligations(
     engines: Sequence[str],
     seeds: int | None = None,
     start: int = 0,
-    *,
-    include_comparisons: bool = True,
 ) -> list[tuple[str, str, int]]:
     """Every required (property, engine, seed batch) for the selected engines."""
 
     return [
         (name, engine, seed)
         for name, prop in PROPERTIES.items()
-        if include_comparisons or name not in COMPARISON_PROPERTIES
         for engine in engines
         if engine in prop.engines
         for seed in seed_batches(engine, seeds, start)

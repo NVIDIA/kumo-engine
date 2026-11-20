@@ -401,7 +401,3 @@ The model output format is decoded from the same `Padded` layout as the
 inspectable one, so both compare against the in-memory engine. Each property shares one
 covering array; a known gap removes cases only from the property that found it,
 which adds rows for any pairs those cases alone covered.
-
-The package tests now use DiskGraph and independent expected answers.
-Additional regression cases and their documented expectations are listed in
-[documented regressions](documented-regressions.md).

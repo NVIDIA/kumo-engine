@@ -15,7 +15,6 @@ import pytest
 from conformance.assertions import require_engine
 from conformance.cases import ENGINES, REPOSITORY
 from conformance.properties import (
-    COMPARISON_PROPERTIES,
     PROPERTIES,
     obligation_id,
     obligations,
@@ -34,7 +33,6 @@ def _engines(config):
 
 def pytest_generate_tests(metafunc):
     engines = _engines(metafunc.config)
-    native_only = metafunc.config.getoption("--conformance-no-in-memory")
     if "obligation" in metafunc.fixturenames:
         metafunc.parametrize(
             "obligation",
@@ -44,19 +42,13 @@ def pytest_generate_tests(metafunc):
                     engines,
                     metafunc.config.getoption("--conformance-seeds"),
                     metafunc.config.getoption("--conformance-seed-start"),
-                    include_comparisons=not native_only,
                 )
             ],
         )
     if "corpus_engine" in metafunc.fixturenames:
         metafunc.parametrize("corpus_engine", engines)
     if "gap" in metafunc.fixturenames:
-        gaps = [
-            gap
-            for gap in REPLAYED
-            if gap.engine in engines
-            and (not native_only or gap.property not in COMPARISON_PROPERTIES)
-        ]
+        gaps = [gap for gap in REPLAYED if gap.engine in engines]
         metafunc.parametrize("gap", gaps, ids=[gap.id for gap in gaps])
 
 
@@ -66,17 +58,12 @@ def test_property(obligation):
     run_obligation(name, engine, seed)
 
 
-def test_corpus(corpus_engine, request):
+def test_corpus(corpus_engine):
     """Every corpus entry holds on each selected engine its property applies to."""
     require_engine(corpus_engine)
     failures = []
     for entry_id, entry in load_corpus().items():
         if corpus_engine not in PROPERTIES[entry.property].engines:
-            continue
-        if (
-            request.config.getoption("--conformance-no-in-memory")
-            and entry.property in COMPARISON_PROPERTIES
-        ):
             continue
         try:
             replay(entry, corpus_engine)

@@ -4,7 +4,7 @@
 
 """Documented package bugs remain ordinary failures.
 
-Evidence: conformance/documented-regressions.md relative to the package root.
+Expected behavior is cited from the existing package API docs and guarantees.
 """
 
 from contextlib import nullcontext
@@ -39,7 +39,7 @@ def test_artifact_reload_preserves_iterator_identity(tmp_path, reload):
     and emits exactly the two remaining samples, without refitting.
 
     Evidence: G-ARTIFACT-001;
-    conformance/documented-regressions.md#db01--artifact-identity-and-iterator-continuation
+    conformance/spec/guarantees/G-ARTIFACT-001/guarantee.md; docs/api/lifecycle.md
     """
     schema = r.DataSchema(
         (r.TableSpec("users", "id", {"id": INT, "at": TIME, "x": FLOAT}, time_column="at"),)
@@ -94,7 +94,7 @@ def test_next_token_budget_counts_emitted_input_slots(tmp_path, layout, budget):
     of five or six, in both packed and padded layouts.
 
     Evidence: Batching.max_tokens and G-TARGET-001;
-    conformance/documented-regressions.md#db02--next-token-budget-after-shifting
+    docs/api/batches.md; docs/api/targets.md
     """
     contract, rows, records, expected = token_fixture(layout, "next")
     contract = replace(
@@ -125,7 +125,7 @@ def test_numerical_fitting_preserves_representable_normalization(tmp_path, value
     inputs normalize to [0, 0] using scale one, without a fitting error.
 
     Evidence: G-ENCODING-001;
-    conformance/documented-regressions.md#db03--population-normalization-on-finite-binary64-inputs
+    conformance/spec/guarantees/G-ENCODING-001/guarantee.md; docs/api/encodings.md
     """
     schema = r.DataSchema(
         (r.TableSpec("items", "id", {"id": INT, "at": TIME, "value": FLOAT}, time_column="at"),)
@@ -169,7 +169,7 @@ def test_masking_supports_declared_uint64_entity_keys(tmp_path, identity):
     valid supervision, including keys above the signed integer maximum.
 
     Evidence: DType.uint64 and G-TARGET-001;
-    conformance/documented-regressions.md#db04--uint64-identities-with-masking
+    docs/api/schema.md (DType, TableSpec); docs/api/targets.md
     """
     dtype = r.DType("uint64")
     schema = r.DataSchema(
@@ -233,7 +233,7 @@ def test_event_age_survives_long_history_at_fine_clock_resolution(tmp_path, unit
     (8,985,600 or 9,072,000), for microsecond and nanosecond source clocks.
 
     Evidence: EventTimeDelta and DType;
-    conformance/documented-regressions.md#db05--event-ages-at-nanosecond-resolution
+    docs/api/samples.md (EventTimeDelta)
     """
     time = r.DType("timestamp", unit=unit, timezone="UTC")
     schema = r.DataSchema(
@@ -282,7 +282,7 @@ def test_later_graph_layer_reexpands_visited_nodes(tmp_path, fanout):
     events and their edges; fanout one keeps the latest. Output nodes are unique.
 
     Evidence: G-GRAPH-001;
-    conformance/documented-regressions.md#db06--expanding-a-revisited-graph-node
+    docs/api/samples.md (NeighborhoodSpec, GraphLayer)
     """
     schema = r.DataSchema(
         (
@@ -345,7 +345,7 @@ def test_native_length_planning_handles_typed_null_text_constants(tmp_path, cons
     budget of twelve, and retain the correct masked labels and validity.
 
     Evidence: Constant, Tokens.missing and G-TARGET-001;
-    conformance/documented-regressions.md#db07--typed-null-text-constants-under-length-planning
+    docs/api/samples.md (Constant); docs/api/encodings.md
     """
     contract, rows, records, _ = token_fixture(r.Packed(), "masked")
     event = replace(contract.sample.events["events"], fields={"text": r.Constant(constant, TEXT)})
@@ -376,7 +376,7 @@ def test_ambiguous_two_named_fields_reading_one_text_column(tmp_path, copies):
     reject source aliases before execution. Reviewers must settle the contract.
 
     Evidence: G-FIELDS-001 and EventSpec.fields;
-    conformance/documented-regressions.md#ambiguous-a01
+    conformance/spec/guarantees/G-FIELDS-001/guarantee.md
     """
     contract, rows, records, _ = token_fixture(r.Packed(), "masked")
     encoding = contract.batch.inputs["history"].representation.fields[0].encoding
@@ -407,7 +407,7 @@ def test_ambiguous_two_named_fields_reading_one_text_column(tmp_path, copies):
     with materialized(contract, rows, [record("one", 1)], tmp_path) as (task, _, _):
         message = (
             "CONTRACT AMBIGUITY A01: "
-            "conformance/documented-regressions.md#ambiguous-a01. "
+            "conformance/spec/guarantees/G-FIELDS-001/guarantee.md. "
             "G-FIELDS-001 forbids duplicate resolved values; EventSpec allows named fields. "
             "Proposed: emit both aliases in declaration order; "
             "alternative: reject before execution."

@@ -65,8 +65,8 @@ table on the DiskGraph engine. Serving needs encoded batches, so it is covered
 by tests in
 [test_inference_lifecycle.py](../../../../tests/test_inference_lifecycle.py)
 and [test_serving.py](../../../../tests/test_serving.py), each comparing served
-batches with native DiskGraph batch inference over the full dataset:
-the golden case served from each user's own rows; fetching exactly
+batches value for value with batch inference over the full dataset read in
+process: the golden case served from each user's own rows; fetching exactly
 what `rows_spec` lists, without the optional tables and columns, for the
 example, a bounded-window, an event-limit, a columns/events/graph and generated
 multi-hop graph contracts, and, in
@@ -77,14 +77,10 @@ from that user's rows only, for a columns/events/graph contract and a key/value
 token contract; Arrow input; a column that is `None` throughout; the plan built
 once per `ServingAssembler`; and each refusal above. For a model trained on the
 DiskGraph engine, served batches have the same layout as its model-format
-inference batches. Graph tensors are checked by source identity, feature values
-and a complete legal expansion, independently of tensor order or permitted tied
-neighbor choices. Generated sequences use independent source membership,
-chronology, values and limit assertions, allowing equal-time permutations and
-eligible clipping alternatives under the suite's tie policy. Floating means and
-moments use the conformance tolerance; counts, validity and structure remain
-exact. The keyless tied-event check validates eligible source membership and its
-limit separately for each preparation.
+inference batches. No test compares served values directly with the DiskGraph
+engine's batch inference; those values are covered only through the harness's
+differential comparison of batch inference read in process with the DiskGraph
+engine's.
 
 Deployment, request routing and fetching rows online are outside this package.
 

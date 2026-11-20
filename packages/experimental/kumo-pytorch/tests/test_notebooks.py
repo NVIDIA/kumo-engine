@@ -27,8 +27,6 @@ from pathlib import Path
 
 import pytest
 
-from conformance.refusals import record_child_refusal
-
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
 NEEDS: dict[str, tuple[str, ...]] = {
@@ -73,7 +71,7 @@ def _copy_sources(folder: Path, into: Path) -> None:
             shutil.copy2(path, into / path.name)
 
 
-def _execute(folder: Path, *, accept_refusal=False) -> str | None:
+def _execute(folder: Path) -> str:
     """Run ``folder``'s walkthrough from a fresh kernel with ``folder`` as its working
     directory; return what its last cell printed. The notebook file is not written."""
 
@@ -85,31 +83,9 @@ def _execute(folder: Path, *, accept_refusal=False) -> str | None:
         notebook,
         timeout=600,
         kernel_name="python3",
-        force_raise_errors=True,
         resources={"metadata": {"path": str(folder)}},
     )
-    # Wrap only the in-memory test copy. The kernel classifies actual exceptions;
-    # an nbclient error message alone never qualifies as a capability refusal.
-    with tempfile.TemporaryDirectory(prefix="notebook-refusal-") as scratch:
-        evidence_path = Path(scratch) / "refusal.json"
-        for index, cell in enumerate(notebook.cells):
-            if cell.cell_type == "code":
-                cell.source = (
-                    f"import sys; sys.path.insert(0, {str(ROOT)!r})\n"
-                    "from tests.notebook_refusals import execute as _execute_test_cell\n"
-                    f"_execute_test_cell({cell.source!r}, {f'cell-{index}'!r}, "
-                    f"globals(), {str(evidence_path)!r})"
-                )
-        try:
-            client.execute()
-        except nbclient.exceptions.CellExecutionError as error:
-            if not accept_refusal or not evidence_path.exists():
-                raise
-            record = json.loads(evidence_path.read_text())
-            if (error.ename, error.evalue) != (record["ename"], record["evalue"]):
-                raise
-            record_child_refusal(record["evidence"])
-            return None
+    client.execute()
     return "".join(
         output.get("text", "")
         for output in notebook.cells[-1].get("outputs", [])
@@ -211,99 +187,10 @@ def test_notebook_reproduces_its_files(name: str, tmp_path: Path) -> None:
     folder = EXAMPLES / name
     copy = tmp_path / name
     _copy_sources(folder, copy)
-    printed = _execute(copy, accept_refusal=True)
-    produced, committed = _generated(copy), _generated(folder)
-    if printed is None:
-        # Do not require later outputs, but preserve errors in files already written.
-        committed = {name: path for name, path in committed.items() if name in produced}
-    else:
-        assert "checks passed" in printed
-    problems = _drift(name, produced, committed)
+    assert "checks passed" in _execute(copy)
+    problems = _drift(name, _generated(copy), _generated(folder))
     if problems:
         pytest.fail(f"examples/{name}/: " + "\n".join(problems), pytrace=False)
-
-
-@pytest.mark.notebook
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        "refusal",
-        "empty-refusal",
-        "success",
-        "assertion",
-        "crash",
-        "spoof",
-        "write",
-        "tagged-error",
-        "tagged-refusal",
-    ],
-)
-def test_notebook_refusals_require_actual_kernel_evidence(tmp_path, scenario):
-    import nbclient
-    import nbformat
-
-    from tests.conformance.test_refusals import EMPTY_REFUSE, REFUSE
-
-    source = {
-        "refusal": REFUSE,
-        "empty-refusal": EMPTY_REFUSE,
-        "write": REFUSE,
-        "success": "print('checks passed')",
-        "assertion": "assert False, 'wrong answer'",
-        "crash": "raise ValueError('crash')",
-        "spoof": "raise ValueError('DG-ROW-FILTER unsupported capability')",
-        "tagged-error": "assert False, 'wrong answer'",
-        "tagged-refusal": REFUSE,
-    }[scenario]
-    notebook = nbformat.v4.new_notebook(
-        cells=[
-            nbformat.v4.new_code_cell(source),
-            nbformat.v4.new_code_cell(
-                "print('checks passed')" if scenario == "success" else REFUSE
-            ),
-        ]
-    )
-    if scenario in {"tagged-error", "tagged-refusal"}:
-        notebook.cells[0].metadata.tags = ["raises-exception"]
-        notebook.cells[1].source = "from pathlib import Path; Path('continued').touch()\n" + REFUSE
-    nbformat.write(notebook, tmp_path / NOTEBOOK)
-    if scenario in {"refusal", "empty-refusal", "success", "tagged-refusal"}:
-        result = _execute(tmp_path, accept_refusal=True)
-        assert result == ("checks passed\n" if scenario == "success" else None)
-    else:
-        with pytest.raises(nbclient.exceptions.CellExecutionError):
-            _execute(tmp_path, accept_refusal=scenario != "write")
-    assert not (tmp_path / "continued").exists()
-
-
-@pytest.mark.notebook
-@pytest.mark.parametrize("contents", ["expected", "wrong"])
-def test_notebook_refusal_preserves_prior_artifact_checks(tmp_path, monkeypatch, contents):
-    import nbformat
-
-    from tests import test_notebooks
-    from tests.conformance.test_refusals import REFUSE
-
-    examples = tmp_path / "examples"
-    folder = examples / "fixture"
-    folder.mkdir(parents=True)
-    (folder / "contract.json").write_text("expected")
-    notebook = nbformat.v4.new_notebook(
-        cells=[
-            nbformat.v4.new_code_cell(
-                f"from pathlib import Path; Path('contract.json').write_text({contents!r})\n"
-                + REFUSE
-            )
-        ]
-    )
-    nbformat.write(notebook, folder / NOTEBOOK)
-    monkeypatch.setattr(test_notebooks, "EXAMPLES", examples)
-    monkeypatch.setitem(NEEDS, "fixture", ())
-    if contents == "wrong":
-        with pytest.raises(pytest.fail.Exception, match="differs from what the notebook writes"):
-            test_notebook_reproduces_its_files("fixture", tmp_path / "execution")
-    else:
-        test_notebook_reproduces_its_files("fixture", tmp_path / "execution")
 
 
 def write(names: list[str]) -> None:

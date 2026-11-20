@@ -7,10 +7,7 @@ its inputs a little differently, the model still returns numbers, and they are
 wrong.
 
 This page walks one small example from training to batch scoring to online
-serving, and shows how to keep the inputs identical at every step. Training and
-batch scoring use DiskGraph. `ServingAssembler` still invokes the deprecated
-InMemory implementation internally. The testing suite allows this package-owned
-dependency while prohibiting InMemory as a test backend or reference oracle.
+serving, and shows how to keep the inputs identical at every step.
 
 kumo-pytorch gives you three things for this:
 
@@ -67,28 +64,6 @@ state, and the row lookup the service uses.
 
 <!-- test: file shop.py -->
 ```python
-from pathlib import Path
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-
-
-def parquet_data(rows, schema):
-    """Write this example's small, explicitly typed fixture tables."""
-    root = Path("data")
-    root.mkdir(exist_ok=True)
-    sources = {}
-    for table in schema.tables:
-        arrow_schema = pa.schema(
-            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
-        )
-        path = root / f"{table.name}.parquet"
-        if not path.exists():
-            pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
-        sources[table.name] = api.Parquet(str(path))
-    return api.Dataset(sources)
-
-
 import random
 from collections.abc import Mapping
 from typing import Any
@@ -236,7 +211,7 @@ def anchors(at: int, *, split: str | None) -> list[api.SampleRequest]:
 
 
 def dataset(rows: Tables) -> api.Dataset:
-    return parquet_data({name: values for (name, values) in rows.items()}, contract().schema)
+    return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
 
 
 def rows_for(user_id: int, as_of: int) -> Tables:
@@ -266,11 +241,8 @@ from shop import TRAIN_AT, ActivityModel, anchors, contract, dataset, tables
 
 workdir = Path("run-001")
 torch.manual_seed(0)
-with api.prepare(
-    contract(),
-    dataset(tables()),
-    api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
-) as plan:
+# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
+with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
     with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
         model = ActivityModel(task.output_schema)  # embedding sizes come from here
         optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
@@ -382,11 +354,8 @@ def leaves(prefix: str, value: Any) -> Iterator[tuple[str, Any]]:
 
 
 predictions = {}
-with api.prepare(
-    artifact.contract,
-    dataset(tables()),
-    api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
-) as plan:
+# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
+with api.prepare(artifact.contract, dataset(tables()), api.InMemoryEngine()) as plan:
     scoring = anchors(SCORE_AT, split=None)
     with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
         with torch.no_grad():
@@ -426,8 +395,11 @@ fingerprints.
 
 ### Batch scoring on the DiskGraph engine
 
-This scoring variant uses a Parquet `AnchorTable` for native batch planning.
-The artifact, weights and model stay the same.
+The example above scores on the in-memory engine to keep it small. A real
+scoring job reads Parquet files through the DiskGraph engine, and its anchors
+are a Parquet `AnchorTable`. The artifact, the weights and the model stay the same.
+Here we write the example's tables and scoring anchors to Parquet and score
+them:
 
 <!-- test: diskgraph -->
 ```python

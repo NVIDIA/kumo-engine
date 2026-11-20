@@ -3,9 +3,8 @@
 A contract is three declarations: `DataSchema` (what is stored), `SampleSpec`
 (what one example may read at its prediction time) and `BatchSpec` (what the
 model receives). This page builds one contract over a small shop, then extends
-it with a graph neighborhood and caller-supplied candidates. Blocks execute in
-order on DiskGraph. The executable documentation checks record explicit
-unsupported-capability refusals separately from execution failures.
+it with a graph neighborhood and caller-supplied candidates. Every block runs
+in order; paste them into one Python session.
 
 These snippets use Python requests to inspect a few examples. For training,
 evaluation, or benchmarking on DiskGraph, use the
@@ -19,27 +18,6 @@ event or transaction tables may set `primary_key=None`; each source row remains
 a separate occurrence, including identical rows:
 
 ```python
-from pathlib import Path
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-
-
-def parquet_data(rows, schema):
-    """Write this example's small, explicitly typed fixture tables."""
-    root = Path("data")
-    root.mkdir(exist_ok=True)
-    sources = {}
-    for table in schema.tables:
-        arrow_schema = pa.schema(
-            [pa.field(name, dtype.to_arrow()) for name, dtype in table.columns.items()]
-        )
-        path = root / f"{table.name}.parquet"
-        pq.write_table(pa.Table.from_pylist(rows[table.name], schema=arrow_schema), path)
-        sources[table.name] = api.Parquet(str(path))
-    return api.Dataset(sources)
-
-
 from kumo.pytorch import api
 
 DAY = 86_400
@@ -117,7 +95,7 @@ rows = {
         {"purchase_id": 4, "user_id": 1, "item_id": 12, "at": 12 * DAY, "amount": 99.0},
     ],
 }
-dataset = parquet_data({name: values for (name, values) in rows.items()}, schema)
+dataset = api.Dataset(tables={name: api.InMemoryRows(rows=values) for name, values in rows.items()})
 ```
 
 ## The sample: what one example may know
@@ -214,15 +192,12 @@ batch = api.BatchSpec(
 )
 contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
 
+# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(
-        contract=contract,
-        dataset=dataset,
-        engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
-    ) as plan,
+    api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
-    result = next(task.batches())
+    result = next(task.batches(requests=requests))
 
 user = result.inputs["user"]
 history = result.inputs["history"]
@@ -309,26 +284,24 @@ graph_batch = api.BatchSpec(
 )
 graph_contract = api.DataLoaderSpec(schema=schema, sample=graph_sample, batch=graph_batch)
 
+# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(
-        contract=graph_contract,
-        dataset=dataset,
-        engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
-    ) as plan,
+    api.prepare(contract=graph_contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
-    graph = next(task.batches()).inputs["graph"]
+    graph = next(task.batches(requests=requests)).inputs["graph"]
 
 print("node types:", tuple(sorted(graph["nodes"])))
-items = graph["nodes"]["items"]
-print("items (sample, id):", sorted(zip(items["batch"].tolist(), items["ids"].tolist())))
+print("item ids:", graph["nodes"]["items"]["ids"].tolist())
+print("owning sample:", graph["nodes"]["items"]["batch"].tolist())
 print("edge types:", tuple(sorted(graph["edges"])))
 ```
 
 <!-- test: output -->
 ```text
 node types: ('items', 'purchases', 'users')
-items (sample, id): [(0, 10), (0, 11), (1, 10)]
+item ids: [11, 10, 10]
+owning sample: [0, 0, 1]
 edge types: ('item_purchases', 'user_purchases')
 ```
 
@@ -399,11 +372,12 @@ candidate_request = api.SampleRequest(
         )
     },
 )
+# The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
     api.prepare(
         contract=api.DataLoaderSpec(schema=schema, sample=candidate_sample, batch=candidate_batch),
         dataset=dataset,
-        engine=api.DiskGraphEngine(index="diskgraph-index", num_threads=1, num_shards=1),
+        engine=api.InMemoryEngine(),
     ) as plan,
     plan.materialize(anchors=(candidate_request,)) as task,
 ):
