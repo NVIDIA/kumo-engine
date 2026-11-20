@@ -17,7 +17,14 @@ from typing import Any
 
 import numpy as np
 
-from kumo.pytorch.anchors import AllAnchors, AnchorTable, PositionalAnchors, SplitSelection
+from kumo.pytorch.anchors import (
+    ALL_ANCHORS,
+    AllAnchors,
+    AnchorTable,
+    PositionalAnchors,
+    SplitSelection,
+)
+from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.spec import ValidationIssue
@@ -148,7 +155,9 @@ class ParquetAnchors(PositionalAnchors):
         if not selected:
             return []
         indices = pa.array(selected, type=pa.int64())
-        columns = {name: values.take(indices).to_pylist() for name, values in self._columns.items()}
+        columns = {
+            name: _arrow_values(values.take(indices)) for name, values in self._columns.items()
+        }
         table = self._table
         targets = sorted(table.targets.items())
         return [
@@ -165,8 +174,22 @@ class ParquetAnchors(PositionalAnchors):
             for index, row in enumerate(selected)
         ]
 
+    def latest_time(self, selection: SplitSelection = ALL_ANCHORS) -> Any:
+        """The latest ``as_of_time`` of the selected anchors, as `fetch` returns it."""
+        import pyarrow.compute as pc
+
+        rows = self._rows(selection)
+        if not len(rows):
+            raise ValueError("no anchors selected")
+        if self._table.as_of_time is None:
+            return 0
+        times = self._columns[self._table.as_of_time]
+        if not isinstance(selection, AllAnchors):
+            times = times.take(rows)
+        return _arrow_scalar_value(pc.max(times))
+
     def _value(self, name: str, row: int) -> Any:
-        return self._columns[name][row].as_py()
+        return _arrow_scalar_value(self._columns[name][row])
 
     def _request(self, position: int) -> SampleRequest:
         row = int(position)

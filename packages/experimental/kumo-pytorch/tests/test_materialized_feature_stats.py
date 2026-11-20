@@ -17,6 +17,7 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
@@ -155,7 +156,11 @@ def test_selected_stats_reuse_shared_fitter_without_sample_collection(tmp_path, 
 
         monkeypatch.setattr(plan._require_open(), "build", forbidden)
         monkeypatch.setattr(plan._require_open(), "build_model", forbidden, raising=False)
+        monkeypatch.setattr(ParquetAnchors, "fetch", forbidden)
+        monkeypatch.setattr(ParquetAnchors, "_request", forbidden)
         with plan.materialize(values.anchors, fit_split="train") as task:
+            assert isinstance(task._anchors, ParquetAnchors)
+            assert task.fitted_state.fit["inputs"]["statistics"]["cutoff"] == 100 * 10**9
             encoder = task.output("entity").field(name="score").encoder
             assert encoder.mean == 6.0
             assert encoder.scale == pytest.approx(sqrt(92 / 8))
