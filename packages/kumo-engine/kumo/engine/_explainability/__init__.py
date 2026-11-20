@@ -12,16 +12,19 @@ cutoff statistics from the transported counts. Open it with
 import json
 import posixpath
 from functools import cache, cached_property
+from html import escape
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 
 from kumo.engine import _widget
 from kumo.engine._explainability import (
     _classification,
     _columns,
     _metrics,
+    _ranking,
     _subgraphs,
+    _training,
 )
 from kumo.engine._explainability._forecasting import forecast_card
 from kumo.engine._explainability._regression import predicted_card
@@ -38,16 +41,23 @@ from kumo.engine._explainability._snapshot import Snapshot
 if TYPE_CHECKING:
     from kumo.engine.trainer.trainer import TrainingResult
 
-# The cards of the Evaluation and Explanation tabs, in order. A card that does
-# not apply to the model type or whose inputs are missing is left out; a tab
-# with no card is left out.
+# The cards of the Evaluation, Training and Explanation tabs, in order. A card
+# that does not apply to the model type or whose inputs are missing is left
+# out; a tab with no card is left out.
 TABS = (('evaluation',
          (('metrics', _metrics.card), ('cutoff', _classification.cutoff_card),
-          ('scores', _classification.scores_card),
+          ('scores', _classification.scores_card), ('ranking', _ranking.card),
           ('predicted', predicted_card), ('forecast', forecast_card))),
+        ('training', (('history', _training.history_card),
+                      ('training_table', _training.table_card))),
         ('explanation', (('subgraphs', _subgraphs.card), ('importance',
                                                           _columns.importance),
                          ('groups', _columns.groups))))
+
+# The page around a standalone widget, as the widget's own HTML export sets it.
+PAGE_STYLE = ('html{color-scheme:light dark}body{margin:clamp(8px,2vw,24px);'
+              'background:light-dark(white,#1a1c1f)}'
+              '.kumo-widget{max-width:1200px;margin:auto}')
 
 
 def build(run: Run) -> dict[str, Any]:
@@ -60,8 +70,8 @@ def build(run: Run) -> dict[str, Any]:
         ]
         if cards:
             tabs.append(dict(id=tab_id, label=tab_id.capitalize(), cards=cards))
-    return dict(model_type=run.model_type, entities=run.entities,
-                header=_metrics.header(run), tabs=tabs)
+    return dict(model_type=run.model_type, task_type=run.task_type,
+                entities=run.entities, header=_metrics.header(run), tabs=tabs)
 
 
 @cache
@@ -71,9 +81,12 @@ def _static(name: str) -> str:
 
 def script(model_type: str) -> str:
     """The shared front end, the model type's own cards, then the mount."""
-    names = ['charts.js', 'shell.js', 'epoch-history.js', 'exports.js']
-    if model_type != LINK_PREDICTION:
-        names.append(f'{model_type}.js')
+    names = [
+        'charts.js', 'shell.js', 'epoch-history.js', 'training-table.js',
+        'exports.js'
+    ]
+    names.append('ranking.js' if model_type ==
+                 LINK_PREDICTION else f'{model_type}.js')
     if model_type != FORECASTING:
         names.append('subgraphs.js')
     # The widget layer runs the script inside one function; keep it from
@@ -81,6 +94,7 @@ def script(model_type: str) -> str:
     code = '\n'.join(_static(name) for name in names).replace('</', '<\\/')
     return (
         'function renderExplainability({host,widgetId,data,signal,onDispose}, saved) {\n'
+        'const pageCSS = ' + json.dumps(PAGE_STYLE) + ';\n' +
         'const exportCSS = ' + json.dumps(_static('widget.css')) + ';\n' +
         code + '''
 const fallback = host.querySelector(':scope > .kx-static');
@@ -128,6 +142,25 @@ class ExplainabilityView:
     def html(self) -> str:
         """The widget as one self-contained HTML fragment."""
         return _widget.render_widget(**self._specification())
+
+    def page(self, title: str = 'Training report') -> str:
+        """The widget as a standalone, interactive HTML page.
+
+        The page loads nothing from outside itself. Open it in a browser
+        or an artifact viewer that permits scripted HTML.
+        """
+        return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,'
+                f'initial-scale=1"><title>{escape(title)}</title>'
+                f'<style>{PAGE_STYLE}</style></head><body>{self.html()}'
+                '</body></html>')
+
+    def save(self, path: Union[str, Path],
+             title: str = 'Training report') -> Path:
+        """Write :meth:`page` to ``path`` and return the path."""
+        path = Path(path)
+        path.write_text(self.page(title), encoding='utf-8')
+        return path
 
     def as_widget(self) -> Any:
         """Return a cached anywidget view, for hosts that need one."""

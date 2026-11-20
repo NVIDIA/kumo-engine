@@ -5,6 +5,7 @@
 
 import base64
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import replace
@@ -26,7 +27,13 @@ from test_explanation_artifacts import _run as _retained_run
 from kumo.engine import _explainability
 from kumo.engine._explainability import _classification, _columns, _forecasting
 from kumo.engine._explainability import _format as fmt
-from kumo.engine._explainability import _metrics, _regression, _run, _subgraphs
+from kumo.engine._explainability import (
+    _metrics,
+    _ranking,
+    _regression,
+    _run,
+    _subgraphs,
+)
 from kumo.engine.explain import TrainingExplanations
 from kumo.engine.trainer.trainer import TrainingResult
 
@@ -74,19 +81,24 @@ def _write_json(path: Path, value):
 
 def _result(tmp_path: Path, task_type: str = 'regression', *,
             test_rows: int = 30, batch: int = 64, max_test_steps: int = 2000,
-            holdout: pd.DataFrame | None = None) -> TrainingResult:
+            holdout: pd.DataFrame | None = None,
+            scores: dict[str, float] | None = None, tune: str = 'mae',
+            refit: bool = True) -> TrainingResult:
     """A fitted result with the files the widget reads."""
-    run, trial = _retained_run(tmp_path, refit=True)
+    run, trial = _retained_run(tmp_path, refit=refit)
+    metrics = ['mae', 'mse', 'rmse'] if scores is None else sorted(
+        {k.split('_', 1)[1]
+         for k in scores if k.startswith('test_')})
     bundle = run / 'published-model'
     table = tmp_path / 'snap' / 'train_tables' / 'tt-run'
     files = dict(
         prediction_schema=('prediction-schema.json', dict(task_type=task_type)),
         resolved_model_plan=('model/resolved-model-plan.json',
                              dict(
-                                 training_job=dict(
-                                     metrics=['mae', 'mse', 'rmse'],
-                                     tune_metric='mae'), optimization=dict(
-                                         max_test_steps=max_test_steps))),
+                                 training_job=dict(metrics=metrics,
+                                                   tune_metric=tune),
+                                 optimization=dict(
+                                     max_test_steps=max_test_steps))),
         trainer_config=('model/config.json',
                         dict(loader_kwargs=dict(batch_size=batch),
                              eval_loader_kwargs=None)),
@@ -121,13 +133,12 @@ def _result(tmp_path: Path, task_type: str = 'regression', *,
         dict(graph=dict(index_path=str(tmp_path / 'snap')),
              stages=dict(test=dict(index_path=str(table)))))
     return TrainingResult(
-        metrics=dict(test_mae=2.0, test_mse=9.0, test_rmse=3.0,
-                     test_refit_mae=1.5, test_refit_mse=4.0,
-                     test_refit_rmse=2.0), artifact_paths={
-                         k: str(bundle / v[0])
-                         for k, v in files.items()
-                     }, bundle_dir=bundle,
-        holdout_path=bundle / 'holdout.parquet',
+        metrics=scores
+        or dict(test_mae=2.0, test_mse=9.0, test_rmse=3.0, test_refit_mae=1.5,
+                test_refit_mse=4.0, test_refit_rmse=2.0), artifact_paths={
+                    k: str(bundle / v[0])
+                    for k, v in files.items()
+                }, bundle_dir=bundle, holdout_path=bundle / 'holdout.parquet',
         explanations=TrainingExplanations.load(run))
 
 
@@ -177,21 +188,41 @@ def test_forecast_coverage_counts_entity_anchors(tmp_path):
     assert run.holdout_coverage() == 'based on the first 2 of 30 test rows'
 
 
-def test_metrics_card_uses_last_epoch_training(tmp_path):
+def _scored(run: _run.Run, model_type: str, tune: str, names: list[str]):
+    run.model_type = model_type
+    run.plan = dict(training_job=dict(metrics=names, tune_metric=tune))
+    run.metrics = {f'test_refit_{name}': 0.1 for name in names}
+    return _metrics.card(run)
+
+
+def test_metrics_card_is_one_view_of_pills_and_a_table(tmp_path):
     result = _result(tmp_path)
     result.metrics.update(train_mae=0.8, val_mae=1.7)
     card = _card(_metrics.card, result)
-    tiles = card['views'][0]['tiles']
-    assert [t['name'] for t in tiles] == ['MAE', 'RMSE']
-    assert tiles[0]['tune'] and tiles[0]['holdout_text'] == '1.50'
-    assert tiles[0]['gap_text'] == 'holdout minus training: +0.700'
-    assert tiles[0]['callout'] == '+0.833 vs predict the mean'
-    table = card['views'][1]['table']
-    assert [g['title'] for g in table['groups']
-            ] == ['Published model', 'Training run · last epoch']
+    [view] = card['views']
+    assert view['pills'] == [
+        dict(name='MAE', tune=True, holdout_text='1.50'),
+        dict(name='RMSE', tune=False, holdout_text='2.00')
+    ]
+    table = view['table']
     assert [c['label']
             for c in table['columns']] == ['Holdout', 'Validation', 'Training']
-    assert table['rows'][0]['texts'] == ['1.50', '1.70', '0.800']
+    assert table['rows'][0] == dict(name='MAE', tune=True, baseline=False,
+                                    texts=['1.50', '1.70', '0.800'])
+    # Baselines follow the model rows and are scored on the holdout alone.
+    baseline = [r for r in table['rows'] if r['baseline']]
+    assert table['rows'][-len(baseline):] == baseline
+    assert [r['name'] for r in baseline] == [
+        'Predict zero · MAE', 'Predict zero · RMSE', 'Predict the mean · MAE',
+        'Predict the mean · RMSE'
+    ]
+    assert all(r['texts'][1:] == [None, None] for r in baseline)
+    assert 'groups' not in table and 'detail' not in table['columns'][0]
+
+
+def _cards(result: TrainingResult) -> dict[str, dict[str, Any]]:
+    data = result.visualize().data
+    return {c['id']: c for tab in data['tabs'] for c in tab['cards']}
 
 
 @pytest.mark.parametrize('recorded', ['bundle', 'progress', None])
@@ -221,19 +252,184 @@ def test_epoch_history_follows_search_experiments(tmp_path, recorded):
         _write_json(
             Path(result.explanations.trial_root).parent /
             'auto_train_progress.json', dict(trial_progress=trials))
-    views = result.visualize().data['tabs'][0]['cards'][0]['views']
+    tabs = result.visualize().data['tabs']
     if not recorded:
-        assert 'history' not in [view['id'] for view in views]
+        assert 'history' not in _cards(result)
         return
-    assert views[-1]['metrics'] == ['mae', 'loss']
-    assert views[-1]['experiments'] == [
-        dict(train_mae=[(1, 0.5), (4, 0.4)], val_mae=[(3, 0.8)],
-             train_loss=[(1, None)]),
-        dict(train_loss=[(2, 1)]),
+    assert [tab['id']
+            for tab in tabs] == ['evaluation', 'training', 'explanation']
+    assert [tab['label'] for tab in tabs][:2] == ['Evaluation', 'Training']
+    assert 'history' not in [c['id'] for c in tabs[0]['cards']]
+    assert all(view['id'] != 'history'
+               for view in _cards(result)['metrics']['views'])
+    history = _cards(result)['history']
+    assert history['title'] == 'Learning Curves'
+    assert history['metrics'] == ['mae', 'loss'] and history['tune'] == 'mae'
+    # The retained run selected version_2, the first of these experiments.
+    assert history['experiments'] == [
+        dict(
+            label='Experiment 3', best=True,
+            series=dict(train_mae=[(1, 0.5), (4, 0.4)], val_mae=[(3, 0.8)],
+                        train_loss=[(1, None)])),
+        dict(label='Experiment 11', best=False,
+             series=dict(train_loss=[(2, 1)])),
     ]
-    # History alone is sufficient, without any holdout score.
-    html = replace(result, metrics={}).visualize().html()
-    assert '"id":"history"' in html.replace(' ', '')
+
+
+def test_binary_metrics_have_no_baseline_rows(tmp_path):
+    run = _run.load(_binary(tmp_path, [.9, .2, .3, .1], [True, False] * 2))
+    card = _scored(run, _run.CLASSIFICATION, 'auroc', ['auroc', 'ap', 'f1'])
+    assert not any(r['baseline'] for r in card['views'][0]['table']['rows'])
+
+
+@pytest.mark.parametrize('model_type', [_run.LINK_PREDICTION, 'ranking'])
+def test_top_k_metrics_order_by_family_then_k(tmp_path, model_type):
+    names = [
+        'map@10', 'recall@20', 'precision@10', 'f1@10', 'recall@10',
+        'precision@20', 'map@20'
+    ]
+    card = _scored(_run.load(_result(tmp_path)), model_type, 'map@10', names)
+    view = card['views'][0]
+    assert [p['name']
+            for p in view['pills']] == ['MAP@10', 'Recall@10', 'Precision@10']
+    assert [r['name'] for r in view['table']['rows']] == [
+        'F1@10', 'MAP@10', 'MAP@20', 'Precision@10', 'Precision@20',
+        'Recall@10', 'Recall@20'
+    ]
+
+
+def test_header_keeps_the_query_and_notes_a_full_refit(tmp_path):
+    run = _run.load(_result(tmp_path))
+    assert list(_metrics.header(run)) == ['query']
+    run.full_refit = True
+    assert _metrics.header(run)['note'].endswith('before full refit.')
+
+
+@pytest.mark.parametrize(
+    'scores, retained, best',
+    [
+        # The retained run names version_2, whatever the scores say.
+        ([0.7, 1.7, 0.2], True, [False, False, True]),
+        # Without it, the one experiment that recorded the published score.
+        ([0.7, 1.7, 0.2], False, [False, True, False]),
+        ([1.7, 1.7, 0.2], False, [False, False, False]),
+        ([0.7, 0.2], False, [False, False]),
+        ([1.7], True, [False]),
+    ])
+def test_epoch_history_marks_the_selected_experiment(tmp_path, scores, retained,
+                                                     best):
+    result = _result(tmp_path)
+    trials = {
+        str(i): dict(metrics={'1': dict(validation_metrics=dict(val_mae=v))})
+        for i, v in enumerate(scores)
+    }
+    _write_json(tmp_path / 'history.json', dict(trial_progress=trials))
+    result.artifact_paths['metric_history'] = str(tmp_path / 'history.json')
+    result = replace(
+        result, metrics={
+            **result.metrics, 'val_mae': 1.7
+        }, explanations=result.explanations
+        if retained else TrainingExplanations.unavailable())
+    history = _cards(result)['history']
+    assert [e['best'] for e in history['experiments']] == best
+    assert [e['label'] for e in history['experiments']
+            ] == [f'Experiment {i + 1}' for i in range(len(scores))]
+
+
+def _split_stats(result: TrainingResult, **splits: dict[str, Any]) -> None:
+    path = (Path(result.explanations.run_root).parent / 'snap' /
+            'train_tables' / 'tt-run' / 'split_stats.json')
+    _write_json(path, {f'{k}_table_stats': v for k, v in splits.items()})
+
+
+def test_training_table_of_a_temporal_regression(tmp_path):
+    result = _result(tmp_path)
+
+    def day(month):
+        return f'2024-0{month}-01T00:00:00'
+
+    _split_stats(
+        result, train=dict(num_train_rows=960, num_entities=240,
+                           min_date=day(4), max_date=day(5),
+                           target_distribution=dict(target_mean=2.925)),
+        val=dict(num_train_rows=480, num_entities=900, min_date=day(6),
+                 max_date=day(6), target_distribution=dict(target_mean=12.5)),
+        test=dict(num_train_rows=30, num_entities=30, min_date=day(7),
+                  max_date=day(7),
+                  target_distribution=dict(target_mean=float('nan'))))
+    card = _cards(result)['training_table']
+    assert card['title'] == 'Training Table'
+    assert card['columns'] == [
+        'Rows', 'Distinct users (approx.)', 'Target mean', 'Anchor times'
+    ]
+    # Entities never exceed rows, and the mean column shares one scale.
+    assert card['rows'] == [
+        dict(name='Training',
+             texts=['960', '240', '2.9', '2024-04-01 to 2024-05-01']),
+        dict(name='Validation', texts=['480', '480', '12.5', '2024-06-01']),
+        dict(name='Holdout', texts=['30', '30', '', '2024-07-01']),
+    ]
+
+
+def test_training_table_of_a_static_binary_task(tmp_path):
+    result = _result(tmp_path, 'binary_classification')
+    epoch = '1970-01-01T00:00:00'
+
+    def split(rows, true):
+        return dict(
+            num_train_rows=rows, num_entities=rows, min_date=epoch,
+            max_date=epoch,
+            target_distribution=dict(count=dict(true=true, false=rows - true)))
+
+    _split_stats(result, train=split(148, 74), val=split(51, 28),
+                 test=split(41, 15))
+    card = _cards(result)['training_table']
+    # Static tasks carry a placeholder anchor, which is not a time range.
+    assert card['columns'] == [
+        'Rows', 'Distinct users (approx.)', 'Positive rate'
+    ]
+    assert [r['texts'] for r in card['rows']] == [['148', '148', '50.0%'],
+                                                  ['51', '51', '54.9%'],
+                                                  ['41', '41', '36.6%']]
+
+
+def test_training_table_without_class_balance_or_counts(tmp_path):
+    result = _result(tmp_path, 'multiclass_classification')
+    _split_stats(
+        result, train=dict(num_train_rows=5,
+                           target_distribution={}), val=dict(num_entities=3),
+        test=dict(num_train_rows=2,
+                  target_distribution=dict(count=dict(a=1, b=1))))
+    card = _cards(result)['training_table']
+    assert card['columns'] == ['Rows']
+    assert card['rows'] == [
+        dict(name='Training', texts=['5']),
+        dict(name='Holdout', texts=['2'])
+    ]
+    _split_stats(result, val=dict(num_entities=3))
+    assert 'training_table' not in _cards(result)
+
+
+def test_training_table_from_the_bundle_alone(tmp_path):
+    result = _result(tmp_path)
+
+    def ns(month):
+        return int(pd.Timestamp(f'2024-0{month}-01').value)
+
+    manifest = tmp_path / 'input.json'
+    _write_json(
+        manifest,
+        dict(split=dict(
+            stage_counts=dict(train=400, val=40, test=30),
+            stage_seed_times=dict(train=[ns(1), ns(2)], val=[ns(
+                3), ns(3)], test=[2**63, 2**63]))))
+    result.artifact_paths['input_manifest'] = str(manifest)
+    result = replace(result, explanations=TrainingExplanations.unavailable())
+    card = _cards(result)['training_table']
+    assert card['columns'] == ['Rows', 'Anchor times']
+    assert [r['texts']
+            for r in card['rows']] == [['400', '2024-01-01 to 2024-02-01'],
+                                       ['40', '2024-03-01'], ['30', '']]
 
 
 @pytest.mark.parametrize('truncated', [False, True])
@@ -252,27 +448,22 @@ def test_bundle_alone_keeps_published_holdout(tmp_path, truncated, full_refit):
     result = replace(result, holdout_truncated=truncated,
                      explanations=TrainingExplanations.unavailable())
     card = _card(_metrics.card, result)
-    mae = card['views'][0]['tiles'][0]
-    assert mae['holdout_text'] == '1.50' and mae['training_text'] is None
-    assert mae['callout'] is not None  # baselines need only the holdout
-    table = card['views'][1]['table']
-    assert [c['label'] for c in table['columns']] == ['Holdout']
-    assert table['groups'] == [
-        dict(
-            title='Model before full refit'
-            if full_refit else 'Published model', span=1)
-    ]
+    view = card['views'][0]
+    assert view['pills'][0]['holdout_text'] == '1.50'
+    # Baselines need only the holdout.
+    assert any(row['baseline'] for row in view['table']['rows'])
+    assert [c['label'] for c in view['table']['columns']] == ['Holdout']
     assert _columns.importance(_run.load(result)) is None
     # Holdout scores come from the whole test split, not the retained copy;
     # the baselines come from the retained copy.
     assert card['coverage'] is None
-    assert card['views'][1].get('coverage') is None
-    assert (card['views'][0]['coverage'] == 'Baselines: based on a truncated '
+    assert (view['coverage'] == 'Baselines: based on a truncated '
             'retained holdout; full coverage is unavailable.'
-            if truncated else card['views'][0]['coverage'] is None)
-    svg = result.visualize()._repr_svg_()
-    assert ('truncated retained holdout' in svg) == truncated
-    assert ('before full refit' in svg) == bool(full_refit)
+            if truncated else view['coverage'] is None)
+    visual = result.visualize()
+    assert ('truncated retained holdout' in visual._repr_svg_()) == truncated
+    assert ('note' in visual.data['header']) == bool(full_refit)
+    assert ('before full refit' in visual._repr_svg_()) == bool(full_refit)
 
 
 MALFORMED = {
@@ -322,15 +513,13 @@ def test_missing_optional_files_omit_views(tmp_path, missing):
     run = _run.load(result)
     card = _card(_metrics.card, result)
     if missing == 'holdout':
-        tile = card['views'][0]['tiles'][0]
-        assert run.holdout is None and tile['baselines'] == []
-        assert tile['callout'] is None
+        assert run.holdout is None
+        assert not any(r['baseline'] for r in card['views'][0]['table']['rows'])
     if explained:
         assert _columns.importance(run) is None
         groups = _card(_columns.groups, result)
         assert groups['selectable'] and len(groups['columns']) == 2
     if missing.startswith(('split', 'runtime-')):
-        assert card['views'][1]['table']['columns'][0]['detail'] is None
         assert run.covered(1) is None
     view = result.visualize()
     assert view.data['tabs'] and 'Training diagnostics' in view._repr_svg_()
@@ -410,15 +599,20 @@ def _model_type_result(tmp_path: Path, task: str) -> TrainingResult:
 
 @pytest.mark.parametrize('task, cards', [
     ('binary_classification', [['metrics', 'cutoff', 'scores'],
+                               ['training_table'],
                                ['subgraphs', 'importance', 'groups']]),
-    ('multiclass_classification', [['metrics'],
+    ('multiclass_classification', [['metrics'], ['training_table'],
                                    ['subgraphs', 'importance', 'groups']]),
-    ('multilabel_classification', [['metrics'],
+    ('multilabel_classification', [['metrics'], ['training_table'],
                                    ['subgraphs', 'importance', 'groups']]),
-    ('regression', [['metrics', 'predicted'],
+    ('regression', [['metrics', 'predicted'], ['training_table'],
                     ['subgraphs', 'importance', 'groups']]),
-    ('forecasting', [['metrics', 'forecast'], ['importance']]),
-    ('temporal_link_prediction', [['metrics'], ['subgraphs', 'importance']]),
+    ('forecasting', [['metrics', 'forecast'], ['training_table'],
+                     ['importance']]),
+    ('temporal_link_prediction', [['metrics'], ['training_table'],
+                                  ['subgraphs', 'importance']]),
+    ('multilabel_ranking', [['metrics'], ['training_table'],
+                            ['subgraphs', 'importance']]),
 ])
 def test_cards_per_model_type(tmp_path, task, cards):
     result = _model_type_result(tmp_path, task)
@@ -430,16 +624,90 @@ def test_cards_per_model_type(tmp_path, task, cards):
 
     assert listed() == cards
     (result.bundle_dir / 'holdout.parquet').unlink()
-    assert listed()[1] == cards[1]
+    assert listed()[2] == cards[2]
 
 
-def test_tenths_only_include_observed_groups(tmp_path):
-    view = _run.tenths(_run.load(_result(tmp_path)), np.arange(3),
-                       np.array([0.1, 0.5, 0.9]), np.array([0, 1, 1]),
-                       'observed')
+def _ranking_scores(refit: bool = False) -> dict[str, float]:
+    scores = {'test_loss': 5.0}
+    for family, base in (('recall', 0.2), ('precision', 0.7), ('map', 0.5),
+                         ('f1', 0.3), ('ndcg', 0.4)):
+        for i, k in enumerate((1, 10, 5)):
+            for split, shift in (('test', 0.0), ('val', 0.01), ('train', 0.02)):
+                scores[f'{split}_{family}@{k}'] = base + 0.1 * i + shift
+                if refit and split == 'test':
+                    scores[f'test_refit_{family}@{k}'] = base + 0.1 * i + 0.05
+    return scores
+
+
+@pytest.mark.parametrize('task', [
+    'multilabel_ranking', 'static_link_prediction', 'temporal_link_prediction'
+])
+@pytest.mark.parametrize('refit', [False, True])
+def test_ranking_card_reports_metrics_by_k(tmp_path, task, refit):
+    scores = _ranking_scores(refit)
+    result = _result(tmp_path, task, scores=scores, tune='f1@5', refit=refit)
+    card = _card(_ranking.card, result)
+    assert [view['id'] for view in card['views']
+            ] == ['f1', 'recall', 'precision', 'map', 'ndcg']
+    assert [view['tune'] for view in card['views']] == [True] + [False] * 4
+    holdout = 'test_refit_' if refit else 'test_'
+    for view in card['views']:
+        assert view['ks'] == [1, 5, 10]
+        assert [s['id'] for s in view['series']] == ['holdout', 'val', 'train']
+        for series, prefix in zip(view['series'], (holdout, 'val_', 'train_')):
+            expected = [scores[f'{prefix}{view["id"]}@{k}'] for k in view['ks']]
+            assert series['values'] == expected
+            assert series['texts'] == [fmt.number(v) for v in expected]
+    assert card['views'][1]['label'] == 'Recall'
+    assert json.dumps(card, allow_nan=False)
+
+
+def test_ranking_card_omits_missing_splits_and_single_cutoffs(tmp_path):
+    scores = {
+        'test_recall@5': 0.5,
+        'test_recall@10': 0.7,
+        'test_map@5': 0.4,
+        'val_recall@5': 0.4
+    }
+    card = _card(
+        _ranking.card,
+        _result(tmp_path, 'multilabel_ranking', scores=scores, tune='recall@5',
+                refit=False))
+    assert [view['id'] for view in card['views']] == ['recall']
+    recall = card['views'][0]
+    assert [s['id'] for s in recall['series']] == ['holdout', 'val']
+    assert recall['series'][1]['values'] == [0.4, None]
+    assert recall['series'][1]['texts'] == ['0.400', None]
+    only_one = {'test_recall@5': 0.5, 'test_precision@5': 0.4}
+    assert _ranking.card(
+        _run.load(
+            _result(tmp_path / 'b', 'multilabel_ranking', scores=only_one,
+                    tune='recall@5'))) is None
+
+
+def test_ranking_card_applies_to_ranking_tasks_only(tmp_path):
+    result = _result(tmp_path, 'regression', scores=_ranking_scores())
+    assert _ranking.card(_run.load(result)) is None
+
+
+def test_ranking_snapshot_lists_the_tuned_metric_by_k(tmp_path):
+    result = _result(tmp_path, 'multilabel_ranking', scores=_ranking_scores(),
+                     tune='recall@5', refit=False)
+    view = result.visualize()
+    assert [card['id'] for card in view.data['tabs'][0]['cards']
+            ] == ['metrics', 'ranking']
+    text = ' '.join(ElementTree.fromstring(view._repr_svg_()).itertext())
+    assert 'Multilabel Ranking evaluation' in text
+    assert 'Recall by K' in text and 'K=10' in text
+
+
+def test_tenths_only_include_observed_groups():
+    view = _run.tenths(np.arange(3), np.array([0.1, 0.5, 0.9]),
+                       np.array([0, 1, 1]), 'observed', 'Overall positive rate',
+                       percentage=True)
     assert [r['label'] for r in view['tenths']] == ['1', '4', '7']
-    assert view['callout'] == 'tenth 4: predicted 0.500 · observed 1.00'
-    assert view['reference_callout'] == 'all users: 0.667'
+    assert view['callout'] == 'Group 4 of 10: predicted 50.0% · observed 100.0%'
+    assert view['reference_callout'] == 'Overall positive rate: 66.7%'
 
 
 def test_equal_count_groups_break_ties_by_entity():
@@ -594,8 +862,9 @@ def test_render_html_is_self_contained(tmp_path):
     image = html.split('src="data:image/svg+xml;base64,', 1)[1].split('"', 1)[0]
     labels = list(ElementTree.fromstring(base64.b64decode(image)).itertext())
     assert 'Metrics' in labels and 'Holdout' in labels
-    assert 'Training · last epoch' in labels
+    assert 'Metric' in labels and 'MAE' in labels
     assert 'Predicted against actual' in labels
+    assert 'Training Table' in labels
     assert 'Column importance' not in labels
     assert f'<p>{note}</p>' in html
     assert note in list(ElementTree.fromstring(view._repr_svg_()).itertext())
@@ -604,7 +873,7 @@ def test_render_html_is_self_contained(tmp_path):
 @pytest.mark.skipif(not shutil.which('node'), reason='needs node')
 @pytest.mark.parametrize('task', [
     'binary_classification', 'regression', 'forecasting',
-    'temporal_link_prediction'
+    'temporal_link_prediction', 'multilabel_ranking'
 ])
 def test_rendered_script_parses_for_each_model_type(tmp_path, task):
     html = _model_type_result(tmp_path, task).visualize().html()
@@ -661,12 +930,13 @@ def test_training_result_visualize_opens_its_run(tmp_path, source):
     cards = {c['id']: c for tab in data['tabs'] for c in tab['cards']}
     assert 'importance' in cards
     if source == 'unlisted':
-        assert data['header']['holdout'] is None and 'predicted' not in cards
+        assert 'predicted' not in cards
     else:
-        assert data['header']['holdout'].startswith('Holdout: 30 users')
         assert 'truncated' in cards['predicted']['coverage']
+    assert 'holdout' not in data['header']
     if source == 'remote':
-        assert cards['metrics']['views'][-1]['id'] == 'history'
+        assert [e['label']
+                for e in cards['history']['experiments']] == ['Experiment 1']
 
 
 @pytest.mark.parametrize('remote', [False, True])
@@ -689,9 +959,8 @@ def test_open_run_reads_a_retained_run_with_its_bundle(tmp_path, remote):
         shutil.rmtree(result.explanations.run_root)
     data = _explainability.open_run(run).data
     cards = {c['id']: c for tab in data['tabs'] for c in tab['cards']}
-    assert data['header']['holdout'].startswith('Holdout: 30 users')
-    assert {'predicted', 'importance'} <= set(cards)
-    assert cards['metrics']['views'][-1]['id'] == 'history'
+    assert 'holdout' not in data['header']
+    assert {'predicted', 'importance', 'history'} <= set(cards)
 
 
 @pytest.mark.parametrize('failure', [None, 'missing', 'dangling', 'malformed'])
@@ -739,3 +1008,27 @@ def test_subgraphs_use_typed_artifacts_and_keep_missing_distinct(
     model_only = replace(result,
                          explanations=TrainingExplanations.unavailable())
     assert _subgraphs.card(_run.load(model_only)) is None
+
+
+def _payload(html: str) -> Any:
+    return json.loads(
+        html.split('class="kumo-widget-data">', 1)[1].split('</script>', 1)[0])
+
+
+def test_page_is_a_standalone_document(tmp_path):
+    view = _result(tmp_path).visualize()
+    path = view.save(tmp_path / 'report.html', 'a<b training report')
+
+    page = path.read_text(encoding='utf-8')
+    head, body = page.split('<body>', 1)
+    assert head.startswith('<!doctype html><html lang="en"><head>'
+                           '<meta charset="utf-8">')
+    assert '<title>a&lt;b training report</title>' in head
+    assert body.startswith('<div id="kumo-')
+    assert body.endswith('</div></body></html>')
+    widget_id = re.compile(r'kumo-[0-9a-f]{32}')
+    assert widget_id.sub('', body[:-len('</body></html>')]) == widget_id.sub(
+        '', view.html())
+    # Nothing is fetched from outside the page.
+    assert not re.search(r'<link|@import|(src|href)="(?!data:)|url\((?!#)',
+                         page)

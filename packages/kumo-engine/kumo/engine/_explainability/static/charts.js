@@ -251,7 +251,7 @@ function xGrid(g, x, tk, y0, y1, fmt) {
     const px = x(v);
     S('path', {d: `M${px} ${y0}V${y1}`, style: {stroke: v === 0 && tk.lo < 0 && !tk.categorical ? COLOR.axis : COLOR.grid,
       strokeWidth: 1}}, g);
-    T(g, px, y1 + 17, fmt ? fmt(v) : tickText(v, tk.step), 'kx-t-axis', 'middle');
+    T(g, px, y1 + 20, fmt ? fmt(v) : tickText(v, tk.step), 'kx-t-axis', 'middle');
   }
 }
 
@@ -421,14 +421,14 @@ function columns(host, width, opts) {
 function tenthsView(body, view, title, ctx) {
   const pair = view.tenths[0].values.length > 1, last = view.tenths.length - 1;
   if (pair) legend(body, [{label: view.series[0], color: ROLE.model}, {label: view.series[1], color: ROLE.actual},
-    {label: 'all ' + ENTITIES, kind: 'dash', color: COLOR.ink, width: 1.4}]);
+    {label: view.reference_label, kind: 'dash', color: COLOR.ink, width: 1.4}]);
   return chartHost(body, (host, width) => columns(host, width, {
     categories: view.tenths.map((t, i) => ({...t,
       texts: pair && (i % last || i === view.highlight) ? [] : t.texts})),
     series: pair ? [{color: ROLE.model}, {color: ROLE.actual}] : [{color: ROLE.actual}],
     highlight: view.highlight, highlightBand: pair, highlightBar: pair ? null : 0,
     ref: {value: view.reference, text: view.reference_callout}, notes: [{index: view.highlight, text: view.callout}],
-    tickFmt: pair ? null : v => Math.round(v * 100) + '%',
+    tickFmt: pair && !view.percentage ? null : v => Math.round(v * 100) + '%',
     yTitle: view.y, xTitle: view.x, height: 300, label: title}), ctx);
 }
 
@@ -558,19 +558,6 @@ function curves(host, width, opts) {
     }
   }
   return {svg, g, x, y, x0, x1, y0, y1, space, notes: S('g', {}, svg)};
-}
-
-/* A thin leader from a mark to its callout when the callout had to move
-   away from it. */
-function leader(g, px, py, box, gapPx) {
-  if (!box) return;
-  const qx = Math.max(box.x, Math.min(px, box.x + box.w));
-  const qy = Math.max(box.y, Math.min(py, box.y + box.h));
-  const d = Math.hypot(qx - px, qy - py);
-  if (d < (gapPx || 22)) return;
-  const k = 9 / d;
-  S('path', {d: `M${px + (qx - px) * k} ${py + (qy - py) * k}L${qx} ${qy}`,
-    style: {stroke: COLOR.muted, strokeWidth: 1}}, g);
 }
 
 /* Mark the cutoff point on a curve: a green dot with a halo. */

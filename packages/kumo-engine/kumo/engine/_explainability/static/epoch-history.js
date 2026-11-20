@@ -9,20 +9,29 @@ function epochHistoryView(body, view, ctx, state) {
   const select = picker(controls, 'Metric', 'history-metric');
   for (const metric of view.metrics) H('option', null, select, metric.toUpperCase()).value = metric;
   if (view.metrics.includes(state.metric)) select.value = state.metric;
-  H('span', 'kx-coverage', controls, 'Training experiments before model selection');
   const plots = H('div', 'kx-history-plots', body);
-  const legend = H('div', 'kx-history-legend', body);
-  legend.setAttribute('role', 'group');
-  legend.setAttribute('aria-label', 'Visible experiments');
+  /* The best experiment, which the final model came from, starts alone and
+     keeps the first colour; with none recorded, every experiment starts on. */
+  const picked = view.experiments.some(e => e.best);
+  const many = view.experiments.length > 1;
+  const legend = many ? H('div', 'kx-history-legend', body) : null;
+  if (legend) {
+    legend.setAttribute('role', 'group');
+    legend.setAttribute('aria-label', 'Visible experiments');
+  }
   const colors = [COLOR.deep, COLOR.train, COLOR.val, COLOR.hold];
   const dashes = ['', '6 3', '2 3'];
-  const all = checkbox(legend, 'Select all', true);
-  const experiments = view.experiments.map((series, i) => {
-    const color = colors[i % colors.length], dash = dashes[Math.floor(i / colors.length) % dashes.length];
-    const label = 'Experiment ' + (i + 1);
-    const box = checkbox(legend, label, state.experiments?.[i] ?? true,
-      parent => swatch(parent, {kind: 'line', w: 19, h: 9, width: 2, color, dash}));
-    return {series, label, color, dash, box};
+  const all = legend ? checkbox(legend, 'Select all', true) : null;
+  let others = 0;
+  const experiments = view.experiments.map((experiment, i) => {
+    const rank = !picked || experiment.best ? (picked ? 0 : i) : ++others;
+    const color = colors[rank % colors.length], dash = dashes[Math.floor(rank / colors.length) % dashes.length];
+    const label = experiment.label;
+    const box = legend ? checkbox(legend, label + (experiment.best ? ' (best)' : ''),
+      state.experiments?.[i] ?? (!picked || experiment.best),
+      parent => swatch(parent, {kind: 'line', w: 19, h: 9, width: 2, color, dash})) : {checked: true};
+    if (experiment.best) box.parentNode.title = 'The experiment the final model came from';
+    return {series: experiment.series, label, color, dash, box};
   });
 
   let metric, yDomain, exponent, unit;
@@ -83,11 +92,12 @@ function epochHistoryView(body, view, ctx, state) {
       const step = Math.max(1, Math.ceil(xs.length / Math.max(2, (width - 70) / 34)));
       const xTicks = xs.filter((epoch, index) => index % step === 0 || index === xs.length - 1);
       const xDomain = xs.length === 1 ? [xs[0] - 0.5, xs[0] + 0.5] : [xs[0], xs[xs.length - 1]];
-      curves(host, width, {lines, xDomain, xTicks, yDomain, xTitle: 'Epoch', height: 210,
+      curves(host, width, {lines, xDomain, xTicks, yDomain, xTitle: 'Epoch', height: 270,
         label: heading.textContent + ' by epoch', reserveSpace: false});
     }, ctx);
   });
   function sync() {
+    if (!all) return;
     const count = experiments.filter(e => e.box.checked).length;
     all.checked = count === experiments.length;
     all.indeterminate = count > 0 && !all.checked;
@@ -98,9 +108,13 @@ function epochHistoryView(body, view, ctx, state) {
     charts.forEach(chart => chart.redraw());
   }
   sync();
-  all.addEventListener('change', () => {
+  all?.addEventListener('change', () => {
     for (const experiment of experiments) experiment.box.checked = all.checked;
   }, {signal: ctx.signal});
-  legend.addEventListener('change', redraw, {signal: ctx.signal});
+  legend?.addEventListener('change', redraw, {signal: ctx.signal});
   select.addEventListener('change', () => { setMetric(); redraw(); }, {signal: ctx.signal});
 }
+
+KX.cards.history = (parent, card, ctx) => {
+  cardFrame(parent, card, ctx, null, (body, view, ui) => epochHistoryView(body, card, ctx, ui));
+};

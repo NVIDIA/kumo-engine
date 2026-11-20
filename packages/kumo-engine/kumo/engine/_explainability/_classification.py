@@ -66,8 +66,6 @@ def _class(run: Run, positive: bool, auroc: Optional[float]) -> dict[str, Any]:
         auroc_callout=None if auroc is None else f'AUROC {fmt.number(auroc)}',
         ap_callout=None
         if 'ap' not in curves else f'AP {fmt.number(curves["ap"])}',
-        base_rate_callout=f'base rate {fmt.number(share)}',
-        ideal_callout=f'ideal bend {fmt.percent(share)}',
         matrix_rows=[f'actual {name}', f'actual {other}'],
         matrix_columns=[f'predicted {name}', f'predicted {other}'])
 
@@ -80,11 +78,11 @@ def cutoff_card(run: Run) -> Optional[dict[str, Any]]:
     views = [
         dict(id='matrix', label='Confusion matrix'),
         dict(id='roc', label='ROC', x='false positive rate',
-             y='true positive rate', diagonal='chance'),
+             y='true positive rate'),
         dict(id='pr', label='Precision-recall', x='recall', y='precision'),
         dict(id='gain', label='Cumulative gain',
              x=f'share of {run.entities} flagged',
-             y='share of positives captured', diagonal='random'),
+             y='share of positives captured'),
     ]
     return dict(
         title='Classification cutoff', grid=GRID,
@@ -111,8 +109,8 @@ def _distribution(run: Run, scores: np.ndarray,
     i = int(np.argmax(total))
     return dict(
         id='outcome', label='Scores by outcome',
-        x='predicted probability of True', y=run.entities, edges=edges.tolist(),
-        series=series, tallest=i,
+        x='Predicted probability of True', y='Number of cases',
+        edges=edges.tolist(), series=series, tallest=i,
         tallest_callout=(f'{total[i]:,} {run.entities} '
                          f'({fmt.percent(total[i] / len(scores))}) score '
                          f'{edges[i]:.2f} to {edges[i + 1]:.2f}'))
@@ -123,11 +121,13 @@ def scores_card(run: Run) -> Optional[dict[str, Any]]:
         return None
     target = run.holdout['TARGET'].astype(bool).to_numpy()
     scores = run.holdout['True_PROB'].to_numpy(dtype=float)
-    by_tenth = tenths(run, run.holdout['ENTITY'].to_numpy(), scores,
-                      target.astype(float), 'observed')
-    by_tenth.update(label='By score tenth', x='score tenth, lowest to highest',
-                    y='share True',
-                    series=['average score', 'observed share True'])
+    by_tenth = tenths(run.holdout['ENTITY'].to_numpy(), scores,
+                      target.astype(float), 'observed', 'Overall positive rate',
+                      percentage=True)
+    by_tenth.update(
+        label='By predicted probability',
+        x='Cases by predicted probability (low to high)', y='Positive rate (%)',
+        series=['Mean predicted probability', 'Actual positive rate'])
     return dict(title='Scores against outcomes',
                 views=[by_tenth, _distribution(run, scores, target)],
                 coverage=run.holdout_coverage())

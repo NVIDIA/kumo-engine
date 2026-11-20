@@ -59,85 +59,33 @@ function cardFrame(parent, card, ctx, views, renderView, extraTop) {
 
 /* ------------------------------------------------------------- Metrics */
 
-function tilesView(body, view, ctx) {
-  const grid = H('div', 'kx-tiles', body);
-  for (const tile of view.tiles) {
-    const box = H('div', 'kx-tile', grid);
-    const name = H('div', 'kx-tile-name', box, tile.name);
-    if (tile.tune) H('small', null, name, 'tuning metric');
-    const vals = H('div', 'kx-tile-vals', box);
-    const hold = H('div', 'kx-tile-val', vals);
-    const hr = H('div', 'kx-tile-row', hold);
-    H('span', 'kx-split h', hr, tile.holdout_label);
-    H('span', 'kx-big', hr, tile.holdout_text);
-    if (tile.callout) H('span', 'kx-note', hold, tile.callout);
-    if (tile.training_text) {
-      const tr = H('div', 'kx-tile-val', vals);
-      const trr = H('div', 'kx-tile-row', tr);
-      H('span', 'kx-split t', trr, 'training · last epoch').title =
-        'Last training epoch; predictions use the selected checkpoint.';
-      H('span', 'kx-mid', trr, tile.training_text);
-      if (tile.gap_text) H('span', 'kx-note-plain', tr, tile.gap_text);
-    }
-    if (tile.baselines.length) {
-      const base = H('div', 'kx-tile-base', box);
-      for (const text of tile.baselines) H('span', null, base, text);
-    }
+function metricsView(body, view) {
+  const pills = H('div', 'kx-pills', body);
+  for (const pill of view.pills) {
+    const box = H('div', 'kx-pill', pills);
+    H('div', 'kx-pill-name', box, pill.name);
+    H('div', 'kx-pill-val', box, pill.holdout_text);
   }
-}
-
-/* Keep a date, and the 'epoch 4 of 4' phrase, on one line when a header
-   wraps. */
-function keep(text) {
-  return String(text).replace(/(\d{4})-(\d{2})-(\d{2})/g, '$1\u2011$2\u2011$3')
-    .replace(/(epoch) (\d+) (of) (\d+)/g, '$1\u00a0$2\u00a0$3\u00a0$4');
-}
-
-function tableView(body, view) {
   const t = view.table;
   const wrap = H('div', 'kx-table-wrap', body);
-  const table = H('table', 'kx-table', wrap);
-  const head = H('thead', null, table);
-  if (t.groups && t.groups.length) {
-    const gr = H('tr', 'kx-grp', head);
-    H('th', null, gr);
-    for (const group of t.groups) {
-      const th = H('th', null, gr);
-      th.colSpan = group.span;
-      H('span', null, th, keep(group.title));
-    }
-  }
-  const cr = H('tr', 'kx-col', head);
+  const table = H('table', 'kx-table kx-metrics', wrap);
+  const cr = H('tr', 'kx-col', H('thead', null, table));
   H('th', null, cr, 'Metric');
-  for (const col of t.columns) {
-    const th = H('th', null, cr, col.label);
-    /* One detail per line (rows, then dates or rows used), so every
-       column header has the same shape. */
-    if (col.detail) for (const part of String(col.detail).split(' \u00b7 ')) H('small', null, th, keep(part));
-  }
+  for (const col of t.columns) H('th', null, cr, col.label);
   const tb = H('tbody', null, table);
+  let first = true;
   for (const row of t.rows) {
-    const tr = H('tr', row.tune ? 'kx-tune' : null, tb);
+    const tr = H('tr', row.baseline ? 'kx-baseline' : row.tune ? 'kx-tune' : null, tb);
+    if (row.baseline && first) { tr.classList.add('kx-baseline-first'); first = false; }
     H('td', null, tr, row.name);
     for (const text of row.texts) H('td', null, tr, text === null ? '' : text);
   }
 }
 
 KX.cards.metrics = (parent, card, ctx) => {
-  let historyEvents;
-  ctx.onDispose(() => historyEvents?.abort());
-  cardFrame(parent, {...card, coverage: null}, ctx, card.views, (body, view, ui) => {
-    historyEvents?.abort();
-    if (view.id === 'history') {
-      historyEvents = new AbortController();
-      const signal = historyEvents.signal;
-      epochHistoryView(body, view, {...ctx, signal,
-        onDispose: cleanup => signal.addEventListener('abort', cleanup, {once: true})}, ui);
-    } else {
-      if (view.tiles) tilesView(body, view, ctx);
-      else tableView(body, view);
-      for (const note of [view.coverage, card.coverage]) if (note) H('p', 'kx-coverage', body, note);
-    }
+  cardFrame(parent, {...card, coverage: null}, ctx, card.views, (body, view) => {
+    metricsView(body, view);
+    for (const note of [view.coverage, card.coverage]) if (note) H('p', 'kx-coverage', body, note);
   });
 };
 

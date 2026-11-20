@@ -30,17 +30,13 @@ const share = v => fixed(100 * v, 1) + '%';
 
 /* Rates and texts at grid cutoff i of a class, from its [tp, fp, fn, tn]. */
 function cutoffAt(card, cls, i) {
-  const counts = cls.counts[i], [tp, fp, fn, tn] = counts, n = tp + fp + fn + tn, t = card.grid_text[i];
+  const counts = cls.counts[i], [tp, fp, fn, tn] = counts, n = tp + fp + fn + tn;
   const at = {counts, flagged: (tp + fp) / n, precision: tp + fp ? tp / (tp + fp) : 1,
     recall: tp + fn ? tp / (tp + fn) : 0, fpr: fp + tn ? fp / (fp + tn) : 1};
   return Object.assign(at, {
     cells: counts.map(c => c.toLocaleString('en-US') + ' \u00b7 ' + share(c / n)),
     strip: [['precision', rate(at.precision)], ['recall', rate(at.recall)], ['accuracy', rate((tp + tn) / n)],
       ['flagged', share(at.flagged)], ['F1', rate(2 * tp / (2 * tp + fp + fn || 1))]],
-    matrix_callout: share(at.flagged) + ' flagged at cutoff ' + t,
-    roc_callout: `cutoff ${t} \u00b7 TPR ${rate(at.recall)} \u00b7 FPR ${rate(at.fpr)}`,
-    pr_callout: `cutoff ${t} \u00b7 precision ${rate(at.precision)} \u00b7 recall ${rate(at.recall)}`,
-    gain_callout: `${share(at.flagged)} flagged \u00b7 ${share(at.recall)} of ${cls.name} captured`,
     /* The score histogram's axis is True_PROB, so the cutoff line names the
        value on that axis. */
     line_callout: 'cutoff ' + card.grid_text[cls.name === card.classes[0].name ? i : card.grid.length - 1 - i]});
@@ -57,16 +53,19 @@ function matrixView(host, width, cls, at) {
   const cells = [[tp, fn, at.cells[0], at.cells[2]], [fp, tn, at.cells[1], at.cells[3]]];
   const n = tp + fp + fn + tn || 1;
   const rowLab = 104, totW = 76, gap = 6;
-  const cellW = Math.max(96, Math.min(220, (width - rowLab - totW - gap * 3) / 2));
-  const cellH = 64, top = 30;
+  /* Cells shrink to 64px so the totals column never runs past the chart. */
+  const cellW = Math.max(64, Math.min(168, (width - rowLab - totW - gap * 3) / 2));
+  const cellH = 56, stacked = cellW < 130, top = stacked ? 46 : 30;
   const totalW = rowLab + 2 * cellW + gap + totW + gap;
-  const height = top + 2 * cellH + gap + 30 + 26;
+  const height = top + 2 * cellH + gap + 30;
   const svg = svgRoot(host, Math.min(width, totalW), height, 'Confusion matrix');
   const g = S('g', {}, svg);
   const cx = j => rowLab + j * (cellW + gap);
   const cy = i => top + i * (cellH + gap);
-  cls.matrix_columns.forEach((label, j) => T(g, cx(j) + cellW / 2, top - 12, label, 'kx-t-axis', 'middle',
-    {style: {fill: COLOR.ink, fontWeight: 600}}));
+  /* A narrow matrix stacks each column label on two lines. */
+  cls.matrix_columns.forEach((label, j) => (stacked ? label.split(' ') : [label]).forEach((part, i, parts) =>
+    T(g, cx(j) + cellW / 2, top - 12 - 14 * (parts.length - 1 - i), part, 'kx-t-axis', 'middle',
+      {style: {fill: COLOR.ink, fontWeight: 600}})));
   T(g, cx(2) + totW / 2, top - 12, 'total', 'kx-t-axis', 'middle');
   cls.matrix_rows.forEach((label, i) => T(g, rowLab - 12, cy(i) + cellH / 2 + 4, label, 'kx-t-axis', 'end',
     {style: {fill: COLOR.ink, fontWeight: 600}}));
@@ -91,11 +90,10 @@ function matrixView(host, width, cls, at) {
   colTotals.forEach((v, j) => T(g, cx(j) + cellW / 2, ty, v.toLocaleString('en-US'), 'kx-t-axis', 'middle',
     {style: {fill: COLOR.ink}}));
   T(g, rowLab - 12, ty, 'total', 'kx-t-axis', 'end');
-  T(g, cx(0) + cellW / 2, ty + 20, at.matrix_callout, 'kx-t-note', 'middle');
 }
 
 function curveView(host, width, kind, cls, at, view) {
-  const opts = {height: 340, maxRatio: 2.3, extraRight: 0, label: kind};
+  const opts = {height: 290, maxRatio: 2.3, extraRight: 0, label: kind};
   const lines = [];
   let point, xt, yt;
   if (kind === 'roc') {
@@ -122,33 +120,14 @@ function curveView(host, width, kind, cls, at, view) {
   const shareAxes = kind === 'gain';
   const c = curves(host, width, Object.assign(opts, {lines, xTitle: xt, yTitle: yt,
     xFmt: shareAxes ? fmt : null, yFmt: shareAxes ? fmt : null}));
-  const {x, y, notes, space} = c;
-  /* The cutoff point is placed first, then the fixed line labels, which
-     stay even when nothing is flagged and the point is undefined. */
+  const {x, y} = c;
+  refNote(c, kind, cls);
   const ok = point[0] !== null && point[1] !== null && isFinite(point[0]) && isFinite(point[1]);
-  if (ok) cutoffNote(c, kind, at, x(point[0]), y(point[1]));
-  refNotes(c, kind, cls, view);
   if (ok) marker(c.g, x(point[0]), y(point[1]));
 }
 
-function cutoffNote(c, kind, at, px, py) {
-  const {notes, space} = c;
-  space.add(px - 8, py - 8, 16, 16);
-  const callout = kind === 'roc' ? at.roc_callout : kind === 'pr' ? at.pr_callout : at.gain_callout;
-  const right = px < (c.x0 + c.x1) / 2;
-  const box = note(notes, space, twoLines(callout), [
-    {x: px + 12, y: py + 18}, {x: px - 12, y: py + 18, anchor: 'end'},
-    {x: px + 12, y: py - 10}, {x: px - 12, y: py - 10, anchor: 'end'},
-    {x: right ? px + 12 : px - 12, y: py + 34, anchor: right ? 'start' : 'end'},
-    {x: right ? px + 12 : px - 12, y: py - 26, anchor: right ? 'start' : 'end'},
-    {x: px - 12, y: py + 50, anchor: 'end'}, {x: px + 12, y: py + 50},
-    {x: right ? px + 12 : px - 12, y: py + 66, anchor: right ? 'start' : 'end'},
-    {x: right ? px + 12 : px - 12, y: py - 42, anchor: right ? 'start' : 'end'}]);
-  leader(c.g, px, py, box);
-}
-
-/* Reference-line labels, at fixed places on their lines. */
-function refNotes(c, kind, cls, view) {
+/* The curve's own score, AUROC or AP, is its only label. */
+function refNote(c, kind, cls) {
   const {x, y, notes, space} = c;
   if (kind === 'roc') {
     /* On the curve: just under it, or just over it, near its bend. */
@@ -168,19 +147,9 @@ function refNotes(c, kind, cls, view) {
       spots.push({x: x(f) + 8, y: y(on(f)) + 20}, {x: x(f) - 8, y: y(on(f)) - 9, anchor: 'end'});
     }
     note(notes, space, cls.auroc_callout, spots);
-    note(notes, space, view.diagonal, [{x: x(0.64), y: y(0.55)}, {x: x(0.78), y: y(0.7)},
-      {x: x(0.5), y: y(0.4)}], 'kx-t-note-plain');
   } else if (kind === 'pr') {
-    const by = y(cls.share);
-    note(notes, space, cls.base_rate_callout, [{x: c.x1 - 4, y: by - 7, anchor: 'end'},
-      {x: c.x1 - 4, y: by + 16, anchor: 'end'}, {x: c.x0 + 6, y: by + 16}], 'kx-t-note-plain');
     note(notes, space, cls.ap_callout, [{x: x(0.5), y: y(Math.min(1, cls.share + 0.5 * (1 - cls.share))) - 8, anchor: 'middle'},
       {x: x(0.2), y: y(0.98)}, {x: x(0.5), y: c.y0 + 14, anchor: 'middle'}]);
-  } else {
-    note(notes, space, view.diagonal, [{x: x(0.7), y: y(0.62)}, {x: x(0.8), y: y(0.72)}], 'kx-t-note-plain');
-    note(notes, space, cls.ideal_callout, [{x: x(cls.share) + 8, y: y(1) + 16},
-      {x: x(cls.share) - 8, y: y(1) - 6, anchor: 'end'}, {x: x(cls.share) - 8, y: y(1) + 16, anchor: 'end'},
-      {x: x(cls.share) + 8, y: y(1) + 32}, {x: x(cls.share) - 8, y: y(1) + 32, anchor: 'end'}], 'kx-t-note-plain');
   }
 }
 
@@ -262,15 +231,23 @@ KX.cards.cutoff = (parent, card, ctx) => {
     return box;
   };
   let box;
-  const frame = cardFrame(parent, card, ctx, card.views, (body, view) => {
-    const draw = (host, width) => {
+  /* Confusion matrix beside the cutoff controls, then the three curves. */
+  const frame = cardFrame(parent, card, ctx, null, body => {
+    const draw = (id, host, width) => {
       const cls = byName[state.cls], at = cutoffAt(card, cls, state.cut[state.cls]);
-      if (view.id === 'matrix') matrixView(host, width, cls, at);
-      else curveView(host, width, view.id, cls, at, view);
+      if (id === 'matrix') matrixView(host, width, cls, at);
+      else curveView(host, width, id, cls, at, card.views.find(v => v.id === id));
     };
-    const chart = chartHost(body, draw, ctx);
-    refresh = () => chart.redraw();
-  }, root => { box = controls(root); });
+    const top = H('div', 'kx-cutoff-top', body), curvesRow = H('div', 'kx-cutoff-curves', body);
+    const charts = card.views.map((view, i) => {
+      const cell = H('div', i ? 'kx-cutoff-curve' : 'kx-cutoff-matrix', i ? curvesRow : top);
+      H('h4', null, cell, view.label);
+      return chartHost(cell, (host, width) => draw(view.id, host, width), ctx);
+    });
+    box = controls(top);
+    box.classList.add('kx-cutoff-slider');
+    refresh = () => charts.forEach(chart => chart.redraw());
+  });
   box.update();
   return frame;
 };

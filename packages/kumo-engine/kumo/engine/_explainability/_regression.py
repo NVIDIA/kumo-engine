@@ -6,6 +6,7 @@ holdout predictions and the training table's label histogram bin width."""
 
 import math
 import posixpath
+import re
 from typing import Any, Optional
 
 import numpy as np
@@ -220,10 +221,14 @@ def predicted_card(run: Run) -> Optional[dict[str, Any]]:
         actual, pred = actual[keep], pred[keep]
         if len(actual):
             entities = holdout['ENTITY'].to_numpy()[keep]
-            by_tenth = tenths(run, entities, pred, actual, 'actual')
-            by_tenth.update(label='By predicted tenth',
-                            x='predicted tenth, lowest to highest',
-                            y='average ' + (run.target(short=True) or 'value'),
+            target = run.target(short=True) or 'value'
+            count = re.fullmatch(r'COUNT\((\w+)\.\*\)', target, re.IGNORECASE)
+            unit = count.group(1) if count else target
+            by_tenth = tenths(entities, pred, actual, 'actual',
+                              'Overall actual average')
+            by_tenth.update(label='By predicted value',
+                            x='Cases by predicted value (low to high)',
+                            y=f'Average {unit} per case',
                             series=['average prediction', 'average actual'])
             views += [by_tenth, _bands(run, actual, pred, entities)]
     heatmap = _heatmap(run, width)

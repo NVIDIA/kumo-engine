@@ -21,13 +21,15 @@ class Snapshot:
         self._marks: list[str] = []
         self._text: list[str] = []
         self._y = 12
-        self._line(f'{data["model_type"].replace("_", " ").title()} evaluation',
+        self._line(f'{data["task_type"].replace("_", " ").title()} evaluation',
                    size=20, bold=True)
         for value in data['header'].values():
             if value:
                 self._line(value)
-        cards = next(
-            (t['cards'] for t in data['tabs'] if t['id'] == 'evaluation'), [])
+        cards = [
+            card for tab in data['tabs']
+            if tab['id'] in ('evaluation', 'training') for card in tab['cards']
+        ]
         if not cards:
             self._line('No evaluation diagnostics were recorded.')
         for card in cards:
@@ -36,15 +38,16 @@ class Snapshot:
                 f'<path d="M16 {self._y}h416" stroke="{THEME["grid"]}"/>')
             self._y += 8
             self._line(card['title'], size=17, bold=True)
+            if card['id'] in ('history', 'training_table'):
+                getattr(self, '_' + card['id'])(card)
+                continue
             view = card['views'][0]
-            if view['id'] == 'history':
-                count = len(view['experiments'])
-                self._line(f'Epoch history · {count} training experiment' +
-                           ('s' if count != 1 else ''))
-            elif card['id'] == 'metrics':
-                self._metrics(view['tiles'])
+            if card['id'] == 'metrics':
+                self._metrics(view)
             elif card['id'] == 'cutoff':
                 self._matrix(card)
+            elif card['id'] == 'ranking':
+                self._by_k(view)
             elif view['id'] == 'heatmap':
                 self._heatmap(view)
             elif card['id'] in ('scores', 'predicted', 'forecast'):
@@ -65,23 +68,56 @@ class Snapshot:
             self._y += size + 6
             self._label(line, 16, self._y, size, bold=bold)
 
-    def _metrics(self, tiles: list[dict[str, Any]]) -> None:
+    def _history(self, card: dict[str, Any]) -> None:
+        count = len(card['experiments'])
+        best = next((e['label'] for e in card['experiments'] if e['best']),
+                    None)
+        self._line(f'{count} training experiment' +
+                   ('s' if count != 1 else '') +
+                   (f' · {best} is the best' if best else ''))
+
+    def _training_table(self, card: dict[str, Any]) -> None:
+        # One line per split: its name, then each column's value.
+        for row in card['rows']:
+            self._line(' · '.join([
+                row['name'],
+                *(f'{label} {text}'
+                  for label, text in zip(card['columns'], row['texts']) if text)
+            ]))
+
+    def _metrics(self, view: dict[str, Any]) -> None:
+        table = view['table']
+        ends = (249, 341, 432)[:len(table['columns'])]
         self._y += 23
         self._label('Metric', 16, self._y, bold=True)
-        self._label('Holdout', 249, self._y, anchor='end', bold=True)
-        self._label('Training · last epoch', 432, self._y, anchor='end',
-                    bold=True)
-        for tile in tiles:
-            names = _wrap(tile['name'], 22)
+        for column, end in zip(table['columns'], ends):
+            self._label(column['label'], end, self._y, anchor='end', bold=True)
+        for row in table['rows']:
+            names = _wrap(row['name'], 30 if row['baseline'] else 22)
             self._y += 23
-            self._label(names[0], 16, self._y)
-            self._label(tile['holdout_text'], 249, self._y, anchor='end')
-            self._label(tile['training_text'] or 'N/A', 432, self._y,
-                        anchor='end')
+            self._label(names[0], 16, self._y, 13 if row['baseline'] else 14,
+                        bold=row['tune'])
+            for text, end in zip(row['texts'], ends):
+                if text is not None:
+                    self._label(text, end, self._y, anchor='end',
+                                bold=row['tune'])
             for name in names[1:]:
                 self._line(name)
-            if tile['baselines']:
-                self._line(' · '.join(tile['baselines']), size=13)
+
+    def _by_k(self, view: dict[str, Any]) -> None:
+        self._line(view['y'] + ' by K', bold=True)
+        self._y += 23
+        edges = [432 - 52 * i for i in range(len(view['ks']))][::-1]
+        for x, k in zip(edges, view['ks']):
+            self._label(f'K={k}', x, self._y, anchor='end', bold=True)
+        for series in view['series']:
+            names = _wrap(series['label'], 22)
+            self._y += 23
+            self._label(names[0], 16, self._y)
+            for x, text in zip(edges, series['texts']):
+                self._label(text or 'N/A', x, self._y, anchor='end')
+            for name in names[1:]:
+                self._line(name)
 
     def _matrix(self, card: dict[str, Any]) -> None:
         cls, cutoff = card['classes'][0], card['grid_text'][card['default']]

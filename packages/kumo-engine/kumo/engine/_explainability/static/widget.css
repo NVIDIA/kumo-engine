@@ -5,7 +5,8 @@
 .kx{
 --kx-font:"NVIDIA Sans","Segoe UI",system-ui,-apple-system,Roboto,"Helvetica Neue",Arial,sans-serif;
 --kx-bg:light-dark(#ffffff,#1a1c1f);
---kx-panel:light-dark(#f5f6f3,#24272b);
+/* Cards sit on the widget background, set apart by a hairline. */
+--kx-panel:var(--kx-bg);
 --kx-soft:light-dark(#e8ebe5,#31353a);
 --kx-soft-hover:light-dark(#dde1da,#3b4045);
 --kx-ink:light-dark(#202327,#e8eaeb);
@@ -38,7 +39,7 @@ font-size:18px!important;font-weight:600!important;color:var(--kx-muted)!importa
 .kx-tab:hover{color:var(--kx-ink)!important}
 .kx button:focus{outline:none}
 .kx button:focus-visible,.kx input:focus-visible,.kx select:focus-visible{outline:2px solid var(--kx-deep);outline-offset:2px}
-.kx-card{background:var(--kx-panel);border-radius:12px;padding:16px 18px 14px;margin:0 0 12px;min-width:0}
+.kx-card{background:var(--kx-panel);border:1px solid var(--kx-soft);border-radius:12px;padding:16px 18px 14px;margin:0 0 12px;min-width:0}
 .kx-card-top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
 gap:8px 16px;margin-bottom:12px}
 .kx-title{margin:0;font-size:17px;font-weight:700;line-height:1.3;color:var(--kx-ink)}
@@ -73,37 +74,37 @@ paint-order:stroke;stroke:var(--kx-panel);stroke-width:4px;stroke-linejoin:round
 .kx-chart .kx-clickable:hover .kx-bar{opacity:.85}
 .kx-chart .kx-clickable:focus{outline:none}
 .kx-chart .kx-clickable:focus-visible .kx-focus{stroke:var(--kx-deep);stroke-width:2}
-.kx-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
-.kx-tile{background:var(--kx-bg);border-radius:10px;padding:12px 14px 12px;min-width:0}
-.kx-tile-name{display:flex;align-items:baseline;gap:8px;font-size:13px;font-weight:700;color:var(--kx-ink)}
-.kx-tile-name small{font-size:11.5px;font-weight:500;color:var(--kx-muted)}
-.kx-tile-vals{display:flex;flex-wrap:wrap;align-items:flex-end;gap:6px 22px;margin:8px 0 2px}
-.kx-tile-val{display:flex;flex-direction:column;gap:3px;min-width:0}
-.kx-tile-row{display:flex;align-items:center;gap:7px}
-.kx-big{font-size:26px;font-weight:700;line-height:1.05;letter-spacing:-.01em}
-.kx-mid{font-size:18px;font-weight:600;line-height:1.05;color:var(--kx-ink)}
-.kx-split{display:inline-block;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;
-line-height:15px;color:var(--kx-chip-ink);white-space:nowrap}
-.kx-split.h{background:var(--kx-hold)}
-.kx-split.t{background:var(--kx-train)}
-.kx-note{font-size:12px;color:var(--kx-ink);font-weight:600}
+.kx-pills{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px}
+.kx-pill{background:var(--kx-bg);border:1px solid var(--kx-soft);border-radius:10px;padding:8px 14px 9px;min-width:128px;display:flex;flex-direction:column;gap:3px}
+.kx-pill-name{display:flex;align-items:baseline;gap:8px;font-size:14.5px;font-weight:700;color:var(--kx-ink)}
+.kx-pill-val{font-size:22px;font-weight:700;line-height:1.05;letter-spacing:-.01em}
 .kx-note-plain{font-size:12px;color:var(--kx-muted)}
-.kx-tile-base{margin-top:8px;font-size:12px;color:var(--kx-muted);display:flex;flex-direction:column;gap:2px}
 .kx-table-wrap{max-width:100%;overflow:hidden}
 .kx-table{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;font-size:12.5px}
 .kx-table th,.kx-table td{padding:5px 8px;text-align:right;overflow-wrap:anywhere;font-weight:500}
 .kx-table th:first-child,.kx-table td:first-child{text-align:left;width:19%}
+/* Notebook stylesheets set heading and table type with element selectors;
+   these keep the widget's own sizes and weights. */
+.kx .kx-table{font-size:13px}
+.kx .kx-metrics{font-size:14.5px}
+.kx .kx-table th,.kx .kx-table td{font-size:inherit}
+.kx .kx-title{margin:0;font-size:17px;font-weight:700}
+.kx h4{font-weight:700}
 .kx-table thead th{vertical-align:bottom;color:var(--kx-ink);font-weight:700}
-.kx-table thead .kx-grp th{font-size:12px;text-align:center;padding-bottom:2px;height:1px}
-.kx-table thead .kx-grp th span{display:flex;align-items:center;justify-content:center;height:100%;box-sizing:border-box;border-radius:6px;background:var(--kx-soft);padding:3px 6px}
 .kx-table thead .kx-col th{padding-top:8px}
 .kx-table thead .kx-col small{display:block;font-weight:500;font-size:11px;color:var(--kx-muted);line-height:1.3;margin-top:1px}
 .kx-table tbody td{color:var(--kx-ink)}
-.kx-table tbody tr:nth-child(odd) td{background:light-dark(rgba(255,255,255,.55),rgba(255,255,255,.025))}
+.kx-table tbody tr:nth-child(odd) td{background:light-dark(rgba(0,0,0,.03),rgba(255,255,255,.04))}
 .kx-table tbody tr.kx-tune td{background:var(--kx-greenbg);font-weight:700}
 .kx-table tbody tr td:first-child{border-radius:6px 0 0 6px}
 .kx-table tbody tr td:last-child{border-radius:0 6px 6px 0}
-.kx-controls{background:var(--kx-bg);border-radius:10px;padding:12px 14px 10px;margin:0 0 12px}
+.kx-metrics{max-width:720px}
+.kx-metrics th,.kx-metrics td{padding:6px 9px}
+/* Wide enough for a baseline row's name, such as 'Predict the mean · RMSE'. */
+.kx-metrics th:first-child,.kx-metrics td:first-child{width:34%}
+.kx-metrics tbody tr.kx-baseline td{color:var(--kx-muted);font-style:italic;background:transparent}
+.kx-metrics tbody tr.kx-baseline-first td{border-top:1px solid var(--kx-soft);border-radius:0;padding-top:9px}
+.kx-controls{background:var(--kx-bg);border:1px solid var(--kx-soft);border-radius:10px;padding:12px 14px 10px;margin:0 0 12px}
 .kx-slider-row{display:flex;align-items:center;gap:12px}
 .kx-slider-row label{font-size:13px;font-weight:700;white-space:nowrap}
 .kx-cut{font-size:18px;font-weight:700;min-width:44px;text-align:right}
@@ -155,7 +156,7 @@ margin-top:10px;font-size:12px;align-items:baseline}
 .kx-sg-entity {width:15rem}
 .kx-sg-cohort-column {width:28rem}
 .kx-sg-field span {display:block;margin:0 0 5px;color:var(--kx-muted);font-size:12px}
-.kx-sg-field select {display:block;width:100%;min-height:38px;margin:0;padding:8px 36px 8px 10px;border:0;border-radius:6px;
+.kx-sg-field select {display:block;width:100%;min-height:38px;margin:0;padding:8px 36px 8px 10px;border:1px solid var(--kx-soft);border-radius:6px;
   background:var(--kx-bg);color:var(--kx-ink);font:600 13px/1.4 var(--kx-font);cursor:pointer;appearance:none;text-overflow:ellipsis}
 .kx-sg-field select:hover {background:var(--kx-soft)}
 .kx-sg-field svg {position:absolute;right:10px;bottom:11px;width:16px;height:16px;pointer-events:none;stroke:var(--kx-muted);
@@ -170,7 +171,7 @@ margin-top:10px;font-size:12px;align-items:baseline}
 .kx-sg-outcome span{color:var(--kx-muted)}
 .kx-sg-outcome strong{display:block;color:var(--kx-ink);font-size:18px;font-weight:600;margin-top:2px}
 .kx-sg-main{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:20px;align-items:start}
-.kx-sg-canvas{min-width:0;background:var(--kx-bg);border-radius:10px;max-height:480px;overflow:auto;position:relative}
+.kx-sg-canvas{min-width:0;background:var(--kx-bg);border:1px solid var(--kx-soft);border-radius:10px;max-height:480px;overflow:auto;position:relative}
 .kx-sg-canvas svg{display:block;width:100%;height:auto;min-height:300px;max-height:480px;font-family:var(--kx-font);overflow:visible}
 .kx-sg-canvas text{fill:var(--kx-ink);font-size:12px}
 .kx-sg-canvas .kx-sg-lane{fill:var(--kx-muted);font-weight:600;font-size:13px}
@@ -245,22 +246,29 @@ margin-top:10px;font-size:12px;align-items:baseline}
 .kx-heatmap-toggle input{accent-color:var(--kx-deep);margin:0}
 .kx-heatmap{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}
 
-/* Keep chart navigation visibly separate from the plotted data. */
-.kx-card[data-card="cutoff"]{display:grid;grid-template-columns:minmax(0,1fr) 190px;column-gap:20px}
-.kx-card[data-card="cutoff"]>.kx-card-top,.kx-card[data-card="cutoff"]>.kx-controls,.kx-card[data-card="cutoff"]>.kx-coverage{grid-column:1/-1}
-.kx-card[data-card="cutoff"]>.kx-switch-row{grid-column:2;grid-row:3;min-width:0}
-.kx-card[data-card="cutoff"]>.kx-card-body{grid-column:1;grid-row:3;min-width:0}
-.kx-card[data-card="cutoff"] .kx-switch{flex-direction:column;gap:8px}
-.kx-card[data-card="cutoff"] .kx-switch button{padding:11px 10px;text-align:left;white-space:normal;font-size:14px;min-height:44px}
-.kx-card[data-card="cutoff"] .kx-switch button:hover{background:var(--kx-soft)}
+/* Classification cutoff: row 1 the matrix beside compact controls, row 2 the three curves. */
+.kx-cutoff-top{display:grid;grid-template-columns:minmax(0,5fr) minmax(280px,4fr);gap:12px 20px;align-items:start}
+.kx-cutoff-curves{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 16px;margin-top:14px}
+.kx-cutoff-matrix,.kx-cutoff-curve{min-width:0}
+.kx-cutoff-matrix>h4,.kx-cutoff-curve>h4{margin:0 0 2px;font-size:13px}
+.kx-cutoff-slider{padding:10px 12px 8px;margin:0}
+.kx-cutoff-slider .kx-cut{font-size:16px}
+.kx-cutoff-slider .kx-strip{gap:2px 14px;margin-top:8px;font-size:12.5px}
+.kx-cutoff-slider .kx-ctl-row{flex-direction:column;align-items:flex-start;gap:6px}
+@container(max-width:780px){
+.kx-cutoff-curves{grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))}
+}
+/* Side by side only while the matrix's 96px cells and the 280px controls both fit. */
 @container(max-width:760px){
-.kx-card[data-card="cutoff"]{display:block}
-.kx-card[data-card="cutoff"] .kx-switch{flex-direction:row}
-.kx-card[data-card="cutoff"] .kx-switch button{flex:1 1 130px;text-align:center}
+.kx-cutoff-top{grid-template-columns:minmax(0,1fr)}
+}
+@container(max-width:760px){
 .kx-query{font-size:17px}
 }
 .kx-history-controls{display:flex;flex-wrap:wrap;align-items:end;gap:10px 18px;margin:6px 0 12px}
-.kx-history-controls .kx-sg-field{width:11.5rem}
+.kx-history-controls .kx-sg-field{width:16rem}
+.kx-splits{table-layout:auto}
+.kx-splits td,.kx-splits th{overflow-wrap:normal}
 .kx-history-legend{display:flex;gap:6px 16px;flex-wrap:wrap;align-items:center;margin-top:10px;font-size:12.5px}
 .kx-history-legend label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
 .kx-history-legend input{accent-color:var(--kx-deep)}
@@ -272,7 +280,7 @@ margin-top:10px;font-size:12px;align-items:baseline}
 .kx-headline .kx-query{flex:0 1 auto;min-width:0}
 .kx-exports{position:relative;display:flex;flex:none;align-self:stretch;align-items:flex-start;gap:4px;margin:0}
 .kx-exports button{display:inline-flex;align-items:center;gap:6px;border:0;border-radius:4px;background:transparent;padding:7px 8px;cursor:pointer;font-size:13px;font-weight:600;color:var(--kx-muted);white-space:nowrap}
-.kx-exports button:hover{color:var(--kx-ink);background:var(--kx-panel)}
+.kx-exports button:hover{color:var(--kx-ink);background:var(--kx-soft)}
 .kx-exports>button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .kx-export-status{position:absolute;z-index:5;right:0;top:calc(100% + 8px);width:300px;max-width:calc(100cqw - 24px);padding:10px 12px;border-radius:6px;background:var(--kx-bg);box-shadow:0 3px 14px #0002;font-size:12px;color:var(--kx-muted)}
 .kx-export-status:empty{display:none}

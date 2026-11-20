@@ -37,9 +37,8 @@ function widgetExports(root, {host, data, signal, onDispose, css, source, render
     meta.name = 'viewport'; meta.content = 'width=device-width, initial-scale=1';
     doc.head.append(meta);
     const style = doc.createElement('style');
-    style.textContent = 'html{color-scheme:' + (print ? 'light' : 'light dark') +
-      '}body{margin:clamp(8px,2vw,24px);background:light-dark(white,#1a1c1f)}' +
-      '.kumo-widget{max-width:1200px;margin:auto}[hidden]{display:none!important}' + css;
+    style.textContent = pageCSS + (print ? 'html{color-scheme:light}' : '') +
+      '[hidden]{display:none!important}' + css;
     doc.head.append(style);
     return doc;
   }
@@ -54,7 +53,7 @@ function widgetExports(root, {host, data, signal, onDispose, css, source, render
   }
   html.addEventListener('click', () => {
     try {
-      const doc = documentBase('Kumo explanations');
+      const doc = documentBase('Training report');
       const target = doc.createElement('div');
       target.id = 'kumo-export'; target.className = host.className;
       const fallback = host.querySelector(':scope > .kx-static').cloneNode(true);
@@ -70,7 +69,7 @@ function widgetExports(root, {host, data, signal, onDispose, css, source, render
         'addEventListener("pagehide",event=>{if(!event.persisted){controller.abort();cleanups.forEach(fn=>fn())}});' +
         '(' + source + ')({host,widgetId:host.id,data,signal:controller.signal,onDispose:fn=>cleanups.push(fn)},saved);';
       doc.body.append(script);
-      download(doc, 'kumo-' + (data.kind || 'training') + '-explanations.html');
+      download(doc, (data.kind || 'training') + '-report.html');
       status.textContent = 'HTML downloaded with the widget’s saved data.';
     } catch (error) { status.textContent = 'HTML export failed. Please retry.'; console.error(error); }
   }, {signal});

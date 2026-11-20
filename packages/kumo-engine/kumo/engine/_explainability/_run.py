@@ -14,7 +14,7 @@ import json
 import math
 import posixpath
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -23,7 +23,7 @@ import pandas as pd
 from kumo_core.io import filesystem
 
 from kumo.engine import _text
-from kumo.engine._explainability._format import numbers
+from kumo.engine._explainability._format import numbers, percent
 
 if TYPE_CHECKING:
     from kumoapi.explain.column_analysis import ColumnAnalysisOutput
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 CLASSIFICATION = 'classification'
 REGRESSION = 'regression'
 FORECASTING = 'forecasting'
+# Link prediction and multilabel ranking share one model type: both rank the
+# top K items per entity and report the same @K metric families.
 LINK_PREDICTION = 'link_prediction'
 
 CLASS_LABELED = ('multiclass_classification', 'multilabel_classification')
@@ -43,7 +45,8 @@ CLASS_LABELED = ('multiclass_classification', 'multilabel_classification')
 _TASKS = dict(binary_classification=CLASSIFICATION,
               multiclass_classification=CLASSIFICATION,
               multilabel_classification=CLASSIFICATION, regression=REGRESSION,
-              forecasting=FORECASTING, link_prediction=LINK_PREDICTION,
+              forecasting=FORECASTING, multilabel_ranking=LINK_PREDICTION,
+              link_prediction=LINK_PREDICTION,
               temporal_link_prediction=LINK_PREDICTION,
               static_link_prediction=LINK_PREDICTION)
 
@@ -69,7 +72,7 @@ def model_type(task_type: Optional[str]) -> str:
         raise UnsupportedModelError(
             f'No explainability view for task type {task_type!r}; supported: '
             'binary, multiclass and multilabel classification, regression, '
-            'forecasting and link prediction.')
+            'forecasting, multilabel ranking and link prediction.')
     return _TASKS[task_type]
 
 
@@ -118,6 +121,7 @@ class Run:
     explanations: 'TrainingExplanations'
     table: Optional[str] = None
     snapshot: Optional[str] = None
+    input_manifest: dict[str, Any] = field(default_factory=dict)
 
     @property
     def entities(self) -> str:
@@ -313,7 +317,8 @@ def load(result: 'TrainingResult') -> Run:
             if isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value)
         }, None if holdout is None or holdout.empty else holdout, truncated,
-        full_refit, history, result.explanations, *directories)
+        full_refit, history, result.explanations, *directories,
+        input_manifest=mapping(read_json(paths.get('input_manifest'))))
 
 
 def equal_count_groups(values: np.ndarray, entities: np.ndarray,
@@ -330,8 +335,9 @@ def equal_count_groups(values: np.ndarray, entities: np.ndarray,
     return out
 
 
-def tenths(run: Run, entities: np.ndarray, first: np.ndarray,
-           second: np.ndarray, word: str) -> dict[str, Any]:
+def tenths(entities: np.ndarray, first: np.ndarray, second: np.ndarray,
+           word: str, reference_label: str, *,
+           percentage: bool = False) -> dict[str, Any]:
     """Mean of both series in each tenth of ``first``, and the widest gap.
 
     ``word`` names the second series in the gap callout.
@@ -341,7 +347,8 @@ def tenths(run: Run, entities: np.ndarray, first: np.ndarray,
     means = [(float(first[group == k].mean()), float(second[group == k].mean()))
              for k in occupied]
     reference = float(second.mean())
-    texts = numbers([v for pair in means for v in pair] + [reference])
+    values = [v for pair in means for v in pair] + [reference]
+    texts = [percent(v) for v in values] if percentage else numbers(values)
     worst = int(np.argmax([abs(a - b) for a, b in means]))
     rows = [
         dict(label=str(k + 1), values=list(pair), texts=texts[2 * i:2 * i + 2])
@@ -349,6 +356,7 @@ def tenths(run: Run, entities: np.ndarray, first: np.ndarray,
     ]
     return dict(
         id='tenths', tenths=rows, reference=reference, highlight=worst,
-        reference_callout=f'all {run.entities}: {texts[-1]}',
-        callout=(f'tenth {occupied[worst] + 1}: predicted '
+        reference_label=reference_label, percentage=percentage,
+        reference_callout=f'{reference_label}: {texts[-1]}',
+        callout=(f'Group {occupied[worst] + 1} of 10: predicted '
                  f'{texts[2 * worst]} · {word} {texts[2 * worst + 1]}'))

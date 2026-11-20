@@ -7,21 +7,46 @@ below. Explanation generation can fail without invalidating training or predicti
 
 ## Notebook widgets
 
-Display `training_result.visualize()` to inspect training Evaluation and Explanation views.
-Under **Evaluation**, choose **Metrics → Epoch history** to compare training and validation scores across the experiments that preceded model selection.
-The tuning metric opens first when recorded. Select another metric or toggle individual experiments to compare their curves on the same scale.
+Display `training_result.visualize()` to inspect training Evaluation, Training and Explanation views.
+The header shows the predictive query.
+When the published model was refit on all data, a note says that diagnostics and explanations describe the model before the refit.
+Under **Evaluation**, **Metrics** shows the holdout scores of the main metrics, then a table of every recorded metric with its Holdout, Validation and Training values.
+Validation and Training values are from the last epoch of the original run.
+Baseline rows (random for link prediction; predict zero and predict the mean for regression and forecasting) follow the model rows and are scored on the holdout only.
+The **Training** tab holds **Learning Curves** and the **Training Table**.
+**Learning Curves** compares training and validation scores across the search experiments that preceded model selection.
+The tuning metric opens first, with only the best experiment (the one the final model came from) selected and marked **(best)** in the legend.
+Tick other experiments to compare their curves on the same scale, or change the metric.
 Each point represents a recorded epoch. Missing scores leave gaps, and epochs from the later refit are excluded.
-The widget reads `metric-history.json` from the published bundle or `auto_train_progress.json` from the retained run. The view appears when either source contains training or validation series.
+The widget reads `metric-history.json` from the published bundle or `auto_train_progress.json` from the retained run. The card appears when either source contains training or validation series.
+The best experiment is the `version_<n>` that the retained run's `best_trainer.json` names.
+Without a retained run, it is the one experiment whose recorded validation score for the tuning metric equals the bundle's; if none or several match, no experiment is marked and all start selected.
+A single experiment shows no legend.
+The **Training Table** lists the training, validation and holdout splits with their row counts.
+Further columns appear only when the facts are recorded: distinct entities (approximate, never above the row count), the positive rate for binary tasks, the target mean for regression and forecasting, and the anchor time range for temporal tasks.
+Static tasks show no time column.
+The widget reads them from the training table's `split_stats.json` in the retained run, and otherwise row counts and anchor times from the bundle's `manifests/input.json`.
 
-Use **Export PDF** to print every chart view on the currently open page, including All metrics, Epoch history and Against baselines where available, then choose **Save as PDF** in the browser dialog.
+Binary classification adds a **Classification cutoff** card.
+Its first row holds the confusion matrix beside a compact cutoff slider.
+Its second row holds the ROC, Precision-recall and Cumulative gain curves side by side, and they stack only on narrow screens.
+Multilabel ranking and static or temporal link prediction add **Ranking quality by cutoff K**.
+It draws one chart per metric family (recall, precision, MAP, NDCG and F1) with the holdout, validation and last-epoch training score at each K, tuning metric first.
+Every value is the one in `training_result.metrics`; a family with a single K, or a split with no scores, is left out.
+
+Use **Export PDF** to print every chart view on the currently open page, including Metrics on the Evaluation tab or Learning Curves and the Training Table on the Training tab, then choose **Save as PDF** in the browser dialog.
 The export preserves the selected explanation and chart controls.
-The other tab is excluded.
+The other tabs are excluded.
 If the notebook blocks pop-ups, open the downloaded print page to save it as PDF.
 **Export HTML** downloads the complete interactive widget with its current chart and customer selections, including the saved data needed to explore other records offline.
 Neither export requires a running kernel after saving.
 
 Call `.html()` on the returned view for self-contained HTML, or `.as_widget()` to request the optional anywidget transport explicitly.
-The saved notebook snapshot includes the model summary, metrics and default Evaluation charts, followed by “To activate the widget, rerun this cell.”
+Use `training_result.visualize().save("training-report.html")` to save a portable report with its default chart selections.
+`.page(title)` returns that standalone HTML page as a string; `.save(path, title)` writes it to a file.
+Open the saved report in a browser without a running notebook kernel.
+Snowflake notebooks use the anywidget transport supplied by the runtime, with the same `visualize()` call.
+The saved notebook snapshot includes the model summary, metrics, default Evaluation charts, the epoch-history summary and the Training Table, followed by “To activate the widget, rerun this cell.”
 Individual subgraphs are omitted from that static snapshot.
 Opening the widget only reads retained artifacts; it never starts training or prediction.
 

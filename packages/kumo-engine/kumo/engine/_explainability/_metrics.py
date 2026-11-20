@@ -14,15 +14,12 @@ from typing import Any, Optional
 import numpy as np
 
 from kumo.engine._explainability import _format as fmt
-from kumo.engine._explainability._forecasting import period
 from kumo.engine._explainability._run import (
     CLASS_LABELED,
-    CLASSIFICATION,
     FORECASTING,
     LINK_PREDICTION,
     REGRESSION,
     Run,
-    mapping,
 )
 
 _NAMES = dict(auroc='AUROC', ap='AP', auprc='AUPRC', mae='MAE', mse='MSE',
@@ -30,7 +27,7 @@ _NAMES = dict(auroc='AUROC', ap='AP', auprc='AUPRC', mae='MAE', mse='MSE',
               precision='Precision', f1='F1', acc='Accuracy',
               accuracy='Accuracy', smape='SMAPE', r2='R²', mape='MAPE',
               ndcg='NDCG')
-_RANKING_ORDER = ('f1', 'map', 'precision', 'recall')
+_RANKING_ORDER = ('f1', 'map', 'ndcg', 'precision', 'recall')
 
 Baselines = dict[str, list[tuple[str, float]]]
 
@@ -42,6 +39,9 @@ def _top_k(metric: str) -> Optional[int]:
 
 def display_name(metric: str) -> str:
     family = metric.split('@')[0]
+    base, _, average = family.partition('_')
+    if average in ('macro', 'micro', 'weighted') and base in _NAMES:
+        return f'{_NAMES[base]} ({average})'
     name = _NAMES.get(family, family.upper())
     k = _top_k(metric)
     return name if k is None else f'{name}@{k}'
@@ -69,22 +69,11 @@ def _holdout(run: Run) -> dict[str, float]:
     }
 
 
-def positive_share(run: Run) -> Optional[float]:
-    if run.task_type in CLASS_LABELED or run.holdout is None:
-        return None
-    return float(run.holdout['TARGET'].astype(bool).mean())
-
-
 def baselines(run: Run) -> Baselines:
     out: Baselines = {}
     if run.task_type in CLASS_LABELED:
         return out
-    if run.model_type == CLASSIFICATION:
-        out['auroc'] = [('chance', 0.5)]
-        share = positive_share(run)
-        if share is not None:
-            out['ap'] = out['auprc'] = [('base rate', share)]
-    elif run.model_type == LINK_PREDICTION and run.catalog is not None:
+    if run.model_type == LINK_PREDICTION and run.catalog is not None:
         size, mean_targets, _ = run.catalog
         for metric in run.metric_names:
             k = _top_k(metric)
@@ -92,7 +81,8 @@ def baselines(run: Run) -> Baselines:
                 out[metric] = [('random', k / size)]
             elif k is not None and metric.startswith('precision@'):
                 out[metric] = [('random', mean_targets / size)]
-    elif run.model_type != LINK_PREDICTION and run.holdout is not None:
+    elif run.model_type in (REGRESSION,
+                            FORECASTING) and run.holdout is not None:
         actual = run.holdout['TARGET'].to_numpy(dtype=float)
         for name, pred in (('predict zero', 0.0), ('predict the mean',
                                                    actual.mean())):
@@ -104,15 +94,30 @@ def baselines(run: Run) -> Baselines:
     return out
 
 
+def _family(metric: str) -> str:
+    return metric.split('@')[0]
+
+
+def _position(order: tuple[str, ...], metric: str) -> int:
+    family = _family(metric)
+    return order.index(family) if family in order else len(order)
+
+
+def _same_k(metrics: list[str], tune: str, k: int) -> list[str]:
+    """Metrics at the tuning metric's K, recall and precision first."""
+    rest = [m for m in metrics if _top_k(m) == k and m != tune]
+    return sorted(rest, key=lambda m: _position(('recall', 'precision'), m))
+
+
 def tile_metrics(run: Run) -> list[str]:
+    """The main metrics, shown as pills."""
     metrics = run.metric_names
     tune = run.tune or (metrics[0] if metrics else None)
     if tune is None:
         return []
-    if run.model_type == LINK_PREDICTION:
-        k = _top_k(tune)
-        order = [tune
-                 ] + ([] if k is None else [f'recall@{k}', f'precision@{k}'])
+    k = _top_k(tune)
+    if k is not None:
+        order = [tune] + _same_k(metrics, tune, k)
     else:
         order = [tune] + [
             m for m in metrics if not (m == 'auprc' and 'ap' in metrics)
@@ -121,53 +126,20 @@ def tile_metrics(run: Run) -> list[str]:
     return list(dict.fromkeys(order))[:3]
 
 
-def _tile(run: Run, metric: str, holdout: float, training: Optional[float],
-          items: list[tuple[str, float]]) -> dict[str, Any]:
-    callout = None
-    if run.model_type == LINK_PREDICTION:
-        if items and items[0][1] > 0:
-            callout = f'{holdout / items[0][1]:.1f}× random'
-    elif items:
-        from kumo_core.evaluation.suite import MetricStore
-
-        best = max if MetricStore.tune_mode(metric) == 'max' else min
-        name, value = best(items, key=lambda item: item[1])
-        callout = f'{fmt.signed(holdout - value)} vs {name}'
-    return dict(
-        name=display_name(metric), tune=metric == run.tune,
-        holdout_text=fmt.number(holdout),
-        holdout_label=('holdout · before full refit'
-                       if run.full_refit else 'holdout'),
-        training_text=None if training is None else fmt.number(training),
-        gap_text=None if training is None else
-        f'holdout minus training: {fmt.signed(holdout - training)}',
-        baselines=[f'{name} {fmt.number(value)}'
-                   for name, value in items], callout=callout)
+def _ordered(metrics: list[str]) -> list[str]:
+    """Top-K metrics group by family, then K; others keep their order."""
+    if not any(_top_k(m) is not None for m in metrics):
+        return metrics
+    return sorted(metrics, key=lambda m:
+                  (_position(_RANKING_ORDER, m), _top_k(m) or 0))
 
 
-def _detail(split: dict[str, Any], *dates: str) -> Optional[str]:
-    rows = split.get('num_train_rows')
-    if not isinstance(rows, int) or not all(split.get(d) for d in dates):
-        return None
-    return f'{rows:,} rows · ' + ' to '.join(str(split[d])[:10] for d in dates)
-
-
-def _table(run: Run, holdout: dict[str, float]) -> dict[str, Any]:
-    splits = run.splits
-    columns = [
-        ('Holdout', _detail(splits['test'], 'anchor_date'), holdout),
-        ('Validation', _detail(splits['val'],
-                               'anchor_date'), _prefixed(run, 'val_')),
-        ('Training', _detail(splits['train'], 'min_date',
-                             'max_date'), _prefixed(run, 'train_')),
-    ]
-    metrics = list(run.metric_names)
-    if run.model_type == LINK_PREDICTION:
-        metrics.sort(key=lambda m: (_RANKING_ORDER.index(m.split('@')[0])
-                                    if m.split('@')[0] in _RANKING_ORDER else
-                                    len(_RANKING_ORDER), _top_k(m) or 0))
-    rows = [(display_name(m), m == run.tune, [v.get(m) for _, _, v in columns])
-            for m in metrics]
+def _table(run: Run, holdout: dict[str, float],
+           base: Baselines) -> dict[str, Any]:
+    columns = [('Holdout', holdout), ('Validation', _prefixed(run, 'val_')),
+               ('Training', _prefixed(run, 'train_'))]
+    rows = [(display_name(m), m == run.tune, [v.get(m) for _, v in columns])
+            for m in _ordered(list(run.metric_names))]
     if run.model_type == LINK_PREDICTION:
         prefix = 'test_refit_' if _refit(run) else 'test_'
         rows.append(('Locality score', False,
@@ -175,125 +147,59 @@ def _table(run: Run, holdout: dict[str, float]) -> dict[str, Any]:
     rows = [row for row in rows if any(v is not None for v in row[2])]
     # Drop columns no row fills, such as training values a bundle lacks.
     keep = [i for i in range(3) if any(row[2][i] is not None for row in rows)]
-    groups = [
-        ('Model before full refit' if run.full_refit else 'Published model',
-         int(0 in keep)),
-        ('Training run · last epoch', len([i for i in keep if i])),
+    out = [
+        dict(
+            name=name, tune=tune, baseline=False, texts=[
+                None if values[i] is None else fmt.number(values[i])
+                for i in keep
+            ]) for name, tune, values in rows
     ]
-    return dict(
-        groups=[dict(title=title, span=span) for title, span in groups if span],
-        columns=[dict(label=columns[i][0], detail=columns[i][1]) for i in keep],
-        rows=[
-            dict(
-                name=name, tune=tune, texts=[
-                    None if values[i] is None else fmt.number(values[i])
-                    for i in keep
-                ]) for name, tune, values in rows
-        ])
-
-
-def _history(run: Run) -> Optional[dict[str, Any]]:
-    """Search-trial scalars with the same tags and epoch labels as the UI."""
-    experiments = []
-    for trial in mapping(mapping(run.history).get('trial_progress')).values():
-        series: dict[str, list[tuple[int, Optional[float]]]] = {}
-        for epoch, record in mapping(mapping(trial).get('metrics')).items():
-            if not re.fullmatch(r'[0-9]+', epoch):
-                continue
-            for field, prefix in (('train_metrics', 'train_'),
-                                  ('validation_metrics', 'val_')):
-                for tag, value in mapping(mapping(record).get(field)).items():
-                    if tag.startswith(prefix) and '_per_label_' not in tag:
-                        finite = (isinstance(value, (int, float))
-                                  and not isinstance(value, bool)
-                                  and math.isfinite(value))
-                        series.setdefault(tag, []).append(
-                            (int(epoch), value if finite else None))
-        for tag, points in series.items():
-            points.sort(key=lambda point: point[0])
-            # The TensorBoard hook adjusts each series independently.
-            if points[0][0] == 0:
-                series[tag] = [(epoch + 1, value) for epoch, value in points]
-        if series:
-            experiments.append(series)
-    if not experiments:
-        return None
-    tags = sorted(tag for series in experiments for tag in series)
-    metrics = list(dict.fromkeys(tag.split('_', 1)[1] for tag in tags))
-    if run.tune in metrics:
-        metrics.remove(run.tune)
-        metrics.insert(0, run.tune)
-    return dict(id='history', label='Epoch history', metrics=metrics,
-                experiments=experiments)
+    # A baseline is scored on the holdout alone; its rows group by baseline.
+    named: dict[str, list[tuple[str, float]]] = {}
+    for metric, items in base.items():
+        for name, value in items:
+            named.setdefault(name, []).append((display_name(metric), value))
+    for name, items in named.items():
+        for metric, value in items:
+            out.append(
+                dict(
+                    name=f'{name[0].upper()}{name[1:]} · {metric}', tune=False,
+                    baseline=True,
+                    texts=[fmt.number(value) if i == 0 else None
+                           for i in keep]))
+    return dict(columns=[dict(label=columns[i][0]) for i in keep], rows=out)
 
 
 def card(run: Run) -> Optional[dict[str, Any]]:
     holdout = _holdout(run)
-    training = _prefixed(run, 'train_')
-    base = baselines(run)
     shown = [metric for metric in tile_metrics(run) if metric in holdout]
-    tiles = [
-        _tile(run, metric, holdout[metric], training.get(metric),
-              base.get(metric, [])) for metric in shown
-    ]
-    # Chance and random baselines need no rows; the rest come from the
-    # retained holdout, which may hold fewer rows than the scored split.
-    line = run.holdout_coverage() if any(
-        name not in ('chance', 'random') for metric in shown
-        for name, _ in base.get(metric, [])) else None
+    if not shown:
+        return None
+    # Baselines are listed for the pill metrics only, to keep the table light.
+    base = {
+        metric: items
+        for metric, items in baselines(run).items() if metric in shown
+    }
+    # A random baseline needs no rows; the rest come from the retained
+    # holdout, which may hold fewer rows than the scored split.
+    line = run.holdout_coverage() if any(name != 'random'
+                                         for items in base.values()
+                                         for name, _ in items) else None
     if line:
         line = 'Baselines: ' + line[0].lower() + line[1:]
-    views = [
-        dict(
-            id='baselines', tiles=tiles,
-            label=('Against random' if run.model_type == LINK_PREDICTION else
-                   'Against baselines'), coverage=line),
-        dict(id='table', label='All metrics', table=_table(run, holdout)),
-    ] if tiles else []
-    history = _history(run)
-    if history is not None:
-        views.append(history)
-    if not views:
-        return None
-    return dict(title='Metrics', views=views,
-                coverage=run.metrics_coverage() if tiles else None)
+    pills = [
+        dict(name=display_name(metric), tune=metric == run.tune,
+             holdout_text=fmt.number(holdout[metric])) for metric in shown
+    ]
+    view = dict(id='metrics', label='Metrics', pills=pills,
+                table=_table(run, holdout, base), coverage=line)
+    return dict(title='Metrics', views=[view], coverage=run.metrics_coverage())
 
 
 def header(run: Run) -> dict[str, Any]:
-    """The query and one line about the holdout; either may be missing."""
-    frame = run.holdout
-    parts = []
-    if run.model_type == LINK_PREDICTION:
-        rows = run.splits['test'].get('num_train_rows')
-        if isinstance(rows, int):
-            parts.append(f'{rows:,} {run.entities}')
-    elif frame is not None and run.model_type == FORECASTING:
-        steps = frame['TIMESTAMP'].nunique()
-        word = period(frame['TIMESTAMP'])
-        parts.append(f'{frame["ENTITY"].nunique():,} {run.entities} × {steps} '
-                     f'{word if steps == 1 else word + "s"} = '
-                     f'{len(frame):,} rows')
-    elif frame is not None:
-        parts.append(f'{len(frame):,} {run.entities}')
-    anchor = run.splits['test'].get('anchor_date')
-    if parts and anchor:
-        parts.append(f'anchor {str(anchor)[:10]}')
-    share = positive_share(run)
-    if run.model_type == CLASSIFICATION and share is not None:
-        parts.append(f'{fmt.percent(share)} True')
-    if run.model_type == REGRESSION and frame is not None:
-        zero = float((frame['TARGET'] == 0).mean())
-        if zero >= 0.1:
-            parts.append(f'{fmt.percent(zero)} with actual 0')
-    if run.model_type == LINK_PREDICTION and run.catalog is not None:
-        size, mean_targets, table = run.catalog
-        parts += [
-            f'{fmt.number(mean_targets)} items each',
-            f'catalog {size:,} {table}'
-        ]
-    line = ('Holdout: ' + ' · '.join(parts)) if parts else None
+    """The query, and a note when the model was refit on all the data."""
+    out: dict[str, Any] = dict(query=run.query)
     if run.full_refit:
-        note = ('Diagnostics and explanations describe the model before full '
-                'refit.')
-        line = f'{line} · {note}' if line else note
-    return dict(query=run.query, holdout=line)
+        out['note'] = ('Diagnostics and explanations describe the model '
+                       'before full refit.')
+    return out

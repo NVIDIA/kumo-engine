@@ -94,9 +94,9 @@ def forecast_card(run: Run) -> Optional[dict[str, Any]]:
                      texts=[fmt.percent(share)]))
         views.append(
             dict(
-                id='tenths', label='By forecast tenth',
-                x='forecast tenth, lowest to highest',
-                y='share of actual units', tenths=rows, reference=0.1,
+                id='tenths', label='By total forecast',
+                x='Entities by total forecast (low to high)',
+                y='Share of actual total (%)', tenths=rows, reference=0.1,
                 reference_callout='equal share 10%', highlight=len(rows) - 1,
                 callout=(f'{rows[-1]["texts"][0]} of actual units · '
                          f'{int((group == group.max()).sum()):,} '

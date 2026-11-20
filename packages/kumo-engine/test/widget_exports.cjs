@@ -90,40 +90,54 @@ async function alter(filename, change) {
         assert.equal(await reopened.locator('[data-card="importance"] svg[role="img"]').textContent(), expanded);
         assert.equal(await reopened.locator('[data-card="subgraphs"] g.kx-sg-node[aria-pressed="true"]').getAttribute('data-id'), pinned);
         await page.getByRole('tab', {name: 'Evaluation', exact: true}).click();
+        assert.equal(await page.locator('[data-card="cutoff"] .kx-cutoff-curves > *').count(), 3);
         const cutoff = page.locator('[data-card="cutoff"] input[type="range"]');
         await cutoff.evaluate(el => { el.value = '30'; el.dispatchEvent(new Event('input', {bubbles: true})); });
-        let metric, points;
-        for (const selected of ['Epoch history', 'All metrics']) {
-          await page.getByRole('button', {name: selected, exact: true}).click();
-          if (selected === 'Epoch history') {
+        let metric, points, flipped;
+        for (const tab of ['Training', 'Evaluation']) {
+          await page.getByRole('tab', {name: tab, exact: true}).click();
+          if (tab === 'Training') {
             const picker = page.locator('.kx-history-controls select');
             await picker.selectOption({index: (await picker.locator('option').count()) - 1});
             metric = await picker.inputValue();
-            await page.locator('.kx-history-legend input').nth(1).uncheck();
+            // A single experiment has no legend; otherwise flip the first one.
+            const box = page.locator('.kx-history-legend input').nth(1);
+            if (await box.count()) { flipped = !(await box.isChecked()); await box.setChecked(flipped); }
+            /* Every split row of the Training Table is complete. */
+            assert.ok(await page.locator('[data-card="training_table"] table').evaluate(table =>
+              table.tBodies[0].rows.length > 0 && [...table.tBodies[0].rows].every(
+                row => row.cells.length === table.tHead.rows[0].cells.length)));
             assert.equal(await plots(page, '.kx-history-plots svg'), 2);
             points = await page.locator('.kx-history-plots circle title').allTextContents();
-            assert.ok(points.length > 0);
+            assert.ok(points.length > 0 || flipped === false);
           }
           await page.evaluate(() => scrollTo(0, 100));
           const position = await page.evaluate(() => [scrollX, scrollY]);
           const popup = await print(page);
-          assert.equal(await plots(popup, '.kx-history-plots svg'), 2);
-          await plots(popup, '.kx-chart svg');
-          assert.equal(await popup.locator('[data-card="cutoff"] input[type="range"]').first().getAttribute('value'), '30');
-          assert.equal(await popup.locator('.kx-history-legend input').nth(1).isChecked(), false);
-          assert.equal(await popup.locator('.kx-history-controls select').inputValue(), metric);
-          assert.deepEqual(await popup.locator('.kx-history-plots circle title').allTextContents(), points);
-          for (const label of ['All metrics', 'Epoch history', 'Against baselines', 'Confusion matrix', 'ROC', 'Precision-recall', 'Cumulative gain'])
-            assert.ok((await popup.locator('body').textContent()).includes(label), label);
+          if (tab === 'Training') {
+            assert.equal(await plots(popup, '.kx-history-plots svg'), 2);
+            if (flipped !== undefined) assert.equal(await popup.locator('.kx-history-legend input').nth(1).isChecked(), flipped);
+            assert.equal(await popup.locator('.kx-history-controls select').inputValue(), metric);
+            assert.deepEqual(await popup.locator('.kx-history-plots circle title').allTextContents(), points);
+            assert.ok((await popup.locator('body').textContent()).includes('Training Table'));
+          } else {
+            await plots(popup, '.kx-chart svg');
+            assert.equal(await popup.locator('[data-card="cutoff"] input[type="range"]').first().getAttribute('value'), '30');
+            assert.equal(await popup.locator('[data-card="metrics"] .kx-switch').count(), 0);
+            for (const label of ['Holdout', 'Validation', 'Training', 'Confusion matrix', 'ROC', 'Precision-recall', 'Cumulative gain'])
+              assert.ok((await popup.locator('body').textContent()).includes(label), label);
+            for (const label of ['Against baselines', 'Published model', 'Training run'])
+              assert.ok(!(await popup.locator('[data-card="metrics"]').textContent()).includes(label), label);
+          }
           await page.waitForTimeout(200);
           assert.deepEqual(await page.evaluate(() => [scrollX, scrollY]), position);
           await popup.close();
         }
         await save(page, saved); await reopened.goto(pathToFileURL(saved).href);
         assert.equal(await reopened.locator('[data-card="cutoff"] input[type="range"]').inputValue(), '30');
-        await reopened.getByRole('button', {name: 'Epoch history', exact: true}).click();
+        await reopened.getByRole('tab', {name: 'Training', exact: true}).click();
         assert.equal(await reopened.locator('.kx-history-controls select').inputValue(), metric);
-        assert.equal(await reopened.locator('.kx-history-legend input').nth(1).isChecked(), false);
+        if (flipped !== undefined) assert.equal(await reopened.locator('.kx-history-legend input').nth(1).isChecked(), flipped);
         assert.deepEqual(await reopened.locator('.kx-history-plots circle title').allTextContents(), points);
         await alter(saved, payload => { payload.data.tabs = payload.data.tabs.filter(tab => tab.id === 'evaluation'); payload.saved.tab = 0; });
         await reopened.goto(pathToFileURL(saved).href); const single = await print(reopened);
@@ -144,15 +158,20 @@ async function alter(filename, change) {
         await page.locator('[data-card="predicted"] [data-view="heatmap"]').click();
         await page.getByLabel('Hide outliers', {exact: true}).check();
         await plots(page, '.kx-heatmap svg');
-        const heatmap = await page.locator('.kx-heatmap svg').textContent();
+        /* Tick density and visible count labels follow the chart width, so
+           copies are compared by their cells' bins and counts. */
+        const cells = target => target.locator('.kx-heatmap svg rect > title').allTextContents();
+        const heatmap = await cells(page);
+        assert.ok(heatmap.length > 0);
         await page.locator('[data-card="predicted"] [data-view="tenths"]').click();
         await save(page, saved); await reopened.goto(pathToFileURL(saved).href);
         await reopened.locator('[data-card="predicted"] [data-view="heatmap"]').click();
         assert.equal(await reopened.getByLabel('Hide outliers', {exact: true}).isChecked(), true);
-        assert.equal(await reopened.locator('.kx-heatmap svg').textContent(), heatmap);
+        assert.deepEqual(await cells(reopened), heatmap);
+        await plots(reopened, '.kx-heatmap svg');
         const popup = await print(page);
         assert.equal(await popup.getByLabel('Hide outliers', {exact: true}).isChecked(), true);
-        assert.equal(await popup.locator('.kx-heatmap svg').textContent(), heatmap);
+        assert.deepEqual(await cells(popup), heatmap);
         await plots(popup, '.kx-heatmap svg'); await popup.close();
         await alter(saved, payload => {
           const view = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'predicted').views.find(v => v.id === 'distributions');
