@@ -296,9 +296,9 @@ The engine and GloVe release jobs call
 [Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
 It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
 Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
-plus the Kitmaker bearer token. Both release callers explicitly forward
-`KITMAKER_API_TOKEN`, which the reusable workflow declares as required.
-Portal credentials stay in the `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+plus the Kitmaker bearer token. The reusable workflow's caller token is optional.
+The approved Portal job resolves the required `KITMAKER_API_TOKEN` secret from
+the protected `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
 The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
 used an older staging proxy; its replacement is documented in
