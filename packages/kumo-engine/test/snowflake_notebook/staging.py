@@ -39,9 +39,11 @@ def identity(wheel, source):
                 expected_version=version)
 
 
-def stage(wheel, source, run, output, key_file=None):
+def stage(wheel, source, run, output, key_file=None, workload_wheels=None):
     from resources import require
 
+    extra_wheels = list(workload_wheels or [])
+    launch.workload_tools().check_workload_wheels(wheel, extra_wheels)
     require()
     repo = Path(__file__).resolve().parents[4]
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo,
@@ -57,7 +59,7 @@ def stage(wheel, source, run, output, key_file=None):
         work = Path(temporary)
         plan = json.loads(
             Path(__file__).with_name('dependency-plan.json').read_text())
-        wheelhouse = resolve(wheel, work / 'dependencies', plan)
+        wheelhouse = resolve(wheel, work / 'dependencies', plan, extra_wheels)
         manifest = json.loads(
             wheelhouse.with_name('dependencies.json').read_text())
         with launch.connect(
@@ -78,6 +80,8 @@ def stage(wheel, source, run, output, key_file=None):
                       wheel.name: asset,
                       'wheelhouse.tar': archive
                   })
+    if extra_wheels:
+        result['workload_wheels'] = [path.name for path in extra_wheels]
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + '\n')
     output.chmod(0o600)
@@ -88,6 +92,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
     parser.add_argument('--source-ref', required=True)
+    parser.add_argument(
+        '--workload-wheel', type=Path, action='append',
+        help='Additional workload dependency wheel; repeat as needed')
     parser.add_argument('--github-run', type=int)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument(
@@ -95,7 +102,7 @@ def main():
         help='Encrypted local RSA key already unlocked in the memory cache')
     args = parser.parse_args()
     stage(args.wheel, args.source_ref, args.github_run, args.output,
-          args.key_file)
+          args.key_file, args.workload_wheel)
     print('Staged this checkout candidate; dependency cache verified')
 
 
