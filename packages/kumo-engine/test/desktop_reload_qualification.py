@@ -212,7 +212,7 @@ def finish_process(process):
         if process.poll() is None:
             try:
                 subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
-                               check=True, capture_output=True)
+                               check=True, capture_output=True, timeout=30)
             except subprocess.CalledProcessError:
                 if process.poll() is None:
                     raise

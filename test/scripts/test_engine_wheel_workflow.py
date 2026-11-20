@@ -307,7 +307,22 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     workflow = yaml.safe_load((WORKFLOW.parent /
                               'kumo-engine-platform-smoke.yml').read_text())
     job = workflow['jobs']['windows-reload']
-    assert job['runs-on'] == 'windows-2022'
+    assert job['runs-on'] == 'windows-amd64-cpu4'
+    native_build = next(row for row in BUILDS
+                        if row['arch'] == 'windows-x86_64')
+    assert native_build['runner'] == 'windows-amd64-cpu4'
+    cleanup_step = _step('build', 'Verify native Windows process cleanup')
+    assert cleanup_step['if'] == "${{ matrix.arch == 'windows-x86_64' }}"
+    assert cleanup_step['run'] == (
+        'python -I packages/kumo-engine/test/windows_cleanup_check.py')
+    steps = [step['name'] for step in JOBS['build']['steps']]
+    assert (steps.index('Set up Python') <
+            steps.index('Verify native Windows process cleanup') <
+            steps.index('Set up Rust') < steps.index('Build wheel'))
+    smoke_targets = {row['platform']: row['runner'] for row in
+                     workflow['jobs']['smoke']['strategy']['matrix']['target']}
+    assert smoke_targets['windows-native'] == 'windows-amd64-cpu4'
+    assert smoke_targets['windows-wsl'] == 'wsl-amd64-gpu-t4-latest-1'
     assert set(job['strategy']['matrix']['python']) == {
         '3.11', '3.12', '3.13', '3.14'}
     assert job['environment']['name'] == 'gha-kumo-workflow-tests'
@@ -323,6 +338,12 @@ def test_windows_reload_blocks_publication_with_current_wheel():
     assert 'venv/Scripts/python.exe' in run
     assert '--torch-backend=cpu "${wheels[0]}[cpu]"' in run
     assert 'uv pip check --python "$python"' in run
+    assert 'wheel_gpu_smoke,windows_cleanup_check}.py' in run
+    cleanup = ('"$python" -I test/windows_cleanup_check.py '
+               '2>&1 | tee results/cleanup.log')
+    assert cleanup in run
+    assert 'set -euo pipefail' in run
+    assert run.index(cleanup) < run.index('desktop_reload_qualification.py run')
     assert 'desktop_reload_qualification.py run' in run
     assert '--commit "$CANDIDATE_SHA"' in run
     assert 'platform-qualification' in JOBS['attach-to-release']['needs']

@@ -50,7 +50,7 @@ def test_windows_timeout_terminates_tree(monkeypatch):
     RELOAD.finish_process(process)
     run.assert_called_once_with(
         ['taskkill', '/PID', '123', '/T', '/F'],
-        check=True, capture_output=True)
+        check=True, capture_output=True, timeout=30)
     process.wait.assert_called_once_with(timeout=30)
 
 
@@ -78,6 +78,18 @@ def test_windows_taskkill_exit_race(monkeypatch, exited):
     else:
         with pytest.raises(subprocess.CalledProcessError):
             RELOAD.finish_process(process)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='non-Windows refusal check')
+def test_windows_cleanup_check_refuses_other_platforms():
+    checker = SCRIPT.with_name('windows_cleanup_check.py')
+    result = subprocess.run([sys.executable, '-I', str(checker)],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0
+    assert 'requires native Windows' in result.stderr
+    evidence = json.loads(result.stdout.splitlines()[0])
+    assert evidence['sys_platform'] == sys.platform
+    assert evidence['os_name'] == os.name
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process group check')
