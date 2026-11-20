@@ -2,6 +2,29 @@
 
 DiskGraph is a Rust-based pipeline for turning CSV/Parquet tables into an on-disk graph index and exploring it with a fast TUI.
 
+## Runtime sampling API
+
+Configure local sampling with the same typed options used by remote samplers:
+
+```python
+from dataclasses import replace
+from diskgraph import RuntimeIndex, SamplingOptions, SamplingPlan
+
+index = RuntimeIndex("runtime_manifest.json", rnd_seed=42, num_threads=4)
+options = SamplingOptions(
+    stage="train", batch_size=1024, sampling_plan=SamplingPlan(), shuffle=True,
+)
+batches, sample_count = index.iter(options)
+next_epoch, _ = index.iter(replace(options, epoch=1))
+```
+
+`SamplingOptions` and `WeightedSeedSampling` are frozen Python dataclasses.
+`RuntimeIndex.iter` accepts a `SamplingOptions` object rather than keyword
+arguments; the underlying Rust iterator API is unchanged. An omitted `rnd_seed`
+inherits the index seed, while explicit `None` disables it and is rejected when
+shuffling. Projections and selected seed IDs retain their existing dictionary
+and list formats; treat those containers as read-only while options are in use.
+
 ## Install Rust
 
 ```bash

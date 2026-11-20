@@ -40,8 +40,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from diskgraph import SplitSpec
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -97,6 +97,7 @@ def _default_sampling_plan() -> SamplingPlan:
 def test_wheel_is_tt_ng():
     """Installed wheel must expose the 3-arg execute_tt_plan signature."""
     import inspect
+
     from diskgraph import execute_tt_plan
 
     sig = inspect.signature(execute_tt_plan)
@@ -175,12 +176,11 @@ def test_forecasting_tt_gen_ingest_preserves_split_stats(parent_index):
 
 
 def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(parent_index):
+    from diskgraph import DiskGraphPlanCompiler, TimeUnit, execute_tt_gen
+    from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS
     from kumoapi.pquery.AST import Aggregation, Column, DateOffsetRange, Join
     from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
     from kumoapi.typing import AggregationType
-
-    from diskgraph import DiskGraphPlanCompiler, TimeUnit, execute_tt_gen
-    from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS
 
     target_ast = Aggregation(
         target=Column(fqn="orders.order_id"),
@@ -476,4 +476,4 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
+    return index.iter(SamplingOptions(**kwargs))
