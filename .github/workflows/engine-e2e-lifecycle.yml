@@ -66,6 +66,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MODE: ${{ github.event_name == 'workflow_dispatch' && 'report' || 'cleanup' }}
   failed-case:
+    name: failed-case ${{ matrix.case }} ${{ matrix.scale }}
     needs: lifecycle
     if: >-
       github.event_name == 'workflow_dispatch' && needs.lifecycle.outputs.matrix != '' &&

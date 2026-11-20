@@ -8,11 +8,12 @@ umask 077
 bootstrapping=1 boot_check='runner image'
 invoke() {
   local payload function_error
-  payload=$(python3 - "$REPOSITORY" "$POOL_RUN_ID" "$POOL_ATTEMPT" "$SOURCE_SHA" "$CAPACITY_DEADLINE" "$INSTANCE_TYPE" "$LABEL" "$POOL_CASES" "$1" "${2:-}" <<'PY'
+  payload=$(python3 - "$REPOSITORY" "$POOL_RUN_ID" "$POOL_ATTEMPT" "$SOURCE_SHA" "$CAPACITY_DEADLINE" "$INSTANCE_TYPE" "$LABEL" "$POOL_CASES" "${instance_region:-}" "${instance_id:-}" "$1" "${2:-}" <<'PY'
 import json, sys
-repo, run, attempt, sha, deadline, instance, label, cases, kind, error = sys.argv[1:]
+repo, run, attempt, sha, deadline, instance, label, cases, region, instance_id, kind, error = sys.argv[1:]
 payload = dict(kind=kind, repo=repo, run=run, attempt=attempt, sha=sha,
-    deadline=int(deadline), instance=instance, label=label, cases=json.loads(cases))
+    deadline=int(deadline), instance=instance, label=label, cases=json.loads(cases),
+    region=region, instance_id=instance_id)
 if error:
     payload['error'] = error
 print(json.dumps(payload))
@@ -25,7 +26,7 @@ PY
 retry_invoke() {
   local delay status=1
   [[ $CAPACITY_DEADLINE =~ ^[1-9][0-9]{0,10}$ ]] || return 1
-  for delay in 0 5 10; do
+  for delay in 0 5 10 20 30 60 60 60 60; do
     (( $(date +%s) + delay < CAPACITY_DEADLINE )) || break
     (( delay == 0 )) || sleep "$delay"
     (( $(date +%s) < CAPACITY_DEADLINE )) || break
@@ -50,11 +51,16 @@ trap finish EXIT
 [[ $EUID -eq 0 && $REPOSITORY == NVIDIA/kumo-engine && $SOURCE_SHA =~ ^[0-9a-f]{40}$ && $SCRATCH_GIB =~ ^[1-9][0-9]{0,5}$ ]]
 [[ $TIER == nightly || $TIER == weekly ]]
 [[ $CAPACITY_DEADLINE =~ ^[1-9][0-9]{0,10}$ ]]
+boot_check='instance metadata'
+metadata_token=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)
+instance_id=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-id)
+instance_region=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/placement/region)
+[[ $instance_id =~ ^i-[0-9a-f]{8,17}$ && $instance_region =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]]
+boot_check='runner image'
 [[ -x /opt/actions-runner/config.sh && -x /opt/actions-runner/run.sh && ! -e /opt/actions-runner/.runner ]]
 boot_check='capacity deadline'
 (( $(date +%s) < CAPACITY_DEADLINE ))
 boot_check='instance type'
-metadata_token=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
 actual_instance=$(curl --retry 5 --retry-all-errors --retry-max-time 30 --fail --silent --show-error --max-time 10 -H "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-type)
 [[ $actual_instance == "$INSTANCE_TYPE" ]]
 unset metadata_token
@@ -96,7 +102,9 @@ boot_check='runner configuration'
 cd /opt/actions-runner
 mode=()
 if [[ $TIER == weekly ]]; then mode+=(--ephemeral); fi
-runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./config.sh --unattended --disableupdate --url "https://github.com/$REPOSITORY" --token "$RUNNER_TOKEN" --name "$LABEL-$(hostname)" --labels "$LABEL" --no-default-labels --work /mnt/localssd/engine-e2e/_work "${mode[@]}"
+instance_hash=$(printf '%s' "$instance_id" | sha256sum | cut -c 1-12)
+[[ $instance_hash =~ ^[0-9a-f]{12}$ ]]
+runuser -u engine-e2e -- env -i HOME=/home/engine-e2e PATH=/usr/local/bin:/usr/bin:/bin ./config.sh --unattended --disableupdate --url "https://github.com/$REPOSITORY" --token "$RUNNER_TOKEN" --name "$LABEL-$instance_hash" --labels "$LABEL" --no-default-labels --work /mnt/localssd/engine-e2e/_work "${mode[@]}"
 unset RUNNER_TOKEN
 printf 'ENGINE_E2E_INSTANCE_TYPE=%s\nENGINE_E2E_CAPACITY_DEADLINE=%s\n' "$actual_instance" "$CAPACITY_DEADLINE" >> .env
 chown engine-e2e:engine-e2e .env
