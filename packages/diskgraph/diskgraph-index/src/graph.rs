@@ -1363,7 +1363,8 @@ fn merge_extension_into(
     tt_id: &str,
 ) -> Result<()> {
     let ext_meta_path = subdir.join("index_metadata.json");
-    let ext_metadata = read_index_metadata(&ext_meta_path)?;
+    let ext_metadata = read_index_metadata(&ext_meta_path)
+        .with_context(|| format!("open extension {tt_id} at {}", subdir.display()))?;
     if ext_metadata.parent_index_build_id != reader.metadata.index_build_id {
         return Err(invalid_extension(format!(
             "extension `{tt_id}` belongs to index build {:?}, not {:?}",
