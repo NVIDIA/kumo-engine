@@ -903,3 +903,171 @@ def test_visualize_table_cap_precedes_source_access(count):
             assert len(root.findall(
                 './{http://www.w3.org/2000/svg}g[@data-kumo-card]')) == 30
         backend.assert_not_called()
+
+
+def _keyed(table: Table, columns: list[Column], pkey: str) -> Table:
+    definition = replace(table.definition, cols=columns, pkey=pkey)
+    return replace(table, definition=definition)
+
+
+@pytest.mark.parametrize('table_name, key', [('users', 'id'),
+                                             ('events', 'user_id')])
+def test_float_key_columns_are_declared_int64_with_a_warning(table_name, key):
+    from unittest import mock
+
+    users, events = _s3_tables()
+    tables = {'users': users, 'events': events}
+    owner = tables[table_name]
+    tables[table_name] = replace(
+        owner,
+        definition=replace(
+            owner.definition,
+            cols=[
+                replace(col, dtype=Dtype.float64) if col.name == key else col
+                for col in owner.definition.cols
+            ]))
+    graph = Graph(tables, [Edge('events', 'user_id', 'users')])
+
+    with pytest.warns(UserWarning,
+                      match=rf"{table_name}\.{key} .*float64.*int64") as caught:
+        graph.validate()
+        with mock.patch.object(Graph, '_snapshot_no_lock'):
+            graph.snapshot()
+    assert sum('float64' in str(w.message) for w in caught) == 1
+
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    projected = (config['users']['pkey']
+                 if key == 'id' else config['events']['fkeys'][0])
+    assert projected['dtype'] == 'int64'
+    assert Dtype(graph.native_graph.table(table_name).column(key).dtype) \
+        == Dtype.int64
+    assert next(col for col in tables[table_name].definition.cols
+                if col.name == key).dtype == Dtype.float64
+
+
+@pytest.mark.parametrize('shape, widths', [
+    ('direct', {'events.user_id': 'int32'}),
+    ('shared', {'events.user_id': 'int32'}),
+    ('shared_reversed', {'events.user_id': 'int32'}),
+    ('incoming', {'bridge.id': 'int64'}),
+    ('chained', {'events.user_id': 'int32', 'bridge.id': 'int32'}),
+    ('chained_narrow_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
+    ('chained_float_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32',
+        'orders.bridge_id': 'int32'
+    }),
+    ('chained_self_incoming', {
+        'events.user_id': 'int32',
+        'bridge.id': 'int32'
+    }),
+])
+def test_float_keys_take_the_width_every_link_accepts(shape, widths):
+    users, events = _s3_tables()
+    narrow = _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id')
+    wide = _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id')
+    bridge = _keyed(users, [
+        Column('id', Stype.ID, Dtype.float64),
+        Column('parent_id', Stype.ID, Dtype.int64),
+    ], 'id')
+    events = _keyed(events, [
+        Column('event_id', Stype.ID, Dtype.int64),
+        Column('user_id', Stype.ID, Dtype.float64),
+    ], 'event_id')
+    incoming = {
+        'incoming': Dtype.int64,
+        'chained_narrow_incoming': Dtype.int16,
+        'chained_float_incoming': Dtype.float64,
+    }.get(shape)
+    tables = {'narrow': narrow, 'events': events}
+    edges = [Edge('events', 'user_id', 'narrow')]
+    if shape.startswith('shared'):
+        tables['wide'] = wide
+        edges.append(Edge('events', 'user_id', 'wide'))
+        if shape == 'shared_reversed':
+            edges.reverse()
+    if shape.startswith('chained'):
+        tables['bridge'] = bridge
+        edges = [Edge('bridge', 'id', 'narrow'),
+                 Edge('events', 'user_id', 'bridge')]
+    if shape == 'incoming':
+        tables, edges = {'bridge': bridge}, []
+    if shape == 'chained_self_incoming':
+        edges.append(Edge('bridge', 'parent_id', 'bridge'))
+    if incoming is not None:
+        tables['orders'] = _keyed(events, [
+            Column('order_id', Stype.ID, Dtype.int64),
+            Column('bridge_id', Stype.ID, incoming),
+        ], 'order_id')
+        edges.append(Edge('orders', 'bridge_id', 'bridge'))
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning) as caught:
+        graph.validate()
+    assert {
+        str(w.message).split(' is stored')[0]
+        for w in caught if ' is stored' in str(w.message)
+    } == {f'Key column {column}'
+          for column in widths}
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    keys = {}
+    for name, table in config.items():
+        keys[f"{name}.{table['pkey']['name']}"] = table['pkey']['dtype']
+        for fkey in table['fkeys']:
+            keys[f"{name}.{fkey['name']}"] = fkey['dtype']
+            assert Dtype(fkey['dtype']).can_link_to_dtype(
+                Dtype(config[fkey['dst_table']]['pkey']['dtype']))
+    assert {column: keys[column] for column in widths} == widths
+
+
+def test_float_key_with_no_width_for_every_link_is_refused():
+    users, events = _s3_tables()
+    graph = Graph(
+        {
+            'narrow':
+            _keyed(users, [Column('id', Stype.ID, Dtype.int32)], 'id'),
+            'bridge':
+            _keyed(users, [Column('id', Stype.ID, Dtype.float64)], 'id'),
+            'orders':
+            _keyed(events, [
+                Column('order_id', Stype.ID, Dtype.int64),
+                Column('bridge_id', Stype.ID, Dtype.int64),
+            ], 'order_id'),
+        },
+        [Edge('bridge', 'id', 'narrow'),
+         Edge('orders', 'bridge_id', 'bridge')])
+
+    with pytest.raises(
+            ValueError,
+            match=(r"Key column bridge\.id is stored as float64; it links to "
+                   r"narrow\.id \(int32\) and orders\.bridge_id \(int64\) "
+                   r"links to it, so no integer width fits every link\. "
+                   r"Declare these keys with one integer width at the "
+                   r"source\.")):
+        graph.validate()
+
+
+@pytest.mark.parametrize('reversed_edges', [False, True])
+def test_equal_width_integer_targets_settle_on_int64(reversed_edges):
+    users, events = _s3_tables()
+    tables = {
+        'plain': _keyed(users, [Column('id', Stype.ID, Dtype.int)], 'id'),
+        'wide': _keyed(users, [Column('id', Stype.ID, Dtype.int64)], 'id'),
+        'events': _keyed(events, [
+            Column('event_id', Stype.ID, Dtype.int64),
+            Column('user_id', Stype.ID, Dtype.float64),
+        ], 'event_id'),
+    }
+    edges = [Edge('events', 'user_id', 'plain'),
+             Edge('events', 'user_id', 'wide')]
+    if reversed_edges:
+        edges.reverse()
+    graph = Graph(tables, edges)
+
+    with pytest.warns(UserWarning):
+        graph.validate()
+    config = {t['table_name']: t for t in graph._graph_config['tables']}
+    assert {fk['dtype'] for fk in config['events']['fkeys']} == {'int64'}

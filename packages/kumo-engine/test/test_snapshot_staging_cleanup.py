@@ -19,7 +19,7 @@ def _fake_table(dest_writes: bool = True, credentials=None):
                                source={'path': dest_dir})
 
     return SimpleNamespace(
-        definition=SimpleNamespace(cols=[], source_table=None),
+        definition=SimpleNamespace(cols=[], source_table=None, pkey=None),
         connector=SimpleNamespace(source_backend=SimpleNamespace(
             prepare_ingest=prepare_ingest)),
         table_name='t',
