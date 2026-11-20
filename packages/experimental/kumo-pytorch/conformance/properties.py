@@ -26,7 +26,13 @@ from pathlib import Path
 from typing import Literal
 from unittest.mock import patch
 
-from conformance.assertions import PropertyFailure, _same_value, bound_tables, case_settings
+from conformance.assertions import (
+    PropertyFailure,
+    _same_value,
+    bound_tables,
+    case_settings,
+    write_anchor_table,
+)
 from conformance.assertions import require as _require
 from conformance.cases import REPOSITORY
 from conformance.fixtures import values as fixture_values
@@ -134,14 +140,26 @@ def answer(
         dataset, engine = bound
         check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
-            return _collect(plan.materialize(requests), requests)
+            return _collect(
+                plan.materialize(
+                    write_anchor_table(
+                        requests,
+                        Path(plan.engine.index).parent / "anchors.parquet",
+                        schema=plan.contract.schema,
+                    )
+                ),
+                requests,
+            )
 
 
 def _collect(task: Task, requests: Sequence[SampleRequest]) -> Answer:
     result: Answer = {}
+    assert callable(task._anchors.batches)
     cutoffs = {str(request.sample_id): int(request.as_of_time) for request in requests}
     for start in range(0, len(requests), PREVIEW_LIMIT):
-        chunk = requests[start : start + PREVIEW_LIMIT]
+        chunk = task._anchors.fetch(
+            ALL_ANCHORS, range(start, min(start + PREVIEW_LIMIT, len(requests)))
+        )
         for sample in task.preview(chunk).to_dict()["samples"]:
             _require(sample["sample_id"] not in result, f"duplicate sample {sample['sample_id']}")
             targets = flat_targets(sample["targets"], cutoffs[str(sample["sample_id"])])
@@ -369,7 +387,13 @@ def _runs_or_refuses_late(
     late = late_refusal(engine, strategy)
     try:
         with prepare(variant.contract, dataset, bound) as plan:
-            task = plan.materialize(case.requests)
+            task = plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            )
             _collect(task, case.requests)
             if late is None:
                 list(variant.run(task, case.requests))
@@ -817,7 +841,16 @@ def truncated_parquet(case: GeneratedCase, engine: str, position: int) -> None:
         victim.write_bytes(data[: len(data) // 2])
         try:
             with prepare(contract, dataset, engine_object) as plan:
-                _collect(plan.materialize(case.requests), case.requests)
+                _collect(
+                    plan.materialize(
+                        write_anchor_table(
+                            case.requests,
+                            Path(plan.engine.index).parent / "anchors.parquet",
+                            schema=plan.contract.schema,
+                        )
+                    ),
+                    case.requests,
+                )
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as error:  # noqa: BLE001 - a native panic is a finding
@@ -866,8 +899,14 @@ def batch_answer(
         dataset, engine = bound
         check_or_refuse(contract, dataset, engine)
         with prepare(contract, dataset, engine) as plan:
-            task = plan.materialize(requests)
-            batches = task.batches(requests, batch_size=BATCH_ROWS, output_format=output_format)
+            task = plan.materialize(
+                write_anchor_table(
+                    requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            )
+            batches = task.batches(batch_size=BATCH_ROWS, output_format=output_format)
             rows = decode_batches(batches)
     result = dict(rows)
     _require(len(result) == len(rows), "a sample was delivered twice")
@@ -962,10 +1001,16 @@ def packing(case: GeneratedCase, engine: str, position: int) -> None:
         dataset, engine_object = bound
         for layout, contract in bounded.items():
             with prepare(contract, dataset, engine_object) as plan:
-                task = plan.materialize(case.requests)
+                task = plan.materialize(
+                    write_anchor_table(
+                        case.requests,
+                        Path(plan.engine.index).parent / "anchors.parquet",
+                        schema=plan.contract.schema,
+                    )
+                )
                 for output_format in formats:
                     label = f"{layout}/{output_format}"
-                    batches = list(task.batches(case.requests, output_format=output_format))
+                    batches = list(task.batches(output_format=output_format))
                     for batch in batches:
                         cost, size = batch_cost(batch, HISTORY), len(batch.metadata["sample_ids"])
                         _require(cost <= budget, f"{label}: a batch takes {cost} > {budget} tokens")
@@ -1095,23 +1140,39 @@ def root_availability(case: GeneratedCase, engine: str, position: int) -> None:
         dataset, engine_object = bound
         _require(not check(contract, dataset, engine_object), f"{engine} refused available_from")
         with prepare(contract, dataset, engine_object) as plan:
-            task = plan.materialize(case.requests)
+            task = plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            )
             _same(
                 _entities(_base(case, engine)),
                 _entities(_collect(task, case.requests)),
                 "available_from before every anchor",
             )
             entity = case.requests[0].entity_id
-            task.preview([SampleRequest("after_join", entity, joined + 1)])
+
+            def deliver(request):
+                anchors = write_anchor_table(
+                    [request],
+                    Path(plan.engine.index).parent / f"{request.sample_id}.parquet",
+                    schema=plan.contract.schema,
+                )
+                with plan.materialize(anchors, fitted=task.fitted_state) as selected:
+                    return next(selected.batches(batch_size=1, output_format="model"))
+
+            deliver(SampleRequest("after_join", entity, joined + 1))
             try:
-                task.preview([SampleRequest("at_join", entity, joined)])
+                deliver(SampleRequest("at_join", entity, joined))
             except ValueError as error:
                 _require("did not exist" in str(error), f"available_from: {error!r}")
             else:
                 raise PropertyFailure("an anchor at available_from was answered")
             missing = SampleRequest("missing_root", MISSING_ROOT, joined + 1)
             try:
-                task.preview([missing])
+                deliver(missing)
             except Exception as error:
                 message = str(error)
                 _require(
@@ -1139,21 +1200,39 @@ def fitted_state(case: GeneratedCase, engine: str, position: int) -> None:
         expected, approximate = encoder_expectations(case, contract)
         with bound_tables(contract, case.tables, engine, types=PHYSICAL_TYPES) as (dataset, native):
             with prepare(contract, dataset, native) as plan:
-                state = plan.materialize(case.requests).fitted_state.to_dict()
+                state = plan.materialize(
+                    write_anchor_table(
+                        case.requests,
+                        Path(plan.engine.index).parent / "anchors.parquet",
+                        schema=plan.contract.schema,
+                    )
+                ).fitted_state.to_dict()
                 actual = state["encoders"]
         _require(actual.keys() == expected.keys(), f"{label}: fitted encoder inventory")
-        for identity, values in approximate.items():
+        for identity, (values, maximum_cuts) in approximate.items():
             cuts = actual[identity].get("boundaries", [])
             wanted = expected[identity]["boundaries"]
-            _require(len(cuts) == len(wanted), f"{label} {identity}: boundary count")
-            for cut, want in zip(cuts, wanted, strict=True):
-                _require(
+
+            # T-digest can interpolate distinct cuts where raw quantiles coincide.
+            # Check both populations of cuts by rank, including every requested quantile.
+            def same_rank(cut, want):
+                return (
                     math.isfinite(cut)
                     and bisect.bisect_left(values, cut) <= bisect.bisect_right(values, want) + 1.5
-                    and bisect.bisect_right(values, cut) >= bisect.bisect_left(values, want) - 1.5,
-                    f"{label} {identity}: stored-column quantile ranks",
+                    and bisect.bisect_right(values, cut) >= bisect.bisect_left(values, want) - 1.5
                 )
+
+            _require(
+                cuts == sorted(set(cuts))
+                and len(cuts) <= maximum_cuts
+                and all(any(same_rank(cut, want) for want in wanted) for cut in cuts)
+                and all(any(same_rank(cut, want) for cut in cuts) for want in wanted),
+                f"{label} {identity}: fitted state differs: quantile ranks ({cuts} vs {wanted})",
+            )
             expected[identity]["boundaries"] = cuts
+            expected[identity]["vocabulary_size"] = (
+                len(cuts) + 2 + int(expected[identity]["separate_zero"])
+            )
         differences = state_differences(
             fitted_structure(contract, expected), state, MOMENT_TOLERANCE
         )
@@ -1183,11 +1262,17 @@ def contract_transfer(case: GeneratedCase, engine: str, position: int) -> None:
         paths = {name: source.path for name, source in dataset.tables.items()}
         for label, contract in contracts.items():
             with prepare(contract, dataset, engine_object) as plan:
-                task = plan.materialize(case.requests)
+                task = plan.materialize(
+                    write_anchor_table(
+                        case.requests,
+                        Path(plan.engine.index).parent / "anchors.parquet",
+                        schema=plan.contract.schema,
+                    )
+                )
                 folder = Path(directory) / label
                 folder.mkdir()
                 (folder / "contract.json").write_text(task.bound_contract().to_json())
-                expected[label] = batches_json(task.batches(case.requests, **TRANSFER_ARGUMENTS))
+                expected[label] = batches_json(task.batches(**TRANSFER_ARGUMENTS))
             inputs = json.dumps({"tables": paths, "requests": requests})
             (folder / "inputs.json").write_text(inputs)
         folders = [Path(directory) / label for label in contracts]

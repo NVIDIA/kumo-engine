@@ -8,6 +8,7 @@ Fault injection changes one native request or result (a window edge, selection,
 group key or typed column). Every case executes DiskGraph.
 """
 
+import json
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
@@ -35,7 +36,6 @@ from conformance.outputs import (
 from conformance.properties import PROPERTIES, PropertyFailure, clear_runs
 from conformance.registry import ENGINE_REFUSALS, INAPPLICABLE, blocked_regions
 from conformance.variants import VARIANTS, variant_for
-from kumo.pytorch import assembly
 from kumo.pytorch.api import (
     Aggregate,
     GroupBy,
@@ -404,13 +404,18 @@ def _reverse_entity_values(original):
     return adapt
 
 
-def _shift_model_cutoffs(original):
-    def build_model(self, spec, requests, **keywords):
-        later = [replace(request, as_of_time=request.as_of_time + 10**6) for request in requests]
-        result = original(self, spec, later, **keywords)
-        return replace(result, evaluation_times=tuple(r.as_of_time for r in requests))
+def _ignore_encoder_cutoff(original):
+    def column_stats(self, requests, cutoff):
+        return original(self, requests, None)
 
-    return build_model
+    return column_stats
+
+
+def _shift_anchor_cutoffs(original):
+    def cutoffs(self, values):
+        return pc.add(original(self, values), 10**15 // self._tick_nanos)
+
+    return cutoffs
 
 
 def _growing_model_work(original):
@@ -426,14 +431,14 @@ def _growing_model_work(original):
 
 
 def _perturb_sum(original):
-    def build_model(self, spec, requests, **keywords):
-        result = original(self, spec, requests, **keywords)
-        values = dict(result.entity_values)
-        if "sum" in values:
-            values["sum"] = pc.add(values["sum"], 1)
-        return replace(result, entity_values=values)
+    def materialize(self, *arguments, **keywords):
+        for columns, features, targets, cutoffs in original(self, *arguments, **keywords):
+            features = dict(features)
+            if "sum" in features:
+                features["sum"] = pc.add(features["sum"], 1)
+            yield columns, features, targets, cutoffs
 
-    return build_model
+    return materialize
 
 
 def _unbound(original):
@@ -443,22 +448,31 @@ def _unbound(original):
     return bound_contract
 
 
-def _longer_lengths(original):
+def _native_singletons(original):
     def lengths(self, *arguments, **keywords):
-        return [length + 1 for length in original(self, *arguments, **keywords)]
+        contract, metadata = original(self, *arguments, **keywords)
+        costs = json.loads(contract)
+        costs["max_samples"] = 1
+        return json.dumps(costs), metadata
 
     return lengths
 
 
 NATIVE_DEFECTS = (
     ("aggregate_answers", "_adapt_model_result", _reverse_entity_values, "fixture answers", "M22"),
-    ("point_in_time", "build_model_ordered", _shift_model_cutoffs, "future rows", "model PIT"),
-    ("fitted_state", "build_model", _shift_model_cutoffs, "fitted state differs", "token fit"),
+    ("point_in_time", "_cutoff_array", _shift_anchor_cutoffs, "future rows", "model PIT"),
+    ("fitted_state", "column_stats", _ignore_encoder_cutoff, "fitted state differs", "token fit"),
     ("model_delivery", "_adapt_model_result", _reverse_entity_values, "differs", "M22"),
     ("model_epoch_trend", "build_model_batch", _growing_model_work, "!= epoch 2", "model work"),
-    ("fitted_state", "build_model", _perturb_sum, "columns: fitted state", "column fit"),
+    (
+        "fitted_state",
+        "materialize_scalar_batches",
+        _perturb_sum,
+        "columns: fitted state",
+        "column fit",
+    ),
     ("contract_transfer", "bound_contract", _unbound, "fresh process", "lost state"),
-    ("packing", "model_lengths", _longer_lengths, "differ by format", "M17"),
+    ("packing", "_length_contract", _native_singletons, "differ by format", "M17"),
 )
 
 
@@ -468,7 +482,11 @@ NATIVE_DEFECTS = (
 )
 def test_a_wrong_diskgraph_fails_its_own_path(native_cases, name, method, wrap, expected, mutation):
     cases, model = native_cases
-    target = Task if method == "bound_contract" else DiskGraphSource
+    target = (
+        Task
+        if method == "bound_contract"
+        else (NativeAnchors if method == "_length_contract" else DiskGraphSource)
+    )
     case = model
     with ExitStack() as stack:
         stack.enter_context(_patched(target, method, wrap))
@@ -478,25 +496,25 @@ def test_a_wrong_diskgraph_fails_its_own_path(native_cases, name, method, wrap, 
 
 
 def _swap_float_columns(original):
-    def rows(source, values, declarations):
-        typed = original(source, values, declarations)
-        floats = [
-            name for name, column in typed.columns.items() if pa.types.is_floating(column.type)
-        ]
-        columns = dict(typed.columns)
-        for target, moved in zip(floats, floats[1:] + floats[:1], strict=True):
-            columns[target] = typed.columns[moved]
-        return replace(typed, columns=columns)
+    def materialize(self, *arguments, **keywords):
+        for columns, features, targets, cutoffs in original(self, *arguments, **keywords):
+            floats = [
+                name for name, column in features.items() if pa.types.is_floating(column.type)
+            ]
+            swapped = dict(features)
+            for target, moved in zip(floats, floats[1:] + floats[:1], strict=True):
+                swapped[target] = features[moved]
+            yield columns, swapped, targets, cutoffs
 
-    return rows
+    return materialize
 
 
 @pytest.mark.engine("diskgraph")
 def test_a_wrong_typed_fitting_path_fails_fitted_state(native_cases):
-    """DiskGraph fits field tokens from typed columns; a wrong field mapping is caught."""
+    """Native fitting consumes typed materialized fields; a wrong mapping is caught."""
 
     cases, _ = native_cases
-    with _patched(assembly, "_model_rows", _swap_float_columns):
+    with _patched(DiskGraphSource, "materialize_scalar_batches", _swap_float_columns):
         with pytest.raises(PropertyFailure, match="fitted state differs"):
             PROPERTIES["fitted_state"].check(cases[0], "diskgraph", 0)
     PROPERTIES["fitted_state"].check(cases[0], "diskgraph", 0)

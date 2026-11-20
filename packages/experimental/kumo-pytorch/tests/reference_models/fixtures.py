@@ -14,7 +14,7 @@ from kumo.pytorch.api import (
     SampleRequest,
 )
 from kumo.pytorch.architectures import build_architecture
-from tests.native_fixtures import prepare_rows
+from tests.native_fixtures import prepare_rows, request_anchor_table
 from tests.reference_models.architecture_definitions import ARCHITECTURES, MODEL_BINDINGS
 from tests.reference_models.batch_adapters import MODEL_BATCH_ADAPTERS
 from tests.reference_models.batch_definitions import BATCH_SPECS
@@ -197,7 +197,10 @@ def model_task(
         tables={table: InMemoryRows(rows=rows) for table, rows in (tables or _tables()).items()}
     )
     with prepare_rows(contract, dataset) as plan:
-        with plan.materialize(requests or requests_for(name), fitted=fitted) as task:
+        with plan.materialize(
+            request_anchor_table(requests or requests_for(name), schema=plan.contract.schema),
+            fitted=fitted,
+        ) as task:
             yield task
 
 

@@ -4,16 +4,32 @@
 
 """Native pools retain complete batches and cache lengths across shuffled epochs."""
 
+from dataclasses import replace
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
-from tests.native_fixtures import native_anchor_table
+from tests.native_fixtures import native_anchor_table, request_anchor_table
 from tests.test_model_history_limits import history_data as history_data
 from tests.test_preview import _equal
 
 diskgraph = pytest.importorskip("diskgraph")
+
+
+def _single_anchor_batches(plan, anchors, fitted):
+    contract = replace(
+        plan.contract,
+        batch=replace(plan.contract.batch, batching=api.Batching(max_samples=1)),
+    )
+    with api.prepare(contract, plan.dataset, plan.engine) as reference:
+        with reference.materialize(anchors, fitted=fitted.inputs) as task:
+            assert callable(task._anchors.batches)
+            return {
+                batch.metadata["sample_ids"][0]: batch
+                for batch in task.batches(output_format="model", shuffle=False)
+            }
 
 
 @pytest.mark.parametrize(
@@ -221,7 +237,7 @@ def test_native_bucketing_sorts_by_model_token_length(history_data, tmp_path, mo
 @pytest.mark.parametrize("tokens", [False, True])
 @pytest.mark.parametrize("packed", [False, True])
 @pytest.mark.parametrize("keep", ["first", "last"])
-def test_native_planning_matches_python_and_caches_lengths(
+def test_native_planning_matches_single_anchor_batches_and_caches_lengths(
     history_data, tmp_path, monkeypatch, tokens, packed, keep
 ):
     schema, dataset, _, index, _ = history_data
@@ -286,10 +302,7 @@ def test_native_planning_matches_python_and_caches_lengths(
     )
     with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
         with plan.materialize(table, fit_split="train") as task:
-            expected = {}
-            requests = task._anchors.fetch(frozenset({"train"}), range(n))
-            for request in requests:
-                expected[request.sample_id] = next(task.batches([request], output_format="model"))
+            expected = _single_anchor_batches(plan, table, task.fitted_state)
 
             def forbidden(*args, **kwargs):
                 pytest.fail(
@@ -420,10 +433,8 @@ def test_precomputed_text_lengths_drive_native_budget_without_planning_encoding(
             assert "orders" in task.fitted_state.fit["inputs"]["statistics"]["token_lengths"]
             assert len(task._anchors._token_maps) == 1
             expected = {
-                r.sample_id: next(task.batches([r], output_format="model")).inputs["history"][
-                    "value_ids"
-                ]
-                for r in task._anchors.fetch(api.ALL_ANCHORS, range(24))
+                sid: batch.inputs["history"]["value_ids"]
+                for sid, batch in _single_anchor_batches(plan, anchors, task.fitted_state).items()
             }
             monkeypatch.setattr(
                 task._assembler,
@@ -554,7 +565,10 @@ def test_native_drop_last_and_cache_survive_batch_size_change(history_data, tmp_
     ) as plan:
         # Fit on a legal empty history, then refuse a longer unseen input.
         with plan.materialize(
-            [api.SampleRequest("empty", 2, 4, split="train")], fit_split="train"
+            request_anchor_table(
+                [api.SampleRequest("empty", 2, 4, split="train")], schema=plan.contract.schema
+            ),
+            fit_split="train",
         ) as calibration:
             fitted = calibration.fitted_state
         with plan.materialize(anchors, fitted=fitted) as task:
@@ -688,10 +702,7 @@ def test_fixed_width_costs_never_scan_or_allocate_per_row_lengths(
                 assert task._anchors._event_costs["orders"]["values"] is None
             else:
                 assert task._anchors._event_costs == {}
-            expected = {
-                r.sample_id: next(task.batches([r], output_format="model"))
-                for r in task._anchors.fetch(api.ALL_ANCHORS, range(3))
-            }
+            expected = _single_anchor_batches(plan, anchors, task.fitted_state)
             for actual in task.batches(output_format="model"):
                 for i, sid in enumerate(actual.metadata["sample_ids"]):
                     lengths = actual.inputs["history"]["offsets"]

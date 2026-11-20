@@ -15,6 +15,7 @@ import torch
 import kumo.pytorch.api as r
 from conformance.assertions import write_parquet
 from conformance.refusals import check_or_refuse, executing_case
+from tests.test_inference_lifecycle import assert_same
 
 INT = r.DType("int64")
 FLOAT = r.DType("float64")
@@ -110,17 +111,4 @@ def fields(*names):
     return r.Fields(tuple(r.Encode(name, r.Raw()) for name in names))
 
 
-def assert_tree(left, right):
-    if isinstance(left, torch.Tensor):
-        assert isinstance(right, torch.Tensor) and left.dtype == right.dtype
-        assert torch.equal(left, right)
-    elif isinstance(left, dict):
-        assert left.keys() == right.keys()
-        for key in left:
-            assert_tree(left[key], right[key])
-    elif isinstance(left, (list, tuple)):
-        assert len(left) == len(right)
-        for a, b in zip(left, right, strict=True):
-            assert_tree(a, b)
-    else:
-        assert left == right
+assert_tree = assert_same

@@ -21,6 +21,7 @@ from conformance.fixtures import values as fixture_values
 from conformance.refusals import check_or_refuse
 from conformance.registry import DimensionValue
 from kumo.pytorch.api import (
+    ALL_ANCHORS,
     NON_TEMPORAL,
     DataLoaderSpec,
     Dataset,
@@ -129,12 +130,22 @@ def write_anchor_table(requests, path, *, schema=None):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from kumo.pytorch.api import AnchorTable, Parquet
+    from kumo.pytorch.api import AnchorTable, CandidateColumn, Parquet
 
     requests = list(requests)
-    assert not any(row.candidates for row in requests), "candidate projection is not supported"
     targets = sorted({target.name for row in requests for target in row.targets})
     metadata = sorted({name for row in requests for name in row.metadata})
+    candidates = {
+        name: sorted(
+            {
+                target.name
+                for row in requests
+                for item in row.candidates.get(name, ())
+                for target in item.targets
+            }
+        )
+        for name in sorted({name for row in requests for name in row.candidates})
+    }
     rows = [
         {
             "sample_id": row.sample_id,
@@ -146,11 +157,28 @@ def write_anchor_table(requests, path, *, schema=None):
                 for name in targets
             },
             **{name: row.metadata.get(name) for name in metadata},
+            **{
+                f"candidates_{name}": [
+                    {
+                        "entity_id": item.entity_id,
+                        **{f"target_{target.name}": target.value for target in item.targets},
+                    }
+                    for item in row.candidates.get(name, ())
+                ]
+                for name in candidates
+            },
         }
         for row in requests
     ]
     data = (
-        pa.Table.from_pylist(rows)
+        pa.table(
+            {
+                name: pa.array([row[name] for row in rows], type=pa.uint64())
+                if any(type(row[name]) is int and row[name] > 2**63 - 1 for row in rows)
+                else [row[name] for row in rows]
+                for name in rows[0]
+            }
+        )
         if rows
         else pa.table(
             {
@@ -186,6 +214,14 @@ def write_anchor_table(requests, path, *, schema=None):
         sample_id="sample_id",
         split="split" if any(row.split is not None for row in requests) else None,
         targets={name: f"target_{name}" for name in targets},
+        candidates={
+            name: CandidateColumn(
+                f"candidates_{name}",
+                "entity_id",
+                targets={target: f"target_{target}" for target in labels},
+            )
+            for name, labels in candidates.items()
+        },
         metadata=metadata,
     )
 
@@ -253,10 +289,19 @@ def assert_answer(case: GoldenCase, engine_name: str) -> None:
     with bound_case(case, engine_name) as (dataset, engine):
         check_or_refuse(case.contract, dataset, engine)
         with prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                result = preview(task, case.requests).to_dict()
+            with plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            ) as task:
+                assert callable(task._anchors.batches)
+                result = preview(
+                    task, task._anchors.fetch(ALL_ANCHORS, range(task.count()))
+                ).to_dict()
                 if case.batch is not None:
-                    batches = list(task.batches(case.requests, batch_size=len(case.requests)))
+                    batches = list(task.batches(batch_size=len(case.requests)))
                     assert len(batches) == 1, f"{case.id}: expected exactly one batch"
                     batch = batches[0]
                     assert_projection(
@@ -402,13 +447,26 @@ def assert_execution_error(
             return
         with prepare(case.contract, dataset, engine) as plan:
             if stage == "fit":
-                expect(lambda: plan.materialize(case.requests))
+                expect(
+                    lambda: plan.materialize(
+                        write_anchor_table(
+                            case.requests,
+                            Path(plan.engine.index).parent / "anchors.parquet",
+                            schema=plan.contract.schema,
+                        )
+                    )
+                )
                 return
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            ) as task:
                 expect(
                     lambda: list(
                         task.batches(
-                            case.requests,
                             batch_size=len(case.requests),
                             output_format=output_format,
                         )

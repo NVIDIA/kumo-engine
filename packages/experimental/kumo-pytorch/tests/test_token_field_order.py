@@ -11,7 +11,7 @@ import torch
 
 from kumo.pytorch import api
 from tests.helpers import reorder_dicts
-from tests.native_fixtures import prepare_rows, preview_rows
+from tests.native_fixtures import prepare_rows, preview_rows, request_anchor_table
 
 INTEGER, STRING = api.DType("int64"), api.DType("string")
 SCHEMA = api.DataSchema(
@@ -144,12 +144,14 @@ def test_field_order_precedes_truncation(binding, monkeypatch, scope, packed, fi
     for variant in (contract, api.DataLoaderSpec.from_dict(reorder_dicts(contract.to_dict()))):
         assert variant.fingerprint == contract.fingerprint
         with api.prepare(variant, dataset, engine) as plan:
-            with plan.materialize(REQUESTS) as task:
+            with plan.materialize(
+                request_anchor_table(REQUESTS, schema=plan.contract.schema)
+            ) as task:
                 bound = task.bound_contract()
                 if fitted_fingerprint is not None:
                     assert bound.fingerprint == fitted_fingerprint
                 fitted_fingerprint = bound.fingerprint
-                batch = next(task.batches(REQUESTS, batch_size=1))
+                batch = next(task.batches(batch_size=1))
                 tokens = batch.inputs["tokens"]
                 expected_rows = [{"z_first": "US", "a_second": "GB"}]
                 if scope == "event":
@@ -173,7 +175,7 @@ def test_field_order_precedes_truncation(binding, monkeypatch, scope, packed, fi
                             "_adapt_temporal_result",
                             lambda *_: pytest.fail("model output constructed readable records"),
                         )
-                        model = next(task.batches(REQUESTS, batch_size=1, output_format="model"))
+                        model = next(task.batches(batch_size=1, output_format="model"))
                     torch.testing.assert_close(model.inputs, batch.inputs)
 
 
@@ -216,8 +218,12 @@ def test_composite_components_preserve_order_and_supplied_mappings(shared):
     for variant in (contract, swapped):
         restored = api.DataLoaderSpec.from_json(variant.to_json())
         with prepare_rows(restored, dataset) as plan:
-            with plan.materialize(REQUESTS) as task:
-                expected = task.preview(REQUESTS).batch.inputs
+            with plan.materialize(
+                request_anchor_table(REQUESTS, schema=plan.contract.schema)
+            ) as task:
+                expected = next(
+                    task.batches(batch_size=len(REQUESTS), output_format="model")
+                ).inputs
                 bound = task.bound_contract()
                 component_ids = tuple(
                     task.output("tokens")
@@ -274,7 +280,9 @@ def test_dated_occurrence_order_is_explicit_and_keeps_equal_time_field_order(chr
     dataset = api.Dataset({name: api.InMemoryRows(rows) for name, rows in ROWS.items()})
     for variant in (contract, api.DataLoaderSpec.from_dict(reorder_dicts(contract.to_dict()))):
         with prepare_rows(variant, dataset) as plan:
-            with plan.materialize(REQUESTS) as task:
+            with plan.materialize(
+                request_anchor_table(REQUESTS, schema=plan.contract.schema)
+            ) as task:
                 tokens = task.preview(REQUESTS).batch.inputs["tokens"]
                 names = (
                     ("static", "z_first", "a_second", "z_first")
@@ -298,13 +306,13 @@ def test_text_pieces_keep_positions_within_field_order(binding, scope):
         SCHEMA, SAMPLE, _batch(source, _tokens(("z_first", "a_second"), text=True), layout)
     )
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(REQUESTS) as task:
+        with plan.materialize(request_anchor_table(REQUESTS, schema=plan.contract.schema)) as task:
             for output_format in (
                 ("inspectable", "model") if engine.name == "diskgraph" else ("inspectable",)
             ):
-                tokens = next(
-                    task.batches(REQUESTS, batch_size=1, output_format=output_format)
-                ).inputs["tokens"]
+                tokens = next(task.batches(batch_size=1, output_format=output_format)).inputs[
+                    "tokens"
+                ]
                 names = ("z_first", "z_first", "a_second") + (
                     ("z_first", "z_first") if scope == "event" else ()
                 )

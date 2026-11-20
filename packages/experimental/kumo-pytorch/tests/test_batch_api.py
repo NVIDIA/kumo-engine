@@ -193,7 +193,7 @@ def test_packed_and_padded_sequences_contain_the_same_tokens():
             id_spaces=_spaces(),
         )
         task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, batch), requests)
-        outputs.append(next(task.batches(requests, batch_size=2)).inputs["history"])
+        outputs.append(next(task.batches(batch_size=2)).inputs["history"])
     padded, packed = outputs
     assert torch.equal(padded["value_ids"][padded["valid"]], packed["value_ids"])
     assert packed["offsets"][-1] == packed["value_ids"].numel()
@@ -226,7 +226,7 @@ def test_typed_entity_and_event_inputs_are_separate():
         },
     )
     task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
-    batch = next(task.batches(requests, batch_size=2))
+    batch = next(task.batches(batch_size=2))
     assert tuple(batch.inputs) == ("entity", "events")
     assert batch.inputs["entity"]["country"]["values"].tolist() == [7, 7]
     assert batch.inputs["events"]["channel"]["values"].unique().tolist() == [8]
@@ -245,7 +245,7 @@ def test_typed_event_fields_work_without_a_prediction_target():
         }
     )
     task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
-    batch = next(task.batches(requests, batch_size=2))
+    batch = next(task.batches(batch_size=2))
     assert tuple(batch.inputs) == ("events",)
     assert not batch.targets
 
@@ -287,7 +287,7 @@ def test_packed_prefixed_targets_keep_separate_offsets():
         targets={"next_behavior": api.NextTokenTarget(input="history", prefix_input="entity")},
     )
     task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
-    batch = next(task.batches(requests, batch_size=2))
+    batch = next(task.batches(batch_size=2))
     assert torch.equal(
         batch.targets["next_behavior"]["offsets"].diff(),
         batch.inputs["history"]["offsets"].diff() + 1,
@@ -435,7 +435,7 @@ def test_graph_neighborhood_is_an_input_shape_over_the_same_relations():
     ]
     contract = api.DataLoaderSpec(schema, sample, spec)
     task = plan_diskgraph(schema, rows, contract, requests)
-    batch = next(task.batches(requests, batch_size=2, seed=7))
+    batch = next(task.batches(batch_size=2, seed=7))
     graph = batch.inputs["neighborhood"]
     assert_graph(
         graph,
@@ -484,7 +484,7 @@ def test_entity_input_can_expose_calculated_values():
         }
     )
     task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
-    batch = next(task.batches(requests, batch_size=2))
+    batch = next(task.batches(batch_size=2))
     assert batch.inputs["entity"]["country"]["values"].tolist() == [2, 2]
     assert batch.inputs["entity"]["count"]["values"].shape == (2,)
 
@@ -539,7 +539,7 @@ def test_relational_label_uses_a_separate_future_window(boolean):
         api.SampleRequest(sample_id="negative", entity_id=2, as_of_time=100),
     ]
     task = plan_diskgraph(schema, rows, api.DataLoaderSpec(schema, sample, spec), requests)
-    result = next(task.batches(requests, batch_size=2)).targets["future"]
+    result = next(task.batches(batch_size=2)).targets["future"]
     assert result["values"].tolist() == ([True, False] if boolean else [2, 0])
     assert result["values"].dtype == (torch.bool if boolean else torch.int64)
     assert result["valid"].tolist() == [True, True]

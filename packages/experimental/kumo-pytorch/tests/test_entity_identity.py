@@ -13,7 +13,7 @@ import pytest
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import api, build
-from tests.native_fixtures import preview_rows
+from tests.native_fixtures import preview_rows, request_anchor_table
 
 
 def _case():
@@ -97,14 +97,14 @@ def test_primary_key_answers_metadata_and_artifact_contract(engine_name, tmp_pat
     with bound_case(case, engine_name) as (dataset, engine):
         assert not api.check(case.contract, dataset, engine)
         with api.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 formats = (
                     ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
                 )
                 for output_format in formats:
-                    batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
-                    )
+                    batch = next(iter(task.batches(batch_size=2, output_format=output_format)))
                     assert batch.inputs["values"]["external"]["values"].tolist() == [2, 1]
                     assert list(batch.metadata["entity_ids"]) == [1, 2]
                 task.to_artifact().save(tmp_path)
@@ -218,7 +218,9 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
     )
     with bound_case(case, engine_name) as (dataset, engine):
         with api.prepare(contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 vocabulary = (
                     task.bound_contract()
                     .batch.inputs["graph"]
@@ -230,9 +232,7 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
                     ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
                 )
                 for output_format in formats:
-                    batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
-                    )
+                    batch = next(iter(task.batches(batch_size=2, output_format=output_format)))
                     nodes = batch.inputs["graph"]["nodes"]["users"]
                     edges = batch.inputs["graph"]["edges"]["peer"]["index"]
                     assert edges.shape == (2, 2)

@@ -30,7 +30,12 @@ import torch
 from torch import nn
 
 from kumo.pytorch import api
-from tests.native_fixtures import forbid_deprecated_engine, native_resources, prepare_rows
+from tests.native_fixtures import (
+    forbid_deprecated_engine,
+    native_resources,
+    prepare_rows,
+    request_anchor_table,
+)
 
 
 def parquet_data(rows, schema):
@@ -204,7 +209,10 @@ def rows_for(user_id: int, as_of: int) -> Tables:
 def train(workdir: Path) -> None:
     torch.manual_seed(0)
     with prepare_rows(contract(), dataset(tables())) as plan:
-        with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(anchors(TRAIN_AT, split="train"), schema=plan.contract.schema),
+            fit_split="train",
+        ) as task:
             model = ActivityModel(task.output_schema)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
             for epoch in range(30):
@@ -250,7 +258,7 @@ def infer(workdir: Path) -> None:
     artifact, model = load_model(workdir)
     predictions: dict[str, float] = {}
     with prepare_rows(artifact.contract, dataset(tables())) as plan:
-        scoring = anchors(SCORE_AT, split=None)
+        scoring = request_anchor_table(anchors(SCORE_AT, split=None), schema=plan.contract.schema)
         with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
             with torch.no_grad():
                 for batch in task.batches():

@@ -14,7 +14,13 @@ import pytest
 
 from kumo.pytorch import api
 from tests.helpers import reorder_dicts
-from tests.native_fixtures import native_engine, parquet_dataset, prepare_rows, preview_rows
+from tests.native_fixtures import (
+    native_engine,
+    parquet_dataset,
+    prepare_rows,
+    preview_rows,
+    request_anchor_table,
+)
 
 
 def _contract(scope="entity", values=None):
@@ -81,8 +87,12 @@ def test_all_declaration_orders_resolve_dependencies_and_reuse_state(scope):
         assert contract.fingerprint == original.fingerprint
         assert contract.input_fingerprint == original.input_fingerprint
         with prepare_rows(contract, dataset) as plan:
-            with plan.materialize(requests, fitted=fitted) as task:
-                fields = task.preview(requests).batch.inputs["values"]
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fitted=fitted
+            ) as task:
+                fields = next(task.batches(batch_size=len(requests), output_format="model")).inputs[
+                    "values"
+                ]
                 for name, expected in {"z_base": 2, "a_double": 4, "b_total": 6}.items():
                     assert fields[name]["values"].flatten().tolist() == [expected]
                     assert fields[name]["valid"].all()
@@ -227,7 +237,9 @@ def test_shared_fitting_is_independent_of_named_input_and_field_placement(separa
     fingerprints = []
     for variant in (contract, api.DataLoaderSpec.from_dict(reorder_dicts(contract.to_dict()))):
         with prepare_rows(variant, dataset) as plan:
-            with plan.materialize(requests) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema)
+            ) as task:
                 fingerprints.append(task.bound_contract().fingerprint)
     assert fingerprints[0] == fingerprints[1]
 
@@ -236,14 +248,16 @@ def test_artifact_contract_preserves_executable_meaning(tmp_path):
     contract, requests = _contract()
     dataset = api.Dataset({"users": api.InMemoryRows([{"id": 1}])})
     with prepare_rows(contract, dataset) as plan:
-        with plan.materialize(requests) as task:
+        with plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task:
             task.to_artifact().save(tmp_path)
             fitted = task.fitted_state
     restored = api.DataLoaderSpec.from_json((tmp_path / "contract.json").read_text())
     restored.validate()
     assert restored.fingerprint == contract.fingerprint
     with prepare_rows(restored, dataset) as plan:
-        with plan.materialize(requests, fitted=fitted) as task:
-            assert task.preview(requests).batch.inputs["values"]["b_total"]["values"].tolist() == [
-                6
-            ]
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fitted=fitted
+        ) as task:
+            assert next(task.batches(batch_size=len(requests), output_format="model")).inputs[
+                "values"
+            ]["b_total"]["values"].tolist() == [6]

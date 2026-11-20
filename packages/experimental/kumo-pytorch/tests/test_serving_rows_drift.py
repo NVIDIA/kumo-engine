@@ -15,7 +15,7 @@ dataset.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -28,6 +28,7 @@ from conformance.properties import SEEDS
 from conformance.registry import KNOWN_GAPS
 from conformance.sequence_cases import sequence_batch
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 from tests.serving_assertions import assert_serving_batches
 from tests.serving_fetch import Tables, fetch
 from tests.test_inference_lifecycle import assert_same_batches
@@ -73,7 +74,9 @@ def drift_cases() -> Iterator[DriftCase]:
             "golden",
             case.contract,
             case.tables,
-            case.requests,
+            case.requests
+            if case.contract.requires_anchor_time
+            else tuple(replace(request, as_of_time=0) for request in case.requests),
             {},
             case.physical_types,
         )
@@ -103,10 +106,16 @@ def _run(case: DriftCase) -> tuple[api.Artifact, dict[str, api.Batch]]:
     ):
         dataset, bound_engine = bound
         with api.prepare(case.contract, dataset, bound_engine) as plan:
-            with plan.materialize(requests) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema)
+            ) as task:
                 artifact = task.to_artifact()
         with api.prepare(artifact.contract, dataset, bound_engine) as plan:
-            with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema),
+                fitted=artifact.fitted_state,
+                inference=True,
+            ) as task:
                 batches = task.batches(batch_size=1, seed=SEED)
                 return artifact, {batch.metadata["sample_ids"][0]: batch for batch in batches}
 

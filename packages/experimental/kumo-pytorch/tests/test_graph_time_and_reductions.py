@@ -38,7 +38,7 @@ from kumo.pytorch.api import (
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.sample import ALL_REDUCTIONS, Reduce
-from tests.native_fixtures import NativeSamples, prepare_rows
+from tests.native_fixtures import NativeSamples, prepare_rows, request_anchor_table
 
 USERS = TableSpec(
     name="users",
@@ -96,7 +96,9 @@ def _neighborhood(**kwargs: object) -> NeighborhoodSpec:
 
 def _sampled_event_ids(neighborhood: NeighborhoodSpec, schema: DataSchema = SCHEMA) -> set[int]:
     with prepare_rows(_contract(neighborhood, schema), ROWS) as plan:
-        with plan.materialize([SampleRequest("s1", 1, CUTOFF)]) as task:
+        with plan.materialize(
+            request_anchor_table([SampleRequest("s1", 1, CUTOFF)], schema=plan.contract.schema)
+        ) as task:
             graph = next(task.batches(output_format="model")).inputs["neighborhood"]
             return (
                 set(graph["nodes"]["events"]["ids"].tolist())

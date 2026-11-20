@@ -17,7 +17,13 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.aggregate_materialization import MaterializedValues
 from kumo.pytorch.column_stats import ColumnStats, TableColumnEncoder, fit_from_stats
-from tests.native_fixtures import native_anchor_table, native_engine, parquet_dataset, prepare_rows
+from tests.native_fixtures import (
+    native_anchor_table,
+    native_engine,
+    parquet_dataset,
+    prepare_rows,
+    request_anchor_table,
+)
 from tests.test_anchor_tables import ANCHORS, DATASET, EVENTS, _contract, _table
 from tests.test_model_history_limits import history_data as history_data
 
@@ -286,11 +292,14 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
                 for cut, probability in zip(boundaries, (1 / 3, 2 / 3), strict=True):
                     rank = sum(value <= cut for value in expected_values) / len(expected_values)
                     assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
+        assert len(calls) == 1
         requests = [
             api.SampleRequest(row["sid"], row["user_id"], row["at"], split=row["split"])
             for row in ANCHORS
         ]
-        with plan.materialize(requests, fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
             row_boundaries = task.output("entity").field(name="score").encoder.boundaries
             if zero:
                 assert row_boundaries == ()
@@ -299,7 +308,7 @@ def test_materialized_buckets_use_shared_statistics(tmp_path, zero, monkeypatch)
                 for cut, probability in zip(row_boundaries, (1 / 3, 2 / 3), strict=True):
                     rank = sum(value <= cut for value in expected_values) / len(expected_values)
                     assert rank == pytest.approx(probability, abs=1.5 / len(expected_values))
-        assert len(calls) == 1
+        assert len(calls) == 2  # One statistics pass for each independent Parquet projection.
         assert "bucket_cuts" not in values.feature_stats
 
 

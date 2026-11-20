@@ -65,6 +65,7 @@ from tests.native_fixtures import (
     native_engine,
     parquet_dataset,
     prepare_rows,
+    request_anchor_table,
 )
 
 USERS = [{"user_id": index, "score": float(index)} for index in range(1, 13)]
@@ -213,8 +214,16 @@ class TestMaterialize:
     def test_requests_carrying_splits_need_a_fit_selector_too(self) -> None:
         with prepare_rows(_contract(), DATASET) as plan:
             with pytest.raises(ValueError, match="pass fit_split"):
-                plan.materialize(_requests_for("train"))
-            assert plan.materialize(_requests_for("train"), fit_split="train").count("train") == 8
+                plan.materialize(
+                    request_anchor_table(_requests_for("train"), schema=plan.contract.schema)
+                )
+            assert (
+                plan.materialize(
+                    request_anchor_table(_requests_for("train"), schema=plan.contract.schema),
+                    fit_split="train",
+                ).count("train")
+                == 8
+            )
 
     def test_one_task_serves_every_split(self) -> None:
         with prepare_rows(_contract(), DATASET) as plan:
@@ -436,7 +445,15 @@ class TestPaddingIdentity:
                     metadata=("source",),
                 )
             )
-        return plan.materialize(requests)
+        if source in {"materialized_requests", "explicit_requests"}:
+            # Only the heterogeneous-ID compatibility check uses request records.
+            return plan.materialize(requests)
+        table = request_anchor_table(requests, schema=plan.contract.schema)
+        task = plan.materialize(table)
+        if source == "reused_state":
+            task = plan.materialize(table, fitted=task.fitted_state)
+        assert callable(task._anchors.batches)
+        return task
 
     @staticmethod
     def _assert_rows(batches, ids, positions, padding):
@@ -467,7 +484,7 @@ class TestPaddingIdentity:
             for value in batch.inputs["entity"]["score"]["values"].tolist()
         ] == [float(index + 1) for index in positions]
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests", "explicit_requests"])
+    @pytest.mark.parametrize("source", ["table", "projected", "reused_state"])
     @pytest.mark.parametrize("batch_size", [1, 3])
     @pytest.mark.parametrize(
         ("ids", "world_size", "expected_ids", "positions", "padding"),
@@ -523,10 +540,11 @@ class TestPaddingIdentity:
                 "rank": world_size - 1,
                 "world_size": world_size,
             }
-            explicit = requests if source == "explicit_requests" else None
-            batches = list(task.batches(explicit, **settings))
+            if source == "explicit_requests":
+                settings["requests"] = requests
+            batches = list(task.batches(**settings))
             self._assert_rows(batches, expected_ids, positions, padding)
-            assert [b.metadata["sample_ids"] for b in task.batches(explicit, **settings)] == [
+            assert [b.metadata["sample_ids"] for b in task.batches(**settings)] == [
                 b.metadata["sample_ids"] for b in batches
             ]
         assert [request.sample_id for request in requests] == ids
@@ -546,7 +564,7 @@ class TestPaddingIdentity:
             [False, False, True],
         )
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests"])
+    @pytest.mark.parametrize("source", ["table", "projected"])
     def test_padding_in_a_later_chunk_is_unique_and_resumable(self, source) -> None:
         requests = self._requests(["a", "b", "c", "d", "e", "f", "g", "b#padding1", "i"])
         # The first chunk owns b/d/f. The final chunk owns b#padding1 and the
@@ -629,7 +647,10 @@ class TestIdentity:
         with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             again = plan.materialize(_table(), fit_split="train")
-            other = plan.materialize(_requests_for("train"), fit_split="train")
+            other = plan.materialize(
+                request_anchor_table(_requests_for("train"), schema=plan.contract.schema),
+                fit_split="train",
+            )
         assert set(task.fingerprints) == {
             "contract",
             "inputs",
@@ -847,7 +868,11 @@ class TestCandidates:
         with prepare_rows(contract, DATASET) as plan:
             task = plan.materialize(self._table(), fit_split="train")
             from_table = next(iter(task.batches(split="train", batch_size=4)))
-            from_requests = next(iter(task.batches(requests, batch_size=4)))
+            projected = plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema),
+                fitted=task.fitted_state,
+            )
+            from_requests = next(projected.batches(split="train", batch_size=4))
         assert from_table.inputs["peers"]["score"]["values"].equal(
             from_requests.inputs["peers"]["score"]["values"]
         )
@@ -1039,7 +1064,7 @@ class TestDistributedTokenBudgets:
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
                 task.batches(split="train", rank=0, world_size=2)
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
-                task.batches(_requests_for("train"), rank=1, world_size=2)
+                task.batches(split="train", rank=1, world_size=2)
             assert list(task.batches(split="train"))
 
 

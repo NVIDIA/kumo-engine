@@ -226,7 +226,8 @@ def encoder_expectations(case, contract):
             if isinstance(config, UseEncoding):
                 path = ["shared", config.name]
                 config = contract.batch.encodings[config.name]
-            add(path, config, dtype, values, not is_entity)
+            # Native scalar materialization uses the stored-column t-digest collector too.
+            add(path, config, dtype, values, not isinstance(field.encoding, UseEncoding))
     for name, target in contract.batch.targets.items():
         if hasattr(target, "fields"):
             for field in target.fields:
@@ -288,7 +289,7 @@ def encoder_expectations(case, contract):
                 vocabulary_size=len(cuts) + 2 + int(config.separate_zero),
             )
             if stored_column:
-                approximate[identity] = values
+                approximate[identity] = (values, ranges - 1)
         else:
             assert isinstance(config, Raw), f"fixture oracle has no encoder rule for {config}"
         result[identity] = state

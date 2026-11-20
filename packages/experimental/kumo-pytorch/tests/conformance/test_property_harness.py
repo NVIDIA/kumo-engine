@@ -4,12 +4,14 @@
 
 """The generated-case machinery: wrong engines fail every property, repros round-trip."""
 
+import copy
 import json
 import random
 import re
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -97,8 +99,10 @@ class FaultAnchors(NativeAnchors):
             return [stage for stage in stages if stage["split"] is not None]
         return stages
 
-    def batches(self, *args, **kwargs):
+    def batches(self, assembler, *args, **kwargs):
         owner = self._fault
+        assembler = copy.copy(assembler)
+        assembler._model_sample = owner.sample(assembler._model_sample)
         owner.orders += 1
         if owner.defect == "no_shuffle":
             kwargs.update(shuffle=False)
@@ -106,7 +110,7 @@ class FaultAnchors(NativeAnchors):
             kwargs["seed"] += owner.opened
         elif owner.defect == "unstable_order":
             kwargs["seed"] += owner.orders
-        batches = list(super().batches(*args, **kwargs))
+        batches = list(super().batches(assembler, *args, **kwargs))
         if owner.defect == "anchor_dropped":
             batches = batches[:-1]
         if owner.defect == "union_unsorted":
@@ -119,6 +123,13 @@ class FaultSource(DiskGraphSource):
 
     def _fault_requests(self, requests):
         defect = self._fault.defect
+        if defect in {"future_visible", "absolute_time"}:
+            requests = [
+                replace(r, as_of_time=int(r.as_of_time.timestamp()))
+                if isinstance(r.as_of_time, datetime)
+                else r
+                for r in requests
+            ]
         if defect == "future_visible":
             return [replace(r, as_of_time=r.as_of_time + 10**6) for r in requests]
         if defect == "absolute_time":
@@ -174,12 +185,30 @@ class FaultSource(DiskGraphSource):
         return self._fault_model(result)
 
     def materialize_scalar_batches(self, sample, anchors, batch_size):
-        yield from super().materialize_scalar_batches(
-            self._fault.sample(sample), anchors, batch_size
-        )
+        if self._fault.defect == "late_refusal":
+            raise ValueError("row filters are unsupported")
+        try:
+            yield from super().materialize_scalar_batches(
+                self._fault.sample(sample), anchors, batch_size
+            )
+        except ValueError:
+            if self._fault.defect == "missing_root_bare":
+                raise RuntimeError("lookup failed") from None
+            raise
 
-    def materialize_anchors(self, *args, **kwargs):
-        anchors = super().materialize_anchors(*args, **kwargs)
+    def _cutoff_array(self, values):
+        import pyarrow.compute as pc
+
+        cutoffs = super()._cutoff_array(values)
+        second = 10**9 // self._tick_nanos
+        if self._fault.defect == "future_visible":
+            return pc.add(cutoffs, 10**6 * second)
+        if self._fault.defect == "absolute_time":
+            return pa.array([t // (1000 * second) * (1000 * second) for t in cutoffs.to_pylist()])
+        return cutoffs
+
+    def materialize_anchors(self, table, sample, **kwargs):
+        anchors = super().materialize_anchors(table, self._fault.sample(sample), **kwargs)
         anchors.__class__ = FaultAnchors
         anchors._fault = self._fault
         return anchors

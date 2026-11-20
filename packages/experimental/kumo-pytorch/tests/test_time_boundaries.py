@@ -11,6 +11,7 @@ import pytest
 from conformance.assertions import bound_tables
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 
 
 @pytest.mark.parametrize(
@@ -111,7 +112,9 @@ def test_time_boundaries_across_outputs(engine_name, output_format, bounded, clo
     delivered = []
     with bound_tables(contract, tables, engine_name) as (dataset, engine):
         with api.prepare(contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 for batch in task.batches(output_format=output_format):
                     history = batch.inputs["history"]
                     graph = batch.inputs["graph"]["nodes"].get("events")

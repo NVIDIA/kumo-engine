@@ -27,7 +27,16 @@ def assert_serving_batches(
     assert len(actual) == len(expected)
     for left, right in zip(actual, expected, strict=True):
         assert_same(left.targets, right.targets, "targets")
-        assert_same(left.metadata, right.metadata, "metadata")
+        metadata = []
+        for batch in (left, right):
+            # Native anchors explicitly report the absent split as null.
+            value = dict(batch.metadata)
+            value["request_metadata"] = tuple(
+                {key: item for key, item in row.items() if key != "split" or item is not None}
+                for row in value["request_metadata"]
+            )
+            metadata.append(value)
+        assert_same(*metadata, "metadata")
         assert set(left.inputs) == set(right.inputs) == set(contract.batch.inputs)
         selected = [by_id[sample] for sample in left.metadata["sample_ids"]]
         if sequence_case is not None:

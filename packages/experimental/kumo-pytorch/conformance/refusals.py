@@ -139,28 +139,6 @@ def record_refusal(error, **scope):
     return evidence
 
 
-def record_child_refusal(evidence):
-    """Record evidence classified by this module inside a test subprocess/kernel."""
-    assert evidence["outcome"] == "refused" and evidence["issues"]
-    assert (evidence["stage"], evidence["execution"]) == ("preflight", "not_started") or (
-        (evidence["stage"], evidence["execution"])
-        == ("ingestion", "stopped_before_materialization")
-        and evidence["engine"] == "diskgraph"
-        and evidence["source_rows"] == 0
-        and len(evidence["issues"]) == 1
-        and evidence["issues"][0]["code"] == "DG-EMPTY-BASE-TABLE"
-    )
-    assert all(
-        all(
-            isinstance(issue.get(key), str) and issue[key].strip()
-            for key in ("code", "path", "reason", "suggestion")
-        )
-        for issue in evidence["issues"]
-    )
-    if (records := _EVIDENCE.get()) is not None:
-        records.append(evidence)
-
-
 def check_or_refuse(contract, dataset, engine, *, inference=False):
     """If check reports issues, require prepare to refuse before opening the engine."""
     from unittest.mock import patch

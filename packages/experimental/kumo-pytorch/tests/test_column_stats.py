@@ -19,7 +19,7 @@ import pytest
 from kumo.pytorch import api
 from kumo.pytorch.column_stats import table_column_encoders
 from kumo.pytorch.engine import GraphRoot
-from tests.native_fixtures import prepare_rows
+from tests.native_fixtures import prepare_rows, request_anchor_table
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _write_parquet
 
 pytest.importorskip("diskgraph")
@@ -111,7 +111,11 @@ def _setup(engine_name: str, directory: Path):
 
 def _encoders(contract, dataset, engine, **materialize):
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train", **materialize) as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema),
+            fit_split="train",
+            **materialize,
+        ) as task:
             return task.fitted_state
 
 
@@ -241,7 +245,7 @@ def test_a_shared_encoder_fits_the_graph_values_of_every_root_then_the_aggregate
         api.DiskGraphEngine(index=tmp_path / "index"),
     )
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(anchors) as task:
+        with plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task:
             fitted = task.encoders["amounts"]
     source = engine.open(dataset, contract.schema)
     sample = contract.resolve().sample
@@ -349,8 +353,12 @@ def test_a_value_supplied_for_a_generated_target_is_refused_while_fitting(tmp_pa
     request = _requests()[0]
     request = replace(request, targets=(*request.targets, api.TargetValue("future", 1)))
     with api.prepare(replace(contract, sample=sample), *_setup("diskgraph", tmp_path)) as plan:
-        with pytest.raises(ValueError, match="'future' was both supplied and generated"):
-            plan.materialize([request], fit_split="train")
+        with pytest.raises(
+            api.ValidationError, match=r"anchors.targets: \['future'\].*also computed"
+        ):
+            plan.materialize(
+                request_anchor_table([request], schema=plan.contract.schema), fit_split="train"
+            )
 
 
 def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
@@ -365,7 +373,11 @@ def test_the_default_cutoff_is_the_latest_anchor_at_full_precision(tmp_path):
             {"encoder_cutoff": "2024-12-01T00:00:00.5Z"},
             {"encoder_cutoff": "2024-12-01T00:00:00.000000001Z"},
         ):
-            with plan.materialize(requests, fit_split="train", **options) as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema),
+                fit_split="train",
+                **options,
+            ) as task:
                 fitted.append(task.fitted_state)
     second = int(LATEST.timestamp()) * 10**9
     cutoffs = [_statistics(state)["cutoff"] for state in fitted]
@@ -434,7 +446,9 @@ def test_vocabulary_learns_every_stored_column_type(tmp_path, engine_name):
     dataset = api.Dataset({table: api.Parquet(str(tmp_path / "items.parquet"))})
     engine = api.DiskGraphEngine(index=tmp_path / "index")
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
+        with plan.materialize(
+            request_anchor_table([api.SampleRequest("item-0", 0, 0)], schema=plan.contract.schema)
+        ) as task:
             for name, (_, values) in COLUMN_TYPES.items():
                 counts = {value: values.count(value) for value in values}
                 expected = sorted(counts, key=lambda value: (-counts[value], value))
@@ -474,6 +488,8 @@ def test_buckets_cut_values_near_the_float_limits():
     rows = [{"id": i, "v": v} for i, v in enumerate(values)]
     dataset = api.Dataset({"items": api.InMemoryRows(rows)})
     with prepare_rows(contract, dataset) as plan:
-        with plan.materialize([api.SampleRequest("item-0", 0, 0)]) as task:
+        with plan.materialize(
+            request_anchor_table([api.SampleRequest("item-0", 0, 0)], schema=plan.contract.schema)
+        ) as task:
             cuts = _state(task.fitted_state, '"v"')["boundaries"]
     assert len(cuts) == 3 and all(np.isfinite(cuts)) and cuts == sorted(cuts)

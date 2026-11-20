@@ -51,7 +51,7 @@ from kumo.pytorch.api import (
     preview,
 )
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
-from tests.native_fixtures import prepare_rows, preview_rows
+from tests.native_fixtures import prepare_rows, preview_rows, request_anchor_table
 
 
 def _fixture() -> tuple[DataLoaderSpec, dict[str, list[dict[str, Any]]]]:
@@ -151,10 +151,12 @@ def _dataset(tables: dict[str, list[dict[str, Any]]]) -> Dataset:
 def test_prepared_preview_returns_the_exact_normal_batch_without_mutating_state() -> None:
     contract, tables = _fixture()
     request = (SampleRequest("s1", 1, 100),)
-    plan = prepare_rows(contract, _dataset(tables)).materialize(request)
+    plan = prepare_rows(contract, _dataset(tables)).materialize(
+        request_anchor_table(request, schema=contract.schema)
+    )
     before = plan.manifest["fitted_state_fingerprint"]
     result = preview(plan, request, seed=7)
-    normal = next(plan.batches(request, batch_size=1, seed=7))
+    normal = next(plan.batches(batch_size=1, seed=7))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert plan.manifest["fitted_state_fingerprint"] == before
@@ -165,7 +167,9 @@ def test_prepared_preview_returns_the_exact_normal_batch_without_mutating_state(
 def test_preview_shows_only_produced_raw_values_and_the_encoded_batch() -> None:
     contract, tables = _fixture()
     request = (SampleRequest("s1", 1, 100),)
-    with prepare_rows(contract, _dataset(tables)).materialize(request) as plan:
+    with prepare_rows(contract, _dataset(tables)).materialize(
+        request_anchor_table(request, schema=contract.schema)
+    ) as plan:
         result = preview(plan, request)
     payload = result.to_dict()
     sample = payload["samples"][0]
@@ -188,8 +192,10 @@ def test_contract_preview_temporarily_fits_encodings_and_returns_one_batch() -> 
     request = (SampleRequest("s1", 1, 100),)
     dataset = _dataset(tables)
     result = preview_rows(contract, dataset, request)
-    with prepare_rows(contract, dataset).materialize(request) as expected:
-        normal = next(expected.batches(request, batch_size=1))
+    with prepare_rows(contract, dataset).materialize(
+        request_anchor_table(request, schema=contract.schema)
+    ) as expected:
+        normal = next(expected.batches(batch_size=1))
     _equal(result.batch.inputs, normal.inputs)
     _equal(result.batch.targets, normal.targets)
     assert result.encoding_summary["history"]["summary"]["kind"]["entries"] == [
@@ -223,8 +229,10 @@ def test_preview_puts_every_request_in_one_batch_regardless_of_normal_policy() -
     contract, tables = _fixture()
     contract = replace(contract, batch=replace(contract.batch, batching=Batching(max_samples=1)))
     requests = tuple(SampleRequest(f"s{index}", 1, 100) for index in range(3))
-    plan = prepare_rows(contract, _dataset(tables)).materialize(requests)
-    assert len(list(plan.batches(requests))) == 3
+    plan = prepare_rows(contract, _dataset(tables)).materialize(
+        request_anchor_table(requests, schema=contract.schema)
+    )
+    assert len(list(plan.batches())) == 3
     result = preview(plan, requests)
     assert len(result.samples) == 3
     assert result.batch.metadata["entity_ids"].shape == (3,)

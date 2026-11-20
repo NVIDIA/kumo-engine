@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
-from tests.native_fixtures import native_anchor_table
+from tests.native_fixtures import native_anchor_table, request_anchor_table
 from tests.test_model_history_limits import history_data as history_data
 
 pytest.importorskip("diskgraph")
@@ -55,8 +55,8 @@ def without_utc_zoneinfo(monkeypatch):
 
 
 @pytest.mark.usefixtures("without_utc_zoneinfo")
-@pytest.mark.parametrize("parquet_anchors", [False, True], ids=["requests", "parquet"])
-def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
+@pytest.mark.parametrize("typed_anchors", [False, True], ids=["projected", "typed"])
+def test_calendar_parts_without_utc_zoneinfo(tmp_path, typed_anchors):
     timestamp = api.DType("timestamp", unit="ns", timezone="UTC")
     ids = [1, 2, 3, 4]
     times = pa.array([-1, 0, 1709251199000000001, None], type=timestamp.to_arrow())
@@ -109,7 +109,7 @@ def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
         ),
     )
     cutoff = 1709251200  # 2024-03-01 00:00 UTC
-    if parquet_anchors:
+    if typed_anchors:
         path = tmp_path / "anchors.parquet"
         pq.write_table(
             pa.table(
@@ -122,7 +122,9 @@ def test_calendar_parts_without_utc_zoneinfo(tmp_path, parquet_anchors):
         )
         anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
     else:
-        anchors = tuple(api.SampleRequest(str(i), i, cutoff) for i in ids)
+        anchors = request_anchor_table(
+            tuple(api.SampleRequest(str(i), i, cutoff) for i in ids), schema=contract.schema
+        )
     dataset = api.Dataset({"users": api.Parquet(str(source))})
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
@@ -250,7 +252,9 @@ def test_unpinned_graph_fitting_uses_the_source_clock(tmp_path, monkeypatch, uni
     with api.prepare(contract, data, api.DiskGraphEngine(index=tmp_path / "index")) as plan:
         # Exercise the supported fallback for an encoder that is not pinned by column stats.
         monkeypatch.setattr(plan._require_open(), "column_stats", None)
-        with plan.materialize([api.SampleRequest("one", 1, cutoff)]) as task:
+        with plan.materialize(
+            request_anchor_table([api.SampleRequest("one", 1, cutoff)], schema=plan.contract.schema)
+        ) as task:
             (encoder,) = task.fitted_state["encoders"].values()
             assert {value for value, _ in encoder["entries"]} == {"seen"}
 
@@ -851,8 +855,8 @@ def test_integer_timestamp_labels_use_target_units(
 
 
 @pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
-@pytest.mark.parametrize("native_anchors", [False, True])
-def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_anchors):
+@pytest.mark.parametrize("explicit_columns", [False, True])
+def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, explicit_columns):
     dtype = api.DType("timestamp", unit=unit, timezone="UTC")
     clock = api.DType("timestamp", unit="ns", timezone="UTC")
     users, events = tmp_path / "users.parquet", tmp_path / "events.parquet"
@@ -903,8 +907,8 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
             }
         ),
     )
-    anchors = [api.SampleRequest("one", 1, 2)]
-    if native_anchors:
+    anchors = request_anchor_table([api.SampleRequest("one", 1, 2)], schema=contract.schema)
+    if explicit_columns:
         path = tmp_path / "anchors.parquet"
         pq.write_table(pa.table({"entity": [1], "at": [2]}), path)
         anchors = native_anchor_table(api.Parquet(str(path)), "entity", "at")

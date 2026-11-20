@@ -138,6 +138,7 @@ def request_anchor_table(requests, *, root=None, schema=None):
             row.split,
             [(target.name, target.value) for target in row.targets],
             dict(row.metadata),
+            dict(row.candidates),
         ]
         for row in requests
     ]

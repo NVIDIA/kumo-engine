@@ -30,7 +30,7 @@ from kumo.pytorch.api import (
     Task,
 )
 from kumo.pytorch.assembly import WRITTEN_BESIDE_STATE
-from tests.native_fixtures import prepare_rows
+from tests.native_fixtures import prepare_rows, request_anchor_table
 
 __all__ = ["fixture_rows", "plan_diskgraph"]
 
@@ -78,7 +78,11 @@ def plan_diskgraph(
     else:
         contract = DataLoaderSpec(schema, contract_or_sample, requests_or_spec)
         fitting = requests
-    return prepare_rows(contract, tables).materialize(fitting, fit_split=_fit_everything(fitting))
+    task = prepare_rows(contract, tables).materialize(
+        request_anchor_table(fitting, schema=contract.schema), fit_split=_fit_everything(fitting)
+    )
+    assert callable(task._anchors.batches), "fixture must use native AnchorTable iteration"
+    return task
 
 
 class Plans:
@@ -99,9 +103,7 @@ class Plans:
         else:
             contract = DataLoaderSpec(self.schema, contract_or_sample, requests_or_spec)
             fitting = requests
-        return prepare_rows(contract, self._dataset).materialize(
-            fitting, fit_split=_fit_everything(fitting)
-        )
+        return plan_diskgraph(contract.schema, self._dataset.tables, contract, fitting)
 
 
 def _fit_everything(requests: Sequence[SampleRequest]) -> Any:

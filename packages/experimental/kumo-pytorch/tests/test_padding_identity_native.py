@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from kumo.pytorch import api
-from tests.native_fixtures import native_anchor_table
+from tests.native_fixtures import native_anchor_table, request_anchor_table
 
 
 @pytest.fixture(scope="module")
@@ -186,16 +186,21 @@ def test_native_graph_padding_preserves_identity(
     graph_plan, tmp_path, names, rank, world_size, positions, padding
 ):
     requests = tuple(api.SampleRequest(name, 1, 10 + index) for index, name in enumerate(names))
-    task = graph_plan.materialize(requests)
+    task = graph_plan.materialize(request_anchor_table(requests, schema=graph_plan.contract.schema))
     from_table = graph_plan.materialize(_anchor_table(tmp_path / "anchors.parquet", names))
-    for source, selected_task, explicit in (
-        ("explicit requests", task, requests),
-        ("materialized requests", task, None),
-        ("materialized AnchorTable", from_table, None),
+    for source, selected_task in (
+        ("projected AnchorTable", task),
+        (
+            "reused state",
+            graph_plan.materialize(
+                request_anchor_table(requests, schema=graph_plan.contract.schema),
+                fitted=task.fitted_state,
+            ),
+        ),
+        ("materialized AnchorTable", from_table),
     ):
         for output_format in ("inspectable", "model"):
             batches = selected_task.batches(
-                explicit,
                 batch_size=3,
                 rank=rank,
                 world_size=world_size,

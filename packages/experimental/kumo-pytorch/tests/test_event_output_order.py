@@ -9,7 +9,7 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api
-from tests.native_fixtures import prepare_rows
+from tests.native_fixtures import prepare_rows, request_anchor_table
 from tests.test_model_history_limits import _Queries, _sample
 from tests.test_model_history_limits import history_data as history_data
 from tests.test_preview import _equal as assert_equal
@@ -48,8 +48,10 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
     if order == "descending":
         rows = [row[::-1] for row in rows]
     with prepare_rows(spec, memory) as plan:
-        with plan.materialize(requests, fit_split="train") as task:
-            reference = next(task.batches(requests, batch_size=4))
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
+            reference = next(task.batches(batch_size=4))
             actual = reference.inputs["history"]
             if isinstance(layout, api.Padded):
                 assert actual["id"]["values"].tolist() == [
@@ -65,11 +67,13 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
                 assert actual["id"]["values"].tolist() == [item for row in rows for item in row]
                 assert actual["offsets"].tolist() == [0, 2, 2, 4, 5]
     with api.prepare(spec, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
-        queries = _Queries(plan._source._sampler)
-        plan._source._sampler = queries
-        with plan.materialize(requests, fit_split="train") as task:
-            queries.calls.clear()
-            actual = next(task.batches(requests, batch_size=4, output_format="model"))
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
+            queries = _Queries(plan._source._sampler)
+            plan._source._sampler = queries
+            queries.trace_native(task)
+            actual = next(task.batches(batch_size=4, output_format="model"))
             assert_equal(actual.inputs, reference.inputs)
             requested = {
                 seq["output_order"]
@@ -78,9 +82,9 @@ def test_declared_order_matches_both_engines_and_formats(history_data, order, ke
             }
             assert requested == ({"ascending", "descending"} if shared else {order})
             assert not hasattr(plan._source, "_ascending_indices")
-            inspected = next(task.batches(requests, batch_size=4, output_format="inspectable"))
+            inspected = next(task.batches(batch_size=4, output_format="inspectable"))
             assert_equal(inspected.inputs, reference.inputs)
-            preview = task.preview(requests)
+            preview = task.preview(task._anchors.fetch(api.ALL_ANCHORS, range(task.count())))
             assert len(preview.samples[0]["events"]["orders"]) == 6
 
 
@@ -96,10 +100,11 @@ def test_event_direction_does_not_replace_explicit_sample_selection(history_data
     )
     for dataset, engine in [(parquet, api.DiskGraphEngine(index=index))]:
         with api.prepare(spec, dataset, engine) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 batch = next(
                     task.batches(
-                        requests,
                         batch_size=4,
                         output_format="model"
                         if isinstance(engine, api.DiskGraphEngine)
@@ -131,9 +136,11 @@ def test_existing_model_source_signature_still_works(history_data, order):
                 return getattr(source, name)
 
         plan._source = ExistingSource()
-        with plan.materialize(requests, fit_split="train") as task:
-            actual = next(task.batches(requests, batch_size=4, output_format="model"))
-            expected = next(task.batches(requests, batch_size=4, output_format="inspectable"))
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
+            actual = next(task.batches(batch_size=4, output_format="model"))
+            expected = next(task.batches(batch_size=4, output_format="inspectable"))
             assert_equal(actual.inputs, expected.inputs)
 
 
@@ -155,11 +162,13 @@ def test_native_order_aliases_cannot_collide_with_component_names(history_data):
         ),
     )
     with api.prepare(spec, parquet, api.DiskGraphEngine(index=index)) as plan:
-        queries = _Queries(plan._source._sampler)
-        plan._source._sampler = queries
-        with plan.materialize(requests, fit_split="train") as task:
-            queries.calls.clear()
-            next(task.batches(requests, batch_size=4, output_format="model"))
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
+            queries = _Queries(plan._source._sampler)
+            plan._source._sampler = queries
+            queries.trace_native(task)
+            next(task.batches(batch_size=4, output_format="model"))
             names = [seq["name"] for seq in queries.calls[-1]["sequences"]]
             assert len(names) == len(set(names))
 
@@ -253,11 +262,15 @@ def test_token_inputs_share_the_same_direction_on_both_paths(history_data, repre
             ),
         )
         with prepare_rows(spec, memory) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
-                reference = next(task.batches(requests, batch_size=4))
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
+                reference = next(task.batches(batch_size=4))
         with api.prepare(spec, parquet, api.DiskGraphEngine(index=index)) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
-                actual = next(task.batches(requests, batch_size=4, output_format="model"))
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
+                actual = next(task.batches(batch_size=4, output_format="model"))
                 assert_equal(actual.inputs, reference.inputs)
 
 
@@ -284,7 +297,9 @@ def test_fitting_is_independent_of_delivery_direction(history_data):
             ),
         )
         with prepare_rows(spec, memory) as plan:
-            with plan.materialize(requests, fit_split="train") as task:
+            with plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 states.append(task.bound_contract().batch.inputs["history"].representation)
     assert states[0] == states[1]
 
@@ -362,7 +377,9 @@ def test_aligned_target_fitting_keeps_canonical_reduction_order(built_samples):
         else:
             dataset = api.Dataset({name: api.InMemoryRows(value) for name, value in rows.items()})
             with prepare_rows(spec, dataset) as plan:
-                with plan.materialize(request) as task:
+                with plan.materialize(
+                    request_anchor_table(request, schema=plan.contract.schema)
+                ) as task:
                     encoder = task.target(name="labels").field(name="label").encoder
                     states.append((encoder.mean, encoder.scale))
     assert states[0][0] == 1 / 3

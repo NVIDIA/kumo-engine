@@ -14,7 +14,7 @@ import kumo.pytorch.api as r
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import build
-from tests.native_fixtures import prepare_rows, preview_rows
+from tests.native_fixtures import prepare_rows, preview_rows, request_anchor_table
 
 
 def _case():
@@ -128,10 +128,10 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
     case = _graph_case()
     with bound_case(case, engine_name) as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
-                )
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
+                batch = next(iter(task.batches(batch_size=3, output_format=output_format)))
                 assert batch.inputs["values"]["count"]["values"].tolist() == [2, 3, 0]
                 assert batch.inputs["history"]["amount"]["values"].tolist() == [2, 2, 2, 2, 3]
                 graph = batch.inputs["graph"]
@@ -143,7 +143,9 @@ def test_keyless_graph_history_targets_and_features(engine_name, output_format):
                 edges = graph["edges"]["activity"]["index"]
                 assert edges.shape == (2, 5)
                 assert len(set(map(tuple, edges.t().tolist()))) == 5
-                preview = task.preview(case.requests).to_dict()
+                preview = task.preview(
+                    task._anchors.fetch(r.ALL_ANCHORS, range(task.count()))
+                ).to_dict()
                 assert preview["samples"][1]["targets"]["next"]["fields"][0]["value"] == 100
 
 
@@ -152,7 +154,9 @@ def test_keyless_artifact_and_serving_keep_identical_rows(engine_name, arrow, tm
     case = _case()
     with bound_case(case, engine_name) as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 task.to_artifact().save(tmp_path / "artifact")
     artifact = r.Artifact.load(tmp_path / "artifact")
     server = r.ServingAssembler(artifact)
@@ -239,10 +243,10 @@ def test_keyless_constant_only_events(engine_name, output_format):
     )
     with bound_case(replace(case, contract=contract), engine_name) as (dataset, engine):
         with r.prepare(contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                batch = next(
-                    iter(task.batches(case.requests, batch_size=3, output_format=output_format))
-                )
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
+                batch = next(iter(task.batches(batch_size=3, output_format=output_format)))
                 assert batch.inputs["history"]["marker"]["values"].tolist() == [1] * 5
 
 
@@ -337,8 +341,10 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     )
     with bound_case(case, engine_name) as (dataset, engine):
         with r.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                offline = next(iter(task.batches(case.requests, batch_size=1))).inputs["graph"]
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
+                offline = next(iter(task.batches(batch_size=1))).inputs["graph"]
                 server = r.ServingAssembler(task.to_artifact())
     rows = fetch(server.rows_spec, server.contract.schema, case.tables, case.requests[0])
     served = server.assemble(rows, case.requests)[0].inputs["graph"]
@@ -384,8 +390,8 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     requests = (r.SampleRequest("rounding", 1, 9),)
     dataset = r.Dataset({name: r.InMemoryRows(values) for name, values in rows.items()})
     with prepare_rows(contract, dataset) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
+        with plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task:
+            offline = next(iter(task.batches(batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
     served = server.assemble({**rows, "events": rows["events"][::-1]}, requests)[0]
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.

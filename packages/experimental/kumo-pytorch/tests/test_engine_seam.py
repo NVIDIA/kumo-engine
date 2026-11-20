@@ -44,7 +44,13 @@ from kumo.pytorch.assembly import fit_plan
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.contract.schema import DataSchema
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
-from tests.native_fixtures import check_rows, native_engine, parquet_dataset, prepare_rows
+from tests.native_fixtures import (
+    check_rows,
+    native_engine,
+    parquet_dataset,
+    prepare_rows,
+    request_anchor_table,
+)
 
 USERS = TableSpec(
     "users",
@@ -230,8 +236,10 @@ class TestDiskGraphRunsThroughTheSeam:
     """Real Parquet sources exercise the public engine boundary."""
 
     def test_a_materialized_task_emits_batches(self) -> None:
-        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
-        batch = next(iter(task.batches(REQUESTS)))
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(
+            request_anchor_table(REQUESTS, schema=CONTRACT.schema)
+        )
+        batch = next(iter(task.batches()))
         assert list(batch.inputs) == ["values"]
 
     def test_model_output_requires_an_engine_optimized_source(self) -> None:
@@ -242,13 +250,19 @@ class TestDiskGraphRunsThroughTheSeam:
                 next(task.batches(output_format="model"))
 
     def test_output_format_is_explicit(self) -> None:
-        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
+        task = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(
+            request_anchor_table(REQUESTS, schema=CONTRACT.schema)
+        )
         with pytest.raises(ValueError, match="inspectable.*model"):
-            next(iter(task.batches(REQUESTS, output_format="fast")))
+            next(iter(task.batches(output_format="fast")))
 
     def test_preparing_twice_is_deterministic(self) -> None:
-        first = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
-        second = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(REQUESTS)
+        first = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(
+            request_anchor_table(REQUESTS, schema=CONTRACT.schema)
+        )
+        second = prepare_rows(CONTRACT, FIXTURE_ROWS).materialize(
+            request_anchor_table(REQUESTS, schema=CONTRACT.schema)
+        )
         assert first.fitted_state == second.fitted_state
         assert first.manifest["artifact_fingerprint"] == second.manifest["artifact_fingerprint"]
         assert first.fingerprints == second.fingerprints
@@ -321,7 +335,7 @@ class TestTheOpenedSourceIsOwned:
     def test_a_plan_is_a_context_manager(self) -> None:
         engine = self._Counting()
         with prepare(CONTRACT, parquet_dataset(SCHEMA, FIXTURE_ROWS), engine) as plan:
-            assert next(iter(plan.materialize(REQUESTS).batches(REQUESTS))) is not None
+            assert next(iter(plan.materialize(REQUESTS).batches())) is not None
         assert engine.closed == 1
 
     def test_a_failed_materialization_leaves_the_plan_to_its_owner(self) -> None:
@@ -336,7 +350,7 @@ class TestTheOpenedSourceIsOwned:
         plan = prepare_rows(CONTRACT, FIXTURE_ROWS)
         plan.close()
         with pytest.raises(ValueError, match="closed"):
-            plan.materialize(REQUESTS)
+            plan.materialize(request_anchor_table(REQUESTS, schema=plan.contract.schema))
 
     def test_a_plan_built_from_a_borrowed_source_does_not_close_it(self) -> None:
         source = prepare_rows(CONTRACT, FIXTURE_ROWS)._source

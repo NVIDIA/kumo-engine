@@ -34,6 +34,8 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
+from tests.native_fixtures import request_anchor_table
+
 pytest.importorskip("diskgraph")
 pytest.importorskip("torch_geometric")
 
@@ -525,7 +527,9 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     engine = DiskGraphEngine(index=root / "tie-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(
-            [tied_requests[sample_id]], fitted=artifact.fitted_state, inference=True
+            request_anchor_table([tied_requests[sample_id]], schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
         ) as task:
             (batch,) = list(task.batches(output_format="model"))
     purchases = [
@@ -560,7 +564,11 @@ def test_a_history_batch_without_any_event_assembles(
     (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
     engine = DiskGraphEngine(index=root / "empty-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
-        with plan.materialize([request], fitted=artifact.fitted_state, inference=True) as task:
+        with plan.materialize(
+            request_anchor_table([request], schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             (scored,) = list(task.batches(output_format="model"))
     for batch in (served, scored):
         assert batch.inputs["history"]["value_ids"].shape[0] == 0
@@ -571,7 +579,11 @@ def _reference_batches(
     artifact: Artifact, rows: Dataset, requests: list[SampleRequest]
 ) -> dict[int, Batch]:
     with prepare_rows(artifact.contract, rows) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             batches = task.batches(batch_size=1, seed=0)
             return {int(batch.metadata["sample_ids"][0]): batch for batch in batches}
 

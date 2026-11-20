@@ -10,6 +10,7 @@ import pytest
 
 from conformance.assertions import bound_tables
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 
 USERS = [{"user_id": 1, "at": 0}, {"user_id": 2, "at": 0}]
 EVENTS = [
@@ -80,7 +81,7 @@ def test_revisited_edges_appear_once_per_sample(engine_name):
             engine,
         ),
         api.prepare(contract, dataset, engine) as plan,
-        plan.materialize(requests) as task,
+        plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task,
     ):
         batches = list(
             task.batches(
