@@ -1082,3 +1082,30 @@ def test_page_is_a_standalone_document(tmp_path):
     # Nothing is fetched from outside the page.
     assert not re.search(r'<link|@import|(src|href)="(?!data:)|url\((?!#)',
                          page)
+
+
+def test_a_tracked_fit_logs_its_report_as_a_page(tmp_path):
+    from kumo.engine._card import REPORT_FILE
+    from kumo.engine.trainer._run_spec import report_artifacts
+
+    result = _result(tmp_path)
+    artifacts = report_artifacts(result, 'churn')
+
+    assert list(artifacts) == [REPORT_FILE]
+    page = artifacts[REPORT_FILE]
+    assert '<title>churn training report</title>' in page
+    assert _payload(page) == json.loads(json.dumps(result.visualize().data))
+    assert '<title>Training report</title>' in report_artifacts(
+        result)[REPORT_FILE]
+
+
+def test_a_report_that_cannot_render_is_left_out(caplog):
+    from kumo.engine.trainer._run_spec import report_artifacts
+
+    class Broken:
+        def visualize(self):
+            raise OSError('scratch directory is gone')
+
+    assert report_artifacts(Broken()) == {}
+    assert ('Could not render the training report: scratch directory is '
+            'gone') in caplog.text
