@@ -6,6 +6,11 @@ name: Snowflake notebook platform checks
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
+      workload:
+        description: Engine lifecycle workload (PyTorch requires engine mode/checks only)
+        type: choice
+        default: kumo
+        options: [kumo, pytorch]
       mode:
         description: Snowflake scenario
         type: choice
@@ -41,12 +46,20 @@ jobs:
         name: Verify test environment policy
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py
+          WORKLOAD: ${{ inputs.workload }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [[ "$WORKLOAD" == pytorch && "$MODE" != engine ]]; then
+            echo 'PyTorch requires mode=engine' >&2
+            exit 1
+          fi
+          python3 packages/kumo-engine/test/snowflake_notebook/check_environment.py
   wheel:
     needs: configuration
     uses: ./.github/workflows/kumo-engine-pr.yml
     with:
       build_only: true
+      build_pytorch: ${{ inputs.workload == 'pytorch' }}
     permissions:
       contents: read
       pull-requests: read
@@ -97,15 +110,30 @@ jobs:
         with:
           name: engine-pr-wheel-${{ github.sha }}
           path: ${{ runner.temp }}/snowflake-wheel
+      - name: Download matching PyTorch workload wheels
+        if: ${{ inputs.workload == 'pytorch' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: engine-pytorch-wheels-${{ github.sha }}
+          path: ${{ runner.temp }}/pytorch-wheels
       - name: Stage this dispatch's candidate
         env:
+          WORKLOAD: ${{ inputs.workload }}
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
           export SNOWFLAKE_TEST_CANDIDATE="$RUNNER_TEMP/snowflake-candidate.json"
           printf 'SNOWFLAKE_TEST_CANDIDATE=%s\n' "$SNOWFLAKE_TEST_CANDIDATE" >> "$GITHUB_ENV"
-          python packages/kumo-engine/test/snowflake_notebook/staging.py \
+          workload_args=()
+          if [[ "$WORKLOAD" == pytorch ]]; then
+            wheels=("$RUNNER_TEMP"/pytorch-wheels/*.whl)
+            test "${#wheels[@]}" -eq 2
+            for wheel in "${wheels[@]}"; do
+              workload_args+=(--workload-wheel "$wheel")
+            done
+          fi
+          python packages/kumo-engine/test/snowflake_notebook/staging.py "${workload_args[@]}" \
             --wheel "$RUNNER_TEMP"/snowflake-wheel/*.whl \
             --source-ref "$GITHUB_SHA" --github-run "$GITHUB_RUN_ID" \
             --output "$SNOWFLAKE_TEST_CANDIDATE"
@@ -116,10 +144,17 @@ jobs:
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: python packages/kumo-engine/test/snowflake_notebook/retention.py --execute
       - name: Prepare this revision's notebook tests
+        env:
+          WORKLOAD: ${{ inputs.workload }}
         run: |
+          workload_args=()
+          if [[ "$WORKLOAD" == pytorch ]]; then
+            workload_args+=(--workload packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py
+                            --workload-helper packages/kumo-engine/test/wheel_mlops_pytorch.py)
+          fi
           python packages/kumo-engine/test/snowflake_notebook/prepare.py \
             --output-dir "$RUNNER_TEMP/snowflake-payload" \
-            --candidate "$SNOWFLAKE_TEST_CANDIDATE"
+            --candidate "$SNOWFLAKE_TEST_CANDIDATE" "${workload_args[@]}"
       - name: Execute the installed-wheel notebook lifecycle
         env:
           SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}

@@ -2014,3 +2014,41 @@ def test_custom_kernel_loop_forwards_workload_and_removes_producer_scratch(tmp_p
     assert set(report['phases']) == set(calls)
     assert all(value['returncode'] == 0 for value in report['phases'].values())
     assert not list(lifecycle.glob('scratch-*'))
+
+
+@pytest.mark.parametrize('selected', ['kumo', 'pytorch'])
+def test_actions_dispatch_selects_customer_workload(tmp_path, monkeypatch, selected):
+    import subprocess
+
+    import yaml
+
+    workflow = yaml.safe_load((Path(__file__).resolve().parents[2] / '.github/workflows/kumo-engine-sagemaker-notebook.yml').read_text())
+    steps = workflow['jobs']['notebook']['steps']
+    step = next(step for step in steps if step.get('name', '').startswith('Execute the same installed-wheel'))
+    script = step['run'].split("python - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_text(json.dumps({'candidate': {'wheel_file': 'engine.whl'}}))
+    wheels = tmp_path / 'pytorch-wheels'
+    wheels.mkdir()
+    for name in ('diskgraph-matching.whl', 'kumo_pytorch-candidate.whl'):
+        (wheels / name).touch()
+    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
+    monkeypatch.setenv('SAGEMAKER_TEST_CANDIDATE', str(candidate))
+    monkeypatch.setenv('WORKLOAD', selected)
+    monkeypatch.setenv('SCENARIO', 'engine')
+    monkeypatch.setenv('ENGINE_ONLY', 'true')
+    commands = []
+    monkeypatch.setattr(subprocess, 'call', lambda args: commands.append(args) or 0)
+    with pytest.raises(SystemExit) as exit_info:
+        exec(compile(script, '<actions-dispatch>', 'exec'), {})
+    assert exit_info.value.code == 0
+    command, = commands
+    assert '--engine-checks-only' in command
+    if selected == 'pytorch':
+        assert command[command.index('--workload') + 1].endswith('/wheel_mlops_pytorch.py')
+        assert command.count('--workload-wheel') == 2
+        assert str(wheels / 'diskgraph-matching.whl') in command
+        assert str(wheels / 'kumo_pytorch-candidate.whl') in command
+    else:
+        assert '--workload' not in command
+        assert '--workload-wheel' not in command

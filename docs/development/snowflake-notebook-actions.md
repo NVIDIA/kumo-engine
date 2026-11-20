@@ -375,6 +375,12 @@ those selected engine checks while retaining the separate native UI review gap.
 The default Kumo scenario retains its four phases and existing qualification gaps.
 
 
+
+In Actions, select `workload=pytorch` and `mode=engine`. The dispatch builds
+the adapter, retains the matching DiskGraph constituent wheel and selects the
+native Snowflake customer workload plus its shared helper. Published phase
+results include `platform-prerequisite`, `train` and `reload`.
+
 The temporary branch exception is limited to `egu/byom-mlops-lifecycle` in the
 workflow and `snowflake-mlops-test` environment. Manual dispatch remains required; its deployment-reviewer gate is disabled.
 Administrator bypass remains disabled. Remove the exact branch rule and guard exception when branch testing
