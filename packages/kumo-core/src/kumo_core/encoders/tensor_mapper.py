@@ -873,14 +873,13 @@ class TextTensorMapper(TensorMapper[MultiNestedTensor]):
         Raises:
             ValueError: If tokenization returns an invalid row-pointer count.
         """
-        ser = array.to_pandas()
         rowptr, index = (
-            torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(ser)
+            torch.as_tensor(x, dtype=torch.long) for x in self.model.tokenize(array)
         )
-        if rowptr.numel() != len(ser) + 1:
+        if rowptr.numel() != len(array) + 1:
             raise ValueError(
                 f"{self.model!r}.tokenize() returned {rowptr.numel()} row "
-                f"pointers for {len(ser)} texts; it must return "
+                f"pointers for {len(array)} texts; it must return "
                 f"len(texts) + 1."
             )
         return MultiNestedTensor(
