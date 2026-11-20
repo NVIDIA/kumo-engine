@@ -2275,7 +2275,7 @@ class Trainer(PortableConfigMixin):
         collector_formats: list[FORMAT] | None,
         options: PredictionExplanationOptions,
     ) -> tuple[Explainer, ...]:
-        """Replay independently bounded cohorts and FIRST sampled task rows."""
+        """Replay independently bounded cohorts and first sampled task rows."""
         batch_size = self.datamodule.eval_loader_kwargs['batch_size']
         samples_requested = self._samples_requested(methods)
         first_pass = bool(self.pl_model.explainers)
@@ -2283,7 +2283,7 @@ class Trainer(PortableConfigMixin):
             return self.explanation_producers
         sample_rows = (options.sample_rows if options.sample_rows is not None
                        else self._explain_runtime.prediction_selection_nodes)
-        # Preserve the legacy cohort cap, including rounding to whole batches.
+        # Default cohort cap in whole batches, at least the selection budget.
         default_batches = max(self._explain_runtime.max_batches,
                               math.ceil(self._explain_runtime.prediction_selection_nodes
                                         / batch_size))

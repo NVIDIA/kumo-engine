@@ -12,7 +12,11 @@ import pyarrow as pa
 import pytest
 import torch
 from kumo_core.encoders.tensor_frame import get_tf
-from kumo_core.encoders.tensor_mapper import NumericalTensorMapper
+from kumo_core.encoders.tensor_mapper import (
+    MultiCategoricalTensorMapper,
+    NumericalTensorMapper,
+    TimestampTensorMapper,
+)
 from kumo_core.explain.column_analysis import ColumnAnalysis
 from kumo_core.explain.subgraph_collector import SubgraphCollector
 from kumo_core.io import filesystem
@@ -146,6 +150,61 @@ def test_null_numeric_values_preserve_other_cohorts(tmp_path, null_rows):
     else:
         assert result['USER', 0, 'VALUE'].predictions == [20.0]
     assert all(cohort.cohorts for cohort in result.cohorts)
+
+
+@pytest.mark.parametrize('values', ['empty', 'missing', 'future', 'populated'])
+@pytest.mark.parametrize('stage', [TrainingStage.PRED, TrainingStage.VAL])
+def test_empty_categories_preserve_cohorts(tmp_path, values, stage):
+    analyzer = ColumnAnalysis(TaskType.REGRESSION, str(tmp_path), normalize=False)
+    module = _module()
+    analyzer.explain_start(module, None, stage)
+    numerical = NumericalTensorMapper()
+    mapper = (TimestampTensorMapper() if values == 'future' else
+              MultiCategoricalTensorMapper([['known', 1], ['unused', 1]],
+                                           sep=None))
+    for idx in range(3):
+        batch, loader = _batch(idx)
+        # Only USER nodes are prediction seeds and supply their seed time.
+        del batch['FACT'].batch_size
+        if values == 'future':
+            feature = pa.array(['2025-01-01'])
+            batch['USER'].seed_time = torch.tensor([
+                pd.Timestamp('2024-01-01').value,
+            ])
+        else:
+            value = (None if values == 'missing' else
+                     ['known'] if values == 'populated' and idx == 1 else [])
+            feature = pa.array([value], type=pa.list_(pa.string()))
+        batch['USER'].tf = get_tf(
+            pa.RecordBatch.from_arrays([pa.array([1.0]), feature],
+                                       names=['VALUE', 'CATEGORY']),
+            {'VALUE': numerical, 'CATEGORY': mapper})
+        loader.data[0].get_tensor_mapper.side_effect = (
+            lambda table, column: mapper if column == 'CATEGORY' else numerical)
+        analyzer.explain_post_step(batch, module, loader, {}, stage, idx)
+
+    outputs = {'pred': torch.tensor([10., 20., 30.])}
+    if stage != TrainingStage.PRED:
+        outputs['target'] = torch.tensor([1., 2., 3.])
+    analyzer.explain_end(module, None, outputs, stage)
+    result = load_json(str(tmp_path / stage / 'column_analysis.json'),
+                       ColumnAnalysisOutput)
+    assert analyzer.completed
+    assert analyzer.failure is None
+    assert result['USER', 0, 'VALUE'].predictions == [20.0]
+    if values == 'populated':
+        cohort = result['USER', 0, 'CATEGORY']
+        assert cohort.cohorts == ['known']
+        assert cohort.populations == [1.0]
+        assert cohort.predictions == [20.0]
+        assert cohort.targets == ([2.0] if stage != TrainingStage.PRED else None)
+    else:
+        with pytest.raises(KeyError):
+            result['USER', 0, 'CATEGORY']
+    assert all(cohort.cohorts for cohort in result.cohorts)
+    for cohort in result.cohorts:
+        assert sum(cohort.populations) == pytest.approx(1.0)
+        assert np.isfinite(cohort.predictions).all()
 
 
 def test_empty_population_is_not_a_failure(tmp_path):
