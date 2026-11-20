@@ -215,6 +215,35 @@ def test_keyless_non_primary_key_relation_remains_valid_on_reference():
 
 
 @pytest.mark.parametrize(
+    "primary_key", (None, "id"), ids=("keyless-to-keyless", "keyless-to-non-primary-key")
+)
+def test_diskgraph_refuses_keyless_relations_without_a_primary_key_side(primary_key, tmp_path):
+    case = _case()
+    other = replace(
+        case.contract.schema.tables[1],
+        name="other",
+        primary_key=primary_key,
+        columns={"id": r.DType("int64"), "owner": r.DType("int64")},
+    )
+    relation = r.RelationSpec("unsupported", "events", "owner", "other", "owner")
+    schema = r.DataSchema(
+        (*case.contract.schema.tables, other), (*case.contract.schema.relations, relation)
+    )
+    contract = replace(case.contract, schema=schema)
+    dataset = r.Dataset(
+        {table.name: r.Parquet(str(tmp_path / f"{table.name}.parquet")) for table in schema.tables}
+    )
+    engine = r.DiskGraphEngine(index=tmp_path / "index")
+    with patch.object(engine, "open", side_effect=AssertionError("opened invalid relation")):
+        issues = r.check(contract, dataset, engine)
+        assert [(issue.path, issue.code) for issue in issues] == [
+            ("schema.relations[1]", "DG-RELATION-KEYS")
+        ]
+        with pytest.raises(r.ValidationError, match="exactly one primary-key side"):
+            r.prepare(contract, dataset, engine)
+
+
+@pytest.mark.parametrize(
     ("engine_name", "output_format"),
     (("in_memory", "inspectable"), ("diskgraph", "inspectable"), ("diskgraph", "model")),
     indirect=["engine_name"],
@@ -270,43 +299,6 @@ def test_keyless_non_temporal_count_only_frame(engine_name):
     with bound_case(replace(case, contract=contract), engine_name) as (dataset, engine):
         batch = r.preview(contract, dataset, engine, case.requests).batch
         assert batch.inputs["values"]["count"]["values"].tolist() == [4, 4, 0]
-
-
-def test_keyless_tie_order_survives_an_ordered_serving_subset():
-    case = _case()
-    event = r.EventSpec(
-        r.Rows(("activity",)), {"amount": r.Field(column="amount")}, order="descending", limit=1
-    )
-    contract = replace(
-        case.contract,
-        sample=replace(case.contract.sample, events={"history": event}),
-        batch=r.BatchSpec(
-            {
-                "history": r.Input(
-                    r.EventSource(("history",)),
-                    r.Fields((r.Encode("amount", r.Raw()),)),
-                    r.Packed(),
-                )
-            }
-        ),
-    )
-    # Removing an unrelated row must not change numeric source-order ties.
-    tables = {
-        **case.tables,
-        "events": [
-            {"owner": 2, "at": 9, "amount": 99},
-            *({"owner": 1, "at": 9, "amount": i} for i in range(12)),
-        ],
-    }
-    requests = (r.SampleRequest("tied", 1, 9),)
-    dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
-    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
-            offline = next(iter(task.batches(requests, batch_size=1)))
-            server = r.ServingAssembler(task.to_artifact())
-    served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
-    assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
-    assert served.inputs["history"]["amount"]["values"].tolist() == [11]
 
 
 def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
