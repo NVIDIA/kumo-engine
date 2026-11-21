@@ -102,6 +102,7 @@ jobs:
               control=os.environ['CASE'].endswith('-control'),
               scale=os.environ['SCALE'], source_sha=os.environ['SOURCE_SHA'],
               requested_instance_type=os.environ['INSTANCE'], hardware=dict(instance_type=None),
+              placement=dict(region=None, zone=None), capacity_wait_seconds=None,
               capacity_deadline=float(os.environ['CAPACITY_DEADLINE']),
               error=os.environ['FAILURE_ERROR'])
           (Path(os.environ['RUNNER_TEMP']) / 'result.json').write_text(json.dumps(result))

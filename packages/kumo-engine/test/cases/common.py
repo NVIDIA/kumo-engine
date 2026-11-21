@@ -422,6 +422,7 @@ def run(graph, query, split, task, overrides=None, *, args,
     from kumoapi.jobs import MetadataField
 
     import kumo.engine as kumo
+    wait = os.environ.get("ENGINE_E2E_CAPACITY_WAIT_SECONDS", "")
     result = {
         "case": args.case,
         "scale": args.scale,
@@ -431,6 +432,11 @@ def run(graph, query, split, task, overrides=None, *, args,
         "hardware": {
             "instance_type": args.instance_type
         },
+        "placement": {
+            "region": os.environ.get("ENGINE_E2E_REGION"),
+            "zone": os.environ.get("ENGINE_E2E_ZONE")
+        },
+        "capacity_wait_seconds": int(wait) if wait.isdecimal() else None,
         "resources": {
             "ram_peak_bytes": 0,
             "scratch_peak_delta_bytes": 0,

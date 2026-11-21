@@ -2,6 +2,7 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 const assert = require('node:assert/strict');
+const {execFileSync} = require('node:child_process');
 const {generateKeyPairSync} = require('node:crypto');
 const {readFileSync} = require('node:fs');
 const {join} = require('node:path');
@@ -225,6 +226,16 @@ test('capacity and provider deadlines keep the configured wait and execution win
     const schedules = f.calls.filter(c => c.operation === 'create-schedule');
     assert.equal(Date.parse(schedules[0].input.StartDate) / 1000 - f.io.now(), wait * 3600);
     assert.equal(Date.parse(schedules[2].input.StartDate) / 1000 - f.io.now(), (wait + execution) * 3600 + 1800);
+  }
+});
+test('runner capacity waits count from the pool start of each tier', async () => {
+  for (const tier of ['nightly', 'weekly']) {
+    const f = fixture(tier); await start(f.selected, f.io);
+    const [header, runner] = Buffer.from(f.calls.find(c => c.operation === 'create-launch-template-version')
+      .input.LaunchTemplateData.UserData, 'base64').toString().split('#!/usr/bin/env bash\n');
+    const wait = runner.slice(runner.indexOf("boot_check='boot time'"), runner.indexOf("boot_check='local SSD setup'"));
+    assert.equal(execFileSync('bash', ['-c', 'set -euo pipefail\n' + header +
+      wait.replace('/proc/stat', '<(echo btime ' + (f.io.now() + 60) + ')') + 'echo "$capacity_wait"'], {encoding: 'utf8'}), '60\n');
   }
 });
 test('capacity reporting does not restart work after an early terminal run', async () => {
