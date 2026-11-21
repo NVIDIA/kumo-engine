@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+from torch.nn import functional as F
 
 from e2e.datasets import CALENDAR, bind_tables, history_batch
 from kumo.pytorch import api
@@ -249,6 +250,25 @@ def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
         "currency": ("next_currency", "string", api.Vocabulary()),
     }
     return _prepare_aml(files, directory, anchor_rows, targets, "L01")
+
+
+def l01_loss(batch, amount_prediction, currency_logits):
+    """Return the sum of head means, each head's loss sum, and its eligible count."""
+    amount, currency = batch.targets["amount"], batch.targets["currency"]
+    if amount_prediction.shape != amount["values"].shape:
+        raise ValueError("Expected one scalar amount prediction per anchor")
+    real = ~batch.metadata["is_padding"]
+    amount_valid, currency_valid = real & amount["valid"], real & currency["valid"]
+    amounts, currencies = amount["values"][amount_valid], currency["values"][currency_valid]
+    sums = {
+        "amount": F.smooth_l1_loss(
+            amount_prediction[amount_valid].double(), amounts.double(), reduction="sum", beta=1.0
+        ),
+        "currency": F.cross_entropy(currency_logits[currency_valid], currencies, reduction="sum"),
+    }
+    counts = {"amount": amounts.numel(), "currency": currencies.numel()}
+    loss = sum(sums[name] / max(count, 1) for name, count in counts.items())
+    return loss, sums, counts
 
 
 def _prepare_aml(files, directory, anchor_rows, targets, binding):

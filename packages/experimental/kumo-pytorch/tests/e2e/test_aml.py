@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_hi_small, prepare_l01
+from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, l01_loss, prepare_hi_small, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
 from tests.e2e.history import (
@@ -312,7 +312,7 @@ def _check_history(task, batch, histories):
         check_scalar_history(task, batch, fields, rows)
 
 
-def _check_delivered_targets(batch, expected, currency_ids):
+def _check_l01_targets(batch, expected, currency_ids):
     samples = batch.metadata["sample_ids"]
     assert sorted(samples) == sorted(expected)
     amounts, currencies = zip(*(expected[s] for s in samples), strict=True)
@@ -325,6 +325,35 @@ def _check_delivered_targets(batch, expected, currency_ids):
     )
     ids = [0 if value is None else currency_ids.get(value, 1) for value in currencies]
     assert_same(currency["values"], torch.tensor(ids, dtype=torch.int64))
+
+    # One amount score, then distinct currency logits for missing, UNKNOWN and fitted IDs.
+    columns = torch.arange(3 + len(currency_ids), dtype=torch.float32)
+    scores = torch.nn.Parameter(torch.arange(1, len(samples) + 1)[:, None] * columns)
+    prediction, logits = scores[:, 0], scores[:, 1:]
+    loss, sums, counts = l01_loss(batch, prediction, logits)
+    padding = batch.metadata["is_padding"]
+    terms = {"amount": [], "currency": []}
+    for i, (value, category) in enumerate(zip(amounts, ids, strict=True)):
+        if padding[i]:
+            continue
+        if value is not None:
+            error = abs(prediction[i].item() - amount["values"][i].item())
+            terms["amount"].append(error**2 / 2 if error < 1 else error - 0.5)
+        if category:
+            row = logits[i].detach().double()
+            terms["currency"].append((row.logsumexp(0) - row[category]).item())
+    assert counts == {name: len(values) for name, values in terms.items()}
+    assert sums["amount"].dtype == torch.float64
+    for name, values in terms.items():
+        assert sums[name].item() == pytest.approx(sum(values), abs=1e-7)
+    assert loss.item() == pytest.approx(sum(sum(v) / len(v) for v in terms.values() if v))
+    loss.backward()
+    assert_same(scores.grad[:, 0] != 0, amount["valid"] & ~padding)
+    assert_same(scores.grad[:, 1:].any(dim=1), currency["valid"] & ~padding)
+    if not any(counts.values()):
+        before = scores.detach().clone()
+        torch.optim.SGD([scores], lr=0.1).step()
+        assert_same(scores, before)
 
 
 def _source_counts(spec, root, cutoff, history):
@@ -391,7 +420,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
         assert dict(task.target("currency").field(name="value").encoder.entries) == currency_ids
         for split, expected in answers.items():
             (batch,) = task.batches(split=split, batch_size=len(positions), output_format="model")
-            _check_delivered_targets(batch, expected, currency_ids)
+            _check_l01_targets(batch, expected, currency_ids)
             selected = [histories[s] for s in batch.metadata["sample_ids"]]
             assert set(batch.inputs) == {"graph", "history", "aggregates"}
             assert list(batch.metadata["entity_ids"]) == [root for root, _, _ in selected]
@@ -402,19 +431,30 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             _check_history(task, batch, selected)
             check_normalized_aggregates(task, batch, counts, answers["train"])
 
-        # The source records both labels together. Mask one head at a time to test native delivery.
+        # The short rank gets a copy with valid labels and zero eligible loss.
+        (padded,) = task.batches(split="test", rank=1, world_size=2, output_format="model")
+        assert padded.metadata["is_padding"].tolist() == [True]
+        (labels,) = answers["test"].values()
+        _check_l01_targets(padded, {padded.metadata["sample_ids"][0]: labels}, currency_ids)
+
+        # The original labels occur together. Give the two heads different eligible counts.
         projected = pq.read_table(table.source.path)
-        row = next(r for r in projected.to_pylist() if r["currency"] in currency_ids)
+        row, other = (r for r in projected.to_pylist() if r["split"] == "train")
         probes = [{**row, "sample_id": name, name: None} for name in ("amount", "currency")]
+        probes.append(dict(other, currency=None))
         path = tmp_path / "partial-targets.parquet"
         pq.write_table(pa.Table.from_pylist(probes, schema=projected.schema), path)
         with plan.materialize(
             replace(table, source=api.Parquet(str(path))), fitted=task.fitted_state
         ) as partial:
-            (batch,) = partial.batches(batch_size=2, output_format="model")
-            _check_delivered_targets(
+            (batch,) = partial.batches(batch_size=len(probes), output_format="model")
+            _check_l01_targets(
                 batch,
-                {"amount": (None, row["currency"]), "currency": (row["amount"], None)},
+                {
+                    "amount": (None, row["currency"]),
+                    "currency": (row["amount"], None),
+                    other["sample_id"]: (other["amount"], None),
+                },
                 currency_ids,
             )
 
