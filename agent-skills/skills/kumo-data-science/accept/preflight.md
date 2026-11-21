@@ -176,6 +176,20 @@ A link is proposed when a column in table A has the **same name** as the primary
 taken as well, where the source declares any. Nothing else is inferred — no fuzzy matching,
 no value overlap checks, no joins executed.
 
+**Two links from one table to the same table** — both ends of a connection, a follow, a referral,
+a transfer — are a decision for the user, not two ordinary links. Kumo accepts both, but a query
+that aggregates across that table to the shared parent fails query validation with
+`Ambiguous link between tables` (the foreign key is not unique). Report the pair in the proposal,
+under `Not found`, and ask which the user wants:
+1. **One direction** — keep one link: the graph gets a single `Edge` for the column they name, and
+   the other column is left out of the table's columns.
+2. **Both, directed** — keep both links; fine as long as no query aggregates across that table to
+   the shared parent.
+3. **Undirected** — the user writes each row twice upstream, the second copy with the two columns
+   swapped, and the graph keeps one link.
+
+Propose, never apply: the notebook does not copy, swap or drop rows.
+
 ## 7. Seeds and table mode
 
 - **Seeds** are the tables behind `prediction_entity` and `prediction_target` (for link

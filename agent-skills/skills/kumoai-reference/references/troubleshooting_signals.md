@@ -181,6 +181,14 @@ pquery = kumo.PredictiveQuery(
 pquery.validate()
 ```
 
+### Symptom: `pquery.validate()` fails with `Ambiguous link between tables`
+**Cause:** The query aggregates from one table to another that it reaches through two links —
+two columns of one table pointing at the same parent. The validator cannot pick one. (The title is
+the query validator's own text, from `kumopql`'s join validation.)
+**Fix:** A graph change for the user to choose (`kumo-data-science/accept/preflight.md` §6): keep
+one link, or have the rows written in both directions upstream and keep one link. Do not drop a
+link or column, or copy or swap rows, in the notebook before the user has chosen.
+
 ### Symptom: aggregation window rejected
 **Cause:** Both *start* and *end* must be **non-negative integers**, and *end* must be **greater than** *start*.
 **Fix:** Correct the bounds. Semantics: start is exclusive, end is inclusive. `SUM(TRANSACTIONS.PRICE, 10, 30)` from a `2020-01-01` anchor aggregates `2020-01-11 00:00:00 < t <= 2020-01-31 00:00:00`.

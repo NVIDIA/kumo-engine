@@ -217,6 +217,8 @@ leaving them unmentioned, because each one changes whether the task is expressib
   conclude from a failed heuristic that the table must be an event or fact table.
 - a time-ranged target whose referenced table has no usable time column — say so, and say what
   would make the task expressible. A timestamp on another table does not repair the target.
+- two links from one table to the same table — name the pair and ask which direction the user
+  wants (`accept/preflight.md` §6). Proposing both without comment is not a confirmation of both.
 
 | Condition | Transition |
 |---|---|
