@@ -5,6 +5,9 @@
 """Global history caps bound every native component before payload decoding."""
 
 import json
+import re
+from contextlib import ExitStack
+from itertools import chain
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -12,8 +15,7 @@ import pytest
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
-
-pytest.importorskip("diskgraph")
+from tests.helpers import parquet_anchors
 
 
 @pytest.mark.parametrize("keep", ["first", "last"])
@@ -23,6 +25,7 @@ pytest.importorskip("diskgraph")
 def test_component_caps_preserve_global_ties_and_empty_histories(
     tmp_path, monkeypatch, keep, order, layout, same_rows
 ):
+    pytest.importorskip("diskgraph")
     _check_history(tmp_path, monkeypatch, keep, order, layout, same_rows)
 
 
@@ -39,14 +42,13 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
 def test_history_membership_and_aligned_supervision(
     tmp_path, monkeypatch, keep, order, layout, same_rows, budget
 ):
+    pytest.importorskip("diskgraph")
     _check_history(
         tmp_path, monkeypatch, keep, order, layout, same_rows, extended=True, budget=budget
     )
 
 
-def _check_history(
-    tmp_path, monkeypatch, keep, order, layout, same_rows, *, extended=False, budget=False
-):
+def _history_case(tmp_path, keep, order, layout, same_rows, *, extended, budget, graph):
     sources = {}
     users = tmp_path / "users.parquet"
     pq.write_table(pa.table({"id": [1, 2]}), users)
@@ -111,7 +113,7 @@ def _check_history(
             api.EventsOf("history"), api.Fields((api.Encode("age", api.Raw()),)), layout
         )
         targets["labels"] = api.AlignedEventTarget("history", (api.Encode("label", api.Raw()),))
-        if not budget:
+        if graph:
             neighborhoods["graph"] = api.NeighborhoodSpec(
                 (api.GraphLayer(tuple(api.GraphSample(name, 4) for name in ("events", "web"))),)
             )
@@ -130,13 +132,30 @@ def _check_history(
         neighborhoods=neighborhoods,
     )
     batching = (
-        api.Batching(max_samples=2, max_tokens=6, length_input="history")
+        api.Batching(max_samples=2, max_tokens=budget, length_input="history")
         if budget
         else api.Batching(max_samples=2)
     )
     contract = api.DataLoaderSpec(
         schema, sample, api.BatchSpec(inputs, targets=targets, batching=batching)
     )
+    return contract, api.Dataset(sources)
+
+
+def _check_history(
+    tmp_path, monkeypatch, keep, order, layout, same_rows, *, extended=False, budget=False
+):
+    contract, dataset = _history_case(
+        tmp_path,
+        keep,
+        order,
+        layout,
+        same_rows,
+        extended=extended,
+        budget=6 if budget else None,
+        graph=not budget,
+    )
+    limit = contract.batch.inputs["history"].source.max_events
     path = tmp_path / "anchors.parquet"
     pq.write_table(pa.table({"id": [1, 2], "at": [100, 100]}), path)
     anchors = api.AnchorTable(api.Parquet(str(path)), "id", "at")
@@ -159,7 +178,7 @@ def _check_history(
             yield runtime
 
     with api.prepare(
-        contract, api.Dataset(sources), api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
+        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=2)
     ) as plan:
         with plan.materialize(anchors, fit_split=api.ALL_ANCHORS) as task:
             if not budget:
@@ -226,3 +245,89 @@ def _check_history(
         roots = graph["nodes"]["users"]
         assert roots["ids"][src].tolist() == [1] * 4
         assert nodes["batch"][dst].tolist() == roots["batch"][src].tolist()
+
+
+def test_graph_and_event_history_share_a_token_budget(tmp_path, native_anchor_delivery):
+    from diskgraph import DiskgraphConfigError
+
+    contract, dataset = _history_case(
+        tmp_path, "last", "ascending", api.Packed(), False, extended=True, budget=3, graph=True
+    )
+    cutoffs = [100, 61]
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"user": [1, 1], "at": cutoffs}, "user", "at"
+    )
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with ExitStack() as stack:
+        try:
+            plan = stack.enter_context(api.prepare(contract, dataset, engine))
+            task = stack.enter_context(plan.materialize(anchors, fit_split=api.ALL_ANCHORS))
+            batches = iter(native_anchor_delivery(task))
+            first = next(batches)
+        except (ValueError, NotImplementedError, DiskgraphConfigError) as exc:
+            messages = (
+                [i.message for i in exc.issues]
+                if isinstance(exc, api.ValidationError)
+                else [str(exc)]
+            )
+            graph = r"(?:native )?graphs?(?: (?:inputs?|outputs?|batches|sampling))?"
+            budget = r"(?:token budgets?|token budgeting|max_tokens)"
+            both = rf"(?:{graph} (?:and|with) {budget}|{budget} (?:and|with) {graph})"
+            refusals = (
+                rf"(?:mixed )?{both}(?: delivery| batching)? (?:is|are) "
+                r"(?:unsupported|not supported)(?: together)?",
+                rf"{both} cannot be combined",
+                rf"{graph} (?:cannot be combined with|do(?:es)? not support) {budget}",
+                rf"{budget} (?:cannot be combined with|(?:is |are )?not supported with) {graph}",
+                rf"diskgraph does not support {both}",
+            )
+            assert messages
+            for message in messages:
+                reason = message.lower().replace("-", " ").rstrip(".")
+                assert any(re.fullmatch(pattern, reason) for pattern in refusals), message
+            return
+
+        delivered = []
+        for batch in chain((first,), batches):
+            # Each anchor fills the three-slot budget. Ignoring it would put both in one batch.
+            (sid,) = batch.metadata["sample_ids"]
+            delivered.append(sid)
+            assert batch.metadata["entity_ids"].tolist() == [1] and not any(
+                batch.metadata["is_padding"]
+            )
+            cutoff = cutoffs[sid]
+            assert batch.metadata["as_of_time"].tolist() == [cutoff]
+            end = min(cutoff, 63)
+            times = [end - 1, end, end]
+            history, ages, labels = (
+                batch.inputs["history"],
+                batch.inputs["ages"],
+                batch.targets["labels"],
+            )
+            assert history["valid"].numel() == contract.batch.batching.max_tokens
+            assert history["valid"].all() and ages["valid"].all()
+            assert history["value"]["valid"].all() and ages["age"]["valid"].all()
+            assert (
+                history["offsets"].tolist()
+                == ages["offsets"].tolist()
+                == labels["offsets"].tolist()
+                == [0, 3]
+            )
+            assert history["value"]["values"].tolist() == [1000 + end - 1, end, 1000 + end]
+            assert ages["age"]["values"].tolist() == [cutoff - t for t in times]
+            valid = labels["label"]["valid"]
+            assert valid.tolist() == [t != 63 for t in times]
+            assert labels["label"]["values"][valid].tolist() == [t for t in times if t != 63]
+            graph = batch.inputs["graph"]
+            roots = graph["nodes"]["users"]
+            assert roots["ids"].tolist() == [1] and roots["batch"].tolist() == [0]
+            for table in ("events", "web"):
+                nodes = graph["nodes"][table]
+                src, dst = graph["edges"][table]["index"]
+                neighbors = list(range(end - 3, end + 1))
+                assert (
+                    sorted(nodes["ids"].tolist()) == sorted(nodes["ids"][dst].tolist()) == neighbors
+                )
+                assert roots["ids"][src].tolist() == [1] * 4
+                assert nodes["batch"].tolist() == roots["batch"][src].tolist() == [0] * 4
+        assert delivered == [0, 1]
