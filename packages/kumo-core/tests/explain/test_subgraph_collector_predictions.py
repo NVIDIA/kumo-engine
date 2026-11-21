@@ -4,7 +4,7 @@
 """Keep predicted items explicit when graph export aggregates neighbors."""
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pyarrow as pa
 import pytest
@@ -48,8 +48,8 @@ def test_export_retains_predicted_items(
     feature_store.get_time_col_name.return_value = None
     graph_schema = Mock()
     graph_schema.get_foreign_keys.return_value = []
-    rhs_index_map = Mock()
-    rhs_index_map.loc = {7: {"ID": 107}, 8: {"ID": 108}, 9: {"ID": 109}}
+    rhs_index_map = MagicMock()
+    rhs_index_map.loc.__getitem__.return_value = [107, 108, 109]
     save_json = Mock()
     monkeypatch.setattr(subgraph_collector, "save_json", save_json)
     monkeypatch.setattr(subgraph_collector.fsutil, "makedirs", Mock())
