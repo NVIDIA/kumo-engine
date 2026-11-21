@@ -8,7 +8,7 @@ Where table bytes live, which engine executes the contract, and what it supports
 
 ### `Dataset`
 
-*class* · `kumo.pytorch.api.Dataset`
+*class* · `kumo.pytorch.Dataset`
 
 ```python
 class Dataset(tables: Mapping[str, TableSource])
@@ -58,7 +58,7 @@ Fill omitted types from Parquet metadata, without reading rows.
 
 ### `InMemoryRows`
 
-*class* · `kumo.pytorch.api.InMemoryRows`
+*class* · `kumo.pytorch.InMemoryRows`
 
 ```python
 class InMemoryRows(rows: Sequence[Mapping[str, Any]] = ())
@@ -83,7 +83,7 @@ Always refused: in-memory rows are the data, not a reference to it.
 
 ### `Parquet`
 
-*class* · `kumo.pytorch.api.Parquet`
+*class* · `kumo.pytorch.Parquet`
 
 ```python
 class Parquet(path: str = '', columns: Mapping[str, str] = {})
@@ -110,7 +110,7 @@ JSON-compatible form of this storage reference.
 
 ### `Engine`
 
-*class* · `kumo.pytorch.api.Engine`
+*class* · `kumo.pytorch.Engine`
 
 ```python
 class Engine(*args, **kwargs)
@@ -153,7 +153,7 @@ anchor-to-graph edges — and fixes the canonical row order.
 
 ### `SampleSource`
 
-*class* · `kumo.pytorch.api.SampleSource`
+*class* · `kumo.pytorch.SampleSource`
 
 ```python
 class SampleSource(*args, **kwargs)
@@ -216,7 +216,7 @@ Release whatever the binding holds. Must tolerate repeat calls.
 
 ### `AnchorTask`
 
-*class* · `kumo.pytorch.api.AnchorTask`
+*class* · `kumo.pytorch.AnchorTask`
 
 ```python
 class AnchorTask(*args, **kwargs)
@@ -289,7 +289,7 @@ Release whatever the task holds. Must tolerate repeat calls.
 
 ### `DiskGraphEngine`
 
-*class* · `kumo.pytorch.api.DiskGraphEngine`
+*class* · `kumo.pytorch.DiskGraphEngine`
 
 ```python
 class DiskGraphEngine(
@@ -369,7 +369,7 @@ Issues with a Parquet anchor table's binding, without reading its rows.
 
 ### `available_engines`
 
-*function* · `kumo.pytorch.api.available_engines`
+*function* · `kumo.pytorch.available_engines`
 
 ```python
 def available_engines() -> tuple[str, ...]
@@ -379,7 +379,7 @@ Registered engine names, sorted.
 
 ### `engine_from_name`
 
-*function* · `kumo.pytorch.api.engine_from_name`
+*function* · `kumo.pytorch.engine_from_name`
 
 ```python
 def engine_from_name(name: str, **config: Any) -> Engine
@@ -397,7 +397,7 @@ resolves to the same class explicit construction would give.
 
 ### `register_engine`
 
-*function* · `kumo.pytorch.api.register_engine`
+*function* · `kumo.pytorch.register_engine`
 
 ```python
 def register_engine(name: str, factory: type) -> None
@@ -411,7 +411,7 @@ engine without editing this module.
 
 ### `Unsupported`
 
-*class* · `kumo.pytorch.api.Unsupported`
+*class* · `kumo.pytorch.Unsupported`
 
 ```python
 class Unsupported(
@@ -445,7 +445,7 @@ The refusal raised outside `check`, naming the code and the next step.
 
 ### `InMemoryEngine`
 
-*class* · `kumo.pytorch.api.InMemoryEngine`
+*class* · `kumo.pytorch.InMemoryEngine`
 
 ```python
 class InMemoryEngine()

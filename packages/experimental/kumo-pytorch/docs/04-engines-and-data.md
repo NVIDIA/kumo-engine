@@ -45,30 +45,30 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="user_id",
-            columns={"user_id": api.DType(name="int64")},
-            time_column=api.NON_TEMPORAL,
+            columns={"user_id": kp.DType(name="int64")},
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="orders",
             primary_key="order_id",
             columns={
-                "order_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "occurred_at": api.DType(name="timestamp", unit="s", timezone="UTC"),
-                "amount": api.DType(name="float64"),
+                "order_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "occurred_at": kp.DType(name="timestamp", unit="s", timezone="UTC"),
+                "amount": kp.DType(name="float64"),
             },
             time_column="occurred_at",
         ),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_orders",
             left_table="users",
             left_key="user_id",
@@ -77,30 +77,28 @@ schema = api.DataSchema(
         ),
     ),
 )
-history = api.Rows(path=("user_orders",), time=api.TimeWindow(column="occurred_at", stop=0))
-contract = api.DataLoaderSpec(
+history = kp.Rows(path=("user_orders",), time=kp.TimeWindow(column="occurred_at", stop=0))
+contract = kp.DataLoaderSpec(
     schema=schema,
-    sample=api.SampleSpec(
-        entity=api.EntitySpec(table="users", entity_type="user"),
-        entity_values={"spend": api.Aggregate(source=history, operation="sum", column="amount")},
-        events={
-            "orders": api.EventSpec(rows=history, fields={"amount": api.Field(column="amount")})
-        },
+    sample=kp.SampleSpec(
+        entity=kp.EntitySpec(table="users", entity_type="user"),
+        entity_values={"spend": kp.Aggregate(source=history, operation="sum", column="amount")},
+        events={"orders": kp.EventSpec(rows=history, fields={"amount": kp.Field(column="amount")})},
     ),
-    batch=api.BatchSpec(
+    batch=kp.BatchSpec(
         inputs={
-            "user": api.Input(
-                source=api.EntitySource(),
-                representation=api.Fields(fields=(api.Encode(field="spend", encoding=api.Raw()),)),
-                layout=api.Separate(),
+            "user": kp.Input(
+                source=kp.EntitySource(),
+                representation=kp.Fields(fields=(kp.Encode(field="spend", encoding=kp.Raw()),)),
+                layout=kp.Separate(),
             ),
-            "orders": api.Input(
-                source=api.EventSource(events=("orders",)),
-                representation=api.Fields(fields=(api.Encode(field="amount", encoding=api.Raw()),)),
-                layout=api.Padded(),
+            "orders": kp.Input(
+                source=kp.EventSource(events=("orders",)),
+                representation=kp.Fields(fields=(kp.Encode(field="amount", encoding=kp.Raw()),)),
+                layout=kp.Padded(),
             ),
         },
-        batching=api.Batching(max_samples=1),
+        batching=kp.Batching(max_samples=1),
     ),
 )
 
@@ -121,15 +119,13 @@ orders_schema = pa.schema(
     ]
 )
 pq.write_table(pa.Table.from_pylist(orders, schema=orders_schema), root / "orders.parquet")
-parquet = api.Dataset(
+parquet = kp.Dataset(
     tables={
-        "users": api.Parquet(path=str(root / "users.parquet")),
-        "orders": api.Parquet(path=str(root / "orders.parquet")),
+        "users": kp.Parquet(path=str(root / "users.parquet")),
+        "orders": kp.Parquet(path=str(root / "orders.parquet")),
     }
 )
-request = api.SampleRequest(
-    sample_id="user-1-jan-10", entity_id=1, as_of_time=datetime(2024, 1, 10)
-)
+request = kp.SampleRequest(sample_id="user-1-jan-10", entity_id=1, as_of_time=datetime(2024, 1, 10))
 ```
 
 Each table in the schema is bound to one Parquet source, which can be a single
@@ -163,9 +159,9 @@ reuse it.
 
 <!-- test: diskgraph -->
 ```python
-engine = api.DiskGraphEngine(index=root / "index", ingest="if_missing", num_shards=1)
+engine = kp.DiskGraphEngine(index=root / "index", ingest="if_missing", num_shards=1)
 with (
-    api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
+    kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
     batch = next(task.batches(output_format="model"))
@@ -250,15 +246,15 @@ anchor_schema = pa.schema(
     ]
 )
 pq.write_table(pa.Table.from_pylist(anchor_rows, schema=anchor_schema), root / "anchors.parquet")
-anchors = api.AnchorTable(
-    source=api.Parquet(path=str(root / "anchors.parquet")),
+anchors = kp.AnchorTable(
+    source=kp.Parquet(path=str(root / "anchors.parquet")),
     entity_id="user_id",
     as_of_time="as_of",
     sample_id="sample_id",
     split="split",
 )
 with (
-    api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
+    kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=anchors, fit_split="train") as task,
 ):
     for split in ("train", "valid", "test"):
@@ -279,10 +275,10 @@ Encoders over stored columns instead fit on every table row created at or
 before the encoder cutoff (by default the latest anchor time `fit_split`
 selects), whichever split that row's entity belongs to; a non-temporal table
 contributes every row. When anchors carry splits, `fit_split` is required.
-It can name one split, a set of splits, or `api.ALL_ANCHORS`. Anchor tables can
+It can name one split, a set of splits, or `kp.ALL_ANCHORS`. Anchor tables can
 also carry your own labels (`targets={"label": "column"}`), metadata columns
 that are passed through to the batch, and nested candidate lists
-(`api.CandidateColumn`).
+(`kp.CandidateColumn`).
 
 For graph-neighborhood and sequence tasks, DiskGraph materializes only the anchors into a
 task-owned native seed extension. The base graph stays unchanged. TT-NG then
@@ -337,7 +333,7 @@ features and generated labels once before fitting or iteration:
 
 <!-- test: diskgraph -->
 ```python
-with api.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
+with kp.prepare(contract=contract, dataset=parquet, engine=engine) as plan:
     with plan.materialize(anchors, fit_split="train") as task:
         for batch in task.batches(split="train", output_format="model"):
             pass  # Supply these tensors to the model.
@@ -366,12 +362,12 @@ It reads `InMemoryRows` rather than Parquet. Python rows carry no type
 metadata, so every column needs an explicit type in the schema.
 
 ```python
-in_memory = api.Dataset(
-    tables={"users": api.InMemoryRows(rows=users), "orders": api.InMemoryRows(rows=orders)}
+in_memory = kp.Dataset(
+    tables={"users": kp.InMemoryRows(rows=users), "orders": kp.InMemoryRows(rows=orders)}
 )
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=contract, dataset=in_memory, engine=api.InMemoryEngine()) as plan,
+    kp.prepare(contract=contract, dataset=in_memory, engine=kp.InMemoryEngine()) as plan,
     plan.materialize(anchors=(request,)) as task,
 ):
     batch = next(task.batches())
@@ -387,7 +383,7 @@ amounts: [[20.0, 35.0]]
 
 The batch is the same one the DiskGraph engine built from the Parquet files
 above. Anchor tables work the same way on the in-memory engine, with
-`api.InMemoryRows` as their source.
+`kp.InMemoryRows` as their source.
 
 ## Choosing an engine, and early refusal
 
@@ -397,8 +393,8 @@ do. When the choice comes from a configuration file or an environment variable,
 you can resolve a registered name to the same class instead:
 
 ```python
-print("engines:", api.available_engines())
-configured = api.engine_from_name("diskgraph", index=root / "index", ingest="never")
+print("engines:", kp.available_engines())
+configured = kp.engine_from_name("diskgraph", index=root / "index", ingest="never")
 print(type(configured).__name__)
 ```
 
@@ -417,21 +413,21 @@ behind an aggregate, which the DiskGraph engine doesn't support:
 ```python
 from dataclasses import replace
 
-large_orders = api.Rows(
+large_orders = kp.Rows(
     path=("user_orders",),
-    time=api.TimeWindow(column="occurred_at", stop=0),
-    filters=(api.RowFilter(column="amount", operation="greater_than", value=30.0),),
+    time=kp.TimeWindow(column="occurred_at", stop=0),
+    filters=(kp.RowFilter(column="amount", operation="greater_than", value=30.0),),
 )
 filtered = replace(
     contract,
     sample=replace(
         contract.sample,
         entity_values={
-            "spend": api.Aggregate(source=large_orders, operation="sum", column="amount")
+            "spend": kp.Aggregate(source=large_orders, operation="sum", column="amount")
         },
     ),
 )
-for issue in api.check(contract=filtered, dataset=parquet, engine=engine):
+for issue in kp.check(contract=filtered, dataset=parquet, engine=engine):
     print(issue.path, issue.code)
     print("   ", issue.message)
     print("   ", issue.suggestion)

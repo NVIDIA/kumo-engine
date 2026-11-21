@@ -8,7 +8,7 @@ Named model inputs: sources, ordered fields, row and history arrangements, layou
 
 ### `BatchSpec`
 
-*class* · `kumo.pytorch.api.BatchSpec`
+*class* · `kumo.pytorch.BatchSpec`
 
 ```python
 class BatchSpec(
@@ -34,7 +34,7 @@ Named model inputs and targets, with explicit shared mappings.
 
 ### `Input`
 
-*class* · `kumo.pytorch.api.Input`
+*class* · `kumo.pytorch.Input`
 
 ```python
 class Input(
@@ -59,7 +59,7 @@ columns use `Padded()` or `Packed()`; grouped event tokens use
 
 ### `InputSpec`
 
-*class* · `kumo.pytorch.api.InputSpec`
+*class* · `kumo.pytorch.InputSpec`
 
 ```python
 class InputSpec(
@@ -84,7 +84,7 @@ columns use `Padded()` or `Packed()`; grouped event tokens use
 
 ### `InputSource`
 
-*type alias* · `kumo.pytorch.api.InputSource`
+*type alias* · `kumo.pytorch.InputSource`
 
 ```python
 InputSource = EntitySource | EventSource | EventsOf | OccurrencesOf | NeighborhoodSource | CandidateSource
@@ -94,7 +94,7 @@ One of: `EntitySource`, `EventSource`, `EventsOf`, `OccurrencesOf`, `Neighborhoo
 
 ### `EntitySource`
 
-*class* · `kumo.pytorch.api.EntitySource`
+*class* · `kumo.pytorch.EntitySource`
 
 ```python
 class EntitySource()
@@ -106,7 +106,7 @@ Dated entity values are also available to entity token inputs.
 
 ### `EventSource`
 
-*class* · `kumo.pytorch.api.EventSource`
+*class* · `kumo.pytorch.EventSource`
 
 ```python
 class EventSource(
@@ -130,7 +130,7 @@ Read ordered event components already declared by `SampleSpec`.
 
 ### `EventsOf`
 
-*class* · `kumo.pytorch.api.EventsOf`
+*class* · `kumo.pytorch.EventsOf`
 
 ```python
 class EventsOf(input: str)
@@ -150,7 +150,7 @@ Self, chained and cyclic references are refused before reading data.
 
 ### `OccurrencesOf`
 
-*class* · `kumo.pytorch.api.OccurrencesOf`
+*class* · `kumo.pytorch.OccurrencesOf`
 
 ```python
 class OccurrencesOf(input: str)
@@ -171,7 +171,7 @@ not decide what their own encoders learn.
 
 ### `CandidateSource`
 
-*class* · `kumo.pytorch.api.CandidateSource`
+*class* · `kumo.pytorch.CandidateSource`
 
 ```python
 class CandidateSource(name: str)
@@ -184,7 +184,7 @@ Candidates keep the caller's order. Use columns with a `Padded` or
 
 ### `NeighborhoodSource`
 
-*class* · `kumo.pytorch.api.NeighborhoodSource`
+*class* · `kumo.pytorch.NeighborhoodSource`
 
 ```python
 class NeighborhoodSource(name: str)
@@ -198,7 +198,7 @@ node.
 
 ### `Representation`
 
-*type alias* · `kumo.pytorch.api.Representation`
+*type alias* · `kumo.pytorch.Representation`
 
 ```python
 Representation = Fields | Graph
@@ -208,7 +208,7 @@ One of: `Fields`, `Graph`.
 
 ### `Fields`
 
-*class* · `kumo.pytorch.api.Fields`
+*class* · `kumo.pytorch.Fields`
 
 ```python
 class Fields(
@@ -239,7 +239,7 @@ dtypes must agree; `events/<component>/<field>` selects one.
 
 ### `Encode`
 
-*class* · `kumo.pytorch.api.Encode`
+*class* · `kumo.pytorch.Encode`
 
 ```python
 class Encode(field: str, encoding: ValueEncoding, id_space: str | None = None)
@@ -255,7 +255,7 @@ Encode one sampled field, optionally translating IDs into a final space.
 
 ### `Graph`
 
-*class* · `kumo.pytorch.api.Graph`
+*class* · `kumo.pytorch.Graph`
 
 ```python
 class Graph(
@@ -273,7 +273,7 @@ Node attributes use the same explicit field encodings as ordinary columns.
 
 ### `ColumnarGraph`
 
-*class* · `kumo.pytorch.api.ColumnarGraph`
+*class* · `kumo.pytorch.ColumnarGraph`
 
 ```python
 class ColumnarGraph(
@@ -307,7 +307,7 @@ that construct their own model representation, such as foundation models.
 
 ### `ColumnarNodes`
 
-*class* · `kumo.pytorch.api.ColumnarNodes`
+*class* · `kumo.pytorch.ColumnarNodes`
 
 ```python
 class ColumnarNodes(ids: Array | ChunkedArray, owners: Array, features: Table)
@@ -326,7 +326,7 @@ the node count. All three outputs otherwise have the same row order.
 
 ### `ColumnarEdges`
 
-*class* · `kumo.pytorch.api.ColumnarEdges`
+*class* · `kumo.pytorch.ColumnarEdges`
 
 ```python
 class ColumnarEdges(
@@ -359,7 +359,7 @@ whose logical identity is already the mapping key and orientation is normalized.
 
 ### `Columns`
 
-*class* · `kumo.pytorch.api.Columns`
+*class* · `kumo.pytorch.Columns`
 
 ```python
 class Columns()
@@ -373,7 +373,7 @@ offsets and text pieces carry piece offsets.
 
 ### `Tokens`
 
-*class* · `kumo.pytorch.api.Tokens`
+*class* · `kumo.pytorch.Tokens`
 
 ```python
 class Tokens(
@@ -400,7 +400,7 @@ stay explicit.
 
 ### `Composite`
 
-*class* · `kumo.pytorch.api.Composite`
+*class* · `kumo.pytorch.Composite`
 
 ```python
 class Composite(
@@ -428,7 +428,7 @@ repeated components are refused before reading data.
 
 ### `Grouped`
 
-*class* · `kumo.pytorch.api.Grouped`
+*class* · `kumo.pytorch.Grouped`
 
 ```python
 class Grouped()
@@ -438,7 +438,7 @@ Preserve each event as its own logical sequence.
 
 ### `Flatten`
 
-*class* · `kumo.pytorch.api.Flatten`
+*class* · `kumo.pytorch.Flatten`
 
 ```python
 class Flatten(
@@ -469,7 +469,7 @@ and have no source field or event. Sample boundaries are never removed.
 
 ### `SequenceLayout`
 
-*type alias* · `kumo.pytorch.api.SequenceLayout`
+*type alias* · `kumo.pytorch.SequenceLayout`
 
 ```python
 SequenceLayout = Padded | Packed
@@ -479,7 +479,7 @@ One of: `Padded`, `Packed`.
 
 ### `Padded`
 
-*class* · `kumo.pytorch.api.Padded`
+*class* · `kumo.pytorch.Padded`
 
 ```python
 class Padded()
@@ -491,7 +491,7 @@ Padding is storage: a padded position is never a real value or event.
 
 ### `Packed`
 
-*class* · `kumo.pytorch.api.Packed`
+*class* · `kumo.pytorch.Packed`
 
 ```python
 class Packed()
@@ -506,7 +506,7 @@ level sits under `sequence`.
 
 ### `Nested`
 
-*class* · `kumo.pytorch.api.Nested`
+*class* · `kumo.pytorch.Nested`
 
 ```python
 class Nested(fields: SequenceLayout, events: SequenceLayout)
@@ -521,7 +521,7 @@ Storage choices for fields within events and events within samples.
 
 ### `Separate`
 
-*class* · `kumo.pytorch.api.Separate`
+*class* · `kumo.pytorch.Separate`
 
 ```python
 class Separate()
@@ -531,7 +531,7 @@ Keep fixed entity fields as independently named arrays.
 
 ### `Batching`
 
-*class* · `kumo.pytorch.api.Batching`
+*class* · `kumo.pytorch.Batching`
 
 ```python
 class Batching(
@@ -555,7 +555,7 @@ Limits on samples and materialized token slots, independent of layout.
 
 ### `Batch`
 
-*class* · `kumo.pytorch.api.Batch`
+*class* · `kumo.pytorch.Batch`
 
 ```python
 class Batch(

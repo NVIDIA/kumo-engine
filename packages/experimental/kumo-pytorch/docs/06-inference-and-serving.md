@@ -14,7 +14,7 @@ kumo-pytorch gives you three things for this:
 - An artifact, a directory that saves the contract and the fitted processing
   state (vocabularies, normalization), so another process builds the same
   inputs. You supply the anchors and source rows, and you save model weights
-  separately with `api.save_weights`.
+  separately with `kp.save_weights`.
 - An inference mode that builds the same inputs without computing labels.
 - A serving assembler that tells you which rows to fetch for a request, and
   turns the rows you pass in, together with your requests, into the same
@@ -71,7 +71,7 @@ from typing import Any
 import torch
 from torch import nn
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 DAY = 86_400
 TRAIN_AT, SCORE_AT = 20 * DAY, 34 * DAY
@@ -102,72 +102,70 @@ def tables() -> Tables:
     return {"users": users, "purchases": purchases}
 
 
-def contract() -> api.DataLoaderSpec:
-    users = {"user_id": api.DType("int64"), "segment": api.DType("string")}
+def contract() -> kp.DataLoaderSpec:
+    users = {"user_id": kp.DType("int64"), "segment": kp.DType("string")}
     purchases = {
-        "purchase_id": api.DType("int64"),
-        "user_id": api.DType("int64"),
-        "at": api.DType("timestamp", unit="s", timezone="UTC"),
-        "amount": api.DType("float64"),
-        "category": api.DType("string"),
+        "purchase_id": kp.DType("int64"),
+        "user_id": kp.DType("int64"),
+        "at": kp.DType("timestamp", unit="s", timezone="UTC"),
+        "amount": kp.DType("float64"),
+        "category": kp.DType("string"),
     }
-    schema = api.DataSchema(
+    schema = kp.DataSchema(
         tables=(
-            api.TableSpec("users", "user_id", users, time_column=api.NON_TEMPORAL),
-            api.TableSpec("purchases", "purchase_id", purchases, time_column="at"),
+            kp.TableSpec("users", "user_id", users, time_column=kp.NON_TEMPORAL),
+            kp.TableSpec("purchases", "purchase_id", purchases, time_column="at"),
         ),
-        relations=(api.RelationSpec("user_purchases", "users", "user_id", "purchases", "user_id"),),
+        relations=(kp.RelationSpec("user_purchases", "users", "user_id", "purchases", "user_id"),),
     )
-    history = api.Rows(("user_purchases",), api.TimeWindow("at", stop=0))  # up to the cutoff
-    next_week = api.Rows(("user_purchases",), api.TimeWindow("at", start=0, stop=7 * DAY))
-    sample = api.SampleSpec(
-        entity=api.EntitySpec("users", entity_type="user"),
+    history = kp.Rows(("user_purchases",), kp.TimeWindow("at", stop=0))  # up to the cutoff
+    next_week = kp.Rows(("user_purchases",), kp.TimeWindow("at", start=0, stop=7 * DAY))
+    sample = kp.SampleSpec(
+        entity=kp.EntitySpec("users", entity_type="user"),
         entity_values={
-            "segment": api.Field(column="segment"),
-            "purchases_so_far": api.Aggregate(history, "count", dtype=api.DType("int64")),
+            "segment": kp.Field(column="segment"),
+            "purchases_so_far": kp.Aggregate(history, "count", dtype=kp.DType("int64")),
         },
         events={
-            "purchases": api.EventSpec(
+            "purchases": kp.EventSpec(
                 history,
                 fields={
-                    "amount": api.Field(column="amount"),
-                    "category": api.Field(column="category"),
+                    "amount": kp.Field(column="amount"),
+                    "category": kp.Field(column="category"),
                 },
                 limit=8,
                 order="descending",
             )
         },
         # Read from rows after the cutoff: computed in training, never in inference.
-        targets={
-            "purchases_next_week": api.Aggregate(next_week, "count", dtype=api.DType("int64"))
-        },
+        targets={"purchases_next_week": kp.Aggregate(next_week, "count", dtype=kp.DType("int64"))},
     )
-    batch = api.BatchSpec(
+    batch = kp.BatchSpec(
         inputs={
-            "user": api.Input(
-                api.EntitySource(),
-                api.Fields(
+            "user": kp.Input(
+                kp.EntitySource(),
+                kp.Fields(
                     (
-                        api.Encode("segment", api.Vocabulary()),
-                        api.Encode("purchases_so_far", api.ZScore()),
+                        kp.Encode("segment", kp.Vocabulary()),
+                        kp.Encode("purchases_so_far", kp.ZScore()),
                     ),
-                    row=api.Columns(),
+                    row=kp.Columns(),
                 ),
-                api.Separate(),
+                kp.Separate(),
             ),
-            "recent": api.Input(
-                api.EventSource(("purchases",)),
-                api.Fields(
-                    (api.Encode("amount", api.ZScore()), api.Encode("category", api.Vocabulary())),
-                    row=api.Columns(),
+            "recent": kp.Input(
+                kp.EventSource(("purchases",)),
+                kp.Fields(
+                    (kp.Encode("amount", kp.ZScore()), kp.Encode("category", kp.Vocabulary())),
+                    row=kp.Columns(),
                 ),
-                api.Padded(),
+                kp.Padded(),
             ),
         },
-        targets={"active": api.LabelTarget("purchases_next_week", api.Raw())},
-        batching=api.Batching(max_samples=16),
+        targets={"active": kp.LabelTarget("purchases_next_week", kp.Raw())},
+        batching=kp.Batching(max_samples=16),
     )
-    return api.DataLoaderSpec(schema, sample, batch)
+    return kp.DataLoaderSpec(schema, sample, batch)
 
 
 class ActivityModel(nn.Module):
@@ -181,7 +179,7 @@ class ActivityModel(nn.Module):
         self.category = nn.Embedding(recent["category"]["vocabulary_size"], 8)
         self.head = nn.Sequential(nn.Linear(8 + 1 + 8 + 1, 16), nn.ReLU(), nn.Linear(16, 1))
 
-    def forward(self, batch: api.Batch) -> torch.Tensor:
+    def forward(self, batch: kp.Batch) -> torch.Tensor:
         user, recent = batch.inputs["user"], batch.inputs["recent"]
         valid = recent["valid"].unsqueeze(-1).float()
         events = torch.cat(
@@ -203,15 +201,15 @@ class ActivityModel(nn.Module):
         return self.head(features).squeeze(-1)
 
 
-def anchors(at: int, *, split: str | None) -> list[api.SampleRequest]:
+def anchors(at: int, *, split: str | None) -> list[kp.SampleRequest]:
     return [
-        api.SampleRequest(f"user-{user_id}-at-{at // DAY}", user_id, at, split=split)
+        kp.SampleRequest(f"user-{user_id}-at-{at // DAY}", user_id, at, split=split)
         for user_id in range(1, 61)
     ]
 
 
-def dataset(rows: Tables) -> api.Dataset:
-    return api.Dataset({name: api.InMemoryRows(values) for name, values in rows.items()})
+def dataset(rows: Tables) -> kp.Dataset:
+    return kp.Dataset({name: kp.InMemoryRows(values) for name, values in rows.items()})
 
 
 def rows_for(user_id: int, as_of: int) -> Tables:
@@ -236,13 +234,13 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 from shop import TRAIN_AT, ActivityModel, anchors, contract, dataset, tables
 
 workdir = Path("run-001")
 torch.manual_seed(0)
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
+with kp.prepare(contract(), dataset(tables()), kp.InMemoryEngine()) as plan:
     with plan.materialize(anchors(TRAIN_AT, split="train"), fit_split="train") as task:
         model = ActivityModel(task.output_schema)  # embedding sizes come from here
         optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
@@ -254,7 +252,7 @@ with api.prepare(contract(), dataset(tables()), api.InMemoryEngine()) as plan:
                 loss.backward()
                 optimizer.step()
         task.to_artifact().save(workdir / "artifact")
-        api.save_weights(workdir / "model.pt", model.state_dict(), task.fitted_state)
+        kp.save_weights(workdir / "model.pt", model.state_dict(), task.fitted_state)
 ```
 
 `fit_split="train"` tells the package which anchors it may learn from. What it
@@ -295,13 +293,13 @@ from typing import Any
 
 import torch
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 from shop import SCORE_AT, ActivityModel, anchors, dataset, tables
 
 workdir = Path("run-001")
-artifact = api.Artifact.load(workdir / "artifact")
+artifact = kp.Artifact.load(workdir / "artifact")
 model = ActivityModel(artifact.output_schema)
-model.load_state_dict(api.load_weights(workdir / "model.pt", artifact.fitted_state))
+model.load_state_dict(kp.load_weights(workdir / "model.pt", artifact.fitted_state))
 model.eval()
 print(artifact.output_schema["inputs"]["user"]["segment"]["vocabulary_size"])
 ```
@@ -355,7 +353,7 @@ def leaves(prefix: str, value: Any) -> Iterator[tuple[str, Any]]:
 
 predictions = {}
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-with api.prepare(artifact.contract, dataset(tables()), api.InMemoryEngine()) as plan:
+with kp.prepare(artifact.contract, dataset(tables()), kp.InMemoryEngine()) as plan:
     scoring = anchors(SCORE_AT, split=None)
     with plan.materialize(scoring, fitted=artifact.fitted_state, inference=True) as task:
         with torch.no_grad():
@@ -430,18 +428,18 @@ scoring_rows = [
 ]
 pq.write_table(pa.Table.from_pylist(scoring_rows), data / "scoring-anchors.parquet")
 
-parquet = api.Dataset(
-    {name: api.Parquet(path=str(data / f"{name}.parquet")) for name in ("users", "purchases")}
+parquet = kp.Dataset(
+    {name: kp.Parquet(path=str(data / f"{name}.parquet")) for name in ("users", "purchases")}
 )
-scoring_table = api.AnchorTable(
-    source=api.Parquet(path=str(data / "scoring-anchors.parquet")),
+scoring_table = kp.AnchorTable(
+    source=kp.Parquet(path=str(data / "scoring-anchors.parquet")),
     entity_id="user_id",
     as_of_time="as_of",
     sample_id="sample_id",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+engine = kp.DiskGraphEngine(index=data / "index")
 disk_predictions = {}
-with api.prepare(artifact.contract, parquet, engine) as plan:
+with kp.prepare(artifact.contract, parquet, engine) as plan:
     with plan.materialize(scoring_table, fitted=artifact.fitted_state, inference=True) as task:
         with torch.no_grad():
             for batch in task.batches(output_format="model"):
@@ -502,7 +500,7 @@ when you prepare:
 
 <!-- test: diskgraph -->
 ```python
-with api.prepare(artifact.contract, parquet, engine, inference=True) as plan:
+with kp.prepare(artifact.contract, parquet, engine, inference=True) as plan:
     with plan.materialize(scoring_table, fitted=artifact.fitted_state) as task:
         print(task.count(), "anchors to score")
 ```
@@ -543,16 +541,16 @@ from pathlib import Path
 
 import torch
 
-from kumo.pytorch import api
+import kumo.pytorch as kp
 from shop import SCORE_AT, ActivityModel, rows_for
 
 workdir = Path("run-001")
-artifact = api.Artifact.load(workdir / "artifact")
+artifact = kp.Artifact.load(workdir / "artifact")
 model = ActivityModel(artifact.output_schema)
-model.load_state_dict(api.load_weights(workdir / "model.pt", artifact.fitted_state))
+model.load_state_dict(kp.load_weights(workdir / "model.pt", artifact.fitted_state))
 model.eval()
 
-server = api.ServingAssembler(artifact)
+server = kp.ServingAssembler(artifact)
 print(server.rows_spec)
 ```
 
@@ -608,7 +606,7 @@ batch it returns:
 predictions = json.loads((workdir / "predictions.json").read_text())
 matches = []
 for user_id in (1, 2, 3):
-    request = api.SampleRequest(f"user-{user_id}-at-34", entity_id=user_id, as_of_time=SCORE_AT)
+    request = kp.SampleRequest(f"user-{user_id}-at-34", entity_id=user_id, as_of_time=SCORE_AT)
     (batch,) = server.assemble(rows_for(user_id, SCORE_AT), [request])
     with torch.no_grad():
         score = torch.sigmoid(model(batch)).item()
@@ -643,7 +641,7 @@ Each request reads only the rows
 that match it, so its sample is the same as when it is assembled alone:
 
 ```python
-requests = [api.SampleRequest(f"user-{u}-at-34", u, SCORE_AT) for u in (1, 2, 3)]
+requests = [kp.SampleRequest(f"user-{u}-at-34", u, SCORE_AT) for u in (1, 2, 3)]
 rows = {"users": [], "purchases": []}
 for request in requests:
     for table, found in rows_for(request.entity_id, SCORE_AT).items():
@@ -675,7 +673,7 @@ column it rejects:
 
 ```python
 user_3 = rows_for(3, SCORE_AT)
-request = api.SampleRequest("user-3-at-34", entity_id=3, as_of_time=SCORE_AT)
+request = kp.SampleRequest("user-3-at-34", entity_id=3, as_of_time=SCORE_AT)
 misspelled = dict(user_3["purchases"][0])
 misspelled["amout"] = misspelled.pop("amount")
 mistakes = {

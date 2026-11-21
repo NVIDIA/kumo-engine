@@ -8,7 +8,7 @@ Explicitly encoded labels and input-derived objectives.
 
 ### `TargetSpec`
 
-*type alias* · `kumo.pytorch.api.TargetSpec`
+*type alias* · `kumo.pytorch.TargetSpec`
 
 ```python
 TargetSpec = LabelTarget | StructuredTarget | CandidateTarget | AlignedEventTarget | MaskedValuesTarget | NextTokenTarget | MatchingGroupTarget
@@ -18,7 +18,7 @@ One of: `LabelTarget`, `StructuredTarget`, `CandidateTarget`, `AlignedEventTarge
 
 ### `LabelTarget`
 
-*class* · `kumo.pytorch.api.LabelTarget`
+*class* · `kumo.pytorch.LabelTarget`
 
 ```python
 class LabelTarget(source: str, encoding: ValueEncoding, id_space: str | None = None)
@@ -34,7 +34,7 @@ A label supplied beside each sample rather than inserted into its inputs.
 
 ### `StructuredTarget`
 
-*class* · `kumo.pytorch.api.StructuredTarget`
+*class* · `kumo.pytorch.StructuredTarget`
 
 ```python
 class StructuredTarget(source: str, fields: tuple[Encode, ...])
@@ -49,7 +49,7 @@ Independently encode named fields from a structured sample target.
 
 ### `CandidateTarget`
 
-*class* · `kumo.pytorch.api.CandidateTarget`
+*class* · `kumo.pytorch.CandidateTarget`
 
 ```python
 class CandidateTarget(
@@ -72,7 +72,7 @@ validity and label validity are separate; padding is not a negative.
 
 ### `AlignedEventTarget`
 
-*class* · `kumo.pytorch.api.AlignedEventTarget`
+*class* · `kumo.pytorch.AlignedEventTarget`
 
 ```python
 class AlignedEventTarget(
@@ -98,7 +98,7 @@ no pretend values.
 
 ### `ThresholdEventLabel`
 
-*class* · `kumo.pytorch.api.ThresholdEventLabel`
+*class* · `kumo.pytorch.ThresholdEventLabel`
 
 ```python
 class ThresholdEventLabel(
@@ -129,7 +129,7 @@ the midpoint for an even-sized population, and zero for an empty one.
 
 ### `MaskedValuesTarget`
 
-*class* · `kumo.pytorch.api.MaskedValuesTarget`
+*class* · `kumo.pytorch.MaskedValuesTarget`
 
 ```python
 class MaskedValuesTarget(
@@ -171,7 +171,7 @@ masked. Off in inference.
 
 ### `NextTokenTarget`
 
-*class* · `kumo.pytorch.api.NextTokenTarget`
+*class* · `kumo.pytorch.NextTokenTarget`
 
 ```python
 class NextTokenTarget(input: str, prefix_input: str | None = None)
@@ -190,7 +190,7 @@ it never fits another vocabulary. An input can carry at most one
 
 ### `MatchingGroupTarget`
 
-*class* · `kumo.pytorch.api.MatchingGroupTarget`
+*class* · `kumo.pytorch.MatchingGroupTarget`
 
 ```python
 class MatchingGroupTarget(input: str, fields: tuple[str, ...])
@@ -208,7 +208,7 @@ encode as unknown are not merged.
 
 ### `InputExposureWarning`
 
-*exception* · `kumo.pytorch.api.InputExposureWarning`
+*exception* · `kumo.pytorch.InputExposureWarning`
 
 A masked value is also selected by an unmasked named input.
 

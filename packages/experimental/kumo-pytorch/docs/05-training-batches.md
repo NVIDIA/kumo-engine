@@ -15,7 +15,7 @@ computes for you, is how many purchases the user makes in the 7 days after the
 prediction time.
 
 ```python
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 DAY = 86_400
 users = [{"user_id": u, "segment": ("loyal", "casual")[u % 2]} for u in range(1, 6)]
@@ -24,28 +24,28 @@ purchases = [
     for u in range(1, 6)
     for d in range(0, 30, u)
 ]
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="user_id",
-            columns={"user_id": api.DType(name="int64"), "segment": api.DType(name="string")},
-            time_column=api.NON_TEMPORAL,
+            columns={"user_id": kp.DType(name="int64"), "segment": kp.DType(name="string")},
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="purchases",
             primary_key="purchase_id",
             columns={
-                "purchase_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "at": api.DType(name="timestamp", unit="s", timezone="UTC"),
-                "amount": api.DType(name="float64"),
+                "purchase_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "at": kp.DType(name="timestamp", unit="s", timezone="UTC"),
+                "amount": kp.DType(name="float64"),
             },
             time_column="at",
         ),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_purchases",
             left_table="users",
             left_key="user_id",
@@ -54,25 +54,25 @@ schema = api.DataSchema(
         ),
     ),
 )
-history = api.Rows(path=("user_purchases",), time=api.TimeWindow(column="at", stop=0))
-next_week = api.Rows(
-    path=("user_purchases",), time=api.TimeWindow(column="at", start=0, stop=7 * DAY)
+history = kp.Rows(path=("user_purchases",), time=kp.TimeWindow(column="at", stop=0))
+next_week = kp.Rows(
+    path=("user_purchases",), time=kp.TimeWindow(column="at", start=0, stop=7 * DAY)
 )
-sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
-    entity_values={"segment": api.Field(column="segment")},
+sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
+    entity_values={"segment": kp.Field(column="segment")},
     events={
-        "purchases": api.EventSpec(
-            rows=history, fields={"amount": api.Field(column="amount")}, limit=4, order="descending"
+        "purchases": kp.EventSpec(
+            rows=history, fields={"amount": kp.Field(column="amount")}, limit=4, order="descending"
         )
     },
-    targets={"next_week": api.Aggregate(source=next_week, operation="count")},
+    targets={"next_week": kp.Aggregate(source=next_week, operation="count")},
 )
-dataset = api.Dataset(
-    tables={"users": api.InMemoryRows(rows=users), "purchases": api.InMemoryRows(rows=purchases)}
+dataset = kp.Dataset(
+    tables={"users": kp.InMemoryRows(rows=users), "purchases": kp.InMemoryRows(rows=purchases)}
 )
 anchors = [
-    api.SampleRequest(
+    kp.SampleRequest(
         sample_id=f"user-{u}-day-{day}",
         entity_id=u,
         as_of_time=day * DAY,
@@ -83,42 +83,40 @@ anchors = [
 ]
 
 
-def contract(layout: api.SequenceLayout) -> api.DataLoaderSpec:
-    batch = api.BatchSpec(
+def contract(layout: kp.SequenceLayout) -> kp.DataLoaderSpec:
+    batch = kp.BatchSpec(
         inputs={
-            "user": api.Input(
-                source=api.EntitySource(),
-                representation=api.Fields(
-                    fields=(api.Encode(field="segment", encoding=api.Vocabulary()),)
+            "user": kp.Input(
+                source=kp.EntitySource(),
+                representation=kp.Fields(
+                    fields=(kp.Encode(field="segment", encoding=kp.Vocabulary()),)
                 ),
-                layout=api.Separate(),
+                layout=kp.Separate(),
             ),
-            "recent": api.Input(
-                source=api.EventSource(events=("purchases",)),
-                representation=api.Fields(
-                    fields=(api.Encode(field="amount", encoding=api.ZScore()),)
-                ),
+            "recent": kp.Input(
+                source=kp.EventSource(events=("purchases",)),
+                representation=kp.Fields(fields=(kp.Encode(field="amount", encoding=kp.ZScore()),)),
                 layout=layout,
             ),
         },
-        targets={"active": api.LabelTarget(source="next_week", encoding=api.Raw())},
-        batching=api.Batching(max_samples=4),
+        targets={"active": kp.LabelTarget(source="next_week", encoding=kp.Raw())},
+        batching=kp.Batching(max_samples=4),
     )
-    return api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+    return kp.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
 ```
 
 Generated labels live in `SampleSpec.targets` and must look strictly forward:
 a target window starts at or after zero, and its start is excluded, so an event
 at the prediction time is history, never label. `BatchSpec.targets` then
 selects and encodes each label; declaring a label never puts it into an input.
-Labels computed elsewhere are declared as `api.ExternalTarget(dtype=...)` and
+Labels computed elsewhere are declared as `kp.ExternalTarget(dtype=...)` and
 supplied per request or per anchor-table column.
 
 ## Fit on the training split
 
 ```python
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-plan = api.prepare(contract=contract(api.Padded()), dataset=dataset, engine=api.InMemoryEngine())
+plan = kp.prepare(contract=contract(kp.Padded()), dataset=dataset, engine=kp.InMemoryEngine())
 task = plan.materialize(anchors=anchors, fit_split="train")
 print("train/valid anchors:", task.count(split="train"), task.count(split="valid"))
 batch = next(task.batches(split="train"))
@@ -146,8 +144,8 @@ packed (one flat buffer plus offsets). The sampled events are identical:
 ```python
 padded = task.batches(split="valid")
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
-with api.prepare(
-    contract=contract(api.Packed()), dataset=dataset, engine=api.InMemoryEngine()
+with kp.prepare(
+    contract=contract(kp.Packed()), dataset=dataset, engine=kp.InMemoryEngine()
 ) as packed_plan:
     packed_task = packed_plan.materialize(anchors=anchors, fit_split="train")
     packed = next(packed_task.batches(split="valid"))
@@ -162,10 +160,10 @@ padded: [4, 4, 4, 4]
 packed offsets: [0, 4, 8, 12, 16]
 ```
 
-Grouped token histories use `api.Nested(fields=..., events=...)` to choose the
+Grouped token histories use `kp.Nested(fields=..., events=...)` to choose the
 field and event axes independently. Packing keeps event and sample boundaries
 as offsets. If you want one flat token stream instead, use
-`history=api.Flatten(...)`.
+`history=kp.Flatten(...)`.
 
 ## Preview
 
@@ -173,7 +171,7 @@ as offsets. If you want one flat token stream instead, use
 fitted state. It is the quickest way to check a contract against your data:
 
 ```python
-result = api.preview(task, anchors[:2])
+result = kp.preview(task, anchors[:2])
 print(len(result.samples), "samples;", tuple(result.batch.inputs))
 ```
 
@@ -211,7 +209,7 @@ for rank in range(2):
 1 3 anchors, 1 padding
 ```
 
-`api.Batching` also offers token budgets (`max_tokens` with `length_input`),
+`kp.Batching` also offers token budgets (`max_tokens` with `length_input`),
 length bucketing and `drop_last`. Token budgets count actual emitted
 positions, padding included, and are refused with `world_size > 1`, where
 ranks could otherwise take different numbers of steps.
@@ -255,13 +253,13 @@ cpu
 
 Some targets are derived from an input rather than from future rows:
 
-- `api.MaskedValuesTarget(input=...)` hides selected values of one input behind
+- `kp.MaskedValuesTarget(input=...)` hides selected values of one input behind
   a reserved mask ID and asks the model to recover them (masked pre-training).
-- `api.NextTokenTarget(input=...)` shifts an already-encoded flattened stream by
+- `kp.NextTokenTarget(input=...)` shifts an already-encoded flattened stream by
   one (causal pre-training).
-- `api.AlignedEventTarget(input=..., fields=...)` predicts withheld fields of the
+- `kp.AlignedEventTarget(input=..., fields=...)` predicts withheld fields of the
   events an input keeps.
-- `api.MatchingGroupTarget(input=..., fields=...)` groups samples by raw values,
+- `kp.MatchingGroupTarget(input=..., fields=...)` groups samples by raw values,
   for contrastive objectives.
 
 [Model input shapes](07-model-input-shapes.md) shows each in a complete
@@ -348,22 +346,22 @@ pq.write_table(
     data / "anchors.parquet",
 )
 
-parquet = api.Dataset(
+parquet = kp.Dataset(
     tables={
-        "users": api.Parquet(path=str(data / "users.parquet")),
-        "purchases": api.Parquet(path=str(data / "purchases.parquet")),
+        "users": kp.Parquet(path=str(data / "users.parquet")),
+        "purchases": kp.Parquet(path=str(data / "purchases.parquet")),
     }
 )
-anchor_table = api.AnchorTable(
-    source=api.Parquet(path=str(data / "anchors.parquet")),
+anchor_table = kp.AnchorTable(
+    source=kp.Parquet(path=str(data / "anchors.parquet")),
     entity_id="user_id",
     as_of_time="as_of",
     sample_id="sample_id",
     split="split",
 )
-engine = api.DiskGraphEngine(index=data / "index")
+engine = kp.DiskGraphEngine(index=data / "index")
 with (
-    api.prepare(contract=contract(api.Padded()), dataset=parquet, engine=engine) as disk_plan,
+    kp.prepare(contract=contract(kp.Padded()), dataset=parquet, engine=engine) as disk_plan,
     disk_plan.materialize(anchors=anchor_table, fit_split="train") as disk_task,
 ):
     print("train/valid anchors:", disk_task.count(split="train"), disk_task.count(split="valid"))
@@ -399,42 +397,42 @@ training and validation rows.
 
 <!-- test: diskgraph -->
 ```python
-graph_contract = api.DataLoaderSpec(
+graph_contract = kp.DataLoaderSpec(
     schema=schema,
-    sample=api.SampleSpec(
-        entity=api.EntitySpec(table="users"),
+    sample=kp.SampleSpec(
+        entity=kp.EntitySpec(table="users"),
         neighborhoods={
-            "history": api.NeighborhoodSpec(
+            "history": kp.NeighborhoodSpec(
                 layers=(
-                    api.GraphLayer(
-                        samples=(api.GraphSample("user_purchases", 4, strategy="recent"),)
+                    kp.GraphLayer(
+                        samples=(kp.GraphSample("user_purchases", 4, strategy="recent"),)
                     ),
                 )
             )
         },
     ),
-    batch=api.BatchSpec(
+    batch=kp.BatchSpec(
         inputs={
-            "graph": api.Input(
-                source=api.NeighborhoodSource("history"),
-                representation=api.Graph(
+            "graph": kp.Input(
+                source=kp.NeighborhoodSource("history"),
+                representation=kp.Graph(
                     node_fields={
-                        "users": api.Fields((api.Encode("segment", api.Raw()),)),
-                        "purchases": api.Fields((api.Encode("amount", api.Raw()),)),
+                        "users": kp.Fields((kp.Encode("segment", kp.Raw()),)),
+                        "purchases": kp.Fields((kp.Encode("amount", kp.Raw()),)),
                     }
                 ),
                 layout=None,
             )
         },
-        batching=api.Batching(max_samples=1024),
+        batching=kp.Batching(max_samples=1024),
     ),
 )
 with (
-    api.prepare(graph_contract, parquet, engine) as graph_plan,
+    kp.prepare(graph_contract, parquet, engine) as graph_plan,
     graph_plan.materialize(anchors=anchor_table, fit_split="train") as graph_task,
 ):
     for batch in graph_task.batches(split="train", output_format="columnar"):
-        graph = batch.inputs["graph"]  # api.ColumnarGraph
+        graph = batch.inputs["graph"]  # kp.ColumnarGraph
         roots = graph.nodes[graph.root_type]
         root_ids = roots.ids.slice(0, batch.batch_size)
         for table_name, nodes in graph.nodes.items():

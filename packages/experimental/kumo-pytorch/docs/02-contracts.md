@@ -18,47 +18,47 @@ event or transaction tables may set `primary_key=None`; each source row remains
 a separate occurrence, including identical rows:
 
 ```python
-from kumo.pytorch import api
+import kumo.pytorch as kp
 
 DAY = 86_400
-timestamp = api.DType(name="timestamp", unit="s", timezone="UTC")
+timestamp = kp.DType(name="timestamp", unit="s", timezone="UTC")
 
-schema = api.DataSchema(
+schema = kp.DataSchema(
     tables=(
-        api.TableSpec(
+        kp.TableSpec(
             name="users",
             primary_key="user_id",
-            columns={"user_id": api.DType(name="int64"), "country": api.DType(name="string")},
-            time_column=api.NON_TEMPORAL,
+            columns={"user_id": kp.DType(name="int64"), "country": kp.DType(name="string")},
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="items",
             primary_key="item_id",
-            columns={"item_id": api.DType(name="int64"), "category": api.DType(name="string")},
-            time_column=api.NON_TEMPORAL,
+            columns={"item_id": kp.DType(name="int64"), "category": kp.DType(name="string")},
+            time_column=kp.NON_TEMPORAL,
         ),
-        api.TableSpec(
+        kp.TableSpec(
             name="purchases",
             primary_key="purchase_id",
             columns={
-                "purchase_id": api.DType(name="int64"),
-                "user_id": api.DType(name="int64"),
-                "item_id": api.DType(name="int64"),
+                "purchase_id": kp.DType(name="int64"),
+                "user_id": kp.DType(name="int64"),
+                "item_id": kp.DType(name="int64"),
                 "at": timestamp,
-                "amount": api.DType(name="float64"),
+                "amount": kp.DType(name="float64"),
             },
             time_column="at",
         ),
     ),
     relations=(
-        api.RelationSpec(
+        kp.RelationSpec(
             name="user_purchases",
             left_table="users",
             left_key="user_id",
             right_table="purchases",
             right_key="user_id",
         ),
-        api.RelationSpec(
+        kp.RelationSpec(
             name="item_purchases",
             left_table="items",
             left_key="item_id",
@@ -95,7 +95,7 @@ rows = {
         {"purchase_id": 4, "user_id": 1, "item_id": 12, "at": 12 * DAY, "amount": 99.0},
     ],
 }
-dataset = api.Dataset(tables={name: api.InMemoryRows(rows=values) for name, values in rows.items()})
+dataset = kp.Dataset(tables={name: kp.InMemoryRows(rows=values) for name, values in rows.items()})
 ```
 
 ## The sample: what one example may know
@@ -104,26 +104,26 @@ An example is an entity (here a user) at a prediction time. The caller supplies
 both in a `SampleRequest`; the `SampleSpec` says what may be read for it.
 
 ```python
-past = api.Rows(path=("user_purchases",), time=api.TimeWindow(column="at", start=-30 * DAY, stop=0))
+past = kp.Rows(path=("user_purchases",), time=kp.TimeWindow(column="at", start=-30 * DAY, stop=0))
 
-sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
+sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
     entity_values={
-        "country": api.Field(column="country"),
-        "spend_30d": api.Aggregate(source=past, operation="sum", column="amount"),
-        "orders_30d": api.Aggregate(source=past, operation="count"),
-        "average_order": api.Derived(operation="divide", inputs=("spend_30d", "orders_30d")),
+        "country": kp.Field(column="country"),
+        "spend_30d": kp.Aggregate(source=past, operation="sum", column="amount"),
+        "orders_30d": kp.Aggregate(source=past, operation="count"),
+        "average_order": kp.Derived(operation="divide", inputs=("spend_30d", "orders_30d")),
     },
     events={
-        "purchases": api.EventSpec(
+        "purchases": kp.EventSpec(
             rows=past,
             fields={
-                "amount": api.Field(column="amount"),
-                "item_id": api.Field(column="item_id"),
-                "age_days": api.EventTimeDelta(unit="days", dtype=api.DType(name="float64")),
-                "at": api.Field(column="at"),
-                "weekday": api.Derived(
-                    operation=api.CalendarPart(part="weekday", timezone="UTC"),
+                "amount": kp.Field(column="amount"),
+                "item_id": kp.Field(column="item_id"),
+                "age_days": kp.EventTimeDelta(unit="days", dtype=kp.DType(name="float64")),
+                "at": kp.Field(column="at"),
+                "weekday": kp.Derived(
+                    operation=kp.CalendarPart(part="weekday", timezone="UTC"),
                     inputs=("at",),
                 ),
             },
@@ -134,8 +134,8 @@ sample = api.SampleSpec(
 )
 
 requests = (
-    api.SampleRequest(sample_id="user-1", entity_id=1, as_of_time=10 * DAY),
-    api.SampleRequest(sample_id="user-2", entity_id=2, as_of_time=10 * DAY),
+    kp.SampleRequest(sample_id="user-1", entity_id=1, as_of_time=10 * DAY),
+    kp.SampleRequest(sample_id="user-2", entity_id=2, as_of_time=10 * DAY),
 )
 ```
 
@@ -160,41 +160,41 @@ A `BatchSpec` holds named inputs. Each input picks a source from the sample,
 an ordered tuple of fields with an explicit encoder each, and a layout:
 
 ```python
-batch = api.BatchSpec(
+batch = kp.BatchSpec(
     inputs={
-        "user": api.Input(
-            source=api.EntitySource(),
-            representation=api.Fields(
+        "user": kp.Input(
+            source=kp.EntitySource(),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="country", encoding=api.Vocabulary()),
-                    api.Encode(field="spend_30d", encoding=api.Raw()),
-                    api.Encode(field="average_order", encoding=api.Raw()),
+                    kp.Encode(field="country", encoding=kp.Vocabulary()),
+                    kp.Encode(field="spend_30d", encoding=kp.Raw()),
+                    kp.Encode(field="average_order", encoding=kp.Raw()),
                 )
             ),
-            layout=api.Separate(),
+            layout=kp.Separate(),
         ),
-        "history": api.Input(
-            source=api.EventSource(events=("purchases",)),
-            representation=api.Fields(
+        "history": kp.Input(
+            source=kp.EventSource(events=("purchases",)),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="amount", encoding=api.ZScore()),
-                    api.Encode(field="item_id", encoding=api.Vocabulary()),
-                    api.Encode(field="age_days", encoding=api.Raw()),
-                    api.Encode(field="weekday", encoding=api.Vocabulary()),
+                    kp.Encode(field="amount", encoding=kp.ZScore()),
+                    kp.Encode(field="item_id", encoding=kp.Vocabulary()),
+                    kp.Encode(field="age_days", encoding=kp.Raw()),
+                    kp.Encode(field="weekday", encoding=kp.Vocabulary()),
                 ),
-                row=api.Columns(),
-                history=api.Grouped(),
+                row=kp.Columns(),
+                history=kp.Grouped(),
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         ),
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
-contract = api.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
+contract = kp.DataLoaderSpec(schema=schema, sample=sample, batch=batch)
 
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
+    kp.prepare(contract=contract, dataset=dataset, engine=kp.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
     result = next(task.batches(requests=requests))
@@ -238,18 +238,18 @@ declared key relationships are typed edges. It belongs in the sample; the batch
 only chooses node fields and encoders.
 
 ```python
-neighborhood = api.NeighborhoodSpec(
+neighborhood = kp.NeighborhoodSpec(
     layers=(
-        api.GraphLayer(
+        kp.GraphLayer(
             samples=(
-                api.GraphSample(
+                kp.GraphSample(
                     relation="user_purchases", fanout=5, direction="forward", strategy="recent"
                 ),
             )
         ),
-        api.GraphLayer(
+        kp.GraphLayer(
             samples=(
-                api.GraphSample(
+                kp.GraphSample(
                     relation="item_purchases",
                     fanout=1,
                     direction="reverse",
@@ -259,34 +259,34 @@ neighborhood = api.NeighborhoodSpec(
         ),
     )
 )
-graph_sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
+graph_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
     neighborhoods={"bought": neighborhood},
 )
-graph_batch = api.BatchSpec(
+graph_batch = kp.BatchSpec(
     inputs={
-        "graph": api.Input(
-            source=api.NeighborhoodSource(name="bought"),
-            representation=api.Graph(
+        "graph": kp.Input(
+            source=kp.NeighborhoodSource(name="bought"),
+            representation=kp.Graph(
                 node_fields={
-                    "items": api.Fields(
-                        fields=(api.Encode(field="category", encoding=api.Vocabulary()),)
+                    "items": kp.Fields(
+                        fields=(kp.Encode(field="category", encoding=kp.Vocabulary()),)
                     ),
-                    "purchases": api.Fields(
-                        fields=(api.Encode(field="amount", encoding=api.ZScore()),)
+                    "purchases": kp.Fields(
+                        fields=(kp.Encode(field="amount", encoding=kp.ZScore()),)
                     ),
                 }
             ),
             layout=None,
         )
     },
-    batching=api.Batching(max_samples=2),
+    batching=kp.Batching(max_samples=2),
 )
-graph_contract = api.DataLoaderSpec(schema=schema, sample=graph_sample, batch=graph_batch)
+graph_contract = kp.DataLoaderSpec(schema=schema, sample=graph_sample, batch=graph_batch)
 
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(contract=graph_contract, dataset=dataset, engine=api.InMemoryEngine()) as plan,
+    kp.prepare(contract=graph_contract, dataset=dataset, engine=kp.InMemoryEngine()) as plan,
     plan.materialize(anchors=requests) as task,
 ):
     graph = next(task.batches(requests=requests)).inputs["graph"]
@@ -323,50 +323,48 @@ says what to read for each candidate at the request's prediction time, and
 labels align with the caller's order:
 
 ```python
-candidate_sample = api.SampleSpec(
-    entity=api.EntitySpec(table="users", entity_type="user"),
+candidate_sample = kp.SampleSpec(
+    entity=kp.EntitySpec(table="users", entity_type="user"),
     candidate_sets={
-        "items": api.CandidateSetSpec(
-            entity=api.EntitySpec(table="items", entity_type="item"),
+        "items": kp.CandidateSetSpec(
+            entity=kp.EntitySpec(table="items", entity_type="item"),
             values={
-                "category": api.Field(column="category"),
-                "prior_buyers": api.Aggregate(
-                    source=api.Rows(
-                        path=("item_purchases",), time=api.TimeWindow(column="at", stop=0)
+                "category": kp.Field(column="category"),
+                "prior_buyers": kp.Aggregate(
+                    source=kp.Rows(
+                        path=("item_purchases",), time=kp.TimeWindow(column="at", stop=0)
                     ),
                     operation="count",
                 ),
             },
-            targets={"bought": api.ExternalTarget(dtype=api.DType(name="bool"))},
+            targets={"bought": kp.ExternalTarget(dtype=kp.DType(name="bool"))},
         )
     },
 )
-candidate_batch = api.BatchSpec(
+candidate_batch = kp.BatchSpec(
     inputs={
-        "candidates": api.Input(
-            source=api.CandidateSource(name="items"),
-            representation=api.Fields(
+        "candidates": kp.Input(
+            source=kp.CandidateSource(name="items"),
+            representation=kp.Fields(
                 fields=(
-                    api.Encode(field="category", encoding=api.Vocabulary()),
-                    api.Encode(field="prior_buyers", encoding=api.Raw()),
+                    kp.Encode(field="category", encoding=kp.Vocabulary()),
+                    kp.Encode(field="prior_buyers", encoding=kp.Raw()),
                 )
             ),
-            layout=api.Padded(),
+            layout=kp.Padded(),
         )
     },
-    targets={
-        "bought": api.CandidateTarget(input="candidates", source="bought", encoding=api.Raw())
-    },
-    batching=api.Batching(max_samples=1),
+    targets={"bought": kp.CandidateTarget(input="candidates", source="bought", encoding=kp.Raw())},
+    batching=kp.Batching(max_samples=1),
 )
-candidate_request = api.SampleRequest(
+candidate_request = kp.SampleRequest(
     sample_id="user-1",
     entity_id=1,
     as_of_time=10 * DAY,
     candidates={
         "items": tuple(
-            api.CandidateRequest(
-                entity_id=item, targets=(api.TargetValue(name="bought", value=item == 12),)
+            kp.CandidateRequest(
+                entity_id=item, targets=(kp.TargetValue(name="bought", value=item == 12),)
             )
             for item in (10, 11, 12)
         )
@@ -374,10 +372,10 @@ candidate_request = api.SampleRequest(
 )
 # The in-memory engine is for trying things out on tiny data; use DiskGraph for real data.
 with (
-    api.prepare(
-        contract=api.DataLoaderSpec(schema=schema, sample=candidate_sample, batch=candidate_batch),
+    kp.prepare(
+        contract=kp.DataLoaderSpec(schema=schema, sample=candidate_sample, batch=candidate_batch),
         dataset=dataset,
-        engine=api.InMemoryEngine(),
+        engine=kp.InMemoryEngine(),
     ) as plan,
     plan.materialize(anchors=(candidate_request,)) as task,
 ):
@@ -410,8 +408,8 @@ from kumo.pytorch import build
 users = build.Table(
     name="users",
     key="id",
-    columns={"id": api.DType(name="int64"), "age": api.DType(name="int64")},
-    time=api.NON_TEMPORAL,
+    columns={"id": kp.DType(name="int64"), "age": kp.DType(name="int64")},
+    time=kp.NON_TEMPORAL,
 )
 built = build.contract(
     schema=build.Schema(tables=(users,)),
@@ -420,8 +418,8 @@ built = build.contract(
         inputs={
             "profile": build.Input(
                 source=users,
-                representation=api.Fields(fields=(api.Encode(field="age", encoding=api.Raw()),)),
-                layout=api.Separate(),
+                representation=kp.Fields(fields=(kp.Encode(field="age", encoding=kp.Raw()),)),
+                layout=kp.Separate(),
             )
         }
     ),

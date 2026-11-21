@@ -8,7 +8,7 @@ Stored tables, their scalar column types, keys, relationships and clocks.
 
 ### `DataSchema`
 
-*class* · `kumo.pytorch.api.DataSchema`
+*class* · `kumo.pytorch.DataSchema`
 
 ```python
 class DataSchema(
@@ -30,7 +30,7 @@ names its clock or declares `NON_TEMPORAL`.
 
 ### `TableSpec`
 
-*class* · `kumo.pytorch.api.TableSpec`
+*class* · `kumo.pytorch.TableSpec`
 
 ```python
 class TableSpec(
@@ -74,7 +74,7 @@ types with concrete ones, so a saved contract records them.
 
 ### `RelationSpec`
 
-*class* · `kumo.pytorch.api.RelationSpec`
+*class* · `kumo.pytorch.RelationSpec`
 
 ```python
 class RelationSpec(
@@ -100,7 +100,7 @@ primary-key side.
 
 ### `NON_TEMPORAL`
 
-*constant* · `kumo.pytorch.api.NON_TEMPORAL`
+*constant* · `kumo.pytorch.NON_TEMPORAL`
 
 ```python
 NON_TEMPORAL: NonTemporal
@@ -110,7 +110,7 @@ The `NonTemporal` marker: pass it as `TableSpec(time_column=NON_TEMPORAL)` for a
 
 ### `NonTemporal`
 
-*class* · `kumo.pytorch.api.NonTemporal`
+*class* · `kumo.pytorch.NonTemporal`
 
 ```python
 class NonTemporal()
@@ -128,7 +128,7 @@ not establish that it orders the rows of this table.
 
 ### `DType`
 
-*class* · `kumo.pytorch.api.DType`
+*class* · `kumo.pytorch.DType`
 
 ```python
 class DType(
