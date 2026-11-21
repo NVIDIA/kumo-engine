@@ -6,6 +6,7 @@ import logging
 import re
 import uuid
 from contextlib import nullcontext
+from contextvars import ContextVar
 from typing import Any, List, Optional
 
 from kumo_core.artifact_staging import (
@@ -13,11 +14,16 @@ from kumo_core.artifact_staging import (
     local_parquet_files,
     selected_local_parquet_files,
 )
+from kumo_snowflake.errors import ACCESS_DENIED_SQLSTATE, summary
 
 logger = logging.getLogger(__name__)
 _ALLOWED_BLOB_PATH_RE = re.compile(r"^(s3://|gcs://|azure://|@)",
                                    flags=re.IGNORECASE)
 MAX_COPY_FILES = 1000
+# export_table_files sets the requested table for staging-write errors,
+# preserving the adapters' write_artifacts_to_table signature.
+_write_destination: ContextVar[Optional[str]] = ContextVar(
+    'snowflake_write_destination', default=None)
 
 
 class ArtifactWriteError(ValueError):
@@ -30,6 +36,26 @@ class ArtifactWriteError(ValueError):
         # one idempotent overwrite retry.
         self.errno = getattr(cause, "errno", None)
         self.sqlstate = getattr(cause, "sqlstate", None)
+
+
+def _current_role(context: Any) -> Optional[str]:
+    """Read the driver's role, querying only when it is unavailable."""
+    try:
+        role = getattr(context, 'role', None)
+        if role:
+            return str(role)
+    except Exception:
+        pass
+    try:
+        cursor = context.cursor()
+        try:
+            cursor.execute('SELECT CURRENT_ROLE()')
+            row = cursor.fetchone()
+            return str(row[0]) if row and row[0] else None
+        finally:
+            cursor.close()
+    except Exception:
+        return None
 
 
 def _to_snowflake_stage_sql_ref(path: str) -> Optional[str]:
@@ -223,7 +249,7 @@ def write_artifacts_to_table(
             legacy whole-prefix load.
 
     Raises:
-        ConnectorError: If the schema does not exist or the write fails.
+        ArtifactWriteError: If the write fails.
         NotImplementedError: If artifact_path is a cloud storage URL
             other than s3://.
     """
@@ -269,7 +295,9 @@ def write_artifacts_to_table(
 
     ctx = connector.context
     local_stage_ref: str | None = None
+    qualified_name = table_name
     try:
+        qualified_name = connector._qualified_table_name(table_name)
         if is_local_path:
             local_stage_ref = f'@~/__kumo_artifact_{uuid.uuid4().hex}/'
             (upload_local or _upload_local_parquet_to_user_stage)(
@@ -283,8 +311,6 @@ def write_artifacts_to_table(
         # Explicit stage URIs resolve directly. Local artifacts have
         # now been uploaded to an isolated user-stage prefix.
         is_stage_path = stage_sql_ref is not None
-
-        qualified_name = connector._qualified_table_name(table_name)
 
         if replace:
             connector.execute_meta_query(
@@ -407,10 +433,19 @@ def write_artifacts_to_table(
                     f"'{table_name}'.")
 
     except Exception as e:
-        logger.warning('Snowflake output write failed (%s)', type(e).__name__)
-        raise ArtifactWriteError(
-            'Failed to write artifacts to the configured Snowflake '
-            'output table.', cause=e) from None
+        message = f'Snowflake output write failed ({type(e).__name__})'
+        try:
+            role = _current_role(ctx)
+            role_clause = f' as role {role}' if role else ''
+            destination = _write_destination.get() or qualified_name
+            message = (f'Failed to write {destination}{role_clause}: '
+                       f'{summary(e)}')
+            if getattr(e, 'sqlstate', None) == ACCESS_DENIED_SQLSTATE:
+                message += '; the role lacks a privilege this write needs'
+        except Exception:
+            pass
+        logger.warning('%s', message)
+        raise ArtifactWriteError(message, cause=e) from None
     finally:
         if local_stage_ref is not None:
             try:
@@ -462,6 +497,12 @@ def export_table_files(connector, table_name, artifact_path, *, replace,
         staging = f'{table_name}_STAGING'
     if staging is not None:
         staging = f'{staging}_{uuid.uuid4().hex[:12]}'
+    destination = table_name
+    try:
+        destination = connector._qualified_table_name(table_name)
+    except Exception:
+        pass
+    token = _write_destination.set(destination)
     try:
         kwargs = {} if artifact_files is None else {
             'artifact_files': artifact_files
@@ -471,6 +512,7 @@ def export_table_files(connector, table_name, artifact_path, *, replace,
         if staging is not None:
             connector.overwrite_table(staging, table_name)
     finally:
+        _write_destination.reset(token)
         if staging is not None:
             try:
                 connector.drop_table_if_exists(staging)

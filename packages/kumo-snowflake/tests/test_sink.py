@@ -95,9 +95,11 @@ def test_an_overwrite_retries_once_with_a_fresh_session_after_token_expiry(
             def upload(*_args, **_kwargs) -> None:
                 raise _ExpiredTokenError()
 
-            write_artifacts_to_table(SimpleNamespace(context=object()),
-                                     "PREDICTIONS", "/tmp/predictions.parquet",
-                                     replace=True, upload_local=upload)
+            target = SimpleNamespace(
+                context=object(), _qualified_table_name=lambda name: name)
+            write_artifacts_to_table(target, "PREDICTIONS",
+                                     "/tmp/predictions.parquet", replace=True,
+                                     upload_local=upload)
 
     monkeypatch.setattr(backend, "_session", open_session)
     monkeypatch.setattr(backend, "_principal", lambda _connector: object())
