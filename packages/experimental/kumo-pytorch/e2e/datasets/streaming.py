@@ -19,23 +19,9 @@ T01_MANIFEST = Path(__file__).parent / "pins" / "streaming-25b.json"
 
 
 def load_streaming(root):
-    """Project the two verified T01 viewers and their forecast and historical graph rows."""
+    """Load the verified T01 viewer and session extracts."""
     files = verify(root, T01_MANIFEST)
-    selected = [("viewer_id", "in", [3, 873])]
-    # Viewer 3 has no earlier history. Include all ties at viewer 873's 32nd graph second.
-    history = [*selected, ("start_time", ">", datetime(2025, 8, 18, 10, 43, 18))]
-    columns = [
-        "session_id",
-        "viewer_id",
-        "start_time",
-        "watch_seconds",
-        "completion_frac",
-        "device_type",
-    ]
-    return (
-        pq.read_table(files["viewers"], columns=["viewer_id", "signup_time"], filters=selected),
-        pq.read_table(files["sessions"], columns=columns, filters=history, use_threads=False),
-    )
+    return pq.read_table(files["viewers"]), pq.read_table(files["sessions"])
 
 
 def prepare_streaming(directory, cohort_size):

@@ -52,9 +52,9 @@ totaling 1,029,139,562 bytes. M03 adds only the v1 anchor pair (963,739,896 byte
 To verify the extract against all clients and transactions, add the original shards to the file mapping
 using their paths from `extraction.json` and call `read_mbd(files, manifest)` again.
 
-Streaming 25B stages the original viewer and session `part-00000.parquet` files (1,915,395,993 bytes).
-`load_streaming(root)` selects viewers 3 and 873 and 36 sessions for the three forecast weeks.
-The digest in [`streaming-25b.json`](datasets/pins/streaming-25b.json) hashes 10,000 rows sorted by viewer ID,
+Streaming 25B stages two private Parquet files (3,965 bytes). `load_streaming(root)` reads viewers 3 and 873
+and 36 sessions for the three forecast weeks. [`streaming-25b.json`](datasets/pins/streaming-25b.json)
+records the original shard keys, sizes and hashes. The full-cohort digest covers 10,000 rows sorted by viewer ID,
 each encoded as four little-endian int64 values (viewer ID, training count, validation count, test count).
 
 ## The H&M-shaped dataset
