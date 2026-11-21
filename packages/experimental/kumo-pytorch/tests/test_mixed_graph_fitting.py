@@ -189,9 +189,12 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
                     assert_equal(batch.metadata, expected_batch.metadata)
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize("delta", [-1, 0, 1])
 def test_input_and_target_fitting_at_the_chunk_boundary(history_data, tmp_path, delta):
     from statistics import mean, pstdev
+
+    from tests.helpers import parquet_anchors
 
     schema, dataset, _, index, _ = history_data
     contract = _contract(schema, False, "computed")
@@ -201,9 +204,9 @@ def test_input_and_target_fitting_at_the_chunk_boundary(history_data, tmp_path, 
     size = assembly._FIT_CHUNK + delta
     # At t=3 this user has four past orders and 180 of future spend; at t=5, six and 70.
     cutoffs = [3] * (size - 1) + [5]
-    path = tmp_path / "anchors.parquet"
-    pq.write_table(pa.table({"user": [1] * size, "at": cutoffs}), path)
-    anchors = api.AnchorTable(api.Parquet(str(path)), "user", "at")
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"user": [1] * size, "at": cutoffs}, "user", "at"
+    )
     with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=1)) as plan:
         with plan.materialize(anchors) as task:
             count = task.output("counts").field(name="count").encoder

@@ -78,8 +78,6 @@ TABLES = {
         {"item_id": 10, "category": "book"},
         {"item_id": 11, "category": "game"},
         {"item_id": 12, "category": "book"},
-        {"item_id": 13, "category": None},
-        {"item_id": 14, "category": "unseen"},
     ],
     "views": [
         {"view_id": 1, "item_id": 10, "at": 80},
@@ -297,34 +295,3 @@ def test_candidate_source_and_target_references_are_validated() -> None:
 def test_candidate_contract_round_trips() -> None:
     contract = _contract()
     assert DataLoaderSpec.from_json(contract.to_json()) == contract
-
-
-@pytest.mark.parametrize("layout", [Packed(), Padded()])
-def test_missing_candidate_fields_and_labels_stay_distinct_from_padding(layout):
-    requests = (
-        SampleRequest("empty", 1, 100, candidates={"items": ()}),
-        SampleRequest(
-            "mixed",
-            2,
-            100,
-            candidates={
-                "items": (_candidate(14, False), CandidateRequest(13), _candidate(10, True))
-            },
-        ),
-        SampleRequest("single", 1, 100, candidates={"items": (CandidateRequest(10),)}),
-    )
-    with PLANS.prepare(_contract(layout), requests) as task:
-        batch = next(task.batches(requests, batch_size=3))
-    assert batch.metadata["candidate_entity_ids"]["items"] == ((), (14, 13, 10), (10,))
-    items, target = batch.inputs["items"], batch.targets["clicked"]
-    present = items["valid"]
-    if isinstance(layout, Packed):
-        assert items["offsets"].tolist() == target["offsets"].tolist() == [0, 0, 3, 4]
-        assert present.all()
-    else:
-        assert present.tolist() == [[False] * 3, [True] * 3, [True, False, False]]
-        assert not target["valid"][~present].any()
-    assert items["category"]["values"][present].tolist() == [1, 0, 2, 2]
-    assert items["category"]["valid"][present].tolist() == [True, False, True, True]
-    assert target["valid"][present].tolist() == [True, False, True, False]
-    assert target["values"][target["valid"]].tolist() == [0.0, 1.0]

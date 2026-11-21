@@ -19,7 +19,6 @@ import torch
 
 import kumo.pytorch.preparation as preparation
 import kumo.pytorch.serving as serving
-from conformance.assertions import bound_tables
 from conformance.cases import discover_cases
 from conformance.graph_cases import generate_graph_case
 from conformance.sequence_cases import generate_sequence_case
@@ -196,21 +195,12 @@ CASES: dict[str, Callable[[], tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 }
 
 
-@pytest.mark.parametrize(
-    "name,engine_name",
-    [
-        *((name, "in_memory") for name in sorted(CASES)),
-        ("bounded_window", "diskgraph"),
-        ("event_limit", "diskgraph"),
-    ],
-)
-def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str, engine_name: str) -> None:
+@pytest.mark.parametrize("name", sorted(CASES))
+def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     contract, tables, requests = CASES[name]()
     artifact = _artifact(contract, tables, requests)
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
-    with bound_tables(contract, tables, engine_name) as (dataset, engine):
-        expected = _batch_inference(artifact, dataset, engine, requests)
+    dataset, engine = _dataset("in_memory", tables, Path())
+    expected = _batch_inference(artifact, dataset, engine, requests)
     server = api.ServingAssembler(artifact)
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
@@ -522,3 +512,52 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
         assert _layout(served.inputs) == _layout(model_format[request.sample_id].inputs)
         with torch.no_grad():
             assert served_model(served).shape == (1,)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("name", ["bounded_window", "event_limit"])
+def test_serving_fetch_covers_native_parquet_anchors(tmp_path, name):
+    from conformance.assertions import bound_tables
+    from tests.helpers import parquet_anchors
+
+    contract, tables, requests = CASES[name]()
+    spec = ServingRowsSpec.from_contract(contract)
+    by_id = {r.sample_id: r for r in requests}
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet",
+        {
+            "sample": list(by_id),
+            "entity": [r.entity_id for r in requests],
+            "at": [r.as_of_time for r in requests],
+        },
+        "entity",
+        "at",
+        sample_id="sample",
+    )
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        seen = []
+        for batch in task.batches(batch_size=1, output_format="model"):
+            (sample,) = batch.metadata["sample_ids"]
+            seen.append(sample)
+            rows = fetch(spec, contract.schema, tables, by_id[sample])
+            if name == "bounded_window":
+                assert batch.inputs["entity"]["recent_count"]["values"].item() == len(
+                    rows["events"]
+                )
+            else:
+                merged = batch.inputs["merged"]
+                valid = merged["id"]["valid"]
+                delivered = zip(
+                    merged["component"]["values"][valid].tolist(),
+                    merged["id"]["values"][valid].tolist(),
+                    strict=True,
+                )
+                assert sorted(delivered) == sorted(
+                    [(0, r["order_id"]) for r in rows["orders"]]
+                    + [(1, r["click_id"]) for r in rows["clicks"]]
+                )
+        assert sorted(seen) == sorted(by_id)

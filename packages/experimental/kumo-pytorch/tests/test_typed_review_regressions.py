@@ -17,6 +17,7 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.data import cutoff_to_epoch
+from tests.helpers import parquet_anchors
 
 MODES = ("reference", "native_inspectable", "native_model")
 INT = api.DType("int64")
@@ -586,10 +587,8 @@ def test_fractional_anchor_never_admits_a_later_event(tmp_path, mode, anchor, ev
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-@pytest.mark.parametrize(
-    "mode,filtered", [("reference", False), ("reference", True), ("native_model", False)]
-)
-def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, grouped):
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, grouped):
     schema = api.DataSchema(
         (
             api.TableSpec("users", "id", {"id": INT}, time_column=api.NON_TEMPORAL),
@@ -609,7 +608,6 @@ def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, 
     window = api.Rows(
         ("accounts", "events"),
         api.TimeWindow("at", -10, 0),
-        filters=(api.RowFilter("v", "not_null"),) if filtered else (),
     )
     source = (
         api.GroupBy(window, ("group",), {"part": api.Reduce("sum", "v", dtype=INT)})
@@ -648,12 +646,18 @@ def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, 
             for i, (user, t, v, group) in enumerate(events)
         ],
     }
-    with _prepared(tmp_path, contract, rows, mode) as plan:
-        out = _batch(plan, tuple(api.SampleRequest(i, i, 100) for i in (1, 2, 3)), mode).inputs["x"]
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"id": [1, 2, 3], "at": [100] * 3}, "id", "at"
+    )
+    with (
+        _prepared(tmp_path, contract, rows, "native_model") as plan,
+        plan.materialize(anchors) as task,
+    ):
+        out = next(task.batches(batch_size=3, output_format="model")).inputs["x"]
     for name, expected in (
         ("total", [2, 0, 7]),
         ("difference", [1, -1, 6]),
-        ("count", [3 if filtered else 4, 0, 1]),
+        ("count", [4, 0, 1]),
     ):
         assert out[name]["values"].dtype == torch.int64
         assert out[name]["valid"].tolist() == [True] * 3

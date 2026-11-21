@@ -402,6 +402,7 @@ def test_a_nonnull_constant_required_field_needs_no_validity_scan(tmp_path, monk
     assert entry["file"] is None
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 def test_bpe_piece_offsets_across_short_and_long_source_rows():
     from conformance.assertions import bound_tables
     from conformance.cases import discover_cases
