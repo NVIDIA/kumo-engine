@@ -417,7 +417,22 @@ Source: shipped package (`kumo.engine.pquery.predictive_query`)
 Materialization is **explicit**. `fit` does not do it for you.
 
 ```python
-snapshot = graph.snapshot()
+import warnings
+
+# Kumo reports rows it dropped or could not link as warnings and keeps going
+# (troubleshooting_signals.md §1a). Stop here, before any training, so the user decides first.
+DATA_WARNINGS = ('duplicate primary-key', 'null or invalid primary key',
+                 'invalid values found', 'non-null rows')
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter('always')
+    snapshot = graph.snapshot()
+for w in caught:
+    print(f'{w.category.__name__}: {w.message}')
+data_problems = [str(w.message) for w in caught
+                 if any(s in str(w.message) for s in DATA_WARNINGS)]
+if data_problems and not DATA_LOSS_ACCEPTED:      # config cell; False unless the user chose
+    raise RuntimeError('Kumo reported a problem in the data; stopped before training:\n'
+                       + '\n'.join(data_problems))
 
 training_table = pquery.generate_training_table(snapshot)
 prediction_table = pquery.generate_prediction_table(
@@ -436,7 +451,13 @@ PredictiveQuery.generate_prediction_table(snapshot, *, prediction_time=None, pla
 - `snapshot` is **positional** on both. `prediction_time` and `plan` are keyword-only on
   `generate_prediction_table`.
 - `graph.snapshot()` reads every table through its connector and builds an on-disk DiskGraph index
-  under the scratch directory. An unchanged valid snapshot is reused on later runs.
+  under the scratch directory. An unchanged valid snapshot is reused on later runs, and its data
+  warnings are raised again.
+- **The snapshot cell stops on a data warning.** Repeated or missing primary keys, unparseable
+  values and unmatched foreign keys are warnings, not errors: without the stop the notebook trains
+  on what is left. `DATA_LOSS_ACCEPTED = False` goes in the config cell; it becomes `True` only
+  after the user has seen the messages and chosen to continue with the loss, never on the agent's
+  own initiative.
 - `GraphSnapshot` exposes `.id`, `.index_path`, `.graph_config`.
 - `TrainingTable` exposes `.train_table_path` (ordinary parquet), `.manifest_path`,
   `.required_stages`, `.generation_plan`.
@@ -734,7 +755,7 @@ print('task type:', pquery.get_task_type())
 
 # 5. Materialize. PREDICTION_TIME is NAIVE — a tz-aware datetime raises ValueError.
 PREDICTION_TIME = datetime(2026, 8, 1)
-snapshot = graph.snapshot()
+snapshot = graph.snapshot()                         # wrapped in the §7 data-warning stop
 training_table = pquery.generate_training_table(snapshot)
 prediction_table = pquery.generate_prediction_table(
     snapshot, prediction_time=PREDICTION_TIME,       # NAIVE datetime, inside the event history
@@ -862,7 +883,8 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] `with_column(...)` results assigned or chained — it returns a new Table.
 - [ ] `Graph(tables=[...], edges=[Edge(...)])` — list form; `graph.validate()` emitted.
 - [ ] `pquery.validate()` and `get_task_type()` run before training, both called with no arguments.
-- [ ] `graph.snapshot()` before generating any table.
+- [ ] `graph.snapshot()` before generating any table, inside the §7 data-warning stop, with
+      `DATA_LOSS_ACCEPTED = False` in the config cell.
 - [ ] **`trainer.fit(training_table, snapshot=snapshot)`** — `snapshot=` present.
 - [ ] **`trainer.predict(prediction_table, snapshot=snapshot, ...)`** — `snapshot=` present.
 - [ ] `binary_classification_threshold` / `num_classes_to_return` on `predict`, never on

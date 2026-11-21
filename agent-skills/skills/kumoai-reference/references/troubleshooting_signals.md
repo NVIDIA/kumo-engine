@@ -5,7 +5,7 @@ Observable symptom → likely cause → fix. Ordered by when the agent hits them
 This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
-> The five messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
+> The six messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
 
 **Who applies a fix.** A fix that changes the data — casting a column, deduplicating, flattening,
 filling or filtering values, combining columns into a key, normalising key types — is the user's
@@ -74,7 +74,7 @@ Fully specify tables in production code to avoid unexpected re-inference.
 ### Symptom: row count silently drops after ingestion
 **Cause:** Duplicate primary key values — Kumo retains one row per key and drops the rest.
 **Fix:** Report how many rows the key repeats on (the preflight probe, or the snapshot warning in
-§1a) and put the choice to the user: a different, genuinely unique key, or the source deduplicated
+§1a, which stops the notebook before training) and put the choice to the user: a different, genuinely unique key, or the source deduplicated
 upstream. The agent does not deduplicate.
 
 ### Symptom: a categorical column has very high cardinality
@@ -98,13 +98,17 @@ change data, types or the query to make it go away (*Who applies a fix*, above).
 |---|---|---|
 | `Snapshot contains <n> duplicate primary-key row(s) for <table>.<key>` | `<n>` rows share a key; Kumo keeps one per key and drops the rest | a different key, or the source deduplicated; or continue knowing `<n>` rows are gone |
 | `Foreign key <table>.<fk> matched <m> of <n> non-null rows` | only `<m>` of `<n>` rows reach the parent; the rest get no edge | the link may be wrong (wrong column, or values differing in format, e.g. `007` vs `7`), or the parent rows are missing |
+| `Snapshot dropped <n> row(s) with a null or invalid primary key in <table>.<key>` | `<n>` rows have no usable key and are gone from the table | the source fixed upstream, or a different key; or continue knowing `<n>` rows are gone |
 | `<n> invalid values found in <table>.<column>` | `<n>` values did not parse as the column's type and are read as null (see §5) | whether those rows are bad data, or the column's type is wrong |
 | `key <table>.<column> has a floating-point dtype` | an ID column is stored as a float (often an integer key with nulls) | the column fixed upstream as an integer or string key |
 | `foreign key <table>.<fk> (dtype=…) cannot link to primary key <table>.<pk> (dtype=…)` | the two sides of a link hold different types | which side is right, fixed upstream; never cast one side in the notebook |
 
-A float or mismatched key fails `graph.validate()` and stops the notebook. The other three are
-warnings: the notebook keeps going and trains on what is left. Either way, the report the user
-reads starts with the message, the table and column, and the count.
+A float or mismatched key fails `graph.validate()` and stops the notebook. The other four are
+warnings: Kumo keeps going and trains on what is left, so the notebook's snapshot cell turns them
+into a stop before training (`kumo_finetuning_sdk.md` §7). Either way, the report the user reads
+starts with the message, then, per table, how many rows were lost or left unlinked and why —
+repeated key, missing key, or a value (a time, a number) that did not parse — and asks before
+anything trains.
 
 ---
 
