@@ -14,7 +14,7 @@ import math
 import os
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +22,7 @@ from threading import Lock
 from types import ModuleType
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast
 
+from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
 
 from kumo_core.diskgraph.batch_contract import (
@@ -29,7 +30,7 @@ from kumo_core.diskgraph.batch_contract import (
     BatchPayload,
     BatchRequest,
     ConsumerToken,
-    NativeBatch,
+    HeteroBatchPayload,
     SamplingContractError,
     content_digest,
 )
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from diskgraph._c import SeedSchedule
     from ray import ObjectRef
     from ray.util.scheduling_strategies import SchedulingStrategyT
+    from torch_geometric.data import HeteroData
 
 _MethodArgs = ParamSpec("_MethodArgs")
 _MethodResult = TypeVar("_MethodResult")
@@ -57,7 +59,7 @@ class SamplerActor(Protocol):
     """Only the remote operations required from an owned sampler actor."""
 
     @property
-    def sample(self) -> RemoteMethod[[BatchRequest], BatchPayload]:
+    def sample(self) -> RemoteMethod[[BatchRequest], BatchPayload | HeteroBatchPayload]:
         """Sample an explicit batch request."""
         ...
 
@@ -75,7 +77,7 @@ class SamplerActor(Protocol):
 class BatchContext(Protocol):
     """Native stateless sampling interface cached by each replica."""
 
-    def sample_request(self, node_ids: list[int]) -> NativeBatch:
+    def sample_request(self, node_ids: list[int]) -> RuntimeBatch:
         """Sample the supplied canonical seed IDs without advancing a cursor."""
         ...
 
@@ -132,6 +134,7 @@ class ReplicaConfig:
     engine_seed: int
     num_threads: int
     context_capacity: int = 16
+    batch_encoder: Callable[[RuntimeBatch], HeteroData] | None = None
 
     def verify(self) -> None:
         """Validate manifest identities and CPU/context budgets before readiness.
@@ -209,12 +212,14 @@ class _SamplerPool:
         if not self.replicas:
             raise SamplingContractError("at least one sampling replica is required")
         self.available = deque(range(len(self.replicas)))
-        self.pending: dict[ObjectRef[BatchPayload], int] = {}
+        self.pending: dict[ObjectRef[BatchPayload | HeteroBatchPayload], int] = {}
         self.lock = Lock()
         self.close_lock = Lock()
         self.closed = False
 
-    def submit(self, request: BatchRequest) -> ObjectRef[BatchPayload]:
+    def submit(
+        self, request: BatchRequest
+    ) -> ObjectRef[BatchPayload | HeteroBatchPayload]:
         """Submit directly to an idle actor; callers bound their request window.
 
         Args:
@@ -247,7 +252,9 @@ class _SamplerPool:
             self.pending[result] = replica_id
             return result
 
-    def get(self, result: ObjectRef[BatchPayload]) -> BatchPayload:
+    def get(
+        self, result: ObjectRef[BatchPayload | HeteroBatchPayload]
+    ) -> BatchPayload | HeteroBatchPayload:
         """Receive a result and make only its completed actor available again.
 
         Args:
@@ -267,7 +274,8 @@ class _SamplerPool:
                 raise SamplingContractError("unknown sampling result")
         try:
             payload = cast(
-                BatchPayload, self.ray.get(result, timeout=self.config.request_timeout)
+                BatchPayload | HeteroBatchPayload,
+                self.ray.get(result, timeout=self.config.request_timeout),
             )
         except self.ray.exceptions.ActorDiedError:
             self._finished(result, failed=True)
@@ -282,7 +290,9 @@ class _SamplerPool:
                 raise SamplingUnavailableError("discarding cancelled sampling result")
         return payload
 
-    def _finished(self, result: ObjectRef[BatchPayload], failed: bool = False) -> None:
+    def _finished(
+        self, result: ObjectRef[BatchPayload | HeteroBatchPayload], failed: bool = False
+    ) -> None:
         with self.lock:
             if not self.closed:
                 replica_id = self.pending.pop(result)
@@ -357,7 +367,7 @@ class _SamplerReplica:
     def drain(self) -> None:
         """Acknowledge that earlier sampling on this serial actor has exited."""
 
-    def sample(self, request: BatchRequest) -> BatchPayload:
+    def sample(self, request: BatchRequest) -> BatchPayload | HeteroBatchPayload:
         """Return a complete Arrow/native envelope directly to the requesting trainer."""
         if (
             request.artifacts != self.config.artifacts
@@ -379,6 +389,13 @@ class _SamplerReplica:
                 self.contexts.pop(0)
         started = time.monotonic()
         batch = context.sample_request(list(request.seed_ids))
+        if self.config.batch_encoder is not None:
+            from kumo_core.diskgraph.hetero_wire import pack_python_hetero
+
+            metadata, buffers = pack_python_hetero(self.config.batch_encoder(batch))
+            return HeteroBatchPayload(
+                request, metadata, buffers, time.monotonic() - started
+            )
         payload = BatchPayload(request, batch, time.monotonic() - started)
         payload.validate(request)
         return payload
@@ -404,11 +421,12 @@ def start_sampling_replicas(
         raise SamplingContractError("one explicit placement is required per replica")
     baseline = configs[0]
     if any(
-        (c.artifacts, c.engine_seed, c.num_threads)
+        (c.artifacts, c.engine_seed, c.num_threads, c.batch_encoder is None)
         != (
             baseline.artifacts,
             baseline.engine_seed,
             baseline.num_threads,
+            baseline.batch_encoder is None,
         )
         for c in configs
     ):
@@ -461,7 +479,7 @@ class RayRuntimeIndex:
         self._manifest_verified = False
         self.samplers = _SamplerPool(config)
 
-    def iter(self, options: SamplingOptions) -> tuple[Iterator[NativeBatch], int]:
+    def iter(self, options: SamplingOptions) -> tuple[Iterator[RuntimeBatch], int]:
         """Create a seed iterator without opening local adjacency/features.
 
         Args:
@@ -475,6 +493,21 @@ class RayRuntimeIndex:
         """
         requests, count = self.iter_requests(options)
         return map(self._sample, requests), count
+
+    def iter_hetero(self, options: SamplingOptions) -> tuple[Iterator[HeteroData], int]:
+        """Receive actor-encoded graphs through MessagePack and NumPy buffers.
+
+        Args:
+            options: DiskGraph sampling configuration and logical shard identity.
+
+        Returns:
+            Decoded graph iterator and worker-local sample/bucket count.
+
+        Raises:
+            SamplingContractError: If actors do not have a batch encoder configured.
+        """
+        requests, count = self.iter_requests(options)
+        return map(self._sample_hetero, requests), count
 
     def iter_requests(
         self, options: SamplingOptions
@@ -542,7 +575,21 @@ class RayRuntimeIndex:
             )
             ordinal += 1
 
-    def _sample(self, request: BatchRequest) -> NativeBatch:
+    def _sample(self, request: BatchRequest) -> RuntimeBatch:
+        payload = self._receive(request)
+        if not isinstance(payload, BatchPayload):
+            raise SamplingContractError(
+                "encoded responses require iter_hetero(options)"
+            )
+        return payload.validate(request)
+
+    def _sample_hetero(self, request: BatchRequest) -> HeteroData:
+        payload = self._receive(request)
+        if not isinstance(payload, HeteroBatchPayload):
+            raise SamplingContractError("sampler did not return an encoded graph")
+        return payload.decode(request)
+
+    def _receive(self, request: BatchRequest) -> BatchPayload | HeteroBatchPayload:
         ray = _ray()
         for attempt in range(self.config.max_retries + 1):
             ref = self.samplers.submit(request)
@@ -563,7 +610,7 @@ class RayRuntimeIndex:
                 # Keep ownership until close() confirms actual native exit.
                 self.samplers.cancel()
                 raise
-            return payload.validate(request)
+            return payload
         raise SamplingUnavailableError("sampling attempts exhausted")
 
     def close(self) -> None:

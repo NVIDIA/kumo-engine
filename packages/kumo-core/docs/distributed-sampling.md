@@ -2,12 +2,14 @@
 
 The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants must use
 that version and a DiskGraph build with `SeedScheduleConfig`, `SeedSchedule`, and
-`RuntimeBatchIterator.sample_request` support, plus native `SamplingPlan` and
-DiskGraph-owned `SamplingOptions` from #449 (stacked on #445).
+`RuntimeBatchIterator.sample_request` support, plus DiskGraph-owned `SamplingPlan`,
+`SamplingOptions`, and typed `RuntimeBatch` records from #454 (stacked on #449 and #445).
 
-This backend returns complete native Arrow batches. Feature encoding, hetero
-assembly, asynchronous trainer prefetch, and training integration are separate
-layers. It does not change the existing DataLoader implementation.
+The default backend returns DiskGraph's complete typed `RuntimeBatch`, retaining
+its Arrow buffers. Actors can also run a supplied Python batch encoder and return
+MessagePack metadata plus NumPy buffers for direct Python HeteroData reconstruction.
+The asynchronous trainer loader and training integration remain separate; this
+backend does not change the existing DataLoader implementation.
 
 ## Contracts and execution
 
@@ -21,12 +23,13 @@ layers. It does not change the existing DataLoader implementation.
   cache keys are needed. The actor retains at most `context_capacity` contexts,
   using structural equality and least-recently-used eviction.
   Wire version 2 rejects the previous JSON-bytes request format. All participants
-  must use the matching request implementation. Native batch and manifest shapes
-  remain `TypedDict`s because those dictionaries come from DiskGraph or JSON.
+  must use the matching request implementation. DiskGraph owns the runtime batch,
+  task, graph, edge, and feature classes; kumo-core defines no duplicate batch
+  schemas. Fixed fields use attributes; named channels/namespaces remain dicts.
 - `seed_schedule.py` constructs the native seed schedule from task metadata and
   seed sidecars. The trainer does not open adjacency or feature files.
 - `ray_sampling.py` provides serial native sampler actors and trainer-local actor
-  tracking. Raw Arrow payloads travel directly from sampler to trainer, with no
+  tracking. Typed raw or encoded graph payloads travel directly to the trainer, with no
   remote admission, start, completion-watcher, or delivery-validation RPCs.
 
 The launcher owns artifact distribution, file-checksum verification, consistent
@@ -51,6 +54,34 @@ sampling options. Omitted RNG seeds inherit the backend engine seed; explicit
 in actor requests without changing the caller's configuration. The client cannot
 be inherited across processes. Remote
 neighborhood/history decorators are not exposed by this interface.
+
+## Optional encoded responses
+
+Set `ReplicaConfig.batch_encoder` to a serializable callable taking a
+`diskgraph.RuntimeBatch` and returning CPU `HeteroData`. It can reuse fitted Kumo
+mappers through `runtime_batch_to_hetero`; configure the callable with
+`attach_pkeys=False`. The launcher owns the fitted state and must keep it
+consistent with `ArtifactIdentity.mapping_digest` across replicas.
+
+The actor calls `pack_python_hetero` after encoding. `HeteroBatchPayload` carries
+MessagePack graph metadata (including tensor shapes, dtypes, and buffer indices)
+and separate contiguous NumPy arrays. Tensor contents are never packed into the
+MessagePack bytes. Ray still serializes the outer envelope normally and transports
+NumPy data through its out-of-band buffers.
+
+Consume these actors with `RayRuntimeIndex.iter_hetero(options)`. Its synchronous
+reference iterator validates request identity and reconstructs TensorFrames and
+HeteroData in Python using `torch.from_numpy`; it does not spawn DataLoader
+subprocesses or use Rust feature encoding/decoding. Use `iter(options)` with raw
+actors; either entry point rejects the wrong response kind.
+
+The version-1 graph wire supports CPU int64/float32/float64 tensors, numerical,
+categorical, timestamp, and ragged multi-categorical TensorFrame features, node
+sampling metadata, and edge indices/counts. Nonempty primary keys, global graph
+attributes, extra edge attributes, and unsupported feature layouts fail explicitly.
+Noncontiguous tensors require a contiguous copy; existing contiguous storage is
+borrowed. Treat received buffers as read-only and clone before in-place writes.
+Zero-copy on the receiver does not eliminate cross-host network transfer.
 
 ## Concurrency, cancellation, and ownership
 
@@ -92,5 +123,8 @@ PYTHONPATH=packages/kumo-core/src .venv/bin/python -m pytest -q \
 
 The core tests cover identities, metadata-only scheduling, actor availability,
 local fencing, cancellation/drain races, retry limits, Arrow transport, and startup
-cleanup. The native integration test compares remote and local Arrow batches for
-shuffled, selected-seed, and RHS sampling. Tests start only local Ray clusters.
+cleanup. The native integration test compares remote/local typed batches for shuffled,
+selected-seed, and RHS sampling, plus real actor encoding/NumPy delivery and Python
+reconstruction. `test_hetero_transport.py` covers feature parity, buffer lifetime,
+noncontiguous views, response modes, and malformed layouts; it requires the Torch
+runtime. Tests start only local Ray clusters.
