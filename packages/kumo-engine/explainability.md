@@ -35,7 +35,8 @@ It draws one chart per metric family (recall, precision, MAP, NDCG and F1) with 
 Every value is the one in `training_result.metrics`; a family with a single K, or a split with no scores, is left out.
 
 Display `prediction.visualize()` for a batch prediction result to open the batch widget, with the same styling and graph controls on a single page.
-It shows the batch, model and snapshot identities, a Cohorts chart with class selection and sampled subgraphs with their recorded predictions.
+Use it on a live prediction result; to reopen a saved run, use `PredictionExplanations.load(path).visualize()`, which shows only the batch ID.
+The live result also shows the model, snapshot and prediction type, a Cohorts chart with class selection and sampled subgraphs with their recorded predictions.
 Cohort charts show average predictions and sampled population shares; a batch has no observed outcomes or evaluation metrics.
 An unavailable, disabled, unsupported or failed producer is listed under **Explanation availability**, and the other producer's card still appears.
 
