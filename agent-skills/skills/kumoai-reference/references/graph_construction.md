@@ -183,6 +183,29 @@ Rules:
 - Both `dtype` and `stype` must be resolved before a table is used in a `PredictiveQuery`;
   `infer_metadata()` resolves whatever is missing.
 
+### How a semantic type is inferred
+
+For a column with no declared type, `infer_metadata()` reads, in order: its role (a primary key
+is `ID`, a time column `timestamp`), its physical type (date, time, boolean and list types decide
+on their own), its **name**, and then its **values**, in a sample of up to 10,000 rows. The first
+that decides wins. The name and value rules below can contradict what a column means; the graph
+gate reports each selected column they match (router Node 1c, *Column types*), and a confirmed
+correction is declared with `with_column`.
+
+- **A code stored as a number is typed `numerical`.** An integer column is typed `numerical`
+  when its name contains `num` or `number` as a prefix, a suffix or an underscore-separated word
+  (`store_number`), or when it has more than 4,000 distinct sampled values or more than 5% of the
+  sampled rows are distinct. A postal code, a store or branch number, a SKU or an area code then
+  reads as a magnitude — neighbouring codes look "close", and a larger code looks "more" — and a
+  code held as a number has already lost any leading zeros, which no type declaration restores.
+  Kumo reports nothing. For every selected integer column whose name or role reads as a code,
+  report `Kumo: numerical (integer, many distinct values)` — or `(named *_number)` — and ask the
+  user: keep it `numerical`, declare it `categorical` (up to 4,000 distinct values; above that,
+  `ID`), or store it upstream as text with its zeros. Do not change the type without that answer.
+  (An integer named `*_code` is typed `ID` by name instead.)
+
+Source: shipped package (`kumo_core.stype_inference`, `kumo.engine.table`)
+
 ---
 
 ## Step 4: build the graph
