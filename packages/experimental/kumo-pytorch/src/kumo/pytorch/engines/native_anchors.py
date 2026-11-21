@@ -309,20 +309,22 @@ class NativeAnchors:
         length_planning=None,
     ):
         iterator, _ = self._runtime.iter(
-            stage["name"],
-            self._source._diskgraph.SamplingPlan() if plan is None else plan,
-            world_size,
-            rank,
-            shuffle,
-            epoch,
-            batch_size,
-            rnd_seed=seed,
-            entity_node_type=self._sample.entity.table,
-            fused=False,
-            swap_edge_direction=False,
-            selected_stage_node_ids=ids,
-            projections=projections,
-            disable_pseudo_time=True,
+            self._source._diskgraph.SamplingOptions(
+                stage=stage["name"],
+                sampling_plan=SamplingPlan() if plan is None else plan,
+                num_workers=world_size,
+                worker_id=rank,
+                shuffle=shuffle,
+                epoch=epoch,
+                batch_size=batch_size,
+                rnd_seed=seed,
+                entity_node_type=self._sample.entity.table,
+                fused=False,
+                swap_edge_direction=False,
+                selected_stage_node_ids=ids,
+                projections=projections,
+                disable_pseudo_time=True,
+            )
         )
         if neighborhoods:
             iterator.with_neighborhoods(neighborhoods)

@@ -783,10 +783,15 @@ class SubgraphCollector(Explainer):
                         src_stack.append((dst_table_name, dst_index))
 
             if self.task_type.is_link_pred:
-                # For each seed entity, find the RHS nodes that do not exist
-                # in the batch subgraph:
-                batch_mask = (batch[rhs_name].batch == seed_id)
-                n_id = batch[rhs_name].n_id[batch_mask]
+                assert rhs_name is not None
+                # Residual aggregation can omit RHS nodes from the export
+                # even when those nodes are present in the sampled batch.
+                retained_rhs = [
+                    node_id - batch.node_offsets[rhs_name]
+                    for node_id in subgraph_store.tables.get(rhs_name, [])
+                    if node_id >= 0
+                ]
+                n_id = batch[rhs_name].n_id[retained_rhs]
                 assert pred is not None
                 rhs_mask = ~torch.isin(pred[seed_id], n_id)
                 rhs_n_ids = pred[seed_id][rhs_mask]

@@ -33,6 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from diskgraph import RuntimeIndex, SplitSpec, task_stage_size
+from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
@@ -53,8 +54,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
     )
-    return index.iter(**kwargs)
-
+    return index.iter(SamplingOptions(**kwargs))
 
 
 # ---------------------------------------------------------------------------
@@ -514,11 +514,9 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
         rnd_seed=11,
         epoch=0,
         batch_size=2,
-        weighted_seed_sampling={
-            "false_weight": 1.0,
-            "true_weight": 10.0,
-            "num_samples": 6,
-        },
+        weighted_seed_sampling=WeightedSeedSampling(
+            false_weight=1.0, true_weight=10.0, num_samples=6
+        ),
     )
 
     assert num_samples == 6
@@ -578,7 +576,7 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
             rnd_seed=37,
             epoch=2,
             batch_size=3,
-            weighted_seed_sampling=sampling_config,
+            weighted_seed_sampling=WeightedSeedSampling(**sampling_config),
         )
         seen: list[int] = []
         for batch in iterator:
@@ -653,10 +651,9 @@ def test_iterator_row_weight_seed_sampling_uses_cdf(
         rnd_seed=19,
         epoch=0,
         batch_size=3,
-        weighted_seed_sampling={
-            "use_sample_weights": True,
-            "num_samples": 12,
-        },
+        weighted_seed_sampling=WeightedSeedSampling(
+            use_sample_weights=True, num_samples=12
+        ),
     )
 
     assert num_samples == 12
@@ -1354,11 +1351,12 @@ def test_feature_projection_of_the_seed_namespace_is_ignored(
 @pytest.mark.parametrize("weighted", [False, True])
 def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     import json
+
+    import diskgraph
     import pyarrow as pa
     import pyarrow.parquet as pq
-    import diskgraph
-    from diskgraph._c import build_train_table_artifacts_for_existing_table
     from diskgraph import execute_tt_ingest
+    from diskgraph._c import build_train_table_artifacts_for_existing_table
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -2042,11 +2040,11 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
 
 
 def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
+    from diskgraph import execute_tt_ingest
     from diskgraph._c import (
         DiskgraphDataError,
         build_train_table_artifacts_for_existing_table,
     )
-    from diskgraph import execute_tt_ingest
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()

@@ -20,6 +20,7 @@ from diskgraph import (
 )
 from diskgraph._c import SeedSchedule
 from diskgraph._c import SeedScheduleConfig as NativeSeedScheduleConfig
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from test_runtime_batch_iterator_e2e import (
     _sampling_plan,
@@ -85,8 +86,8 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         "epoch": 0,
         "batch_size": 2,
     }
-    iterator, _ = index.iter(**options)
-    reference, _ = index.iter(**options)
+    iterator, _ = index.iter(SamplingOptions(**options))
+    reference, _ = index.iter(SamplingOptions(**options))
     for current in (iterator, reference):
         if extras == "neighborhood":
             current.with_neighborhoods(
@@ -143,7 +144,9 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
             }
             current.with_history(sampler, "users", json.dumps(plan), "[]")
     first = next(iterator)
-    full_iterator, _ = index.iter(**{**options, "sampling_plan": _sampling_plan()})
+    full_iterator, _ = index.iter(
+        SamplingOptions(**{**options, "sampling_plan": _sampling_plan()})
+    )
     full = next(full_iterator)
     assert len(first["graphs"]["main"]["node_ids"]["orders"]) < len(
         full["graphs"]["main"]["node_ids"]["orders"]
@@ -209,7 +212,7 @@ def test_seed_only_schedule_matches_native_iterator(
     )
     schedule = SeedSchedule(config)
     count = schedule.num_samples()
-    iterator, expected_count = index.iter(**options)
+    iterator, expected_count = index.iter(SamplingOptions(**options))
     assert count == expected_count
     for batch in iterator:
         field = "seed_node_ids" if mode == "rhs" else "tt_stage_node_ids"
@@ -300,15 +303,17 @@ def test_local_and_standalone_validate_all_selected_ids(
     index = RuntimeIndex(seed_table_fixture["manifest_path"], rnd_seed=42)
     with pytest.raises(DiskgraphDataError, match="selected_stage_node_ids"):
         index.iter(
-            stage="train",
-            sampling_plan=_sampling_plan(),
-            entity_node_type="users",
-            batch_size=config.batch_size,
-            num_workers=config.num_workers,
-            worker_id=worker_id,
-            shuffle=False,
-            epoch=config.epoch,
-            selected_stage_node_ids=config.selected_stage_node_ids,
+            SamplingOptions(
+                stage="train",
+                sampling_plan=_sampling_plan(),
+                entity_node_type="users",
+                batch_size=config.batch_size,
+                num_workers=config.num_workers,
+                worker_id=worker_id,
+                shuffle=False,
+                epoch=config.epoch,
+                selected_stage_node_ids=config.selected_stage_node_ids,
+            )
         )
 
 
@@ -379,8 +384,8 @@ def test_named_neighborhoods_accept_native_plans_without_json(
         "epoch": 0,
         "batch_size": 2,
     }
-    native, _ = index.iter(**options)
-    legacy, _ = index.iter(**options)
+    native, _ = index.iter(SamplingOptions(**options))
+    legacy, _ = index.iter(SamplingOptions(**options))
     native.with_neighborhoods(
         {"context": {"plan": _sampling_plan(), "projections": {}}}
     )

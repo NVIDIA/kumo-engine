@@ -13,6 +13,7 @@ from diskgraph import (
     execute_tt_plan,
 )
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError
+from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 
 
@@ -51,9 +52,17 @@ def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path, par
 
     def sampled(stage, **options):
         batches, _ = index.iter(
-            stage=stage, sampling_plan=sampling, num_workers=1, worker_id=0,
-            shuffle=False, epoch=0, batch_size=32, entity_node_type="users",
-            **options,
+            SamplingOptions(
+                stage=stage,
+                sampling_plan=sampling,
+                num_workers=1,
+                worker_id=0,
+                shuffle=False,
+                epoch=0,
+                batch_size=32,
+                entity_node_type="users",
+                **options,
+            )
         )
         return {
             node for batch in batches
@@ -94,7 +103,15 @@ def test_runtime_index_accepts_extensions_without_fact_metadata(
     }))
     index = RuntimeIndex(str(runtime_manifest), num_threads=1)
     batches, size = index.iter(
-        stage="train", sampling_plan=SamplingPlan(), num_workers=1,
-        worker_id=0, shuffle=False, epoch=0, batch_size=32, entity_node_type="users",
+        SamplingOptions(
+            stage="train",
+            sampling_plan=SamplingPlan(),
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            batch_size=32,
+            entity_node_type="users",
+        )
     )
     assert sum(len(batch["task"]["input_ids"]) for batch in batches) == size > 0

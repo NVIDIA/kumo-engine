@@ -24,6 +24,11 @@ import pyarrow as pa
 import pytest
 import pytorch_lightning as pl
 import torch
+from diskgraph.sampling_options import (
+    InheritEngineSeed,
+    SamplingOptions,
+    WeightedSeedSampling,
+)
 from diskgraph.sampling_plan import LayerSpec, SamplingPlan
 from kumo_core.diskgraph.lightning_data import (
     DiskgraphLightningDataModule,
@@ -515,8 +520,10 @@ def _install_fake_diskgraph(
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
-        def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+        def iter(self, options: SamplingOptions):
+            kwargs = vars(options).copy()
+            if options.rnd_seed is InheritEngineSeed.DEFAULT:
+                kwargs["rnd_seed"] = self._rnd_seed
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
@@ -1118,11 +1125,9 @@ def test_binary_weighted_seed_sampling_sets_train_epoch_length_and_runtime_optio
 
     list(loader)
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "false_weight": 1.0,
-        "true_weight": 9.0,
-        "num_samples": 64,
-    }
+    assert calls["kwargs"]["weighted_seed_sampling"] == WeightedSeedSampling(
+        false_weight=1.0, true_weight=9.0, num_samples=64
+    )
 
 
 def test_weighted_seed_sampling_allocates_across_refit_stages(
@@ -1188,10 +1193,10 @@ def test_weighted_seed_sampling_allocates_across_refit_stages(
     }
 
     assert len(batches) == 4
-    assert options_by_stage["train"]["num_samples"] == 48
-    assert options_by_stage["val"]["num_samples"] == 16
-    assert options_by_stage["train"]["false_weight"] == 1.0
-    assert options_by_stage["val"]["true_weight"] == 9.0
+    assert options_by_stage["train"].num_samples == 48
+    assert options_by_stage["val"].num_samples == 16
+    assert options_by_stage["train"].false_weight == 1.0
+    assert options_by_stage["val"].true_weight == 9.0
 
 
 def test_weighted_seed_sampling_validates_every_refit_stage(tmp_path, ) -> None:
@@ -1359,10 +1364,9 @@ def test_weighted_seed_sampling_uses_row_weight_mass_for_epoch_length(
 
     list(dm.train_dataloader())
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "use_sample_weights": True,
-        "num_samples": 8,
-    }
+    assert calls["kwargs"]["weighted_seed_sampling"] == WeightedSeedSampling(
+        use_sample_weights=True, num_samples=8
+    )
 
 
 def test_weighted_seed_sampling_combines_row_and_class_weight_mass(
@@ -1423,12 +1427,9 @@ def test_weighted_seed_sampling_combines_row_and_class_weight_mass(
 
     list(dm.train_dataloader())
 
-    assert calls["kwargs"]["weighted_seed_sampling"] == {
-        "use_sample_weights": True,
-        "false_weight": 1.0,
-        "true_weight": 2.0,
-        "num_samples": 12,
-    }
+    assert calls["kwargs"]["weighted_seed_sampling"] == WeightedSeedSampling(
+        use_sample_weights=True, false_weight=1.0, true_weight=2.0, num_samples=12
+    )
 
 
 @pytest.mark.parametrize("stage,method_name", [
@@ -1569,7 +1570,7 @@ def test_explain_dataloader_pred_resolves_only_entity(
 
     list(dm.explain_dataloader("pred", torch.tensor([10, 12])))
     assert calls["kwargs"]["entity_node_type"] == "User"
-    assert "target_node_type" not in calls["kwargs"]
+    assert calls["kwargs"]["target_node_type"] is None
 
 
 def test_explain_dataloader_lp_pred_keeps_selected_rows(
@@ -3190,8 +3191,10 @@ def _install_grouped_fake_diskgraph(
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
-        def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+        def iter(self, options: SamplingOptions):
+            kwargs = vars(options).copy()
+            if options.rnd_seed is InheritEngineSeed.DEFAULT:
+                kwargs["rnd_seed"] = self._rnd_seed
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
@@ -3255,8 +3258,10 @@ def _install_grouped_fake_diskgraph_per_stage(
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
-        def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+        def iter(self, options: SamplingOptions):
+            kwargs = vars(options).copy()
+            if options.rnd_seed is InheritEngineSeed.DEFAULT:
+                kwargs["rnd_seed"] = self._rnd_seed
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
@@ -3415,8 +3420,10 @@ def _install_plain_fake_diskgraph(
             self._rnd_seed = rnd_seed
             self._num_threads = num_threads
 
-        def iter(self, **kwargs: Any):
-            kwargs.setdefault("rnd_seed", self._rnd_seed)
+        def iter(self, options: SamplingOptions):
+            kwargs = vars(options).copy()
+            if options.rnd_seed is InheritEngineSeed.DEFAULT:
+                kwargs["rnd_seed"] = self._rnd_seed
             if self._num_threads is not None:
                 kwargs.setdefault("num_threads", self._num_threads)
             return make_runtime_batch_iterator(self._ref, **kwargs)
