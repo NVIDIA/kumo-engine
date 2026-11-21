@@ -437,7 +437,7 @@ def test_extension_reference_preserves_index_local_layout(tmp_path, directory):
     ) == f"{directory}/task"
 
 
-def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp_path):
+def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp_path, request):
     from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
 
     parent = pathlib.Path(seed_table_fixture["parent_root"])
@@ -446,6 +446,7 @@ def test_index_local_symlink_keeps_its_catalog_namespace(seed_table_fixture, tmp
     shutil.copytree(parent / "train_tables" / seed_table_fixture["tt_id"], target)
     alias = parent / "train_tables" / "task-alias"
     alias.symlink_to(target, target_is_directory=True)
+    request.addfinalizer(alias.unlink)
     assert _extension_ref_from_stage_path(str(parent), str(alias)) == "train_tables/task-alias"
 
     manifest = json.loads(pathlib.Path(seed_table_fixture["manifest_path"]).read_text())
@@ -516,7 +517,7 @@ def test_extension_reference_resolves_symlink_before_parent_segment(tmp_path, pa
 @pytest.mark.parametrize("entrypoint", ["native", "manifest"])
 @pytest.mark.parametrize("kind", ["missing", "empty", "base", "base_alias", "index_local",
                                  "legacy_alias"])
-def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind, entrypoint):
+def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind, entrypoint, request):
     parent = pathlib.Path(seed_table_fixture["parent_root"])
     stage = tmp_path / "stage"
     if kind == "empty":
@@ -527,11 +528,13 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
         stage.symlink_to(parent, target_is_directory=True)
     elif kind == "index_local":
         stage = parent / "arbitrary-directory"
-        stage.mkdir(exist_ok=True)
+        stage.mkdir()
+        request.addfinalizer(lambda: shutil.rmtree(stage))
         (stage / "index_metadata.json").write_text("{}")
     elif kind == "legacy_alias":
         stage = parent / "train_tables" / ("base-alias-" + entrypoint)
         stage.symlink_to(parent, target_is_directory=True)
+        request.addfinalizer(stage.unlink)
     match = "base index" if kind in ("base", "base_alias", "legacy_alias") else "extension"
     if kind == "missing" and entrypoint == "native":
         match = "extension `stage`"
@@ -556,12 +559,13 @@ def test_runtime_rejects_non_extension_paths(seed_table_fixture, tmp_path, kind,
             )
 
 
-def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path):
+def test_nested_index_local_stage_path_is_rejected(seed_table_fixture, tmp_path, request):
     from diskgraph.runtime_batch_iterator import _extension_ref_from_stage_path
 
     parent = pathlib.Path(seed_table_fixture["parent_root"])
     nested = parent / "train_tables" / seed_table_fixture["tt_id"] / "nested"
     nested.mkdir()
+    request.addfinalizer(nested.rmdir)
     with pytest.raises(diskgraph.DiskgraphConfigError, match="index-local extension"):
         _extension_ref_from_stage_path(str(parent), str(nested))
 
@@ -584,7 +588,8 @@ def test_external_extension_metadata_is_validated_by_native_reader(seed_table_fi
     build_id = json.loads((original / "index_metadata.json").read_text())["index_build_id"]
     paths = ManagedIndexPaths(tmp_path / "managed", build_id)
     paths.index_dir.parent.mkdir(parents=True)
-    shutil.copytree(original, paths.index_dir)
+    # Never expand fixture symlinks while copying the base.
+    shutil.copytree(original, paths.index_dir, symlinks=True)
     external = paths.task_dir("not-an-index")
     external.mkdir(parents=True)
     (external / "index_metadata.json").write_text("{}")
