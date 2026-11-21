@@ -153,4 +153,4 @@ def test_gpu_registration_requires_real_cuda_and_matching_distribution(monkeypat
         workload.devices(profile)
     if available:
         monkeypatch.setattr(workload, 'package_version', lambda name: '2.9.1+cu128')
-        assert workload.devices(profile) == ('cpu', 'cuda')
+        assert workload.devices(profile) == ('cuda',)
