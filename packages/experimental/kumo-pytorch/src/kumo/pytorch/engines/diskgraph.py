@@ -650,7 +650,7 @@ class DiskGraphSource:
 
     def materialize_scalar_batches(self, sample, anchors, batch_size):
         """Scan native TT batches and evaluate scalar arrays without SampleRequests."""
-        from kumo.pytorch.engines.parquet_anchors import _files, _physical
+        from kumo.pytorch.engines.parquet_anchors import _entity_ids, _files, _physical
 
         physical = _physical(anchors)
         compiled = _TemporalPlanCompiler(self).compile(sample)
@@ -658,13 +658,16 @@ class DiskGraphSource:
             sample.entity.table, json.dumps(self._aggregate_plan(sample, compiled.plan))
         )
         entity = self._tables[sample.entity.table]
+        key_dtype = entity.columns[entity.primary_key]
         for path in _files(anchors.source.path):
             for batch in self._diskgraph.read_custom_tt_parquet_batches(
                 path, columns=sorted(set(physical.values())), batch_size=batch_size
             ):
                 started = time.perf_counter_ns()
                 columns = {name: batch.column(column) for name, column in physical.items()}
-                key_dtype = entity.columns[entity.primary_key]
+                columns[anchors.entity_id] = _entity_ids(
+                    columns[anchors.entity_id], key_dtype, path
+                )
                 keys = self._pa.array(
                     [
                         key_dtype.normalize(v, path="anchors.entity_id")

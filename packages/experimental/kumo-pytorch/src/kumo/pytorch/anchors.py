@@ -163,7 +163,12 @@ class AnchorTable:
     :param source: where the anchor rows are; the same source kinds `Dataset`
         binds.
     :param entity_id: input column holding each entity's primary-key value;
-        this maps request data, not the entity table's lookup column.
+        this maps request data, not the entity table's lookup column. When the
+        key is ``int64``, `Plan.materialize` on the DiskGraph engine reads
+        Parquet ``int8``/``int16``/``int32`` and scale-zero
+        ``decimal128``/``decimal256`` ids as ``int64``, and refuses a value
+        outside its range. Every role bound to this column, including metadata
+        and ``sample_id``, sees the ``int64`` values.
     :param as_of_time: column holding the prediction time. Required when any
         table in the contract declares a clock and refused, rather than ignored,
         when none does — see `DataLoaderSpec.requires_anchor_time`.
@@ -173,7 +178,8 @@ class AnchorTable:
     :param targets: typed external target name to the column supplying it.
         Declare its dtype with ``ExternalTarget`` in ``SampleSpec.targets``.
         A name also computed by the sample is refused, not resolved by precedence.
-    :param metadata: columns carried through to `Batch.metadata` untouched.
+    :param metadata: columns carried through to `Batch.metadata` untouched,
+        apart from the ``entity_id`` column's ``int64`` reading described above.
         Declared rather than free-form, so the table has one schema.
     :param candidates: candidate-set name to the nested column holding it.
     """

@@ -694,12 +694,12 @@ are a nested column per named set, which is the relational form of
 **Parameters**
 
 - `source`: where the anchor rows are; the same source kinds `Dataset` binds.
-- `entity_id`: input column holding each entity's primary-key value; this maps request data, not the entity table's lookup column.
+- `entity_id`: input column holding each entity's primary-key value; this maps request data, not the entity table's lookup column. When the key is `int64`, `Plan.materialize` on the DiskGraph engine reads Parquet `int8`/`int16`/`int32` and scale-zero `decimal128`/`decimal256` ids as `int64`, and refuses a value outside its range. Every role bound to this column, including metadata and `sample_id`, sees the `int64` values.
 - `as_of_time`: column holding the prediction time. Required when any table in the contract declares a clock and refused, rather than ignored, when none does — see `DataLoaderSpec.requires_anchor_time`.
 - `sample_id`: column identifying each anchor. Omit to use the anchor's position in the table, which is stable because the order is.
 - `split`: column to filter on, so one table can hold every split.
 - `targets`: typed external target name to the column supplying it. Declare its dtype with `ExternalTarget` in `SampleSpec.targets`. A name also computed by the sample is refused, not resolved by precedence.
-- `metadata`: columns carried through to `Batch.metadata` untouched. Declared rather than free-form, so the table has one schema.
+- `metadata`: columns carried through to `Batch.metadata` untouched, apart from the `entity_id` column's `int64` reading described above. Declared rather than free-form, so the table has one schema.
 - `candidates`: candidate-set name to the nested column holding it.
 
 #### `AnchorTable.columns`
