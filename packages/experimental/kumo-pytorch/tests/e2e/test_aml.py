@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import accumulate
 from pathlib import Path
-from statistics import mean, pstdev
 from typing import NamedTuple
 
 import pyarrow as pa
@@ -26,7 +25,7 @@ import torch
 from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_e01, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
-from tests.e2e.history import check_scalar_history
+from tests.e2e.history import check_normalized_aggregates, check_scalar_history
 from tests.test_inference_lifecycle import assert_same
 
 
@@ -268,20 +267,6 @@ def _source_counts(spec, root, cutoff, history):
     return counts
 
 
-def _check_counts(task, batch, counts, training):
-    actual = batch.inputs["aggregates"]
-    assert actual.keys() == counts[batch.metadata["sample_ids"][0]].keys()
-    for name, field in actual.items():
-        train = [counts[sample][name] for sample in training]
-        center, scale = mean(train), pstdev(train)
-        encoder = task.output("aggregates").field(name=name).encoder
-        assert (encoder.mean, encoder.scale) == pytest.approx((center, scale))
-        values = [(counts[s][name] - center) / scale for s in batch.metadata["sample_ids"]]
-        expected = torch.tensor(values, dtype=torch.float32)
-        torch.testing.assert_close(field["values"], expected, rtol=2e-6, atol=2e-6)
-        assert_same(field["valid"], torch.ones_like(expected, dtype=torch.bool))
-
-
 def test_li_medium_l01_combined_forecast(tmp_path):
     # The two train anchors share an account but differ on all twelve historical counts.
     # The other anchors cover a held-out currency, tied transfers and the 24-hour boundary.
@@ -314,6 +299,8 @@ def test_li_medium_l01_combined_forecast(tmp_path):
         assert (row["next_amount"], row["next_currency"]) == pair
         answers[row["forecast_split"]][sample] = pair
 
+    first, second = answers["train"]
+    assert all(value != counts[second][name] for name, value in counts[first].items())
     (train_currency,) = {currency for _, currency in answers["train"].values()} - {None}
     currency_ids = {train_currency: 2}
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
@@ -334,7 +321,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             ]
             _check_graph(task, batch, selected)
             _check_history(task, batch, selected)
-            _check_counts(task, batch, counts, answers["train"])
+            check_normalized_aggregates(task, batch, counts, answers["train"])
 
         # The source records both labels together. Mask one head at a time to test native delivery.
         projected = pq.read_table(table.source.path)

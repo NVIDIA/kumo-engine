@@ -2,15 +2,36 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare flattened model histories with timestamped scalar fields from source rows."""
+"""Compare native batch histories and aggregates with answers from source rows."""
 
 from bisect import bisect_right
 from datetime import UTC, datetime
+from statistics import mean, pstdev
 
+import pytest
 import torch
 
 from kumo.pytorch import api
 from tests.test_inference_lifecycle import assert_same
+
+
+def check_normalized_aggregates(task, batch, answers, training, *, raw_only=()):
+    samples = batch.metadata["sample_ids"]
+    actual = batch.inputs["aggregates"]
+    assert actual.keys() == answers[samples[0]].keys() - set(raw_only)
+    for name, field in actual.items():
+        train = [v for s in training if (v := answers[s][name]) is not None]
+        center, scale = (mean(train), pstdev(train) or 1.0) if train else (0.0, 1.0)
+        encoder = task.output("aggregates").field(name=name).encoder
+        assert encoder.config == api.ZScore()
+        assert (encoder.mean, encoder.scale) == pytest.approx((center, scale))
+        values = [answers[s][name] for s in samples]
+        valid = torch.tensor([v is not None for v in values], dtype=torch.bool)
+        assert_same(field["valid"], valid)
+        expected = torch.tensor(
+            [(v - center) / scale for v in values if v is not None], dtype=torch.float32
+        )
+        torch.testing.assert_close(field["values"][valid], expected, rtol=2e-6, atol=2e-6)
 
 
 def scalar_token(encoder, space, value):
