@@ -36,12 +36,12 @@ python -m pytest -q tests/e2e/test_aml.py tests/e2e/test_synthetic.py
 Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
 `prepare_e01` (HI Small) or `prepare_l01` (LI Medium) in `e2e.datasets.aml`. Both take
 `(files, fresh_directory, anchor_rows=rows)` and return the contract, dataset and anchors.
-For Synthetic Medium, `load_s02(files)` and `prepare_s02(tables, fresh_directory)` in
-`e2e.datasets.synthetic` use four weekly-customer anchors. Fit with `fit_split="train"` and
-`encoder_cutoff` one second before the latest training anchor. The S02 manifest pins every shard
-containing an event for either customer, including transfers received from another partition.
-`load_s02` checks the selected event IDs against a full scan of the 1,610 published shards before
-applying any time cutoff. To repeat that scan, supply all verified shard paths keyed by `<table>/<filename>`.
+For Synthetic Medium, `load_synthetic(root, entity_type)` and `prepare_synthetic(tables, fresh_directory, entity_type)`
+in `e2e.datasets.synthetic` accept `"customer"` (S02, four weekly anchors) or `"account"` (S01, three).
+Both use the same source shards, including incoming transfers from another partition. The loader checks
+their event IDs against a full scan of all 1,610 published shards before applying a time cutoff.
+To repeat the scan, pass `read_synthetic(files, entity_type)` the verified files with all shards keyed by
+`<table>/<filename>`. Fit with `fit_split="train"` and `encoder_cutoff` one second before the latest training anchor.
 
 ## The H&M-shaped dataset
 

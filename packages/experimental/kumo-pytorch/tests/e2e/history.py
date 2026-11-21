@@ -13,6 +13,15 @@ from kumo.pytorch import api
 from tests.test_inference_lifecycle import assert_same
 
 
+def scalar_token(encoder, space, value):
+    assert value is not None
+    if isinstance(encoder.config, api.Buckets):
+        local = bisect_right(encoder.boundaries, float(value)) + 1
+    else:
+        local = dict(encoder.entries).get(value, encoder.config.unknown_id)
+    return space.members[encoder.identity][local]
+
+
 def check_scalar_history(task, batch, fields, histories):
     fields = {"age_range": api.Buckets(bins=64), **fields}
     for name, values in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
@@ -20,15 +29,6 @@ def check_scalar_history(task, batch, fields, histories):
     bindings = task.output("history").bindings
     assert {name: binding.encoder.config for name, binding in bindings.items()} == fields
     space = task.spaces["history"]
-
-    def token(name, value):
-        encoder = bindings[name].encoder
-        assert value is not None
-        if isinstance(fields[name], api.Buckets):
-            local = bisect_right(encoder.boundaries, float(value)) + 1
-        else:
-            local = dict(encoder.entries).get(value, encoder.config.unknown_id)
-        return space.members[encoder.identity][local]
 
     stream = batch.inputs["history"]
     valid = stream["valid"]
@@ -54,7 +54,10 @@ def check_scalar_history(task, batch, fields, histories):
                 weekday=stamp.weekday(),
                 day=stamp.day,
             )
-            expected.append((seconds, tuple(token(n, values[n]) for n in fields if n in values)))
+            tokens = tuple(
+                scalar_token(bindings[n].encoder, space, values[n]) for n in fields if n in values
+            )
+            expected.append((seconds, tokens))
         mask = valid[owner]
         size = max(0, sum(len(record) + 1 for _, record in expected) - 1 - int(target is not None))
         assert_same(mask, torch.arange(mask.numel()) < size)

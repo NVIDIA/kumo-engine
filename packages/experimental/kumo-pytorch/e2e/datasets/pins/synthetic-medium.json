@@ -3,24 +3,8 @@
   "bucket": "kumo-engine-arena",
   "region": "us-west-2",
   "expected_bucket_owner": "926922431314",
-  "anchor_rows": [
-    44425727,
-    44437340,
-    44444036,
-    44448395
-  ],
   "event_ids_sha256": "2924c66eef053bdd71a709c099ec9293e2677457586355a8da9d050593f7a82b",
   "objects": {
-    "anchor_manifest": {
-      "key": "anchors/pragma-synthetic-medium/v1/weekly-customer/v1/manifest.json",
-      "size": 14013,
-      "sha256": "72328f1cc0b1d4208b84b0b96df56b6b03005072d4ed576cc7099e1a73c16c05"
-    },
-    "anchors": {
-      "key": "anchors/pragma-synthetic-medium/v1/weekly-customer/v1/anchors.parquet",
-      "size": 107928518,
-      "sha256": "206d97b0a98787e551ffc24c84811b69c8902ca54084824e9bdbe82eac23d510"
-    },
     "source_manifest": {
       "key": "datasets/pragma-synthetic/medium/v1/manifest.json",
       "size": 483775,

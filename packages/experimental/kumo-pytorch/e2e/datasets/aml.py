@@ -17,6 +17,7 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from e2e.datasets import bind_tables
 from kumo.pytorch import api
 
 E01_MANIFEST = Path(__file__).parent / "pins" / "aml-e01.json"
@@ -280,19 +281,4 @@ def _prepare_aml(files, directory, anchor_rows, targets, *, combined=False):
         pq.write_table(accounts, work / "accounts.parquet")
         pq.write_table(selection, work / "anchors.parquet")
         work.rename(directory)
-    dataset = api.Dataset(
-        {
-            table.name: api.Parquet(str(directory / f"{table.name}.parquet"))
-            for table in contract.schema.tables
-        }
-    )
-    anchors = api.AnchorTable(
-        api.Parquet(str(directory / "anchors.parquet")),
-        "entity_id",
-        "as_of_time",
-        sample_id="sample_id",
-        split="split",
-        targets={name: name for name in targets},
-        metadata=("registered_entity_id", "prediction_time_ns", "anchor_row_position"),
-    )
-    return contract.resolve(dataset=dataset), dataset, anchors
+    return bind_tables(directory, contract, "entity_id", targets)
