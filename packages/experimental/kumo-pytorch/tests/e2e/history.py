@@ -5,7 +5,9 @@
 """Compare native graphs, histories and aggregates with answers from source rows."""
 
 from bisect import bisect_right
+from collections import Counter
 from datetime import UTC, datetime
+from itertools import accumulate, groupby
 from statistics import mean, pstdev
 
 import pytest
@@ -81,19 +83,35 @@ def check_normalized_aggregates(task, batch, answers, training, *, raw_only=()):
         torch.testing.assert_close(field["values"][valid], expected, rtol=2e-6, atol=2e-6)
 
 
+def _scalar_id(encoder, value):
+    if value is None:
+        return 0
+    if isinstance(encoder.config, api.Buckets):
+        return bisect_right(encoder.boundaries, float(value)) + 1
+    return dict(encoder.entries).get(value, encoder.config.unknown_id)
+
+
 def scalar_token(encoder, space, value):
     assert value is not None
-    if isinstance(encoder.config, api.Buckets):
-        local = bisect_right(encoder.boundaries, float(value)) + 1
-    else:
-        local = dict(encoder.entries).get(value, encoder.config.unknown_id)
-    return space.members[encoder.identity][local]
+    return space.members[encoder.identity][_scalar_id(encoder, value)]
 
 
-def check_scalar_history(task, batch, fields, histories):
+def _history_fields(fields):
     fields = {"age_range": api.Buckets(bins=64), **fields}
     for name, values in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
         fields[name] = api.Vocabulary(values=tuple((i, i + 2) for i in values))
+    return fields
+
+
+def _event_values(cutoff, seconds, fields):
+    stamp = datetime.fromtimestamp(seconds, UTC)
+    return dict(
+        fields, age_range=cutoff - seconds, hour=stamp.hour, weekday=stamp.weekday(), day=stamp.day
+    )
+
+
+def check_scalar_history(task, batch, fields, histories):
+    fields = _history_fields(fields)
     bindings = task.output("history").bindings
     assert {name: binding.encoder.config for name, binding in bindings.items()} == fields
     space = task.spaces["history"]
@@ -114,14 +132,7 @@ def check_scalar_history(task, batch, fields, histories):
     for owner, (cutoff, history) in enumerate(histories):
         expected = []
         for seconds, fields_from_source in history:
-            stamp = datetime.fromtimestamp(seconds, UTC)
-            values = dict(
-                fields_from_source,
-                age_range=cutoff - seconds,
-                hour=stamp.hour,
-                weekday=stamp.weekday(),
-                day=stamp.day,
-            )
+            values = _event_values(cutoff, seconds, fields_from_source)
             tokens = tuple(
                 scalar_token(bindings[n].encoder, space, values[n]) for n in fields if n in values
             )
@@ -155,3 +166,93 @@ def check_scalar_history(task, batch, fields, histories):
             sources.extend([index] * len(record))
         assert stream["source_event_indices"][owner][mask].tolist() == sources[:size]
         offset += len(history)
+
+
+def source_vocabulary(values):
+    counts = Counter(value for value in values if value is not None)
+    return {key: i for i, key in enumerate(sorted(counts, key=lambda k: (-counts[k], k)), 2)}
+
+
+def check_mbd_packed_history(task, batch, registered, events, fields):
+    def labels(row):
+        amount = row["amount"]
+        positive = None if amount is None else ("abnormal" if amount > 0 else "normal")
+        return row["event_type"], row["event_subtype"], positive
+
+    samples = batch.metadata["sample_ids"]
+    histories = {
+        sample: sorted(event for event in events[row["entity_id"]] if event[0] < row["as_of_time"])
+        for sample, row in registered.items()
+    }
+    heads = ("event_type", "event_subtype", "positive_amount")
+    training = [
+        labels(row)
+        for s, h in histories.items()
+        if registered[s]["split"] == "train"
+        for _, _, row in h
+    ]
+    aux = [source_vocabulary(row[i] for row in training) for i in range(len(heads))]
+    bindings = task.target("aligned").bindings
+    assert set(bindings) == set(heads)
+    for name, vocab in zip(heads, aux, strict=True):
+        encoder = bindings[name].encoder
+        assert encoder.config == api.Vocabulary() and dict(encoder.entries) == vocab
+    state = task.fitted_state.to_dict()
+    assert state["targets"]["aligned"]["thresholds"] == {"positive_amount": 0.0}
+
+    withheld = {"event_type", "event_subtype", "amount", "event_time_seconds"}
+    fields = _history_fields({k: v for k, v in fields.items() if k not in withheld})
+    encoders = task.output("history").bindings
+    event_encoders = task.output("events").bindings
+    for bindings in (encoders, event_encoders):
+        assert {k: b.encoder.config for k, b in bindings.items()} == fields
+    composite = {tuple(map(tuple, key)): i for key, i in state["inputs"]["history"]["composite"]}
+    space = task.spaces["history"].members['["composite","history"]']
+
+    def record(cutoff, row):
+        values = _event_values(cutoff, row["event_time_seconds"], row)
+        scalars, key = [], []
+        for name, binding in encoders.items():
+            encoder = binding.encoder
+            value = values[name]
+            scalars.append((_scalar_id(event_encoders[name].encoder, value), value is not None))
+            key.append(
+                ("missing", str(encoder.dtype))
+                if value is None
+                else (type(encoder.config).__name__, _scalar_id(encoder, value))
+            )
+        aligned = [
+            (0 if v is None else vocab.get(v, 1), v is not None)
+            for v, vocab in zip(labels(row), aux, strict=True)
+        ]
+        return (space[composite.get(tuple(key), 1)], *scalars, *aligned)
+
+    lengths = [len(histories[s]) for s in samples]
+    offsets = torch.tensor(list(accumulate(lengths, initial=0)))
+    size = sum(lengths)
+    layout = dict(offsets=offsets, cu_seqlens=offsets.int(), max_seqlen=max(lengths, default=0))
+    valid = torch.ones(size, dtype=torch.bool)
+    assert set(batch.inputs) == {"history", "events", "identity"}
+    history, columns = batch.inputs["history"], batch.inputs["events"]
+    aligned = batch.targets["aligned"]
+    tokens = history["value_ids"]
+    assert tokens.dtype == torch.int64 and tokens.shape == (size,)
+    indices = dict(position_ids=torch.zeros_like(tokens), source_event_indices=torch.arange(size))
+    assert_same(history, dict(layout, **indices, valid=valid, value_ids=tokens))
+    assert_same(columns["valid"], valid)
+    packed = [tokens.tolist()]
+    for stream, names, extras in ((columns, encoders, {"valid"}), (aligned, heads, set())):
+        assert set(stream) == layout.keys() | set(names) | extras
+        assert_same({k: stream[k] for k in layout}, layout)
+        for name in names:
+            values, mask = stream[name]["values"], stream[name]["valid"]
+            assert values.dtype == torch.int64 and mask.dtype == torch.bool
+            assert values.shape == mask.shape == (size,)
+            packed.append(zip(values.tolist(), mask.tolist(), strict=True))
+    actual = iter(zip(*packed, strict=True))
+    for sample in samples:
+        cutoff = registered[sample]["as_of_time"] // 10**9
+        for ns, tied in groupby(histories[sample], key=lambda event: event[0]):
+            expected = [record(cutoff, row) for _, _, row in tied]
+            # Only complete events sharing an original nanosecond can exchange positions.
+            assert sorted(next(actual) for _ in expected) == sorted(expected), (sample, ns)

@@ -25,6 +25,9 @@ def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, P
     spec = json.loads(manifest.read_text())
     if spec["version"] != 1 or not spec["objects"]:
         raise ValueError(f"Invalid dataset manifest: {manifest}")
+    if shared := spec.get("include_objects_from"):
+        shared_objects = json.loads(manifest.with_name(shared).read_text())["objects"]
+        spec["objects"] = shared_objects | spec["objects"]
     root = root.resolve()
     files = {}
     for name, pin in spec["objects"].items():

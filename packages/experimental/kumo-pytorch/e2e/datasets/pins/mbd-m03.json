@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "include_objects_from": "mbd-m04.json",
+  "anchor_rows": [
+    3950478,
+    3583375,
+    9371016,
+    2528648
+  ],
+  "event_ids_sha256": "9dcf46db63d2325f8b76182b7c85c967847d5ec1cdde2c21f98263555624b409",
+  "objects": {
+    "anchor_manifest": {
+      "key": "anchors/mbd/v1/transaction-forecast/v1/manifest.json",
+      "size": 36195,
+      "sha256": "404ff82d14061b1b7b36d40626d0acf874662d4c1af662f4dd630b6eb598b7b2"
+    },
+    "anchors": {
+      "key": "anchors/mbd/v1/transaction-forecast/v1/anchors.parquet",
+      "size": 963703701,
+      "sha256": "5a6476f7fc67761595ac063ba9892a8d9fbc08ff0f6e73b4dc8b4983efbbd5b6"
+    }
+  }
+}

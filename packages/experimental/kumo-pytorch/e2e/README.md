@@ -44,11 +44,12 @@ their event IDs against a full scan of all 1,610 published shards before applyin
 To repeat the scan, pass `read_synthetic(files, entity_type)` the verified files with all shards keyed by
 `<table>/<filename>`. Fit with `fit_split="train"` and `encoder_cutoff` one second before the latest training anchor.
 
-For MBD M04, use `read_m04(verify(root, M04_MANIFEST))` and `prepare_m04(tables, fresh_directory)`
-from `e2e.datasets.mbd`. The three registered clients have complete histories in transaction parts
-00171 (fold 0), 00014 (fold 3), and 00196 (fold 4). The nine pinned objects total 1,029,139,562 bytes.
+For MBD, use `load_mbd(root, manifest)` and `prepare_mbd(tables, fresh_directory)`
+from `e2e.datasets.mbd`. Use `M04_MANIFEST` for 30-day counts or `M03_MANIFEST` for category forecasts.
+Both use transaction parts 00171 (fold 0), 00014 (fold 3), and 00196 (fold 4). M04 stages nine objects
+totaling 1,029,139,562 bytes. M03 adds only the v1 anchor pair (963,739,896 bytes) to the shared nightly cache.
 To verify the extract against all clients and transactions, add the original shards to the file mapping
-using their paths from `extraction.json` and call `read_m04` again.
+using their paths from `extraction.json` and call `read_mbd(files, manifest)` again.
 
 ## The H&M-shaped dataset
 

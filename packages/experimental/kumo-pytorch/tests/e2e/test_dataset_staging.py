@@ -34,6 +34,8 @@ def test_stage_pinned_datasets(tmp_path, monkeypatch):
             "expected_bucket_owner": "123456789012",
             "objects": {"table": pin},
         }
+        if key == "two":
+            spec.update(include_objects_from="one.json", objects={"second": pin})
         manifest = tmp_path / f"{key}.json"
         manifest.write_text(json.dumps(spec))
         manifests.append(manifest)
@@ -48,6 +50,7 @@ def test_stage_pinned_datasets(tmp_path, monkeypatch):
         payload = b"ok"
         assert verify(root, manifests[0], download=True) == {"table": root / "one"}
     (root / "two").write_bytes(payload)
+    assert verify(root, manifests[1]) == {"table": root / "one", "second": root / "two"}
     command = [sys.executable, "-m", "e2e.datasets.staging", *manifests, "--root", root]
     # Fully cached inputs work with no AWS executable.
     monkeypatch.setenv("PATH", "")

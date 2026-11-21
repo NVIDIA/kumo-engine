@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""MBD's registered 30-day transaction count and historical client graph."""
+"""Registered MBD transaction forecasts over complete client histories."""
 
 import hashlib
 import json
@@ -17,9 +17,12 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from e2e.datasets import bind_tables
+from e2e.datasets.staging import verify
 from kumo.pytorch import api
 
 M04_MANIFEST = Path(__file__).parent / "pins" / "mbd-m04.json"
+M03_MANIFEST = M04_MANIFEST.with_name("mbd-m03.json")
+_HEADS = ("event_type", "event_subtype")
 CATEGORIES = (
     "currency",
     "event_type",
@@ -35,12 +38,20 @@ CATEGORIES = (
 )
 
 
-def read_m04(files):
+def load_mbd(root, manifest=M04_MANIFEST):
+    """Load a registered forecast from its anchors and the shared MBD sources."""
+    return read_mbd(verify(root, manifest), manifest)
+
+
+def read_mbd(files, manifest=M04_MANIFEST):
     """Return original anchors and transactions with their full-source physical identities."""
-    pin = json.loads(M04_MANIFEST.read_text())
+    pin = json.loads(manifest.read_text())
+    source_pin = pin
+    if shared := pin.get("include_objects_from"):
+        source_pin = json.loads(manifest.with_name(shared).read_text())
     published = json.loads(files["anchor_manifest"].read_text())
     if published["files"][0]["sha256"] != pin["objects"]["anchors"]["sha256"]:
-        raise ValueError("M04 anchor payload disagrees with its manifest")
+        raise ValueError("MBD anchor payload disagrees with its manifest")
     positions = pin["anchor_rows"]
     anchor_columns = [
         "sample_id",
@@ -48,19 +59,24 @@ def read_m04(files):
         "source_fold",
         "split",
         "as_of_time",
-        "graph_as_of_time",
-        "outcome_end",
-        "future_count",
     ]
-    anchors = ds.dataset(files["anchors"]).take(positions, columns=anchor_columns)
+    anchor_data = ds.dataset(files["anchors"])
+    if "graph_as_of_time" in anchor_data.schema.names:
+        anchor_columns.extend(("graph_as_of_time", "outcome_end", "future_count"))
+    else:
+        anchor_columns.append("outcome_end")
+        anchor_columns.extend(
+            f"next_{name}{suffix}" for name in _HEADS for suffix in ("", "_valid")
+        )
+    anchors = anchor_data.take(positions, columns=anchor_columns)
     anchors = anchors.append_column("anchor_row_position", pa.array(positions))
     clients = anchors["entity_id"].unique()
     # All clients occur in the monthly anchors. Their sorted IDs match all five membership files.
     batches = pq.ParquetFile(files["anchors"]).iter_batches(columns=["entity_id"])
     names = pc.unique(pa.chunked_array([pc.unique(b.column(0)) for b in batches])).sort()
     encoded = pc.binary_join_element_wise(names, "\n", "").buffers()[2]
-    if hashlib.sha256(encoded).hexdigest() != pin["client_ids_sha256"]:
-        raise ValueError("M04 client identities differ from the full membership")
+    if hashlib.sha256(encoded).hexdigest() != source_pin["client_ids_sha256"]:
+        raise ValueError("MBD client identities differ from the full membership")
     ranks = dict(
         zip(clients.to_pylist(), pc.index_in(clients, value_set=names).to_pylist(), strict=True)
     )
@@ -80,13 +96,13 @@ def read_m04(files):
             offset += entry["rows"]
         if name not in files:
             continue
-        if name in pin["objects"]:
-            digest = pin["objects"][name]["sha256"]
+        if name in source_pin["objects"]:
+            digest = source_pin["objects"][name]["sha256"]
         else:  # Optional full-source replay supplies extra files outside the nightly pin.
             with files[name].open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if digest != entry["sha256"]:
-            raise ValueError(f"M04 shard disagrees with its published manifest: {name}")
+            raise ValueError(f"MBD shard disagrees with its published manifest: {name}")
         fold = int(source.name.removeprefix("fold="))
         parquet = pq.ParquetFile(files[name])
         owners = parquet.read(columns=["client_id"])["client_id"]
@@ -101,23 +117,23 @@ def read_m04(files):
                 membership.get(c) == fold for c in rows["client_id"].unique().to_pylist()
             )
             if not owners_match or rows["fold"].unique().to_pylist() != [fold]:
-                raise ValueError("M04 transaction disagrees with its source fold")
+                raise ValueError("MBD transaction disagrees with its source fold")
             pieces.append(rows.append_column("event_id", pc.add(selected.cast(pa.int64()), base)))
     for row in anchors.to_pylist():
         fold = membership[row["entity_id"]]
         split = ("train", "train", "train", "valid", "test")[fold]
         if (fold, split) != (row["source_fold"], row["split"]):
-            raise ValueError("M04 anchor disagrees with its source fold")
+            raise ValueError("MBD anchor disagrees with its source fold")
     if not pieces:
-        raise ValueError("M04 extract contains no transactions for the selected clients")
+        raise ValueError("MBD extract contains no transactions for the selected clients")
     transactions = pa.concat_tables(pieces, promote_options="permissive")
     ids = transactions["event_id"].combine_chunks().sort().to_numpy().astype("<i8", copy=False)
     if hashlib.sha256(ids).hexdigest() != pin["event_ids_sha256"]:
-        raise ValueError("M04 event IDs differ from the complete published client histories")
+        raise ValueError("MBD event IDs differ from the complete published client histories")
     return anchors, transactions, ranks
 
 
-def _contract(fanout):
+def _contract(ids, categories):
     relation = api.RelationSpec(
         "client_transactions", "roots", "root_id", "transactions", "root_id"
     )
@@ -128,6 +144,9 @@ def _contract(fanout):
         ),
         (relation,),
     )
+    if categories:
+        return _category_contract(schema, relation.name)
+    fanout = max(Counter(ids.to_pylist()).values(), default=1)
     layer = api.GraphLayer((api.GraphSample(relation.name, fanout, time_column="event_time"),))
     future = api.Rows((relation.name,), api.TimeWindow("event_time", 0, 30 * 86400))
     targets = {
@@ -159,28 +178,83 @@ def _contract(fanout):
     )
 
 
+def _category_contract(schema, relation):
+    event = {name: api.Field(name) for name in ("amount", *CATEGORIES)}
+    event.update(age_range=api.EventTimeDelta("seconds"), __event_time=api.Field("event_time"))
+    fields = [api.Encode("age_range", api.Buckets(bins=64))]
+    fields.extend(api.Encode(name, api.Vocabulary()) for name in CATEGORIES if name not in _HEADS)
+    for name, domain in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
+        event[name] = api.Derived(api.CalendarPart(name), ("__event_time",))
+        fields.append(api.Encode(name, api.Vocabulary(values=tuple((i, i + 2) for i in domain))))
+    rows = api.Rows((relation,), api.TimeWindow("event_time", stop=-1))
+    sample = api.SampleSpec(
+        api.EntitySpec("roots", entity_type="client"),
+        events={"transactions": api.EventSpec(rows, event)},
+        entity_values={"root_id": api.Field("root_id")},
+        targets={name: api.ExternalTarget(api.DType("string")) for name in _HEADS},
+    )
+    history = api.Fields(
+        tuple(fields), row=api.Composite(id_space="history"), history=api.Grouped()
+    )
+    inputs = {
+        "history": api.Input(api.EventSource(("transactions",)), history, api.Packed()),
+        "events": api.Input(api.EventsOf("history"), api.Fields(tuple(fields)), api.Packed()),
+        "identity": api.Input(
+            api.EntitySource(), api.Fields((api.Encode("root_id", api.Raw()),)), api.Separate()
+        ),
+    }
+    targets = {name: api.LabelTarget(name, api.Vocabulary()) for name in _HEADS}
+    positive = api.ThresholdEventLabel(
+        "positive_amount", "amount", api.DType("string"), api.Vocabulary(), threshold=0.0
+    )
+    targets["matching"] = api.MatchingGroupTarget("identity", ("root_id",))
+    targets["aligned"] = api.AlignedEventTarget(
+        "events", tuple(api.Encode(name, api.Vocabulary()) for name in _HEADS), (positive,)
+    )
+    roles = {name: f"[{name.upper()}]" for name in ("pad", "unknown", "mask", "entity", "event")}
+    batch = api.BatchSpec(
+        inputs,
+        targets,
+        id_spaces={"history": api.IdSpace(dict(roles, separator="[SEP]"))},
+        batching=api.Batching(max_samples=32),
+    )
+    return api.DataLoaderSpec(schema, sample, batch)
+
+
 def _category(value):
     if value is None or not math.isfinite(value):
         return None
     return str(int(value)) if int(value) == value else repr(value)
 
 
-def prepare_m04(tables, directory):
-    """Bind projected source rows and v2 anchors for the package test or a benchmark."""
+def prepare_mbd(tables, directory):
+    """Bind projected source rows and registered anchors for the package test or a benchmark."""
     anchors, transactions, ranks = tables
+    categories = "next_event_type" in anchors.column_names
     if directory.exists():
         raise FileExistsError(directory)
     directory.parent.mkdir(parents=True, exist_ok=True)
     ids = pa.array([ranks[name] for name in transactions["client_id"].to_pylist()], pa.int64())
     seconds = pc.floor_temporal(transactions["event_time"], unit="second").cast(pa.timestamp("s"))
+    nanoseconds = transactions["event_time"].cast(pa.int64())
+    event_ids = transactions["event_id"]
+    if categories:
+        # Native clocks are whole seconds. Preserve original signed ns and file/row order.
+        wide = pa.decimal128(20, 0)
+        biased_ns = pc.add(nanoseconds.cast(wide), pa.scalar(2**63, wide))
+        event_ids = pc.binary_join_element_wise(
+            pc.utf8_lpad(biased_ns.cast(pa.string()), 20, "0"),
+            pc.utf8_lpad(event_ids.cast(pa.string()), 20, "0"),
+            ":",
+        )
     amounts = transactions["amount"].cast(pa.float64())
     events = pa.table(
         {
-            "event_id": transactions["event_id"],
+            "event_id": event_ids,
             "root_id": ids,
             "event_time": seconds.cast(pa.timestamp("ms")),
             "event_time_seconds": seconds.cast(pa.int64()),
-            "event_time_ns": transactions["event_time"].cast(pa.int64()),
+            "event_time_ns": nanoseconds,
             "amount": pc.if_else(pc.is_finite(amounts), amounts, None),
             **{
                 n: pa.array([_category(v) for v in transactions[n].to_pylist()], pa.string())
@@ -188,17 +262,28 @@ def prepare_m04(tables, directory):
             },
         }
     )
+    if categories:
+        labels = {}
+        for name in _HEADS:
+            valid = anchors[f"next_{name}_valid"]
+            if valid.null_count:
+                raise ValueError(f"Missing MBD forecast validity: {name}")
+            labels[name] = pc.if_else(valid, anchors[f"next_{name}"].cast(pa.string()), None)
+    else:
+        labels = {
+            "original_count": anchors["future_count"],
+            "count": anchors["future_count"].cast(pa.float32(), safe=False),
+        }
     projected = pa.table(
         {
             "sample_id": anchors["sample_id"],
             "root_id": [ranks[n] for n in anchors["entity_id"].to_pylist()],
             "registered_entity_id": anchors["entity_id"],
             "prediction_time_ns": anchors["as_of_time"].cast(pa.int64()),
-            "as_of_time": anchors["graph_as_of_time"],
+            "as_of_time": anchors["as_of_time" if categories else "graph_as_of_time"],
             "split": anchors["split"],
             "anchor_row_position": anchors["anchor_row_position"],
-            "original_count": anchors["future_count"],
-            "count": anchors["future_count"].cast(pa.float32(), safe=False),
+            **labels,
         }
     )
     with TemporaryDirectory(dir=directory.parent) as temp:
@@ -207,5 +292,9 @@ def prepare_m04(tables, directory):
         pq.write_table(events, work / "transactions.parquet")
         pq.write_table(projected, work / "anchors.parquet")
         work.rename(directory)
-    fanout = max(Counter(ids.to_pylist()).values(), default=1)
-    return bind_tables(directory, _contract(fanout), "root_id", targets=("count",))
+    targets = _HEADS if categories else ("count",)
+    return bind_tables(directory, _contract(ids, categories), "root_id", targets=targets)
+
+
+read_m04 = read_mbd
+prepare_m04 = prepare_mbd
