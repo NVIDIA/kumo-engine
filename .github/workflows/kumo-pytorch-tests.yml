@@ -8,26 +8,7 @@ name: kumo-pytorch tests
 # suite, style and the package build. The in-memory engine computes column
 # statistics with DiskGraph's collector, so DiskGraph is built from this commit.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-tests.yml'
   workflow_dispatch:
-  schedule:
-    - cron: '17 10 * * *'
 
 permissions:
   contents: read
@@ -47,13 +28,14 @@ jobs:
 
   cpu:
     name: kumo-pytorch-tests
-    if: github.event_name != 'schedule' || github.repository != 'NVIDIA/kumo-engine' || github.ref != 'refs/heads/main'
+    if: false
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps: &package_steps
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
+          ref: 7571ab2f1117dea282ce421653244e32dbe35aae
           persist-credentials: false
       - id: aws
         if: env.STAGE_PINNED_DATASETS == 'true'
@@ -79,6 +61,7 @@ jobs:
         run: |
           root="$RUNNER_TEMP/kumo-pytorch-data"
           python3 -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$root"
+          find "$root" -type f -printf 'Verified %s bytes  %P\n' | sort
           echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
           # Bash also reads this before running package code inside the shared setup action.
           echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
@@ -89,7 +72,7 @@ jobs:
       - name: Golden cases on the in-memory engine
         run: python -m conformance --engine in_memory
       - name: Test suite
-        run: python -m pytest -q
+        run: python -m pytest -v
       - name: Style
         run: |
           uvx ruff@0.17.3 check .
@@ -99,7 +82,7 @@ jobs:
 
   nightly:
     name: kumo-pytorch-tests (nightly datasets)
-    if: github.event_name == 'schedule' && github.repository == 'NVIDIA/kumo-engine' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'NVIDIA/kumo-engine' && github.ref == 'refs/heads/codex/nightly-453-7571ab2f-once'
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -110,6 +93,6 @@ jobs:
     steps: *package_steps
 
   hm-lifecycle:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/nightly-453-7571ab2f-once'
     needs: diskgraph-wheel
     uses: ./.github/workflows/_kumo-pytorch-t2b.yml

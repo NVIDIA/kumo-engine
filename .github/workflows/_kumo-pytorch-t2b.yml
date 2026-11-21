@@ -25,6 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: 7571ab2f1117dea282ce421653244e32dbe35aae
           persist-credentials: false
       - id: matrix
         run: echo "matrix=$(python3 tests/e2e/tiers.py t2b)" >> "$GITHUB_OUTPUT"
@@ -40,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: 7571ab2f1117dea282ce421653244e32dbe35aae
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
@@ -65,6 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: 7571ab2f1117dea282ce421653244e32dbe35aae
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
@@ -83,7 +86,7 @@ jobs:
         env:
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
-          python -m pytest -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+          python -m pytest -v --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
             tests/e2e/test_lifecycle.py
       - name: Summarize metrics and run times
         if: ${{ always() }}
@@ -133,6 +136,7 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: 7571ab2f1117dea282ce421653244e32dbe35aae
           persist-credentials: false
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
