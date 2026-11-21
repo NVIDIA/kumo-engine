@@ -89,9 +89,9 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
 - Choose the predictive problem, target, horizon, graph, or tuning for the user — refuse and name
   the minimum inputs needed
 - Join, clean, deduplicate, aggregate, create labels, or transform data **as model input**.
-  Diagnostic scalar aggregates during preflight — reported as proposal evidence, never written and
-  never fed to training — are not this; they exist so a key can be checked before it silently
-  discards rows
+  Diagnostic scalar aggregates during preflight or in a notebook's read-only check cell — reported
+  as evidence, never written and never fed to training — are not this; they exist so a key or a
+  link can be checked before it silently discards rows
 - Search for, rank, or curate tables by business relevance
 - Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
   Step 3, and only when the user asks.
@@ -338,7 +338,8 @@ in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetun
 - Report the outcome: the training metrics, or the exception and the cell that raised it
 - **Read what Kumo said about the data first.** A warning or error about the data — duplicate
   primary keys, a foreign key that matched few rows, invalid values read as null, a float or
-  mismatched key, an empty training table — leads the report, with the table, column and count,
+  mismatched key, an empty training table — or a link check line with unmatched rows
+  (`hosts/<host>/runtime.md`, where it has one) leads the report, with the table, column and count,
   and the decision goes to the user: fix the source, change the key or link, or accept the loss.
   A run that finished is not a success until they have decided. Never change the data, a column's
   type or the query to make such a message go away

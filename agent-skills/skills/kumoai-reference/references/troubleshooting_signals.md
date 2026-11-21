@@ -124,8 +124,12 @@ print(table.has_primary_key())
 linked columns have different types, both are **cast to strings** — values equal as numbers may not
 match as strings (`1.0` vs `1`).
 **Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot reports the match rate
-(§1a). Report it, and put a low one to the user before training: a wrong link to correct, or keys
-to fix upstream so both sides hold the same values in the same type. Do not cast either side.
+(§1a) only when fewer than half of a link's rows match; a link that loses fewer rows passes
+silently. The host runtime's link check cell, run before the graph, counts matched, unmatched and
+null values for every link. Report each link's share, and put any unmatched rows to the user before
+training: a wrong link to correct, parent rows missing upstream, or keys to fix upstream so both
+sides hold the same values in the same type; or continue knowing those rows get no edge. Do not
+cast either side, filter the rows or invent the missing parents.
 Set every foreign key to `Stype.ID`; left as numerical it is treated as a feature rather than a
 link.
 

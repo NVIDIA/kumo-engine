@@ -138,6 +138,47 @@ Snowflake destination before the session ends. Never describe a scratch path as 
 plan a workflow that reads an artifact back in a later session without first confirming storage
 lifetime.
 
+### 3.2 Link check — a read-only cell before any table is built
+
+The snapshot warns about a link only when **fewer than half** of its rows match
+(`kumoai-reference/references/troubleshooting_signals.md` §1a), so a link that loses a few percent
+of its rows passes silently. Every training notebook therefore carries this cell right after the
+connector, before any `Table`: one line per confirmed link, written verbatim from the proposal.
+It prints diagnostic counts only — it never raises, filters or writes, and nothing it reads reaches
+the graph.
+
+```python
+def q(name):
+    return '"' + name.replace('"', '""') + '"'
+
+LINKS = [('<child>', '<fk>', '<parent>', '<pk>')]    # every confirmed link, names as in the catalog
+for child, fk, parent, pk in LINKS:
+    try:
+        r = session.sql(
+            f'SELECT COUNT(*) AS N, COUNT(c.{q(fk)}) AS NON_NULL, '
+            f'COUNT_IF(c.{q(fk)} IS NOT NULL AND p.K IS NULL) AS UNMATCHED, '
+            f'COUNT(DISTINCT IFF(p.K IS NULL, c.{q(fk)}, NULL)) AS UNMATCHED_VALUES '
+            f'FROM {DATABASE}.{SCHEMA}.{q(child)} c LEFT JOIN '
+            f'(SELECT DISTINCT {q(pk)} AS K FROM {DATABASE}.{SCHEMA}.{q(parent)}) p '
+            f'ON c.{q(fk)} = p.K').collect()[0]
+    except Exception as err:                       # e.g. the two sides hold different types
+        print(f'LINK CHECK {child}.{fk} -> {parent}.{pk}: could not compare: {err}')
+        continue
+    matched = r['NON_NULL'] - r['UNMATCHED']
+    share = matched / r['NON_NULL'] if r['NON_NULL'] else 0.0
+    print(f'LINK CHECK {child}.{fk} -> {parent}.{pk}: {matched} of {r["NON_NULL"]} non-null rows '
+          f'matched ({share:.1%}); {r["UNMATCHED"]} unmatched rows, {r["UNMATCHED_VALUES"]} distinct '
+          f'unmatched values; {r["N"] - r["NON_NULL"]} null')
+```
+
+**Read its output before anything else the run reports.** Every link's line goes into your reply
+with its share. A link with any unmatched rows is a finding about the data, not a code problem:
+lead the reply with the table, column, unmatched rows and distinct values, say the likely cause —
+parent rows missing from the parent table, values that differ in format (`007` vs `7`), or a wrong
+link when few or none match — and ask the user to choose: fix the source upstream, correct the
+link, or continue knowing those rows get no edge. Stop there; a fix to an unrelated code error
+waits for their answer. Never filter the rows, add parents, or cast either side in the notebook.
+
 
 ---
 ## 4. What the Snowflake runtime provides
@@ -191,7 +232,7 @@ Two further facts: the target destination must be writable by the identity's pri
 2. Create a writable scratch directory (§1.2).
 3. `kumo.configure(scratch_dir=...)`, then the connector, in the §3 order: `from_spcs_env`,
    `from_connection_toml`, key pair from secrets.
-4. Assert `connector.table_names()` (§3).
+4. Assert `connector.table_names()` (§3), then the link check (§3.2).
 5. Tables → graph → `validate()` → predictive query → `snapshot()` → train → predict
    (portable core; `snapshot=` is required on `fit` and `predict`).
 6. Write results to a durable Snowflake destination before the session ends (§3.1, §7).
