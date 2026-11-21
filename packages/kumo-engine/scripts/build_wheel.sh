@@ -256,7 +256,7 @@ fi
 for pkg_dir in "${KUMO_REPO}"/packages/*/ \
         "${KUMO_REPO}/packages/experimental/kumo-pytorch/"; do
     pkg_name="$(basename "${pkg_dir}")"
-    # packages/experimental/ holds packages that aren't released yet.
+    # Of packages/experimental/, only kumo-pytorch (listed above) is released.
     case "${pkg_name}" in kumo-sdk|diskgraph|experimental) continue ;; esac
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"
