@@ -70,6 +70,26 @@ The existing stager downloads missing objects and verifies all 744 shards agains
 manifest. The test checks the 30,000 weekly counts, compares indexed row counts for all seven tables
 with the manifest, and replays viewers 3 and 873 over the three weeks.
 
+The **kumo-pytorch tests** workflow offers five manual Streaming 25B modes on `main`
+or a trusted `pull-request/<number>` branch.
+
+| Mode | What runs |
+| --- | --- |
+| `smoke` | The full-source replay above. |
+| `training` | Two same-seed 100-update CPU GraphSAGE runs on the first 32 training viewers, followed by checkpoint evaluation on validation and test. |
+| `lifecycle` | A fresh process reloads fitted state and weights, checks target-free predictions, fine-tunes with frozen inputs and resumes a partially consumed training epoch. |
+| `full` | Native delivery of all 30,000 anchors in source order, with their original identities, cutoffs, count targets and masks. |
+| `all` | All four cases in one pytest invocation, sharing the verified source and native index. |
+
+The job checks for 3 TiB free before setup. The cold smoke run used 2.83 TiB. To use a larger worker
+or volume than the existing RTX runner and its temporary directory, set the repository variables
+`KUMO_PYTORCH_25B_RUNNER` (Linux x64 runner label) and `KUMO_PYTORCH_25B_SCRATCH` (writable
+directory) as needed. The worker uses `kumo-pytorch-25b/cache` under the scratch
+directory. Populate it in advance or grant the worker read access to the pinned source objects.
+JUnit records each case's duration and the shared staging, cohort and index times. For local runs,
+select `tests/e2e/test_streaming.py::test_streaming_campaign[MODE]` for any of the three new cases.
+Training and lifecycle use the package's PyG examples dependency.
+
 ## The H&M-shaped dataset
 
 ```bash

@@ -4,23 +4,28 @@
 
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 import torch
 
 from e2e.datasets.staging import verify
 from e2e.datasets.streaming import T01_MANIFEST, load_streaming, prepare_streaming
+from e2e.flows.common import Stopwatch
 from kumo.pytorch import api
+from kumo.pytorch.engines.native_anchors import NativeAnchors
 from tests.e2e.history import check_source_graph
 from tests.test_inference_lifecycle import assert_same
 
 FIRST = int(datetime(2025, 12, 10, tzinfo=UTC).timestamp()) * 1000
 WEEK = 7 * 86400 * 1000
 FULL_PIN = T01_MANIFEST.parents[1] / "streaming-25b-full.json"
+SPLITS = ("train", "valid", "test")
 
 
 def _bounded_tables():
@@ -51,9 +56,37 @@ def _bounded_tables():
     return viewers, sessions
 
 
+@pytest.fixture(scope="module")
+def streaming_25b(tmp_path_factory, record_testsuite_property):
+    root = os.environ.get("KUMO_PYTORCH_25B_ROOT")
+    if not root:
+        pytest.skip("set KUMO_PYTORCH_25B_ROOT for the full-source run")
+    clock = Stopwatch()
+    manifest = verify(Path(root), FULL_PIN, download=True)["manifest"]
+    clock.lap("stage_and_verify")
+    work = tmp_path_factory.mktemp("streaming-25b")
+    spec, data, table = prepare_streaming(work, cohort_size=10_000, source_manifest=manifest)
+    clock.lap("prepare_cohort")
+    # The full sessions table exceeds the native per-shard 32-bit row ID range.
+    engine = api.DiskGraphEngine(index=work / "index", num_shards=8)
+    with api.prepare(spec, data, engine) as plan:
+        clock.lap("build_index")
+        for stage, seconds in clock.laps.items():
+            record_testsuite_property(f"{stage}_seconds", seconds)
+        tables = json.loads(manifest.read_text())["tables"]
+        expected = {name: metadata["rows"] for name, metadata in tables.items()}
+        stats = json.loads((engine.index / "ingest_stats.json").read_text())["stats"]
+        assert stats["source_rows_by_table"] == stats["node_counts"] == expected
+        yield plan, table
+
+
+def _subset(table, rows, path):
+    pq.write_table(rows, path)
+    return replace(table, source=api.Parquet(str(path)))
+
+
 @pytest.mark.parametrize("source", ["bounded", "25b", "25b-full"])
-def test_streaming_weekly_session_forecast(tmp_path, source):
-    manifest = None
+def test_streaming_weekly_session_forecast(tmp_path, source, request):
     weekly = {3: (0, 1, 0), 873: (2, 0, 1)}
     fields = {
         "watch_seconds": api.ZScore(),
@@ -61,15 +94,11 @@ def test_streaming_weekly_session_forecast(tmp_path, source):
         "device_type": api.Vocabulary(),
     }
     if source == "25b-full":
-        root = os.environ.get("KUMO_PYTORCH_25B_ROOT")
-        if not root:
-            pytest.skip("set KUMO_PYTORCH_25B_ROOT for the full-source run")
-        manifest = verify(Path(root), FULL_PIN, download=True)["manifest"]
-        spec, data, table = prepare_streaming(
-            tmp_path, cohort_size=10_000, source_manifest=manifest, replay_viewers=tuple(weekly)
-        )
+        plan, table = request.getfixturevalue("streaming_25b")
+        replay = pq.read_table(table.source.path, filters=[("viewer_id", "in", list(weekly))])
+        table = _subset(table, replay, tmp_path / "replay.parquet")
         sessions = pq.read_table(
-            manifest.parent / "sessions",
+            plan.dataset.tables["sessions"].path,
             columns=["session_id", "viewer_id", "start_time", *fields],
             filters=[("viewer_id", "<=", max(weekly)), ("viewer_id", "in", list(weekly))],
             use_threads=False,
@@ -87,9 +116,11 @@ def test_streaming_weekly_session_forecast(tmp_path, source):
         pq.write_table(viewers, tmp_path / "viewers.parquet")
         pq.write_table(sessions, tmp_path / "sessions.parquet")
         spec, data, table = prepare_streaming(tmp_path, cohort_size=2)
+        plan = api.prepare(spec, data, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1))
+        request.addfinalizer(plan.close)
     counts = {
         f"{split}:{viewer}": values[i]
-        for i, split in enumerate(("train", "valid", "test"))
+        for i, split in enumerate(SPLITS)
         for viewer, values in weekly.items()
     }
     anchors = pq.read_table(table.source.path)
@@ -101,22 +132,7 @@ def test_streaming_weekly_session_forecast(tmp_path, source):
     timed = sessions.append_column("ms", sessions["start_time"].cast(pa.int64()))
     rows = {r["session_id"]: r for r in timed.to_pylist()}
     delivered = []
-    index = tmp_path / "index"
-    # The full sessions table exceeds the native per-shard 32-bit row ID range.
-    engine = (
-        api.DiskGraphEngine(index=index, num_shards=8)
-        if manifest
-        else api.DiskGraphEngine(index=index, num_threads=1)
-    )
-    with (
-        api.prepare(spec, data, engine) as plan,
-        plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task,
-    ):
-        if manifest:
-            tables = json.loads(manifest.read_text())["tables"]
-            expected_rows = {name: table["rows"] for name, table in tables.items()}
-            stats = json.loads((index / "ingest_stats.json").read_text())["stats"]
-            assert stats["source_rows_by_table"] == stats["node_counts"] == expected_rows
+    with plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task:
         for batch in task.batches(batch_size=2, output_format="model"):
             meta = batch.metadata
             samples = meta["sample_ids"]
@@ -144,3 +160,56 @@ def test_streaming_weekly_session_forecast(tmp_path, source):
             target = {"values": values, "valid": torch.ones(len(samples), dtype=torch.bool)}
             assert_same(batch.targets, {"count": target})
     assert sorted(delivered) == sorted(counts)
+
+
+def _check_population(task, anchors):
+    assert isinstance(task._anchors, NativeAnchors)
+    delivered = 0
+    for split in SPLITS:
+        assert task.count(split) == 10_000
+        for batch in task.batches(split=split, batch_size=4, shuffle=False, output_format="model"):
+            meta = batch.metadata
+            assert not any(meta["is_padding"])
+            features = batch.inputs["graph"]["nodes"]["sessions"]["features"]
+            assert all(field["values"].isfinite().all() for field in features.values())
+            rows = anchors.slice(delivered, batch.batch_size)
+            assert list(meta["sample_ids"]) == rows["sample_id"].to_pylist()
+            assert list(meta["splits"]) == rows["split"].to_pylist() == [split] * len(rows)
+            assert meta["entity_ids"].tolist() == rows["viewer_id"].to_pylist()
+            assert (
+                list(meta["request_metadata"])
+                == rows.select(
+                    ["anchor_row_position", "registered_entity_id", "prediction_time_ns", "split"]
+                ).to_pylist()
+            )
+            assert meta["as_of_time"].tolist() == [
+                ns // 10**9 - 1 for ns in rows["prediction_time_ns"].to_pylist()
+            ]
+            values = torch.tensor(rows["future_count"].to_pylist(), dtype=torch.float32)
+            valid = torch.ones(len(rows), dtype=torch.bool)
+            assert_same(batch.targets, {"count": {"values": values, "valid": valid}})
+            delivered += batch.batch_size
+    assert delivered == len(anchors) == 30_000
+
+
+@pytest.mark.parametrize("mode", ["training", "lifecycle", "full"])
+def test_streaming_campaign(streaming_25b, mode, tmp_path):
+    plan, table = streaming_25b
+    rows = pq.read_table(table.source.path)
+    if mode != "full":
+        limit = 32 if mode == "training" else 4
+        bounded = pa.concat_tables(
+            [rows.filter(pc.equal(rows["split"], split)).slice(0, limit) for split in SPLITS]
+        )
+        table = _subset(table, bounded, tmp_path / "anchors.parquet")
+    with plan.materialize(table, fit_split="train", encoder_cutoff=FIRST // 1000 - 1) as task:
+        if mode == "full":
+            _check_population(task, rows)
+        elif mode == "training":
+            from tests.e2e.streaming_training import run_training
+
+            run_training(task, tmp_path)
+        else:
+            from tests.e2e.streaming_lifecycle import run_lifecycle
+
+            run_lifecycle(task, plan.dataset, table, plan.engine.index, tmp_path)
