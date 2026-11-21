@@ -76,6 +76,7 @@ def test_calibration_uses_registered_filesystem_for_adls_checkpoint(
         monkeypatch):
     monkeypatch.setattr(BaseNodeLightningModule, '__abstractmethods__', set())
     module = BaseNodeLightningModule(TaskType.BINARY_CLASSIFICATION)
+    module.setup(TrainerFn.TESTING)
     calibrator = torch.nn.Identity()
     calibrator.is_supported = True
     calibrator.is_fitted = False
