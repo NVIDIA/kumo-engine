@@ -183,9 +183,7 @@ class FakeDiskGraph:
             "dataset_name": config["dataset_name"],
             "timestamp_unit": "seconds",
             "edge_relations": edge_relations(config),
-            "index_build_id": (
-                index_build_id if index_build_id is not None else str(uuid.uuid4())
-            ),
+            "index_build_id": (index_build_id if index_build_id is not None else str(uuid.uuid4())),
         }
         if parent_build_id is not None:
             metadata["parent_index_build_id"] = parent_build_id
