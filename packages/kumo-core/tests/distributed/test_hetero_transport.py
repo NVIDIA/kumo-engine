@@ -203,3 +203,11 @@ def test_reference_client_rejects_wrong_response_mode() -> None:
         pytest.raises(SamplingContractError, match="encoded graph"),
     ):
         client._sample_hetero(request)
+
+
+def test_wire_rejects_extra_edge_attributes() -> None:
+    """Unsupported edge data must fail instead of suggesting another serializer."""
+    graph = _graph()
+    graph["nodes", "connects", "nodes"].score = torch.ones(2)
+    with pytest.raises(NotImplementedError, match="unsupported"):
+        pack_python_hetero(graph)
