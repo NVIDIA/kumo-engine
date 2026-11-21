@@ -176,6 +176,20 @@ A link is proposed when a column in table A has the **same name** as the primary
 taken as well, where the source declares any. Nothing else is inferred — no fuzzy matching,
 no value overlap checks, no joins executed.
 
+Each link line names its basis: `declared`, `same name`, or `[supplied]` for a link the user
+named. A column whose name only resembles another table's key — a prefix or suffix added, a
+synonym, an abbreviation (`buyer_id` or `xuser_id` beside `user_id`, `sku` beside `product_id`) —
+is never linked on that resemblance: list it under `Not found` as a possible link, say which key it
+might reference, and let the user name it. Once named, it is `[supplied]`, and the user's
+confirmation is the only basis it has.
+
+Value overlap never creates a link, but it is how every link is checked. For each link the graph
+uses, report the share of its non-null values found in the parent key, so a wrong link stands out:
+measured here when you can read rows (a scalar count, as for keys), otherwise by the notebook's link
+check before training (`hosts/<host>/runtime.md`), and shown on the link line as `coverage: not
+measured yet` until then. When it is measured, every link's share goes to the user; a low one means
+the link, or the parent table, is wrong.
+
 ## 7. Seeds and table mode
 
 - **Seeds** are the tables behind `prediction_entity` and `prediction_target` (for link
@@ -209,7 +223,7 @@ Metadata
 - ...
 
 Links
-- fraud_events.CUSTOMER_ID -> customers.CUSTOMER_ID [inferred]
+- fraud_events.CUSTOMER_ID -> customers.CUSTOMER_ID [inferred] — same name; coverage: 99.6% of non-null values found
 - ...
 
 Excluded columns
@@ -232,7 +246,8 @@ format.
 
 - Prepare, transform, aggregate or materialize **model inputs** — joining, cleaning,
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
-  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
+  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key,
+  and the matched share of a proposed link (§6). Its
   result is reported and then discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.

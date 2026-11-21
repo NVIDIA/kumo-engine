@@ -89,9 +89,9 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
 - Choose the predictive problem, target, horizon, graph, or tuning for the user — refuse and name
   the minimum inputs needed
 - Join, clean, deduplicate, aggregate, create labels, or transform data **as model input**.
-  Diagnostic scalar aggregates during preflight — reported as proposal evidence, never written and
-  never fed to training — are not this; they exist so a key can be checked before it silently
-  discards rows
+  Diagnostic scalar aggregates during preflight or in a notebook's read-only check cell — reported
+  as evidence, never written and never fed to training — are not this; they exist so a key or a
+  link can be checked before it silently discards rows
 - Search for, rank, or curate tables by business relevance
 - Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
   Step 3, and only when the user asks.
