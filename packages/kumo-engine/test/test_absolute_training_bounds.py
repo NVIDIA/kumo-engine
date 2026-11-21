@@ -7,7 +7,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from kumoapi.graph import Edge
-from kumoapi.model_plan import TrainingTableGenerationPlan
 from kumoapi.typing import Stype
 
 from io_utils import fsutil
@@ -17,6 +16,7 @@ from kumo.engine import (
     Graph,
     PredictiveQuery,
     Table,
+    TrainingTableGenerationPlan,
     TrainingTableOutputConfig,
     configure,
 )
