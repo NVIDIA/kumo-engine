@@ -5,7 +5,7 @@ Observable symptom → likely cause → fix. Ordered by when the agent hits them
 This file is the signal set as previously compiled. It is **not** re-verifiable against the published Kumo documentation, which is stale for this version of the local SDK and is not a source here — do not cite it, fetch it, or reconcile against it.
 
 > No verbatim Kumo exception text is established for this SDK. Entries below are keyed on the **observable condition**, not on a quoted message. **Do not fabricate Kumo error strings.**
-> The five messages quoted in §1a are the exceptions: they are the SDK's own text, read from its source.
+> The messages quoted in §1a and the semantic-type messages quoted in §3 are the exceptions: they are the SDK's own text, read from its source.
 
 **Who applies a fix.** A fix that changes the data — casting a column, deduplicating, flattening,
 filling or filtering values, combining columns into a key, normalising key types — is the user's
@@ -180,6 +180,16 @@ pquery = kumo.PredictiveQuery(
 )
 pquery.validate()
 ```
+
+### Symptom: the query fails with `Aggregation SUM is not intended to operate on foreign keys and ID-type columns.`
+**Cause:** The column `SUM` or `AVG` aggregates is typed `ID`: it is a key, or `infer_metadata()`
+typed it `ID` from its name (`graph_construction.md` *How a semantic type is inferred*).
+Source: shipped package (`kumopql.validator.type_validator`).
+**Fix:** Name the column, its type and why — "`orders.discount_code` is `ID` because it is named
+`*_code`". A key is the wrong column to sum: aggregate a measurement, or `COUNT` the rows. A
+measurement typed `ID` by its name is declared `.with_column('<col>', stype=Stype.numerical)` —
+a type declaration the user confirms at the graph gate (router Node 1c, *Column types*), never a
+silent change.
 
 ### Symptom: aggregation window rejected
 **Cause:** Both *start* and *end* must be **non-negative integers**, and *end* must be **greater than** *start*.
