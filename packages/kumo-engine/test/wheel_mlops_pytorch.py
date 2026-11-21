@@ -67,8 +67,18 @@ def inputs():
     return contract, dataset, requests
 
 
-def features(batch):
-    return batch.inputs['user']['value']['values'].float().reshape(-1, 1)
+def features(batch, device='cpu'):
+    return batch.inputs['user']['value']['values'].float().reshape(-1, 1).to(device)
+
+
+def devices(profile):
+    import torch
+
+    if profile is None or profile.accelerator == 'cpu':
+        return ('cpu',)
+    require(profile.accelerator == 'gpu', 'Unknown workload accelerator')
+    require(torch.cuda.is_available(), 'GPU workload requires an available CUDA device')
+    return ('cpu', 'cuda')
 
 
 @contextmanager
@@ -91,8 +101,7 @@ def tracking(root, profile):
             raise ImportError(
                 'This example uses native MLflow registration; supply a workload '
                 'using the Snowflake native model registry for Snowflake')
-        require(profile.accelerator == 'cpu',
-                'This example requires a CPU profile')
+        devices(profile)
         cfg = profile.settings(False)
         clients = cfg.tracking.client()
         experiment, model = profile.experiment, profile.model
@@ -108,7 +117,8 @@ def predictions(task, model):
     with torch.no_grad():
         for batch in task.batches():
             require(not batch.targets, 'Inference emitted training targets')
-            values = model(features(batch)).flatten().tolist()
+            device = next(model.parameters()).device
+            values = model(features(batch, device)).flatten().cpu().tolist()
             for key, value in zip(batch.metadata['sample_ids'], values,
                                   strict=True):
                 require(key not in result and math.isfinite(value),
@@ -132,6 +142,7 @@ def train(root, profile):
     with tracking(root, profile) as (client, name):
         contract, dataset, requests = inputs()
         versions = []
+        selected_devices = devices(profile)
         with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
             with plan.materialize(requests, fit_split='train') as task:
                 centered = torch.cat(
@@ -140,11 +151,12 @@ def train(root, profile):
                     abs(centered.mean().item()) < 1e-6,
                     'Derived input normalization was not fitted on the training split'
                 )
-                for seed in (0, 1):
+                variants = [(device, seed) for device in selected_devices for seed in (0, 1)]
+                for index, (device, seed) in enumerate(variants):
                     torch.manual_seed(seed)
-                    model = torch.nn.Linear(1, 1)
+                    model = torch.nn.Linear(1, 1).to(device)
                     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-                    directory = root / 'scratch-train' / str(seed)
+                    directory = root / 'scratch-train' / str(index)
                     directory.mkdir(parents=True)
                     task.to_artifact().save(directory / 'preprocessing')
                     with mlflow.start_run() as run:
@@ -152,16 +164,16 @@ def train(root, profile):
                             for batch in task.batches(split='train',
                                                       epoch=epoch):
                                 labels = batch.targets['label']['values'].float(
-                                ).reshape(-1, 1)
+                                ).reshape(-1, 1).to(device)
                                 loss = torch.nn.functional.mse_loss(
-                                    model(features(batch)), labels)
+                                    model(features(batch, device)), labels)
                                 optimizer.zero_grad()
                                 loss.backward()
                                 optimizer.step()
                             with torch.no_grad():
                                 squared = [
-                                    (model(features(batch)).flatten() -
-                                     batch.targets['label']['values'].float()
+                                    (model(features(batch, device)).flatten() -
+                                     batch.targets['label']['values'].float().to(device)
                                      ).square() for batch in task.batches(
                                          split='validation')
                                 ]
@@ -179,22 +191,25 @@ def train(root, profile):
                         write(directory / 'expected.json', expected)
                         mlflow.log_artifacts(str(directory),
                                              artifact_path='customer')
+                        example = np.zeros((2, 1), dtype=np.float32)
+                        with torch.no_grad():
+                            output = model(torch.from_numpy(example).to(device)).cpu().numpy()
                         logged = mlflow.pytorch.log_model(
-                            model, name='model', input_example=np.zeros(
-                                (2, 1), dtype=np.float32))
+                            model, name='model', input_example=example,
+                            signature=mlflow.models.infer_signature(example, output))
                         registered = mlflow.register_model(
                             logged.model_uri, name)
                         mlflow.set_tag('customer.preprocessing',
                                        task.fitted_state.fingerprint)
                     versions.append(
-                        dict(version=str(registered.version),
+                        dict(version=str(registered.version), device=device,
                              run=run.info.run_id,
                              fingerprint=task.fitted_state.fingerprint))
-        require(versions[0]['version'] != versions[1]['version'],
+        require(len({v['version'] for v in versions}) == len(versions),
                 'Registry reused a version')
         client.set_registered_model_alias(name, 'champion',
                                           versions[0]['version'])
-        state = dict(model=name, versions=versions)
+        state = dict(model=name, versions=versions, devices=list(selected_devices))
         write(root / 'customer-state.json', state)
         return state
 
@@ -207,11 +222,15 @@ def reload(root, profile):
 
     with tracking(root, profile) as (client, name):
         state = json.loads((root / 'customer-state.json').read_text())
-        require(state['model'] == name, 'Recovered another registry model')
+        selected_devices = devices(profile)
+        require(state['model'] == name and state['devices'] == list(selected_devices)
+                and len(state['versions']) == 2 * len(selected_devices),
+                'Recovered another or incomplete registry model lifecycle')
         _, dataset, requests = inputs()
         checks = []
         for expected in state['versions']:
-            version = expected['version']
+            version, device = expected['version'], expected['device']
+            require(device in selected_devices, 'Recovered an unselected model device')
             registered = client.get_model_version(name, version)
             require(registered.run_id == expected['run'],
                     'Registry refers to another training run')
@@ -243,7 +262,7 @@ def reload(root, profile):
             model.load_state_dict(
                 api.load_weights(directory / 'weights.pt',
                                  artifact.fitted_state))
-            model.eval()
+            model.to(device).eval()
             saved = json.loads((directory / 'expected.json').read_text())
             client.set_registered_model_alias(name, 'champion', version)
             require(
@@ -253,7 +272,9 @@ def reload(root, profile):
                 'Alias promotion resolved another version')
             # The registry loads a native PyTorch model; Engine Trainer is never involved.
             published = mlflow.pytorch.load_model(f'models:/{name}@champion',
-                                                  map_location='cpu')
+                                                  map_location=device)
+            require(next(published.parameters()).device.type == device,
+                    'MLflow loaded the native model onto another device')
             with api.prepare(artifact.contract, dataset, api.InMemoryEngine(),
                              inference=True) as plan:
                 with plan.materialize(requests, fitted=artifact.fitted_state,
@@ -266,9 +287,12 @@ def reload(root, profile):
                                              abs_tol=1e-6) for key in saved),
                             'Fresh-process predictions changed')
             checks.append(
-                dict(version=version, run=expected['run'], rows=len(saved),
+                dict(version=version, run=expected['run'], device=device, rows=len(saved),
                      history=history))
-        return dict(versions=checks)
+        require({device: sum(c['device'] == device for c in checks)
+                 for device in selected_devices} == dict.fromkeys(selected_devices, 2),
+                'Both model versions must reload on every selected device')
+        return dict(versions=checks, devices=list(selected_devices))
 
 
 def run_phase(name, root, profile):

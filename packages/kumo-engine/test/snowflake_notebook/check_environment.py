@@ -11,7 +11,9 @@ REPOSITORY = 'NVIDIA/kumo-engine'
 ENVIRONMENT = 'snowflake-mlops-test'
 MAIN_BRANCH = 'main'
 TEST_BRANCH = 'egu/byom-mlops-lifecycle'
-BRANCH_TEST_ENVIRONMENTS = {'snowflake-mlops-test', 'sagemaker-mlops-test'}
+BRANCH_TEST_ENVIRONMENTS = {
+    'snowflake-mlops-test', 'sagemaker-mlops-test', 'databricks-mlops-test'
+}
 TEAM_ID = 19956283
 
 

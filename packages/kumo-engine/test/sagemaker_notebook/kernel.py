@@ -109,7 +109,7 @@ def execute(config):
                     denied_artifact_root=config['denied_artifact_root'],
                     tracking_arn=config['tracking_arn'],
                     experiment='kumo-test-mlops',
-                    model_prefix='kumo-test-mlops', accelerator='cpu',
+                    model_prefix='kumo-test-mlops', accelerator=config.get('accelerator', 'cpu'),
                     execution_context='sagemaker', environment='venv',
                     notebook_context=str(payload / 'runtime-context.json'))
                 (lifecycle / 'platform.json').write_text(

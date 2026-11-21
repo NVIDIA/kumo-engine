@@ -186,3 +186,72 @@ installed (it skips when either is absent):
 python -m pytest -q -c /dev/null --confcutdir=test/scripts \
   test/scripts/test_engine_mlops_pytorch.py
 ```
+
+
+## CPU and GPU platform matrix
+
+The [shared platform test](../../packages/kumo-engine/test/byom_platform_test.py)
+uses one workload contract across Databricks, SageMaker and Snowflake. It installs
+the complete Engine wheel, its matching DiskGraph constituent wheel and
+`kumo-pytorch`. Engine supplies platform connectors and MLOps configuration;
+`kumo-pytorch` supplies batches and persisted preprocessing; the customer owns
+the PyTorch model and optimizer. This example uses the in-memory batch engine.
+
+Each CPU case registers two model versions. Each GPU case registers two CPU and
+two CUDA versions in the same environment. A fresh worker restores preprocessing
+and weights, loads each version through the native registry, checks its device,
+compares predictions and promotes the alias. The common verifier requires
+matching workload hashes, distinct versions/runs, successful worker exits and
+cleanup. Missing CUDA or CPU-only evidence fails a requested GPU case.
+
+GPU environments select `torch==2.9.1+cu128` from the
+[official CUDA 12.8 index](https://download.pytorch.org/whl/cu128/torch/).
+The distribution version and CUDA runtime must agree. Snowflake GPU versions
+retain `cuda_version=12.8` and the CUDA-tagged dependency; CPU versions use
+`cuda_version=None`. Native reload validation stays enabled. Snowflake documents
+these options under [PyTorch registration](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/built-in-models/pytorch).
+
+| Platform | CPU fixture | GPU fixture |
+| --- | --- | --- |
+| Databricks | Single-node `KUMO_TEST_` cluster, `i3.xlarge` or `i3.2xlarge` | Single-node `KUMO_TEST_` cluster, `g5.xlarge` or `g4dn.xlarge`, GPU ML runtime |
+| SageMaker | Pinned Distribution CPU image, `ml.m5.2xlarge` | Pinned Distribution GPU image, `ml.g5.xlarge`; dedicated test policies/quota must permit it |
+| Snowflake | `KUMO_TEST_POOL`, CPU runtime | `KUMO_TEST_GPU_POOL`, single-node `GPU_NV_S`, GPU runtime |
+
+An authorized Snowflake administrator can provision the separate GPU fixture:
+
+```sql
+CREATE COMPUTE POOL KUMO_TEST_GPU_POOL
+  MIN_NODES = 1 MAX_NODES = 1 INSTANCE_FAMILY = GPU_NV_S
+  AUTO_RESUME = TRUE AUTO_SUSPEND_SECS = 60 INITIALLY_SUSPENDED = TRUE;
+GRANT USAGE ON COMPUTE POOL KUMO_TEST_GPU_POOL TO ROLE KUMO_SNOWFLAKE_TEST_ROLE;
+```
+
+For one Actions run, open **SageMaker notebook platform checks**, select the
+reviewed branch, set `platform_matrix=true`, `platform=all` and
+`accelerator=all`, and supply both Databricks cluster IDs. This existing entrypoint
+calls the [customer-model matrix](../../.github/workflows/kumo-engine-byom-platforms.yml),
+which builds both packages once and executes all six platform/device cases.
+`platform` or `accelerator` can select a smaller diagnostic run. Manual dispatch,
+exact branch admission and environment-specific identities remain enforced.
+The three test environments admit `main` and `egu/byom-mlops-lifecycle`, have no
+required deployment reviewers, and disable administrator bypass. Remove the
+exact development-branch exception after testing. Older main-only/reviewer-gated
+guard revisions reject this policy until the update is merged.
+
+The same test can run locally with already configured platform credentials:
+
+```sh
+python packages/kumo-engine/test/byom_platform_test.py --execute \
+  --platform all --accelerator all \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
+  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
+  --cpu-cluster-id CPU_CLUSTER_ID --gpu-cluster-id GPU_CLUSTER_ID \
+  --output-dir /tmp/byom-platforms-001
+```
+
+Use Linux x86_64 Python 3.12 and the owning platform's submission-client
+requirements. Omit `--execute` to inspect all six command plans without cloud
+access. The public summary contains only fixed platform/device/phase statuses;
+raw logs stay in private attempt directories. Native UI, GPU serving endpoints,
+DiskGraph execution and model quality are separate checks.

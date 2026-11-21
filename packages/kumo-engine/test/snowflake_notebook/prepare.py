@@ -18,7 +18,8 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare(output, candidate_path, workload=None, workload_helpers=None):
+def prepare(output, candidate_path, workload=None, workload_helpers=None,
+            accelerator='cpu'):
     source = Path(__file__).resolve().parent
     test = source.parent
     candidate = json.loads(candidate_path.read_text())
@@ -31,6 +32,10 @@ def prepare(output, candidate_path, workload=None, workload_helpers=None):
     if assets[identity['wheel_file']]['sha256'] != identity['wheel_sha256']:
         raise ValueError('Candidate wheel hash differs from asset')
     dependencies = candidate['dependencies']
+    if accelerator not in ('cpu', 'gpu') or dependencies.get('accelerator', 'cpu') != accelerator:
+        raise ValueError('Selected accelerator differs from the dependency environment')
+    if accelerator == 'gpu' and workload is None:
+        raise ValueError('GPU notebook validation requires a customer workload')
     if dependencies['archive_sha256'] != assets['wheelhouse.tar']['sha256']:
         raise ValueError('Dependency manifest differs from archive')
     custom = None
@@ -79,7 +84,7 @@ def prepare(output, candidate_path, workload=None, workload_helpers=None):
     compile(cell, 'snowflake-notebook-cell', 'exec')
     profile = json.loads((test / 'mlops_platforms/snowflake.json').read_text())
     target = dict(
-        database=launch.DATABASE, schema=launch.SCHEMA,
+        accelerator=accelerator, database=launch.DATABASE, schema=launch.SCHEMA,
         warehouse=launch.WAREHOUSE, role=launch.ROLE,
         artifact_root=launch.STAGE + '/mlops-validation', denied_artifact_root=(
             '@KUMO_TEST_DB.KUMO_TEST.KUMO_TEST_DENIED_STAGE/mlops-validation'))
@@ -132,6 +137,7 @@ def prepare(output, candidate_path, workload=None, workload_helpers=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--candidate', type=Path)
     parser.add_argument('--workload', type=Path,
                         help='Committed native customer workload module')
@@ -140,7 +146,7 @@ def main():
         help='Committed sibling Python helper; repeat as needed')
     args = parser.parse_args()
     candidate = admit_candidate(path=args.candidate or default_candidate_path())
-    prepare(args.output_dir, candidate, args.workload, args.workload_helper)
+    prepare(args.output_dir, candidate, args.workload, args.workload_helper, args.accelerator)
     print('Prepared:', args.output_dir)
 
 

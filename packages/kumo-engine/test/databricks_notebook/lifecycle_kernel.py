@@ -97,6 +97,12 @@ def execute(config, dbutils):
             ]
             if custom is not None:
                 install += [str(payload / name) for name in custom['wheels']]
+            if config.get('accelerator') == 'gpu':
+                tools_spec = importlib.util.spec_from_file_location(
+                    'workload_tools', payload / 'wheel_mlops_workload.py')
+                tools = importlib.util.module_from_spec(tools_spec)
+                tools_spec.loader.exec_module(tools)
+                install += tools.pytorch_install_args('gpu')
             if helpers.execute(install, root, log, 900):
                 raise RuntimeError(
                     'Clean environment installation failed; see install.log')
@@ -110,7 +116,7 @@ def execute(config, dbutils):
                        artifact_root=config['artifact_root'],
                        experiment=config['experiment'],
                        model_prefix='KUMO_TEST_MLOPS', identity='ambient',
-                       accelerator='cpu', execution_context='databricks',
+                       accelerator=config.get('accelerator', 'cpu'), execution_context='databricks',
                        environment='venv')
         if config.get('denied_artifact_root'):
             profile['denied_artifact_root'] = config['denied_artifact_root']

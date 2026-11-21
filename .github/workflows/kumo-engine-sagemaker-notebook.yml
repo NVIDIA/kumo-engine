@@ -6,6 +6,26 @@ name: SageMaker notebook platform checks
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
+      platform_matrix:
+        description: Run the shared customer PyTorch platform/device matrix
+        type: boolean
+        default: false
+      platform:
+        description: Platform matrix selection
+        type: choice
+        default: all
+        options: [all, databricks, sagemaker, snowflake]
+      accelerator:
+        description: Platform matrix device coverage
+        type: choice
+        default: all
+        options: [all, cpu, gpu]
+      cpu_cluster_id:
+        description: Dedicated KUMO_TEST_ CPU Databricks cluster for the matrix
+        type: string
+      gpu_cluster_id:
+        description: Dedicated KUMO_TEST_ GPU Databricks cluster for the matrix
+        type: string
       workload:
         description: Engine lifecycle workload (PyTorch requires engine mode/checks only)
         type: choice
@@ -32,6 +52,7 @@ jobs:
   configuration:
     name: Check protected SageMaker environment
     if: >-
+      !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')
@@ -73,6 +94,7 @@ jobs:
   notebook:
     needs: [configuration, wheel]
     if: >-
+      !inputs.platform_matrix &&
       github.repository == 'NVIDIA/kumo-engine' &&
       github.event_name == 'workflow_dispatch' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')
@@ -191,3 +213,17 @@ jobs:
           path: ${{ runner.temp }}/sagemaker-public/
           if-no-files-found: warn
           retention-days: 7
+
+  byom-platforms:
+    if: inputs.platform_matrix
+    uses: ./.github/workflows/kumo-engine-byom-platforms.yml
+    with:
+      platform: ${{ inputs.platform }}
+      accelerator: ${{ inputs.accelerator }}
+      cpu_cluster_id: ${{ inputs.cpu_cluster_id }}
+      gpu_cluster_id: ${{ inputs.gpu_cluster_id }}
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write

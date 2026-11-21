@@ -38,6 +38,7 @@ SOURCES = {
     'wheel_mlops_lifecycle.py': HERE.parent / 'wheel_mlops_lifecycle.py',
     'wheel_mlops_platform.py': HERE.parent / 'wheel_mlops_platform.py',
     'wheel_gpu_smoke.py': HERE.parent / 'wheel_gpu_smoke.py',
+    'wheel_mlops_workload.py': HERE.parent / 'wheel_mlops_workload.py',
     'sagemaker_runtime.py': HERE / 'runtime.py',
     'sagemaker_budget.py': HERE / 'budget.py',
     'graph_fixture.py': SHARED / 'graph_fixture.py',
@@ -232,7 +233,10 @@ def execute(args, root):
         if args.wheel is None:
             raise ValueError('Customer workloads require the local candidate --wheel')
         check_workload_wheels(args.wheel, extra_wheels)
-    cfg = configuration()
+    accelerator = getattr(args, 'accelerator', 'cpu')
+    if accelerator == 'gpu' and custom is None:
+        raise ValueError('GPU notebook validation requires a customer workload')
+    cfg = configuration() if accelerator == 'cpu' else configuration(accelerator)
     client = Client(cfg)
     admission = client.preflight()
     version = admission.get('tracking_version')
@@ -343,7 +347,7 @@ def verify_existing(args, root):
     if (not re.fullmatch(r'[0-9a-f]{40}', args.producer_commit or '')
             or spec.get('source_commit') != args.producer_commit):
         raise ValueError('Retained execution must match its GitHub producer commit')
-    cfg = configuration()
+    cfg = configuration() if spec.get('accelerator', 'cpu') == 'cpu' else configuration('gpu')
     for key in ('account', 'region', 'bucket', 'root', 'execution_role',
                 'pipeline_role', 'tracking_arn', 'tracking_server', 'domain_name',
                 'user_profile', 'space', 'image', 'instance', 'kernel'):
@@ -535,6 +539,7 @@ def main(argv=None):
     parser.add_argument('--producer-commit', help='Producer SHA verified from GitHub run metadata')
     parser.add_argument('--candidate', type=Path, default=candidate_path())
     parser.add_argument('--wheel', type=Path)
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--workload', type=Path, help='Committed customer workload module')
     parser.add_argument('--workload-wheel', type=Path, action='append',
                         help='Additional dependency wheel; repeat for each wheel')

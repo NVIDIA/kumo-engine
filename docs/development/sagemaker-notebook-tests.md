@@ -12,7 +12,7 @@ The initialization script creates a clean virtual environment, installs the
 selected complete wheel with `[sagemaker]`, checks its dependencies, and registers the
 notebook kernel. Kernel tools are installed separately from the product.
 The runner caches inputs in S3 by SHA256 and checks S3 checksums before reuse.
-The container is the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
+The default CPU case uses the unchanged AWS SageMaker Distribution 3.6.1 CPU image,
 mirrored into the dedicated `kumo-mlops-validation` ECR repository and pinned
 by its original digest. The execution role only needs access to that repository.
 
@@ -190,7 +190,8 @@ The required role separation is:
 - The notebook/Studio execution role accesses the dedicated S3 prefixes and
   managed MLflow server; it must not create jobs or pass roles.
 
-Account policies must limit job and Studio instances to `ml.m5.2xlarge` and job
+Account policies must limit Studio and default job instances to `ml.m5.2xlarge`;
+the explicit GPU customer-model case additionally needs `ml.g5.xlarge`. Keep job
 runtime to 3,600 seconds. The compiled NotebookJobStep independently requires
 one instance, no retries, and the same runtime cap. These bounds do not cap
 job counts or replace account quotas. Managed MLflow access should use named
@@ -366,3 +367,16 @@ manual test dispatches can run directly. Administrator-bypass restrictions and
 environment-only OIDC trust remain required. Remove the exact branch rule and guard exception when branch
 testing finishes. Older main-only, reviewer-gated guard revisions reject this environment policy
 until the guard update is merged.
+
+
+## Shared CPU/GPU customer-model test
+
+Use the [platform matrix](mlops-validation.md#cpu-and-gpu-platform-matrix) to run
+this same workload alongside Databricks and Snowflake. The GPU profile selects
+`ml.g5.xlarge`, the official Distribution 3.6.1 GPU image, and the shared CUDA
+PyTorch dependency. Its immutable image digest is
+`sha256:210e9ad32983c8a3837e0f935fbe127b04fed5339f19750416c8c43179d430ae`.
+The public manifest and the digest-preserving copy in the existing dedicated
+ECR repository were verified on 2026-11-21. The execution role and notebook
+identity checks stay the same. GPU quota and the dedicated job-role policies
+must permit the selected instance. No instance or image fallback is allowed.

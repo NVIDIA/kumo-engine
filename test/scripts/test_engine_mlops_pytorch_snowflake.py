@@ -132,7 +132,7 @@ def test_cpu_training_does_not_publish_cuda_only_registry_requirements(tmp_path,
     version = SimpleNamespace(set_alias=lambda name: None)
     registry = SimpleNamespace(get_model=lambda name: SimpleNamespace(version=lambda name: version))
     stage = Stage()
-    profile = SimpleNamespace(model='CUSTOMER_MODEL', artifact_root='@DB.SCHEMA.STAGE/attempt')
+    profile = SimpleNamespace(accelerator='cpu', model='CUSTOMER_MODEL', artifact_root='@DB.SCHEMA.STAGE/attempt')
     monkeypatch.setattr(workload, 'native', lambda p: (None, SimpleNamespace(file=stage), registry, Tracking()))
     result = workload.run_phase('train', tmp_path, profile)
     assert len(result['versions']) == len(calls) == 2
@@ -140,3 +140,17 @@ def test_cpu_training_does_not_publish_cuda_only_registry_requirements(tmp_path,
         assert call['options'] == {'cuda_version': None}
         assert call['pip_requirements'] == [f'torch=={torch.__version__.split("+")[0]}']
         assert call['target_platforms'] == ['SNOWPARK_CONTAINER_SERVICES']
+
+
+@pytest.mark.parametrize('available', [False, True])
+def test_gpu_registration_requires_real_cuda_and_matching_distribution(monkeypatch, available):
+    torch = pytest.importorskip('torch')
+    monkeypatch.setattr(torch.cuda, 'is_available', lambda: available)
+    monkeypatch.setattr(torch.version, 'cuda', '12.8')
+    monkeypatch.setattr(workload, 'package_version', lambda name: '2.9.1')
+    profile = SimpleNamespace(accelerator='gpu')
+    with pytest.raises(AssertionError, match='CUDA device|CUDA-tagged'):
+        workload.devices(profile)
+    if available:
+        monkeypatch.setattr(workload, 'package_version', lambda name: '2.9.1+cu128')
+        assert workload.devices(profile) == ('cpu', 'cuda')

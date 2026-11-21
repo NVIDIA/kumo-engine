@@ -116,8 +116,6 @@ def validate(config):
                     or '..' in Path(context).parts):
         raise ValueError(
             'notebook_context requires an absolute SageMaker runtime path')
-    if platform == 'sagemaker' and config['accelerator'] != 'cpu':
-        raise ValueError('Notebook lifecycle validation requires CPU')
     if config['accelerator'] not in ('cpu', 'gpu'):
         raise ValueError('accelerator must be cpu or gpu')
     if config['environment'] not in ('venv', 'managed'):
