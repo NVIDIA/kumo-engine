@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast, get_args
 
 import pytest
+from kumo_core.sources.identity import SourceVersion
 from kumoapi.typing import TimestampPrecision
 
 from kumo.engine._scratch import fingerprint
@@ -48,7 +49,8 @@ def ingests(tmp_path, monkeypatch):
 def _graph():
     class Source:
         def prepare_ingest(self, connector, table_name, destination, **_):
-            return SimpleNamespace(credentials=None, version='v1',
+            return SimpleNamespace(credentials=None,
+                                   version=SourceVersion('v1', 'exact'),
                                    source={'path': destination})
 
     table: Any = SimpleNamespace(
