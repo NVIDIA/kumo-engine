@@ -149,16 +149,7 @@ environment that already installs `kumo-api`.
 
 ## Native batch runtime
 
-### Managed local build paths
-
-`diskgraph.managed_paths.ManagedIndexPaths(root, index_build_id)` derives the
-same-root layout used by Kumo's FM loader integration:
-
-```text
-<root>/indexes/<index_build_id>/          completed base index
-<root>/tasks/<index_build_id>/<task_id>/  task extension
-<root>/cache/<index_build_id>/            derived statistics
-```
+### Build identity and external extensions
 
 Allocate `index_build_id` with `diskgraph.new_index_build_id()` before ingest
 and pass it to `diskgraph.ingest(index_build_id=...)` when the output directory
@@ -171,7 +162,7 @@ output has not been published. The base's
 `index_metadata.json` records this ID; extension ingest records the exact
 parent ID there as well. The reader rejects an extension whose parent ID does
 not match. Old indexes without IDs remain readable with their old extensions,
-but cannot be mixed with ID-bearing builds or verified by `ManagedIndexPaths`.
+but cannot be mixed with ID-bearing builds.
 Partial builds with version-2 Encode state cannot resume because that state lacks
 build identity; restart them as a fresh ingest, choosing a new ID and output
 path if the ID was preallocated.
@@ -179,10 +170,10 @@ An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
 IDs by default, even for the same source.
 
 The managed-cache writer and external-extension opener are private bindings.
-Kumo derives their paths from its configured root and task ID in companion PR
-#403. Public `cutoff_col_stats` writes into the index, and the native
-`RuntimeIndex` constructor accepts index-local extension references. Runtime
-manifests may open sibling tasks only under the same managed root as the base.
+Kumo owns their layout under its configured root. Public `cutoff_col_stats`
+writes into the index, and the native `RuntimeIndex` constructor accepts
+index-local extension references. The private native opener accepts absolute
+external paths and validates parent build identity, not a Kumo placement rule.
 
 [`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
 and worker-sharded batch generation without Python or transport dependencies. The

@@ -115,11 +115,10 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
 
     The stage path itself is the source of truth: return a relative
     ``train_tables/<tt_id>`` or ``pred_tables/<job_id>`` ref under the parent,
-    or a sibling task path under the same managed root. The native reader
-    validates finalized extension metadata and parent build identity.
+    or an absolute external path. Kumo chooses external locations; the native
+    reader validates finalized extension metadata and parent build identity.
     The catalog namespace is the index-local ID for a relative ref, including
-    a symlink, and the resolved directory basename for an absolute external ref.
-    Other paths are configuration errors.
+    a symlink, and the supplied directory basename for an absolute external ref.
     """
     # Keep the catalog ID for an index-local symlink even if its target is
     # elsewhere. Let the native reader resolve and validate the target.
@@ -130,25 +129,15 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
             parts = lexical_stage.relative_to(lexical_parent).parts
             if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
                 return "/".join(parts)
+        return str(lexical_stage)
     # Resolve other paths before testing placement: a symlink before '..'
     # changes which directory that segment names.
     parent, stage = Path(parent_root).resolve(), Path(stage_index_path).resolve()
-    if stage == parent:
-        raise DiskgraphConfigError("extension path must not identify the base index")
     if stage.is_relative_to(parent):
         parts = stage.relative_to(parent).parts
         if len(parts) == 2 and parts[0] in ("train_tables", "pred_tables"):
             return "/".join(parts)
-        raise DiskgraphConfigError(
-            "index-local extension path must identify train_tables/<id> or pred_tables/<id>"
-        )
-    if parent.parent.name == "indexes":
-        managed_task_parent = parent.parent.parent / "tasks" / parent.name
-        if stage.parent == managed_task_parent and stage.name:
-            return str(stage)
-    raise DiskgraphConfigError(
-        "external extension path must be under the same managed root as the base index"
-    )
+    return str(stage)
 
 
 def _sampling_plan_json(sampling_plan: Any) -> str:
