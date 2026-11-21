@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AML account-day forecasts checked against the original transaction rows."""
+"""AML account-day histories and forecasts checked against original transaction rows."""
 
 import json
 import os
@@ -22,10 +22,14 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_e01, prepare_l01
+from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_hi_small, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
-from tests.e2e.history import check_normalized_aggregates, check_scalar_history
+from tests.e2e.history import (
+    check_masked_history,
+    check_normalized_aggregates,
+    check_scalar_history,
+)
 from tests.test_inference_lifecycle import assert_same
 
 
@@ -58,7 +62,16 @@ def _source_rows(pin, dataset, positions, *targets):
     assert tx["sha256"] == original["expected_sha256"] == pins["transactions"]["sha256"]
     assert tx["rows"] == pq.read_metadata(files["transactions"]).num_rows
     assert manifest["files"][0]["sha256"] == pins["anchors"]["sha256"]
-    assert manifest["statistics"]["rows"] == pq.read_metadata(files["anchors"]).num_rows
+    transform = manifest["transformation"]
+    parent = definition["metadata"]["derived_from"]
+    assert parent["identity"]["anchor_version"] == "v1"
+    assert transform["original_columns"] == "unchanged Arrow arrays in original row order"
+    assert transform["source_payload_sha256_verified"] == parent["payloads"][0]["sha256"]
+    assert (
+        manifest["statistics"]["rows"]
+        == transform["original_rows"]
+        == pq.read_metadata(files["anchors"]).num_rows
+    )
 
     columns = ["sample_id", "entity_id", "as_of_time", "graph_as_of_time"]
     columns += ["forecast_split", *targets]
@@ -168,46 +181,106 @@ def _check_graph(task, batch, histories):
     assert_same(nodes["transactions"]["features"], expected_features)
 
 
-def test_hi_small_e01_graph_and_forecast(tmp_path):
-    # Split boundary, covered negative, sender-only and receiver-only positives, end of observation.
-    files, anchors = _source_rows(
-        E01_MANIFEST, "hi-small", (0, 313, 4245, 11800, 409216), "involvement"
-    )
+@pytest.fixture(scope="module")
+def hi_small():
+    positions = (0, 313, 2724, 4245, 11800, 409216)
+    files, anchors = _source_rows(E01_MANIFEST, "hi-small", positions, "split", "involvement")
     account_ids, events, ends = _source_history(files, anchors)
-    spec, data, table = prepare_e01(files, tmp_path / "prepared", anchor_rows=list(anchors))
+    histories = {}
+    registered = {}
+    for pos, row in anchors.items():
+        root = account_ids[row["entity_id"]]
+        cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
+        assert int(row["graph_as_of_time"].replace(tzinfo=UTC).timestamp()) == cutoff - 1
+        stage = bisect_right(ends[:2], cutoff)
+        split = ("train", "valid", "test")[stage]
+        assert row["split"] == split
+        touching = {i: e for i, e in events.items() if root in (e.sender, e.receiver)}
+        past = {i: e for i, e in touching.items() if e.time < cutoff}
+        assert past
+        if cutoff + 86400 > ends[stage]:
+            assert row["forecast_split"] is None and row["involvement"] is None
+        else:
+            label = any(e.flagged for e in touching.values() if cutoff <= e.time < cutoff + 86400)
+            assert (row["forecast_split"], row["involvement"]) == (split, label)
+        histories[row["sample_id"]] = root, cutoff, past
+        registered[row["sample_id"]] = dict(row, anchor_row_position=pos)
+    return files, registered, histories
+
+
+@pytest.mark.parametrize(
+    "binding,inputs,target",
+    [
+        ("E01", {"graph"}, "label"),
+        ("E02", {"graph", "history", "aggregates"}, "label"),
+        ("E03", {"history", "history_calendar", "history_timing"}, "masked_values"),
+        ("E04", {"history"}, "next_token"),
+        ("E05", {"history"}, "label"),
+    ],
+    ids=["e01-graph", "e02-combined", "e03-masked-values", "e04-next-token", "e05-involvement"],
+)
+def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
+    files, anchors, histories = hi_small
+    positions = [row["anchor_row_position"] for row in anchors.values()]
+    spec, data, table = prepare_hi_small(
+        files, tmp_path / "prepared", anchor_rows=positions, binding=binding
+    )
+    split_col = "forecast_split" if target == "label" else "split"
+    eligible = {s: r[split_col] for s, r in anchors.items() if r[split_col] is not None}
+    training = [s for s, split in eligible.items() if split == "train"]
+    fit_cutoff = max(histories[s][1] for s in training) - 1
+    graph_clock = "graph" in inputs
+    if "history" in inputs:
+        assert {e.rows.time for e in spec.sample.events.values()} == {
+            api.TimeWindow("event_time", stop=0 if graph_clock else -1)
+        }
+    if "aggregates" in inputs:
+        counts = {s: _source_counts(spec, *histories[s]) for s in eligible}
+        first, second = (counts[s] for s in training)
+        assert all(value != second[name] for name, value in first.items())
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,
-        plan.materialize(table, fit_split="train") as task,
+        plan.materialize(table, fit_split="train", encoder_cutoff=fit_cutoff) as task,
     ):
-        # Two immature forecasts are excluded; each named split has one eligible anchor.
-        assert task.count() == 3
-        for pos, row in anchors.items():
-            root_id = account_ids[row["entity_id"]]
-            cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
-            assert int(row["graph_as_of_time"].replace(tzinfo=UTC).timestamp()) == cutoff - 1
-            stage = bisect_right(ends[:2], cutoff)
-            split = ("train", "valid", "test")[stage]
-            touching = {i: e for i, e in events.items() if root_id in (e.sender, e.receiver)}
-            history = {i: e for i, e in touching.items() if e.time < cutoff}
-            assert history
-            if cutoff + 86400 > ends[stage]:
-                assert row["forecast_split"] is None and row["involvement"] is None
-                continue
-            label = any(e.flagged for e in touching.values() if cutoff <= e.time < cutoff + 86400)
-            assert (row["forecast_split"], row["involvement"]) == (split, label)
-            (batch,) = task.batches(split=split, batch_size=4, output_format="model")
-            assert tuple(batch.metadata["sample_ids"]) == (row["sample_id"],)
-            assert list(batch.metadata["entity_ids"]) == [root_id]
-            assert batch.metadata["as_of_time"].tolist() == [cutoff - 1]
-            metadata = batch.metadata["request_metadata"][0]
-            assert metadata["anchor_row_position"] == pos
-            assert metadata["registered_entity_id"] == row["entity_id"]
-            assert metadata["prediction_time_ns"] == cutoff * 10**9
-            assert not any(batch.metadata["is_padding"])
-            assert batch.targets["label"]["valid"].tolist() == [True]
-            assert batch.targets["label"]["values"].tolist() == [label]
-            _check_graph(task, batch, [(root_id, cutoff, history)])
+        assert task.count() == len(eligible)
+        for split in ("train", "valid", "test"):
+            (batch,) = task.batches(
+                split=split, batch_size=len(eligible), seed=1, output_format="model"
+            )
+            meta = batch.metadata
+            samples = meta["sample_ids"]
+            assert sorted(samples) == sorted(s for s in eligible if eligible[s] == split)
+            assert list(meta["splits"]) == [split] * len(samples)
+            selected = [histories[s] for s in samples]
+            assert list(meta["entity_ids"]) == [root for root, _, _ in selected]
+            assert meta["as_of_time"].tolist() == [t - int(graph_clock) for _, t, _ in selected]
+            assert not any(meta["is_padding"])
+            for sample, metadata in zip(samples, meta["request_metadata"], strict=True):
+                row = anchors[sample]
+                assert metadata["anchor_row_position"] == row["anchor_row_position"]
+                assert metadata["registered_entity_id"] == row["entity_id"]
+                assert metadata["prediction_time_ns"] == histories[sample][1] * 10**9
+            assert set(batch.inputs) == inputs and set(batch.targets) == {target}
+            if target == "label":
+                labels = torch.tensor(
+                    [anchors[s]["involvement"] for s in samples], dtype=torch.float32
+                )
+                assert_same(
+                    batch.targets[target],
+                    {"values": labels, "valid": torch.ones_like(labels, dtype=torch.bool)},
+                )
+            elif target == "masked_values" and split == "train":
+                masked = batch.targets[target]
+                assert (masked["corruption"] & ~masked["valid"]).any()
+            if graph_clock:
+                _check_graph(task, batch, selected)
+            if "history" in inputs:
+                _check_history(task, batch, selected)
+            if "aggregates" in inputs:
+                check_normalized_aggregates(task, batch, counts, training)
+    if binding == "E05":
+        _check_role_windows(spec.schema, data, table, engine, {s: histories[s] for s in eligible})
 
 
 def _check_history(task, batch, histories):
@@ -230,7 +303,13 @@ def _check_history(task, batch, histories):
             )
             events.append((event.time, features))
         rows.append((cutoff, events))
-    check_scalar_history(task, batch, fields, rows)
+    if "masked_values" in batch.targets:
+        assert task.contract.batch.targets["masked_values"] == api.MaskedValuesTarget(
+            "history", 0.15, 0.10, 0.10, 0.10, fields=tuple(fields)
+        )
+        check_masked_history(task, batch, fields, rows, family="transactions")
+    else:
+        check_scalar_history(task, batch, fields, rows)
 
 
 def _check_delivered_targets(batch, expected, currency_ids):
@@ -259,7 +338,7 @@ def _source_counts(spec, root, cutoff, history):
             ("receiver", sum(e.receiver == root for e in rows)),
         ):
             name = f"{window}_{role}_count"
-            # The LI source spans under 30 days, so lifetime and 30-day values coincide.
+            # Both extracts span under 30 days, so lifetime and 30-day values coincide.
             assert spec.sample.entity_values[name].source.time == api.TimeWindow(
                 "event_time", start, 0
             )
@@ -338,3 +417,60 @@ def test_li_medium_l01_combined_forecast(tmp_path):
                 {"amount": (None, row["currency"]), "currency": (row["amount"], None)},
                 currency_ids,
             )
+
+
+def _check_role_windows(schema, data, table, engine, histories):
+    # At prediction time T, senders use all prior events and receivers use [T-24h, T-1h].
+    events = {
+        role: api.EventSpec(
+            api.Rows((role,), api.TimeWindow("event_time", *window)),
+            {"id": api.Field("transaction_id"), "role": api.Constant(i, api.DType("int64"))},
+        )
+        for i, (role, window) in enumerate((("sender", (None, -1)), ("receiver", (-86401, -3600))))
+    }
+    fields = api.Fields(tuple(api.Encode(name, api.Raw()) for name in ("role", "id")))
+    inputs = {
+        f"{keep}_{order}": api.Input(
+            api.EventSource(
+                tuple(events), max_events=limit, keep=keep if limit else "first", order=order
+            ),
+            fields,
+            api.Packed(),
+        )
+        for keep, limit in (("all", None), ("first", 3), ("last", 3))
+        for order in ("ascending", "descending")
+    }
+    spec = api.DataLoaderSpec(
+        schema, api.SampleSpec(api.EntitySpec("accounts"), events=events), api.BatchSpec(inputs)
+    )
+    with (
+        api.prepare(spec, data, engine) as plan,
+        plan.materialize(replace(table, targets={}), fit_split="train") as task,
+    ):
+        seen = []
+        for batch in task.batches(batch_size=len(histories), output_format="model"):
+            assert batch.inputs.keys() == inputs.keys()
+            seen.extend(batch.metadata["sample_ids"])
+            for owner, sample in enumerate(batch.metadata["sample_ids"]):
+                root, cutoff, past = histories[sample]
+                times = {(0, i): e.time for i, e in past.items() if e.sender == root}
+                times.update(
+                    {
+                        (1, i): e.time
+                        for i, e in past.items()
+                        if e.receiver == root and cutoff - 86400 <= e.time <= cutoff - 3600
+                    }
+                )
+                ordered = sorted(times.values())
+                for name, stream in batch.inputs.items():
+                    keep, order = name.split("_")
+                    rows = slice(*stream["offsets"][owner : owner + 2].tolist())
+                    roles, ids = (stream[key]["values"][rows].tolist() for key in ("role", "id"))
+                    actual = list(zip(roles, ids, strict=True))
+                    assert len(set(actual)) == len(actual)
+                    # Equal-time transfers can exchange places, including at the third event.
+                    selected = {"all": ordered, "first": ordered[:3], "last": ordered[-3:]}[keep]
+                    assert [times[key] for key in actual] == (
+                        selected if order == "ascending" else selected[::-1]
+                    )
+        assert sorted(seen) == sorted(histories)

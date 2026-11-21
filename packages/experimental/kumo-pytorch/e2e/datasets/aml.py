@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native inputs and stored targets for AML v8 account-daily v2 forecasts."""
+"""Native histories and targets for AML v8 account-daily anchors."""
 
 import json
 from collections import Counter
@@ -17,7 +17,7 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-from e2e.datasets import bind_tables
+from e2e.datasets import CALENDAR, bind_tables, history_batch
 from kumo.pytorch import api
 
 E01_MANIFEST = Path(__file__).parent / "pins" / "aml-e01.json"
@@ -39,7 +39,7 @@ _TRANSACTIONS = pa.schema(
 )
 
 
-def _select_anchors(path, positions, account_ids, targets):
+def _select_anchors(path, positions, account_ids, targets, graph_clock):
     source = ds.dataset(path, format="parquet")
     positions = sorted(map(index, positions))
     in_range = positions and positions[0] >= 0 and positions[-1] < source.count_rows()
@@ -50,8 +50,8 @@ def _select_anchors(path, positions, account_ids, targets):
         "sample_id": field("sample_id"),
         "registered_entity_id": field("entity_id"),
         "prediction_time_ns": field("as_of_time").cast(pa.int64()),
-        "as_of_time": field("graph_as_of_time"),
-        "split": field("forecast_split"),
+        "as_of_time": field("graph_as_of_time" if graph_clock else "as_of_time"),
+        "split": field("forecast_split" if targets else "split"),
         **{name: field(column).cast(dtype) for name, (column, dtype, _) in targets.items()},
     }
     rows = source.take(positions, columns=columns).append_column(
@@ -167,7 +167,7 @@ def _write_account_events(directory):
                 writer.write_batch(batch)
 
 
-def _combined(contract, fanout):
+def _history_contract(contract, fanout, binding, graph_clock):
     relation = api.RelationSpec(
         "account_touches", "accounts", "account_id", "account_events", "account_id"
     )
@@ -175,17 +175,8 @@ def _combined(contract, fanout):
     schema = api.DataSchema(
         (*contract.schema.tables, table), (*contract.schema.relations, relation)
     )
-    fields = {name: api.Field(name) for name in ("direction", *_AMOUNTS, *_CATEGORIES)}
-    # Graph anchors execute at T-1s; report age relative to the original prediction time T.
-    fields.update(
-        __event_time=api.Field("event_time"),
-        __execution_age=api.EventTimeDelta("seconds"),
-        __prediction_offset=api.Constant(1.0, api.DType("float64")),
-        age_range=api.Derived("add", ("__execution_age", "__prediction_offset")),
-    )
     numeric, category = api.Buckets(bins=64), api.Vocabulary()
     encoders = dict(
-        age_range=numeric,
         direction=category,
         amount_paid=numeric,
         payment_currency=category,
@@ -193,15 +184,28 @@ def _combined(contract, fanout):
         receiving_currency=category,
         payment_format=category,
     )
-    for name, domain in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
+    fields = {name: api.Field(name) for name in encoders}
+    fields["__event_time"] = api.Field("event_time")
+    masked = binding == "E03"
+    if graph_clock:
+        # Graph anchors execute at T-1s, but ages refer to prediction time T.
+        fields.update(
+            __execution_age=api.EventTimeDelta("seconds"),
+            __prediction_offset=api.Constant(1.0, api.DType("float64")),
+            age_range=api.Derived("add", ("__execution_age", "__prediction_offset")),
+        )
+    else:
+        fields["age_seconds" if masked else "age_range"] = api.EventTimeDelta("seconds")
+    for name in CALENDAR:
         fields[name] = api.Derived(api.CalendarPart(name), ("__event_time",))
-        encoders[name] = api.Vocabulary(values=tuple((i, i + 2) for i in domain))
-    events = api.EventSpec(api.Rows((relation.name,), api.TimeWindow("event_time")), fields)
-    history = api.Fields(
-        tuple(api.Encode(name, encoder, "history") for name, encoder in encoders.items()),
-        row=api.Tokens(missing="error"),
-        history=api.Flatten((len(encoders) + 1) * fanout - 1, keep="first", separator="separator"),
-    )
+    rows = api.Rows((relation.name,), api.TimeWindow("event_time", stop=0 if graph_clock else -1))
+    events = {"transactions": api.EventSpec(rows, fields)}
+    batch = history_batch(events, encoders, fanout, masked=masked, max_tokens=len(encoders))
+    if contract.batch.targets:
+        batch = replace(batch, targets=contract.batch.targets)
+    sample = replace(contract.sample, events=events)
+    if not graph_clock:
+        return api.DataLoaderSpec(schema, replace(sample, neighborhoods={}), batch)
     windows = (("all_history", None), ("24h", -86400), ("7d", -7 * 86400), ("30d", -30 * 86400))
     paths = (("total_touching", relation.name), ("sender", "sender"), ("receiver", "receiver"))
     counts = {
@@ -211,32 +215,31 @@ def _combined(contract, fanout):
         for window, start in windows
         for role, path in paths
     }
-    sample = replace(contract.sample, events={"transactions": events}, entity_values=counts)
     inputs = dict(
         contract.batch.inputs,
-        history=api.Input(api.EventSource(("transactions",)), history, api.Padded()),
+        **batch.inputs,
         aggregates=api.Input(
             api.EntitySource(),
             api.Fields(tuple(api.Encode(name, api.ZScore()) for name in counts)),
             api.Separate(),
         ),
     )
-    roles = {name: f"[{name.upper()}]" for name in ("entity", "event", "mask", "pad", "unknown")}
-    space = api.IdSpace(dict(roles, separator="[SEP]"))
-    batch = replace(
-        contract.batch,
-        inputs=inputs,
-        id_spaces={"history": space},
-        batching=api.Batching(max_samples=32),
+    return api.DataLoaderSpec(
+        schema, replace(sample, entity_values=counts), replace(batch, inputs=inputs)
     )
-    return api.DataLoaderSpec(schema, sample, batch)
 
 
-def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
-    """Prepare HI Small account involvement."""
-    return _prepare_aml(
-        files, directory, anchor_rows, {"label": ("involvement", "float32", api.Raw())}
-    )
+def prepare_hi_small(
+    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="E01"
+):
+    """Prepare HI Small graph, combined, masked, next-token or involvement inputs."""
+    if binding not in {"E01", "E02", "E03", "E04", "E05"}:
+        raise ValueError(f"Unknown HI Small binding: {binding}")
+    targets = {} if binding in {"E03", "E04"} else {"label": ("involvement", "float32", api.Raw())}
+    return _prepare_aml(files, directory, anchor_rows, targets, binding)
+
+
+prepare_e01 = prepare_hi_small
 
 
 def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
@@ -245,10 +248,10 @@ def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
         "amount": ("next_amount", "float32", api.Raw()),
         "currency": ("next_currency", "string", api.Vocabulary()),
     }
-    return _prepare_aml(files, directory, anchor_rows, targets, combined=True)
+    return _prepare_aml(files, directory, anchor_rows, targets, "L01")
 
 
-def _prepare_aml(files, directory, anchor_rows, targets, *, combined=False):
+def _prepare_aml(files, directory, anchor_rows, targets, binding):
     """Write a bounded native view for verified input files into a fresh directory.
 
     The selected roots keep all touching transactions across time and their counterparties.
@@ -259,7 +262,10 @@ def _prepare_aml(files, directory, anchor_rows, targets, *, combined=False):
     mapping = pq.read_table(files["mapping"], columns=["entity_id", "first_observed_time"])
     mapping = mapping.sort_by("entity_id")
     account_ids = {key: i for i, key in enumerate(mapping["entity_id"].to_pylist())}
-    selection, roots = _select_anchors(files["anchors"], anchor_rows, account_ids, targets)
+    graph_clock = binding in {"E01", "E02", "L01"}
+    selection, roots = _select_anchors(
+        files["anchors"], anchor_rows, account_ids, targets, graph_clock
+    )
     directory.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=directory.parent) as tmp:
         work = Path(tmp)
@@ -267,9 +273,9 @@ def _prepare_aml(files, directory, anchor_rows, targets, *, combined=False):
             files["transactions"], work / "transactions.parquet", roots, account_ids
         )
         contract = _contract(fanout, targets)
-        if combined:
+        if binding != "E01":
             _write_account_events(work)
-            contract = _combined(contract, fanout)
+            contract = _history_contract(contract, fanout, binding, graph_clock)
         mapping = mapping.take(ids)
         accounts = pa.table(
             {

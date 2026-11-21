@@ -7,7 +7,8 @@
 from bisect import bisect_right
 from collections import Counter
 from datetime import UTC, datetime
-from itertools import accumulate, groupby
+from itertools import accumulate, groupby, permutations
+from operator import itemgetter
 from statistics import mean, pstdev
 
 import pytest
@@ -171,6 +172,93 @@ def check_scalar_history(task, batch, fields, histories):
 def source_vocabulary(values):
     counts = Counter(value for value in values if value is not None)
     return {key: i for i, key in enumerate(sorted(counts, key=lambda k: (-counts[k], k)), 2)}
+
+
+def check_masked_history(task, batch, fields, histories, *, family=None, text_pieces=None):
+    bindings, space = task.output("history").bindings, task.spaces["history"]
+    assert {name: b.encoder.config for name, b in bindings.items()} == fields
+    field_ids = {
+        (source, name): space.members['["fields","fields"]'][i]
+        for (_, source, name), i in task.fitted_state["field_names"]["fields"]
+    }
+
+    def source_record(row):
+        record = []
+        for name in fields:
+            if (value := row.get(name)) is None:
+                continue
+            key = field_ids[row.get("source_kind", family), name]
+            pieces = (
+                text_pieces[name][value]
+                if text_pieces and name in text_pieces
+                else [scalar_token(bindings[name].encoder, space, value)]
+            )
+            record.extend((key, position, token) for position, token in enumerate(pieces))
+        return record
+
+    packed, target = batch.inputs["history"], batch.targets["masked_values"]
+    after, changed = packed["value_ids"], target["corruption"]
+    masked, unknown = after == space.special(role="mask"), space.special(role="unknown")
+    assert_same(target["valid"], masked)
+    assert (target["values"][~masked] == -100).all()
+    assert changed[masked].all() and (after[changed & ~masked] == unknown).all()
+    assert packed["valid"].all() and packed["field_valid"].all()
+    offsets = packed["field_offsets"].tolist()
+    assert offsets[0] == 0 and offsets[-1] == len(after)
+    assert_same(target["offsets"], packed["field_offsets"])
+    visible = torch.where(masked, target["values"], after)
+    tokens = list(
+        zip(
+            packed["field_ids"].tolist(),
+            packed["position_ids"].tolist(),
+            visible.tolist(),
+            (changed & ~masked).tolist(),
+            strict=True,
+        )
+    )
+
+    def matches(record, index):
+        actual = tokens[offsets[index] : offsets[index + 1]]
+        return len(record) == len(actual) and all(
+            (field, pos) == (key, position)
+            and (original != unknown if replaced else original == value)
+            for (key, position, original), (field, pos, value, replaced) in zip(
+                record, actual, strict=True
+            )
+        )
+
+    seq = packed["sequence"]
+    valid = seq["valid"]
+    assert valid.shape == (len(histories), max(len(rows) for _, rows in histories))
+    owners, positions = valid.nonzero(as_tuple=True)
+    assert_same(packed["owner"], owners)
+    assert_same(packed["history_position"], positions)
+    assert_same(seq["event_indices"][valid], torch.arange(len(owners)))
+    assert len(offsets) == len(owners) + 1
+    event = 0
+    for owner, (cutoff, history) in enumerate(histories):
+        ordered = sorted(history, key=itemgetter(0))
+        assert_same(valid[owner], torch.arange(valid.shape[1]) < len(ordered))
+        if ordered:
+            assert masked[offsets[event] : offsets[event + len(ordered)]].any()
+        calendar = [_event_values(cutoff, stamp, {}) for stamp, _ in ordered]
+        for name in ("hour", "weekday", "day", "age_seconds"):
+            age = name == "age_seconds"
+            channel = batch.inputs["history_timing" if age else "history_calendar"]
+            assert_same(channel["valid"], valid)
+            assert_same(channel[name]["valid"], valid)
+            assert channel[name]["values"][owner][valid[owner]].tolist() == [
+                row["age_range" if age else name] for row in calendar
+            ]
+        # Both pinned extracts have at most two tied events. Either order is valid after masking.
+        for stamp, tied in groupby(ordered, key=itemgetter(0)):
+            records = [source_record(row) for _, row in tied]
+            assert any(
+                all(matches(r, i) for i, r in enumerate(order, event))
+                for order in permutations(records)
+            ), (owner, stamp)
+            event += len(records)
+    return field_ids
 
 
 def check_mbd_packed_history(task, batch, registered, events, fields):

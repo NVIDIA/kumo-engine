@@ -7,7 +7,6 @@
 import hashlib
 import json
 from collections import Counter
-from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,11 +16,10 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-from e2e.datasets import bind_tables
+from e2e.datasets import CALENDAR, bind_tables, history_batch
 from e2e.datasets.staging import verify
 from e2e.datasets.synthetic_ltv import ltv_contract
 from kumo.pytorch import api
-from tests.reference_models.batch_definitions import PRAGMA_BATCH
 
 _PINS = Path(__file__).parent / "pins"
 _SOURCE = _PINS / "synthetic-medium.json"
@@ -38,7 +36,6 @@ _FAMILIES = {
     "lifelong_events": ("lifelong_id", ("event_type",)),
     "plan_events": ("plan_event_id", ("plan",)),
 }
-_CALENDAR = {"hour": range(24), "weekday": range(7), "day": range(1, 32)}
 
 
 def _events(family, raw, tables, roots, entity_type):
@@ -87,32 +84,6 @@ def _events(family, raw, tables, roots, entity_type):
     return events.filter(pc.is_in(events["root_id"], value_set=roots))
 
 
-def _pragma_batch(events, encoders, roles):
-    encoders = dict(encoders, reason=api.Text(vocabulary_size=256, min_frequency=2, empty="empty"))
-    fields = api.Fields(
-        tuple(api.Encode(name, encoder, "history") for name, encoder in encoders.items()),
-        row=api.Tokens(),
-        field_names="fields",
-        field_space="history",
-        forbidden_fields=("entity_id", "sample_id", "label", "split"),
-    )
-    history = replace(
-        PRAGMA_BATCH.inputs["history"], source=api.EventSource(tuple(events)), representation=fields
-    )
-    masked = replace(PRAGMA_BATCH.targets["masked_values"], fields=tuple(encoders))
-    return api.BatchSpec(
-        {
-            "history": history,
-            "history_calendar": PRAGMA_BATCH.inputs["history_calendar"],
-            "history_timing": PRAGMA_BATCH.inputs["history_timing"],
-        },
-        {"masked_values": masked},
-        id_spaces={"history": api.IdSpace(roles)},
-        field_names=PRAGMA_BATCH.field_names,
-        batching=api.Batching(max_samples=32),
-    )
-
-
 def _contract(capacity, entity_type):
     tables = [api.TableSpec("roots", "root_id", time_column="available_at")]
     relations, events = [], {}
@@ -120,7 +91,7 @@ def _contract(capacity, entity_type):
     account = entity_type == "account"
     ltv = entity_type == "ltv"
     graph_fields = {}
-    encoders = {} if account else {"age_range": buckets}
+    encoders = {}
     for family, (_, fields) in _FAMILIES.items():
         tables.append(api.TableSpec(family, "event_id", time_column="event_time"))
         relation = api.RelationSpec(f"root_{family}", "roots", "root_id", family, "root_id")
@@ -140,7 +111,7 @@ def _contract(capacity, entity_type):
             )
         else:
             values["age_seconds" if account else "age_range"] = api.EventTimeDelta("seconds")
-        for name in _CALENDAR:
+        for name in CALENDAR:
             values[name] = api.Derived(api.CalendarPart(name), ("__event_time",))
         events[family] = api.EventSpec(
             api.Rows((relation.name,), api.TimeWindow("event_time", stop=0 if ltv else -1)), values
@@ -149,27 +120,10 @@ def _contract(capacity, entity_type):
     sample = api.SampleSpec(
         api.EntitySpec("roots", entity_type="account" if account else "customer"), events=events
     )
-    roles = {name: f"[{name.upper()}]" for name in ("entity", "event", "mask", "pad", "unknown")}
     if account:
-        return api.DataLoaderSpec(schema, sample, _pragma_batch(events, encoders, roles))
-    for name, domain in _CALENDAR.items():
-        encoders[name] = api.Vocabulary(values=tuple((i, i + 2) for i in domain))
-    stream = api.Fields(
-        tuple(api.Encode(name, encoder, "history") for name, encoder in encoders.items()),
-        row=api.Tokens(missing="error"),
-        history=api.Flatten(
-            (len(encoders) + 1) * capacity - 1, keep="first", separator="separator"
-        ),
-    )
+        encoders["reason"] = api.Text(vocabulary_size=256, min_frequency=2, empty="empty")
     contract = api.DataLoaderSpec(
-        schema,
-        sample,
-        api.BatchSpec(
-            {"history": api.Input(api.EventSource(tuple(events)), stream, api.Padded())},
-            {"next_token": api.NextTokenTarget("history")},
-            id_spaces={"history": api.IdSpace(dict(roles, separator="[SEP]"))},
-            batching=api.Batching(max_samples=32),
-        ),
+        schema, sample, history_batch(events, encoders, capacity, masked=account)
     )
     return ltv_contract(contract, graph_fields, capacity) if ltv else contract
 

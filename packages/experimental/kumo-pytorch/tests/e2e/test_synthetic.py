@@ -7,7 +7,7 @@
 import json
 import os
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC
 from operator import itemgetter
 from pathlib import Path
 from statistics import mean, pstdev, pvariance
@@ -21,10 +21,10 @@ import torch
 from e2e.datasets.synthetic import _events, load_synthetic, prepare_synthetic
 from kumo.pytorch import api
 from tests.e2e.history import (
+    check_masked_history,
     check_normalized_aggregates,
     check_scalar_history,
     check_source_graph,
-    scalar_token,
 )
 from tests.test_inference_lifecycle import assert_same
 
@@ -159,74 +159,24 @@ _REASON_PIECES = {
 
 def _check_account_batch(task, batch, fields, cutoff, rows):
     space = task.spaces["history"]
-    bindings = task.output("history").bindings
-    assert {n: b.encoder.config for n, b in bindings.items()} == {
-        **fields,
-        "reason": api.Text(vocabulary_size=256, min_frequency=2, empty="empty"),
-    }
-    text = bindings["reason"].encoder
+    text = task.output("history").bindings["reason"].encoder
     vocab = json.loads(text.tokenizer_json)["model"]["vocab"]
     assert "v" not in vocab  # First appears after training, in not_received.
-    names = space.members['["fields","fields"]']
-    field_ids = {
-        (family, name): names[i]
-        for (_, family, name), i in task.fitted_state["field_names"]["fields"]
+    pieces = {
+        reason: [space.members[text.identity][vocab[p]] for p in tokens]
+        for reason, tokens in _REASON_PIECES.items()
     }
-    packed, target = batch.inputs["history"], batch.targets["masked_values"]
-    times = sorted(t for t, _ in rows)
-    # Each tied event in this extract belongs to a different family. Its first field
-    # identifies the family even when the value itself was replaced.
-    records = {(t, field_ids[v["source_kind"], "source_kind"]): v for t, v in rows}
-    assert len(records) == len(rows)
-    seq = packed["sequence"]
-    assert seq["valid"].tolist() == [[True] * len(rows)]
-    assert seq["event_indices"].tolist() == [list(range(len(rows)))]
-    assert packed["owner"].tolist() == [0] * len(rows)
-    assert packed["history_position"].tolist() == list(range(len(rows)))
-    assert packed["valid"].all() and packed["field_valid"].all()
-    dates = [datetime.fromtimestamp(t, UTC) for t in times]
-    for name, expected in (
-        ("age_seconds", [cutoff - t for t in times]),
-        ("hour", [d.hour for d in dates]),
-        ("weekday", [d.weekday() for d in dates]),
-        ("day", [d.day for d in dates]),
-    ):
-        channel = batch.inputs["history_timing" if name == "age_seconds" else "history_calendar"]
-        assert torch.equal(channel["valid"], seq["valid"]) and torch.equal(
-            channel[name]["valid"], seq["valid"]
-        )
-        assert channel[name]["values"].tolist() == [expected]
-
-    originals, keys, positions, offsets = [], [], [], [0]
-    first_fields = packed["field_ids"][packed["field_offsets"][:-1]].tolist()
-    for clock, key in zip(times, first_fields, strict=True):
-        row = records.pop((clock, key))
-        family = row["source_kind"]
-        for name in fields:
-            if (value := row.get(name)) is None:
-                continue
-            if name == "reason":
-                pieces = [space.members[text.identity][vocab[p]] for p in _REASON_PIECES[value]]
-            else:
-                pieces = [scalar_token(bindings[name].encoder, space, value)]
-            originals.extend(pieces)
-            keys.extend([field_ids[family, name]] * len(pieces))
-            positions.extend(range(len(pieces)))
-        offsets.append(len(originals))
-    assert packed["field_offsets"].tolist() == offsets and target["offsets"].tolist() == offsets
-    assert packed["field_ids"].tolist() == keys and packed["position_ids"].tolist() == positions
-    before, after = torch.tensor(originals), packed["value_ids"]
-    supervised = after == space.special(role="mask")
-    unknown = after == space.special(role="unknown")
-    assert ((after == before) | supervised | unknown).all()
+    fields = dict(fields, reason=api.Text(vocabulary_size=256, min_frequency=2, empty="empty"))
+    field_ids = check_masked_history(
+        task, batch, fields, [(cutoff, rows)], text_pieces={"reason": pieces}
+    )
     if batch.metadata["splits"][0] == "test":
+        packed, target = batch.inputs["history"], batch.targets["masked_values"]
         reason = packed["field_ids"] == field_ids["disputes", "reason"]
-        assert (reason & supervised).any()
-        assert (reason & unknown & (after != before)).any()  # Unknown replacement.
-        assert (reason & unknown & (after == before)).any()  # Original held-out [UNK].
-    assert supervised.any() and torch.equal(target["valid"], supervised)
-    assert torch.equal(target["values"], torch.where(supervised, before, -100))
-    assert torch.equal(target["corruption"], before != after)
+        unknown = packed["value_ids"] == space.special(role="unknown")
+        assert (reason & target["valid"]).any()
+        assert (reason & unknown & target["corruption"]).any()  # Unknown replacement.
+        assert (reason & unknown & ~target["corruption"]).any()  # Original held-out [UNK].
 
 
 def _check_ltv_graph(task, batch, histories):
