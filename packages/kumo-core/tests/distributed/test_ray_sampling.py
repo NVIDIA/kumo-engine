@@ -14,6 +14,11 @@ from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
+from diskgraph.sampling_options import (
+    InheritEngineSeed,
+    SamplingOptions,
+    WeightedSeedSampling,
+)
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.diskgraph.batch_contract import (
     WIRE_VERSION,
@@ -23,7 +28,6 @@ from kumo_core.diskgraph.batch_contract import (
     ConsumerToken,
     NativeBatch,
     SamplingContractError,
-    SamplingOptions,
     content_digest,
 )
 from kumo_core.diskgraph.ray_sampling import (
@@ -278,10 +282,13 @@ def test_trainer_rejects_mismatched_seed_manifest_before_scheduling() -> None:
         patch("pathlib.Path.read_bytes", return_value=b"other task"),
         pytest.raises(SamplingContractError, match="trainer task manifest"),
     ):
-        client.iter(stage="train")
+        client.iter(SamplingOptions(stage="train", batch_size=2))
 
 
-def test_request_lookahead_does_not_start_sampling() -> None:
+@pytest.mark.parametrize("seed", [InheritEngineSeed.DEFAULT, None, 0, 17])
+def test_request_lookahead_does_not_start_sampling(
+    seed: int | None | InheritEngineSeed,
+) -> None:
     """Stage quotas can truncate logical requests before any remote submission."""
     import os
 
@@ -300,16 +307,48 @@ def test_request_lookahead_does_not_start_sampling() -> None:
         patch(
             "kumo_core.diskgraph.seed_schedule.make_seed_schedule",
             return_value=(schedule, 3),
-        ),
+        ) as make_schedule,
         patch.object(client, "_sample") as sample,
     ):
-        requests, count = client.iter_requests(
-            stage="train", epoch=3, worker_id=0, num_workers=1, batch_size=2
+        options = SamplingOptions(
+            stage="train",
+            epoch=3,
+            worker_id=1,
+            num_workers=2,
+            batch_size=2,
+            shuffle=True,
+            drop_last=True,
+            group_by_timestamp=True,
+            selected_stage_node_ids=[9, 14, 17],
+            weighted_seed_sampling=WeightedSeedSampling(num_samples=3),
+            projections={"users": ["age"]},
+            rnd_seed=seed,
         )
+        requests, count = client.iter_requests(options)
         first, second = list(requests)
         assert count == 3
         assert first.seed_ids == (9, 14) and second.seed_ids == (17,)
         assert first.batch_ordinal == 0 and second.batch_ordinal == 1
+        resolved_seed = 42 if seed is InheritEngineSeed.DEFAULT else seed
+        make_schedule.assert_called_once_with(
+            client.manifest_path, replace(options, rnd_seed=resolved_seed)
+        )
+        assert first.options == replace(
+            options,
+            rnd_seed=resolved_seed,
+            num_workers=1,
+            worker_id=0,
+            epoch=0,
+            shuffle=False,
+            drop_last=False,
+            group_by_timestamp=False,
+            weighted_seed_sampling=None,
+            selected_stage_node_ids=None,
+        )
+        assert first.options.sampling_plan is options.sampling_plan
+        assert first.validate() is first.options
+        assert options.rnd_seed is seed
+        assert options.selected_stage_node_ids == [9, 14, 17]
         sample.assert_not_called()
 
 

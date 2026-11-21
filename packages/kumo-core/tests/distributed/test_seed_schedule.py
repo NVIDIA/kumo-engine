@@ -7,16 +7,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, Unpack
+from typing import TYPE_CHECKING, TypedDict
 from unittest.mock import Mock
 
 import pytest
 from diskgraph import DiskgraphConfigError
-from kumo_core.diskgraph.batch_contract import (
-    SamplingArguments,
-    SamplingOptions,
-    WeightedSeedSampling,
-)
+from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from kumo_core.diskgraph.seed_schedule import SeedIndexMetadata, make_seed_schedule
 
 if TYPE_CHECKING:
@@ -102,23 +98,12 @@ def metadata(monkeypatch: pytest.MonkeyPatch) -> MetadataFixture:
     return MetadataFixture(manifest, seed_index, rhs_index, reads, forbidden)
 
 
-def _options(**changes: Unpack[SamplingArguments]) -> SamplingOptions:
-    arguments: SamplingArguments = {
-        "stage": "train",
-        "num_workers": 1,
-        "worker_id": 0,
-        "shuffle": False,
-        "rnd_seed": 42,
-        "epoch": 0,
-        "batch_size": 2,
-        **changes,
-    }
-    return SamplingOptions.from_kwargs(**arguments)
+_OPTIONS = SamplingOptions(stage="train", batch_size=2, rnd_seed=42)
 
 
 def test_stage_metadata_produces_canonical_ids(metadata: MetadataFixture) -> None:
     """Sparse stage ranges map to canonical ids without opening graph data."""
-    schedule, count = make_seed_schedule("runtime.json", _options())
+    schedule, count = make_seed_schedule("runtime.json", _OPTIONS)
     assert count == 5
     assert [schedule.next_seed_ids() for _ in range(4)] == [
         [10, 11],
@@ -139,7 +124,8 @@ def test_selected_ids_keep_order_duplicates_and_sharding(
     """Logical worker sharding preserves the caller's explicit seed selection."""
     schedule, count = make_seed_schedule(
         "runtime.json",
-        _options(
+        replace(
+            _OPTIONS,
             num_workers=2,
             worker_id=1,
             selected_stage_node_ids=[12, 20, 12, 21, 10],
@@ -155,7 +141,7 @@ def test_rhs_uses_parent_metadata_and_dense_candidate_domain(
 ) -> None:
     """RHS scheduling uses the parent table's enclosing native node-id range."""
     schedule, count = make_seed_schedule(
-        "runtime.json", _options(rhs_seed_node_type="users")
+        "runtime.json", replace(_OPTIONS, rhs_seed_node_type="users")
     )
     assert count == 5
     assert [schedule.next_seed_ids() for _ in range(4)] == [
@@ -172,7 +158,7 @@ def test_missing_seed_metadata_fails_before_sampling(
     metadata: MetadataFixture, failure: str
 ) -> None:
     """Invalid task/table metadata cannot silently select a different seed domain."""
-    options = _options()
+    options = _OPTIONS
     if failure == "stage":
         options = replace(options, stage="missing")
     elif failure == "empty":
@@ -206,7 +192,7 @@ def test_sidecar_schedules_use_qualified_stage_identity(
     monkeypatch.setattr(native, "SeedSchedule", construct)
     weighted = Mock(return_value=None if grouped else '{"buckets":[]}')
     monkeypatch.setattr(runtime, "_weighted_seed_sampling_json", weighted)
-    options = _options(group_by_timestamp=grouped)
+    options = replace(_OPTIONS, group_by_timestamp=grouped)
     if not grouped:
         options = replace(
             options, weighted_seed_sampling=WeightedSeedSampling(num_samples=5)
@@ -218,3 +204,10 @@ def test_sidecar_schedules_use_qualified_stage_identity(
         Path("/snapshot/train_tables/task") if grouped else None
     )
     assert captured[0].weighted_seed_sampling_json == weighted.return_value
+
+
+def test_schedule_requires_resolved_engine_seed(metadata: MetadataFixture) -> None:
+    """The metadata adapter must not guess the seed of an unopened index."""
+    with pytest.raises(DiskgraphConfigError, match="resolved rnd_seed"):
+        make_seed_schedule("runtime.json", SamplingOptions(stage="train", batch_size=2))
+    metadata.reads.assert_not_called()

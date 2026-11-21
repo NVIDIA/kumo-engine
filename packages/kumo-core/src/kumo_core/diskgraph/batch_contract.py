@@ -6,240 +6,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass
 from hashlib import sha256
-from typing import NotRequired, TypedDict, Unpack, cast
+from typing import NotRequired, TypedDict
 
 import pyarrow as pa
-from diskgraph.sampling_plan import SamplingPlan
-
-
-class WeightedSeedSamplingArguments(TypedDict):
-    """Weights and draw count accepted by the native weighted seed scheduler."""
-
-    false_weight: NotRequired[float]
-    true_weight: NotRequired[float]
-    num_samples: int
-    use_sample_weights: NotRequired[bool]
-
-
-class SamplingArguments(TypedDict, total=False):
-    """Native keyword argument dictionaries accepted at the compatibility boundary."""
-
-    stage: str
-    sampling_plan: SamplingPlan
-    num_workers: int
-    worker_id: int
-    shuffle: bool
-    epoch: int
-    batch_size: int
-    rnd_seed: int | None
-    drop_last: bool
-    fused: bool | None
-    swap_edge_direction: bool
-    neg_rhs_node_type: str | None
-    neg_amount_m: int | None
-    neg_rnd_seed: int | None
-    replace: bool
-    disjoint: bool
-    adaptive: bool
-    entity_node_type: str | None
-    target_node_type: str | None
-    rhs_seed_node_type: str | None
-    rhs_seed_time: int | None
-    group_by_timestamp: bool
-    weighted_seed_sampling: WeightedSeedSamplingArguments | None
-    selected_stage_node_ids: list[int] | None
-    pseudo_seed_time: int | None
-    disable_pseudo_time: bool
-    projections: dict[str, list[str]] | None
-
-
-@dataclass(frozen=True, kw_only=True)
-class WeightedSeedSampling:
-    """Immutable class/sample weights and draw count for native scheduling."""
-
-    num_samples: int
-    false_weight: float | None = None
-    true_weight: float | None = None
-    use_sample_weights: bool = False
-
-    def to_native_kwargs(self) -> WeightedSeedSamplingArguments:
-        """Return native settings, preserving whether class weights were omitted.
-
-        Returns:
-            Fresh native keyword dictionary with absent weights omitted.
-        """
-        return cast(
-            WeightedSeedSamplingArguments,
-            {
-                item.name: value
-                for item in fields(self)
-                if (value := getattr(self, item.name)) is not None
-            },
-        )
-
-
-@dataclass(frozen=True, kw_only=True)
-class SamplingOptions:
-    """Sampling settings carrying DiskGraph's immutable native plan directly."""
-
-    stage: str
-    batch_size: int
-    sampling_plan: SamplingPlan = field(default_factory=SamplingPlan)
-    num_workers: int = 1
-    worker_id: int = 0
-    shuffle: bool = False
-    epoch: int = 0
-    rnd_seed: int | None = None
-    drop_last: bool = False
-    fused: bool | None = None
-    swap_edge_direction: bool = True
-    neg_rhs_node_type: str | None = None
-    neg_amount_m: int | None = None
-    neg_rnd_seed: int | None = None
-    replace: bool = False
-    disjoint: bool = True
-    adaptive: bool = False
-    entity_node_type: str | None = None
-    target_node_type: str | None = None
-    rhs_seed_node_type: str | None = None
-    rhs_seed_time: int | None = None
-    group_by_timestamp: bool = False
-    weighted_seed_sampling: WeightedSeedSampling | None = None
-    selected_stage_node_ids: tuple[int, ...] | None = None
-    pseudo_seed_time: int | None = None
-    disable_pseudo_time: bool = False
-    projections: tuple[tuple[str, tuple[str, ...]], ...] | None = None
-
-    def __post_init__(self) -> None:
-        if self.selected_stage_node_ids is not None:
-            object.__setattr__(
-                self, "selected_stage_node_ids", tuple(self.selected_stage_node_ids)
-            )
-        if self.projections is not None:
-            object.__setattr__(
-                self,
-                "projections",
-                tuple(
-                    sorted((name, tuple(columns)) for name, columns in self.projections)
-                ),
-            )
-
-    @classmethod
-    def from_kwargs(cls, **arguments: Unpack[SamplingArguments]) -> SamplingOptions:
-        """Copy native keyword arguments into owned configuration fields.
-
-        Args:
-            **arguments: Existing native iterator keyword arguments.
-
-        Returns:
-            Configuration independent of the caller's mutable containers.
-
-        Raises:
-            KeyError: If stage or batch size is missing.
-        """
-        weights = arguments.get("weighted_seed_sampling")
-        selected = arguments.get("selected_stage_node_ids")
-        projections = arguments.get("projections")
-        return cls(
-            stage=arguments["stage"],
-            batch_size=arguments["batch_size"],
-            sampling_plan=arguments["sampling_plan"]
-            if "sampling_plan" in arguments
-            else SamplingPlan(),
-            weighted_seed_sampling=WeightedSeedSampling(**weights)
-            if weights is not None
-            else None,
-            selected_stage_node_ids=tuple(selected) if selected is not None else None,
-            projections=tuple(
-                (name, tuple(columns)) for name, columns in projections.items()
-            )
-            if projections is not None
-            else None,
-            num_workers=arguments.get("num_workers", 1),
-            worker_id=arguments.get("worker_id", 0),
-            shuffle=arguments.get("shuffle", False),
-            epoch=arguments.get("epoch", 0),
-            rnd_seed=arguments.get("rnd_seed", None),
-            drop_last=arguments.get("drop_last", False),
-            fused=arguments.get("fused", None),
-            swap_edge_direction=arguments.get("swap_edge_direction", True),
-            neg_rhs_node_type=arguments.get("neg_rhs_node_type", None),
-            neg_amount_m=arguments.get("neg_amount_m", None),
-            neg_rnd_seed=arguments.get("neg_rnd_seed", None),
-            replace=arguments.get("replace", False),
-            disjoint=arguments.get("disjoint", True),
-            adaptive=arguments.get("adaptive", False),
-            entity_node_type=arguments.get("entity_node_type", None),
-            target_node_type=arguments.get("target_node_type", None),
-            rhs_seed_node_type=arguments.get("rhs_seed_node_type", None),
-            rhs_seed_time=arguments.get("rhs_seed_time", None),
-            group_by_timestamp=arguments.get("group_by_timestamp", False),
-            pseudo_seed_time=arguments.get("pseudo_seed_time", None),
-            disable_pseudo_time=arguments.get("disable_pseudo_time", False),
-        )
-
-    def to_native_kwargs(self) -> SamplingArguments:
-        """Return native arguments with the typed plan unchanged.
-
-        Returns:
-            Native keyword arguments with list/dictionary views of tuple fields.
-        """
-        arguments = cast(
-            SamplingArguments,
-            {item.name: getattr(self, item.name) for item in fields(self) if item.init},
-        )
-        arguments["selected_stage_node_ids"] = (
-            list(self.selected_stage_node_ids)
-            if self.selected_stage_node_ids is not None
-            else None
-        )
-        arguments["projections"] = (
-            {name: list(columns) for name, columns in self.projections}
-            if self.projections is not None
-            else None
-        )
-        arguments["weighted_seed_sampling"] = (
-            self.weighted_seed_sampling.to_native_kwargs()
-            if self.weighted_seed_sampling is not None
-            else None
-        )
-        return arguments
-
-    @property
-    def has_seed_schedule(self) -> bool:
-        """Whether this configuration selects or shards a trainer-owned schedule."""
-        return (
-            self.num_workers != 1
-            or self.worker_id != 0
-            or self.shuffle
-            or self.epoch != 0
-            or self.drop_last
-            or self.group_by_timestamp
-            or self.weighted_seed_sampling is not None
-            or self.selected_stage_node_ids is not None
-        )
-
-    def sampling_only(self) -> SamplingOptions:
-        """Return traversal settings without trainer-owned seed selection.
-
-        Returns:
-            This object when already sampling-only, otherwise a normalized copy.
-        """
-        if not self.has_seed_schedule:
-            return self
-        return replace(
-            self,
-            num_workers=1,
-            worker_id=0,
-            shuffle=False,
-            epoch=0,
-            drop_last=False,
-            group_by_timestamp=False,
-            weighted_seed_sampling=None,
-            selected_stage_node_ids=None,
-        )
+from diskgraph.sampling_options import SamplingOptions
 
 
 class NativeTask(TypedDict):
@@ -380,7 +152,7 @@ class BatchRequest:
             or any(type(value) is not int for value in (*integers, *self.seed_ids))
         ):
             raise SamplingContractError(
-                "request requires immutable seeds/options and integers"
+                "request requires tuple seeds, SamplingOptions, and integers"
             )
         if (
             not self.seed_ids
@@ -401,7 +173,16 @@ class BatchRequest:
         options = self.options
         if type(options.batch_size) is not int or options.batch_size < 1:
             raise SamplingContractError("native batch size must be a positive integer")
-        if options.has_seed_schedule:
+        if (
+            options.num_workers != 1
+            or options.worker_id != 0
+            or options.shuffle
+            or options.epoch != 0
+            or options.drop_last
+            or options.group_by_timestamp
+            or options.weighted_seed_sampling is not None
+            or options.selected_stage_node_ids is not None
+        ):
             raise SamplingContractError("feeder options cannot own a seed schedule")
         if len(self.seed_ids) > options.batch_size:
             raise SamplingContractError("request exceeds native batch size")

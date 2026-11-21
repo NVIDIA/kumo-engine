@@ -6,15 +6,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from kumo_core.diskgraph.batch_contract import SamplingArguments
     from kumo_core.diskgraph.ray_sampling import RayRuntimeIndex
 
 import pytest
-from diskgraph import RuntimeIndex
+from diskgraph import RuntimeIndex, SamplingOptions
 from test_runtime_batch_iterator_e2e import (
     _sampling_plan,
     seed_table_fixture,  # noqa: F401 -- shared native ingest fixture
@@ -93,27 +93,26 @@ def test_remote_native_batches_match_local(
     mode: str,
 ) -> None:
     """Transport complete Arrow batches with identical local sampling semantics."""
-    options: SamplingArguments = {
-        "stage": "train",
-        "sampling_plan": _sampling_plan(),
-        "entity_node_type": "users",
-        "num_workers": 2,
-        "worker_id": 1,
-        "shuffle": mode == "flat",
-        "rnd_seed": 42,
-        "epoch": 3,
-        "batch_size": 2,
-    }
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=_sampling_plan(),
+        entity_node_type="users",
+        num_workers=2,
+        worker_id=1,
+        shuffle=mode == "flat",
+        rnd_seed=42,
+        epoch=3,
+        batch_size=2,
+    )
     if mode == "selected":
-        options["selected_stage_node_ids"] = [4, 1, 4, 2, 0]
+        options = replace(options, selected_stage_node_ids=[4, 1, 4, 2, 0])
     elif mode == "rhs":
-        options["rhs_seed_node_type"] = "users"
-        options["rhs_seed_time"] = 1000
+        options = replace(options, rhs_seed_node_type="users", rhs_seed_time=1000)
     local = RuntimeIndex(
         seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
     )
-    expected, expected_count = local.iter(**options)
-    actual, count = remote_index.iter(**options)
+    expected, expected_count = local.iter(options)
+    actual, count = remote_index.iter(options)
     assert count == expected_count
     received = list(actual)
     references = list(expected)
