@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "bucket": "kumo-test-dataplane-bucket",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "table_source_prefix": "scale-bench/datasets",
+  "objects": {
+    "manifest": {
+      "key": "scale-bench/datasets/streaming/25B/manifest.json",
+      "size": 164613,
+      "sha256": "169455eac395e84508d83e575f5ed4f9e1489693421b0ae43f7227db31a151a1"
+    },
+    "validation": {
+      "key": "scale-bench/datasets/streaming/25B/_VALIDATED.json",
+      "size": 27577,
+      "sha256": "7c878c60865bb9844ed35edcfddd43c1e0f2abd40ca7daf1144fb3c1a583c134"
+    }
+  }
+}

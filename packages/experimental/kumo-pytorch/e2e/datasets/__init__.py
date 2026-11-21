@@ -60,16 +60,15 @@ def history_batch(events, encoders, capacity, *, masked=False, max_tokens=None):
     )
 
 
-def bind_tables(directory, contract, root_key, targets=()):
+def bind_tables(directory, contract, root_key, targets=(), *, source_paths=None):
     """Resolve a prepared Parquet dataset with its registered anchors."""
     from kumo.pytorch import api
 
-    def source(name):
-        return api.Parquet(str(directory / f"{name}.parquet"))
-
-    dataset = api.Dataset({table.name: source(table.name) for table in contract.schema.tables})
+    if source_paths is None:
+        source_paths = {t.name: directory / f"{t.name}.parquet" for t in contract.schema.tables}
+    dataset = api.Dataset({name: api.Parquet(str(path)) for name, path in source_paths.items()})
     anchors = api.AnchorTable(
-        source("anchors"),
+        api.Parquet(str(directory / "anchors.parquet")),
         root_key,
         "as_of_time",
         sample_id="sample_id",

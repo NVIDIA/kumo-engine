@@ -20,17 +20,9 @@ def _check(path: Path, pin: dict) -> None:
             raise ValueError(f"SHA-256 mismatch: {pin['key']}")
 
 
-def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, Path]:
-    """Return verified files by logical name. By default, only read local files."""
-    spec = json.loads(manifest.read_text())
-    if spec["version"] != 1 or not spec["objects"]:
-        raise ValueError(f"Invalid dataset manifest: {manifest}")
-    if shared := spec.get("include_objects_from"):
-        shared_objects = json.loads(manifest.with_name(shared).read_text())["objects"]
-        spec["objects"] = shared_objects | spec["objects"]
-    root = root.resolve()
+def _stage(root: Path, spec: dict, pins: dict, download: bool) -> dict[str, Path]:
     files = {}
-    for name, pin in spec["objects"].items():
+    for name, pin in pins.items():
         key = pin["key"]
         path = root / key
         if Path(key).is_absolute() or not path.resolve().is_relative_to(root):
@@ -62,6 +54,43 @@ def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, P
         else:
             _check(path, pin)
         files[name] = path
+    return files
+
+
+def verify(root: Path, manifest: Path, *, download: bool = False) -> dict[str, Path]:
+    """Return verified files by logical name. By default, only read local files."""
+    spec = json.loads(manifest.read_text())
+    if spec["version"] != 1 or not spec["objects"]:
+        raise ValueError(f"Invalid dataset manifest: {manifest}")
+    if shared := spec.get("include_objects_from"):
+        shared_objects = json.loads(manifest.with_name(shared).read_text())["objects"]
+        spec["objects"] = shared_objects | spec["objects"]
+    root = root.resolve()
+    files = _stage(root, spec, spec["objects"], download)
+    if prefix := spec.get("table_source_prefix"):
+        marker = json.loads(files["validation"].read_text())
+        if not (
+            marker["ok"]
+            and marker["checksums_verified"]
+            and marker["violations"] == 0
+            and marker["manifest_sha256"] == spec["objects"]["manifest"]["sha256"]
+        ):
+            raise ValueError("Validation marker does not attest the pinned source manifest")
+        source = json.loads(files["manifest"].read_text())
+        for table, metadata in source["tables"].items():
+            pins = {
+                f"{table}/{Path(f['path']).name}": {
+                    "key": f"{prefix}/{f['path']}",
+                    "size": f["bytes"],
+                    "sha256": f["sha256"],
+                }
+                for f in metadata["files"]
+            }
+            shards = _stage(root, spec, pins, download)
+            directory = files["manifest"].parent / table
+            if set(directory.rglob("*.parquet")) != set(shards.values()):
+                raise ValueError(f"Parquet files differ from pinned inventory for {table}")
+            files.update(shards)
     return files
 
 

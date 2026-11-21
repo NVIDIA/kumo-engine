@@ -59,3 +59,37 @@ def test_stage_pinned_datasets(tmp_path, monkeypatch):
         (root / "two").write_bytes(bad)
         failed = subprocess.run(command, capture_output=True, text=True)
         assert failed.returncode and f"{message} mismatch: two" in failed.stderr
+
+
+def test_verify_source_tables(tmp_path):
+    def write(key, data):
+        path = tmp_path / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return {"key": key, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    shard = write("data/sample/events/part.parquet", b"events")
+    files = [
+        {"path": "sample/events/part.parquet", "bytes": shard["size"], "sha256": shard["sha256"]}
+    ]
+    source = {"tables": {"events": {"files": files}}, "ground_truth": {"hidden": {}}}
+    manifest = write("data/sample/manifest.json", json.dumps(source).encode())
+    marker = dict(
+        ok=True, violations=0, checksums_verified=True, manifest_sha256=manifest["sha256"]
+    )
+    pin = tmp_path / "pin.json"
+
+    def save_marker():
+        validation = write("data/sample/_VALIDATED.json", json.dumps(marker).encode())
+        objects = {"manifest": manifest, "validation": validation}
+        pin.write_text(json.dumps(dict(version=1, table_source_prefix="data", objects=objects)))
+
+    save_marker()
+    assert verify(tmp_path, pin)["events/part.parquet"] == tmp_path / shard["key"]
+    write("data/sample/events/extra.parquet", b"extra")
+    with pytest.raises(ValueError, match="inventory for events"):
+        verify(tmp_path, pin)
+    marker["manifest_sha256"] = "invalid"
+    save_marker()
+    with pytest.raises(ValueError, match="Validation marker"):
+        verify(tmp_path, pin)
