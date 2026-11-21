@@ -4,7 +4,7 @@
 """Optional replicated Ray Core sampling with trainer-owned seed scheduling.
 
 Launchers own snapshot leases and Ray lifetime. Actors use local snapshot paths;
-Trainers select explicit seeds and receive complete Arrow batches directly.
+Trainers select explicit seeds and receive encoded heterogeneous graphs directly.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ from threading import Lock
 from types import ModuleType
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast
 
+import pyarrow as pa
 from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
 
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
-    BatchPayload,
     BatchRequest,
     ConsumerToken,
     HeteroBatchPayload,
@@ -59,7 +59,7 @@ class SamplerActor(Protocol):
     """Only the remote operations required from an owned sampler actor."""
 
     @property
-    def sample(self) -> RemoteMethod[[BatchRequest], BatchPayload | HeteroBatchPayload]:
+    def sample(self) -> RemoteMethod[[BatchRequest], HeteroBatchPayload]:
         """Sample an explicit batch request."""
         ...
 
@@ -69,8 +69,8 @@ class SamplerActor(Protocol):
         ...
 
     @property
-    def ready(self) -> RemoteMethod[[], ReplicaConfig]:
-        """Read the verified replica configuration."""
+    def ready(self) -> RemoteMethod[[], None]:
+        """Acknowledge verified replica initialization."""
         ...
 
 
@@ -133,8 +133,8 @@ class ReplicaConfig:
     artifacts: ArtifactIdentity
     engine_seed: int
     num_threads: int
+    batch_encoder: Callable[[RuntimeBatch], HeteroData]
     context_capacity: int = 16
-    batch_encoder: Callable[[RuntimeBatch], HeteroData] | None = None
 
     def verify(self) -> None:
         """Validate manifest identities and CPU/context budgets before readiness.
@@ -145,6 +145,8 @@ class ReplicaConfig:
         """
         if min(self.num_threads, self.context_capacity) < 1 or self.engine_seed < 0:
             raise SamplingContractError("invalid replica thread/context/seed settings")
+        if not callable(self.batch_encoder):
+            raise SamplingContractError("sampler requires a batch encoder")
         for path, expected in (
             (self.snapshot_manifest_path, self.artifacts.snapshot_digest),
             (self.manifest_path, self.artifacts.task_digest),
@@ -212,14 +214,12 @@ class _SamplerPool:
         if not self.replicas:
             raise SamplingContractError("at least one sampling replica is required")
         self.available = deque(range(len(self.replicas)))
-        self.pending: dict[ObjectRef[BatchPayload | HeteroBatchPayload], int] = {}
+        self.pending: dict[ObjectRef[HeteroBatchPayload], int] = {}
         self.lock = Lock()
         self.close_lock = Lock()
         self.closed = False
 
-    def submit(
-        self, request: BatchRequest
-    ) -> ObjectRef[BatchPayload | HeteroBatchPayload]:
+    def submit(self, request: BatchRequest) -> ObjectRef[HeteroBatchPayload]:
         """Submit directly to an idle actor; callers bound their request window.
 
         Args:
@@ -252,9 +252,7 @@ class _SamplerPool:
             self.pending[result] = replica_id
             return result
 
-    def get(
-        self, result: ObjectRef[BatchPayload | HeteroBatchPayload]
-    ) -> BatchPayload | HeteroBatchPayload:
+    def get(self, result: ObjectRef[HeteroBatchPayload]) -> HeteroBatchPayload:
         """Receive a result and make only its completed actor available again.
 
         Args:
@@ -274,7 +272,7 @@ class _SamplerPool:
                 raise SamplingContractError("unknown sampling result")
         try:
             payload = cast(
-                BatchPayload | HeteroBatchPayload,
+                HeteroBatchPayload,
                 self.ray.get(result, timeout=self.config.request_timeout),
             )
         except self.ray.exceptions.ActorDiedError:
@@ -291,7 +289,7 @@ class _SamplerPool:
         return payload
 
     def _finished(
-        self, result: ObjectRef[BatchPayload | HeteroBatchPayload], failed: bool = False
+        self, result: ObjectRef[HeteroBatchPayload], failed: bool = False
     ) -> None:
         with self.lock:
             if not self.closed:
@@ -360,15 +358,14 @@ class _SamplerReplica:
             )
         self.contexts: list[tuple[SamplingOptions, BatchContext]] = []
 
-    def ready(self) -> ReplicaConfig:
-        """Return the verified local placement after native engines are opened."""
-        return self.config
+    def ready(self) -> None:
+        """Acknowledge initialization without returning fitted encoder state."""
 
     def drain(self) -> None:
         """Acknowledge that earlier sampling on this serial actor has exited."""
 
-    def sample(self, request: BatchRequest) -> BatchPayload | HeteroBatchPayload:
-        """Return a complete Arrow/native envelope directly to the requesting trainer."""
+    def sample(self, request: BatchRequest) -> HeteroBatchPayload:
+        """Sample and encode a graph before returning metadata and NumPy buffers."""
         if (
             request.artifacts != self.config.artifacts
             or request.engine_seed != self.config.engine_seed
@@ -388,17 +385,20 @@ class _SamplerReplica:
             if len(self.contexts) > self.config.context_capacity:
                 self.contexts.pop(0)
         started = time.monotonic()
-        batch = context.sample_request(list(request.seed_ids))
-        if self.config.batch_encoder is not None:
-            from kumo_core.diskgraph.hetero_wire import pack_python_hetero
+        from kumo_core.diskgraph.hetero_wire import pack_python_hetero
 
-            metadata, buffers = pack_python_hetero(self.config.batch_encoder(batch))
-            return HeteroBatchPayload(
-                request, metadata, buffers, time.monotonic() - started
-            )
-        payload = BatchPayload(request, batch, time.monotonic() - started)
-        payload.validate(request)
-        return payload
+        batch = context.sample_request(list(request.seed_ids))
+        seed_ids = (
+            batch.task.seed_node_ids
+            if options.rhs_seed_node_type
+            else batch.task.tt_stage_node_ids
+        )
+        if not seed_ids.equals(pa.array(request.seed_ids, type=pa.uint64())):
+            raise SamplingContractError("sample seed membership/order differs")
+        metadata, buffers = pack_python_hetero(self.config.batch_encoder(batch))
+        return HeteroBatchPayload(
+            request, metadata, buffers, time.monotonic() - started
+        )
 
 
 def start_sampling_replicas(
@@ -421,12 +421,11 @@ def start_sampling_replicas(
         raise SamplingContractError("one explicit placement is required per replica")
     baseline = configs[0]
     if any(
-        (c.artifacts, c.engine_seed, c.num_threads, c.batch_encoder is None)
+        (c.artifacts, c.engine_seed, c.num_threads)
         != (
             baseline.artifacts,
             baseline.engine_seed,
             baseline.num_threads,
-            baseline.batch_encoder is None,
         )
         for c in configs
     ):
@@ -479,23 +478,8 @@ class RayRuntimeIndex:
         self._manifest_verified = False
         self.samplers = _SamplerPool(config)
 
-    def iter(self, options: SamplingOptions) -> tuple[Iterator[RuntimeBatch], int]:
-        """Create a seed iterator without opening local adjacency/features.
-
-        Args:
-            options: DiskGraph configuration and logical shard identity.
-
-        Returns:
-            Synchronous remote-batch iterator and worker-local sample/bucket count.
-
-        Raises:
-            SamplingContractError: If inherited through fork or options are invalid.
-        """
-        requests, count = self.iter_requests(options)
-        return map(self._sample, requests), count
-
-    def iter_hetero(self, options: SamplingOptions) -> tuple[Iterator[HeteroData], int]:
-        """Receive actor-encoded graphs through MessagePack and NumPy buffers.
+    def iter(self, options: SamplingOptions) -> tuple[Iterator[HeteroData], int]:
+        """Receive sampler-encoded graphs through MessagePack and NumPy buffers.
 
         Args:
             options: DiskGraph sampling configuration and logical shard identity.
@@ -504,10 +488,10 @@ class RayRuntimeIndex:
             Decoded graph iterator and worker-local sample/bucket count.
 
         Raises:
-            SamplingContractError: If actors do not have a batch encoder configured.
+            SamplingContractError: If the response is not an encoded graph.
         """
         requests, count = self.iter_requests(options)
-        return map(self._sample_hetero, requests), count
+        return map(self._sample, requests), count
 
     def iter_requests(
         self, options: SamplingOptions
@@ -575,21 +559,13 @@ class RayRuntimeIndex:
             )
             ordinal += 1
 
-    def _sample(self, request: BatchRequest) -> RuntimeBatch:
-        payload = self._receive(request)
-        if not isinstance(payload, BatchPayload):
-            raise SamplingContractError(
-                "encoded responses require iter_hetero(options)"
-            )
-        return payload.validate(request)
-
-    def _sample_hetero(self, request: BatchRequest) -> HeteroData:
+    def _sample(self, request: BatchRequest) -> HeteroData:
         payload = self._receive(request)
         if not isinstance(payload, HeteroBatchPayload):
             raise SamplingContractError("sampler did not return an encoded graph")
         return payload.decode(request)
 
-    def _receive(self, request: BatchRequest) -> BatchPayload | HeteroBatchPayload:
+    def _receive(self, request: BatchRequest) -> HeteroBatchPayload:
         ray = _ray()
         for attempt in range(self.config.max_retries + 1):
             ref = self.samplers.submit(request)

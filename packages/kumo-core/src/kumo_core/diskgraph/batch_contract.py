@@ -9,13 +9,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-import pyarrow as pa
-from diskgraph.runtime_batch import (
-    RuntimeBatch,
-    RuntimeFeatureBlock,
-    RuntimeGraph,
-    RuntimeTask,
-)
 from diskgraph.sampling_options import SamplingOptions
 
 if TYPE_CHECKING:
@@ -146,68 +139,6 @@ class BatchRequest:
 
 
 @dataclass(frozen=True)
-class BatchPayload:
-    """One complete batch retaining Arrow/native buffer owners until conversion."""
-
-    request: BatchRequest
-    batch: RuntimeBatch
-    sampling_seconds: float
-
-    def validate(self, expected: BatchRequest) -> RuntimeBatch:
-        """Check identity and required complete-batch fields before tensor mapping.
-
-        Args:
-            expected: Issued logical request.
-
-        Returns:
-            Existing typed native batch, without repacking its Arrow buffers.
-
-        Raises:
-            SamplingContractError: If identity or native batch structure differs.
-        """
-        expected.validate()
-        options = expected.options
-        if self.request != expected:
-            raise SamplingContractError("wrong request, artifact, or phase generation")
-        if not isinstance(self.batch, RuntimeBatch):
-            raise SamplingContractError("incomplete native batch")
-        task = self.batch.task
-        if not isinstance(task, RuntimeTask):
-            raise SamplingContractError("incomplete native task")
-        if "main" not in self.batch.graphs:
-            raise SamplingContractError("incomplete graph channel")
-        for name in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
-            if not isinstance(getattr(task, name), pa.Array):
-                raise SamplingContractError(f"missing native task array: {name}")
-        seed_ids = (
-            task.seed_node_ids if options.rhs_seed_node_type else task.tt_stage_node_ids
-        )
-        if not seed_ids.equals(pa.array(expected.seed_ids, type=pa.uint64())):
-            raise SamplingContractError("response seed membership/order differs")
-        for channel in self.batch.graphs.values():
-            if not isinstance(channel, RuntimeGraph):
-                raise SamplingContractError("incomplete graph channel")
-            for node_type, ids in channel.node_ids.items():
-                provenance = channel.batch_dict.get(node_type)
-                if provenance is None or len(ids) != len(provenance):
-                    raise SamplingContractError("node provenance length differs")
-            for edge in channel.edge_index_dict:
-                if len(edge.src) != len(edge.dst):
-                    raise SamplingContractError("edge endpoint length differs")
-        for bank in self.batch.raw_features.values():
-            if (
-                not isinstance(bank, RuntimeFeatureBlock)
-                or any(
-                    not isinstance(batch, pa.RecordBatch)
-                    for batch in bank.record_batches
-                )
-                or sum(batch.num_rows for batch in bank.record_batches) != bank.num_rows
-            ):
-                raise SamplingContractError("incomplete native feature bank")
-        return self.batch
-
-
-@dataclass(frozen=True)
 class HeteroBatchPayload:
     """Actor-encoded graph metadata and separate NumPy tensor buffers.
 
@@ -239,7 +170,18 @@ class HeteroBatchPayload:
         """
         from kumo_core.diskgraph.hetero_wire import unpack_python_hetero
 
+        self.validate(expected)
+        return unpack_python_hetero(self.metadata, self.buffers)
+
+    def validate(self, expected: BatchRequest) -> None:
+        """Check response identity before decoding its metadata and buffers.
+
+        Args:
+            expected: Logical request whose response is being consumed.
+
+        Raises:
+            SamplingContractError: If request identity differs.
+        """
         expected.validate()
         if self.request != expected:
             raise SamplingContractError("wrong request, artifact, or phase generation")
-        return unpack_python_hetero(self.metadata, self.buffers)
