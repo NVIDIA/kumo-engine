@@ -183,6 +183,32 @@ Rules:
 - Both `dtype` and `stype` must be resolved before a table is used in a `PredictiveQuery`;
   `infer_metadata()` resolves whatever is missing.
 
+### How a semantic type is inferred
+
+For a column with no declared type, `infer_metadata()` reads, in order: its role (a primary key
+is `ID`, a time column `timestamp`), its physical type (date, time, boolean and list types decide
+on their own), its **name**, and then its **values**, in a sample of up to 10,000 rows. The first
+that decides wins. The name and value rules below can contradict what a column means; the graph
+gate reports each selected column they match (router Node 1c, *Column types*), and a confirmed
+correction is declared with `with_column`.
+
+- **A list in a string is split on a separator Kumo picks.** In a string column's sampled values,
+  Kumo looks for `,` `|` `;` and tab, and takes the one found in the most rows (at least 1% of
+  them; ties in that order) — never a colon, and never inside a `[...]` list. It types the column
+  `multicategorical` when splitting leaves far fewer distinct labels than distinct values, and no
+  more than 500. A comma also splits values such as `Smith, John`, and a column that holds
+  several separators is split on one only. A column that holds several labels per row —
+  keywords, categories, skills, genres — is a list, not free text: do not exclude it as text.
+  Report it at the gate with the separator you expect Kumo to split on and that a comma or a
+  mixed separator would mis-split, and ask the user to confirm the separator or turn splitting
+  off. Declare the answer:
+  `with_column('<col>', stype=Stype.multicategorical, multicategorical_delimiter='|')` (one of
+  `','`, `'|'`, `';'`, `'\t'`), or `stype=Stype.categorical` for no splitting. The notebook
+  prints each such column's resolved `stype` and `multicategorical_delimiter` from
+  `.definition.cols`.
+
+Source: shipped package (`kumo_core.stype_inference`, `kumo.engine.table`)
+
 ---
 
 ## Step 4: build the graph

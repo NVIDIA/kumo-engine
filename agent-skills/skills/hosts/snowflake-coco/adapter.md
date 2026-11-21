@@ -41,8 +41,10 @@ Until the runtime demonstrates that the local default embedding model loads, tre
 as unavailable on this host: exclude columns resolving to `Stype.text` from the positional column
 list and report the exclusion at the graph gate. Decide on the **semantic** type, not Snowflake's
 physical string type — string-backed identifiers and short categorical codes are unaffected and
-must be kept. Never relabel natural-language content as categorical to dodge the constraint. This
-is a host restriction, not a portable Kumo restriction.
+must be kept, and so must a string holding several labels per row, which is a list
+(`multicategorical`), not text (`kumoai-reference/references/graph_construction.md` *How a
+semantic type is inferred*). Never relabel natural-language content as categorical to dodge the
+constraint. This is a host restriction, not a portable Kumo restriction.
 
 Preflight cannot predict Kumo's sampled type inference, so a column name is not proof either way:
 at the graph gate, exclude only columns whose text semantics are already established. The
