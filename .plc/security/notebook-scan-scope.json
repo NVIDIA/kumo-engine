@@ -1,0 +1,888 @@
+{
+  "scope": "All Python cells from the ten local Engine notebooks; pip installation magics excluded from SAST only. Cell indices are zero-based.",
+  "notebooks": [
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/cross-industry/notebooks/local_kumo_engine_custom_training_table.ipynb",
+      "source_sha256": "a034ec33e2bd4e49d9d9e1ad0611e2f59af2de600ce73b01c8291bdd00e9944c",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_custom_training_table.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 29
+        },
+        {
+          "cell": 6,
+          "start_line": 32,
+          "end_line": 66
+        },
+        {
+          "cell": 8,
+          "start_line": 69,
+          "end_line": 81
+        },
+        {
+          "cell": 10,
+          "start_line": 84,
+          "end_line": 84
+        },
+        {
+          "cell": 12,
+          "start_line": 87,
+          "end_line": 89
+        },
+        {
+          "cell": 14,
+          "start_line": 92,
+          "end_line": 96
+        },
+        {
+          "cell": 16,
+          "start_line": 99,
+          "end_line": 107
+        },
+        {
+          "cell": 18,
+          "start_line": 110,
+          "end_line": 114
+        },
+        {
+          "cell": 20,
+          "start_line": 117,
+          "end_line": 123
+        },
+        {
+          "cell": 22,
+          "start_line": 126,
+          "end_line": 138
+        },
+        {
+          "cell": 24,
+          "start_line": 141,
+          "end_line": 152
+        },
+        {
+          "cell": 26,
+          "start_line": 155,
+          "end_line": 166
+        },
+        {
+          "cell": 28,
+          "start_line": 169,
+          "end_line": 186
+        },
+        {
+          "cell": 30,
+          "start_line": 189,
+          "end_line": 201
+        },
+        {
+          "cell": 32,
+          "start_line": 204,
+          "end_line": 209
+        },
+        {
+          "cell": 34,
+          "start_line": 212,
+          "end_line": 225
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/cross-industry/notebooks/local_kumo_engine_graph_visualization_preview.ipynb",
+      "source_sha256": "0991c45f22c18762f7be4c22d33da0575923e735a6cd7b9459c71015a13a4aaf",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_graph_visualization_preview.py",
+      "cell_map": [
+        {
+          "cell": 3,
+          "start_line": 2,
+          "end_line": 9
+        },
+        {
+          "cell": 5,
+          "start_line": 12,
+          "end_line": 41
+        },
+        {
+          "cell": 7,
+          "start_line": 44,
+          "end_line": 62
+        },
+        {
+          "cell": 9,
+          "start_line": 65,
+          "end_line": 65
+        },
+        {
+          "cell": 10,
+          "start_line": 68,
+          "end_line": 68
+        },
+        {
+          "cell": 12,
+          "start_line": 71,
+          "end_line": 76
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/cross-industry/notebooks/local_kumo_engine_static_and_temporal_queries.ipynb",
+      "source_sha256": "882d2163eac7bdd191ca660a0535b6c666d0653852d4246db090a0cc27d1a3a9",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_static_and_temporal_queries.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 9
+        },
+        {
+          "cell": 6,
+          "start_line": 12,
+          "end_line": 22
+        },
+        {
+          "cell": 8,
+          "start_line": 25,
+          "end_line": 53
+        },
+        {
+          "cell": 10,
+          "start_line": 56,
+          "end_line": 65
+        },
+        {
+          "cell": 12,
+          "start_line": 68,
+          "end_line": 92
+        },
+        {
+          "cell": 14,
+          "start_line": 95,
+          "end_line": 95
+        },
+        {
+          "cell": 16,
+          "start_line": 98,
+          "end_line": 104
+        },
+        {
+          "cell": 18,
+          "start_line": 107,
+          "end_line": 114
+        },
+        {
+          "cell": 21,
+          "start_line": 117,
+          "end_line": 120
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/fsi/notebooks/local_kumo_engine_synthetic_money_muling_detection.ipynb",
+      "source_sha256": "cf5cdc960bce3320df809be7a36d541b2fd8d04cb70deeb58314ba323275f5e3",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_money_muling_detection.py",
+      "cell_map": [
+        {
+          "cell": 5,
+          "start_line": 2,
+          "end_line": 24
+        },
+        {
+          "cell": 7,
+          "start_line": 27,
+          "end_line": 58
+        },
+        {
+          "cell": 9,
+          "start_line": 61,
+          "end_line": 139
+        },
+        {
+          "cell": 10,
+          "start_line": 142,
+          "end_line": 178
+        },
+        {
+          "cell": 12,
+          "start_line": 181,
+          "end_line": 204
+        },
+        {
+          "cell": 14,
+          "start_line": 207,
+          "end_line": 209
+        },
+        {
+          "cell": 16,
+          "start_line": 212,
+          "end_line": 213
+        },
+        {
+          "cell": 18,
+          "start_line": 216,
+          "end_line": 220
+        },
+        {
+          "cell": 20,
+          "start_line": 223,
+          "end_line": 241
+        },
+        {
+          "cell": 22,
+          "start_line": 244,
+          "end_line": 254
+        },
+        {
+          "cell": 24,
+          "start_line": 257,
+          "end_line": 273
+        },
+        {
+          "cell": 26,
+          "start_line": 276,
+          "end_line": 290
+        },
+        {
+          "cell": 28,
+          "start_line": 293,
+          "end_line": 298
+        },
+        {
+          "cell": 30,
+          "start_line": 301,
+          "end_line": 316
+        },
+        {
+          "cell": 32,
+          "start_line": 319,
+          "end_line": 321
+        },
+        {
+          "cell": 34,
+          "start_line": 324,
+          "end_line": 357
+        },
+        {
+          "cell": 36,
+          "start_line": 360,
+          "end_line": 373
+        },
+        {
+          "cell": 38,
+          "start_line": 376,
+          "end_line": 383
+        },
+        {
+          "cell": 40,
+          "start_line": 386,
+          "end_line": 389
+        },
+        {
+          "cell": 42,
+          "start_line": 392,
+          "end_line": 402
+        },
+        {
+          "cell": 44,
+          "start_line": 405,
+          "end_line": 424
+        },
+        {
+          "cell": 46,
+          "start_line": 427,
+          "end_line": 441
+        },
+        {
+          "cell": 48,
+          "start_line": 444,
+          "end_line": 447
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/fsi/notebooks/local_kumo_engine_synthetic_transaction_screening.ipynb",
+      "source_sha256": "38eb41733dbdcade2af0a324b2d78e42c6676008359d46da4dac836b0a3cf099",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_transaction_screening.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 15
+        },
+        {
+          "cell": 6,
+          "start_line": 18,
+          "end_line": 39
+        },
+        {
+          "cell": 8,
+          "start_line": 42,
+          "end_line": 79
+        },
+        {
+          "cell": 10,
+          "start_line": 82,
+          "end_line": 100
+        },
+        {
+          "cell": 12,
+          "start_line": 103,
+          "end_line": 105
+        },
+        {
+          "cell": 14,
+          "start_line": 108,
+          "end_line": 109
+        },
+        {
+          "cell": 16,
+          "start_line": 112,
+          "end_line": 117
+        },
+        {
+          "cell": 18,
+          "start_line": 120,
+          "end_line": 129
+        },
+        {
+          "cell": 20,
+          "start_line": 132,
+          "end_line": 144
+        },
+        {
+          "cell": 22,
+          "start_line": 147,
+          "end_line": 150
+        },
+        {
+          "cell": 24,
+          "start_line": 153,
+          "end_line": 155
+        },
+        {
+          "cell": 26,
+          "start_line": 158,
+          "end_line": 167
+        },
+        {
+          "cell": 28,
+          "start_line": 170,
+          "end_line": 175
+        },
+        {
+          "cell": 30,
+          "start_line": 178,
+          "end_line": 185
+        },
+        {
+          "cell": 32,
+          "start_line": 188,
+          "end_line": 201
+        },
+        {
+          "cell": 34,
+          "start_line": 204,
+          "end_line": 206
+        },
+        {
+          "cell": 36,
+          "start_line": 209,
+          "end_line": 213
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/healthcare/notebooks/local_kumo_engine_synthetic_appointment_attendance.ipynb",
+      "source_sha256": "c52ea8269b81b908a2dfda236a9f392df7c66b5ba7eb2d1ce8ba6e4fd7878132",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_appointment_attendance.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 15
+        },
+        {
+          "cell": 6,
+          "start_line": 18,
+          "end_line": 38
+        },
+        {
+          "cell": 8,
+          "start_line": 41,
+          "end_line": 76
+        },
+        {
+          "cell": 10,
+          "start_line": 79,
+          "end_line": 93
+        },
+        {
+          "cell": 12,
+          "start_line": 96,
+          "end_line": 98
+        },
+        {
+          "cell": 14,
+          "start_line": 101,
+          "end_line": 102
+        },
+        {
+          "cell": 16,
+          "start_line": 105,
+          "end_line": 110
+        },
+        {
+          "cell": 18,
+          "start_line": 113,
+          "end_line": 123
+        },
+        {
+          "cell": 20,
+          "start_line": 126,
+          "end_line": 138
+        },
+        {
+          "cell": 22,
+          "start_line": 141,
+          "end_line": 144
+        },
+        {
+          "cell": 24,
+          "start_line": 147,
+          "end_line": 149
+        },
+        {
+          "cell": 26,
+          "start_line": 152,
+          "end_line": 161
+        },
+        {
+          "cell": 28,
+          "start_line": 164,
+          "end_line": 169
+        },
+        {
+          "cell": 30,
+          "start_line": 172,
+          "end_line": 179
+        },
+        {
+          "cell": 32,
+          "start_line": 182,
+          "end_line": 195
+        },
+        {
+          "cell": 34,
+          "start_line": 198,
+          "end_line": 200
+        },
+        {
+          "cell": 36,
+          "start_line": 203,
+          "end_line": 208
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/media/notebooks/local_kumo_engine_synthetic_content_format_preferences.ipynb",
+      "source_sha256": "75d86acae9719b227f27430451ba24a6d5aadb39d9a3222df05f509014f32f14",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_content_format_preferences.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 15
+        },
+        {
+          "cell": 6,
+          "start_line": 18,
+          "end_line": 38
+        },
+        {
+          "cell": 8,
+          "start_line": 41,
+          "end_line": 74
+        },
+        {
+          "cell": 10,
+          "start_line": 77,
+          "end_line": 91
+        },
+        {
+          "cell": 12,
+          "start_line": 94,
+          "end_line": 96
+        },
+        {
+          "cell": 14,
+          "start_line": 99,
+          "end_line": 100
+        },
+        {
+          "cell": 16,
+          "start_line": 103,
+          "end_line": 108
+        },
+        {
+          "cell": 18,
+          "start_line": 111,
+          "end_line": 121
+        },
+        {
+          "cell": 20,
+          "start_line": 124,
+          "end_line": 134
+        },
+        {
+          "cell": 22,
+          "start_line": 137,
+          "end_line": 140
+        },
+        {
+          "cell": 24,
+          "start_line": 143,
+          "end_line": 145
+        },
+        {
+          "cell": 26,
+          "start_line": 148,
+          "end_line": 157
+        },
+        {
+          "cell": 28,
+          "start_line": 160,
+          "end_line": 165
+        },
+        {
+          "cell": 30,
+          "start_line": 168,
+          "end_line": 175
+        },
+        {
+          "cell": 32,
+          "start_line": 178,
+          "end_line": 194
+        },
+        {
+          "cell": 34,
+          "start_line": 197,
+          "end_line": 199
+        },
+        {
+          "cell": 36,
+          "start_line": 202,
+          "end_line": 207
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/retail/notebooks/local_kumo_engine_synthetic_product_category.ipynb",
+      "source_sha256": "3594bb5edcd97351a28811b215c5cc93a52c05596003f812f84a21876a7a057f",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_product_category.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 14
+        },
+        {
+          "cell": 6,
+          "start_line": 17,
+          "end_line": 39
+        },
+        {
+          "cell": 8,
+          "start_line": 42,
+          "end_line": 135
+        },
+        {
+          "cell": 10,
+          "start_line": 138,
+          "end_line": 140
+        },
+        {
+          "cell": 12,
+          "start_line": 143,
+          "end_line": 149
+        },
+        {
+          "cell": 14,
+          "start_line": 152,
+          "end_line": 189
+        },
+        {
+          "cell": 16,
+          "start_line": 192,
+          "end_line": 198
+        },
+        {
+          "cell": 18,
+          "start_line": 201,
+          "end_line": 206
+        },
+        {
+          "cell": 20,
+          "start_line": 209,
+          "end_line": 213
+        },
+        {
+          "cell": 22,
+          "start_line": 216,
+          "end_line": 224
+        },
+        {
+          "cell": 24,
+          "start_line": 227,
+          "end_line": 229
+        },
+        {
+          "cell": 26,
+          "start_line": 232,
+          "end_line": 234
+        },
+        {
+          "cell": 28,
+          "start_line": 237,
+          "end_line": 245
+        },
+        {
+          "cell": 30,
+          "start_line": 248,
+          "end_line": 253
+        },
+        {
+          "cell": 32,
+          "start_line": 256,
+          "end_line": 260
+        },
+        {
+          "cell": 34,
+          "start_line": 263,
+          "end_line": 272
+        },
+        {
+          "cell": 36,
+          "start_line": 275,
+          "end_line": 288
+        },
+        {
+          "cell": 38,
+          "start_line": 291,
+          "end_line": 299
+        },
+        {
+          "cell": 40,
+          "start_line": 302,
+          "end_line": 304
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/retail/notebooks/local_kumo_engine_synthetic_product_recommendations.ipynb",
+      "source_sha256": "0ff82f07d16ac947c49b590307c063612eee654c802198397dd35d47247647d3",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_product_recommendations.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 15
+        },
+        {
+          "cell": 6,
+          "start_line": 18,
+          "end_line": 38
+        },
+        {
+          "cell": 8,
+          "start_line": 41,
+          "end_line": 74
+        },
+        {
+          "cell": 10,
+          "start_line": 77,
+          "end_line": 89
+        },
+        {
+          "cell": 12,
+          "start_line": 92,
+          "end_line": 94
+        },
+        {
+          "cell": 14,
+          "start_line": 97,
+          "end_line": 98
+        },
+        {
+          "cell": 16,
+          "start_line": 101,
+          "end_line": 106
+        },
+        {
+          "cell": 18,
+          "start_line": 109,
+          "end_line": 119
+        },
+        {
+          "cell": 20,
+          "start_line": 122,
+          "end_line": 133
+        },
+        {
+          "cell": 22,
+          "start_line": 136,
+          "end_line": 139
+        },
+        {
+          "cell": 24,
+          "start_line": 142,
+          "end_line": 144
+        },
+        {
+          "cell": 26,
+          "start_line": 147,
+          "end_line": 156
+        },
+        {
+          "cell": 28,
+          "start_line": 159,
+          "end_line": 164
+        },
+        {
+          "cell": 30,
+          "start_line": 167,
+          "end_line": 174
+        },
+        {
+          "cell": 32,
+          "start_line": 177,
+          "end_line": 195
+        },
+        {
+          "cell": 34,
+          "start_line": 198,
+          "end_line": 200
+        },
+        {
+          "cell": 36,
+          "start_line": 203,
+          "end_line": 208
+        }
+      ]
+    },
+    {
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/retail/notebooks/local_kumo_engine_synthetic_product_tags.ipynb",
+      "source_sha256": "b153cc094dd2de56eee55e3f8aa1f17d541e63ea4f178723ca06608392d100ba",
+      "projection": ".plc/tools/notebook-source/local_kumo_engine_synthetic_product_tags.py",
+      "cell_map": [
+        {
+          "cell": 4,
+          "start_line": 2,
+          "end_line": 14
+        },
+        {
+          "cell": 6,
+          "start_line": 17,
+          "end_line": 39
+        },
+        {
+          "cell": 8,
+          "start_line": 42,
+          "end_line": 135
+        },
+        {
+          "cell": 10,
+          "start_line": 138,
+          "end_line": 142
+        },
+        {
+          "cell": 12,
+          "start_line": 145,
+          "end_line": 151
+        },
+        {
+          "cell": 14,
+          "start_line": 154,
+          "end_line": 192
+        },
+        {
+          "cell": 16,
+          "start_line": 195,
+          "end_line": 201
+        },
+        {
+          "cell": 18,
+          "start_line": 204,
+          "end_line": 209
+        },
+        {
+          "cell": 20,
+          "start_line": 212,
+          "end_line": 216
+        },
+        {
+          "cell": 22,
+          "start_line": 219,
+          "end_line": 227
+        },
+        {
+          "cell": 24,
+          "start_line": 230,
+          "end_line": 232
+        },
+        {
+          "cell": 26,
+          "start_line": 235,
+          "end_line": 237
+        },
+        {
+          "cell": 28,
+          "start_line": 240,
+          "end_line": 248
+        },
+        {
+          "cell": 30,
+          "start_line": 251,
+          "end_line": 256
+        },
+        {
+          "cell": 32,
+          "start_line": 259,
+          "end_line": 265
+        },
+        {
+          "cell": 34,
+          "start_line": 268,
+          "end_line": 278
+        },
+        {
+          "cell": 36,
+          "start_line": 281,
+          "end_line": 298
+        },
+        {
+          "cell": 38,
+          "start_line": 301,
+          "end_line": 303
+        },
+        {
+          "cell": 40,
+          "start_line": 306,
+          "end_line": 314
+        },
+        {
+          "cell": 42,
+          "start_line": 317,
+          "end_line": 319
+        }
+      ]
+    }
+  ],
+  "triage": [
+    {
+      "rule": "hooks-path-traversal-python",
+      "notebook": "examples/kumo-example-notebooks/kumo-engine/fsi/notebooks/local_kumo_engine_synthetic_money_muling_detection.ipynb",
+      "cell": 46,
+      "assessment": "Pre-existing code reads the model selection JSON produced by this run, then uses Path(...).name to choose the experiment directory. No external request or untrusted path is accepted by this tutorial. Scanner warning retained."
+    }
+  ]
+}

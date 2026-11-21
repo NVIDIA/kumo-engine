@@ -4,7 +4,9 @@ Train relational models, prepare datasets and reuse models through `kumo.engine`
 Choose the vertical and workflow below, then follow that example's setup and data prerequisites.
 For direct or client KumoRelational inference, see the [Structured Data Models relational examples](../structured-data-models/README.md#relational).
 
-The synthetic industry notebooks below generate their own related tables and use the local Engine API through training, batch scoring on newly added records, and model reload. They require a prepared Linux GPU environment and local SSD scratch.
+The synthetic industry notebooks below generate their own related tables and use the local Engine API through training, batch scoring on newly added records, and model reload.
+The local notebooks run on CPU in a prepared Linux environment with writable local scratch storage.
+A local SSD is recommended for faster ingestion.
 
 ## Cross-industry
 
@@ -15,7 +17,7 @@ The synthetic industry notebooks below generate their own related tables and use
 | [Build a custom training table](cross-industry/notebooks/local_kumo_engine_custom_training_table.ipynb) | Local | Focused workflow |
 | [Choose a static or temporal query](cross-industry/notebooks/local_kumo_engine_static_and_temporal_queries.ipynb) | Local | Focused workflow |
 | [Choose the customers to score](cross-industry/notebooks/databricks_kumo_engine_custom_prediction_population.ipynb) | Databricks | Focused workflow |
-| [Preview graph visualization](cross-industry/notebooks/local_kumo_engine_graph_visualization_preview.ipynb) | Local | Commented preview |
+| [Visualize graph relationships](cross-industry/notebooks/local_kumo_engine_graph_visualization_preview.ipynb) | Local | Focused workflow |
 
 ### SDK code examples
 
