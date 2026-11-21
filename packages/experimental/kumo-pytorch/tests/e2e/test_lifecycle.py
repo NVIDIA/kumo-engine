@@ -67,7 +67,7 @@ from kumo.pytorch.api import (  # noqa: E402
 )
 from tests.e2e import runs as runs_module  # noqa: E402
 from tests.e2e.runs import FLOWS  # noqa: E402
-from tests.e2e.tiers import TIERS, Tier  # noqa: E402
+from tests.e2e.tiers import T2A, T2B, TIERS, Tier  # noqa: E402
 from tests.test_diskgraph_backend import _canonical_graph  # noqa: E402
 from tests.test_inference_lifecycle import assert_same, assert_same_batches  # noqa: E402
 
@@ -548,6 +548,13 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     assert purchases[0] != purchases[1]
 
 
+# Small also runs in ordinary package pytest. Medium uses the lifecycle nightly.
+@pytest.mark.parametrize(
+    "tier",
+    [T2A, pytest.param(T2B, marks=pytest.mark.t2b)],
+    ids=lambda tier: tier.name,
+    scope="session",
+)
 def test_native_graph_at_tied_purchase_cutoff(
     hm: HMDataset, data: HMDataset, tmp_path: Path, native_anchor_delivery
 ) -> None:
