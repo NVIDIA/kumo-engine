@@ -169,6 +169,21 @@ Decide by semantic role, never by a fixed column-name list. Record every exclusi
 in the proposal. Where the role is genuinely ambiguous, do not invent one — show the column as an
 exclusion the user can overturn at the gate, rather than asking the user for column names.
 
+**An interval that ends before it starts.** When a row carries both ends of one interval — its
+time column and a later timestamp that closes the same interval (a delivery, resolution, end or
+expiry time), decided by semantic role — count the rows whose end precedes their start, whether
+or not the end column stays a feature. Kumo accepts such rows without a check.
+
+```sql
+SELECT COUNT(*) AS N, SUM(CASE WHEN <END> < <START> THEN 1 ELSE 0 END) AS N_END_BEFORE_START
+FROM <DB>.<SCHEMA>.<TABLE>;
+```
+
+Report a nonzero count under `Not found` with the table, both columns and the count, and let the
+user decide; never correct, filter or drop those rows. When the preflight result in hand did not
+run this probe (a host-supplied result that read only key probes), name the pair in the proposal
+as not yet counted: the notebook counts it (`kumoai-reference/SKILL.md` Step 4).
+
 ## 6. Links
 
 A link is proposed when a column in table A has the **same name** as the primary key of table B
@@ -220,6 +235,7 @@ Excluded columns
 Not found
 - payments: no primary key inferred [inferred] — treated as keyless; edge source only unless corrected
 - events: no usable time column [inferred] — a time-ranged target cannot reference this table
+- fraud_events: 37 of 120,000 rows have RESOLVED_AT before EVENT_AT [inferred] — reported, not corrected
 - ...
 
 Confirm, or correct any line (your values take precedence).
@@ -232,8 +248,9 @@ format.
 
 - Prepare, transform, aggregate or materialize **model inputs** — joining, cleaning,
   deduplicating, creating labels. A diagnostic scalar aggregate over source rows is permitted
-  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key. Its
-  result is reported and then discarded; it is never written anywhere and never reaches training.
+  solely as evidence for the proposal: row, distinct and null counts for a proposed or candidate key,
+  and the count of rows whose interval ends before it starts (§5). Its result is reported and then
+  discarded; it is never written anywhere and never reaches training.
 - Rank tables by relevance or drop tables the user did not ask to drop.
 - Proceed to PQL before the proposal is confirmed.
 - Ask the user for columns, types, keys or joins — with one exception: when §0 finds you cannot

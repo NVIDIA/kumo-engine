@@ -92,6 +92,11 @@ Before returning code:
   exclusions.
 - If the active host adapter restricts a semantic type, confirm the generated code includes the
   adapter's runtime type guard before `graph.snapshot()`.
+- For every interval the graph gate named but preflight did not count
+  (`kumo-data-science/accept/preflight.md` §5), the notebook counts the rows that end before they
+  start, read-only, before `graph.snapshot()` — through the host's own SQL session
+  (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), never the Kumo connector — and
+  prints the table, both columns and the count. It reports; it never filters.
 - Confirm that the output table in the generated code matches the output location from the original request.
 - Check against known error patterns in `kumoai-reference/references/troubleshooting_signals.md`.
 
