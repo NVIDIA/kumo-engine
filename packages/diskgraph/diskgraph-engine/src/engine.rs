@@ -1255,7 +1255,7 @@ impl DiskGraphEngine {
     }
 
     /// Phase 3 convenience: turn a batch of seed-table row ids into the
-    /// `RuntimeBatch` shape PR-28765's `runtime_batch_to_hetero` consumes.
+    /// `SamplingBatch` shape PR-28765's `runtime_batch_to_hetero` consumes.
     ///
     /// Pipeline (single engine over a merged parent + tt reader):
     ///   1. Walk the seed sub-index's `edges.bin` for each row id to recover
@@ -1267,7 +1267,7 @@ impl DiskGraphEngine {
     ///   2. Read the seed rowpack for those rows once → `task.target`,
     ///      `task.seed_timestamps` (if a TIMESTAMP column exists), etc.
     ///   3. Call `sample()` with the resolved parent ids + seed timestamps
-    ///      as the sampling anchors. RuntimeBatchOutput collates edges,
+    ///      as the sampling anchors. SamplingBatchOutput collates edges,
     ///      node_ids, and batch_dict per channel.
     ///   4. Stitch task fields onto the result.
     ///
@@ -1285,9 +1285,9 @@ impl DiskGraphEngine {
         seed_type_ids: std::collections::HashSet<usize>,
         projection: Arc<ResolvedProjection>,
         cutoff: Option<&NodeCutoff<'_>>,
-    ) -> Result<crate::output::RuntimeBatch> {
+    ) -> Result<crate::output::SamplingBatch> {
         let mut state = SamplingState::default();
-        let mut output = crate::output::RuntimeBatchOutput::new(
+        let mut output = crate::output::SamplingBatchOutput::new(
             name,
             seed_src_rel_ids,
             rel_id_to_names,
@@ -1340,7 +1340,7 @@ impl DiskGraphEngine {
             }
         }
 
-        Ok(output.into_runtime_batch())
+        Ok(output.into_sampling_batch())
     }
 
     /// Sample another neighborhood for an already resolved native anchor batch.
@@ -1355,7 +1355,7 @@ impl DiskGraphEngine {
         plan: &SamplingPlan,
         flags: &SamplingFlags,
         projection: Arc<ResolvedProjection>,
-    ) -> Result<crate::output::RuntimeBatch> {
+    ) -> Result<crate::output::SamplingBatch> {
         let prefix = format!("{}/", stage_table.split('/').next().unwrap_or(""));
         let seed_type_ids = self
             .id_to_node_type
@@ -1431,7 +1431,7 @@ impl DiskGraphEngine {
         // iterator (`Arc` clone = refcount bump). `None` resolves it here, which
         // keeps every existing caller and test working unchanged.
         projection: Option<Arc<ResolvedProjection>>,
-    ) -> Result<crate::output::RuntimeBatch> {
+    ) -> Result<crate::output::SamplingBatch> {
         use crate::output::InMemoryOutput;
         use std::collections::HashSet;
 
@@ -1985,7 +1985,7 @@ impl DiskGraphEngine {
     /// FK-free resolution, the two-tower positive rooting, AND the negatives
     /// blocks of [`Self::sample_runtime_batch`]: NodeRange is an RHS-tower forward
     /// pass over the catalog, so there are no positives, labels, or negatives to
-    /// produce. It reuses the SAME `self.sample()` / `RuntimeBatchOutput::finalize`
+    /// produce. It reuses the SAME `self.sample()` / `SamplingBatchOutput::finalize`
     /// path so topology / feature collation stays identical.
     ///
     /// `batch_row_ids` are the seeds for this batch; the pybind iterator drives
@@ -2003,8 +2003,8 @@ impl DiskGraphEngine {
         cutoff: Option<NodeCutoff<'_>>,
         // Already resolved by `sample_runtime_batch`, which is the only caller.
         projection: Arc<ResolvedProjection>,
-    ) -> Result<crate::output::RuntimeBatch> {
-        use crate::output::{OutputHandler, RuntimeBatchOutput};
+    ) -> Result<crate::output::SamplingBatch> {
+        use crate::output::{OutputHandler, SamplingBatchOutput};
         use std::collections::HashSet;
 
         // The RHS type must be in the merged catalog (sanity — the pybind layer
@@ -2055,7 +2055,7 @@ impl DiskGraphEngine {
         // drop, and no stage seed namespaces in this NodeRange path — pass an
         // empty seed_type_ids set.
         let mut state = SamplingState::default();
-        let mut output = RuntimeBatchOutput::new(
+        let mut output = SamplingBatchOutput::new(
             "main",
             HashSet::new(),
             rel_id_to_names,
@@ -2102,7 +2102,7 @@ impl DiskGraphEngine {
             }
         }
 
-        let mut runtime_batch = output.into_runtime_batch();
+        let mut runtime_batch = output.into_sampling_batch();
         // Task bag: only the seed identity / count / timestamps are meaningful in
         // NodeRange mode. All LP / negative / target fields stay at their Default
         // (empty / None / 0) — the two-tower MIPS reader uses the RHS embeddings

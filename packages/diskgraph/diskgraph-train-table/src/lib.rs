@@ -26,3 +26,5 @@ pub mod split_stats;
 pub mod kumo_contract_bridge;
 
 pub mod batch_aggregate;
+
+pub mod event_stream;

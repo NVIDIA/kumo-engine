@@ -5,11 +5,15 @@
 //! Python-independent index ownership and worker-sharded batch iteration.
 
 use diskgraph_core::sampling::{NegativeSamplingSpec, SamplingFlags, SamplingPlan};
-use diskgraph_engine::{engine::DiskGraphEngine, output::RuntimeBatch};
+use diskgraph_engine::{engine::DiskGraphEngine, output::SamplingBatch};
 use diskgraph_index::graph::TableReader;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use serde::Deserialize;
 use std::{collections::VecDeque, sync::Arc};
+
+mod batch;
+use batch::HistoryIteration;
+pub use batch::RuntimeBatch;
 
 mod errors;
 pub use errors::{Result, RuntimeError};
@@ -1113,6 +1117,7 @@ pub struct RuntimeBatchIterator {
     stage_table_catalog_key: String,
     stage_table: Arc<TableReader>,
     plan: SamplingPlan,
+    history: Option<HistoryIteration>,
     neighborhoods: Vec<(
         String,
         SamplingPlan,
@@ -1660,6 +1665,7 @@ impl RuntimeBatchIterator {
             stage_table: stage_table_arc,
             feature_projection,
             plan: sampling_plan,
+            history: None,
             neighborhoods: Vec::new(),
             flags: SamplingFlags {
                 replace,
@@ -1753,7 +1759,28 @@ impl RuntimeBatchIterator {
         Ok(())
     }
 
-    pub fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
+    /// Prepare optional history once; every yielded batch includes its results.
+    ///
+    /// `context` shares the query reader and engine; `root_type` identifies the
+    /// batch seed entity. `plan` and `merges` contain temporal-query JSON.
+    ///
+    /// # Errors
+    /// Returns a configuration error for invalid plans or event merges.
+    pub fn with_history(
+        &mut self,
+        context: (
+            Arc<diskgraph_index::graph::GraphIndexReader>,
+            Arc<DiskGraphEngine>,
+        ),
+        root_type: &str,
+        plan: &str,
+        merges: &str,
+    ) -> Result<()> {
+        self.history = Some(HistoryIteration::prepare(context, root_type, plan, merges)?);
+        Ok(())
+    }
+
+    fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
         if self.neighborhoods.is_empty() {
             return Ok(());
         }
@@ -1784,6 +1811,18 @@ impl RuntimeBatchIterator {
 
     /// Yield the next native batch, or None at exhaustion; propagate sampling errors.
     pub fn next_batch(&mut self) -> Result<Option<RuntimeBatch>> {
+        let Some(sampled) = self.next_sampled_batch()? else {
+            return Ok(None);
+        };
+        let mut batch = RuntimeBatch::from(sampled);
+        self.add_neighborhoods(&mut batch)?;
+        if let Some(history) = &self.history {
+            history.execute(&mut batch)?;
+        }
+        Ok(Some(batch))
+    }
+
+    fn next_sampled_batch(&mut self) -> Result<Option<SamplingBatch>> {
         // Grouped (single-timestamp) path: pull the next bucket-chunk of FINAL
         // node-ids and feed them DIRECTLY to the engine (they are already final
         // node-ids — no stage `node_id_from_offset` map, no NodeRange seed).

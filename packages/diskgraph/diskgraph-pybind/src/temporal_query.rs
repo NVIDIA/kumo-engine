@@ -8,26 +8,12 @@ use arrow::pyarrow::ToPyArrow;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use crate::DiskgraphConfigError;
-use serde::Deserialize;
 use diskgraph_train_table::batch_aggregate::{scalar_values_to_array, ScalarValue};
 pub(crate) use diskgraph_train_table::batch_aggregate::{
     execute_parallel, execute_aggregate_plan, execute_lengths_parallel, QueryResult, LengthResult,
 };
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EventMerge {
-    pub name: String,
-    pub sequences: Vec<String>,
-    pub ascending: Vec<bool>,
-    maximum: Option<usize>,
-    keep_last: bool,
-    descending: bool,
-}
-
 pub(crate) trait QueryPython {
-    #[allow(clippy::type_complexity)]
-    fn merged_event_orders(&self, plans: &[EventMerge]) -> Result<Vec<(String, Vec<i64>, Vec<i64>)>, String>;
     fn into_python(self, py: Python<'_>, model_format: bool) -> PyResult<Py<PyDict>>;
 }
 pub(crate) trait LengthPython {
@@ -45,51 +31,6 @@ fn append_scalar_to(value: &ScalarValue, list: &Bound<'_, PyList>) -> PyResult<(
 }
 
 impl QueryPython for QueryResult {
-    /// Plan component ordering while histories are still native batch buffers.
-    fn merged_event_orders(
-        &self,
-        plans: &[EventMerge],
-    ) -> Result<Vec<(String, Vec<i64>, Vec<i64>)>, String> {
-        plans
-            .iter()
-            .map(|plan| {
-                if plan.sequences.len() != plan.ascending.len() {
-                    return Err("merge sequence/order counts differ".into());
-                }
-                let parts = plan
-                    .sequences
-                    .iter()
-                    .zip(&plan.ascending)
-                    .map(|(name, ascending)| {
-                        let sequence = self
-                            .sequences
-                            .iter()
-                            .find(|s| &s.name == name)
-                            .ok_or_else(|| format!("unknown merge sequence {name:?}"))?;
-                        Ok((
-                            Int64Array::from(
-                                sequence
-                                    .offsets
-                                    .iter()
-                                    .map(|&v| v as i64)
-                                    .collect::<Vec<_>>(),
-                            ),
-                            Int64Array::from(sequence.timestamps.clone()),
-                            *ascending,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                let (bounds, order) = crate::token_stream::event_stream_order(
-                    &parts,
-                    plan.maximum,
-                    plan.keep_last,
-                    plan.descending,
-                )?;
-                Ok((plan.name.clone(), bounds, order))
-            })
-            .collect()
-    }
-
     fn into_python(self, py: Python<'_>, model_format: bool) -> PyResult<Py<PyDict>> {
         let output = PyDict::new(py);
         let sequences = PyList::empty(py);

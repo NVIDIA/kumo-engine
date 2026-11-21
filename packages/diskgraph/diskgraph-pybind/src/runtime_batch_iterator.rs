@@ -49,15 +49,15 @@ fn py_bool_array<'py>(py: Python<'py>, values: Vec<bool>) -> PyResult<Bound<'py,
 // done by Phase-1 ingest, so this hot loop is just:
 //
 //   1. Pick the next `batch_size` row offsets for this worker shard.
-//   2. `engine.sample_runtime_batch(...)` — walks `seed.edges.bin` to
-//      recover parent row ids, reads seed rowpack, calls `engine.sample`,
-//      and returns a `RuntimeBatch`.
+//   2. The native runtime samples topology/features and attaches configured
+//      neighborhoods, temporal history and event merges to `RuntimeBatch`.
 //   3. `runtime_batch_to_pydict(...)` — converts the Rust struct to the
 //      PyDict shape the trainer adapter expects, zero-copy where possible
 //      (via `to_data().to_pyarrow` and `RecordBatch.to_pyarrow`).
 // ---------------------------------------------------------------------------
 
-use diskgraph_engine::output::{GraphChannel, RawFeatureBank, RuntimeBatch, TaskBag};
+use diskgraph_engine::output::{GraphChannel, RawFeatureBank, TaskBag};
+use diskgraph_runtime::RuntimeBatch;
 
 /// Convert our Rust `RuntimeBatch` to PR-28765's PyDict shape. All Arrow
 /// payloads cross the FFI boundary via Arrow C Data Interface (zero-copy);
@@ -261,15 +261,8 @@ pub struct RuntimeIndex {
 #[pyclass]
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,
-    history: Option<HistoryIteration>,
 }
 
-struct HistoryIteration {
-    reader: std::sync::Arc<diskgraph_index::graph::GraphIndexReader>,
-    engine: std::sync::Arc<diskgraph_engine::engine::DiskGraphEngine>,
-    plan: diskgraph_train_table::batch_aggregate::PreparedTemporalPlan,
-    merges: Vec<crate::temporal_query::EventMerge>,
-}
 fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
     use diskgraph_runtime::RuntimeError;
     match error {
@@ -375,7 +368,6 @@ impl RuntimeIndex {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<RuntimeBatchIterator> {
         Ok(RuntimeBatchIterator {
-            history: None,
             inner: self
                 .inner
                 .iter(
@@ -488,7 +480,6 @@ impl RuntimeBatchIterator {
         projections: Option<std::collections::HashMap<String, Vec<String>>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            history: None,
             inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
                 .map_err(map_runtime_err)?
                 .iter(
@@ -550,69 +541,31 @@ impl RuntimeBatchIterator {
         plan: String,
         merges: String,
     ) -> PyResult<()> {
-        let plan = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
-            &sampler.reader, &root_type, &plan,
-        ).map_err(DiskgraphConfigError::new_err)?;
-        let merges: Vec<crate::temporal_query::EventMerge> = serde_json::from_str(&merges)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid history merges: {e}")))?;
-        for merge in &merges {
-            if merge.sequences.len() != merge.ascending.len() {
-                return Err(DiskgraphConfigError::new_err("merge sequence/order counts differ"));
-            }
-            for sequence in &merge.sequences {
-                plan.require_timed_sequence(sequence).map_err(DiskgraphConfigError::new_err)?;
-            }
-        }
-        self.history = Some(HistoryIteration {
-            reader: std::sync::Arc::clone(&sampler.reader),
-            engine: std::sync::Arc::clone(&sampler.engine),
-            plan,
-            merges,
-        });
-        Ok(())
+        self.inner
+            .with_history(
+                (
+                    std::sync::Arc::clone(&sampler.reader),
+                    std::sync::Arc::clone(&sampler.engine),
+                ),
+                &root_type,
+                &plan,
+                &merges,
+            )
+            .map_err(map_runtime_err)
     }
 
     pub fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let next = py.detach(|| {
-            let batch = self.inner.next_batch().map_err(map_runtime_err)?;
-            let Some(mut batch) = batch else {
-                return Ok(None);
-            };
-            self.inner
-                .add_neighborhoods(&mut batch)
-                .map_err(map_runtime_err)?;
-            let history = self
-                .history
-                .as_ref()
-                .map(|config| {
-                    let cutoffs = batch
-                        .task
-                        .seed_timestamps
-                        .clone()
-                        .unwrap_or_else(|| vec![0; batch.task.seed_node_ids.len()]);
-                    config.plan.execute(
-                        &config.reader,
-                        &batch.task.seed_node_ids,
-                        &cutoffs,
-                        &config.engine.thread_pool,
-                    )
-                    .and_then(|result| {
-                        let orders = result.merged_event_orders(&config.merges)?;
-                        Ok((result, orders))
-                    })
-                    .map_err(DiskgraphConfigError::new_err)
-                })
-                .transpose()?;
-            Ok::<_, PyErr>(Some((batch, history)))
-        })?;
-        let Some((batch, history)) = next else {
+        let batch = py
+            .detach(|| self.inner.next_batch())
+            .map_err(map_runtime_err)?;
+        let Some(mut batch) = batch else {
             return Ok(None);
         };
         let output = runtime_batch_to_pydict(py, &batch)?;
-        if let Some((result, orders)) = history {
-            output.set_item("history", result.into_python(py, true)?)?;
+        if let Some(history) = batch.history.take() {
+            output.set_item("history", history.into_python(py, true)?)?;
             let merged = PyDict::new(py);
-            for (name, bounds, order) in orders {
+            for (name, bounds, order) in batch.history_merges {
                 merged.set_item(
                     name,
                     (
