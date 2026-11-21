@@ -132,19 +132,27 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         assert outputs[0][1] == pytest.approx(outputs[1][1])
 
 
+def _feature_source(dtype, values):
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
+    batch = pa.record_batch({"amount": values})
+    source._sampler = SimpleNamespace(
+        fetch_features=lambda _: [{"type": "feature", "batch": batch}]
+    )
+    return source
+
+
 @pytest.mark.parametrize(
     "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
 )
 def test_decimal_transport_rejects_invalid_or_lossy_values(text):
-    source = object.__new__(DiskGraphSource)
-    source._pa, source._pc = pa, pc
-    source._tables = {
-        "events": SimpleNamespace(
-            columns={"amount": api.DType("decimal128", precision=38, scale=10)}
-        )
-    }
+    values = pa.array([text])
+    source = _feature_source(api.DType("decimal128", precision=38, scale=10), values)
     with pytest.raises(pa.ArrowInvalid):
-        source._decode_decimal_array("events", "amount", pa.array([text]))
+        source._decode_decimal_array("events", "amount", values)
+    with pytest.raises(pa.ArrowInvalid):
+        source._feature_arrays("events", [0], ("amount",))
 
 
 @pytest.mark.parametrize(
@@ -159,7 +167,7 @@ def test_decimal_transport_rejects_invalid_or_lossy_values(text):
     ],
 )
 def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
-    source = object.__new__(DiskGraphSource)
-    source._pa, source._pc = pa, pc
-    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
+    source = _feature_source(dtype, values)
     assert source._decode_decimal_array("events", "amount", values) is values
+    fetched = source._feature_arrays("events", list(range(len(values))), ("amount",))
+    assert fetched["amount"].equals(values)

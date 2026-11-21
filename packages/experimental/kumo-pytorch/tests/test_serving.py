@@ -19,6 +19,7 @@ import torch
 
 import kumo.pytorch.preparation as preparation
 import kumo.pytorch.serving as serving
+from conformance.assertions import bound_tables
 from conformance.cases import discover_cases
 from conformance.graph_cases import generate_graph_case
 from conformance.sequence_cases import generate_sequence_case
@@ -195,12 +196,21 @@ CASES: dict[str, Callable[[], tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 }
 
 
-@pytest.mark.parametrize("name", sorted(CASES))
-def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
+@pytest.mark.parametrize(
+    "name,engine_name",
+    [
+        *((name, "in_memory") for name in sorted(CASES)),
+        ("bounded_window", "diskgraph"),
+        ("event_limit", "diskgraph"),
+    ],
+)
+def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str, engine_name: str) -> None:
     contract, tables, requests = CASES[name]()
     artifact = _artifact(contract, tables, requests)
-    dataset, engine = _dataset("in_memory", tables, Path())
-    expected = _batch_inference(artifact, dataset, engine, requests)
+    if engine_name == "diskgraph":
+        pytest.importorskip("diskgraph")
+    with bound_tables(contract, tables, engine_name) as (dataset, engine):
+        expected = _batch_inference(artifact, dataset, engine, requests)
     server = api.ServingAssembler(artifact)
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)

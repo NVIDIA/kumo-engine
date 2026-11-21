@@ -21,6 +21,7 @@ from kumo.pytorch.models.protocols import LabeledBatch
 from tests.helpers import written_state
 from tests.reference_models.batch_definitions import NUFORMER_BATCH
 from tests.reference_models.fixtures import SAMPLES, adapted_batch, architecture_for, model_task
+from tests.test_model import assert_mean_cross_entropy_gradient
 
 
 def test_nuformer_fitted_state_and_contract_round_trip(tmp_path):
@@ -44,13 +45,36 @@ def test_nuformer_pretraining_forward_backward():
         architecture = architecture_for(task, "nuformer")
         batch = adapted_batch(task, "nuformer")
         output = architecture.model(batch)
-        assert output.predictions["next_token_logits"].shape == (
+        logits = output.predictions["next_token_logits"]
+        assert logits.shape == (
             batch.token_count,
             task.spaces["nuformer"].size,
         )
         assert torch.isfinite(output.loss)
+        targets = batch.target_ids[batch.token_mask]
+        torch.testing.assert_close(output.predictions["next_token_targets"], targets)
+        logits.retain_grad()
         output.loss.backward()
+        assert_mean_cross_entropy_gradient(logits, targets)
         assert architecture.model.encoder.embedding.weight.grad is not None
+
+
+def test_future_token_cannot_change_earlier_or_other_sample_logits():
+    with model_task("nuformer") as task, torch.no_grad():
+        model = architecture_for(task, "nuformer").model.eval()
+        batch = adapted_batch(task, "nuformer")
+        before = model(batch).predictions["next_token_logits"]
+        positions = batch.token_mask[0].nonzero().flatten()
+        assert len(positions) > 1 and batch.token_mask[1].any()
+        changed = batch.input_ids.clone()
+        last = positions[-1]
+        changed[0, last] = (changed[0, last] + 1) % task.spaces["nuformer"].size
+        after = model(replace(batch, input_ids=changed)).predictions["next_token_logits"]
+        # Logits contain the valid positions of each sample consecutively.
+        row = len(positions) - 1
+        assert not torch.equal(before[row], after[row])
+        torch.testing.assert_close(after[:row], before[:row], rtol=0, atol=0)
+        torch.testing.assert_close(after[row + 1 :], before[row + 1 :], rtol=0, atol=0)
 
 
 def test_nuformer_uses_declared_direction_instead_of_positive_amount_sign():

@@ -79,7 +79,7 @@ def graph_plan(tmp_path_factory):
         yield plan
 
 
-def _anchor_table(path: Path, names: tuple[str, ...]) -> api.AnchorTable:
+def _anchor_table(path: Path, names: tuple[str | int, ...]) -> api.AnchorTable:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -139,7 +139,7 @@ def _assert_delivery(batches, names, positions, padding):
     ]
     assert {
         sample_id for sample_id, padded in zip(sample_ids, flags, strict=True) if padded
-    }.isdisjoint(real_ids)
+    }.isdisjoint(names)
     return sizes
 
 
@@ -154,6 +154,14 @@ def _assert_delivery(batches, names, positions, padding):
             (1, 3, 1),
             (False, False, True),
             id="reported-collision",
+        ),
+        pytest.param(
+            (10, 20, 30, 40, 50),
+            1,
+            2,
+            (1, 3, 1),
+            (False, False, True),
+            id="integer-parquet-ids",
         ),
         pytest.param(
             ("a", "b#padding2", "c", "b#padding2#padding2", "e"),
@@ -207,3 +215,19 @@ def test_native_graph_padding_preserves_identity(
                 [3, 2] if world_size == 1 else [3]
             ), (source, output_format)
     assert tuple(request.sample_id for request in requests) == names
+
+
+def test_native_anchor_padding_resumes_across_chunks(graph_plan, tmp_path):
+    names = ("a", "b", "c", "d", "e", "f", "g", "b#padding1", "i")
+    anchors = _anchor_table(tmp_path / "anchors.parquet", names)
+    settings = dict(batch_size=3, chunk_batches=1, rank=1, world_size=2, output_format="model")
+    with graph_plan.materialize(anchors) as task:
+        batches = task.batches(**settings)
+        assert next(batches).metadata["sample_ids"] == ("b", "d", "f")
+        resumed = task.batches(**settings)
+        resumed.load_state_dict(batches.state_dict())
+        # Rank 1's last real ID already uses the ordinary spelling for its padding row.
+        (last,) = batches
+        (restored,) = resumed
+        assert restored.metadata["sample_ids"] == last.metadata["sample_ids"]
+        assert _assert_delivery([restored], names, (7, 1), (False, True)) == [2]
