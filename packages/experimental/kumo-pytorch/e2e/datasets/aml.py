@@ -2,11 +2,12 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native graph inputs and stored targets for AML v8 account-daily v2 forecasts."""
+"""Native inputs and stored targets for AML v8 account-daily v2 forecasts."""
 
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from operator import index
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -145,6 +146,91 @@ def _contract(fanout, targets):
     return api.DataLoaderSpec(api.DataSchema(tables, relations), sample, batch)
 
 
+def _write_account_events(directory):
+    transactions = ds.dataset(directory / "transactions.parquet")
+    field = ds.field
+    self_transfer = field("sender_id") == field("receiver_id")
+    columns = {name: field(name) for name in ("event_time", *_AMOUNTS, *_CATEGORIES)}
+    event_id = field("transaction_id") * 2
+
+    def project(owner, identity, direction, include=None):
+        projection = dict(columns, account_id=field(owner), event_id=identity, direction=direction)
+        return transactions.scanner(columns=projection, filter=include)
+
+    outgoing = project("sender_id", event_id, pc.if_else(self_transfer, "self", "outgoing"))
+    incoming = project("receiver_id", event_id + 1, ds.scalar("incoming"), ~self_transfer)
+    path = directory / "account_events.parquet"
+    with pq.ParquetWriter(path, outgoing.projected_schema) as writer:
+        for scan in (outgoing, incoming):
+            for batch in scan.to_batches():
+                writer.write_batch(batch)
+
+
+def _combined(contract, fanout):
+    relation = api.RelationSpec(
+        "account_touches", "accounts", "account_id", "account_events", "account_id"
+    )
+    table = api.TableSpec("account_events", "event_id", time_column="event_time")
+    schema = api.DataSchema(
+        (*contract.schema.tables, table), (*contract.schema.relations, relation)
+    )
+    fields = {name: api.Field(name) for name in ("direction", *_AMOUNTS, *_CATEGORIES)}
+    # Graph anchors execute at T-1s; report age relative to the original prediction time T.
+    fields.update(
+        __event_time=api.Field("event_time"),
+        __execution_age=api.EventTimeDelta("seconds"),
+        __prediction_offset=api.Constant(1.0, api.DType("float64")),
+        age_range=api.Derived("add", ("__execution_age", "__prediction_offset")),
+    )
+    numeric, category = api.Buckets(bins=64), api.Vocabulary()
+    encoders = dict(
+        age_range=numeric,
+        direction=category,
+        amount_paid=numeric,
+        payment_currency=category,
+        amount_received=numeric,
+        receiving_currency=category,
+        payment_format=category,
+    )
+    for name, domain in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
+        fields[name] = api.Derived(api.CalendarPart(name), ("__event_time",))
+        encoders[name] = api.Vocabulary(values=tuple((i, i + 2) for i in domain))
+    events = api.EventSpec(api.Rows((relation.name,), api.TimeWindow("event_time")), fields)
+    history = api.Fields(
+        tuple(api.Encode(name, encoder, "history") for name, encoder in encoders.items()),
+        row=api.Tokens(missing="error"),
+        history=api.Flatten((len(encoders) + 1) * fanout - 1, keep="first", separator="separator"),
+    )
+    windows = (("all_history", None), ("24h", -86400), ("7d", -7 * 86400), ("30d", -30 * 86400))
+    paths = (("total_touching", relation.name), ("sender", "sender"), ("receiver", "receiver"))
+    counts = {
+        f"{window}_{role}_count": api.Aggregate(
+            api.Rows((path,), api.TimeWindow("event_time", start)), "count"
+        )
+        for window, start in windows
+        for role, path in paths
+    }
+    sample = replace(contract.sample, events={"transactions": events}, entity_values=counts)
+    inputs = dict(
+        contract.batch.inputs,
+        history=api.Input(api.EventSource(("transactions",)), history, api.Padded()),
+        aggregates=api.Input(
+            api.EntitySource(),
+            api.Fields(tuple(api.Encode(name, api.ZScore()) for name in counts)),
+            api.Separate(),
+        ),
+    )
+    roles = {name: f"[{name.upper()}]" for name in ("entity", "event", "mask", "pad", "unknown")}
+    space = api.IdSpace(dict(roles, separator="[SEP]"))
+    batch = replace(
+        contract.batch,
+        inputs=inputs,
+        id_spaces={"history": space},
+        batching=api.Batching(max_samples=32),
+    )
+    return api.DataLoaderSpec(schema, sample, batch)
+
+
 def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
     """Prepare HI Small account involvement."""
     return _prepare_aml(
@@ -158,10 +244,10 @@ def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
         "amount": ("next_amount", "float32", api.Raw()),
         "currency": ("next_currency", "string", api.Vocabulary()),
     }
-    return _prepare_aml(files, directory, anchor_rows, targets)
+    return _prepare_aml(files, directory, anchor_rows, targets, combined=True)
 
 
-def _prepare_aml(files, directory, anchor_rows, targets):
+def _prepare_aml(files, directory, anchor_rows, targets, *, combined=False):
     """Write a bounded native view for verified input files into a fresh directory.
 
     The selected roots keep all touching transactions across time and their counterparties.
@@ -179,6 +265,10 @@ def _prepare_aml(files, directory, anchor_rows, targets):
         ids, fanout = _write_transactions(
             files["transactions"], work / "transactions.parquet", roots, account_ids
         )
+        contract = _contract(fanout, targets)
+        if combined:
+            _write_account_events(work)
+            contract = _combined(contract, fanout)
         mapping = mapping.take(ids)
         accounts = pa.table(
             {
@@ -192,8 +282,8 @@ def _prepare_aml(files, directory, anchor_rows, targets):
         work.rename(directory)
     dataset = api.Dataset(
         {
-            name: api.Parquet(str(directory / f"{name}.parquet"))
-            for name in ("accounts", "transactions")
+            table.name: api.Parquet(str(directory / f"{table.name}.parquet"))
+            for table in contract.schema.tables
         }
     )
     anchors = api.AnchorTable(
@@ -205,4 +295,4 @@ def _prepare_aml(files, directory, anchor_rows, targets):
         targets={name: name for name in targets},
         metadata=("registered_entity_id", "prediction_time_ns", "anchor_row_position"),
     )
-    return _contract(fanout, targets).resolve(dataset=dataset), dataset, anchors
+    return contract.resolve(dataset=dataset), dataset, anchors

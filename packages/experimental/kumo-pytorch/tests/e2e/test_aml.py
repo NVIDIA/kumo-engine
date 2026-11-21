@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import accumulate
 from pathlib import Path
+from statistics import mean, pstdev
 from typing import NamedTuple
 
 import pyarrow as pa
@@ -25,7 +26,6 @@ import torch
 from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_e01, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
-from tests.test_diskgraph_backend import _canonical_graph
 from tests.test_inference_lifecycle import assert_same
 
 
@@ -123,6 +123,51 @@ def _seconds(stamp):
     return int(datetime.strptime(stamp, "%Y/%m/%d %H:%M").replace(tzinfo=UTC).timestamp())
 
 
+def _check_graph(task, batch, histories):
+    graph = batch.inputs["graph"]
+    nodes = graph["nodes"]
+    assert set(nodes) == {"accounts", "transactions"} and not nodes["accounts"]["features"]
+    assert set(graph["edges"]) == {"sender", "receiver"}
+    for node in nodes.values():
+        assert node["batch"].dtype == node["ids"].dtype == torch.int64
+        assert node["batch"].ndim == node["ids"].ndim == 1
+    accounts, transactions = (
+        list(zip(node["batch"].tolist(), node["ids"].tolist(), strict=True))
+        for node in (nodes["accounts"], nodes["transactions"])
+    )
+    events = {
+        (owner, i): e for owner, (_, _, rows) in enumerate(histories) for i, e in rows.items()
+    }
+    members = {(owner, root) for owner, (root, _, _) in enumerate(histories)}
+    for (owner, _), event in events.items():
+        members.update(((owner, event.sender), (owner, event.receiver)))
+    assert sorted(accounts) == sorted(members)
+    assert sorted(transactions) == sorted(events)
+    for role, edge in graph["edges"].items():
+        assert (edge["source_type"], edge["destination_type"]) == ("accounts", "transactions")
+        indices = edge["index"]
+        assert indices.dtype == torch.int64 and indices.shape[0] == 2 and (indices >= 0).all()
+        actual = [(accounts[a], transactions[t]) for a, t in indices.T.tolist()]
+        expected = [((owner, getattr(e, role)), (owner, i)) for (owner, i), e in events.items()]
+        assert sorted(actual) == sorted(expected)
+
+    bindings = task.output("graph").bindings["transactions"]
+    configs = {
+        "amount_paid": api.ZScore(),
+        "amount_received": api.ZScore(),
+        "payment_currency": api.Vocabulary(),
+        "receiving_currency": api.Vocabulary(),
+        "payment_format": api.Vocabulary(),
+        "event_time_seconds": api.Raw(),
+    }
+    assert {name: field.encoder.config for name, field in bindings.items()} == configs
+    expected_features = {
+        name: binding.encode_values([events[key].features[name] for key in transactions])
+        for name, binding in bindings.items()
+    }
+    assert_same(nodes["transactions"]["features"], expected_features)
+
+
 def test_hi_small_e01_graph_and_forecast(tmp_path):
     # Split boundary, covered negative, sender-only and receiver-only positives, end of observation.
     files, anchors = _source_rows(
@@ -137,16 +182,6 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
     ):
         # Two immature forecasts are excluded; each named split has one eligible anchor.
         assert task.count() == 3
-        bindings = task.output("graph").bindings["transactions"]
-        expected_encoders = {
-            "amount_paid": api.ZScore(),
-            "amount_received": api.ZScore(),
-            "payment_currency": api.Vocabulary(),
-            "receiving_currency": api.Vocabulary(),
-            "payment_format": api.Vocabulary(),
-            "event_time_seconds": api.Raw(),
-        }
-        assert {name: field.encoder.config for name, field in bindings.items()} == expected_encoders
         for pos, row in anchors.items():
             root_id = account_ids[row["entity_id"]]
             cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
@@ -172,25 +207,77 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
             assert not any(batch.metadata["is_padding"])
             assert batch.targets["label"]["valid"].tolist() == [True]
             assert batch.targets["label"]["values"].tolist() == [label]
-            graph = batch.inputs["graph"]
-            tx = graph["nodes"]["transactions"]
-            ids = tx["ids"].tolist()
-            accounts = {a for e in history.values() for a in (e.sender, e.receiver)}
-            assert _canonical_graph(graph) == {
-                "nodes": {
-                    "accounts": sorted((a, 0) for a in accounts),
-                    "transactions": sorted((i, 0) for i in history),
-                },
-                "edges": {
-                    "sender": sorted((e.sender, i) for i, e in history.items()),
-                    "receiver": sorted((e.receiver, i) for i, e in history.items()),
-                },
-            }
-            fields = {
-                name: binding.encode_values([history[i].features[name] for i in ids])
-                for name, binding in bindings.items()
-            }
-            assert_same(tx["features"], fields)
+            _check_graph(task, batch, [(root_id, cutoff, history)])
+
+
+def _check_history(task, batch, histories):
+    buckets, category = api.Buckets(bins=64), api.Vocabulary()
+    fields = {
+        "age_range": buckets,
+        "direction": category,
+        "amount_paid": buckets,
+        "payment_currency": category,
+        "amount_received": buckets,
+        "receiving_currency": category,
+        "payment_format": category,
+    }
+    for name, values in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
+        fields[name] = api.Vocabulary(values=tuple((i, i + 2) for i in values))
+    bindings = task.output("history").bindings
+    assert {name: binding.encoder.config for name, binding in bindings.items()} == fields
+    space = task.spaces["history"]
+
+    def token(name, value):
+        encoder = bindings[name].encoder
+        if fields[name] == buckets:
+            local = bisect_right(encoder.boundaries, float(value)) + 1
+        else:
+            local = dict(encoder.entries).get(value, encoder.config.unknown_id)
+        return space.members[encoder.identity][local]
+
+    stream = batch.inputs["history"]
+    valid = stream["valid"]
+    assert valid.dtype == torch.bool and valid.ndim == 2 and valid.shape[0] == len(histories)
+    assert set(stream) == {"value_ids", "source_event_indices", "position_ids", "valid"}
+    for name in ("value_ids", "source_event_indices", "position_ids"):
+        assert stream[name].dtype == torch.int64 and stream[name].shape == valid.shape
+
+    width = len(fields)
+    offset = 0
+    for owner, (root, cutoff, history) in enumerate(histories):
+        expected = []
+        for event in history.values():
+            stamp = datetime.fromtimestamp(event.time, UTC)
+            direction = "outgoing" if event.sender == root else "incoming"
+            values = dict(
+                event.features,
+                age_range=cutoff - event.time,
+                hour=stamp.hour,
+                weekday=stamp.weekday(),
+                day=stamp.day,
+                direction="self" if event.sender == event.receiver else direction,
+            )
+            tokens = tuple(token(name, values[name]) for name in fields)
+            expected.append((event.time, tokens))
+
+        sources = []
+        for index in range(offset, offset + len(history)):
+            if sources:
+                sources.append(-1)
+            sources.extend([index] * width)
+        offset += len(history)
+        mask = valid[owner]
+        assert_same(mask, torch.arange(mask.numel()) < len(sources))
+        assert stream["source_event_indices"][owner][mask].tolist() == sources
+        assert not stream["position_ids"][owner][mask].any()
+        tokens = stream["value_ids"][owner]
+        assert (tokens[~mask] == space.special(role="pad")).all()
+        ids = tokens[mask].tolist()
+        assert ids[width :: width + 1] == [space.special(role="separator")] * (len(history) - 1)
+        # Attach the expected chronological slots before comparing whole records within ties.
+        times = sorted(event.time for event in history.values())
+        records = [tuple(ids[i : i + width]) for i in range(0, len(ids), width + 1)]
+        assert sorted(zip(times, records, strict=True)) == sorted(expected)
 
 
 def _check_delivered_targets(batch, expected, currency_ids):
@@ -208,18 +295,60 @@ def _check_delivered_targets(batch, expected, currency_ids):
     assert_same(currency["values"], torch.tensor(ids, dtype=torch.int64))
 
 
-def test_li_medium_l01_next_outgoing_targets(tmp_path):
-    # Tied outgoing rows after an incoming transfer, a held-out currency at T,
-    # a training Euro at T, and an empty window with an outgoing transfer exactly at T + 24h.
-    positions = (1302, 31764, 40961, 2708071)
+def _source_counts(spec, root, cutoff, history):
+    counts = {}
+    for window, days in (("all_history", None), ("24h", 1), ("7d", 7), ("30d", 30)):
+        start = None if days is None else -days * 86400
+        rows = [e for e in history.values() if start is None or e.time >= cutoff + start]
+        for role, count in (
+            ("total_touching", len(rows)),
+            ("sender", sum(e.sender == root for e in rows)),
+            ("receiver", sum(e.receiver == root for e in rows)),
+        ):
+            name = f"{window}_{role}_count"
+            # The LI source spans under 30 days, so lifetime and 30-day values coincide.
+            assert spec.sample.entity_values[name].source.time == api.TimeWindow(
+                "event_time", start, 0
+            )
+            counts[name] = count
+    return counts
+
+
+def _check_counts(task, batch, counts, training):
+    actual = batch.inputs["aggregates"]
+    assert actual.keys() == counts[batch.metadata["sample_ids"][0]].keys()
+    for name, field in actual.items():
+        train = [counts[sample][name] for sample in training]
+        center, scale = mean(train), pstdev(train)
+        encoder = task.output("aggregates").field(name=name).encoder
+        assert (encoder.mean, encoder.scale) == pytest.approx((center, scale))
+        values = [(counts[s][name] - center) / scale for s in batch.metadata["sample_ids"]]
+        expected = torch.tensor(values, dtype=torch.float32)
+        torch.testing.assert_close(field["values"], expected, rtol=2e-6, atol=2e-6)
+        assert_same(field["valid"], torch.ones_like(expected, dtype=torch.bool))
+
+
+def test_li_medium_l01_combined_forecast(tmp_path):
+    # The two train anchors share an account but differ on all twelve historical counts.
+    # The other anchors cover a held-out currency, tied transfers and the 24-hour boundary.
+    positions = (1302, 31764, 40961, 1338489, 2708071)
     files, anchors = _source_rows(
         L01_MANIFEST, "li-medium", positions, "next_amount", "next_currency"
     )
     account_ids, events, _ = _source_history(files, anchors)
+    spec, data, table = prepare_l01(files, tmp_path / "prepared", anchor_rows=positions)
     answers = {"train": {}, "valid": {}, "test": {}}
+    histories = {}
+    counts = {}
     for row in anchors.values():
         cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
         root = account_ids[row["entity_id"]]
+        sample = row["sample_id"]
+        past = {
+            i: e for i, e in events.items() if root in (e.sender, e.receiver) and e.time < cutoff
+        }
+        histories[sample] = root, cutoff, past
+        counts[sample] = _source_counts(spec, root, cutoff, past)
         outgoing = (
             (event.time, index)
             for index, event in events.items()
@@ -229,11 +358,10 @@ def test_li_medium_l01_next_outgoing_targets(tmp_path):
         fields = events[first[1]].features if first is not None else {}
         pair = fields.get("amount_paid"), fields.get("payment_currency")
         assert (row["next_amount"], row["next_currency"]) == pair
-        answers[row["forecast_split"]][row["sample_id"]] = pair
+        answers[row["forecast_split"]][sample] = pair
 
     (train_currency,) = {currency for _, currency in answers["train"].values()} - {None}
     currency_ids = {train_currency: 2}
-    spec, data, table = prepare_l01(files, tmp_path / "prepared", anchor_rows=positions)
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,
@@ -244,6 +372,15 @@ def test_li_medium_l01_next_outgoing_targets(tmp_path):
         for split, expected in answers.items():
             (batch,) = task.batches(split=split, batch_size=len(positions), output_format="model")
             _check_delivered_targets(batch, expected, currency_ids)
+            selected = [histories[s] for s in batch.metadata["sample_ids"]]
+            assert set(batch.inputs) == {"graph", "history", "aggregates"}
+            assert list(batch.metadata["entity_ids"]) == [root for root, _, _ in selected]
+            assert batch.metadata["as_of_time"].tolist() == [
+                cutoff - 1 for _, cutoff, _ in selected
+            ]
+            _check_graph(task, batch, selected)
+            _check_history(task, batch, selected)
+            _check_counts(task, batch, counts, answers["train"])
 
         # The source records both labels together. Mask one head at a time to test native delivery.
         projected = pq.read_table(table.source.path)
