@@ -119,16 +119,14 @@ def test_native_values_survive_pickle(value: object, protocol: int) -> None:
     assert restored == value
 
 
-def _worker_plan(plan: SamplingPlan) -> SamplingPlan:
-    return plan
-
-
 def test_native_plans_survive_spawned_worker_round_trip() -> None:
     """Spawned workers can receive and return a complete native weighted plan."""
     plan = _plan(WeightedSampling(CustomExpression("score"), temporal=True))
 
     with multiprocessing.get_context("spawn").Pool(1) as workers:
-        restored = workers.apply(_worker_plan, (plan,))
+        restored = workers.apply_async(pickle.loads, (pickle.dumps(plan),)).get(
+            timeout=30
+        )
 
     assert restored == plan
 
