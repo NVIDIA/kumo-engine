@@ -27,6 +27,3 @@ embedding). Kumo Transaction makes that practical in Kumo Engine:
 - Add the representation to the features you already use, to improve accuracy
   on tasks such as fraud detection.
 
-## Status
-
-This package is new. Usage documentation will be added as the package grows.
