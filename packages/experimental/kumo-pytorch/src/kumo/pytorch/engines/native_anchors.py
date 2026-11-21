@@ -19,16 +19,15 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from diskgraph import SamplingPlan
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
 from kumo.pytorch.materialization import _diskgraph_dtype
-
-if TYPE_CHECKING:
-    from diskgraph import SamplingPlan
 
 
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:

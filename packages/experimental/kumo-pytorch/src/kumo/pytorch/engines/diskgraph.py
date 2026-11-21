@@ -16,10 +16,11 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 import torch
+from diskgraph import SamplingPlan
 
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
@@ -82,9 +83,6 @@ from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_a
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
-
-if TYPE_CHECKING:
-    from diskgraph import SamplingPlan
 
 __all__ = ["DiskGraphEngine"]
 
