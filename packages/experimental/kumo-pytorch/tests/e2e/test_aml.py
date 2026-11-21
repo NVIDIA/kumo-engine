@@ -2,12 +2,13 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""HI Small account-day forecasts checked against the original transaction rows."""
+"""AML account-day forecasts checked against the original transaction rows."""
 
 import json
 import os
 from bisect import bisect_right
 from collections import Counter
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import accumulate
@@ -19,8 +20,9 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import pytest
+import torch
 
-from e2e.datasets.aml import E01_MANIFEST, prepare_e01
+from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_e01, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
 from tests.test_diskgraph_backend import _canonical_graph
@@ -35,31 +37,33 @@ class Transfer(NamedTuple):
     features: dict
 
 
-def _source_rows(files):
+def _source_rows(pin, dataset, positions, *targets):
+    root = os.environ.get("KUMO_PYTORCH_DATA_ROOT")
+    if root is None:
+        pytest.skip("set KUMO_PYTORCH_DATA_ROOT to the staged package datasets")
+    files = verify(Path(root), pin)
     # Check that the three published manifests describe the same pinned population.
-    pins = json.loads(E01_MANIFEST.read_text())["objects"]
+    pins = json.loads(pin.read_text())["objects"]
     manifest = json.loads(files["anchor_manifest"].read_text())
     binding = json.loads(files["mapping_manifest"].read_text())
     definition = manifest["definition"]
     keys = ("dataset_id", "dataset_version", "task_id", "anchor_version")
-    assert tuple(definition[k] for k in keys) == ("aml-data/hi-small", "v8", "account-daily", "v2")
+    expected = (f"aml-data/{dataset}", "v8", "account-daily", "v2")
+    assert tuple(definition[k] for k in keys) == expected
     assert definition["metadata"]["source_binding"] == binding
     assert binding["sha256"]["accounts.parquet"] == pins["mapping"]["sha256"]
     source = json.loads(files["source_manifest"].read_text())
-    (tx,) = (f for f in source["files"] if f["path"] == "hi-small/transactions.parquet")
+    (tx,) = (f for f in source["files"] if f["path"] == f"{dataset}/transactions.parquet")
     (original,) = (f for f in binding["sources"] if f["path"] == tx["path"])
     assert tx["sha256"] == original["expected_sha256"] == pins["transactions"]["sha256"]
     assert tx["rows"] == pq.read_metadata(files["transactions"]).num_rows
     assert manifest["files"][0]["sha256"] == pins["anchors"]["sha256"]
     assert manifest["statistics"]["rows"] == pq.read_metadata(files["anchors"]).num_rows
 
-    # Physical positions in the pinned v2 population: split boundary, covered negative,
-    # sender-only positive, receiver-only positive, and end of observation.
-    positions = (0, 313, 4245, 11800, 409216)
     columns = ["sample_id", "entity_id", "as_of_time", "graph_as_of_time"]
-    columns += ["forecast_split", "involvement"]
+    columns += ["forecast_split", *targets]
     rows = ds.dataset(files["anchors"]).take(positions, columns=columns).to_pylist()
-    return dict(zip(positions, rows, strict=True))
+    return files, dict(zip(positions, rows, strict=True))
 
 
 def _source_history(files, anchors):
@@ -120,11 +124,10 @@ def _seconds(stamp):
 
 
 def test_hi_small_e01_graph_and_forecast(tmp_path):
-    root = os.environ.get("KUMO_PYTORCH_DATA_ROOT")
-    if root is None:
-        pytest.skip("set KUMO_PYTORCH_DATA_ROOT to the staged package datasets")
-    files = verify(Path(root), E01_MANIFEST)
-    anchors = _source_rows(files)
+    # Split boundary, covered negative, sender-only and receiver-only positives, end of observation.
+    files, anchors = _source_rows(
+        E01_MANIFEST, "hi-small", (0, 313, 4245, 11800, 409216), "involvement"
+    )
     account_ids, events, ends = _source_history(files, anchors)
     spec, data, table = prepare_e01(files, tmp_path / "prepared", anchor_rows=list(anchors))
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
@@ -188,3 +191,72 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
                 for name, binding in bindings.items()
             }
             assert_same(tx["features"], fields)
+
+
+def _check_delivered_targets(batch, expected, currency_ids):
+    samples = batch.metadata["sample_ids"]
+    assert sorted(samples) == sorted(expected)
+    amounts, currencies = zip(*(expected[s] for s in samples), strict=True)
+    amount, currency = batch.targets["amount"], batch.targets["currency"]
+    assert_same(amount["valid"], torch.tensor([v is not None for v in amounts]))
+    assert_same(currency["valid"], torch.tensor([v is not None for v in currencies]))
+    assert_same(
+        amount["values"][amount["valid"]],
+        torch.tensor([float(v) for v in amounts if v is not None], dtype=torch.float32),
+    )
+    ids = [0 if value is None else currency_ids.get(value, 1) for value in currencies]
+    assert_same(currency["values"], torch.tensor(ids, dtype=torch.int64))
+
+
+def test_li_medium_l01_next_outgoing_targets(tmp_path):
+    # Tied outgoing rows after an incoming transfer, a held-out currency at T,
+    # a training Euro at T, and an empty window with an outgoing transfer exactly at T + 24h.
+    positions = (1302, 31764, 40961, 2708071)
+    files, anchors = _source_rows(
+        L01_MANIFEST, "li-medium", positions, "next_amount", "next_currency"
+    )
+    account_ids, events, _ = _source_history(files, anchors)
+    answers = {"train": {}, "valid": {}, "test": {}}
+    for row in anchors.values():
+        cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
+        root = account_ids[row["entity_id"]]
+        outgoing = (
+            (event.time, index)
+            for index, event in events.items()
+            if event.sender == root and cutoff <= event.time < cutoff + 86400
+        )
+        first = min(outgoing, default=None)
+        fields = events[first[1]].features if first is not None else {}
+        pair = fields.get("amount_paid"), fields.get("payment_currency")
+        assert (row["next_amount"], row["next_currency"]) == pair
+        answers[row["forecast_split"]][row["sample_id"]] = pair
+
+    (train_currency,) = {currency for _, currency in answers["train"].values()} - {None}
+    currency_ids = {train_currency: 2}
+    spec, data, table = prepare_l01(files, tmp_path / "prepared", anchor_rows=positions)
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(spec, data, engine) as plan,
+        plan.materialize(table, fit_split="train") as task,
+    ):
+        assert task.count() == len(positions)
+        assert dict(task.target("currency").field(name="value").encoder.entries) == currency_ids
+        for split, expected in answers.items():
+            (batch,) = task.batches(split=split, batch_size=len(positions), output_format="model")
+            _check_delivered_targets(batch, expected, currency_ids)
+
+        # The source records both labels together. Mask one head at a time to test native delivery.
+        projected = pq.read_table(table.source.path)
+        row = next(r for r in projected.to_pylist() if r["currency"] in currency_ids)
+        probes = [{**row, "sample_id": name, name: None} for name in ("amount", "currency")]
+        path = tmp_path / "partial-targets.parquet"
+        pq.write_table(pa.Table.from_pylist(probes, schema=projected.schema), path)
+        with plan.materialize(
+            replace(table, source=api.Parquet(str(path))), fitted=task.fitted_state
+        ) as partial:
+            (batch,) = partial.batches(batch_size=2, output_format="model")
+            _check_delivered_targets(
+                batch,
+                {"amount": (None, row["currency"]), "currency": (row["amount"], None)},
+                currency_ids,
+            )

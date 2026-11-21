@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""AML HI Small v8, account-daily v2, GraphSAGE account involvement (E01)."""
+"""Native graph inputs and stored targets for AML v8 account-daily v2 forecasts."""
 
 import json
 from collections import Counter
@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 from kumo.pytorch import api
 
 E01_MANIFEST = Path(__file__).parent / "pins" / "aml-e01.json"
+L01_MANIFEST = E01_MANIFEST.with_name("aml-l01.json")
 _CLOCK = pa.timestamp("ms", tz="UTC")
 _AMOUNTS = ("amount_paid", "amount_received")
 _CATEGORIES = ("payment_currency", "receiving_currency", "payment_format")
@@ -36,12 +37,12 @@ _TRANSACTIONS = pa.schema(
 )
 
 
-def _select_anchors(path, positions, account_ids):
+def _select_anchors(path, positions, account_ids, targets):
     source = ds.dataset(path, format="parquet")
     positions = sorted(map(index, positions))
     in_range = positions and positions[0] >= 0 and positions[-1] < source.count_rows()
     if not in_range or len(set(positions)) != len(positions):
-        raise ValueError("Select distinct, in-range physical E01 anchor rows")
+        raise ValueError("Select distinct, in-range physical anchor rows")
     field = ds.field
     columns = {
         "sample_id": field("sample_id"),
@@ -49,14 +50,14 @@ def _select_anchors(path, positions, account_ids):
         "prediction_time_ns": field("as_of_time").cast(pa.int64()),
         "as_of_time": field("graph_as_of_time"),
         "split": field("forecast_split"),
-        "label": field("involvement").cast(pa.float32()),
+        **{name: field(column).cast(dtype) for name, (column, dtype, _) in targets.items()},
     }
     rows = source.take(positions, columns=columns).append_column(
         "anchor_row_position", pa.array(positions)
     )
     rows = rows.filter(pc.is_valid(rows["split"]))
     if not len(rows):
-        raise ValueError("No eligible E01 forecast anchors in the selection")
+        raise ValueError("No eligible forecast anchors in the selection")
     roots = rows["registered_entity_id"].to_pylist()
     rows = rows.append_column("entity_id", pa.array([account_ids[key] for key in roots]))
     return rows, set(roots)
@@ -64,14 +65,16 @@ def _select_anchors(path, positions, account_ids):
 
 def _write_transactions(path, destination, roots, account_ids):
     # Match account numbers in Arrow, then disambiguate banks using the accepted identity.
-    numbers = pa.array([json.loads(key)[3] for key in roots])
+    identities = [json.loads(key) for key in roots]
+    (variant,) = {key[0] for key in identities}
+    numbers = pa.array([key[3] for key in identities])
     root_ids = {account_ids[key] for key in roots}
     degrees = Counter()
     columns = ["timestamp", "from_bank", "from_account", "to_bank", "to_account"]
     columns += [*_AMOUNTS, *_CATEGORIES]
 
     def endpoint(row, side):
-        key = ["hi-small", "account", str(int(row[f"{side}_bank"])), row[f"{side}_account"]]
+        key = [variant, "account", str(int(row[f"{side}_bank"])), row[f"{side}_account"]]
         return account_ids[json.dumps(key, ensure_ascii=False, separators=(",", ":"))]
 
     offset = 0
@@ -104,7 +107,7 @@ def _write_transactions(path, destination, roots, account_ids):
     return sorted(degrees.keys() | root_ids), max(degrees.values(), default=1)
 
 
-def _contract(fanout):
+def _contract(fanout, targets):
     tables = (
         api.TableSpec("accounts", "account_id", time_column="first_observed_time"),
         api.TableSpec("transactions", "transaction_id", time_column="event_time"),
@@ -128,18 +131,37 @@ def _contract(fanout):
     sample = api.SampleSpec(
         api.EntitySpec("accounts", entity_type="account"),
         neighborhoods={"history_graph": graph},
-        targets={"label": api.ExternalTarget(api.DType("float32"))},
+        targets={
+            name: api.ExternalTarget(api.DType(dtype)) for name, (_, dtype, _) in targets.items()
+        },
     )
     graph_input = api.Input(
         api.NeighborhoodSource("history_graph"), api.Graph({"transactions": fields}), None
     )
     batch = api.BatchSpec(
-        inputs={"graph": graph_input}, targets={"label": api.LabelTarget("label", api.Raw())}
+        inputs={"graph": graph_input},
+        targets={name: api.LabelTarget(name, encoder) for name, (_, _, encoder) in targets.items()},
     )
     return api.DataLoaderSpec(api.DataSchema(tables, relations), sample, batch)
 
 
 def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
+    """Prepare HI Small account involvement."""
+    return _prepare_aml(
+        files, directory, anchor_rows, {"label": ("involvement", "float32", api.Raw())}
+    )
+
+
+def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
+    """Prepare LI Medium's next outgoing amount and currency."""
+    targets = {
+        "amount": ("next_amount", "float32", api.Raw()),
+        "currency": ("next_currency", "string", api.Vocabulary()),
+    }
+    return _prepare_aml(files, directory, anchor_rows, targets)
+
+
+def _prepare_aml(files, directory, anchor_rows, targets):
     """Write a bounded native view for verified input files into a fresh directory.
 
     The selected roots keep all touching transactions across time and their counterparties.
@@ -150,7 +172,7 @@ def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
     mapping = pq.read_table(files["mapping"], columns=["entity_id", "first_observed_time"])
     mapping = mapping.sort_by("entity_id")
     account_ids = {key: i for i, key in enumerate(mapping["entity_id"].to_pylist())}
-    selection, roots = _select_anchors(files["anchors"], anchor_rows, account_ids)
+    selection, roots = _select_anchors(files["anchors"], anchor_rows, account_ids, targets)
     directory.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=directory.parent) as tmp:
         work = Path(tmp)
@@ -180,7 +202,7 @@ def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
         "as_of_time",
         sample_id="sample_id",
         split="split",
-        targets={"label": "label"},
+        targets={name: name for name in targets},
         metadata=("registered_entity_id", "prediction_time_ns", "anchor_row_position"),
     )
-    return _contract(fanout).resolve(dataset=dataset), dataset, anchors
+    return _contract(fanout, targets).resolve(dataset=dataset), dataset, anchors

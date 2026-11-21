@@ -29,12 +29,13 @@ To fill the local cache, run these commands from the package root with the AWS C
 
 ```bash
 export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
-python -m e2e.datasets.staging e2e/datasets/pins/aml-e01.json --root "$KUMO_PYTORCH_DATA_ROOT"
-python -m pytest -q tests/e2e/test_aml_e01.py
+python -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$KUMO_PYTORCH_DATA_ROOT"
+python -m pytest -q tests/e2e/test_aml.py
 ```
 
 Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
-`e2e.datasets.aml.prepare_e01(files, fresh_directory, anchor_rows=rows)` to obtain the contract, dataset and anchors.
+`prepare_e01` (HI Small) or `prepare_l01` (LI Medium) in `e2e.datasets.aml`. Both take
+`(files, fresh_directory, anchor_rows=rows)` and return the contract, dataset and anchors.
 
 ## The H&M-shaped dataset
 
