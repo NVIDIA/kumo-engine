@@ -384,8 +384,8 @@ def test_named_neighborhoods_accept_native_plans_without_json(
         "epoch": 0,
         "batch_size": 2,
     }
-    native, _ = index.iter(**options)
-    legacy, _ = index.iter(**options)
+    native, _ = index.iter(SamplingOptions(**options))
+    legacy, _ = index.iter(SamplingOptions(**options))
     native.with_neighborhoods(
         {"context": {"plan": _sampling_plan(), "projections": {}}}
     )
