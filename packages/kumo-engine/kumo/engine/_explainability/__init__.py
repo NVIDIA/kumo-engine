@@ -6,7 +6,8 @@
 The data side reads the Kumo files a training run leaves on disk and computes
 the chart values; the front end in ``static/`` draws them and derives the
 cutoff statistics from the transported counts. Open it with
-``TrainingResult.visualize()``, or ``open_run`` for a retained run.
+``TrainingResult.visualize()`` or ``open_run`` for a retained run;
+``PredictionResult.visualize()`` shows a batch's cohorts and subgraphs.
 """
 
 import json
@@ -119,6 +120,9 @@ class ExplainabilityView:
     @cached_property
     def data(self) -> dict[str, Any]:
         """The payload the front end draws."""
+        return self._build()
+
+    def _build(self) -> dict[str, Any]:
         return build(load(self._result))
 
     @property

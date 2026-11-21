@@ -268,25 +268,26 @@ KX.cards.subgraphs = (panel, payload, ctx) => {
       : 'All scored records have the same summed sensitivity; no relative size ranking.';
     move(list.indexOf(sample), list.length);
     outcome.replaceChildren();
+    /* Observed values come last in each list; a batch has none. */
+    const observed = ctx.data.kind !== 'prediction';
+    const pred = sample.prediction, actual = sample.target;
     if (['multiclass_classification', 'multilabel_classification'].includes(payload.task_type)) {
       const pages = ui.outcomePages ??= {};
-      classOutcome(outcome, 'Predictions', sample.prediction, nodeOptions.signal, pages);
-      classOutcome(outcome, 'Ground truth', sample.target, nodeOptions.signal, pages);
-    } else if (ctx.data.model_type === 'classification') {
-      outcomeValue('Predicted probability of True',
-        typeof sample.prediction === 'number' ? (sample.prediction * 100).toFixed(1) + '%' : fmt(sample.prediction));
-      outcomeValue('Observed outcome', ['False', 'True'][sample.target] ?? fmt(sample.target));
-    } else if (ctx.data.model_type === 'regression') {
-      outcomeValue('Predicted value', fmt(sample.prediction));
-      outcomeValue('Observed value', fmt(sample.target));
-      outcomeValue('Prediction − observed', typeof sample.prediction === 'number' && typeof sample.target === 'number'
-        ? fmt(sample.prediction - sample.target) : 'Not recorded');
+      for (const [title, values] of [['Predictions', pred], ['Ground truth', actual]].slice(0, observed ? 2 : 1))
+        classOutcome(outcome, title, values, nodeOptions.signal, pages);
     } else {
-      const pred = sample.prediction, actual = sample.target;
-      outcomeValue('Recommended records', fmt(pred?.length));
-      outcomeValue('Observed records', fmt(actual?.length));
       const targets = Array.isArray(actual) ? new Set(actual.map(String)) : null;
-      outcomeValue('Matches in recommendations', fmt(targets && Array.isArray(pred) ? pred.filter(x => targets.has(String(x))).length : null));
+      const values = ctx.data.model_type === 'classification' ? [
+        ['Predicted probability of True', typeof pred === 'number' ? (pred * 100).toFixed(1) + '%' : fmt(pred)],
+        ['Observed outcome', ['False', 'True'][actual] ?? fmt(actual)],
+      ] : ctx.data.model_type === 'regression' ? [
+        ['Predicted value', fmt(pred)], ['Observed value', fmt(actual)],
+        ['Prediction − observed', typeof pred === 'number' && typeof actual === 'number' ? fmt(pred - actual) : 'Not recorded'],
+      ] : [
+        ['Recommended records', fmt(pred?.length)], ['Observed records', fmt(actual?.length)],
+        ['Matches in recommendations', fmt(targets && Array.isArray(pred) ? pred.filter(x => targets.has(String(x))).length : null)],
+      ];
+      for (const [label, value] of values.slice(0, observed ? undefined : 1)) outcomeValue(label, value);
     }
     if (sample.time != null) outcomeValue('Prediction date', String(sample.time).slice(0, 10));
     const neighbors = new Map(sample.nodes.map(node => [node.id, []]));
@@ -443,7 +444,7 @@ KX.cards.subgraphs = (panel, payload, ctx) => {
       addEdges(detachedSvg, detachedPositions);
       detached.forEach(n => addNode(n, detachedPositions.get(n.id), detachedSvg));
     }
-    note.textContent = 'Saved, sampled context from the test explanation pass. '
+    note.textContent = (payload.coverage || 'Saved, sampled context from the test explanation pass.') + ' '
       + (sample.nodes.some(n => n.count != null) ? 'Grouped records summarize additional sampled records. ' : '')
       + (detached.length ? 'Records shown separately have no saved path to the prediction entity.' : '');
     activate(ui.pinned);

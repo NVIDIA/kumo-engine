@@ -163,6 +163,9 @@ from kumo.engine.trainer.output_config import (
 
 if TYPE_CHECKING:
     from kumo.engine._explainability import ExplainabilityView
+    from kumo.engine._explainability._prediction import (
+        PredictionExplainabilityView,
+    )
     from kumo.engine._monitoring import DriftReport, EvaluationResult
 
 logger = logging.getLogger(__name__)
@@ -364,6 +367,18 @@ class PredictionResult:
 
     explanations: PredictionExplanations = field(
         default_factory=PredictionExplanations.unavailable)
+
+    def visualize(self) -> 'PredictionExplainabilityView':
+        """Display retained batch cohorts and subgraphs without running
+        prediction."""
+        from kumo.engine._explainability._prediction import (
+            PredictionExplainabilityView,
+        )
+
+        manifest = (self.manifest if self.selection is not None
+                    or self._exported is not None else None)
+        run_id = self.selection.job_id if self.selection is not None else None
+        return PredictionExplainabilityView(self.explanations, manifest, run_id)
 
     @property
     def tracking(self) -> Optional[TrackingRef]:

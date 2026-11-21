@@ -34,6 +34,21 @@ Multilabel ranking and static or temporal link prediction add **Ranking quality 
 It draws one chart per metric family (recall, precision, MAP, NDCG and F1) with the holdout, validation and last-epoch training score at each K, tuning metric first.
 Every value is the one in `training_result.metrics`; a family with a single K, or a split with no scores, is left out.
 
+Display `prediction.visualize()` for a batch prediction result to open the batch widget, with the same styling and graph controls on a single page.
+Use it on a live prediction result; to reopen a saved run, use `PredictionExplanations.load(path).visualize()`, which shows only the batch ID.
+The live result also shows the model, snapshot and prediction type, a Cohorts chart with class selection and sampled subgraphs with their recorded predictions.
+Cohort charts show average predictions and sampled population shares; a batch has no observed outcomes or evaluation metrics.
+An unavailable, disabled, unsupported or failed producer is listed under **Explanation availability**, and the other producer's card still appears.
+
+```python
+prediction = trainer.predict(snapshot, explanations=True)
+prediction.visualize()
+
+# Reopen a retained prediction run, including its xai/manifest.json:
+from kumo.engine import PredictionExplanations
+PredictionExplanations.load("/path/to/prediction/run").visualize()
+```
+
 Use **Export PDF** to print every chart view on the currently open page, including Metrics on the Evaluation tab or Learning Curves and the Training Table on the Training tab, then choose **Save as PDF** in the browser dialog.
 The export preserves the selected explanation and chart controls.
 The other tabs are excluded.
@@ -48,8 +63,10 @@ Open the saved report in a browser without a running notebook kernel.
 Snowflake notebooks use the anywidget transport supplied by the runtime, with the same `visualize()` call.
 With MLOps on, every tracked fit logs this page as `training-report.html` in its run's artifacts.
 The saved notebook snapshot includes the model summary, metrics, default Evaluation charts, the epoch-history summary and the Training Table, followed by “To activate the widget, rerun this cell.”
+A batch snapshot shows its identities, availability, default cohort chart and subgraph coverage instead.
 Individual subgraphs are omitted from that static snapshot.
-Opening the widget only reads retained artifacts; it never starts training or prediction.
+Opening either widget only reads retained artifacts; it never starts training, prediction or explanation generation.
+Retain the prediction run separately from exported predictions; a bare export cannot supply its explanations.
 
 ## Access the selected training run
 

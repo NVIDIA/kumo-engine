@@ -36,6 +36,8 @@ def cohorts(run: Run) -> Optional[list[ColumnCohorts]]:
     if (run.model_type not in (CLASSIFICATION, REGRESSION) or analysis is None
             or analysis.task_type.value != run.task_type):
         return None
+    if run.batch:
+        return analysis.cohorts or None
     entries = [c for c in analysis.cohorts if c.targets is not None]
     return entries if any(e.prediction_score > 0 for e in entries) else None
 
@@ -112,44 +114,63 @@ def importance(run: Run) -> Optional[dict[str, Any]]:
 def group_view(run: Run, entry: ColumnCohorts, total_score: float,
                class_name: Optional[str] = None) -> dict[str, Any]:
     pops = np.asarray(entry.populations, dtype=float)
-    predictions, targets = entry.predictions, entry.targets
-    if isinstance(predictions, dict) and isinstance(targets, dict):
-        predictions, targets = predictions[class_name], targets[class_name]
-    pred = np.asarray(predictions, dtype=float)
-    actual = np.asarray(targets, dtype=float)
-    avg_actual = float((pops * actual).sum() / pops.sum())
-    avg_pred = float((pops * pred).sum() / pops.sum())
+    # A batch shows predictions only.
+    predictions, targets = entry.predictions, None if run.batch else entry.targets
+    if isinstance(predictions, dict):
+        predictions = predictions[class_name]
+        targets = targets and targets[class_name]
+    series = {
+        name: np.asarray(values, dtype=float)
+        for name, values in (('actual', targets), ('predicted', predictions))
+        if values is not None
+    }
+    averages = {
+        name: float((pops * values).sum() / pops.sum())
+        for name, values in series.items()
+    }
     eligible = np.where(pops >= GAP_MIN_SHARE)[0]
     gap = None
-    if len(eligible):
+    if len(eligible) and 'actual' in series:
+        pred, actual = series['predicted'], series['actual']
         j = int(eligible[np.argmax(np.abs(pred - actual)[eligible])])
         gap = dict(
             index=j, text=f'predicted {fmt.number(pred[j])} · actual '
             f'{fmt.number(actual[j])}')
     stype = entry.stype or ('count' if entry.col_name == COUNT_COLUMN else '')
-    unit = (f'of {run.entities}' if entry.hop == 0 or entry.col_name
-            == COUNT_COLUMN else f'of sampled {entry.table_name} rows')
-    values = fmt.numbers([*pred, *actual, avg_actual, avg_pred])
-    n = len(pred)
-    if class_name is not None:
+    unit = ('of sampled rows' if run.batch else f'of {run.entities}'
+            if entry.hop == 0 or entry.col_name == COUNT_COLUMN else
+            f'of sampled {entry.table_name} rows')
+    texts = fmt.numbers([v for values in series.values()
+                         for v in values] + list(averages.values()))
+    n = len(pops)
+    if run.batch:
+        axis = ('average predicted value' if run.model_type == REGRESSION else
+                f'average predicted probability of {class_name or True}')
+    elif class_name is not None:
         axis = f'share {class_name}'
     elif run.model_type == CLASSIFICATION:
         axis = 'share True'
     else:
         axis = 'average ' + (run.target() or 'value')
+    groups = []
+    for i in range(n):
+        group = dict(label=str(entry.cohorts[i]),
+                     share_text=f'{fmt.percent(pops[i])} {unit}')
+        for k, (name, values) in enumerate(series.items()):
+            group.update({
+                name: float(values[i]),
+                name + '_text': texts[k * n + i]
+            })
+        groups.append(group)
+    share = entry.prediction_score / total_score if total_score else 0
     return dict(
         header=(f'{entry.table_name}.{entry.col_name} · hop {entry.hop} · '
-                f'{stype} · variation '
-                f'{fmt.percent(entry.prediction_score / total_score)}'),
-        groups=[
-            dict(label=str(entry.cohorts[i]),
-                 share_text=f'{fmt.percent(pops[i])} {unit}',
-                 predicted=float(pred[i]), predicted_text=values[i],
-                 actual=float(actual[i]), actual_text=values[n + i])
-            for i in range(n)
-        ], axis=axis, average_actual=avg_actual, average_predicted=avg_pred,
-        average_callout=(f'average actual {fmt.number(avg_actual)} · '
-                         f'average predicted {fmt.number(avg_pred)}'),
+                f'{stype} · variation {fmt.percent(share)}'), groups=groups,
+        axis=axis, **{
+            'average_' + name: v
+            for name, v in averages.items()
+        }, average_callout=' · '.join(f'average {name} {fmt.number(v)}'
+                                      for name, v in averages.items()),
         gap_callout=gap)
 
 
@@ -172,6 +193,7 @@ def groups(run: Run) -> Optional[dict[str, Any]]:
         filter(None, (_link(entries, table, column)
                       for table, column, _ in scores or [])), None)
     return dict(
-        title='Column groups', selectable=not scores, columns=views,
-        default=default or _key(max(entries, key=lambda e: e.prediction_score)),
+        title='Cohorts' if run.batch else 'Column groups',
+        selectable=not scores, columns=views, default=default
+        or _key(max(entries, key=lambda e: e.prediction_score)),
         coverage=run.explanation_coverage())

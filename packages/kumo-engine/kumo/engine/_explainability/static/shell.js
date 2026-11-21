@@ -192,31 +192,33 @@ KX.cards.groups = (parent, card, ctx) => {
         chart.redraw();
       }, {signal: columnCtx.signal});
     }
-    legend(body, [{label: 'average actual', color: ROLE.actual},
-      {label: 'average predicted', color: ROLE.model}]);
+    /* A batch records no actual values, so its groups have one series. */
+    const series = [['actual', ROLE.actual], ['predicted', ROLE.model]].filter(([key]) => col['average_' + key] != null);
+    legend(body, series.map(([key, color]) => ({label: 'average ' + key, color})));
     const chart = chartHost(body, (host, width) => {
       const rows = col.groups.map((grp, i) => ({
         label: grp.label, sub: grp.share_text,
-        values: [grp.actual, grp.predicted],
+        values: series.map(([key]) => grp[key]),
         /* The gap callout carries this group's two values, so its bars
            are not labelled a second time. */
-        texts: col.gap_callout && col.gap_callout.index === i ? [] : [grp.actual_text, grp.predicted_text],
+        texts: col.gap_callout && col.gap_callout.index === i ? [] : series.map(([key]) => grp[key + '_text']),
         band: col.gap_callout && col.gap_callout.index === i,
       }));
-      const vals = col.groups.flatMap(g => [g.actual, g.predicted])
-        .concat([col.average_actual, col.average_predicted]).filter(v => v !== null && v !== undefined);
+      const vals = rows.flatMap(row => row.values)
+        .concat(series.map(([key]) => col['average_' + key])).filter(v => v !== null && v !== undefined);
       const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
       const gap = col.gap_callout ? twoLines(col.gap_callout.text) : '';
       const lane = gap ? Math.max(...gap.split('\n').map(l => l.length)) * 6.8 + 24 : 0;
       /* Bars start at zero; each average is its own dashed line in its
          series' colour, labelled at its top. */
-      const res = rowsChart(host, width, {rows, series: [{color: ROLE.actual}, {color: ROLE.model}],
+      const res = rowsChart(host, width, {rows, series: series.map(([, color]) => ({color})),
         origin: 0, domain: [lo, hi * 1.04], axis: true, right: 56 + lane,
         top: 44, xTitle: col.axis, label: card.title});
       const notes = S('g', {}, res.svg);
       const averages = (col.average_callout || '').split(' \u00b7 ');
-      [[col.average_actual, ROLE.actual], [col.average_predicted, ROLE.model]].forEach(([v, color], k) => {
-        if (v === null || v === undefined || !averages[k]) return;
+      series.forEach(([key, color], k) => {
+        const v = col['average_' + key];
+        if (!averages[k]) return;
         const px = res.x(v);
         /* Drawn under the bars and their values, like a reference line. */
         const line = S('path', {d: `M${px} 36V${res.rowY(rows.length)}`, style: {stroke: color,
@@ -252,6 +254,10 @@ KX.cards.groups = (parent, card, ctx) => {
   return frame;
 };
 
+KX.cards.status = (parent, card, ctx) => cardFrame(parent, card, ctx, null, body => {
+  for (const message of card.messages) H('p', 'kx-coverage', body, message);
+});
+
 /* ------------------------------------------------------------- Shell */
 
 /* `saved` is the UI state the initializer was given (see _render.py): a
@@ -266,7 +272,14 @@ function mount(host, data, signal, onDispose) {
     const head = H('div', 'kx-head', root);
     if (data.header.query) H('div', 'kx-query', head, data.header.query);
     for (const [key, value] of Object.entries(data.header)) {
-      if (key !== 'query' && value) H('div', 'kx-sub', head, value);
+      if (key === 'identity') {
+        const list = H('dl', 'kx-identity', head);
+        for (const [label, text] of value) {
+          const item = H('div', null, list);
+          H('dt', null, item, label);
+          H('dd', null, item, text);
+        }
+      } else if (key !== 'query' && value) H('div', 'kx-sub', head, value);
     }
   }
 
@@ -312,6 +325,12 @@ function mount(host, data, signal, onDispose) {
       panels[next].button.focus();
     }, {signal});
   });
+  /* A batch's single tab needs no tab strip; training keeps its tabs. */
+  if (panels.length === 1 && data.kind === 'prediction') {
+    tabs.remove();
+    panels[0].panel.setAttribute('role', 'region');
+    panels[0].panel.setAttribute('aria-label', panels[0].tab.label);
+  }
   select(panels[ctx.state.values.tab] ? ctx.state.values.tab : 0);
   return root;
 }

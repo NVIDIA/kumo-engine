@@ -8,7 +8,8 @@
 // setting the HTML export or the print copy loses, or a missing printed view.
 //
 // Needs retained classification, forecasting and regression fits under
-// KUMO_EXPLAINABILITY_RUNS/<task>, a Python environment that
+// KUMO_EXPLAINABILITY_RUNS/<task>, optionally a retained batch prediction run
+// with cohorts and subgraphs at KUMO_BATCH_EXPLANATIONS, a Python environment that
 // imports this checkout (PYTHON, default python3), and Playwright with its
 // browsers, from NODE_PATH or the locked package next to this file:
 //   npm ci --prefix packages/kumo-engine/test/snowflake_notebook/browser
@@ -23,17 +24,20 @@ const {chromium, firefox, webkit} = (() => {
 })();
 const runs = process.env.KUMO_EXPLAINABILITY_RUNS;
 assert.ok(runs, 'Set KUMO_EXPLAINABILITY_RUNS to the retained runs (<task>/scratch/trainers/*/runs/*-fit-*).');
-function widget(task, dir) {
+function widget(task, dir, source = path.join(runs, task)) {
   const file = path.join(dir, task + '.html');
   execFileSync(process.env.PYTHON || 'python3', ['-c', `import glob, sys
 from dataclasses import replace
-from kumo.engine import Trainer
+from kumo.engine import PredictionExplanations, Trainer
 from kumo.engine.explain import TrainingExplanations
-run, = glob.glob(sys.argv[1] + '/scratch/trainers/*/runs/*-fit-*')
-result = Trainer.load(run + '/published-model', accelerator='cpu').result
-view = replace(result, explanations=TrainingExplanations.load(run)).visualize()
+if '${task}' == 'batch':
+    view = PredictionExplanations.load(sys.argv[1]).visualize()
+else:
+    run, = glob.glob(sys.argv[1] + '/scratch/trainers/*/runs/*-fit-*')
+    result = Trainer.load(run + '/published-model', accelerator='cpu').result
+    view = replace(result, explanations=TrainingExplanations.load(run)).visualize()
 open(sys.argv[2], 'w', encoding='utf-8').write('<!doctype html><meta charset="utf-8">' + view.html())`,
-  path.join(runs, task), file], {cwd: path.join(__dirname, '..'), stdio: 'inherit'});
+  source, file], {cwd: path.join(__dirname, '..'), stdio: 'inherit'});
   return pathToFileURL(file).href;
 }
 async function plots(page, selector) {
@@ -59,7 +63,8 @@ async function print(page) {
 async function save(page, filename) {
   const waiting = page.waitForEvent('download');
   await page.getByRole('button', {name: 'Export HTML', exact: true}).click();
-  await (await waiting).saveAs(filename);
+  const download = await waiting; await download.saveAs(filename);
+  return download.suggestedFilename();
 }
 async function alter(filename, change) {
   const html = await fs.readFile(filename, 'utf8');
@@ -71,6 +76,7 @@ async function alter(filename, change) {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'kumo-exports-')), results = [];
   try {
     const [training, forecast, regression] = ['classification', 'forecasting', 'regression'].map(task => widget(task, tmp));
+    const batch = process.env.KUMO_BATCH_EXPLANATIONS && widget('batch', tmp, process.env.KUMO_BATCH_EXPLANATIONS);
     for (const engine of [chromium, firefox, webkit]) {
       const browser = await engine.launch(), context = await browser.newContext({acceptDownloads: true});
       const errors = []; context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
@@ -176,6 +182,27 @@ async function alter(filename, change) {
         await alter(saved, payload => { payload.data.tabs = payload.data.tabs.filter(tab => tab.id === 'evaluation'); payload.saved.tab = 0; });
         await reopened.goto(pathToFileURL(saved).href); const single = await print(reopened);
         assert.equal(await single.title(), 'Kumo · Evaluation'); await single.close();
+        if (batch) {
+          // One panel without tabs; the selected column and pinned record survive both exports.
+          await page.goto(batch);
+          assert.equal(await page.getByRole('tab').count(), 0);
+          await page.locator('[data-card="groups"] select').first().selectOption({index: 1});
+          await page.locator('g.kx-sg-node[data-root="false"]').first().dispatchEvent('click');
+          const column = await page.locator('[data-card="groups"] select').first().inputValue();
+          // Axis ticks follow the page width, which the saved page changes.
+          const bars = page => page.locator('[data-card="groups"] .kx-chart svg text:not(.kx-t-axis)').allTextContents();
+          const cohort = await bars(page);
+          const details = await page.locator('.kx-sg-detail').textContent();
+          assert.equal(await save(page, saved), 'kumo-prediction-explanations.html');
+          await reopened.goto(pathToFileURL(saved).href);
+          assert.equal(await reopened.locator('[data-card="groups"] select').first().inputValue(), column);
+          assert.deepEqual(await bars(reopened), cohort);
+          assert.equal(await reopened.locator('.kx-sg-detail').textContent(), details);
+          const popup = await print(page);
+          assert.equal(await popup.title(), 'Kumo · Explanation');
+          await plots(popup, '[data-card="groups"] .kx-chart svg'); await plots(popup, '.kx-sg-canvas > svg');
+          assert.equal(await popup.locator('.kx-sg-detail').textContent(), details); await popup.close();
+        }
         await page.goto(forecast); await save(page, saved);
         await alter(saved, payload => {
           const views = payload.data.tabs.flatMap(t => t.cards).find(c => c.id === 'forecast').views;
