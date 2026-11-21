@@ -1,0 +1,361 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""The decisions behind the kumo-pytorch alert workflow on main.
+
+The script lives at .github/scripts/kumo-pytorch-alert.py, outside the package.
+"""
+
+import importlib.util
+import io
+import json
+import os
+import sys
+import zipfile
+
+import pytest
+
+from conformance.cases import REPOSITORY
+
+SCRIPT = REPOSITORY.parents[2] / ".github/scripts/kumo-pytorch-alert.py"
+_spec = importlib.util.spec_from_file_location("kumo_pytorch_alert", SCRIPT)
+alert = importlib.util.module_from_spec(_spec)
+sys.modules["kumo_pytorch_alert"] = alert
+_spec.loader.exec_module(alert)
+
+
+@pytest.mark.parametrize(
+    ("conclusion", "attempt", "reported", "outcome"),
+    (
+        ("failure", 1, "passing", alert.RERUN),
+        ("failure", 1, "failing", alert.RERUN),
+        ("failure", 2, "passing", alert.FAILING_NOW),
+        ("timed_out", 3, "passing", alert.FAILING_NOW),
+        ("failure", 2, "failing", None),
+        ("timed_out", 2, "failing", None),
+        ("success", 1, "failing", alert.RECOVERED),
+        ("success", 2, "failing", alert.RECOVERED),
+        ("success", 2, "passing", None),
+        ("cancelled", 1, "passing", None),
+        ("skipped", 1, "failing", None),
+    ),
+)
+def test_decide(conclusion, attempt, reported, outcome):
+    assert alert.decide(conclusion, attempt, reported) == outcome
+
+
+def run(number, conclusion, event="push", branch="main", status="completed"):
+    return dict(
+        run_number=number, conclusion=conclusion, event=event, head_branch=branch, status=status
+    )
+
+
+def test_only_a_later_main_run_that_succeeded_or_failed_supersedes():
+    runs = [
+        run(13, "cancelled"),
+        run(14, "success", event="workflow_dispatch"),
+        run(15, "failure", branch="other"),
+        run(12, "failure"),
+    ]
+    assert not alert.superseded(runs, 12)
+    assert alert.superseded([*runs, run(13, "success")], 12)
+
+
+def test_the_message_has_the_workflow_commit_subject_and_run():
+    text = alert.message(
+        alert.FAILING_NOW, "kumo-pytorch tests", "0123456789abcdef", "Fix it\n\nDetails", "URL"
+    )
+    assert text == "kumo-pytorch tests started failing on main at 0123456789 Fix it\nURL"
+
+
+def state_archive(state):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("state.json", json.dumps(state))
+    return buffer.getvalue()
+
+
+REPOSITORY_ID = 42
+FORK_ID = 99
+
+
+def producer(head_repository_id=REPOSITORY_ID, branch="main", path=alert.ALERT_WORKFLOW):
+    return dict(head_repository_id=head_repository_id, head_branch=branch, path=path)
+
+
+class GitHub:
+    """The API calls the script makes, answered from runs and state artifacts.
+
+    Each state is (state, expired) or (state, expired, producer(...)).
+    """
+
+    def __init__(self):
+        self.runs = [run(12, "failure"), run(11, "success")]
+        self.states = []
+        self.calls = []
+
+    def producer(self, index):
+        return self.states[index][2] if len(self.states[index]) > 2 else producer()
+
+    def gh_bytes(self, *args):
+        self.calls.append(args)
+        if args[0] != "api":
+            return b""
+        path = args[1]
+        if "/commits/" in path:
+            return b"Fix it\n"
+        if "/runs?" in path:
+            return json.dumps({"workflow_runs": self.runs}).encode()
+        if "/actions/runs/" in path:
+            made_by = self.producer(int(path.split("/")[-1]) - 1000)
+            return json.dumps(dict(path=made_by["path"], event="workflow_run")).encode()
+        if "/artifacts?name=kumo-pytorch-alert-state-7&" in path:
+            assert args[2:] == ("--paginate", "--slurp")
+            artifacts = []
+            for index, state in enumerate(self.states):
+                made_by = self.producer(index)
+                workflow_run = dict(
+                    id=1000 + index,
+                    head_branch=made_by["head_branch"],
+                    head_repository_id=made_by["head_repository_id"],
+                )
+                artifacts.append(
+                    dict(
+                        id=index,
+                        expired=state[1],
+                        created_at=f"2026-11-{index + 1:02d}T00:00:00Z",
+                        workflow_run=workflow_run,
+                    )
+                )
+            return json.dumps([{"artifacts": artifacts}]).encode()
+        if path.endswith("/zip"):
+            index = int(path.split("/")[-2])
+            return state_archive(self.states[index][0])
+        raise AssertionError(f"unexpected call {args}")
+
+
+@pytest.fixture
+def environment(monkeypatch, tmp_path):
+    values = dict(
+        GITHUB_REPOSITORY="owner/repo",
+        REPOSITORY_ID=str(REPOSITORY_ID),
+        WORKFLOW="kumo-pytorch tests",
+        WORKFLOW_ID="7",
+        RUN_ID="100",
+        RUN_NUMBER="12",
+        RUN_ATTEMPT="2",
+        RUN_CONCLUSION="failure",
+        RUN_EVENT="push",
+        RUN_BRANCH="main",
+        RUN_SHA="0123456789abcdef",
+        RUN_URL="URL",
+        SLACK_WEBHOOK_URL="https://hooks.example/1",
+        STATE_PATH=str(tmp_path / "state.json"),
+        GITHUB_OUTPUT=str(tmp_path / "output"),
+    )
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    github, posts = GitHub(), []
+    monkeypatch.setattr(alert, "_gh_bytes", github.gh_bytes)
+    monkeypatch.setattr(alert, "_post", lambda url, text: posts.append((url, text)))
+    return monkeypatch, github, posts
+
+
+def written_state():
+    path = os.environ["STATE_PATH"]
+    output = os.environ["GITHUB_OUTPUT"]
+    if not os.path.exists(path):
+        assert not os.path.exists(output)
+        return None
+    with open(output) as file:
+        assert file.read() == "state-written=true\n"
+    with open(path) as file:
+        return json.load(file)
+
+
+FAILING_NOW_TEXT = "kumo-pytorch tests started failing on main at 0123456789 Fix it\nURL"
+RECOVERED_TEXT = "kumo-pytorch tests recovered on main at 0123456789 Fix it\nURL"
+
+
+def test_a_final_failure_after_a_success_posts_once(environment):
+    _, github, posts = environment
+    github.states = [(dict(state="passing", run_number=11, run_attempt=1), False)]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_a_first_failed_attempt_is_rerun_without_posting(environment):
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_ATTEMPT", "1")
+    assert alert.main() == 0
+    assert github.calls == [("run", "rerun", "100", "--failed", "--repo", "owner/repo")]
+    assert posts == []
+    assert written_state() is None
+
+
+def test_a_late_failure_of_an_older_run_is_ignored(environment):
+    """(a) 11 and 13 pass, then 12's delayed second attempt fails."""
+    _, github, posts = environment
+    github.runs = [run(13, "success"), run(12, "failure"), run(11, "success")]
+    github.states = [(dict(state="passing", run_number=13, run_attempt=1), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+def test_a_late_success_of_an_older_run_is_ignored(environment):
+    """(b) 11 and 13 fail, then 12's delayed retry passes."""
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_CONCLUSION", "success")
+    github.runs = [run(13, "failure"), run(12, "success"), run(11, "failure")]
+    github.states = [(dict(state="failing", run_number=11, run_attempt=2), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+def test_a_failure_already_reported_is_not_posted_again(environment):
+    """(c) Run 12 reported its failure on attempt 2; a manual attempt 3 fails."""
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_ATTEMPT", "3")
+    github.states = [
+        (dict(state="passing", run_number=11, run_attempt=1), False),
+        (dict(state="failing", run_number=12, run_attempt=2), False),
+    ]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=3)
+
+
+def test_a_rerun_that_passes_after_a_reported_failure_recovers(environment):
+    """(d) Run 12 reported a failure; a manual rerun of 12 passes, no later run."""
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_ATTEMPT", "3")
+    monkeypatch.setenv("RUN_CONCLUSION", "success")
+    github.runs = [run(12, "success"), run(11, "success")]
+    github.states = [(dict(state="failing", run_number=12, run_attempt=2), False)]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", RECOVERED_TEXT)]
+    assert written_state() == dict(state="passing", run_number=12, run_attempt=3)
+
+
+def test_an_older_attempt_after_a_newer_one_is_ignored(environment):
+    """Run 12's attempt 3 recorded passing; its attempt 2's failure arrives later."""
+    _, github, posts = environment
+    github.runs = [run(12, "success"), run(11, "success")]
+    github.states = [(dict(state="passing", run_number=12, run_attempt=3), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+@pytest.mark.parametrize(
+    "untrusted",
+    (
+        producer(head_repository_id=FORK_ID),
+        producer(branch="feature"),
+        producer(path=".github/workflows/other.yml"),
+    ),
+    ids=("fork", "other-branch", "other-workflow"),
+)
+def test_only_the_alert_workflows_own_state_artifacts_are_read(environment, untrusted):
+    """A newer artifact with the state name from elsewhere can't suppress the alert."""
+    _, github, posts = environment
+    github.states = [
+        (dict(state="passing", run_number=11, run_attempt=1), False),
+        (dict(state="failing", run_number=12, run_attempt=2), False, untrusted),
+    ]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_an_artifact_uploaded_by_another_event_is_skipped():
+    def artifact(index, run_id):
+        workflow_run = dict(id=run_id, head_branch="main", head_repository_id=REPOSITORY_ID)
+        created_at = f"2026-11-{index + 1:02d}T00:00:00Z"
+        return dict(id=index, expired=False, created_at=created_at, workflow_run=workflow_run)
+
+    older, newer = artifact(0, run_id=6), artifact(1, run_id=5)
+    events = {5: "pull_request", 6: "workflow_run"}
+    chosen = alert.newest_trusted(
+        [older, newer],
+        REPOSITORY_ID,
+        lambda run_id: dict(path=alert.ALERT_WORKFLOW, event=events[run_id]),
+    )
+    assert chosen is older
+
+
+def test_an_unchanged_state_is_checkpointed_so_an_older_attempt_is_ignored(environment):
+    """Saved passing is run 11's; run 12 attempt 3 passes, then its attempt 2 fails late."""
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_ATTEMPT", "3")
+    monkeypatch.setenv("RUN_CONCLUSION", "success")
+    github.runs = [run(12, "success"), run(11, "success")]
+    github.states = [(dict(state="passing", run_number=11, run_attempt=1), False)]
+    assert alert.main() == 0
+    checkpoint = written_state()
+    assert checkpoint == dict(state="passing", run_number=12, run_attempt=3)
+    github.states.append((checkpoint, False))
+    os.remove(os.environ["STATE_PATH"])
+    os.remove(os.environ["GITHUB_OUTPUT"])
+    monkeypatch.setenv("RUN_ATTEMPT", "2")
+    monkeypatch.setenv("RUN_CONCLUSION", "failure")
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() is None
+
+
+def test_an_expired_state_artifact_is_not_read(environment):
+    _, github, posts = environment
+    github.states = [(dict(state="failing", run_number=5, run_attempt=2), True)]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_without_a_state_artifact_a_failure_posts_even_after_earlier_failures(environment):
+    """Runs 11 and 12 fail; 11's handler was superseded, so nothing was reported."""
+    _, github, posts = environment
+    github.runs = [run(12, "failure"), run(11, "failure")]
+    assert alert.main() == 0
+    assert posts == [("https://hooks.example/1", FAILING_NOW_TEXT)]
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_a_reported_failure_is_not_posted_again_by_the_next_failing_run(environment):
+    _, github, posts = environment
+    github.runs = [run(12, "failure"), run(11, "failure")]
+    github.states = [(dict(state="failing", run_number=10, run_attempt=2), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_without_a_webhook_nothing_is_posted_but_the_state_is_recorded(environment):
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
+    github.states = [(dict(state="passing", run_number=11, run_attempt=1), False)]
+    assert alert.main() == 0
+    assert posts == []
+    assert written_state() == dict(state="failing", run_number=12, run_attempt=2)
+
+
+def test_a_cancelled_run_changes_nothing(environment):
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv("RUN_CONCLUSION", "cancelled")
+    assert alert.main() == 0
+    assert github.calls == [] and posts == []
+    assert written_state() is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"), (("RUN_EVENT", "workflow_dispatch"), ("RUN_BRANCH", "feature"))
+)
+def test_runs_off_main_or_by_hand_are_ignored(environment, key, value):
+    monkeypatch, github, posts = environment
+    monkeypatch.setenv(key, value)
+    assert alert.main() == 0
+    assert github.calls == [] and posts == []
