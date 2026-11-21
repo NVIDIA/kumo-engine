@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "anchor_rows": [
+    6815,
+    6871,
+    6900,
+    7115
+  ],
+  "objects": {
+    "anchor_manifest": {
+      "key": "anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/manifest.json",
+      "size": 5939,
+      "sha256": "f4104482db59b17636857aae08971a39c85ab875b1ae9a201c91cde157576b4a"
+    },
+    "anchors": {
+      "key": "anchors/pragma-synthetic-medium/v1/ltv_positive_6m/v2/anchors.parquet",
+      "size": 10903428,
+      "sha256": "e4723b0ce9f69f8930cec2cee5ebc928465284b8bf91d57073c46835f4d9b2e1"
+    },
+    "transfers/part-00024.parquet": {
+      "key": "datasets/pragma-synthetic/medium/v1/transfers/part-00024.parquet",
+      "size": 20446350,
+      "sha256": "34d19b575d062fbdd6d98d9728e4997919e062b54e395b04bf4d104decc99d73"
+    }
+  },
+  "event_ids_sha256": "c12791a02b3a1ece41fee70778b673c66d87958ee93a4b7176c39e8d29a18c63"
+}
