@@ -553,7 +553,7 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     "tier",
     [T2A, pytest.param(T2B, marks=pytest.mark.t2b)],
     ids=lambda tier: tier.name,
-    scope="session",
+    indirect=True,
 )
 def test_native_graph_at_tied_purchase_cutoff(
     hm: HMDataset, data: HMDataset, tmp_path: Path, native_anchor_delivery
