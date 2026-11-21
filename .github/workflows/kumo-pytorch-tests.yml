@@ -108,3 +108,8 @@ jobs:
     env:
       STAGE_PINNED_DATASETS: 'true'
     steps: *package_steps
+
+  hm-lifecycle:
+    if: github.event_name == 'schedule'
+    needs: diskgraph-wheel
+    uses: ./.github/workflows/_kumo-pytorch-t2b.yml
