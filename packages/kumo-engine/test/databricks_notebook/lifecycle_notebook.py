@@ -211,17 +211,25 @@ def execute(args, root):
                       phases=workload_phases(committed[custom_path.name]),
                       wheels=[wheel.name for wheel in extra_wheels])
         check_workload_wheels(args.wheel, extra_wheels)
+    accelerator = getattr(args, 'accelerator', 'cpu')
+    if accelerator == 'gpu' and custom is None:
+        raise ValueError('GPU notebook validation requires a customer workload')
     config = configuration(args.cluster_id)
+    if accelerator == 'gpu':
+        config['accelerator'] = accelerator
     if not config['expected_user'].strip():
         raise ValueError(
             'KUMO_DATABRICKS_TEST_USER must identify the dedicated test principal'
         )
     client = Client(config)
-    admit_cluster(client, config['cluster_id'])
+    if accelerator == 'cpu':
+        admit_cluster(client, config['cluster_id'])
+    else:
+        admit_cluster(client, config['cluster_id'], accelerator)
     storage = denied_storage(client, config)
     assets = {}
     for name in ('wheel_mlops_lifecycle.py', 'wheel_mlops_platform.py',
-                 'wheel_gpu_smoke.py'):
+                 'wheel_gpu_smoke.py', 'wheel_mlops_workload.py'):
         local = HERE.parent / name
         assets[name], _ = asset(client, config['volume'], name,
                                 digest(committed[name]), local)
@@ -243,6 +251,8 @@ def execute(args, root):
         artifact_root=config['volume'].removesuffix('/notebook-ui') +
         '/lifecycle',
         output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs')
+    if accelerator == 'gpu':
+        spec['accelerator'] = accelerator
     if custom is not None:
         spec['workload'] = custom
         spec['model_version_limit'] = 20
@@ -277,6 +287,7 @@ def main():
                         help='Runtime manifest for the selected checkout wheel')
     parser.add_argument('--engine-checks-only', action='store_true',
                         help='Require engine phases; retain UI gaps')
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--cluster-id', required=True,
                         type=lambda value: configuration(value)['cluster_id'])
     parser.add_argument('--wheel', type=Path)

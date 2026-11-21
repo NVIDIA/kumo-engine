@@ -8,6 +8,15 @@ import re
 import zipfile
 from pathlib import PurePosixPath
 
+CUDA_TORCH = 'torch==2.9.1+cu128'
+CUDA_INDEX = 'https://download.pytorch.org/whl/cu128'
+
+
+def pytorch_install_args(accelerator):
+    if accelerator not in ('cpu', 'gpu'):
+        raise ValueError('Select a CPU or GPU workload environment')
+    return [CUDA_TORCH, '--extra-index-url', CUDA_INDEX] if accelerator == 'gpu' else []
+
 
 def digest(content):
     return hashlib.sha256(content).hexdigest()

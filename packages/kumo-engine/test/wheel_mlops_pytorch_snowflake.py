@@ -14,6 +14,7 @@ import json
 import math
 import sys
 from functools import cache
+from importlib.metadata import version as package_version
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -85,11 +86,25 @@ def download(session, directory, stage):
     return directory
 
 
+def devices(profile):
+    """A GPU run must exercise actual CUDA and retain matching wheel metadata."""
+    import torch
+
+    selected = recipe().devices(profile)
+    if profile.accelerator == 'cpu':
+        return selected
+    require(torch.version.cuda is not None, 'GPU workload requires CUDA-enabled PyTorch')
+    suffix = '+cu' + torch.version.cuda.replace('.', '')
+    require(package_version('torch').endswith(suffix),
+            'GPU registration requires an official CUDA-tagged PyTorch wheel; '
+            'its distribution version must match Snowflake CUDA requirements')
+    return selected
+
+
 def native(profile):
     require(profile is not None and profile.config['platform'] == 'snowflake',
             'This workload requires a Snowflake platform profile')
-    require(profile.accelerator == 'cpu',
-            'This workload requires a CPU profile')
+    devices(profile)
     from snowflake.ml.registry import Registry
 
     cfg = profile.settings(False)
@@ -127,6 +142,7 @@ def train(root, profile):
     cfg, session, registry, tracking = native(profile)
     contract, dataset, requests = shared.inputs()
     versions = []
+    selected_devices = devices(profile)
     python_version = f'{sys.version_info.major}.{sys.version_info.minor}'
     with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
         with plan.materialize(requests, fit_split='train') as task:
@@ -135,11 +151,12 @@ def train(root, profile):
             require(
                 abs(centered.mean().item()) < 1e-6,
                 'Input normalization did not fit only the training split')
-            for seed in (0, 1):
+            variants = [(device, seed) for device in selected_devices for seed in (0, 1)]
+            for index, (device, seed) in enumerate(variants):
                 torch.manual_seed(seed)
-                model = torch.nn.Linear(1, 1)
+                model = torch.nn.Linear(1, 1).to(device)
                 optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-                version, run_name = f'V{seed + 1}', f'CUSTOMER_FIT_{seed}'
+                version, run_name = f'V{index + 1}', f'CUSTOMER_FIT_{index}'
                 directory = root / 'scratch-train' / version
                 directory.mkdir(parents=True)
                 task.to_artifact().save(directory / 'preprocessing')
@@ -148,16 +165,16 @@ def train(root, profile):
                     for epoch in range(2):
                         for batch in task.batches(split='train', epoch=epoch):
                             labels = batch.targets['label']['values'].float(
-                            ).reshape(-1, 1)
+                            ).reshape(-1, 1).to(device)
                             loss = torch.nn.functional.mse_loss(
-                                model(shared.features(batch)), labels)
+                                model(shared.features(batch, device)), labels)
                             optimizer.zero_grad()
                             loss.backward()
                             optimizer.step()
                         with torch.no_grad():
                             squared = [
-                                (model(shared.features(batch)).flatten() -
-                                 batch.targets['label']['values'].float()
+                                (model(shared.features(batch, device)).flatten() -
+                                 batch.targets['label']['values'].float().to(device)
                                  ).square()
                                 for batch in task.batches(split='validation')
                             ]
@@ -167,7 +184,7 @@ def train(root, profile):
                             step=epoch)
                     model.eval()
                     identity = dict(
-                        customer_run=run_name,
+                        customer_run=run_name, customer_device=device,
                         customer_preprocessing=task.fitted_state.fingerprint)
                     tracking.log_params(
                         dict(identity, customer_model=profile.model,
@@ -182,13 +199,12 @@ def train(root, profile):
                            profile.artifact_root + '/customer/' + version)
                     logged = tracking.log_model(
                         model, model_name=profile.model, version_name=version,
-                        metrics=identity, sample_input_data=torch.zeros((2, 1)),
+                        metrics=identity, sample_input_data=torch.zeros((2, 1), device=device),
                         target_platforms=['SNOWPARK_CONTAINER_SERVICES'],
                         python_version=python_version, pip_requirements=[
-                            f'torch=={torch.__version__.split("+")[0]}'
-                        ],
-                        # This workload runs on CPU even with a CUDA-enabled torch wheel.
-                        options={'cuda_version': None})
+                            'torch==' + (package_version('torch') if device == 'cuda'
+                                         else torch.__version__.split('+')[0])
+                        ], options={'cuda_version': torch.version.cuda if device == 'cuda' else None})
                     require(
                         str(logged.version_name) == version,
                         'Snowflake registered another version')
@@ -198,11 +214,16 @@ def train(root, profile):
                 else:
                     tracking.end_run(status='FINISHED')
                 versions.append(
-                    dict(version=version, run=run_name,
+                    dict(version=version, run=run_name, device=device,
                          fingerprint=task.fitted_state.fingerprint))
     registry.get_model(profile.model).version(
         versions[0]['version']).set_alias('CHAMPION')
-    state = dict(model=profile.model, versions=versions)
+    state = dict(model=profile.model, versions=versions,
+                 execution=dict(devices=list(selected_devices),
+                                torch_distribution=package_version('torch'),
+                                torch_runtime=str(torch.__version__),
+                                cuda=torch.version.cuda,
+                                gpu_name=torch.cuda.get_device_name(0) if 'cuda' in selected_devices else None))
     write(root / 'customer-state.json', state)
     result = session.file.put(str(root / 'customer-state.json'),
                               profile.artifact_root, auto_compress=False,
@@ -226,17 +247,23 @@ def reload(root, profile):
     require(result and all(r.status == 'DOWNLOADED' for r in result),
             'Customer lifecycle state was not recovered from the stage')
     state = json.loads((control / 'customer-state.json').read_text())
-    require(state['model'] == profile.model and len(state['versions']) == 2,
+    selected_devices = devices(profile)
+    require(state['model'] == profile.model
+            and len(state['versions']) == 2 * len(selected_devices)
+            and state['execution']['devices'] == list(selected_devices)
+            and state['execution']['torch_distribution'] == package_version('torch'),
             'Recovered another or incomplete customer model lifecycle')
     _, dataset, requests = shared.inputs()
     checks = []
     for expected in state['versions']:
-        version = expected['version']
+        version, device = expected['version'], expected['device']
+        require(device in selected_devices, 'Recovered an unselected model device')
         record = profile.record(cfg, SimpleNamespace(run_id=expected['run']))
         require(
             record['params'].get('customer_preprocessing')
             == expected['fingerprint']
-            and record['params'].get('customer_version') == version,
+            and record['params'].get('customer_version') == version
+            and record['params'].get('customer_device') == device,
             'Native tracking describes another model/preprocessing state')
         history = {
             name: record['history'].get(name, [])
@@ -251,7 +278,8 @@ def reload(root, profile):
         registered = registry.get_model(profile.model).version(version)
         metrics = registered.show_metrics()
         require(
-            metrics.get('customer_run') == expected['run'] and
+            metrics.get('customer_run') == expected['run']
+            and metrics.get('customer_device') == device and
             metrics.get('customer_preprocessing') == expected['fingerprint'],
             'Native registry identifies another customer training run')
         directory = download(session, root / 'scratch-reload' / version,
@@ -262,13 +290,15 @@ def reload(root, profile):
         model = torch.nn.Linear(1, 1)
         model.load_state_dict(
             api.load_weights(directory / 'weights.pt', artifact.fitted_state))
-        model.eval()
+        model.to(device).eval()
         saved = json.loads((directory / 'expected.json').read_text())
         promote(registry, profile.model, version)
         published = registry.get_model(
-            profile.model).version('CHAMPION').load(options={'use_gpu': False})
+            profile.model).version('CHAMPION').load(options={'use_gpu': device == 'cuda'})
         require(isinstance(published, torch.nn.Module),
                 'Native registry did not load a PyTorch model')
+        require(next(published.parameters()).device.type == device,
+                'Native registry loaded the model onto another device')
         with api.prepare(artifact.contract, dataset, api.InMemoryEngine(),
                          inference=True) as plan:
             with plan.materialize(requests, fitted=artifact.fitted_state,
@@ -281,9 +311,12 @@ def reload(root, profile):
                                          abs_tol=1e-6) for key in saved),
                         'Fresh-process Snowflake predictions changed')
         checks.append(
-            dict(version=version, run=expected['run'], rows=len(saved),
+            dict(version=version, run=expected['run'], device=device, rows=len(saved),
                  history=history))
-    return dict(versions=checks)
+    require({device: sum(c['device'] == device for c in checks)
+             for device in selected_devices} == dict.fromkeys(selected_devices, 2),
+            'Both model versions must reload on every selected device')
+    return dict(versions=checks, execution=state['execution'])
 
 
 def run_phase(name, root, profile):

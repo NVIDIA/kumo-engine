@@ -2052,3 +2052,16 @@ def test_actions_dispatch_selects_customer_workload(tmp_path, monkeypatch, selec
     else:
         assert '--workload' not in command
         assert '--workload-wheel' not in command
+
+
+def test_gpu_job_uses_a_pinned_gpu_image_and_uploads_its_installer_helper(modules):
+    cpu = modules.config.configuration()
+    gpu = modules.config.configuration('gpu')
+    assert cpu['instance'] == 'ml.m5.2xlarge'
+    assert gpu['instance'] == 'ml.g5.xlarge'
+    assert gpu['image'] != cpu['image']
+    assert gpu['image'].endswith('@sha256:210e9ad32983c8a3837e0f935fbe127b04fed5339f19750416c8c43179d430ae')
+    assert gpu['execution_role'] == cpu['execution_role']
+    helper = modules.run.SOURCES['wheel_mlops_workload.py']
+    assert helper == HERE.parent / 'wheel_mlops_workload.py'
+    assert helper.is_file()

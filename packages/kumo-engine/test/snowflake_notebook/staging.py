@@ -39,7 +39,8 @@ def identity(wheel, source):
                 expected_version=version)
 
 
-def stage(wheel, source, run, output, key_file=None, workload_wheels=None):
+def stage(wheel, source, run, output, key_file=None, workload_wheels=None,
+          accelerator='cpu'):
     from resources import require
 
     extra_wheels = list(workload_wheels or [])
@@ -59,7 +60,8 @@ def stage(wheel, source, run, output, key_file=None, workload_wheels=None):
         work = Path(temporary)
         plan = json.loads(
             Path(__file__).with_name('dependency-plan.json').read_text())
-        wheelhouse = resolve(wheel, work / 'dependencies', plan, extra_wheels)
+        wheelhouse = resolve(wheel, work / 'dependencies', plan, extra_wheels,
+                             accelerator=accelerator)
         manifest = json.loads(
             wheelhouse.with_name('dependencies.json').read_text())
         with launch.connect(
@@ -91,6 +93,7 @@ def stage(wheel, source, run, output, key_file=None, workload_wheels=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--source-ref', required=True)
     parser.add_argument(
         '--workload-wheel', type=Path, action='append',
@@ -102,7 +105,7 @@ def main():
         help='Encrypted local RSA key already unlocked in the memory cache')
     args = parser.parse_args()
     stage(args.wheel, args.source_ref, args.github_run, args.output,
-          args.key_file, args.workload_wheel)
+          args.key_file, args.workload_wheel, args.accelerator)
     print('Staged this checkout candidate; dependency cache verified')
 
 

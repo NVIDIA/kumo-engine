@@ -21,6 +21,9 @@ TARGET = dict(account='account-test_account', account_locator='TEST_LOCATOR',
               account_url='https://app.snowflake.com/account/test_account/')
 
 
+GPU_POOL = 'KUMO_TEST_GPU_POOL'
+
+
 def expected():
     root = Path(__file__).parent
     return dict(

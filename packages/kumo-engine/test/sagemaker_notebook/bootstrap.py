@@ -117,6 +117,12 @@ def prepare(config, session=None):
             requirements += [
                 str(payload / item) for item in config['workload']['wheels']
             ]
+        if name == 'product-install' and config.get('accelerator') == 'gpu':
+            tools_spec = importlib.util.spec_from_file_location(
+                'workload_tools', payload / 'wheel_mlops_workload.py')
+            tools = importlib.util.module_from_spec(tools_spec)
+            tools_spec.loader.exec_module(tools)
+            requirements += tools.pytorch_install_args('gpu')
         with (evidence / (name + '.log')).open('w') as log:
             command = [
                 sys.executable, '-I', '-m', 'pip', '--isolated', '--python',

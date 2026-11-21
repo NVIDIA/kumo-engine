@@ -15,7 +15,7 @@ from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
-from resources import TARGET
+from resources import GPU_POOL, TARGET
 
 USER = TARGET['user']
 ROLE = TARGET['role']
@@ -194,9 +194,9 @@ def sha(path):
 
 
 def prepare(root, runtime):
-    if not re.fullmatch(r'V[0-9]+(?:\.[0-9]+)*-CPU-PY3\.[0-9]+', runtime):
+    if not re.fullmatch(r'V[0-9]+(?:\.[0-9]+)*-(?:CPU|GPU)-PY3\.[0-9]+', runtime):
         raise ValueError(
-            'Select an explicit x86 CPU Container Runtime version, e.g. V2.9-CPU-PY3.12'
+            'Select an explicit x86 CPU/GPU Container Runtime version, e.g. V2.9-GPU-PY3.12'
         )
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     attempt = uuid4().hex[:12]
@@ -204,9 +204,10 @@ def prepare(root, runtime):
     payload.mkdir()
     prefix = f'{STAGE}/notebook-output-probe/{attempt}'
     bundle = f'{DATABASE}.{SCHEMA}.MLOPS_PROBE_{attempt.upper()}'
+    pool = GPU_POOL if '-GPU-' in runtime else POOL
     spec = (
         'bundle:\n  type: custom\n  compute_type: compute_pool\n  language: python\n'
-        '  compute_options:\n    compute_pool: ' + POOL +
+        '  compute_options:\n    compute_pool: ' + pool +
         '\n    query_warehouse: ' + WAREHOUSE + '\n    runtime_version: ' +
         json.dumps(runtime) + '\n')
     (payload / 'code_bundle.yml').write_text(spec)
@@ -305,6 +306,11 @@ def prepare_payload(root, runtime, source, approved=None):
             for key, value in approved['profile_target'].items()):
         raise ValueError(
             'Snowflake profile differs from the reviewed test targets')
+    accelerator = 'gpu' if '-GPU-' in runtime else 'cpu'
+    if profile.get('accelerator') != accelerator:
+        raise ValueError('Notebook runtime and workload accelerator must agree')
+    if accelerator == 'gpu' and (custom is None or dependencies.get('accelerator') != 'gpu'):
+        raise ValueError('GPU runtime requires the pinned customer CUDA environment')
     manifest = prepare(root, runtime)
     print(f'Preparing {config["mode"]} payload: {root}', flush=True)
     for path in paths:
@@ -775,6 +781,14 @@ def execute(root, manifest, connection, timeout):
                       value) in dict(user=USER, role=ROLE, database=DATABASE,
                                      schema=SCHEMA).items()))):
                 raise AssertionError('Unexpected submitting identity/context')
+            if '-GPU-' in manifest.get('runtime', ''):
+                cursor.execute('DESCRIBE COMPUTE POOL ' + GPU_POOL)
+                columns = [str(column[0]).lower() for column in cursor.description]
+                pools = [dict(zip(columns, row)) for row in cursor.fetchall()]
+                if (len(pools) != 1 or pools[0].get('name') != GPU_POOL
+                        or pools[0].get('instance_family') != 'GPU_NV_S'
+                        or pools[0].get('max_nodes') != 1):
+                    raise ValueError('Use the dedicated single-node GPU_NV_S GPU test pool')
             report['execution_timeout_seconds'] = timeout
             report['statement_timeout_seconds'] = timeout + 60
             cursor.execute(

@@ -12,7 +12,12 @@ import sys
 import tarfile
 from pathlib import Path
 
+# Keep the CUDA environment identical to the online notebook installers.
+import launch
 from dependency_inventory import inventory
+
+CUDA_TORCH = launch.workload_tools().CUDA_TORCH
+CUDA_INDEX = launch.workload_tools().CUDA_INDEX
 
 
 def runtime_target():
@@ -20,7 +25,9 @@ def runtime_target():
                 system=platform.system(), architecture=platform.machine())
 
 
-def resolve(wheel, destination, plan, workload_wheels=None):
+def resolve(wheel, destination, plan, workload_wheels=None, accelerator='cpu'):
+    if accelerator not in ('cpu', 'gpu'):
+        raise ValueError('Select a CPU or GPU dependency environment')
     target = plan['target']
     if platform.python_implementation() != 'CPython':
         raise ValueError(
@@ -71,6 +78,14 @@ def resolve(wheel, destination, plan, workload_wheels=None):
         platforms += ['--platform', legacy]
     if any(path.name.endswith('-linux_x86_64.whl') for path in extra_wheels):
         platforms += ['--platform', 'linux_x86_64']
+    gpu_requirements = []
+    if accelerator == 'gpu':
+        gpu_requirements = [CUDA_TORCH]
+        subprocess.run(command + [
+            'download', '--no-deps', '--only-binary=:all:', '--index-url', CUDA_INDEX,
+            '--python-version', target['python'], '--implementation', 'cp',
+            '--abi', 'cp' + target['python'].replace('.', ''), *platforms,
+            '--dest', str(wheels), CUDA_TORCH], check=True)
     subprocess.run(
         command + [
             'download', '--only-binary=:all:', '--index-url',
@@ -81,7 +96,7 @@ def resolve(wheel, destination, plan, workload_wheels=None):
             str(wheels), '--dest',
             str(wheels),
             str(wheel.resolve()) + '[snowflake]',
-            *[str(path.resolve()) for path in extra_wheels]
+            *[str(path.resolve()) for path in extra_wheels], *gpu_requirements
         ], check=True)
     archive = destination / 'wheelhouse.tar'
     with tarfile.open(archive, 'w', format=tarfile.PAX_FORMAT) as bundle:
@@ -98,6 +113,9 @@ def resolve(wheel, destination, plan, workload_wheels=None):
                 bundle.addfile(member, source)
             path.unlink()
     resolved_plan = dict(plan)
+    if accelerator == 'gpu':
+        resolved_plan['accelerator'] = accelerator
+        resolved_plan['cuda_torch'] = dict(requirement=CUDA_TORCH, source_index=CUDA_INDEX)
     if extra_wheels:
         resolved_plan['workload_wheels'] = [path.name for path in extra_wheels]
     result = inventory(archive, resolved_plan)
@@ -112,6 +130,7 @@ def resolve(wheel, destination, plan, workload_wheels=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wheel', type=Path, required=True)
+    parser.add_argument('--accelerator', choices=('cpu', 'gpu'), default='cpu')
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument(
         '--workload-wheel', type=Path, action='append',
@@ -122,7 +141,7 @@ def main():
     args = parser.parse_args()
     print(
         resolve(args.wheel, args.output_dir, json.loads(args.plan.read_text()),
-                args.workload_wheel))
+                args.workload_wheel, args.accelerator))
 
 
 if __name__ == '__main__':

@@ -51,7 +51,7 @@ jobs:
               raise SystemExit('Provide a dedicated KUMO_TEST_ x86 cluster_id for every scenario')
           PYTHON
       - &check-environment
-        name: Verify maintainer-protected environment
+        name: Verify test environment policy
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 packages/kumo-engine/test/databricks_notebook/check_environment.py

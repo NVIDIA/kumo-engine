@@ -308,7 +308,7 @@ def test_extra_receipt_is_rejected(evidence):
         collect_fake(evidence)
 
 
-def test_workflow_secrets_are_available_only_after_native_environment_approval(
+def test_workflow_secrets_stay_scoped_to_the_native_test_environment(
 ):
     workflow = yaml.safe_load(
         (ROOT /
@@ -316,7 +316,7 @@ def test_workflow_secrets_are_available_only_after_native_environment_approval(
     assert set(workflow[True]) == {'workflow_dispatch'}
     gate = next(
         step for step in workflow['jobs']['configuration']['steps']
-        if step.get('name') == 'Verify maintainer-protected environment')
+        if step.get('name') == 'Verify test environment policy')
     job = workflow['jobs']['notebook-ui']
     assert job['environment'] == 'databricks-mlops-test'
     assert job['steps'][1] == gate
@@ -414,21 +414,21 @@ def test_cloud_jobs_require_manual_main_dispatch(
 
 
 @pytest.mark.parametrize('ref', [
-    'refs/heads/main', 'refs/heads/egu/databricks-ui-validation'
+    'refs/heads/main', 'refs/heads/egu/byom-mlops-lifecycle',
+    'refs/heads/egu/databricks-ui-validation'
 ])
-def test_production_guard_requires_main_and_the_databricks_environment(
+def test_production_guard_admits_only_main_and_the_approved_test_branch(
         monkeypatch, ref):
     import io
     import runpy
     import urllib.request
 
     environment = dict(
-        can_admins_bypass=False, protection_rules=[
-            dict(type='required_reviewers', prevent_self_review=True,
-                 reviewers=[dict(type='Team', reviewer=dict(id=19956283))])
-        ], deployment_branch_policy=dict(protected_branches=False,
-                                         custom_branch_policies=True))
-    policies = dict(branch_policies=[dict(name='main', type='branch')])
+        can_admins_bypass=False, protection_rules=[],
+        deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
+    policies = dict(branch_policies=[
+        dict(name='main', type='branch'),
+        dict(name='egu/byom-mlops-lifecycle', type='branch')])
     calls = []
 
     def get(request, timeout):
@@ -442,7 +442,7 @@ def test_production_guard_requires_main_and_the_databricks_environment(
                            GITHUB_EVENT_NAME='workflow_dispatch',
                            GITHUB_TOKEN='test-token').items():
         monkeypatch.setenv(key, value)
-    if ref == 'refs/heads/main':
+    if ref in ('refs/heads/main', 'refs/heads/egu/byom-mlops-lifecycle'):
         runpy.run_path(str(DIRECTORY / 'check_environment.py'),
                        run_name='__main__')
         assert len(calls) == 2
@@ -846,3 +846,35 @@ def test_retry_does_not_start_another_request_after_deadline(modules, monkeypatc
     with pytest.raises(RuntimeError, match='retry deadline exceeded'):
         client.api('/api/2.2/jobs/runs/get?run_id=1')
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('change,accepted', [
+    ({}, True), ({'spark_version': '17.3.x-scala2.13'}, False),
+    ({'node_type_id': 'i3.xlarge'}, False),
+    ({'cluster_name': 'customer-production'}, False), ({'num_workers': 1}, False),
+])
+def test_gpu_cluster_admission_requires_dedicated_gpu_runtime_and_nodes(modules, change, accepted):
+    client, _ = modules
+    cluster_id = '0101-010101-example'
+    record = dict(cluster_id=cluster_id, cluster_name='KUMO_TEST_GPU',
+                  node_type_id='g5.xlarge', num_workers=0, state='PENDING',
+                  spark_version='17.3.x-gpu-ml-scala2.13')
+    record.update(change)
+    fake = FakeClient({'/api/2.0/clusters/get?cluster_id=' + cluster_id: record})
+    if accepted:
+        assert client.admit_cluster(fake, cluster_id, 'gpu')['node_type_id'] == 'g5.xlarge'
+    else:
+        with pytest.raises(ValueError):
+            client.admit_cluster(fake, cluster_id, 'gpu')
+
+
+def test_gpu_job_submission_revalidates_the_selected_gpu_compute(modules):
+    _, runner = modules
+    cluster_id = '0101-010101-example'
+    fake = FakeClient({'/api/2.0/clusters/get?cluster_id=' + cluster_id:
+                       dict(cluster_id=cluster_id, cluster_name='KUMO_TEST_GPU',
+                            node_type_id='g5.xlarge', num_workers=0, state='RUNNING',
+                            spark_version='17.3.x-gpu-ml-scala2.13')})
+    payload = runner.task_request(dict(cluster_id=cluster_id, accelerator='gpu'),
+                                  '/Shared/KUMO_TEST/notebook', 'a' * 12, fake)
+    assert payload['tasks'][0]['existing_cluster_id'] == cluster_id
