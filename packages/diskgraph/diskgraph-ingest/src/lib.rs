@@ -670,14 +670,37 @@ fn encoded_index_build_id(root: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
     let state: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
-    Ok(state["index_build_id"].as_str().map(str::to_owned))
+    let version = state["version"].as_u64();
+    ensure!(
+        version == Some(ENCODE_STATE_VERSION as u64),
+        "unsupported Encode state version {:?} at {}; restart as a fresh ingest",
+        version,
+        path.display()
+    );
+    let id = state["index_build_id"]
+        .as_str()
+        .ok_or_else(|| {
+            anyhow!(
+                "Encode state has no index_build_id at {}; restart as a fresh ingest",
+                path.display()
+            )
+        })?;
+    validate_index_build_id(id)?;
+    Ok(Some(id.to_owned()))
 }
 
 fn recorded_index_build_id(root: &Path) -> Result<Option<String>> {
-    let metadata_id = fs::read(root.join("index_metadata.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<DatasetMetadata>(&bytes).ok())
-        .and_then(|metadata| metadata.index_build_id);
+    let metadata_path = root.join("index_metadata.json");
+    let metadata_id = match fs::read(&metadata_path) {
+        Ok(bytes) => serde_json::from_slice::<DatasetMetadata>(&bytes)
+            .with_context(|| format!("decode index metadata: {}", metadata_path.display()))?
+            .index_build_id,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("read index metadata: {}", metadata_path.display()))
+        }
+    };
     let encoded_id = encoded_index_build_id(root)?;
     if let (Some(metadata_id), Some(encoded_id)) = (&metadata_id, &encoded_id) {
         ensure!(
@@ -896,14 +919,19 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         return Err(anyhow!("index build requires local output"));
     }
     let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
-    if let OutputTarget::Local { root, .. } = &*target {
-        if resume_from_phase.is_some() {
-            if let (Some(id), Some(recorded_id)) = (
-                options.index_build_id.as_deref(),
-                recorded_index_build_id(root)?,
-            ) {
-                ensure!(id == recorded_id, "resumed index_build_id does not match existing index");
-            }
+    let recorded_id = if let OutputTarget::Local { root, .. } = &*target {
+        let recorded_id = if resume_from_phase.is_some() {
+            recorded_index_build_id(root)?
+        } else {
+            None
+        };
+        if let (Some(id), Some(previous)) =
+            (options.index_build_id.as_deref(), recorded_id.as_deref())
+        {
+            ensure!(
+                id == previous,
+                "resumed index_build_id does not match existing index"
+            );
         }
         let matching_partial_restart = restart
             && !root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
@@ -917,7 +945,15 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             "index_build_id already has output at {}; choose a new ID or resume the existing build",
             root.display()
         );
-    }
+        recorded_id
+    } else {
+        unreachable!("validated above: ingest requires local output")
+    };
+    let index_build_id = options
+        .index_build_id
+        .clone()
+        .or(recorded_id)
+        .unwrap_or_else(diskgraph_core::metadata::new_index_build_id);
     // Invalidation belongs at the reusable ingest boundary, not only in the
     // CLI supervisor: pybind and direct Rust callers can also retry/resume.
     // Complete this synchronously before `prepare`, a fresh local wipe, phase
@@ -982,7 +1018,14 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // can reach the manifest/mirror after `ctx` has consumed its own
     // clone. Cloning an `Arc` is cheap (refcount bump).
     let target_for_finalize = std::sync::Arc::clone(&target);
-    let mut ctx = IngestContext::new(source, target, options, output, stage_sidecars)?;
+    let mut ctx = IngestContext::new(
+        source,
+        target,
+        options,
+        output,
+        stage_sidecars,
+        index_build_id,
+    )?;
     let profile_dir = ctx.profile_dir.clone();
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
@@ -2082,12 +2125,25 @@ mod tests_repopulate_helpers {
         encoded.persist_encode_state().unwrap();
 
         let mut resumed = make_ctx(source.clone(), local_target(root), 1);
+        resumed.index_build_id = "other-build".into();
+        let error = resumed.restore_encode_state().unwrap_err();
+        assert!(error.to_string().contains("resumed index_build_id"));
+
+        resumed.index_build_id = "test-build".into();
         resumed.parent_index_build_id = Some("build-b".into());
         let error = resumed.restore_encode_state().unwrap_err();
         assert!(error.to_string().contains("resumed parent_index_build_id"));
 
         resumed.parent_index_build_id = Some("build-a".into());
         resumed.restore_encode_state().unwrap();
+    }
+
+    #[test]
+    fn resume_rejects_corrupt_index_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index_metadata.json"), b"not json").unwrap();
+        let error = recorded_index_build_id(directory.path()).unwrap_err();
+        assert!(error.to_string().contains("decode index metadata"));
     }
 
     #[test]
@@ -7259,27 +7315,8 @@ impl IngestContext {
         options: IngestOptions,
         output: &str,
         stage_sidecars: HashMap<String, StageSidecarColumns>,
+        index_build_id: String,
     ) -> Result<Self> {
-        // An interrupted Index phase may already have written metadata;
-        // otherwise Encode state carries the physical build ID.
-        let resumed_id = if options.resume_from_phase.is_some() {
-            recorded_index_build_id(Path::new(output))?
-        } else {
-            None
-        };
-        let index_build_id = match options.index_build_id.as_ref() {
-            Some(id) => {
-                validate_index_build_id(id)?;
-                if let Some(previous) = &resumed_id {
-                    ensure!(
-                        id == previous,
-                        "resumed index_build_id does not match existing index"
-                    );
-                }
-                id.clone()
-            }
-            None => resumed_id.unwrap_or_else(diskgraph_core::metadata::new_index_build_id),
-        };
         let parent_index_build_id = options
             .parent_index_path
             .as_deref()
@@ -8216,6 +8253,10 @@ impl IngestContext {
                 path.display()
             ));
         }
+        ensure!(
+            state.index_build_id.as_deref() == Some(self.index_build_id.as_str()),
+            "resumed index_build_id does not match the build used by Encode"
+        );
         ensure!(
             state.parent_index_build_id == self.parent_index_build_id,
             "resumed parent_index_build_id does not match the parent used by Encode"
