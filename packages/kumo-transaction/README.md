@@ -3,7 +3,7 @@
 **Kumo Transaction**, or **TxFM**, brings transaction foundation models to Kumo Engine.
 
 This package is based on the **Transaction Foundation Model kit**, a
-reference-architecture kit for composing, training, and evaluating TxFMs. The
+reference-architecture kit for composing, training, and evaluating transaction foundation models. The
 kit is for education and solution architecture; it is not a production
 authorization, fraud-decisioning, or model-serving system.
 
@@ -11,7 +11,7 @@ Source: <https://gitlab-master.nvidia.com/globalfsiteam/fsi_samples/transaction-
 
 ## What it answers
 
-Every recipe in the kit asks the same question: does adding a TxFM embedding to
+Every recipe in the kit asks the same question: does adding a transaction foundation model embedding to
 raw features beat XGBoost on raw features alone? Three reference architectures
 answer it:
 
