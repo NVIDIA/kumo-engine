@@ -3064,7 +3064,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         iterable = DiskgraphTaskBatchIterable(
             manifest_path=self.task_manifest.runtime_manifest_path,
             stage='predict',
-            sampling_plan={'layers': []},
+            sampling_plan=SamplingPlan(),
             projections={name: [] for name in names},
             batch_size=batch_size,
             shuffle=False,

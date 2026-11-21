@@ -2130,14 +2130,16 @@ class DiskGraphSource:
         return columns[name]
 
     def _sampling_plan(
-        self, neighborhood: NeighborhoodSpec
+        self,
+        neighborhood: NeighborhoodSpec,
     ) -> tuple[SamplingPlan, dict[str, str]]:
         layers = []
         physical_relations = {}
         for layer in neighborhood.layers:
             fanouts = {}
             for traversal in layer.samples:
-                if traversal.strategy is None:
+                strategy = traversal.strategy
+                if strategy is None:
                     raise ValueError("resolve GraphSample.strategy before compiling the plan")
                 relation = self._relations[traversal.relation]
                 target_table = (
@@ -2169,9 +2171,7 @@ class DiskGraphSource:
                 physical_relations[physical] = traversal.relation
                 fanouts[physical] = self._diskgraph.FanoutSpec(
                     traversal.fanout,
-                    "temporal_most_recent"
-                    if traversal.strategy == "recent"
-                    else "uniform",
+                    "temporal_most_recent" if strategy == "recent" else "uniform",
                     "reject_plan",
                 )
             layers.append(self._diskgraph.LayerSpec(fanouts=fanouts))
