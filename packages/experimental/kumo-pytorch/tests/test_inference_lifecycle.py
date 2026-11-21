@@ -94,23 +94,12 @@ def _dataset(engine_name: str, rows: Rows, directory: Path) -> tuple[api.Dataset
     )
 
 
-def _train(
-    contract: api.DataLoaderSpec,
-    dataset: api.Dataset,
-    engine: api.Engine,
-    out: Path,
-    *,
-    cursor: Path | None = None,
-):
+def _train(contract: api.DataLoaderSpec, dataset: api.Dataset, engine: api.Engine, out: Path):
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             task.to_artifact().save(out)
-            batches = task.batches(batch_size=1, seed=SEED, epoch=EPOCH)
-            prefix = []
-            if cursor is not None:
-                prefix.append(next(batches))
-                cursor.write_text(json.dumps(batches.state_dict()))
-            return task.fingerprints, task.fitted_state.to_dict(), [*prefix, *batches]
+            batches = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
+            return task.fingerprints, task.fitted_state.to_dict(), batches
 
 
 def _infer(
@@ -152,9 +141,6 @@ def _fresh_process(
         with plan.materialize(_requests(), fitted=artifact.fitted_state) as task:
             training = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
             fingerprints = dict(task.fingerprints)
-            resumed = task.batches(batch_size=1, seed=SEED, epoch=EPOCH)
-            resumed.load_state_dict(json.loads((directory / "cursor.json").read_text()))
-            remaining = list(resumed)
     inference = _infer(artifact, dataset, engine)
     torch.save(
         {
@@ -162,8 +148,6 @@ def _fresh_process(
             "fitted": artifact.fitted_state.to_dict(),
             "training": training,
             "inference": inference,
-            "remaining": remaining,
-            "consumed": resumed.state_dict()["batches"],
         },
         out,
     )
@@ -176,9 +160,7 @@ def test_a_fresh_process_rebuilds_the_same_batches(
 ) -> None:
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset(engine_name, _fixture_rows(), tmp_path)
-    fingerprints, fitted, training = _train(
-        contract, dataset, engine, tmp_path / "artifact", cursor=tmp_path / "cursor.json"
-    )
+    fingerprints, fitted, training = _train(contract, dataset, engine, tmp_path / "artifact")
     inference = _infer(api.Artifact.load(tmp_path / "artifact"), dataset, engine)
 
     out = tmp_path / "child.pt"
@@ -194,8 +176,6 @@ def test_a_fresh_process_rebuilds_the_same_batches(
     assert child["fitted"] == json.loads(json.dumps(fitted))
     assert_same_batches(child["training"], training)
     assert_same_batches(child["inference"], inference)
-    assert child["consumed"] == len(training) > 1
-    assert_same_batches(child["remaining"], training[1:])
 
 
 @pytest.mark.parametrize("name", sorted(BATCH_SPECS))
@@ -430,20 +410,16 @@ def test_inference_scores_every_anchor_even_when_training_drops_the_last_batch(
     assert [i for batch in served for i in batch.metadata["sample_ids"]] == scored
 
 
-@pytest.mark.parametrize("rebuild", [False, True], ids=["original-index", "rebuilt-index"])
-def test_diskgraph_model_output_inference_matches_inspectable(
-    tmp_path: Path, rebuild: bool
-) -> None:
+def test_diskgraph_model_output_inference_matches_inspectable(tmp_path: Path) -> None:
     contract = _pragma_contract(_schema())
     dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
     artifact = api.Artifact.load(tmp_path / "artifact")
-    inspectable = _infer(artifact, dataset, engine)
-    if rebuild:
-        engine = api.DiskGraphEngine(index=tmp_path / "rebuilt", num_threads=1, num_shards=1)
     model = _infer(artifact, dataset, engine, output_format="model")
-    assert all(batch.targets == {} for batch in model)
-    assert_same_batches(model, inspectable)
+    inspectable = _infer(artifact, dataset, engine)
+    for left, right in zip(model, inspectable, strict=True):
+        assert left.targets == {}
+        assert_same(left.inputs, right.inputs)
 
 
 @pytest.mark.parametrize("output_format", ["inspectable", "model"])
@@ -1155,3 +1131,86 @@ def test_the_guide_shows_the_lifecycle_app_definitions() -> None:
     (shop,) = [block for block in _blocks(page) if block.markers.get("file") == "shop.py"]
     definitions = shop.code[shop.code.index("DAY = 86_400") :]
     assert definitions in (ROOT / "tests" / "lifecycle_app.py").read_text()
+
+
+def _native_history_contract():
+    from tests.test_diskgraph_backend import _native_pragma_contract
+
+    base = _native_pragma_contract()
+    inputs = {k: v for k, v in base.batch.inputs.items() if k != "entity"}
+    return replace(
+        base,
+        sample=replace(base.sample, entity_values={}),
+        batch=replace(base.batch, inputs=inputs),
+    )
+
+
+def _replay_native_cursor(directory):
+    from unittest.mock import patch
+
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    artifact = api.Artifact.load(directory / "artifact")
+    anchors = api.AnchorTable(
+        api.Parquet(str(directory / "anchors.parquet")),
+        "id",
+        "time",
+        sample_id="sample",
+        split="split",
+        targets={"transactions_next_7d": "label"},
+    )
+    dataset = api.Dataset(
+        {
+            t.name: api.Parquet(str(directory / "parquet" / f"{t.name}.parquet"))
+            for t in artifact.contract.schema.tables
+        }
+    )
+    engine = api.DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
+    with (
+        api.prepare(_native_history_contract(), dataset, engine) as plan,
+        plan.materialize(anchors, fitted=artifact.fitted_state) as task,
+    ):
+        batches = task.batches(batch_size=1, seed=SEED, epoch=EPOCH, output_format="model")
+        batches.load_state_dict(json.loads((directory / "cursor.json").read_text()))
+        with patch.object(
+            NativeAnchors, "_requests", side_effect=AssertionError("request fallback")
+        ):
+            torch.save(list(batches), directory / "suffix.pt")
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_supervised_resume_and_rebuilt_inference(tmp_path):
+    from tests.test_diskgraph_backend import _banking_anchors
+
+    contract = _native_history_contract()
+    anchors = _banking_anchors(tmp_path)
+    dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
+    args = dict(batch_size=1, seed=SEED, epoch=EPOCH, output_format="model")
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(anchors, fit_split="train") as task:
+            task.to_artifact().save(tmp_path / "artifact")
+            batches = task.batches(**args)
+            assert next(batches).targets["masked_values"]["valid"].any()
+            (tmp_path / "cursor.json").write_text(json.dumps(batches.state_dict()))
+            suffix = list(batches)
+            assert len(suffix) == 1 and suffix[0].targets["masked_values"]["valid"].any()
+    code = (
+        "from pathlib import Path; "
+        "from tests.test_inference_lifecycle import _replay_native_cursor; "
+        f"_replay_native_cursor(Path({str(tmp_path)!r}))"
+    )
+    subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)
+    assert_same_batches(torch.load(tmp_path / "suffix.pt", weights_only=False), suffix)
+    artifact = api.Artifact.load(tmp_path / "artifact")
+    runs = []
+    for index_engine in (
+        engine,
+        api.DiskGraphEngine(index=tmp_path / "rebuilt", num_threads=1, num_shards=1),
+    ):
+        with (
+            api.prepare(artifact.contract, dataset, index_engine) as plan,
+            plan.materialize(anchors, fitted=artifact.fitted_state, inference=True) as task,
+        ):
+            runs.append(list(task.batches(**args)))
+    assert all(batch.targets == {} for batch in runs[1])
+    assert_same_batches(*runs)

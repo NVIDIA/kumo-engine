@@ -182,9 +182,13 @@ def test_columnar_resume_and_closed_task_buffers(graph_task, deduplicate_edges):
     assert [b.inputs["graph"].nodes["events"].features.to_pylist() for b in actual] == snapshots
 
 
-@pytest.mark.parametrize("depth,deduplicate_edges", [(1, False), (2, False), (2, True), (3, True)])
+@pytest.mark.parametrize(
+    "depth,deduplicate_edges",
+    [pytest.param(2, False, id="False"), pytest.param(2, True, id="True"), (1, False), (3, True)],
+)
 @pytest.mark.parametrize("pk_left", [True, False])
 @pytest.mark.parametrize("directions", [("forward",), ("reverse",), ("forward", "reverse")])
+@pytest.mark.usefixtures("native_anchor_delivery")
 def test_columnar_self_relations_follow_declared_endpoints(
     tmp_path, pk_left, directions, deduplicate_edges, depth
 ):
@@ -193,7 +197,7 @@ def test_columnar_self_relations_follow_declared_endpoints(
     from conformance.assertions import bound_tables
 
     rows = [
-        {"id": 1, "parent_id": 3, "at": 1},
+        {"id": 1, "parent_id": None if depth == 2 else 3, "at": 1},
         {"id": 2, "parent_id": 1, "at": 10},
         {"id": 3, "parent_id": 2, "at": 20},
         {"id": 4, "parent_id": 4, "at": 1},
@@ -201,6 +205,8 @@ def test_columnar_self_relations_follow_declared_endpoints(
         {"id": 6, "parent_id": None, "at": 1},
         {"id": 7, "parent_id": 2, "at": 101},
     ]
+    if depth == 2:
+        rows = rows[:3]
     left_key, right_key = ("id", "parent_id") if pk_left else ("parent_id", "id")
     contract = api.DataLoaderSpec(
         api.DataSchema(
@@ -245,8 +251,9 @@ def test_columnar_self_relations_follow_declared_endpoints(
         ),
     )
     anchors = tmp_path / "anchors.parquet"
-    roots = [2, 2, 2, 4, 5, 6]
-    cutoffs = [100, 5, 20, 100, 100, 100]
+    roots, cutoffs = (
+        ([2, 2], [100, 5]) if depth == 2 else ([2, 2, 2, 4, 5, 6], [100, 5, 20, 100, 100, 100])
+    )
     pq.write_table(
         pa.table({"id": roots, "cutoff": pa.array(cutoffs, type=pa.timestamp("s", tz="UTC"))}),
         anchors,

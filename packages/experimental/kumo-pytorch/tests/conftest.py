@@ -150,3 +150,24 @@ def sample_histories() -> list[EntityHistory]:
         EntityHistory(1, 3_000, entity, events),
         EntityHistory(2, 3_000, entity, events),
     ]
+
+
+@pytest.fixture
+def native_anchor_delivery(monkeypatch):
+    """Require DiskGraph delivery without the Python request batcher."""
+    from kumo.pytorch.api import InMemoryEngine
+    from kumo.pytorch.assembly import PreparedBatchPlan
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("expected native DiskGraph delivery from Parquet anchors")
+
+    monkeypatch.setattr(InMemoryEngine, "open", unexpected)
+    monkeypatch.setattr(PreparedBatchPlan, "batches", unexpected)
+
+    def batches(task, **options):
+        assert isinstance(task._anchors, NativeAnchors)
+        monkeypatch.setattr(task._anchors, "_requests", unexpected)
+        return task.batches(output_format="model", **options)
+
+    return batches
