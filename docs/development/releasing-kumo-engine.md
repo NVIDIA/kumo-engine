@@ -33,8 +33,11 @@ Faiss is selected at install time: `faiss-gpu==1.14.3` on Linux x86-64 and
 `faiss-cpu==1.14.3` on macOS. These markers live on the engine's direct
 dependencies so merging bundled packages preserves them. This dependency
 selection does not establish wheel or runtime support. Faiss is optional on
-Linux ARM64 and experimental native Windows builds; the `cpu` extra opts into
-CPU Faiss there. Windows support for this release is WSL2 only.
+Linux ARM64 and native Windows builds; the `cpu` extra opts into CPU Faiss
+there. Native Windows x86-64 supports CPU execution, including recommendation
+retrieval with `pip install "kumo-engine[cpu]"`. Select `accelerator="cpu"`
+when training and loading models. Native Windows CUDA is deferred; WSL2
+retains the Linux x86-64 GPU route.
 
 Releases are cut from `NVIDIA/kumo-engine`: its GitHub releases trigger the
 workflows below, which attach the wheels to the release. Their `kitmaker` job
@@ -49,13 +52,12 @@ The build matrix targets `cp311-abi3-manylinux_2_34_x86_64` and
 WSL uses the Linux x86-64 wheel. All require CPython >= 3.11
 (DiskGraph's stable-ABI floor), with classifiers for 3.11–3.14. Adding build
 targets does not establish published availability or installed-wheel runtime
-qualification. Native Windows builds and tests are experimental: their wheels
-remain CI artifacts and are excluded from public release attachments and
-Kitmaker publication. The supported Windows route for this release is WSL2.
+qualification. Native Windows wheels are attached and published alongside the
+Linux and macOS wheels only after the candidate passes the required checks.
 Every wheel build also qualifies the native Windows CPU wheel on Python
 3.11–3.14 in fresh producer and consumer processes, with the `cpu` extra for
-Faiss retrieval. This check is a prerequisite for release attachment; it does
-not enable Windows publication. It exports and restores both models and
+Faiss retrieval. This check is a prerequisite for release attachment and
+Kitmaker publication. It exports and restores both models and
 snapshots after deleting the producer's temporary storage, and checks ordinary
 loader defaults without CI or synchronous-loader overrides. Results are saved
 in `engine-wheel-reload-windows-native-cpu-*` artifacts. Native Windows CUDA
@@ -134,9 +136,8 @@ platform's `release-version`.
      Labels and ranks can change only when their scores justify the change
      within that bound. The macOS wheel has no GPU smoke
      check. See the [test criteria](testing.md#finished-kumo-engine-wheel).
-   - attaches the Linux x86_64/ARM64 and macOS ARM64 wheels to the GitHub
-     release; the Linux x86_64 wheel also serves WSL2. Native Windows upload
-     routes remain disabled despite experimental build/test coverage.
+   - attaches the Linux x86_64/ARM64, macOS ARM64 and native Windows x86_64
+     wheels to the GitHub release; the Linux x86_64 wheel also serves WSL2.
 
    Before you approve the `kitmaker` job, start
    [`Kumo Engine - Desktop reload qualification`][desktop-reload] by hand with
@@ -168,6 +169,8 @@ platform's `release-version`.
 5. **Publish through Kitmaker.** The `kitmaker` job runs in the
    `kumo-engine-release` environment and waits for approval from
    `kumo-engineers`. The person who starts the run cannot approve it.
+   The Portal job reads `KITMAKER_API_TOKEN` from that environment after
+   approval; reusable-workflow callers do not need access to the token.
    It checks that the Portal project
    has the expected name and owner and that the attached wheel is the one this
    run built, has Kitmaker dry-run it, and only then publishes it to PyPI and
@@ -237,13 +240,14 @@ and takes the final platform tag from the built DiskGraph wheel. Rust, Xcode
 Command Line Tools, and CMake are required. The release workflow builds this
 wheel on a macOS ARM64 runner with the same deployment target.
 
-### Experimental native Windows builds
+### Native Windows builds
 
-These instructions are for development and CI qualification, not a supported
-installation route for this release. Use WSL2 and the Linux x86-64 wheel on
-Windows. Native Windows release uploads are disabled.
+Native Windows x86-64 supports CPU execution. Install the published wheel with
+`pip install "kumo-engine[cpu]"` for CPU Faiss retrieval, and select
+`accelerator="cpu"` when training and loading models. Use WSL2 and the Linux
+x86-64 wheel for NVIDIA GPU workloads; native Windows CUDA is deferred.
 
-Experimental native Windows x64 installations require a Microsoft Visual C++ v14 runtime
+Native Windows x64 installations require a Microsoft Visual C++ v14 runtime
 at least as recent as the build tools used for the wheel. If the runtime is
 missing or too old, install the
 [latest supported x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
@@ -292,9 +296,9 @@ The engine and GloVe release jobs call
 [Kitmaker Portal via Charon](../../.github/workflows/kitmaker-portal.yml).
 It runs on GitHub-hosted Ubuntu, opens a Teleport application tunnel to Charon
 Ferry, and authenticates each Portal request with a fresh GitHub OIDC token
-plus the Kitmaker bearer token. Both release callers explicitly forward
-`KITMAKER_API_TOKEN`, which the reusable workflow declares as required.
-Portal credentials stay in the `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
+plus the Kitmaker bearer token. The reusable workflow's caller token is optional.
+The approved Portal job resolves the required `KITMAKER_API_TOKEN` secret from
+the protected `kumo-engine-release` environment. Charon/Teleport must authorize this repository,
 workflow, and ref; authorization for cuOpt does not grant access to Kumo.
 The tunnel uses `ext-nv-prd-apps.teleport.sh:443`. The original cuOpt PR
 used an older staging proxy; its replacement is documented in

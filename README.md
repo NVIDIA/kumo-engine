@@ -37,7 +37,7 @@
 - **Training data from one query:** A predictive query generates labeled training examples at points in each entity's history. Each example sees only records timestamped at or before its point in time, with no hand-written label logic or point-in-time joins.
 - **Trains directly on relational data:** A built-in graph neural network (GNN) learns from the related records without requiring hand-built features. It handles classification, regression, forecasting, and recommendation tasks.
 - **End-to-end workflow:** Hyperparameter search, explanations, embedding export, and batch prediction are built in. Kumo Engine also works with MLflow, Databricks, SageMaker, and Snowflake to log each run, version models so scheduled prediction jobs use the one you promote, and monitor prediction drift.
-- **Runs locally or in your data platform:** Run Kumo Engine in Python on Linux, macOS, or Windows (WSL2), or in a Snowflake or Databricks notebook. Read data from, and write predictions to, local files, cloud storage, and data warehouses.
+- **Runs locally or in your data platform:** Run Kumo Engine in Python on Linux, macOS, or Windows (native CPU or WSL2 for NVIDIA GPUs), or in a Snowflake or Databricks notebook. Read data from, and write predictions to, local files, cloud storage, and data warehouses.
 - **Works with coding agents:** The bundled agent skill teaches your coding agent the Kumo Engine API, so it can build, train, and run models on your data.
 
 ## Part of NVIDIA Kumo
@@ -55,7 +55,7 @@ pip install kumo-engine
 | Requirement | Details |
 | --- | --- |
 | Python | CPython 3.11 or later |
-| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows through WSL2 (x86-64) |
+| Operating system | Linux x86-64 or ARM64 with glibc 2.34 or later, macOS 14 or later on Apple silicon, or Windows x86-64 on CPU. Windows through WSL2 also supports NVIDIA GPUs. |
 | CPU | AES and SSE2 instructions on x86-64, or AES and NEON on ARM64 |
 | GPU | An NVIDIA GPU for production workloads. The quickstart and other small datasets also run on a CPU or an Apple silicon GPU. The Apple silicon GPU needs macOS 15 or later. On macOS 14, pass `accelerator="cpu"` to `Trainer`, `Trainer.load` and `Trainer.load_from_connector`. |
 | Storage | A local NVMe SSD for production workloads. Network-attached volumes, such as Amazon EBS, make sampling much slower. |
@@ -78,7 +78,7 @@ Choose your hardware and runtime environment:
 
 - **Hardware:** [Prerequisites](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/prerequisites) · [GPU sizing](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/gpu-sizing)
 - **Setup guides:** [Linux](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/linux-machine-deployment) · [macOS](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/macos) · [Windows (WSL2)](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/windows-wsl2) · [Snowflake notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/snowflake-notebook) · [Databricks notebook](https://docs.nvidia.com/sdgm/kumo-engine/get-started-with-kumo-engine/installation/databricks-notebook)
-- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers ARM64 Linux setup, including Faiss for recommendation tasks.
+- **Platform details:** the [package README](packages/kumo-engine/README.md#installation) covers native Windows CPU installation with `kumo-engine[cpu]` and ARM64 Linux setup, including Faiss for recommendation tasks. Native Windows CUDA is deferred.
 
 ## Quickstart
 

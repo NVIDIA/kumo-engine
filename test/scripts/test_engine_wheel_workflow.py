@@ -181,10 +181,10 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         row["arch"]
         for row in JOBS["attach-to-release"]["strategy"]["matrix"]["include"]
     }
-    assert {"x86_64", "arm64"} <= release_arches
-    assert release_arches <= {"x86_64", "arm64", "aarch64"}
-    if "aarch64" in release_arches:
-        assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert release_arches == arches
+    assert "platform-qualification" in JOBS["attach-to-release"]["needs"]
+    assert next(row for row in JOBS["kitmaker"]["strategy"]["matrix"]["include"]
+                if row["arch"] == "windows-x86_64")["platform"] == "win_amd64"
     for job in ["attach-to-release", "kitmaker"]:
         published = {row["arch"] for row in JOBS[job]["strategy"]["matrix"]["include"]}
         assert published == release_arches
@@ -221,8 +221,9 @@ def test_all_platforms_require_validation_and_release_environment() -> None:
         PORTAL_WORKFLOW[True]["workflow_call"]["secrets"]["KITMAKER_API_TOKEN"][
             "required"
         ]
-        is True
+        is False
     )
+    assert portal["env"]["KITMAKER_API_TOKEN"] == "${{ secrets.KITMAKER_API_TOKEN }}"
     glove = yaml.safe_load(
         (WORKFLOW.parent / "kumo-glove-6b-50d-wheel.yml").read_text()
     )

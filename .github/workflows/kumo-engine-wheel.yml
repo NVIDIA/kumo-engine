@@ -200,7 +200,7 @@ jobs:
           grep -Eq '^test result: ok\. [1-9][0-9]* passed;' success-marker-tests.log
 
       # GitHub-hosted artifact storage, not S3: no AWS role to provision.
-      # Native Windows wheels are experimental internal CI artifacts only.
+      # Release jobs publish only after this candidate passes qualification.
       - name: Upload wheel
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -305,8 +305,7 @@ jobs:
           - arch: x86_64
           - arch: arm64
           - arch: aarch64
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
+          - arch: windows-x86_64
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -348,9 +347,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native Windows remains experimental; Windows releases use WSL.
-          # - arch: windows-x86_64
-          #   platform: win_amd64
+          - arch: windows-x86_64
+            platform: win_amd64
           - arch: aarch64
             platform: manylinux_2_34_aarch64
           - arch: x86_64

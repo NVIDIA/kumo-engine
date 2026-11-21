@@ -7,8 +7,10 @@ name: Kitmaker Portal via Charon
 on:  # yamllint disable-line rule:truthy
   workflow_call:
     secrets:
+      # Environment secrets are resolved by the protected portal job below;
+      # callers cannot read them before that job enters its environment.
       KITMAKER_API_TOKEN:
-        required: true
+        required: false
     inputs:
       project:
         type: string

@@ -7,12 +7,11 @@ Select **Kumo Engine - Build and publish wheel**, **Run workflow**, and the
 candidate branch. Manual runs upload artifacts; they do not publish a release.
 
 Qualification covers Python 3.11, 3.12, 3.13 and 3.14 on native Windows x86-64,
-Windows through WSL x86-64, and Linux ARM64: twelve independent CPU jobs.
-Native Windows jobs provide experimental build and runtime evidence only.
-For this release, Windows support is limited to WSL2; native Windows wheels
-are retained as CI artifacts but excluded from public release attachments and
-publication. A passing native job does not establish supported native Windows
-distribution.
+Windows through WSL x86-64, and Linux ARM64: twelve synthetic CPU smoke jobs
+plus four additional native Windows CPU reload jobs.
+Native Windows x86-64 CPU wheels participate in release attachment and
+publication after the required candidate checks pass. Native Windows CUDA
+support is deferred; WSL2 retains the Linux x86-64 GPU route.
 WSL installs the same Linux x86-64 wheel as ordinary Linux; it is not a
 separate wheel format. GPU availability is not a qualification requirement.
 The producer also retains the macOS ARM64 artifact and its existing checks;
@@ -24,8 +23,8 @@ checks. It copies only the smoke test and standalone environment auditor
 outside the checkout. The auditor rejects checkout imports, records origins
 for engine/core/API/PQL/DiskGraph, verifies the packaged ingestion executable,
 and records the wheel filename, SHA-256, candidate revision, Python, platform,
-and Torch version. Native Windows and Linux ARM64 must run without Faiss;
-WSL retains the wheel's existing Linux x86-64 Faiss dependency.
+and Torch version. Native Windows and Linux ARM64 synthetic smoke jobs run
+without Faiss; WSL retains the wheel's existing Linux x86-64 Faiss dependency.
 
 [smoke_platform.py](test/smoke_platform.py) creates a synthetic Parquet table,
 performs real snapshot ingestion, and selects CPU through the public
@@ -36,10 +35,20 @@ finite predictions. It reloads the same fit's saved bundle with the public
 snapshot. Reloaded entity IDs and counts must match, and prediction values must
 match within `atol=1e-4` and NumPy's default relative tolerance. The optimizer
 hook stays active throughout, requiring no additional training steps during
-either prediction. Synchronous DataLoader execution limits Windows coverage
-to zero worker processes; Unix worker pools and native Windows GPU execution
-are outside this qualification. Subprocess diagnostics are printed only for
+either prediction. This synthetic smoke uses synchronous DataLoader execution.
+Subprocess diagnostics are printed only for
 this generated fixture, preserving production error privacy.
+
+The four additional native Windows jobs install the candidate with `[cpu]` and
+run
+[desktop_reload_qualification.py](test/desktop_reload_qualification.py) on CPU.
+Its binary classification and static-link tasks train, export models and
+snapshots, terminate the producer, delete its temporary storage, and load and
+predict in fresh consumer processes. Static-link retrieval must use CPU Faiss.
+The gate checks ordinary loader defaults with CI and synchronous-loader
+overrides removed. Evidence includes the candidate revision and wheel digest
+in `engine-wheel-reload-windows-native-cpu-*` artifacts. Native CUDA and
+restricted-account execution remain outside this qualification.
 
 The WSL job checks the Linux guest kernel. A Windows host shell or ordinary
 Linux x86-64 runner cannot substitute for WSL. Consumer jobs install no Rust
@@ -50,10 +59,10 @@ results distinguish packaging failures from training failures.
 The [installed-wheel qualification run](https://github.com/NVIDIA/kumo-engine/actions/runs/41101558418)
 at `8f6c496f` passed all twelve jobs, each with four CPU optimizer steps and
 100 finite predictions. Windows native and Linux ARM64 passed without Faiss.
-This establishes runtime evidence for those artifacts, including experimental
-native Windows coverage; it does not change the WSL-only Windows release
-boundary or publish a package. Later runtime or packaging changes require
-qualification of their candidate artifacts.
+This is historical runtime evidence for those artifacts, which did not
+include native Windows Faiss retrieval or snapshot export and restore.
+It does not qualify later candidate artifacts or establish their published
+availability. The current native Windows gate covers those paths.
 
 PR checks remain a later decision after manual qualification is reliable.
 This change does not require an ARM GPU runner grant or change publication
