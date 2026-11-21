@@ -25,9 +25,9 @@ from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.diskgraph.batch_contract import (
     WIRE_VERSION,
     ArtifactIdentity,
-    BatchPayload,
     BatchRequest,
     ConsumerToken,
+    HeteroBatchPayload,
     SamplingContractError,
     content_digest,
 )
@@ -47,6 +47,7 @@ from kumo_core.diskgraph.ray_sampling import (
 
 if TYPE_CHECKING:
     from ray.actor import ActorHandle
+    from torch_geometric.data import HeteroData
 
 pytest.importorskip("ray", reason="Install kumo-core[ray] for backend tests")
 
@@ -74,7 +75,14 @@ def _invalid_request(changes: dict[str, object]) -> BatchRequest:
 
 
 def _config() -> ReplicaConfig:
-    return ReplicaConfig("runtime.json", "snapshot.json", _request().artifacts, 42, 2)
+    return ReplicaConfig(
+        "runtime.json",
+        "snapshot.json",
+        _request().artifacts,
+        42,
+        2,
+        batch_encoder=_encode_batch,
+    )
 
 
 def _batch(request: BatchRequest) -> RuntimeBatch:
@@ -109,25 +117,42 @@ def _batch(request: BatchRequest) -> RuntimeBatch:
     )
 
 
+def _encode_batch(batch: RuntimeBatch) -> HeteroData:
+    import torch
+    from torch_frame import TensorFrame
+    from torch_geometric.data import HeteroData
+
+    ids = batch.task.tt_stage_node_ids
+    graph = HeteroData()
+    graph["nodes"].n_id = torch.from_numpy(ids.to_numpy().copy()).to(torch.int64)
+    graph["nodes"].batch_size = len(ids)
+    graph["nodes"].num_sampled_nodes = [len(ids)]
+    graph["nodes"].tf = TensorFrame({}, {}, num_rows=len(ids))
+    return graph
+
+
+def _payload(request: BatchRequest) -> HeteroBatchPayload:
+    from kumo_core.diskgraph.hetero_wire import pack_python_hetero
+
+    metadata, arrays = pack_python_hetero(_encode_batch(_batch(request)))
+    return HeteroBatchPayload(request, metadata, arrays, 0.1)
+
+
 def test_request_identity_and_envelope_validation() -> None:
+    """Only the matching logical request may consume an encoded response."""
     request = _request()
     assert len(content_digest(b"manifest")) == 64
     assert request == _request()
     assert request != replace(request, consumer=replace(request.consumer, generation=1))
-    payload = BatchPayload(request, _batch(request), 0.1)
-    assert payload.validate(request) is payload.batch
+    payload = _payload(request)
+    payload.validate(request)
+    assert payload.decode(request)["nodes"].n_id.tolist() == [9, 14]
     for wrong in (
         replace(request, artifacts=replace(request.artifacts, task_digest="other")),
         replace(request, epoch=4),
     ):
         with pytest.raises(SamplingContractError, match="wrong request"):
             payload.validate(wrong)
-    with pytest.raises(SamplingContractError, match="incomplete native"):
-        BatchPayload(request, cast(RuntimeBatch, {}), 0).validate(request)
-    wrong_batch = _batch(request)
-    wrong_batch.task.tt_stage_node_ids = pa.array([14, 9], type=pa.uint64())
-    with pytest.raises(SamplingContractError, match="membership/order"):
-        BatchPayload(request, wrong_batch, 0).validate(request)
 
 
 @pytest.mark.parametrize(
@@ -180,9 +205,10 @@ def test_replica_reuses_context_without_advancing_it() -> None:
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         one = replica.sample(request)
         two = replica.sample(request)
-    assert isinstance(one, BatchPayload) and isinstance(two, BatchPayload)
-    assert one.validate(request).task.tt_stage_node_ids.equals(
-        two.validate(request).task.tt_stage_node_ids
+    assert isinstance(one, HeteroBatchPayload) and isinstance(two, HeteroBatchPayload)
+    assert (
+        one.decode(request)["nodes"].n_id.tolist()
+        == two.decode(request)["nodes"].n_id.tolist()
     )
     assert index.iter.call_count == 1
     assert context.sample_request.call_count == 2
@@ -235,7 +261,7 @@ def test_backend_descriptor_delays_actor_handle_deserialization(
 
     ray = ray_cluster
     ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
-    replicas = [ray.remote(_ArrowReplica).remote()]
+    replicas = [ray.remote(_EncodedReplica).remote()]
     config = RayBackendConfig(
         RayConnection("auto", "sampling-tests"),
         tuple(replicas),
@@ -254,7 +280,7 @@ config, request = ray.cloudpickle.loads(sys.stdin.buffer.read())
 assert not ray.is_initialized()
 client = RayRuntimeIndex('metadata-only.json', config, request.consumer)
 batch = client._sample(request)
-assert batch.task.tt_stage_node_ids.to_pylist() == [9, 14]
+assert batch["nodes"].n_id.tolist() == [9, 14]
 ray.shutdown()
 """
     try:
@@ -383,13 +409,13 @@ class _CancellationReplica(_SamplerReplica):
     def __init__(self, gate: ActorHandle[_CancellationGate]) -> None:
         self.gate = gate
 
-    def sample(self, request: BatchRequest) -> BatchPayload:
+    def sample(self, request: BatchRequest) -> HeteroBatchPayload:
         """Hold native capacity independently of the returned ObjectRef state."""
         import ray
 
         ray.get(self.gate.started.remote())
         ray.get(self.gate.wait_release.remote())
-        return BatchPayload(request, _batch(request), 0)
+        return _payload(request)
 
     def drain(self) -> None:
         """Acknowledge that the serial native call exited."""
@@ -414,19 +440,19 @@ def test_request_rejects_mutable_or_noninteger_identity(
         _invalid_request(changes).validate()
 
 
-class _ArrowReplica:
-    """Return complete raw batches with no coordinator calls."""
+class _EncodedReplica:
+    """Return encoded graphs with no coordinator calls."""
 
-    def sample(self, request: BatchRequest) -> BatchPayload:
-        """Return the requested Arrow envelope."""
-        return BatchPayload(request, _batch(request), 0)
+    def sample(self, request: BatchRequest) -> HeteroBatchPayload:
+        """Return the requested MessagePack/NumPy envelope."""
+        return _payload(request)
 
     def drain(self) -> None:
         """Acknowledge prior serial calls."""
 
 
-class _FailingReplica(_ArrowReplica):
-    def sample(self, request: BatchRequest) -> BatchPayload:
+class _FailingReplica(_EncodedReplica):
+    def sample(self, request: BatchRequest) -> HeteroBatchPayload:
         """Simulate confirmed actor death."""
         import os
 
@@ -452,11 +478,11 @@ def _actors(ray: ModuleType, count: int = 2) -> tuple[SamplerActor, ...]:
 
     ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
     return tuple(
-        cast(SamplerActor, ray.remote(_ArrowReplica).remote()) for _ in range(count)
+        cast(SamplerActor, ray.remote(_EncodedReplica).remote()) for _ in range(count)
     )
 
 
-def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: ModuleType) -> None:
+def test_real_actor_tracking_and_encoded_delivery(ray_cluster: ModuleType) -> None:
     """Keep one request per actor and refill the actor whose result was consumed."""
     ray = ray_cluster
     replicas = _actors(ray)
@@ -467,16 +493,12 @@ def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: ModuleType) 
         with pytest.raises(SamplingUnavailableError, match="consume a result"):
             pool.submit(_request())
         second_actor = pool.pending[two]
-        received = cast(BatchPayload, pool.get(two)).validate(_request())
-        assert (
-            received.raw_features["nodes"]
-            .record_batches[0]
-            .equals(_batch(_request()).raw_features["nodes"].record_batches[0])
-        )
+        received = cast(HeteroBatchPayload, pool.get(two)).decode(_request())
+        assert received["nodes"].n_id.tolist() == [9, 14]
         three = pool.submit(_request())
         assert pool.pending[three] == second_actor
-        cast(BatchPayload, pool.get(one)).validate(_request())
-        cast(BatchPayload, pool.get(three)).validate(_request())
+        cast(HeteroBatchPayload, pool.get(one)).validate(_request())
+        cast(HeteroBatchPayload, pool.get(three)).validate(_request())
         assert not pool.pending and len(pool.available) == 2
     finally:
         pool.close()
@@ -496,7 +518,7 @@ def test_real_actor_death_retries_on_survivor(ray_cluster: ModuleType) -> None:
     )
     try:
         batch = client._sample(_request())
-        assert batch.task.tt_stage_node_ids.to_pylist() == [9, 14]
+        assert batch["nodes"].n_id.tolist() == [9, 14]
         assert list(client.samplers.available) == [1]
     finally:
         client.close()
@@ -510,13 +532,13 @@ def test_direct_call_has_no_control_rpcs() -> None:
     actor = MagicMock()
     ref = actor.sample.remote.return_value
     ray.cloudpickle.loads.return_value = (actor,)
-    ray.get.return_value = BatchPayload(_request(), _batch(_request()), 0)
+    ray.get.return_value = _payload(_request())
     config = RayBackendConfig(
         RayConnection("unused", "unused"), b"actors", _request().artifacts, 42, 2, "job"
     )
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)
-        cast(BatchPayload, pool.get(pool.submit(_request()))).validate(_request())
+        cast(HeteroBatchPayload, pool.get(pool.submit(_request()))).validate(_request())
         pool.close()
     actor.sample.remote.assert_called_once_with(_request())
     ray.get.assert_called_once_with(ref, timeout=config.request_timeout)
@@ -581,7 +603,7 @@ def test_cancellation_drains_native_work_before_reuse(
         with pytest.raises(SamplingUnavailableError):
             pool.get(result)
         restarted = _SamplerPool(_backend((replica,)))
-        cast(BatchPayload, restarted.get(restarted.submit(_request()))).validate(
+        cast(HeteroBatchPayload, restarted.get(restarted.submit(_request()))).validate(
             _request()
         )
         restarted.close()
@@ -623,3 +645,27 @@ def test_replica_reuses_equal_native_plans_and_evicts_old_contexts() -> None:
     replica.sample(replace(request, options=third))
     assert index.iter.call_count == 3
     assert [options for options, _ in replica.contexts] == [request.options, third]
+
+
+def test_replica_rejects_missing_encoder() -> None:
+    """Actor startup must not silently select raw delivery."""
+    config = _config()
+    object.__setattr__(config, "batch_encoder", None)
+    with pytest.raises(SamplingContractError, match="encoder"):
+        config.verify()
+
+
+def test_replica_rejects_wrong_sample_ids_before_encoding() -> None:
+    """Validate native seed membership before invoking the configured encoder."""
+    request = _request()
+    replica = _SamplerReplica.__new__(_SamplerReplica)
+    encoder = MagicMock()
+    replica.config = replace(_config(), batch_encoder=encoder)
+    replica.index = MagicMock()
+    replica.contexts = []
+    context = MagicMock()
+    context.sample_request.return_value = _batch(replace(request, seed_ids=(14, 9)))
+    replica.index.iter.return_value = context, 2
+    with pytest.raises(SamplingContractError, match="membership/order"):
+        replica.sample(request)
+    encoder.assert_not_called()

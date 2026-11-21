@@ -17,7 +17,6 @@ torch = pytest.importorskip("torch")
 
 from diskgraph.runtime_batch import RuntimeBatch
 from kumo_core.diskgraph.batch_contract import (
-    BatchPayload,
     HeteroBatchPayload,
     SamplingContractError,
 )
@@ -186,23 +185,19 @@ def test_actor_uses_existing_python_encoder_and_emits_separate_buffers() -> None
         response.decode(replace(request, epoch=request.epoch + 1))
 
 
-def test_reference_client_rejects_wrong_response_mode() -> None:
-    """Raw and encoded entry points cannot silently consume the wrong response type."""
+def test_reference_client_requires_encoded_response() -> None:
+    """The trainer consumes encoded graphs and rejects legacy raw responses."""
     request = _request()
     metadata, arrays = pack_python_hetero(_graph())
     encoded = HeteroBatchPayload(request, metadata, arrays, 0.1)
     client = RayRuntimeIndex.__new__(RayRuntimeIndex)
     with patch.object(client, "_receive", return_value=encoded):
-        _assert_graph(client._sample_hetero(request), _graph())
-        with pytest.raises(SamplingContractError, match="iter_hetero"):
-            client._sample(request)
+        _assert_graph(client._sample(request), _graph())
     with (
-        patch.object(
-            client, "_receive", return_value=BatchPayload(request, _batch(request), 0.1)
-        ),
+        patch.object(client, "_receive", return_value=_batch(request)),
         pytest.raises(SamplingContractError, match="encoded graph"),
     ):
-        client._sample_hetero(request)
+        client._sample(request)
 
 
 def test_wire_rejects_extra_edge_attributes() -> None:
