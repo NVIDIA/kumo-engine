@@ -14,6 +14,12 @@ use std::{collections::VecDeque, sync::Arc};
 mod errors;
 pub use errors::{Result, RuntimeError};
 
+/// Native traversal plans and feature projections keyed by neighborhood name.
+pub type NeighborhoodPlans = std::collections::BTreeMap<
+    String,
+    (SamplingPlan, std::collections::HashMap<String, Vec<String>>),
+>;
+
 /// Task-owned, sparse-on-disk length metadata. Zero denotes an uncomputed row;
 /// history count is stored plus one, so an empty computed history is distinct.
 /// Only the requested u32 fields are mapped; no stage-sized private Vec exists.
@@ -1295,7 +1301,7 @@ impl RuntimeIndex {
     pub fn iter(
         &self,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: SamplingPlan,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1325,7 +1331,7 @@ impl RuntimeIndex {
         // will actually consume`. Resolved ONCE in `build()` into a
         // `ResolvedProjection` shared by every batch this iterator yields.
         //
-        // A plain parameter rather than a key inside `sampling_plan_json`:
+        // A separate parameter rather than a field of `SamplingPlan`:
         // `SamplingPlan` describes the TRAVERSAL, is embedded in
         // `BatchSamplingRequest`, is deep-cloned per batch and is bincode-
         // serialized -- none of which should be true of a caller-intent hint
@@ -1355,7 +1361,7 @@ impl RuntimeIndex {
             Arc::clone(&self.engine),
             self.namespace.clone(),
             stage_table,
-            sampling_plan_json,
+            sampling_plan,
             num_workers,
             worker_id,
             shuffle,
@@ -1393,7 +1399,7 @@ impl RuntimeBatchIterator {
         engine: Arc<DiskGraphEngine>,
         namespace: String,
         stage_table: String,
-        sampling_plan_json: String,
+        sampling_plan: SamplingPlan,
         num_workers: u64,
         worker_id: u64,
         shuffle: bool,
@@ -1538,8 +1544,6 @@ impl RuntimeBatchIterator {
             weighted_seed_sampling_json,
             bucket_extension_root,
         })?;
-        let sampling_plan: SamplingPlan = serde_json::from_str(&sampling_plan_json)
-            .map_err(|e| RuntimeError::config(format!("Invalid plan JSON: {e}")))?;
         let pseudo_time = PseudoTimeSeed::for_stage(
             reader.as_ref(),
             &stage_table,
@@ -1675,7 +1679,7 @@ impl RuntimeBatchIterator {
         let specs: std::collections::BTreeMap<String, serde_json::Value> =
             serde_json::from_str(specs)
                 .map_err(|e| RuntimeError::config(format!("invalid neighborhoods: {e}")))?;
-        self.neighborhoods = specs
+        let specs = specs
             .into_iter()
             .map(|(name, value)| {
                 let plan = serde_json::from_value(value["plan"].clone()).map_err(|e| {
@@ -1683,14 +1687,21 @@ impl RuntimeBatchIterator {
                 })?;
                 let projections = serde_json::from_value(value["projections"].clone())
                     .map_err(|e| RuntimeError::config(format!("invalid projection {name}: {e}")))?;
-                Ok((
-                    name,
-                    plan,
-                    Arc::new(self.engine.resolve_projection(&projections)),
-                ))
+                Ok((name, (plan, projections)))
             })
             .collect::<Result<_>>()?;
+        self.with_neighborhood_plans(specs);
         Ok(())
+    }
+
+    /// Resolve owned native plans once, sharing this iterator's selected rows.
+    pub fn with_neighborhood_plans(&mut self, specs: NeighborhoodPlans) {
+        self.neighborhoods = specs
+            .into_iter()
+            .map(|(name, (plan, projections))| {
+                (name, plan, Arc::new(self.engine.resolve_projection(&projections)))
+            })
+            .collect();
     }
 
     pub fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {

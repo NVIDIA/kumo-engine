@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from diskgraph import RuntimeIndex, SplitSpec, execute_tt_ingest, ingest
+from diskgraph.sampling_plan import SamplingPlan
 from diskgraph.tt_artifacts import (
     build_train_table_artifacts_for_existing_table,
 )
@@ -103,7 +104,7 @@ def make_dataset(manifest, stages, cap, workers, **kwargs):
     return DiskgraphTaskBatchIterable(
         manifest_path=manifest,
         stage=stages,
-        sampling_plan={'layers': []},
+        sampling_plan=SamplingPlan(),
         batch_size=5,
         shuffle=True,
         drop_last=False,
@@ -135,7 +136,7 @@ def test_grouped_loader_consumes_exact_global_prefix(temporal_manifest, workers,
     index = RuntimeIndex(temporal_manifest, rnd_seed=17, num_threads=1)
     expected = []
     for epoch in range(2):
-        native, _ = index.iter(stage='train', sampling_plan={'layers': []},
+        native, _ = index.iter(stage='train', sampling_plan=SamplingPlan(),
                                num_workers=1, worker_id=0, shuffle=True,
                                epoch=epoch, batch_size=5,
                                entity_node_type='users',

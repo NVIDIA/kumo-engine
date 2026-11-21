@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import diskgraph
+import pytest
 from diskgraph import (
     DiskgraphConfigError,
     FeatureSchemaInputs,
@@ -19,6 +18,7 @@ from diskgraph import (
     build_node_prediction_task_dataset_bundle,
     task_stage_size,
 )
+from diskgraph.sampling_plan import SamplingPlan
 
 
 def make_runtime_batch_iterator(dataset_ref, **kwargs):
@@ -193,7 +193,7 @@ def test_native_iterator_surface_validates_worker_inputs_before_opening_native_i
         make_runtime_batch_iterator(
             manifest_path,
             stage="train",
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             num_workers=2,
             worker_id=2,
             shuffle=False,
@@ -206,7 +206,7 @@ def test_native_iterator_surface_validates_worker_inputs_before_opening_native_i
         make_runtime_batch_iterator(
             manifest_path,
             stage="train",
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             num_workers=1,
             worker_id=0,
             shuffle=True,
@@ -219,7 +219,7 @@ def test_native_iterator_surface_validates_worker_inputs_before_opening_native_i
         make_runtime_batch_iterator(
             manifest_path,
             stage="train",
-            sampling_plan={"layers": []},
+            sampling_plan=SamplingPlan(),
             num_workers=1,
             worker_id=0,
             shuffle=True,
@@ -264,10 +264,11 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
 
     monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
 
+    plan = SamplingPlan()
     iterator, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=plan,
         num_workers=2,
         worker_id=1,
         shuffle=True,
@@ -279,7 +280,7 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
 
     # RuntimeIndex ctor args: 0=parent_root, 1=tt_ref, 2=rnd_seed,
     #   3=num_threads.
-    # RuntimeIndex.iter args: 0=stage_table, 1=plan_json, 2=num_workers,
+    # RuntimeIndex.iter args: 0=stage_table, 1=sampling_plan, 2=num_workers,
     #   3=worker_id, 4=shuffle, 5=rnd_seed, 6=epoch, 7=batch_size,
     #   8=drop_last
     assert isinstance(iterator, FakeIterator)
@@ -287,6 +288,7 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
     assert captured.index_args[0] == "/idx"
     assert captured.index_args[1] == "train_tables/tt_user"
     assert captured.args[0] == "tt_user__train"
+    assert captured.args[1] is plan
     assert captured.args[4:8] == (True, 123, 7, 4)
     assert captured.args[8] is True
 
@@ -334,7 +336,7 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -397,7 +399,7 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -476,7 +478,7 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -544,7 +546,7 @@ def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
     make_runtime_batch_iterator(
         str(manifest_path),
         stage="train",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -588,7 +590,7 @@ def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeyp
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
         stage="predict",
-        sampling_plan={"layers": []},
+        sampling_plan=SamplingPlan(),
         num_workers=1,
         worker_id=0,
         shuffle=False,

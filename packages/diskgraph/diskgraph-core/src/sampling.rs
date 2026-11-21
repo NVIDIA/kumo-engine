@@ -100,14 +100,14 @@ pub struct NegativeSamplingSpec {
 }
 
 /// The definition of a sampling traversal, organized by layers (hops).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SamplingPlan {
     /// Ordered list of layers. Index 0 corresponds to the traversal from Seed -> Hop 1.
     pub layers: Vec<LayerSpec>,
 }
 
 /// Configuration for a single hop in the traversal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayerSpec {
     /// Fanout configuration per edge type (e.g., "User__Click__Item").
     pub fanouts: HashMap<String, FanoutSpec>,
@@ -116,7 +116,7 @@ pub struct LayerSpec {
 }
 
 /// Fanout and selection strategy for a specific edge type at a specific layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FanoutSpec {
     /// Maximum number of neighbors to sample.
     pub fanout: u32,
@@ -127,7 +127,7 @@ pub struct FanoutSpec {
 }
 
 /// Policy used when a plan references keys (time/weight) but the relation lacks them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AbsentKeyPolicy {
     /// Fail the request if the required keys are missing.
@@ -137,7 +137,7 @@ pub enum AbsentKeyPolicy {
 }
 
 /// Strategy for selecting neighbors.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SamplingMode {
     /// Random uniform selection.
@@ -153,7 +153,7 @@ pub enum SamplingMode {
 }
 
 /// Configurable weighting functions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Weighting {
     /// w = exp(-lambda * delta_seconds)

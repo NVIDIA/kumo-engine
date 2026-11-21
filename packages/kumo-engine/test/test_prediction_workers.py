@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from diskgraph.sampling_plan import SamplingPlan
 from kumo_core import prediction
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.task_dataset import DiskgraphTaskManifest
@@ -355,7 +356,7 @@ def test_shards_with_different_loader_workers_cover_seeds_once(
     seeds = []
     for shard, workers in enumerate(local_workers):
         dataset = DiskgraphLightningDataModule(
-            predict_manifest, {}, sampling_plan={'layers': []},
+            predict_manifest, {}, sampling_plan=SamplingPlan(),
             train_batch_size=4, eval_batch_size=4,
             runtime_num_workers=len(local_workers), runtime_worker_id=shard,
             num_workers=workers,

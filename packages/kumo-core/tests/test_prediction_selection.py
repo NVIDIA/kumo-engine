@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import torch
+from diskgraph import SamplingPlan
 from kumo_core.diskgraph import lightning_data
 from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
 from kumo_core.features.stores.feature import FeatureStore
@@ -24,7 +25,7 @@ def module(tmp_path):
          'task_type': 'static_link_prediction'}, {},
         {'graph_index_path': str(tmp_path)})
     return DiskgraphLightningDataModule(
-        manifest, {}, sampling_plan={'layers': []}, train_batch_size=2,
+        manifest, {}, sampling_plan=SamplingPlan(), train_batch_size=2,
         eval_batch_size=2, base_seed=17,
         runtime_options={'disjoint': True, 'fused': True},
         resolve_entity_node_type='users', resolve_target_node_type='items')
@@ -51,7 +52,8 @@ def test_prediction_discovery_skips_model_and_features(monkeypatch, module):
     assert selected.tolist() == [5, 11, 20]
     assert mapping.mappings == {'first': ['2', '0', '1']}
     assert mapping.orig_mappings == {'first': [1007, 1007, 1009]}
-    assert calls[0]['sampling_plan'] == {'layers': []}
+    assert isinstance(calls[0]['sampling_plan'], SamplingPlan)
+    assert calls[0]['sampling_plan'].layers == ()
     assert calls[0]['projections'] == {'users': [], 'items': []}
     assert calls[0]['max_batches'] == 2
     assert calls[0]['replay'] is False

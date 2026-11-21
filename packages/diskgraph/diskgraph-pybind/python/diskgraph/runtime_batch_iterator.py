@@ -22,7 +22,7 @@ import os
 from typing import Any, Mapping, Optional
 
 from ._exceptions import DiskgraphConfigError
-
+from .sampling_plan import SamplingPlan
 
 TaskDatasetRef = str
 
@@ -133,12 +133,6 @@ def _extension_ref_from_stage_path(parent_root: str, stage_index_path: str) -> s
         "or <graph_index_path>/pred_tables/: "
         f"parent={abs_parent}, stage={abs_stage}"
     )
-
-
-def _sampling_plan_json(sampling_plan: Any) -> str:
-    if isinstance(sampling_plan, str):
-        return sampling_plan
-    return json.dumps(sampling_plan or {"layers": []}, sort_keys=True)
 
 
 def _weighted_seed_sampling_json(
@@ -353,7 +347,7 @@ class RuntimeIndex:
     def iter(
         self,
         stage: str,
-        sampling_plan: Any,
+        sampling_plan: SamplingPlan,
         num_workers: int,
         worker_id: int,
         shuffle: bool,
@@ -382,12 +376,13 @@ class RuntimeIndex:
     ) -> tuple[Any, int]:
         """Iterate one (stage, epoch, shard) of this index.
 
-        Arguments match :func:`make_runtime_batch_iterator` except that
         ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
         defaults to the one the index was opened with, which is what callers
         almost always want; pass it explicitly only to vary the shuffle
-        independently of the engine seed. Static LP cutoffs default to the
-        manifest stage. Prediction can set ``disable_pseudo_time=True``.
+        independently of the engine seed. ``sampling_plan`` accepts a
+        :class:`diskgraph.SamplingPlan`; other types raise ``TypeError``.
+        Static LP cutoffs default to the manifest stage.
+        Prediction can set ``disable_pseudo_time=True``.
 
         ``projections`` maps a node type to the columns the caller will
         actually consume, and is resolved once when the iterator is built:
@@ -410,26 +405,36 @@ class RuntimeIndex:
         identical, so the parameter NAME is the only thing that makes a new
         caller against an old wheel fail loudly instead of silently reverting
         to select-all.
+
+        Raises:
+            TypeError: If ``sampling_plan`` is not a ``SamplingPlan``.
         """
+        if not isinstance(sampling_plan, SamplingPlan):
+            raise TypeError("sampling_plan must be a diskgraph.SamplingPlan")
         seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
         _validate_worker_iterator_inputs(
-            batch_size=batch_size, num_workers=num_workers, worker_id=worker_id,
-            shuffle=shuffle, rnd_seed=seed, epoch=epoch,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            worker_id=worker_id,
+            shuffle=shuffle,
+            rnd_seed=seed,
+            epoch=epoch,
         )
         self._resolve()
         ref = self._tables.get(stage)
         if ref is None:
             raise DiskgraphConfigError(
-                f"stage {stage!r} not present in manifest.stages")
+                f"stage {stage!r} not present in manifest.stages"
+            )
         if self.stage_size(stage) == 0:
-            raise DiskgraphConfigError(
-                f"stage {stage!r} not available on this dataset")
+            raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
 
         extension_ref = _extension_ref_from_stage_path(
-            self._parent_root, ref["index_path"])
+            self._parent_root, ref["index_path"]
+        )
         iterator = self._index_for(extension_ref).iter(
             ref["table_name"],
-            _sampling_plan_json(sampling_plan),
+            sampling_plan,
             int(num_workers),
             int(worker_id),
             bool(shuffle),

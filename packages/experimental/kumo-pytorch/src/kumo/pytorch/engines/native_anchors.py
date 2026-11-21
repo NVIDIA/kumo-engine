@@ -21,6 +21,8 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
+from diskgraph import SamplingPlan
+
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
@@ -300,7 +302,7 @@ class NativeAnchors:
         shuffle=False,
         rank=0,
         world_size=1,
-        plan=None,
+        plan: SamplingPlan | None = None,
         projections=None,
         history=None,
         neighborhoods=None,
@@ -308,7 +310,7 @@ class NativeAnchors:
     ):
         iterator, _ = self._runtime.iter(
             stage["name"],
-            plan or {"layers": []},
+            self._source._diskgraph.SamplingPlan() if plan is None else plan,
             world_size,
             rank,
             shuffle,
@@ -323,7 +325,7 @@ class NativeAnchors:
             disable_pseudo_time=True,
         )
         if neighborhoods:
-            iterator.with_neighborhoods(json.dumps(neighborhoods))
+            iterator.with_neighborhoods(neighborhoods)
         if history is not None:
             plan_json, merges_json = history
             iterator.with_history(
