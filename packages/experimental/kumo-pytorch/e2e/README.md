@@ -23,7 +23,7 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 
 ## Pinned nightly datasets
 
-The scheduled CPU suite on `main` stages every `e2e/datasets/pins/*.json` manifest on the runner before pytest.
+The CPU suite on same-repository pull requests and scheduled runs on `main` stages every `e2e/datasets/pins/*.json` manifest on the runner before pytest. Fork pull requests run the same pytest command with private staging disabled.
 For a new dataset, add a manifest with its S3 keys, sizes and SHA-256 hashes. The nightly role needs read access to those keys.
 To fill the local cache, run these commands from the package root with the AWS CLI and read access. A complete cache works offline.
 

@@ -47,11 +47,23 @@ jobs:
 
   cpu:
     name: kumo-pytorch-tests
-    if: github.event_name != 'schedule' || github.repository != 'NVIDIA/kumo-engine' || github.ref != 'refs/heads/main'
     needs: diskgraph-wheel
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    steps: &package_steps
+    permissions: {contents: read, id-token: write}
+    environment:
+      name: >-
+        ${{ github.repository == 'NVIDIA/kumo-engine' &&
+          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) &&
+          'gha-kumo-workflow-tests' || 'kumo-pytorch-public' }}
+      deployment: false
+    env:
+      STAGE_PINNED_DATASETS: >-
+        ${{ github.repository == 'NVIDIA/kumo-engine' &&
+          ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+           (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
         with:
           persist-credentials: false
@@ -96,18 +108,6 @@ jobs:
           uvx ruff@0.17.3 format --check .
       - name: Package build
         run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
-
-  nightly:
-    name: kumo-pytorch-tests (nightly datasets)
-    if: github.event_name == 'schedule' && github.repository == 'NVIDIA/kumo-engine' && github.ref == 'refs/heads/main'
-    needs: diskgraph-wheel
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    environment: {name: gha-kumo-workflow-tests, deployment: false}
-    permissions: {contents: read, id-token: write}
-    env:
-      STAGE_PINNED_DATASETS: 'true'
-    steps: *package_steps
 
   hm-lifecycle:
     if: github.event_name == 'schedule'
