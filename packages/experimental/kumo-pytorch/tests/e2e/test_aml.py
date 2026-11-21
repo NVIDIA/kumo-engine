@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from itertools import accumulate
+from math import log
 from pathlib import Path
 from typing import NamedTuple
 
@@ -22,13 +23,21 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, l01_loss, prepare_hi_small, prepare_l01
+from e2e.datasets.aml import (
+    E01_MANIFEST,
+    L01_MANIFEST,
+    l01_loss,
+    li_head_loss,
+    prepare_hi_small,
+    prepare_li_medium,
+)
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
 from tests.e2e.history import (
     check_masked_history,
     check_normalized_aggregates,
     check_scalar_history,
+    scalar_token,
 )
 from tests.test_inference_lifecycle import assert_same
 
@@ -179,6 +188,45 @@ def _check_graph(task, batch, histories):
         for name, binding in bindings.items()
     }
     assert_same(nodes["transactions"]["features"], expected_features)
+
+
+@pytest.fixture(scope="module")
+def li_heads_source(tmp_path_factory):
+    root = tmp_path_factory.mktemp("li-heads")
+    files = {name: root / f"{name}.parquet" for name in ("anchors", "mapping", "transactions")}
+    cutoff = _seconds("2024/03/01 00:00")
+    entity = '["li-medium","account","1","A"]'
+    clock = pa.timestamp("ns", tz="UTC")
+    anchors = {
+        "sample_id": ["excluded", "train-0", "train-1", "train-2", "valid-0", "test-0"],
+        "entity_id": [entity] * 6,
+        "as_of_time": pa.array([cutoff * 10**9] * 6, clock),
+        "graph_as_of_time": pa.array([(cutoff - 1) * 10**9] * 6, clock),
+        "split": ["train"] * 6,
+        "forecast_split": [None, "train", "train", "train", "valid", "test"],
+        "next_delay_seconds": [999.0, 0.0, 2.5, None, 86400.0, None],
+        "next_format": ["EXCLUDED", "wire", "ach", None, "card", None],
+        "involvement": [1, 1, 0, None, 1, None],
+    }
+    observed = pa.array([(cutoff - 60) * 10**9], clock)
+    transactions = {
+        "timestamp": ["2024/02/29 23:59", "2024/03/01 00:00"],
+        "from_bank": ["1", "1"],
+        "to_bank": ["1", "1"],
+        "from_account": ["A", "A"],
+        "to_account": ["A", "A"],
+        "amount_paid": ["1.25", "20"],
+        "amount_received": ["1.00", "18"],
+        "payment_currency": ["USD", "EUR"],
+        "receiving_currency": ["EUR", "USD"],
+        "payment_format": ["wire", "card"],
+    }
+    pq.write_table(pa.table(anchors), files["anchors"])
+    pq.write_table(
+        pa.table({"entity_id": [entity], "first_observed_time": observed}), files["mapping"]
+    )
+    pq.write_table(pa.table(transactions), files["transactions"])
+    return files, cutoff
 
 
 @pytest.fixture(scope="module")
@@ -383,7 +431,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
         L01_MANIFEST, "li-medium", positions, "next_amount", "next_currency"
     )
     account_ids, events, _ = _source_history(files, anchors)
-    spec, data, table = prepare_l01(files, tmp_path / "prepared", anchor_rows=positions)
+    spec, data, table = prepare_li_medium(files, tmp_path / "prepared", anchor_rows=positions)
     answers = {"train": {}, "valid": {}, "test": {}}
     histories = {}
     counts = {}
@@ -457,6 +505,74 @@ def test_li_medium_l01_combined_forecast(tmp_path):
                 },
                 currency_ids,
             )
+
+
+@pytest.mark.parametrize(
+    "binding,labels,score,loss_sums",
+    [
+        ("L02", [0.0, 2.5, 0.0, 86400.0, 0.0], 0.5, [1.625, 86399.0, 0.0]),
+        ("L03", [3, 2, 0, 1, 0], [0.0, log(2), log(3), log(4)], [log(25 / 3), log(5), 0.0]),
+        ("L04", [1.0, 0.0, 0.0, 1.0, 0.0], log(3), [log(16 / 3), log(4 / 3), 0.0]),
+    ],
+    ids=["l02-delay", "l03-format", "l04-involvement"],
+)
+def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score, loss_sums):
+    files, cutoff = li_heads_source
+    spec, data, table = prepare_li_medium(
+        files, tmp_path / "prepared", anchor_rows=range(6), binding=binding
+    )
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(spec, data, engine) as plan,
+        plan.materialize(table, fit_split="train", encoder_cutoff=cutoff - 1) as task,
+    ):
+        assert task.count() == 5
+        if binding == "L03":
+            assert dict(task.target("label").field(name="value").encoder.entries) == {
+                "ach": 2,
+                "wire": 3,
+            }
+        if binding == "L04":
+            # All six fields of the prior self-transfer survive without corruption.
+            fields = task.output("history").bindings.values()
+            source = ("self", 1.25, "USD", 1.0, "EUR", "wire")
+            tokens = [
+                scalar_token(field.encoder, task.spaces["history"], value)
+                for field, value in zip(fields, source, strict=True)
+            ]
+        valid = torch.tensor([True, True, False, True, False])
+        splits = (("train", slice(3)), ("valid", slice(3, 4)), ("test", slice(4, 5)))
+        for (split, rows), expected_loss in zip(splits, loss_sums, strict=True):
+            (batch,) = task.batches(split=split, batch_size=3, output_format="model")
+            size = len(labels[rows])
+            meta = batch.metadata
+            assert list(meta["sample_ids"]) == [f"{split}-{i}" for i in range(size)]
+            assert meta["as_of_time"].tolist() == [cutoff - int(binding == "L03")] * size
+            requests = meta["request_metadata"]
+            assert [r["anchor_row_position"] for r in requests] == list(range(1, 6)[rows])
+            assert {r["prediction_time_ns"] for r in requests} == {cutoff * 10**9}
+            assert_same(
+                batch.targets,
+                {"label": {"values": torch.tensor(labels[rows]), "valid": valid[rows]}},
+            )
+            if binding == "L02":
+                assert set(batch.inputs) == {"history"}
+                assert batch.inputs["history"]["valid"].sum(dim=1).tolist() == [10] * size
+            elif binding == "L03":
+                assert set(batch.inputs) == {"graph"}
+                assert batch.inputs["graph"]["nodes"]["transactions"]["ids"].tolist() == [0] * size
+            else:
+                assert set(batch.inputs) == {"history", "history_calendar", "history_timing"}
+                assert batch.inputs["history"]["value_ids"].tolist() == tokens * size
+
+            prediction = torch.tensor([score] * size, requires_grad=True)
+            total, count = li_head_loss(batch, binding, prediction)
+            assert count == valid[rows].sum().item()
+            assert total.item() == pytest.approx(expected_loss)
+            if binding == "L02":
+                assert total.dtype == torch.float64
+            total.backward()
+            assert_same(prediction.grad.reshape(size, -1).any(dim=1), valid[rows])
 
 
 def _check_role_windows(schema, data, table, engine, histories):

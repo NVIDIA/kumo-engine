@@ -27,6 +27,12 @@ _CLOCK = pa.timestamp("ms", tz="UTC")
 _AMOUNTS = ("amount_paid", "amount_received")
 _CATEGORIES = ("payment_currency", "receiving_currency", "payment_format")
 _ROLES = ("sender", "receiver")
+_LI_TARGETS = {
+    "L01": {"amount": ("next_amount", "numerical"), "currency": ("next_currency", "categorical")},
+    "L02": {"label": ("next_delay_seconds", "numerical")},
+    "L03": {"label": ("next_format", "categorical")},
+    "L04": {"label": ("involvement", "binary")},
+}
 _TRANSACTIONS = pa.schema(
     {
         "transaction_id": pa.int64(),
@@ -187,7 +193,7 @@ def _history_contract(contract, fanout, binding, graph_clock):
     )
     fields = {name: api.Field(name) for name in encoders}
     fields["__event_time"] = api.Field("event_time")
-    masked = binding == "E03"
+    pragma = binding in {"E03", "L04"}
     if graph_clock:
         # Graph anchors execute at T-1s, but ages refer to prediction time T.
         fields.update(
@@ -196,12 +202,12 @@ def _history_contract(contract, fanout, binding, graph_clock):
             age_range=api.Derived("add", ("__execution_age", "__prediction_offset")),
         )
     else:
-        fields["age_seconds" if masked else "age_range"] = api.EventTimeDelta("seconds")
+        fields["age_seconds" if pragma else "age_range"] = api.EventTimeDelta("seconds")
     for name in CALENDAR:
         fields[name] = api.Derived(api.CalendarPart(name), ("__event_time",))
     rows = api.Rows((relation.name,), api.TimeWindow("event_time", stop=0 if graph_clock else -1))
     events = {"transactions": api.EventSpec(rows, fields)}
-    batch = history_batch(events, encoders, fanout, masked=masked, max_tokens=len(encoders))
+    batch = history_batch(events, encoders, fanout, masked=pragma, max_tokens=len(encoders))
     if contract.batch.targets:
         batch = replace(batch, targets=contract.batch.targets)
     sample = replace(contract.sample, events=events)
@@ -243,30 +249,46 @@ def prepare_hi_small(
 prepare_e01 = prepare_hi_small
 
 
-def prepare_l01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int]):
-    """Prepare LI Medium's next outgoing amount and currency."""
+def prepare_li_medium(
+    files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="L01"
+):
+    """Prepare an LI Medium stored-target binding from the supplied source tables."""
+    if binding not in _LI_TARGETS:
+        raise ValueError(f"Unknown LI Medium binding: {binding}")
     targets = {
-        "amount": ("next_amount", "float32", api.Raw()),
-        "currency": ("next_currency", "string", api.Vocabulary()),
+        name: (column, "string", api.Vocabulary())
+        if kind == "categorical"
+        else (column, "float32", api.Raw())
+        for name, (column, kind) in _LI_TARGETS[binding].items()
     }
-    return _prepare_aml(files, directory, anchor_rows, targets, "L01")
+    return _prepare_aml(files, directory, anchor_rows, targets, binding)
+
+
+prepare_l01 = prepare_li_medium
+
+
+def li_head_loss(batch, binding, prediction, name="label"):
+    """Return the loss sum and eligible count for one stored LI head."""
+    _, kind = _LI_TARGETS[binding][name]
+    target = batch.targets[name]
+    if kind != "categorical" and prediction.shape != target["values"].shape:
+        raise ValueError(f"Expected one scalar {name} prediction per anchor")
+    eligible = target["valid"] & ~batch.metadata["is_padding"]
+    values, scores = target["values"][eligible], prediction[eligible]
+    if kind == "numerical":
+        total = F.smooth_l1_loss(scores.double(), values.double(), reduction="sum", beta=1.0)
+    elif kind == "categorical":
+        total = F.cross_entropy(scores, values, reduction="sum")
+    else:
+        total = F.binary_cross_entropy_with_logits(scores, values, reduction="sum")
+    return total, values.numel()
 
 
 def l01_loss(batch, amount_prediction, currency_logits):
     """Return the sum of head means, each head's loss sum, and its eligible count."""
-    amount, currency = batch.targets["amount"], batch.targets["currency"]
-    if amount_prediction.shape != amount["values"].shape:
-        raise ValueError("Expected one scalar amount prediction per anchor")
-    real = ~batch.metadata["is_padding"]
-    amount_valid, currency_valid = real & amount["valid"], real & currency["valid"]
-    amounts, currencies = amount["values"][amount_valid], currency["values"][currency_valid]
-    sums = {
-        "amount": F.smooth_l1_loss(
-            amount_prediction[amount_valid].double(), amounts.double(), reduction="sum", beta=1.0
-        ),
-        "currency": F.cross_entropy(currency_logits[currency_valid], currencies, reduction="sum"),
-    }
-    counts = {"amount": amounts.numel(), "currency": currencies.numel()}
+    sums, counts = {}, {}
+    for name, prediction in (("amount", amount_prediction), ("currency", currency_logits)):
+        sums[name], counts[name] = li_head_loss(batch, "L01", prediction, name)
     loss = sum(sums[name] / max(count, 1) for name, count in counts.items())
     return loss, sums, counts
 
@@ -282,7 +304,7 @@ def _prepare_aml(files, directory, anchor_rows, targets, binding):
     mapping = pq.read_table(files["mapping"], columns=["entity_id", "first_observed_time"])
     mapping = mapping.sort_by("entity_id")
     account_ids = {key: i for i, key in enumerate(mapping["entity_id"].to_pylist())}
-    graph_clock = binding in {"E01", "E02", "L01"}
+    graph_clock = binding in {"E01", "E02", "L01", "L03"}
     selection, roots = _select_anchors(
         files["anchors"], anchor_rows, account_ids, targets, graph_clock
     )
@@ -293,7 +315,7 @@ def _prepare_aml(files, directory, anchor_rows, targets, binding):
             files["transactions"], work / "transactions.parquet", roots, account_ids
         )
         contract = _contract(fanout, targets)
-        if binding != "E01":
+        if binding not in {"E01", "L03"}:
             _write_account_events(work)
             contract = _history_contract(contract, fanout, binding, graph_clock)
         mapping = mapping.take(ids)
