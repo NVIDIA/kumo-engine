@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "bucket": "kumo-test-dataplane-bucket",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "source_manifest_sha256": "169455eac395e84508d83e575f5ed4f9e1489693421b0ae43f7227db31a151a1",
+  "viewer_weekly_counts_sha256": "0cfd4c5889986129aaba777567706c0f5ea8f3661a175d447ebf785e4f1d882a",
+  "objects": {
+    "viewers": {
+      "key": "scale-bench/datasets/streaming/25B/viewers/part-00000.parquet",
+      "size": 532182025,
+      "sha256": "5921b55dbe3d84ee615183b0cf8232abd307588035e91f9d380ccce66583836a"
+    },
+    "sessions": {
+      "key": "scale-bench/datasets/streaming/25B/sessions/part-00000.parquet",
+      "size": 1383213968,
+      "sha256": "88e55762d7625f67d19173ecb3d412812f55e48e08b6c6e7542c924ce5b1b183"
+    }
+  }
+}

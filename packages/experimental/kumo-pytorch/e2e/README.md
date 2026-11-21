@@ -30,7 +30,7 @@ To fill the local cache, run these commands from the package root with the AWS C
 ```bash
 export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
 python -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$KUMO_PYTORCH_DATA_ROOT"
-python -m pytest -q tests/e2e/test_aml.py tests/e2e/test_synthetic.py tests/e2e/test_mbd.py
+python -m pytest -q tests/e2e/test_{aml,synthetic,mbd,streaming}.py
 ```
 
 Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
@@ -51,6 +51,11 @@ Both use transaction parts 00171 (fold 0), 00014 (fold 3), and 00196 (fold 4). M
 totaling 1,029,139,562 bytes. M03 adds only the v1 anchor pair (963,739,896 bytes) to the shared nightly cache.
 To verify the extract against all clients and transactions, add the original shards to the file mapping
 using their paths from `extraction.json` and call `read_mbd(files, manifest)` again.
+
+Streaming 25B stages the original viewer and session `part-00000.parquet` files (1,915,395,993 bytes).
+`load_streaming(root)` selects viewers 3 and 873 and 36 sessions for the three forecast weeks.
+The digest in [`streaming-25b.json`](datasets/pins/streaming-25b.json) hashes 10,000 rows sorted by viewer ID,
+each encoded as four little-endian int64 values (viewer ID, training count, validation count, test count).
 
 ## The H&M-shaped dataset
 

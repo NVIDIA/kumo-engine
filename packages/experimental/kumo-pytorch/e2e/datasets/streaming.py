@@ -6,12 +6,36 @@
 
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from e2e.datasets import bind_tables
+from e2e.datasets.staging import verify
 from kumo.pytorch import api
+
+T01_MANIFEST = Path(__file__).parent / "pins" / "streaming-25b.json"
+
+
+def load_streaming(root):
+    """Project the two verified T01 viewers and their forecast and historical graph rows."""
+    files = verify(root, T01_MANIFEST)
+    selected = [("viewer_id", "in", [3, 873])]
+    # Viewer 3 has no earlier history. Include all ties at viewer 873's 32nd graph second.
+    history = [*selected, ("start_time", ">", datetime(2025, 8, 18, 10, 43, 18))]
+    columns = [
+        "session_id",
+        "viewer_id",
+        "start_time",
+        "watch_seconds",
+        "completion_frac",
+        "device_type",
+    ]
+    return (
+        pq.read_table(files["viewers"], columns=["viewer_id", "signup_time"], filters=selected),
+        pq.read_table(files["sessions"], columns=columns, filters=history, use_threads=False),
+    )
 
 
 def prepare_streaming(directory, cohort_size):

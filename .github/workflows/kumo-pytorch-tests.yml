@@ -64,7 +64,9 @@ jobs:
           # Intersect the role's existing grants with read-only dataset and anchor access.
           inline-session-policy: >-
             {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",
-            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*"]}]}
+            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*",
+            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/datasets/streaming/25B/viewers/part-00000.parquet",
+            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/datasets/streaming/25B/sessions/part-00000.parquet"]}]}
           output-env-credentials: false
           output-credentials: true
           unset-current-credentials: true
