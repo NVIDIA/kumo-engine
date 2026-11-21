@@ -25,7 +25,6 @@ from kumo.pytorch.api import (
     Field,
     Fields,
     IdSpace,
-    InMemoryEngine,
     InMemoryRows,
     Input,
     OccurrencesOf,
@@ -41,8 +40,8 @@ from kumo.pytorch.api import (
     TimeWindow,
     Tokens,
     Vocabulary,
-    prepare,
 )
+from tests.native_fixtures import prepare_rows, request_anchor_table
 
 
 def _contract(order="fields", keep="first", maximum=None, layout=Padded()):
@@ -156,8 +155,8 @@ def test_projection_repeats_explicit_age_per_piece_and_follows_truncation(
         }
     )
     requests = (SampleRequest("one", 1, 100), SampleRequest("empty", 2, 100))
-    with prepare(contract=contract, dataset=dataset, engine=InMemoryEngine()) as plan:
-        task = plan.materialize(requests)
+    with prepare_rows(contract=contract, dataset=dataset) as plan:
+        task = plan.materialize(request_anchor_table(requests, schema=plan.contract.schema))
         batch = next(task.batches(batch_size=2))
         values = batch.inputs["ages"]["age"]
         if isinstance(layout, Packed):

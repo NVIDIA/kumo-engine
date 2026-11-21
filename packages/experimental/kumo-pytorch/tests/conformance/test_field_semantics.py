@@ -32,14 +32,13 @@ from kumo.pytorch.api import (
     check,
     prepare,
 )
+from tests.native_fixtures import request_anchor_table
 
 
 def pytest_generate_tests(metafunc):
     if "engine_name" in metafunc.fixturenames:
         selected = metafunc.config.getoption("--conformance-engine")
-        metafunc.parametrize(
-            "engine_name", ("in_memory", "diskgraph") if selected == "all" else (selected,)
-        )
+        metafunc.parametrize("engine_name", ("diskgraph",) if selected == "all" else (selected,))
 
 
 def test_calendar_timing_outputs_have_only_explicit_values(engine_name):
@@ -47,9 +46,9 @@ def test_calendar_timing_outputs_have_only_explicit_values(engine_name):
     with (
         bound_case(case, engine_name) as (dataset, engine),
         prepare(case.contract, dataset, engine) as plan,
-        plan.materialize(case.requests) as task,
+        plan.materialize(request_anchor_table(case.requests, schema=plan.contract.schema)) as task,
     ):
-        batch = next(task.batches(case.requests, batch_size=3))
+        batch = next(task.batches(batch_size=3))
         forbidden = {"timestamps", "elapsed_seconds", "auxiliary", "hour", "weekday", "day", "age"}
         assert not forbidden & set(batch.inputs["history"])
         assert not forbidden & set(batch.inputs["history"]["sequence"])
@@ -96,7 +95,7 @@ def test_complete_reuse_never_fits_or_grows(engine_name):
     with (
         bound_case(case, engine_name) as (dataset, engine),
         prepare(case.contract, dataset, engine) as plan,
-        plan.materialize(case.requests) as task,
+        plan.materialize(request_anchor_table(case.requests, schema=plan.contract.schema)) as task,
     ):
         saved = task.fitted_state
         before = copy.deepcopy(saved.to_dict())
@@ -110,9 +109,11 @@ def test_complete_reuse_never_fits_or_grows(engine_name):
         patch(
             "kumo.pytorch.assembly.fit_encoder", side_effect=AssertionError("refitted reused state")
         ),
-        plan.materialize(case.requests, fitted=saved) as task,
+        plan.materialize(
+            request_anchor_table(case.requests, schema=plan.contract.schema), fitted=saved
+        ) as task,
     ):
-        batch = next(task.batches(case.requests, batch_size=3))
+        batch = next(task.batches(batch_size=3))
         assert task.fitted_state.to_dict() == before
         assert saved.to_dict() == before
         assert_projection(
@@ -136,7 +137,9 @@ def test_a_stored_column_fits_on_its_table_rows_not_the_fitting_anchors(engine_n
     with (
         bound_case(replace(case, tables=tables), engine_name) as (dataset, engine),
         prepare(case.contract, dataset, engine) as plan,
-        plan.materialize(requests, fit_split="train") as task,
+        plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task,
     ):
         binding = task.output("entity").field(name="amount")
         amounts = [row["amount"] for row in tables["users"] if row["amount"] is not None]
@@ -187,10 +190,12 @@ def test_exposure_warning_names_overlap_and_masks_only_named_input(engine_name):
             warnings.simplefilter("always")
             with (
                 prepare(contract, dataset, engine) as plan,
-                plan.materialize(case.requests) as task,
+                plan.materialize(
+                    request_anchor_table(case.requests, schema=plan.contract.schema)
+                ) as task,
             ):
                 with warnings.catch_warnings(record=True) as during_batches:
-                    batch = next(task.batches(case.requests, batch_size=2))
+                    batch = next(task.batches(batch_size=2))
                 assert not during_batches
                 assert_projection(
                     batch.inputs["entity"]["value_ids"],

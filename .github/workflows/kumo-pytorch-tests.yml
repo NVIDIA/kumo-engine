@@ -54,8 +54,8 @@ jobs:
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-      - name: Golden cases on the in-memory engine
-        run: python -m conformance --engine in_memory
+      - name: Golden cases on DiskGraph
+        run: python -m conformance --engine diskgraph
       - name: Test suite
         run: python -m pytest -q
       - name: Style

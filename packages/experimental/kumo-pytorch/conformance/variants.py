@@ -37,7 +37,6 @@ from kumo.pytorch.api import (
     Graph,
     GraphLayer,
     GraphSample,
-    InMemoryEngine,
     Input,
     NeighborhoodSource,
     NeighborhoodSpec,
@@ -52,7 +51,7 @@ from kumo.pytorch.api import (
     TimeWindow,
 )
 
-Engine = InMemoryEngine | DiskGraphEngine
+Engine = DiskGraphEngine
 Binding = Callable[[Dataset, Engine], tuple[Dataset, Engine]]
 #: What a strategy runs after the preview: the batches it must deliver, or refuse.
 Run = Callable[[Task, tuple[SampleRequest, ...]], Iterable[Batch]]
@@ -174,11 +173,11 @@ def _remote(dataset: Dataset, engine: Engine) -> tuple[Dataset, Engine]:
 
 
 def _two_ranks(task: Task, requests: tuple[SampleRequest, ...]) -> Iterable[Batch]:
-    return task.batches(requests, rank=0, world_size=2)
+    return task.batches(rank=0, world_size=2)
 
 
 def _model(task: Task, requests: tuple[SampleRequest, ...]) -> Iterable[Batch]:
-    return task.batches(requests, batch_size=8, output_format="model")
+    return task.batches(batch_size=8, output_format="model")
 
 
 def _raw_string(contract: DataLoaderSpec) -> DataLoaderSpec:
@@ -197,7 +196,7 @@ def _bound(case: GeneratedCase, bind: Binding) -> Variant:
 
 
 VARIANTS: Mapping[str, Callable[[GeneratedCase], Variant]] = {
-    # Refused by DiskGraph at check(); the reference runs them.
+    # Refused by DiskGraph at check(); keep each refusal explicit.
     "active_interval": _active_interval,
     "clock_override": lambda case: _device_variant(
         case,

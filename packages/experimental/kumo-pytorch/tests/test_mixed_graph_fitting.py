@@ -99,12 +99,12 @@ def _contract(schema, shared, target):
     )
 
 
-@pytest.mark.parametrize("anchor_table", [False, True], ids=["requests", "parquet"])
+@pytest.mark.parametrize("row_group_size", [1, 2], ids=["single-row-groups", "two-row-groups"])
 @pytest.mark.parametrize(
     "shared,target", [(False, "external"), (True, "computed"), (False, "aligned")]
 )
 def test_mixed_fitting_keeps_columnar_values_and_matches_records(
-    history_data, tmp_path, monkeypatch, anchor_table, shared, target
+    history_data, tmp_path, monkeypatch, row_group_size, shared, target
 ):
     schema, dataset, _memory, index, original = history_data
     contract = _contract(schema, shared, target)
@@ -115,30 +115,28 @@ def test_mixed_fitting_keeps_columnar_values_and_matches_records(
     requests.append(
         api.SampleRequest(99, 1, 100, split="valid", targets=(api.TargetValue("label", "heldout"),))
     )
-    anchors = requests
-    if anchor_table:
-        path = tmp_path / "anchors.parquet"
-        pq.write_table(
-            pa.table(
-                {
-                    "sample": [request.sample_id for request in requests],
-                    "entity": [request.entity_id for request in requests],
-                    "time": [request.as_of_time for request in requests],
-                    "split": [request.split for request in requests],
-                    "label": [request.targets[0].value for request in requests],
-                }
-            ),
-            path,
-            row_group_size=2,
-        )
-        anchors = api.AnchorTable(
-            api.Parquet(str(path)),
-            sample_id="sample",
-            entity_id="entity",
-            as_of_time="time",
-            split="split",
-            targets={"label": "label"},
-        )
+    path = tmp_path / "anchors.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "sample": [request.sample_id for request in requests],
+                "entity": [request.entity_id for request in requests],
+                "time": [request.as_of_time for request in requests],
+                "split": [request.split for request in requests],
+                "label": [request.targets[0].value for request in requests],
+            }
+        ),
+        path,
+        row_group_size=row_group_size,
+    )
+    anchors = api.AnchorTable(
+        api.Parquet(str(path)),
+        sample_id="sample",
+        entity_id="entity",
+        as_of_time="time",
+        split="split",
+        targets={"label": "label"},
+    )
     # Exercise chunk boundaries without manufacturing a large fitting population.
     monkeypatch.setattr(assembly, "_FIT_CHUNK", 2)
     with api.prepare(contract, dataset, api.DiskGraphEngine(index=index, num_threads=1)) as plan:

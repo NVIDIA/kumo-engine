@@ -150,7 +150,7 @@ def test_engine_assertions_receive_differently_ordered_json_contracts(monkeypatc
     monkeypatch.setattr(
         test_guarantees, "assert_answer", lambda case, _engine: contracts.append(case.contract)
     )
-    test_guarantees.test_public_behavior("C-CONTRACT-001", "in_memory")
+    test_guarantees.test_public_behavior("C-CONTRACT-001", "diskgraph")
     assert len(contracts) == 3
     assert {tuple(contract.sample.entity_values) for contract in contracts} == {
         ("a_second", "z_first"),

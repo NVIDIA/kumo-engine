@@ -6,7 +6,7 @@
 
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from unittest.mock import patch
@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from conformance.assertions import PropertyFailure, bound_tables
-from conformance.generate import GeneratedCase, Row, _pairs_of, required_pairs
+from conformance.generate import GeneratedCase, _pairs_of, required_pairs
 from conformance.graph_cases import (
     EXPANSION,
     GRAPH_CHECKS,
@@ -39,112 +39,201 @@ from conformance.sequence_cases import (
 )
 from kumo.pytorch.api import (
     DataLoaderSpec,
-    DataSchema,
     Dataset,
+    DiskGraphEngine,
     EventTimeDelta,
-    InMemoryEngine,
-    InMemoryRows,
     SampleSpec,
 )
-from kumo.pytorch.contract.sample import GraphSample
-from kumo.pytorch.engine import GraphRoot
-from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
+from tests.native_fixtures import directory, parquet_dataset
 
 
-class WrongSampler(InMemoryGraphSampler):
-    """The reference graph sampler with exactly one deliberate defect."""
+class Wrong(DiskGraphEngine):
+    """Real native execution with one deliberate retrieval or output fault."""
 
-    def __init__(self, schema: DataSchema, tables: Mapping[str, Sequence[Row]], engine: "Wrong"):
-        super().__init__(schema, tables)
-        self.engine = engine
-
-    def _neighbors(self, row, current_table, traversal: GraphSample, root: GraphRoot, seed, epoch):
-        defect = self.engine.defect
-        if defect == "future_visible":
-            root = replace(root, cutoff=root.cutoff + 10**6)
-        if defect == "fanout_plus_one":
-            traversal = replace(traversal, fanout=traversal.fanout + 1)
-        if defect in ("tied_second_hop_dropped", "late_beyond_tied_first_hop"):
-            if current_table == "users":
-                self._note_tie(row, current_table, traversal, root, seed, epoch)
-            elif root.sample_id in self.engine.tied:
-                if defect == "tied_second_hop_dropped":
-                    return super()._neighbors(row, current_table, traversal, root, seed, epoch)[
-                        0
-                    ], []
-                if self.engine.opened > 1:
-                    root = replace(root, cutoff=root.cutoff + 10**6)
-        if defect not in ("row_order_ties", "unstable_ties", "older_on_ties"):
-            return super()._neighbors(row, current_table, traversal, root, seed, epoch)
-        everything = replace(traversal, fanout=10**6)
-        table, rows = super()._neighbors(row, current_table, everything, root, seed, epoch)
-        position = {id(candidate): i for i, candidate in enumerate(self._tables[table])}
-        flip = -1 if defect == "unstable_ties" and self.engine.sampled % 2 else 1
-        clock = self._traversal_clock(traversal, table)
-        rows.sort(
-            key=lambda candidate: (candidate[clock], -flip * position[id(candidate)]), reverse=True
-        )
-        fanout = traversal.fanout
-        if defect == "older_on_ties" and len(rows) > fanout:
-            limit = rows[fanout - 1][clock]
-            if rows[fanout][clock] == limit:
-                rows = [candidate for candidate in rows if candidate[clock] != limit]
-        return table, rows[:fanout]
-
-    def _note_tie(self, row, current_table, traversal: GraphSample, root: GraphRoot, seed, epoch):
-        everything = replace(traversal, fanout=10**6)
-        table, rows = super()._neighbors(row, current_table, everything, root, seed, epoch)
-        clocks = [candidate[self._traversal_clock(traversal, table)] for candidate in rows]
-        fanout = traversal.fanout
-        if len(clocks) > fanout and clocks[fanout - 1] == clocks[fanout]:
-            self.engine.tied.add(root.sample_id)
-
-    def batch(self, *arguments, **keywords):
-        self.engine.sampled += 1
-        return super().batch(*arguments, **keywords)
-
-    def _edge_output(self, spec, edge_pairs):
-        if self.engine.defect == "repeated_edges":
-            edge_pairs = {name: pairs + pairs for name, pairs in edge_pairs.items()}
-        output = super()._edge_output(spec, edge_pairs)
-        if self.engine.defect == "reversed_edges":
-            for edge in output.values():
-                edge["index"] = edge["index"].flip(0)
-                edge["source_type"], edge["destination_type"] = (
-                    edge["destination_type"],
-                    edge["source_type"],
-                )
-        return output
-
-
-class Wrong(InMemoryEngine):
-    """The reference engine with one defect in graph sampling or event retrieval."""
-
-    def __init__(self, defect: str):
-        super().__init__()
+    def __init__(self, defect):
+        super().__init__(index=directory() / "index", num_threads=1, num_shards=1)
         self.defect = defect
         self.opened = self.sampled = 0
-        self.tied: set[str] = set()
+        self.tied = set()
+        self.graph_calls = Counter()
 
-    def open(self, dataset: Dataset, schema: DataSchema):
+    def open(self, dataset, schema):
+        import pyarrow.parquet as pq
+
         self.opened += 1
-        tables = {name: list(source.rows) for name, source in dataset.tables.items()}
+        tables = {
+            name: pq.read_table(binding.path).to_pylist()
+            for name, binding in dataset.tables.items()
+        }
         dropped = self.defect == "first_order_dropped" or (
             self.defect == "unstable_rows" and self.opened % 2
         )
         if dropped and "orders" in tables:
             tables["orders"] = tables["orders"][1:]
-        source = super().open(Dataset({n: InMemoryRows(r) for n, r in tables.items()}), schema)
-        source._graph = WrongSampler(schema, tables, self)
-        build = source.build
-        shift = {"future_visible": 10**6, "off_by_one": 1}.get(self.defect, 0)
+            dataset = parquet_dataset(schema, tables, root=directory())
+        graph_future = "orders" not in tables and (
+            self.defect == "future_visible"
+            or (self.defect == "future_after_reopen" and self.opened > 1)
+        )
+        if graph_future:
+            from datetime import timedelta
+
+            for table in schema.tables:
+                if table.time_column in table.columns:
+                    for row in tables[table.name]:
+                        row[table.time_column] -= timedelta(seconds=10**6)
+            dataset = parquet_dataset(schema, tables, root=directory())
+        source = super().open(dataset, schema)
+        build, graph, sampling_plan = source.build, source.sample_graph_batch, source._sampling_plan
 
         def shifted(spec, requests):
+            from datetime import datetime, timedelta
+
             if self.defect == "delta_in_seconds":
                 spec = _in_seconds(spec)
-            return build(spec, [replace(r, as_of_time=r.as_of_time + shift) for r in requests])
+            shift = {"future_visible": 10**6, "off_by_one": 1}.get(self.defect, 0)
+            return build(
+                spec,
+                [
+                    replace(
+                        r,
+                        as_of_time=r.as_of_time
+                        + (
+                            timedelta(seconds=shift)
+                            if isinstance(r.as_of_time, datetime)
+                            else shift
+                        ),
+                    )
+                    for r in requests
+                ],
+            )
+
+        def altered_plan(neighborhood):
+            layers = list(neighborhood.layers)
+            if self.defect == "fanout_plus_one":
+                layers = [
+                    replace(
+                        layer,
+                        samples=tuple(replace(hop, fanout=hop.fanout + 1) for hop in layer.samples),
+                    )
+                    for layer in layers
+                ]
+            if self.defect == "tied_second_hop_dropped":
+                layers = layers[:1]
+            return sampling_plan(replace(neighborhood, layers=tuple(layers)))
+
+        def corrupted(sample, spec, state, runtime):
+            self.sampled += 1
+            call_key = tuple(runtime["task"]["tt_stage_node_ids"].to_pylist())
+            self.graph_calls[call_key] += 1
+            if self.defect == "tied_second_hop_dropped" or graph_future:
+                self.tied.update(call_key)
+            output = graph(sample, spec, state, runtime)
+            if self.defect == "late_after_shops" or (
+                self.defect == "late_beyond_tied_first_hop" and self.opened > 1
+            ):
+                import torch
+
+                # Append a real joined future event at hop three. The users/events
+                # edges and their first-hop clocks remain byte-for-byte unchanged.
+                events, shops = output["nodes"]["events"], output["nodes"]["shops"]
+                cutoffs = runtime["task"]["seed_timestamps"].to_pylist()
+                edge = next(
+                    edge
+                    for edge in output["edges"].values()
+                    if {edge["source_type"], edge["destination_type"]} == {"shops", "events"}
+                )
+                for shop_index, (shop_id, owner) in enumerate(
+                    zip(shops["ids"].tolist(), shops["batch"].tolist(), strict=True)
+                ):
+                    selected = {
+                        identity
+                        for identity, batch_owner in zip(
+                            events["ids"].tolist(), events["batch"].tolist(), strict=True
+                        )
+                        if batch_owner == owner
+                    }
+                    future = next(
+                        (
+                            row
+                            for row in tables["events"]
+                            if row["shop_id"] == shop_id
+                            and row["at"].timestamp() > cutoffs[owner]
+                            and row["event_id"] not in selected
+                        ),
+                        None,
+                    )
+                    if future is None:
+                        continue
+                    event_index = len(events["ids"])
+                    events["ids"] = torch.cat(
+                        (
+                            events["ids"],
+                            torch.tensor([future["event_id"]], dtype=events["ids"].dtype),
+                        )
+                    )
+                    events["batch"] = torch.cat(
+                        (events["batch"], torch.tensor([owner], dtype=events["batch"].dtype))
+                    )
+                    pair = (
+                        [shop_index, event_index]
+                        if edge["source_type"] == "shops"
+                        else [event_index, shop_index]
+                    )
+                    edge["index"] = torch.cat(
+                        (edge["index"], torch.tensor(pair, dtype=edge["index"].dtype)[:, None]),
+                        dim=1,
+                    )
+                    self.tied.add(call_key[owner])
+                    break
+            if self.defect == "older_on_ties":
+                events = output["nodes"]["events"]
+                rows = {row["event_id"]: row for row in tables["events"]}
+                owners = events["batch"].tolist()
+                ids = events["ids"].tolist()
+                for owner in set(owners):
+                    positions = [i for i, value in enumerate(owners) if value == owner]
+                    selected = [rows[ids[i]] for i in positions]
+                    oldest = min(row["at"] for row in selected)
+                    if not any(
+                        row["user_id"] == selected[0]["user_id"]
+                        and row["at"] == oldest
+                        and row["event_id"] not in ids
+                        for row in tables["events"]
+                    ):
+                        continue
+                    older = [
+                        row
+                        for row in tables["events"]
+                        if row["user_id"] == selected[0]["user_id"]
+                        and row["at"] < oldest
+                        and row["event_id"] not in ids
+                    ]
+                    if older:
+                        events["ids"][positions[-1]] = min(older, key=lambda row: row["at"])[
+                            "event_id"
+                        ]
+                        break
+            for edge in output["edges"].values():
+                if self.defect == "repeated_edges":
+                    import torch
+
+                    edge["index"] = torch.cat([edge["index"], edge["index"]], dim=1)
+                elif self.defect == "reversed_edges":
+                    edge["index"] = edge["index"].flip(0)
+                    edge["source_type"], edge["destination_type"] = (
+                        edge["destination_type"],
+                        edge["source_type"],
+                    )
+                elif (self.defect == "unstable_ties" and self.graph_calls[call_key] % 2) or (
+                    self.defect == "row_order_ties" and self.opened > 1
+                ):
+                    edge["index"] = edge["index"][:, :-1]
+            return output
 
         source.build = shifted
+        source._sampling_plan = altered_plan
+        source.sample_graph_batch = corrupted
         return source
 
 
@@ -165,14 +254,18 @@ def _in_seconds(spec: SampleSpec) -> SampleSpec:
 
 
 def _binding(stand_in: Wrong, replaces: str):
-    """Stand in for one engine of `bound_tables`; the other stays the real reference."""
+    """Bind the real native engine with a deliberate fault."""
 
     @contextmanager
     def binding(
         contract: DataLoaderSpec, tables, engine_name: str, *, refusal=False, parts=1, types=None
-    ) -> Iterator[tuple[Dataset, InMemoryEngine]]:
-        with bound_tables(contract, tables, "in_memory", refusal=refusal) as (dataset, engine):
-            yield dataset, stand_in if engine_name == replaces else engine
+    ) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
+        with bound_tables(
+            contract, tables, "diskgraph", refusal=refusal, parts=parts, types=types
+        ) as (dataset, engine):
+            stand_in.index = engine.index
+            stand_in.num_shards, stand_in.num_threads = engine.num_shards, engine.num_threads
+            yield dataset, stand_in
 
     return binding
 
@@ -180,7 +273,7 @@ def _binding(stand_in: Wrong, replaces: str):
 def _graph_case(name: str, **dimensions: object) -> GeneratedCase:
     return next(
         case
-        for case in graph_batch(0, "in_memory", name)
+        for case in graph_batch(0, "diskgraph", name)
         if all(case.dimensions[key] == value for key, value in dimensions.items())
     )
 
@@ -189,45 +282,109 @@ UNTIED = {"time.graph_ties": "distinct"}
 TIED = {"time.graph_ties": "tied"}
 #: Property -> (case dimensions, engine replaced, defect, expected failure).
 WRONG_ENGINES = {
-    "graph_differential": (UNTIED, "diskgraph", "fanout_plus_one", "vs reference changed graphs"),
+    "graph_expected": (
+        UNTIED,
+        "diskgraph",
+        "fanout_plus_one",
+        "exceed fanout|most recent|layer-by-layer",
+    ),
     "graph_inference_exact": (
         UNTIED,
         "diskgraph",
-        "future_visible",
+        "future_after_reopen",
         "future rows changed diskgraph's graphs",
     ),
-    "graph_point_in_time": (UNTIED, "in_memory", "future_visible", "after the cutoff"),
+    "graph_point_in_time": (UNTIED, "diskgraph", "future_visible", "after the cutoff"),
     "graph_structure": (
         {"schema_shape.graph_path": "one_hop"},
-        "in_memory",
+        "diskgraph",
         "fanout_plus_one",
         "exceed fanout",
     ),
-    "graph_edge_uniqueness": ({}, "in_memory", "repeated_edges", "edges repeat within a sample"),
-    "graph_determinism": (TIED, "in_memory", "unstable_ties", "the same index again changed"),
-    "graph_tie_invariance": (TIED, "in_memory", "row_order_ties", "row and request order changed"),
-    "sequence_differential": ({}, "diskgraph", "off_by_one", "vs reference changed sequences"),
+    "graph_edge_uniqueness": ({}, "diskgraph", "repeated_edges", "edges repeat within a sample"),
+    "graph_determinism": (TIED, "diskgraph", "unstable_ties", "the same index again changed"),
+    "graph_tie_invariance": (
+        UNTIED,
+        "diskgraph",
+        "row_order_ties",
+        "row and request order.*changed",
+    ),
+    "sequence_expected": ({}, "diskgraph", "off_by_one", "fixture answers changed sequences"),
     "sequence_point_in_time": (
         {"contract.event_delta_unit": "minutes"},
-        "in_memory",
+        "diskgraph",
         "future_visible",
         "after the cutoff",
     ),
-    "sequence_permutation": ({}, "in_memory", "first_order_dropped", "row and request order"),
+    "sequence_permutation": (
+        {},
+        "diskgraph",
+        "first_order_dropped",
+        "original|row and request order",
+    ),
 }
+
+
+def _tied_sequence_fixture():
+    from conformance.sequence_cases import sequence_contract
+    from kumo.pytorch.api import SampleRequest
+
+    template = sequence_batch(0, "diskgraph", "sequence_expected")[0]
+    dims = {
+        **template.dimensions,
+        "contract.event_order": "ascending",
+        "contract.event_limit": "limited",
+        "contract.event_max": "limited",
+        "contract.event_keep": "first",
+        "contract.event_delta_unit": "seconds",
+    }
+    case = replace(
+        template,
+        contract=sequence_contract(dims),
+        requests=(SampleRequest("a", 1, 9),),
+        tables={
+            "users": [{"user_id": 1}],
+            "orders": [
+                {"order_id": i, "user_id": 1, "amount": float(i), "at": t}
+                for i, t in ((1, 7), (2, 8), (3, 8), (4, 8), (5, 10))
+            ],
+            "clicks": [{"click_id": 10, "user_id": 1, "amount": 10.0, "at": 8}],
+        },
+    )
+
+    def event(time, source, identity):
+        return (
+            time,
+            source,
+            (("amount", True, float(identity)), ("delta", True, 9 - time), ("id", True, identity)),
+        )
+
+    answer = {
+        "a": {
+            "merged": (event(7, "orders", 1), event(8, "orders", 2), event(8, "clicks", 10)),
+            "pushed": (event(7, "recent", 1), event(8, "recent", 2)),
+        }
+    }
+    return case, answer, event
+
+
 MORE_DEFECTS = (
     ("graph_structure", "reversed_edges", "break orientation"),
     ("graph_structure", "older_on_ties", "recent kept other than the most recent"),
-    ("graph_differential", "older_on_ties", "changed tied samples' first-hop clocks"),
+    ("graph_expected", "older_on_ties", "recent kept other than the most recent|layer-by-layer"),
+    ("graph_point_in_time", "late_after_shops", "after the cutoff"),
     ("sequence_point_in_time", "delta_in_seconds", "wrong time deltas"),
-    ("sequence_permutation", "unstable_rows", "a second run changed sequences"),
+    ("sequence_permutation", "unstable_rows", "original|a second preparation"),
 )
 
 
 #: Defects that need other case dimensions than their property's row above.
 DEFECT_CASES = {
-    ("graph_structure", "older_on_ties"): TIED,
-    ("graph_differential", "older_on_ties"): TIED,
+    ("graph_structure", "older_on_ties"): {**TIED, "schema_shape.graph_path": "one_hop"},
+    ("graph_expected", "older_on_ties"): {**TIED, "schema_shape.graph_path": "one_hop"},
+    ("graph_point_in_time", "late_after_shops"): {
+        "schema_shape.graph_path": "fan_in",
+    },
 }
 
 
@@ -239,7 +396,7 @@ def _check(name: str, defect: str) -> None:
     else:
         case = next(
             case
-            for case in sequence_batch(0, "in_memory", name)
+            for case in sequence_batch(0, "diskgraph", name)
             if all(case.dimensions[key] == value for key, value in dimensions.items())
         )
         module = "conformance.sequence_cases"
@@ -250,18 +407,18 @@ def _check(name: str, defect: str) -> None:
 #: Tied samples' later hops deleted, or dated after the cutoff in the
 #: run with future rows: first-hop clocks stay the same, the layer-by-layer expansion doesn't.
 LATER_HOPS = (
-    ("graph_structure", "fan_in", "in_memory", "tied_second_hop_dropped", EXPANSION),
+    ("graph_structure", "fan_in", "diskgraph", "tied_second_hop_dropped", EXPANSION),
     (
-        "graph_differential",
+        "graph_expected",
         "fan_in",
         "diskgraph",
         "tied_second_hop_dropped",
-        f"diskgraph vs reference: diskgraph: {EXPANSION}",
+        EXPANSION,
     ),
     (
         "graph_point_in_time",
         "fan_in",
-        "in_memory",
+        "diskgraph",
         "late_beyond_tied_first_hop",
         f"future rows: with future rows: {EXPANSION}",
     ),
@@ -277,11 +434,28 @@ def test_tied_samples_are_checked_at_every_layer(name, path, replaces, defect, e
         and case.dimensions["time.graph_ties"] == "tied"
     )
     assert case.dimensions["time.graph_ties"] == "tied"
+    # The generator deliberately places fanout-boundary ties at a0/a1. Other
+    # roots must not satisfy this probe by failing an untied expansion instead.
+    case = replace(case, requests=case.requests[:2])
+    fanout = int(case.dimensions["contract.graph_fanout"])
+    for request in case.requests:
+        clocks = sorted(
+            (
+                row["at"]
+                for row in case.tables["events"]
+                if row["user_id"] == request.entity_id and row["at"] <= request.as_of_time
+            ),
+            reverse=True,
+        )
+        assert clocks[fanout - 1] == clocks[fanout]
     with patch("conformance.graph_cases.bound_tables", _binding(Wrong("none"), replaces)):
         PROPERTIES[name].check(case, replaces, 0)
     stand_in = Wrong(defect)
     with patch("conformance.graph_cases.bound_tables", _binding(stand_in, replaces)):
-        with pytest.raises(PropertyFailure, match=re.escape(expected)):
+        with pytest.raises(
+            PropertyFailure,
+            match=re.escape(expected),
+        ):
             PROPERTIES[name].check(case, replaces, 0)
     assert stand_in.tied, "the defect touched no tied sample"
 
@@ -305,7 +479,7 @@ def test_a_wrong_engine_fails_the_property(name, defect, expected):
         _check(name, defect)
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("name", sorted(GRAPH_CHECKS.keys() | SEQUENCE_CHECKS.keys()))
 def test_batches_cover_every_pair_outside_their_own_gaps(name, engine):
     batch = graph_batch if name.startswith("graph") else sequence_batch
@@ -336,7 +510,7 @@ def test_a_gap_blocks_only_its_own_property():
     assert ties("graph_structure") == {"distinct", "tied"}
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 def test_edge_uniqueness_covers_paths_that_revisit_a_relation(engine):
     paths = {
         case.dimensions["schema_shape.graph_path"]
@@ -353,7 +527,7 @@ def _eligible(case: GeneratedCase, table: str, user: int, cutoff: int) -> list[i
     ]
 
 
-@pytest.mark.parametrize("case", graph_batch(0, "in_memory", "graph_structure"), ids=lambda c: c.id)
+@pytest.mark.parametrize("case", graph_batch(0, "diskgraph", "graph_structure"), ids=lambda c: c.id)
 def test_graph_cases_realize_their_dimensions(case):
     dims = case.dimensions
     fanout = dims["contract.graph_fanout"]
@@ -387,7 +561,7 @@ def test_graph_cases_realize_their_dimensions(case):
 
 
 @pytest.mark.parametrize(
-    "case", sequence_batch(0, "in_memory", "sequence_permutation"), ids=lambda c: c.id
+    "case", sequence_batch(0, "diskgraph", "sequence_permutation"), ids=lambda c: c.id
 )
 def test_sequence_cases_realize_their_dimensions(case):
     dims = case.dimensions
@@ -416,15 +590,39 @@ def test_sequence_obligations_run_each_case_at_its_own_shards(dependent, tmp_pat
             with bound_tables(contract, tables, "diskgraph", refusal=True) as (_, native):
                 shards = native.num_shards
         defect = "first_order_dropped" if dependent and shards == 3 else "none"
-        with bound_tables(contract, tables, "in_memory", refusal=refusal) as (dataset, engine):
-            yield dataset, engine if engine_name == "in_memory" else Wrong(defect)
+        with bound_tables(
+            contract, tables, "diskgraph", refusal=refusal, parts=parts, types=types
+        ) as (dataset, engine):
+            mutant = Wrong(defect)
+            mutant.index = engine.index
+            mutant.num_shards = shards
+            yield dataset, mutant
 
-    with patch("conformance.sequence_cases.bound_tables", binding):
+    # This self-test isolates settings propagation; the full generated corpus
+    # remains exercised by the ordinary sequence obligations.
+    base = next(
+        case
+        for case in sequence_batch(0, "diskgraph", "sequence_expected")
+        if case.dimensions["time.ties"] == "distinct"
+    )
+    cases = [
+        replace(base, dimensions={**base.dimensions, "execution.num_shards": shards})
+        for shards in (1, 3)
+    ]
+    with (
+        patch("conformance.sequence_cases.bound_tables", binding),
+        patch.dict(
+            PROPERTIES,
+            sequence_expected=replace(
+                PROPERTIES["sequence_expected"], cases=lambda seed, engine: cases
+            ),
+        ),
+    ):
         if not dependent:
-            run_obligation("sequence_differential", "diskgraph", 0, tmp_path)
+            run_obligation("sequence_expected", "diskgraph", 0, tmp_path)
             return
-        with pytest.raises(PropertyFailure, match="vs reference changed sequences"):
-            run_obligation("sequence_differential", "diskgraph", 0, tmp_path)
+        with pytest.raises(PropertyFailure, match="fixture answers changed sequences"):
+            run_obligation("sequence_expected", "diskgraph", 0, tmp_path)
 
 
 @pytest.mark.parametrize(

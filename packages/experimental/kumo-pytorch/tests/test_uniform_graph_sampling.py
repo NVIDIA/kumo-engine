@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 
 
 @pytest.fixture
@@ -87,9 +88,9 @@ def contract(schema, strategy=None, fanout=5, names=("graph",)):
     )
 
 
-def selections(task, requests=None, **options):
+def selections(task, **options):
     result = {}
-    for batch in task.batches(requests, **options):
+    for batch in task.batches(**options):
         for name, graph in batch.inputs.items():
             if isinstance(graph, api.ColumnarGraph):
                 nodes = graph.nodes["events"]
@@ -125,7 +126,7 @@ def test_native_strategy_semantics(graph_data, tmp_path, clock, strategy):
     with api.prepare(spec, dataset, engine) as plan, plan.materialize(anchors) as task:
         for output_format in ("inspectable", "model"):
             native = selections(task, output_format=output_format)
-            assert native == selections(task, requests, output_format=output_format)
+            assert native == selections(task, output_format=output_format)
             assert all(len(ids) == 5 for ids in native.values())
             if clock and strategy != "uniform":
                 assert native["graph", "early"] == frozenset(range(1, 6))
@@ -160,7 +161,7 @@ def test_seed_replays_direct_native_and_named_neighborhoods(
     for seed in (7, 7, 19):
         engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1, random_seed=seed)
         with api.prepare(spec, dataset, engine) as plan, plan.materialize(anchors) as task:
-            expected = selections(task, requests, batch_size=1)
+            expected = selections(task, batch_size=1)
             for output_format in ("inspectable", "model"):
                 assert expected == selections(
                     task,
@@ -199,7 +200,7 @@ def test_inspectable_reuses_every_prefetched_neighborhood(graph_data, tmp_path, 
         ) as plan,
         plan.materialize(anchors) as task,
     ):
-        expected = selections(task, requests)
+        expected = selections(task)
 
         def forbidden(*args, **kwargs):
             raise AssertionError("prefetched graph fell back to standalone sampling")
@@ -220,7 +221,7 @@ def test_uniform_returns_all_neighbors_when_fanout_covers_degree(graph_data, tmp
         ) as plan,
         plan.materialize(anchors) as task,
     ):
-        assert all(ids == frozenset(range(1, 41)) for ids in selections(task, requests).values())
+        assert all(ids == frozenset(range(1, 41)) for ids in selections(task).values())
 
 
 def test_uniform_empty_neighborhood(graph_data, tmp_path):
@@ -230,9 +231,9 @@ def test_uniform_empty_neighborhood(graph_data, tmp_path):
         api.prepare(
             contract(schema, "uniform"), dataset, api.DiskGraphEngine(index=tmp_path / "index")
         ) as plan,
-        plan.materialize(requests) as task,
+        plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task,
     ):
-        assert selections(task, requests) == {("graph", "empty"): frozenset()}
+        assert selections(task) == {("graph", "empty"): frozenset()}
 
 
 @pytest.mark.parametrize("seed", [-1, 2**64, True, 1.5])

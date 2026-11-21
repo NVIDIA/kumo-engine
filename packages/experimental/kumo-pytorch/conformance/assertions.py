@@ -18,13 +18,14 @@ from unittest.mock import patch
 
 from conformance.cases import GoldenCase
 from conformance.fixtures import values as fixture_values
+from conformance.refusals import check_or_refuse
 from conformance.registry import DimensionValue
 from kumo.pytorch.api import (
+    ALL_ANCHORS,
+    NON_TEMPORAL,
     DataLoaderSpec,
     Dataset,
     DiskGraphEngine,
-    InMemoryEngine,
-    InMemoryRows,
     Parquet,
     TableSpec,
     ValidationError,
@@ -81,7 +82,7 @@ def require_engine(engine_name: str) -> None:
 @contextmanager
 def bound_case(
     case: GoldenCase, engine_name: str, *, refusal: bool = False
-) -> Iterator[tuple[Dataset, InMemoryEngine | DiskGraphEngine]]:
+) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
     with bound_tables(
         case.contract, case.tables, engine_name, refusal=refusal, types=case.physical_types
     ) as bound:
@@ -97,17 +98,9 @@ def bound_tables(
     refusal: bool = False,
     parts: int = 1,
     types: Mapping[str, Mapping[str, str]] | None = None,
-) -> Iterator[tuple[Dataset, InMemoryEngine | DiskGraphEngine]]:
+) -> Iterator[tuple[Dataset, DiskGraphEngine]]:
     """Bind rows to an engine; ``parts`` splits each Parquet table into that many files."""
-    if engine_name == "in_memory":
-        dataset = Dataset(
-            {
-                name: InMemoryRows(UnreadableRows() if refusal else list(rows))
-                for name, rows in tables.items()
-            }
-        )
-        yield dataset, InMemoryEngine()
-    elif engine_name == "diskgraph":
+    if engine_name == "diskgraph":
         require_engine(engine_name)
         with tempfile.TemporaryDirectory(prefix="conformance-") as temporary:
             directory = Path(temporary)
@@ -130,6 +123,107 @@ def bound_tables(
             )
     else:
         raise ValueError(f"unknown conformance engine {engine_name!r}")
+
+
+def write_anchor_table(requests, path, *, schema=None):
+    """Project bounded expected records to native anchors, retaining labels and metadata."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from kumo.pytorch.api import AnchorTable, CandidateColumn, Parquet
+
+    requests = list(requests)
+    targets = sorted({target.name for row in requests for target in row.targets})
+    metadata = sorted({name for row in requests for name in row.metadata})
+    candidates = {
+        name: sorted(
+            {
+                target.name
+                for row in requests
+                for item in row.candidates.get(name, ())
+                for target in item.targets
+            }
+        )
+        for name in sorted({name for row in requests for name in row.candidates})
+    }
+    rows = [
+        {
+            "sample_id": row.sample_id,
+            "entity_id": row.entity_id,
+            "as_of_time": row.as_of_time,
+            "split": row.split,
+            **{
+                f"target_{name}": next((t.value for t in row.targets if t.name == name), None)
+                for name in targets
+            },
+            **{name: row.metadata.get(name) for name in metadata},
+            **{
+                f"candidates_{name}": [
+                    {
+                        "entity_id": item.entity_id,
+                        **{f"target_{target.name}": target.value for target in item.targets},
+                    }
+                    for item in row.candidates.get(name, ())
+                ]
+                for name in candidates
+            },
+        }
+        for row in requests
+    ]
+    data = (
+        pa.table(
+            {
+                name: pa.array([row[name] for row in rows], type=pa.uint64())
+                if any(type(row[name]) is int and row[name] > 2**63 - 1 for row in rows)
+                else [row[name] for row in rows]
+                for name in rows[0]
+            }
+        )
+        if rows
+        else pa.table(
+            {
+                "sample_id": pa.array([], type=pa.string()),
+                "entity_id": pa.array([], type=pa.int64()),
+                "as_of_time": pa.array([], type=pa.timestamp("s", tz="UTC")),
+                "split": pa.array([], type=pa.string()),
+            }
+        )
+    )
+    clock = data.schema.field("as_of_time")
+    if pa.types.is_integer(clock.type):
+        position = data.schema.get_field_index("as_of_time")
+        data = data.set_column(
+            position, "as_of_time", data["as_of_time"].cast(pa.timestamp("s", tz="UTC"))
+        )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        pq.write_table(data, path)
+    else:
+        existing = pq.read_table(path)
+        assert existing.equals(data.cast(existing.schema)), (
+            "anchor projection path was reused for different rows"
+        )
+    return AnchorTable(
+        Parquet(str(path.resolve())),
+        "entity_id",
+        "as_of_time"
+        if schema is None
+        or any(table.time_column not in (None, NON_TEMPORAL) for table in schema.tables)
+        else None,
+        sample_id="sample_id",
+        split="split" if any(row.split is not None for row in requests) else None,
+        targets={name: f"target_{name}" for name in targets},
+        candidates={
+            name: CandidateColumn(
+                f"candidates_{name}",
+                "entity_id",
+                targets={target: f"target_{target}" for target in labels},
+            )
+            for name, labels in candidates.items()
+        },
+        metadata=metadata,
+    )
 
 
 def write_parquet(
@@ -193,13 +287,21 @@ def _same_value(actual: Any, expected: Any) -> bool:
 
 def assert_answer(case: GoldenCase, engine_name: str) -> None:
     with bound_case(case, engine_name) as (dataset, engine):
-        issues = check(case.contract, dataset, engine)
-        assert not issues, f"{case.id}/{engine_name}: expected support, got {issues}"
+        check_or_refuse(case.contract, dataset, engine)
         with prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
-                result = preview(task, case.requests).to_dict()
+            with plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            ) as task:
+                assert callable(task._anchors.batches)
+                result = preview(
+                    task, task._anchors.fetch(ALL_ANCHORS, range(task.count()))
+                ).to_dict()
                 if case.batch is not None:
-                    batches = list(task.batches(case.requests, batch_size=len(case.requests)))
+                    batches = list(task.batches(batch_size=len(case.requests)))
                     assert len(batches) == 1, f"{case.id}: expected exactly one batch"
                     batch = batches[0]
                     assert_projection(
@@ -345,13 +447,26 @@ def assert_execution_error(
             return
         with prepare(case.contract, dataset, engine) as plan:
             if stage == "fit":
-                expect(lambda: plan.materialize(case.requests))
+                expect(
+                    lambda: plan.materialize(
+                        write_anchor_table(
+                            case.requests,
+                            Path(plan.engine.index).parent / "anchors.parquet",
+                            schema=plan.contract.schema,
+                        )
+                    )
+                )
                 return
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                write_anchor_table(
+                    case.requests,
+                    Path(plan.engine.index).parent / "anchors.parquet",
+                    schema=plan.contract.schema,
+                )
+            ) as task:
                 expect(
                     lambda: list(
                         task.batches(
-                            case.requests,
                             batch_size=len(case.requests),
                             output_format=output_format,
                         )

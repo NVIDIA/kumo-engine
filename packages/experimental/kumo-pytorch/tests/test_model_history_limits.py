@@ -10,6 +10,7 @@ from dataclasses import replace
 import pytest
 
 from kumo.pytorch import api, assembly
+from tests.native_fixtures import prepare_rows, request_anchor_table
 from tests.test_preview import _equal as assert_equal
 
 
@@ -177,6 +178,16 @@ class _Queries:
         self.calls.append(json.loads(plan))
         return self.sampler.query_temporal(nodes, cutoffs, plan, **kwargs)
 
+    def trace_native(self, task):
+        original = task._anchors._iter
+
+        def observed(*args, history=None, **kwargs):
+            if history is not None:
+                self.calls.append(json.loads(history[0]))
+            return original(*args, history=history, **kwargs)
+
+        task._anchors._iter = observed
+
 
 @pytest.mark.parametrize("keep", ["first", "last"])
 @pytest.mark.parametrize("layout", [api.Padded(), api.Packed()])
@@ -209,17 +220,22 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
         api.BatchSpec(inputs, {"future": api.LabelTarget("future", api.Raw())} if label else {}),
     )
     fingerprint = contract.fingerprint
-    with api.prepare(contract, memory, api.InMemoryEngine()) as reference:
+    with prepare_rows(contract, memory) as reference:
         expected = next(
-            reference.materialize(requests, fit_split="train").batches(requests, batch_size=4)
+            reference.materialize(
+                request_anchor_table(requests, schema=reference.contract.schema), fit_split="train"
+            ).batches(batch_size=4)
         )
     with api.prepare(contract, parquet, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
-        queries = _Queries(plan._source._sampler)
-        plan._source._sampler = queries
-        with plan.materialize(requests, fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fit_split="train"
+        ) as task:
+            queries = _Queries(plan._source._sampler)
+            plan._source._sampler = queries
+            queries.trace_native(task)
             assert not queries.calls
             fitted = task.bound_contract().to_json()
-            actual = next(task.batches(requests, batch_size=4, output_format="model"))
+            actual = next(task.batches(batch_size=4, output_format="model"))
             pushed = type(limit) is int and limit == 2
             assert queries.calls[0]["sequences"][0]["limit"] == (2 if pushed else None)
             assert queries.calls[0]["sequences"][0]["order"] == (
@@ -233,7 +249,7 @@ def test_real_model_requests_are_bounded_but_preview_and_labels_are_not(
             if aggregate:
                 assert actual.inputs["entity"]["count"]["values"].tolist() == [6, 0, 4, 1]
             queries.calls.clear()
-            preview = task.preview(requests)
+            preview = task.preview(task._anchors.fetch(api.ALL_ANCHORS, range(task.count())))
             assert len(preview.samples[0]["events"]["orders"]) == 6
             assert all(call["sequences"][0]["limit"] is None for call in queries.calls)
             assert task.bound_contract().to_json() == fitted

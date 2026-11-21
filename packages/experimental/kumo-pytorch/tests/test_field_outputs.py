@@ -51,8 +51,8 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
 from kumo.pytorch.encoding import fit_encoder, typed_key
-from kumo.pytorch.engines.in_memory.source import InMemorySource
 from kumo.pytorch.spec import DataLoaderSpec
+from tests.native_fixtures import prepare_rows, request_anchor_table
 
 
 def _tables():
@@ -170,7 +170,7 @@ def _contract(*, flat=False, composite=False, masking=False):
 
 
 def _source(contract):
-    return InMemorySource(contract.schema, _tables())
+    return prepare_rows(contract, _tables())._source
 
 
 def _plan(contract):
@@ -554,7 +554,7 @@ def test_threshold_labels_refuse_nonfinite_cut_points():
         )
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 @pytest.mark.parametrize(
     "dtype,values",
     [
@@ -571,8 +571,7 @@ def test_threshold_labels_refuse_nonfinite_cut_points():
 def test_qualified_entity_numeric_outputs_preserve_engine_and_delivery_parity(
     engine_name, dtype, values
 ):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     from conformance.assertions import bound_tables
     from kumo.pytorch.api import EntitySource, Separate, prepare
 
@@ -609,10 +608,12 @@ def test_qualified_entity_numeric_outputs_preserve_engine_and_delivery_parity(
     with bound_tables(
         contract, {"users": [{"id": i, "value": v} for i, v in enumerate(values, 1)]}, engine_name
     ) as (dataset, engine):
-        with prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
-            outputs = [next(task.batches(anchors, batch_size=2))]
-            if engine_name == "diskgraph":
-                outputs.append(next(task.batches(anchors, batch_size=2, output_format="model")))
+        with (
+            prepare(contract, dataset, engine) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
+            outputs = [next(task.batches(batch_size=2))]
+            outputs.append(next(task.batches(batch_size=2, output_format="model")))
             for output in outputs:
                 assert output.inputs["zscore"]["entity/v"]["values"].tolist() == [
                     float(v) / 2 for v in values
@@ -627,12 +628,10 @@ def test_full_and_input_only_reuse_keep_independent_target_resources_separate(ta
         Dataset,
         EntitySource,
         ExternalTarget,
-        InMemoryEngine,
         InMemoryRows,
         LabelTarget,
         Separate,
         TargetValue,
-        prepare,
     )
 
     contract = _contract()
@@ -670,11 +669,13 @@ def test_full_and_input_only_reuse_keep_independent_target_resources_separate(ta
         )
         for index, (name, label) in enumerate((("a", "a"), ("b", "b")))
     ]
-    with prepare(contract, dataset, InMemoryEngine()) as plan:
-        with plan.materialize(requests) as task:
+    with prepare_rows(contract, dataset) as plan:
+        with plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task:
             saved = task.fitted_state
-    with prepare(contract, dataset, InMemoryEngine()) as plan:
-        with plan.materialize(requests, fitted=saved) as task:
+    with prepare_rows(contract, dataset) as plan:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fitted=saved
+        ) as task:
             assert task.fitted_state.to_dict() == saved.to_dict()
     changed = replace(
         contract,
@@ -688,9 +689,11 @@ def test_full_and_input_only_reuse_keep_independent_target_resources_separate(ta
         ),
     )
     assert changed.input_fingerprint == contract.input_fingerprint
-    with prepare(changed, dataset, InMemoryEngine()) as plan:
-        with plan.materialize(requests, fitted=saved.inputs) as task:
-            result = next(task.batches(requests, batch_size=2))
+    with prepare_rows(changed, dataset) as plan:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fitted=saved.inputs
+        ) as task:
+            result = next(task.batches(batch_size=2))
             binding = task.target("label").field(name="value")
             assert result.targets["label"]["values"].tolist() == [
                 binding.encode(value="a"),

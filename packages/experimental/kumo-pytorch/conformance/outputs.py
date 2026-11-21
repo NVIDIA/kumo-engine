@@ -374,9 +374,7 @@ def _typed_tokens(names: Sequence[str], max_tokens: int) -> Fields:
 
 
 def typed_fitting_contract(case: GeneratedCase) -> DataLoaderSpec:
-    """Field tokens over entity values and an event history, with no targets: DiskGraph
-    fits them straight from typed columns (``build_model``), the reference from records.
-    """
+    """Field tokens over entity values and an event history, with no targets."""
 
     base = case.contract
     fields = {name: Field(name) for name in TYPED_EVENTS}

@@ -34,6 +34,8 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
+from tests.native_fixtures import request_anchor_table
+
 pytest.importorskip("diskgraph")
 pytest.importorskip("torch_geometric")
 
@@ -56,7 +58,6 @@ from kumo.pytorch.api import (  # noqa: E402
     Batch,
     Dataset,
     DiskGraphEngine,
-    InMemoryEngine,
     InMemoryRows,
     SampleRequest,
     ServingAssembler,
@@ -66,16 +67,16 @@ from kumo.pytorch.api import (  # noqa: E402
 from tests.e2e import runs as runs_module  # noqa: E402
 from tests.e2e.runs import FLOWS  # noqa: E402
 from tests.e2e.tiers import TIERS, Tier  # noqa: E402
-from tests.test_inference_lifecycle import assert_same_batches  # noqa: E402
+from tests.graph_semantics import SourceRows  # noqa: E402
+from tests.native_fixtures import prepare_rows  # noqa: E402
+from tests.serving_assertions import assert_serving_batches  # noqa: E402
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-# Where only the order of a float32 sum changes (one request per reference batch against
-# hundreds; DiskGraph reordering equal-time purchases), a probability moves by a few
-# units in the last place (6e-8 each); 1e-6 allows that, and no changed input.
+
+
 REORDER_TOLERANCE = 1e-6
 
 
-# Per flow and test cutoff: test-anchor scores without, then with, the added rows.
 FutureScores = dict[str, dict[str, tuple[dict[int, float], dict[int, float]]]]
 
 
@@ -126,6 +127,7 @@ def root(
 
 @pytest.fixture(scope="session")
 def report(root: Path) -> Report:
+
     return Report(root / "metrics.json")
 
 
@@ -142,7 +144,6 @@ def data(hm: HMDataset, root: Path, tier: Tier) -> HMDataset:
 @pytest.fixture(scope="session")
 def baseline_auroc(tier: Tier) -> float:
     """kumo-engine's lowest test AUROC over its recorded runs."""
-
     baseline = json.loads((REPOSITORY / "e2e" / "baselines" / tier.baseline).read_text())
     return float(baseline["summary"]["test_auroc"]["min"])
 
@@ -190,6 +191,8 @@ def test_a_fresh_process_scores_the_test_anchors_as_training_did(
 
 @pytest.fixture(scope="session")
 def future_scores(runs: dict[str, list[Run]], hm: HMDataset, root: Path) -> FutureScores:
+    from e2e.flows.common import read_predictions
+
     scores: FutureScores = {}
     for flow, module in FLOWS.items():
         scores[flow] = {}
@@ -213,9 +216,14 @@ def future_scores(runs: dict[str, list[Run]], hm: HMDataset, root: Path) -> Futu
 
 @pytest.fixture(scope="session")
 def reference(runs: dict[str, list[Run]], hm: HMDataset) -> dict[str, dict[int, Batch]]:
-    """Reference (in-memory) batch inference for the served requests, over every customer
+    """Native batch inference for the served requests, over every customer
     and article and each served customer's purchases at any time (both contracts reach
     purchases only through their customer; a missing row would fail the checks)."""
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    from e2e.flows.common import CustomerRows, serving_requests
+    from kumo.pytorch.api import Artifact, Dataset
 
     store = CustomerRows.open(hm.root)
     requests = serving_requests(hm.root, store, count=16)
@@ -236,16 +244,23 @@ def test_serving_equals_reference_batch_inference(
     hm: HMDataset,
     reference: dict[str, dict[int, Batch]],
 ) -> None:
-    """Each request, served from the rows the flow looks up by following rows_spec,
-    gives exactly the reference batch-inference batch (``reference``)."""
+    """Serving satisfies the same source semantics, including eligible graph ties."""
 
     store = CustomerRows.open(hm.root)
-    server = ServingAssembler(Artifact.load(runs[flow][0].work / "artifact"))
+    artifact = Artifact.load(runs[flow][0].work / "artifact")
+    server = ServingAssembler(artifact)
+    source = SourceRows(server.contract.schema, store.tables)
     requests = serving_requests(hm.root, store, count=16)
     assert sorted(reference[flow]) == sorted(int(r.sample_id) for r in requests)
     for request in requests:
         served = server.assemble(store.lookup(server.rows_spec, request), [request], seed=0)
-        assert_same_batches(served, [reference[flow][int(request.sample_id)]])
+        assert_serving_batches(
+            served,
+            [reference[flow][int(request.sample_id)]],
+            artifact,
+            source,
+            [request],
+        )
 
 
 def test_diskgraph_batch_inference_equals_the_reference(
@@ -458,29 +473,6 @@ def test_test_auroc_is_within_the_band(
     assert max(areas) - min(areas) <= tier.seed_spread, areas
 
 
-def test_every_test_anchor_is_scored_once_with_a_sane_distribution(
-    runs: dict[str, list[Run]], flow: str, hm: HMDataset, report: Report, tier: Tier
-) -> None:
-    anchors = pq.read_table(hm.anchors)
-    test = anchors.filter(pc.equal(anchors["split"], "test"))
-    expected = set(test["sample_id"].to_pylist())
-    positive_rate = hm.metadata.positive_rate["test"]
-    for run in runs[flow]:
-        table = pq.read_table(run.work / "predictions.parquet")
-        assert sorted(table["sample_id"].to_pylist()) == sorted(expected)
-        scores = table["score"].to_numpy()
-        quantiles = np.quantile(scores, [0.1, 0.5, 0.9]).tolist()
-        report.record(
-            f"{flow}.seed{run.seed}.predictions",
-            {"mean": float(scores.mean()), "std": float(scores.std()), "q10_50_90": quantiles},
-        )
-        assert not np.isnan(scores).any()
-        assert scores.std() > 0.01, "a constant model"
-        ratio = scores.mean() / positive_rate
-        factor = tier.calibration_factor
-        assert 1 / factor <= ratio <= factor, (scores.mean(), ratio)
-
-
 def test_point_lookups_rank_active_customers_above_dormant_ones(
     runs: dict[str, list[Run]], flow: str, hm: HMDataset, report: Report
 ) -> None:
@@ -514,8 +506,8 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
 ) -> None:
     """Recent sampling orders by time, then primary key (docs/limitations.md).
     When the 16th and 17th most recent purchases share a timestamp, DiskGraph's choice
-    follows its index, so rows added after the cutoff change it, and the in-memory
-    engine compares keys as strings. The GNN's DiskGraph checks above skip those
+    follows its index, so rows added after the cutoff can change it.
+    The GNN's DiskGraph checks above skip those
     samples; when this fails, lift the gap from them."""
 
     times = _purchase_times(hm)
@@ -531,25 +523,39 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     tied_requests = _tie_cut_requests(hm)
     assert tied_requests, "no served request cuts a tie; the gap can no longer be seen here"
     sample_id = min(tied_requests)
-    in_memory = reference["gnn"][sample_id]
+    native = reference["gnn"][sample_id]
     engine = DiskGraphEngine(index=root / "tie-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(
-            [tied_requests[sample_id]], fitted=artifact.fitted_state, inference=True
+            request_anchor_table([tied_requests[sample_id]], schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
         ) as task:
             (batch,) = list(task.batches(output_format="model"))
     purchases = [
-        set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (in_memory, batch)
+        set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (native, batch)
     ]
     assert len(purchases[0]) == len(purchases[1]) == RECENT_PURCHASES
-    assert purchases[0] != purchases[1]
+    # A tied boundary permits different identities, but never an older event.
+    table = next(table for table in artifact.contract.schema.tables if table.name == "transactions")
+    requested = tied_requests[sample_id]
+    eligible = {
+        row[table.primary_key]: _epoch(row[table.time_column])
+        for row in CustomerRows.open(hm.root).tables["transactions"].to_pylist()
+        if row["customer_id"] == requested.entity_id
+        and _epoch(row[table.time_column]) <= _epoch(requested.as_of_time)
+    }
+    boundary = sorted(eligible.values(), reverse=True)[RECENT_PURCHASES - 1]
+    required = {key for key, at in eligible.items() if at > boundary}
+    allowed = {key for key, at in eligible.items() if at >= boundary}
+    assert all(required <= ids <= allowed for ids in purchases)
 
 
 def test_a_history_batch_without_any_event_assembles(
     runs: dict[str, list[Run]], hm: HMDataset, root: Path
 ) -> None:
     """A customer with no purchase before the cutoff gets a batch with no event, served
-    or scored alone, on either engine. The flows still serve only customers who
+    or scored alone, on DiskGraph. The flows still serve only customers who
     bought before, because their model reads at least one event per batch."""
 
     artifact = Artifact.load(runs["pragma"][0].work / "artifact")
@@ -558,7 +564,11 @@ def test_a_history_batch_without_any_event_assembles(
     (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
     engine = DiskGraphEngine(index=root / "empty-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
-        with plan.materialize([request], fitted=artifact.fitted_state, inference=True) as task:
+        with plan.materialize(
+            request_anchor_table([request], schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             (scored,) = list(task.batches(output_format="model"))
     for batch in (served, scored):
         assert batch.inputs["history"]["value_ids"].shape[0] == 0
@@ -568,8 +578,12 @@ def test_a_history_batch_without_any_event_assembles(
 def _reference_batches(
     artifact: Artifact, rows: Dataset, requests: list[SampleRequest]
 ) -> dict[int, Batch]:
-    with prepare(artifact.contract, rows, InMemoryEngine()) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
+    with prepare_rows(artifact.contract, rows) as plan:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             batches = task.batches(batch_size=1, seed=0)
             return {int(batch.metadata["sample_ids"][0]): batch for batch in batches}
 
@@ -753,7 +767,6 @@ def _dataset_at(hm: HMDataset, cutoff: datetime, out: Path, *, future: bool) -> 
     return out
 
 
-# A row exactly at the cutoff is history (the cutoff is inclusive), so none is added there.
 FUTURE_OFFSETS = (
     timedelta(seconds=1),
     timedelta(days=3, hours=12),
@@ -800,3 +813,33 @@ def _future_rows(transactions: pa.Table, articles: list[int], cutoff: datetime) 
             "sales_channel_id": pa.array([1] * len(rows), pa.int64()),
         }
     ).select(transactions.column_names)
+
+
+def test_predictions_have_a_sane_distribution(
+    runs: dict[str, list[Run]], flow: str, hm: HMDataset, report: Report, tier: Tier
+) -> None:
+    positive_rate = hm.metadata.positive_rate["test"]
+    for run in runs[flow]:
+        table = pq.read_table(run.work / "predictions.parquet")
+        scores = table["score"].to_numpy()
+        quantiles = np.quantile(scores, [0.1, 0.5, 0.9]).tolist()
+        report.record(
+            f"{flow}.seed{run.seed}.predictions",
+            {"mean": float(scores.mean()), "std": float(scores.std()), "q10_50_90": quantiles},
+        )
+        assert not np.isnan(scores).any()
+        assert scores.std() > 0.01, "a constant model"
+        ratio = scores.mean() / positive_rate
+        factor = tier.calibration_factor
+        assert 1 / factor <= ratio <= factor, (scores.mean(), ratio)
+
+
+def test_every_test_anchor_is_scored_once(
+    runs: dict[str, list[Run]], flow: str, hm: HMDataset
+) -> None:
+    anchors = pq.read_table(hm.anchors)
+    test = anchors.filter(pc.equal(anchors["split"], "test"))
+    expected = set(test["sample_id"].to_pylist())
+    for run in runs[flow]:
+        table = pq.read_table(run.work / "predictions.parquet")
+        assert sorted(table["sample_id"].to_pylist()) == sorted(expected)

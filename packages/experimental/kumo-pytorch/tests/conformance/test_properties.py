@@ -14,7 +14,14 @@ import pytest
 
 from conformance.assertions import require_engine
 from conformance.cases import ENGINES, REPOSITORY
-from conformance.properties import PROPERTIES, obligation_id, obligations, replay, run_obligation
+from conformance.properties import (
+    PROPERTIES,
+    obligation_id,
+    obligations,
+    replay,
+    run_obligation,
+)
+from conformance.refusals import record_refusal
 from conformance.registry import REPLAYED
 from conformance.repro import load_corpus, load_repro
 
@@ -60,13 +67,15 @@ def test_corpus(corpus_engine):
             continue
         try:
             replay(entry, corpus_engine)
-        except AssertionError as error:
+        except Exception as error:
+            if record_refusal(error, corpus=entry_id) is not None:
+                continue
             failures.append(f"{entry_id} ({entry.issue}): {error}")
     assert not failures, "\n".join(failures)
 
 
 def test_known_gap(gap):
-    """Each known gap's or in-memory divergence's repro still fails as recorded; when one
+    """Each existing native gap's repro still fails as recorded; when one
     passes, lift the entry."""
     require_engine(gap.engine)
     repro = load_repro(REPOSITORY / gap.repro)

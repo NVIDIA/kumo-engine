@@ -40,6 +40,7 @@ from kumo.pytorch.api import (
     Vocabulary,
     prepare,
 )
+from tests.native_fixtures import request_anchor_table
 from tests.test_field_outputs import _contract, _tables
 
 
@@ -50,7 +51,7 @@ def _anchors():
     ]
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("packed", (False, True))
 @pytest.mark.parametrize("markers", (False, True))
 def test_masked_flattened_answers_follow_clipping_markers_and_empty_samples(
@@ -92,9 +93,12 @@ def test_masked_flattened_answers_follow_clipping_markers_and_empty_samples(
     empty_ids = [5, 6] if markers else []
     anchors = _anchors()
     with bound_tables(contract, _tables(), engine) as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
             for delivery in ("inspectable", "model") if engine == "diskgraph" else ("inspectable",):
-                batch = next(task.batches(anchors, batch_size=2, output_format=delivery))
+                batch = next(task.batches(batch_size=2, output_format=delivery))
                 source, target = batch.inputs["history"], batch.targets["masked"]
                 if packed:
                     assert source["value_ids"].tolist() == expected_ids + empty_ids
@@ -146,14 +150,17 @@ def test_ensure_masked_supervision_uses_retained_positions_after_history_clippin
             },
         ),
     )
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(_anchors()) as task:
-            batch = next(task.batches(_anchors(), batch_size=2))
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(_anchors(), schema=plan.contract.schema)) as task,
+        ):
+            batch = next(task.batches(batch_size=2))
             assert batch.targets["masked"]["valid"].sum().item() == 1
             assert batch.targets["masked"]["corruption"].sum().item() == 1
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 def test_input_only_reuse_resolves_new_aligned_label_fields_without_refitting(engine):
     if engine == "diskgraph":
         pytest.importorskip("diskgraph")
@@ -173,7 +180,10 @@ def test_input_only_reuse_resolves_new_aligned_label_fields_without_refitting(en
     )
     anchors = _anchors()
     with bound_tables(contract, _tables(), engine) as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
             frozen = task.fitted_state.inputs
         changed = replace(
             contract,
@@ -189,14 +199,16 @@ def test_input_only_reuse_resolves_new_aligned_label_fields_without_refitting(en
         assert changed.input_fingerprint == contract.input_fingerprint
         with (
             prepare(changed, dataset, backend) as plan,
-            plan.materialize(anchors, fitted=frozen) as task,
+            plan.materialize(
+                request_anchor_table(anchors, schema=plan.contract.schema), fitted=frozen
+            ) as task,
         ):
             assert (
                 task.output("history").field(name="amount").encoder
                 is frozen._input_state.prepared_inputs["history"].state["amount"].encoder
             )
             for delivery in ("inspectable", "model") if engine == "diskgraph" else ("inspectable",):
-                target = next(task.batches(anchors, batch_size=2, output_format=delivery)).targets[
+                target = next(task.batches(batch_size=2, output_format=delivery)).targets[
                     "heldout"
                 ]["currency"]
                 assert target["values"].tolist() == [[3, 0, 2], [0, 0, 0]]
@@ -231,9 +243,12 @@ def test_padded_aligned_target_uses_declared_pad_id() -> None:
         ),
     )
     anchors = _anchors()
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
-            target = next(task.batches(anchors, batch_size=2)).targets["heldout"]["currency"]
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
+            target = next(task.batches(batch_size=2)).targets["heldout"]["currency"]
     assert target["values"][1].tolist() == [5, 5, 5]
     assert target["valid"][1].tolist() == [False, False, False]
     assert target["values"][0, 1].item() == 2  # A real NULL uses the missing role.
@@ -250,7 +265,7 @@ def _text():
     return Text(state=tokenizer.to_str())
 
 
-@pytest.mark.parametrize("engine", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine", ("diskgraph",))
 @pytest.mark.parametrize("packed", (False, True))
 def test_aligned_text_targets_keep_piece_and_sample_boundaries(engine, packed):
     if engine == "diskgraph":
@@ -279,9 +294,12 @@ def test_aligned_text_targets_keep_piece_and_sample_boundaries(engine, packed):
         row["currency"] = text
     anchors = _anchors()
     with bound_tables(contract, tables, engine) as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
             for delivery in ("inspectable", "model") if engine == "diskgraph" else ("inspectable",):
-                target = next(task.batches(anchors, batch_size=2, output_format=delivery)).targets[
+                target = next(task.batches(batch_size=2, output_format=delivery)).targets[
                     "heldout"
                 ]["currency"]
                 assert target["values"].tolist() == [2, 3, 0]
@@ -336,9 +354,12 @@ def test_candidate_text_targets_keep_piece_and_sample_boundaries(packed):
     ]
     tables = _tables()
     tables["users"].append({"id": 3})
-    with bound_tables(contract, tables, "in_memory") as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
-            batch = next(task.batches(anchors, batch_size=2))
+    with bound_tables(contract, tables, "diskgraph") as (dataset, backend):
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
+            batch = next(task.batches(batch_size=2))
             target = batch.targets["description"]
             assert target["values"].tolist() == [2, 3, 0]
             assert target["piece_offsets"].tolist() == [0, 2, 3, 3]
@@ -385,18 +406,24 @@ def test_bound_contract_pins_target_members_of_input_used_spaces_only():
         replace(anchor, targets=(TargetValue(name="label", value=label),))
         for anchor, label in zip(_anchors(), ("a", "b"), strict=True)
     ]
-    with bound_tables(contract, _tables(), "in_memory") as (dataset, backend):
-        with prepare(contract, dataset, backend) as plan, plan.materialize(anchors) as task:
+    with bound_tables(contract, _tables(), "diskgraph") as (dataset, backend):
+        with (
+            prepare(contract, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task,
+        ):
             bound = task.bound_contract()
             frozen_space = task.spaces["model"].state_dict()
-            frozen_ids = next(task.batches(anchors, batch_size=2)).inputs["entity"]["id"]["values"]
+            frozen_ids = next(task.batches(batch_size=2)).inputs["entity"]["id"]["values"]
         assert bound.batch.targets["label"].encoding.values == (("a", 2), ("b", 3))
         changed = [
             replace(anchor, targets=(TargetValue(name="label", value="c"),)) for anchor in anchors
         ]
-        with prepare(bound, dataset, backend) as plan, plan.materialize(changed) as task:
+        with (
+            prepare(bound, dataset, backend) as plan,
+            plan.materialize(request_anchor_table(changed, schema=plan.contract.schema)) as task,
+        ):
             assert task.spaces["model"].state_dict() == frozen_space
-            result = next(task.batches(changed, batch_size=2))
+            result = next(task.batches(batch_size=2))
             assert torch.equal(result.inputs["entity"]["id"]["values"], frozen_ids)
             assert result.targets["label"]["values"].tolist() == [1, 1]
 

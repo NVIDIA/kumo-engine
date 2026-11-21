@@ -52,8 +52,8 @@ from kumo.pytorch.api import (
     Vocabulary,
 )
 from kumo.pytorch.contract import batch, sample, schema
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 from tests.helpers import Plans
+from tests.native_fixtures import NativeSamples
 
 I64, F64, STRING = DType("int64"), DType("float64"), DType("string")
 TIME = DType("timestamp", unit="s", timezone="UTC")
@@ -237,7 +237,7 @@ def test_only_declared_components_contribute_to_fitted_encoders():
     assert task.encoders["country"].entries == (("US", 2),)
     assert task.output("events").field(name="amount").encoder.boundaries == (5.0,)
     assert all("noise" not in identity for identity in task.fitted_state["encoders"])
-    output = next(task.batches([SampleRequest("u1", 1, 100)], batch_size=1))
+    output = next(task.batches(batch_size=1))
     assert tuple(output.inputs) == ("entity", "events")
     assert "field_ids" in output.inputs["entity"]
     assert "field_ids" in output.inputs["events"]
@@ -252,7 +252,7 @@ def test_profile_fields_and_history_layouts_are_independent():
         _tokens(profile_layout=Packed(), field_layout=Padded(), event_layout=Packed()),
         [SampleRequest("u1", 1, 100)],
     )
-    output = next(task.batches([SampleRequest("u1", 1, 100)], batch_size=1))
+    output = next(task.batches(batch_size=1))
     assert output.inputs["entity"]["offsets"].tolist() == [0, 1]
     assert output.inputs["events"]["field_ids"].shape == (1, 1)
     assert output.inputs["events"]["sequence"]["offsets"].tolist() == [0, 1]
@@ -260,7 +260,7 @@ def test_profile_fields_and_history_layouts_are_independent():
 
 def test_relational_target_is_raw_sample_data():
     schema, tables = _data()
-    built = InMemorySampleBuilder(schema, tables).build(_sample(), [SampleRequest("u1", 1, 100)])[0]
+    built = NativeSamples(schema, tables).build(_sample(), [SampleRequest("u1", 1, 100)])[0]
     assert {target.name: target.value for target in built.targets} == {"future_count": 1}
     assert type(built.targets[0].value) is int
 

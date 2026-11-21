@@ -44,6 +44,7 @@ from kumo.pytorch.api import (
     Vocabulary,
 )
 from tests.helpers import Plans
+from tests.native_fixtures import check_rows_or_refuse
 
 SCHEMA = DataSchema(
     (
@@ -181,7 +182,7 @@ REQUESTS = (
 def test_padded_candidates_keep_metadata_values_labels_and_validity_aligned() -> None:
     contract = _contract()
     with PLANS.prepare(contract, REQUESTS) as plan:
-        batch = next(plan.batches(REQUESTS, batch_size=2))
+        batch = next(plan.batches(batch_size=2))
     items = batch.inputs["items"]
     assert "entity_ids" not in items
     assert batch.metadata["candidate_entity_ids"] == {
@@ -216,7 +217,7 @@ def test_padded_candidate_target_uses_declared_pad_id() -> None:
         ),
     )
     with PLANS.prepare(contract, REQUESTS) as plan:
-        target = next(plan.batches(REQUESTS, batch_size=2)).targets["clicked"]
+        target = next(plan.batches(batch_size=2)).targets["clicked"]
     assert target["values"][1, 1].item() == 5
     assert not target["candidate_valid"][1, 1]
     assert not target["valid"][1, 1]
@@ -225,7 +226,7 @@ def test_padded_candidate_target_uses_declared_pad_id() -> None:
 def test_multiple_groups_and_empty_candidates_have_an_explicit_axis() -> None:
     contract = _contract()
     with PLANS.prepare(contract, REQUESTS) as plan:
-        batch = next(plan.batches(REQUESTS, batch_size=2))
+        batch = next(plan.batches(batch_size=2))
     alternatives = batch.inputs["alternatives"]
     assert "entity_ids" not in alternatives
     assert alternatives["valid"].tolist() == [[True], [False]]
@@ -238,7 +239,7 @@ def test_all_empty_candidate_groups_produce_empty_padded_axes() -> None:
     )
     contract = _contract()
     with PLANS.prepare(contract, requests) as plan:
-        batch = next(plan.batches(requests, batch_size=2))
+        batch = next(plan.batches(batch_size=2))
     assert batch.metadata["candidate_entity_ids"]["items"] == ((), ())
     assert "entity_ids" not in batch.inputs["items"]
     assert tuple(batch.inputs["items"]["valid"].shape) == (2, 0)
@@ -249,7 +250,7 @@ def test_all_empty_candidate_groups_produce_empty_padded_axes() -> None:
 def test_packed_candidates_use_offsets_instead_of_padding() -> None:
     contract = _contract(Packed())
     with PLANS.prepare(contract, REQUESTS) as plan:
-        batch = next(plan.batches(REQUESTS, batch_size=2))
+        batch = next(plan.batches(batch_size=2))
     assert "entity_ids" not in batch.inputs["items"]
     assert batch.metadata["candidate_entity_ids"]["items"] == ((10, 11), (12,))
     assert batch.inputs["items"]["offsets"].tolist() == [0, 2, 3]
@@ -258,14 +259,15 @@ def test_packed_candidates_use_offsets_instead_of_padding() -> None:
 
 def test_unknown_candidate_groups_and_duplicate_candidates_are_refused() -> None:
     contract = _contract()
+    check_rows_or_refuse(contract, TABLES)
     unknown = SampleRequest("bad", 1, 100, candidates={"missing": (CandidateRequest(10),)})
     with pytest.raises(ValueError, match="unknown candidate set"):
-        next(PLANS.prepare(contract, (unknown,)).batches((unknown,), batch_size=1))
+        next(PLANS.prepare(contract, (unknown,)).batches(batch_size=1))
     duplicate = SampleRequest(
         "bad", 1, 100, candidates={"items": (CandidateRequest(10), CandidateRequest(10))}
     )
     with pytest.raises(ValueError, match="candidate IDs must be unique"):
-        next(PLANS.prepare(contract, (duplicate,)).batches((duplicate,), batch_size=1))
+        next(PLANS.prepare(contract, (duplicate,)).batches(batch_size=1))
 
 
 def test_candidate_source_and_target_references_are_validated() -> None:

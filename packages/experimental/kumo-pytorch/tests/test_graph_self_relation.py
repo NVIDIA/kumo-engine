@@ -8,9 +8,10 @@ import pytest
 
 from conformance.assertions import bound_tables
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 @pytest.mark.parametrize("pk_left", [True, False])
 @pytest.mark.parametrize("direction", ["forward", "reverse"])
 @pytest.mark.parametrize("connected", [True, False])
@@ -64,13 +65,12 @@ def test_self_relation_orientation(engine_name, pk_left, direction, connected):
         ),
     )
     contract = api.DataLoaderSpec.from_json(contract.to_json())
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     requests = [api.SampleRequest("root", root, 100)]
     with (
         bound_tables(contract, {"accounts": rows}, engine_name) as (dataset, engine),
         api.prepare(contract, dataset, engine) as plan,
-        plan.materialize(requests) as task,
+        plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task,
     ):
         batches = list(
             task.batches(

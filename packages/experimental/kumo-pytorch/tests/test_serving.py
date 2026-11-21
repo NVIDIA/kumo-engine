@@ -25,6 +25,8 @@ from conformance.sequence_cases import generate_sequence_case
 from kumo.pytorch import api
 from kumo.pytorch.serving import RowLimit, RowsJoin, ServingRowsSpec
 from tests import lifecycle_app
+from tests.native_fixtures import prepare_rows, request_anchor_table
+from tests.serving_assertions import assert_serving_batches
 from tests.serving_fetch import fetch
 from tests.test_diskgraph_backend import _fixture_rows, _requests, _schema, _temporal_contract
 from tests.test_inference_lifecycle import _dataset, assert_same_batches
@@ -43,9 +45,9 @@ def _artifact(
     contract: api.DataLoaderSpec, tables: Tables, requests: Sequence[api.SampleRequest]
 ) -> api.Artifact:
     dataset = api.Dataset({name: api.InMemoryRows(rows) for name, rows in tables.items()})
-    with api.prepare(contract, dataset, api.InMemoryEngine()) as plan:
+    with prepare_rows(contract, dataset) as plan:
         anchors = [replace(request, split=None) for request in requests]
-        with plan.materialize(anchors) as task:
+        with plan.materialize(request_anchor_table(anchors, schema=plan.contract.schema)) as task:
             return task.to_artifact()
 
 
@@ -56,7 +58,11 @@ def _batch_inference(
     requests: Sequence[api.SampleRequest],
 ) -> dict[str, api.Batch]:
     with api.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             return {
                 batch.metadata["sample_ids"][0]: batch
                 for batch in task.batches(batch_size=1, seed=SEED)
@@ -199,13 +205,17 @@ CASES: dict[str, Callable[[], tuple[api.DataLoaderSpec, Tables, list[api.SampleR
 def test_fetching_what_rows_spec_lists_gives_batch_inference(name: str) -> None:
     contract, tables, requests = CASES[name]()
     artifact = _artifact(contract, tables, requests)
-    dataset, engine = _dataset("in_memory", tables, Path())
+    dataset, engine = _dataset("diskgraph", tables, Path(), schema=contract.schema)
     expected = _batch_inference(artifact, dataset, engine, requests)
     server = api.ServingAssembler(artifact)
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)
-        assert_same_batches(
-            server.assemble(rows, [request], seed=SEED), [expected[request.sample_id]]
+        assert_serving_batches(
+            server.assemble(rows, [request], seed=SEED),
+            [expected[request.sample_id]],
+            artifact,
+            tables,
+            [request],
         )
 
 
@@ -228,9 +238,11 @@ def test_spec_fetch_of_a_graph_contract_equals_batch_inference(tmp_path: Path) -
     # columns, events, two-hop graph and future-row targets
     contract = _temporal_contract(_schema())
     rows = _fixture_rows()
-    dataset, engine = _dataset("in_memory", rows, tmp_path)
+    dataset, engine = _dataset("diskgraph", rows, tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             artifact = task.to_artifact()
     expected = _batch_inference(artifact, dataset, engine, _requests())
     server = api.ServingAssembler(artifact)
@@ -338,6 +350,53 @@ def _request(user_id: int = 4) -> api.SampleRequest:
     return api.SampleRequest(f"user-{user_id}", user_id, example.SCORE_AT)
 
 
+@pytest.mark.parametrize(
+    "operation", ["construct", "open", "anchors", "source", "graph", "samples"]
+)
+def test_serving_dependency_exception_does_not_allow_test_backends(example_server, operation):
+    from kumo.pytorch.engines.in_memory.graph import InMemoryGraphSampler
+    from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    (batch,) = example_server.assemble(_user_rows(4), [_request()])
+    assert batch.metadata["sample_ids"] == ("user-4",)
+    with pytest.raises(ValueError, match="at least one request"):
+        example_server.assemble({}, [])
+    calls = {
+        "construct": lambda: api.InMemoryEngine(),
+        "open": lambda: api.InMemoryEngine.open(object(), None, None),
+        "anchors": lambda: api.InMemoryEngine.materialize_anchors(object(), None),
+        "source": lambda: InMemorySource(None, {}),
+        "graph": lambda: InMemoryGraphSampler(None, {}),
+        "samples": lambda: InMemorySampleBuilder(None, {}),
+    }
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        calls[operation]()
+
+
+def test_serving_dependency_errors_still_fail(example_server, monkeypatch):
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("serving dependency crashed")
+
+    monkeypatch.setattr(InMemorySource, "build", broken)
+    with pytest.raises(RuntimeError, match="serving dependency crashed"):
+        example_server.assemble(_user_rows(4), [_request()])
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        api.InMemoryEngine()
+
+
+def test_serving_exception_never_allows_opening_a_test_backend(example_server, monkeypatch):
+    from kumo.pytorch.engines.in_memory.source import InMemorySource
+
+    monkeypatch.setattr(
+        InMemorySource, "build", lambda *args: api.InMemoryEngine.open(object(), None, None)
+    )
+    with pytest.raises(AssertionError, match="InMemory execution is forbidden"):
+        example_server.assemble(_user_rows(4), [_request()])
+
+
 def _refused(server: api.ServingAssembler, rows: Mapping[str, object], pattern: str) -> None:
     with pytest.raises(ValueError, match=pattern) as error:
         server.assemble(rows, [_request()])  # type: ignore[arg-type]
@@ -401,7 +460,7 @@ def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler)
         **tables,
         "users": [{**row, "segment": None} for row in tables["users"]],
     }
-    dataset, engine = _dataset("in_memory", blank, Path())
+    dataset, engine = _dataset("diskgraph", blank, Path(), schema=contract.schema)
     request = _request(4)
     expected = _batch_inference(artifact, dataset, engine, [request])[request.sample_id]
     rows = _user_rows(4)
@@ -424,7 +483,9 @@ def test_resolve_never_reads_supplied_rows(example_server: api.ServingAssembler)
         ),
     )
     for supplied in (rows, arrow):
-        assert_same_batches(example_server.assemble(supplied, [request]), [expected])
+        assert_serving_batches(
+            example_server.assemble(supplied, [request]), [expected], artifact, blank, [request]
+        )
 
 
 def test_the_plan_is_built_once_and_rows_are_never_fingerprinted(
@@ -483,7 +544,9 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
     torch.manual_seed(0)
     with api.prepare(example.contract(), dataset, engine) as plan:
         anchors = example.anchors(example.TRAIN_AT, split="train")
-        with plan.materialize(anchors, fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(anchors, schema=plan.contract.schema), fit_split="train"
+        ) as task:
             model = example.ActivityModel(task.output_schema)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.03)
             for batch in task.batches(split="train", output_format="model"):
@@ -501,10 +564,14 @@ def test_a_model_trained_on_model_format_batches_takes_served_batches(tmp_path: 
     server = api.ServingAssembler(artifact)
     requests = [api.SampleRequest(f"user-{u}", u, example.SCORE_AT) for u in (1, 2, 3)]
     with api.prepare(artifact.contract, dataset, engine) as plan:
-        with plan.materialize(requests, fitted=artifact.fitted_state, inference=True) as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             model_format = {
-                request.sample_id: next(iter(task.batches([request], output_format="model")))
-                for request in requests
+                batch.metadata["sample_ids"][0]: batch
+                for batch in task.batches(batch_size=1, output_format="model")
             }
     for request in requests:
         rows = fetch(server.rows_spec, artifact.contract.schema, tables, request)

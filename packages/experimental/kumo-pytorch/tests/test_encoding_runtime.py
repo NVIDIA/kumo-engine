@@ -13,6 +13,7 @@ import torch
 from kumo.pytorch.contract.batch import Vocabulary
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.encoding import FittedSpace, fit_encoder
+from tests.native_fixtures import request_anchor_table
 
 
 @pytest.mark.parametrize("physical", [pa.string(), pa.large_string()])
@@ -88,14 +89,16 @@ def test_diskgraph_rebuilds_runtime_lookups_from_portable_fitted_state(monkeypat
         bound_tables(contract, _tables(), "diskgraph") as (dataset, engine),
         api.prepare(contract, dataset, engine) as plan,
     ):
-        with plan.materialize(requests) as task:
+        with plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task:
             written = task.fitted_state.to_dict()
             expected = list(task.batches(batch_size=2, output_format="model"))
             assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
             assert task.fitted_state.to_dict() == written
             fitted = pickle.loads(pickle.dumps(task.fitted_state))
         assert len(builds) == 1
-        with plan.materialize(requests, fitted=fitted) as task:
+        with plan.materialize(
+            request_anchor_table(requests, schema=plan.contract.schema), fitted=fitted
+        ) as task:
             assert_same_batches(list(task.batches(batch_size=2, output_format="model")), expected)
             assert task.fitted_state.to_dict() == written
         assert len(builds) == 2

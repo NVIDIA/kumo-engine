@@ -37,7 +37,6 @@ from kumo.pytorch.api import (
     ExternalTarget,
     Field,
     Fields,
-    InMemoryEngine,
     InMemoryRows,
     Input,
     LabelTarget,
@@ -54,13 +53,20 @@ from kumo.pytorch.api import (
     TimeWindow,
     ValidationError,
     ZScore,
-    check,
     padded_positions,
     prepare,
     shard_positions,
 )
-from kumo.pytorch.engines.in_memory.anchors import InMemoryAnchors
+from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 from kumo.pytorch.task import _mark_padding
+from tests.native_fixtures import (
+    check_rows,
+    native_anchor_table,
+    native_engine,
+    parquet_dataset,
+    prepare_rows,
+    request_anchor_table,
+)
 
 USERS = [{"user_id": index, "score": float(index)} for index in range(1, 13)]
 EVENTS = [
@@ -129,7 +135,7 @@ def _table(**overrides: object) -> AnchorTable:
         "split": "split",
     }
     settings.update(overrides)
-    return AnchorTable(**settings)
+    return native_anchor_table(**settings)
 
 
 class TestOrdering:
@@ -173,7 +179,7 @@ def _requests_for(split: str) -> list[SampleRequest]:
 
 
 def _check_anchors(contract: DataLoaderSpec, table: AnchorTable) -> list[str]:
-    issues = check(contract, DATASET, InMemoryEngine(), anchors=table)
+    issues = check_rows(contract, DATASET, anchors=table)
     return [item.path for item in issues if item.path.startswith("anchors")]
 
 
@@ -194,25 +200,33 @@ class TestMaterialize:
     """Anchors bind once, at materialize; each pass then chooses a split."""
 
     def test_fitting_reads_only_the_fit_split(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             assert task.count("train") == 8
             assert task.count("valid") == 4
             assert task.count() == 12
 
     def test_anchors_spanning_splits_need_a_fit_split(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             with pytest.raises(ValueError, match="pass fit_split"):
                 plan.materialize(_table())
 
     def test_requests_carrying_splits_need_a_fit_selector_too(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             with pytest.raises(ValueError, match="pass fit_split"):
-                plan.materialize(_requests_for("train"))
-            assert plan.materialize(_requests_for("train"), fit_split="train").count("train") == 8
+                plan.materialize(
+                    request_anchor_table(_requests_for("train"), schema=plan.contract.schema)
+                )
+            assert (
+                plan.materialize(
+                    request_anchor_table(_requests_for("train"), schema=plan.contract.schema),
+                    fit_split="train",
+                ).count("train")
+                == 8
+            )
 
     def test_one_task_serves_every_split(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             valid = _scores(task.batches(split="valid", batch_size=4))
             train = _scores(task.batches(split="train", batch_size=4))
@@ -220,39 +234,47 @@ class TestMaterialize:
         assert len(train) == 8
 
     def test_an_unknown_split_is_refused_when_asked_for(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             with pytest.raises(ValueError, match="no anchors in split\\(s\\) \\['test'\\]"):
                 task.batches(split="test", batch_size=4)
 
     def test_a_split_cannot_be_applied_to_requests(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             with pytest.raises(ValueError, match="requests carry their own"):
                 task.batches(_requests_for("train"), split="train", batch_size=4)
 
-    def test_table_and_requests_yield_the_same_samples(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+    def test_native_table_batches_match_original_anchor_rows(self) -> None:
+        from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+        expected = {
+            row["sid"]: next(user["score"] for user in USERS if user["user_id"] == row["user_id"])
+            for row in ANCHORS
+            if row["split"] == "train"
+        }
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
-            from_table = {
-                sample_id: score
-                for batch in task.batches(split="train", batch_size=3, shuffle=True, seed=5)
-                for sample_id, score in zip(
-                    batch.metadata["sample_ids"],
-                    batch.inputs["entity"]["score"]["values"].tolist(),
-                    strict=True,
-                )
-            }
-            from_requests = {
-                sample_id: score
-                for batch in task.batches(_requests_for("train"), batch_size=3)
-                for sample_id, score in zip(
-                    batch.metadata["sample_ids"],
-                    batch.inputs["entity"]["score"]["values"].tolist(),
-                    strict=True,
-                )
-            }
-        assert from_table == from_requests
+            assert isinstance(task._anchors, NativeAnchors)
+            for epoch in (0, 1):
+                delivered = [
+                    (sample_id, score)
+                    for batch in task.batches(
+                        split="train",
+                        epoch=epoch,
+                        batch_size=3,
+                        shuffle=True,
+                        seed=5,
+                        output_format="model",
+                    )
+                    for sample_id, score in zip(
+                        batch.metadata["sample_ids"],
+                        batch.inputs["entity"]["score"]["values"].tolist(),
+                        strict=True,
+                    )
+                ]
+                assert len(delivered) == len(expected)
+                assert dict(delivered) == expected
 
 
 class TestFittedStateReuse:
@@ -278,15 +300,15 @@ class TestFittedStateReuse:
         )
 
     def test_complete_state_is_reused_without_refitting(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             train = plan.materialize(_table(), fit_split="train")
             scoring = plan.materialize(_table(), fitted=train.fitted_state)
         assert scoring.fitted_state == train.fitted_state
 
     def test_input_state_carries_into_a_contract_with_new_targets(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             pretrain = plan.materialize(_table(), fit_split="train")
-        with prepare(self._with_target(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(self._with_target(), DATASET) as plan:
             finetune = plan.materialize(
                 _table(), fitted=pretrain.fitted_state.inputs, fit_split="train"
             )
@@ -296,16 +318,16 @@ class TestFittedStateReuse:
         assert "future" in finetune.fitted_state["targets"]
 
     def test_complete_state_is_refused_under_different_targets(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             pretrain = plan.materialize(_table(), fit_split="train")
-        with prepare(self._with_target(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(self._with_target(), DATASET) as plan:
             with pytest.raises(ValueError, match="reuse fitted.inputs"):
                 plan.materialize(_table(), fitted=pretrain.fitted_state)
 
     def test_state_is_refused_under_different_inputs(self) -> None:
-        with prepare(_contract(temporal=False), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(temporal=False), DATASET) as plan:
             other = plan.materialize(_table(), fit_split="train")
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             with pytest.raises(ValueError, match="different inputs"):
                 plan.materialize(_table(), fitted=other.fitted_state.inputs, fit_split="train")
 
@@ -336,19 +358,19 @@ class TestOrderingGuarantees:
 
     @pytest.mark.parametrize("world_size", [1, 2, 3, 5, 8, 11])
     def test_exactly_once_disjoint_and_equal(self, world_size: int) -> None:
-        anchors = InMemoryAnchors(_table())
+        anchors = ParquetAnchors(_table())
         ranks = self._epoch(anchors, world_size=world_size)
         real = [position for rank in ranks for position, padding in rank if not padding]
         assert sorted(real) == list(range(anchors.count(frozenset({"train"}))))
         assert len({len(rank) for rank in ranks}) == 1
 
     def test_the_order_is_a_pure_function_of_seed_and_epoch(self) -> None:
-        anchors = InMemoryAnchors(_table())
+        anchors = ParquetAnchors(_table())
         assert self._epoch(anchors, world_size=3) == self._epoch(anchors, world_size=3)
         assert self._epoch(anchors, world_size=3) != self._epoch(anchors, world_size=3, epoch=1)
 
     def test_padding_repeats_only_a_rank_s_own_anchor(self) -> None:
-        anchors = InMemoryAnchors(_table())
+        anchors = ParquetAnchors(_table())
         for rank in self._epoch(anchors, world_size=3):
             own = {position for position, padding in rank if not padding}
             assert all((position in own for position, padding in rank if padding))
@@ -358,7 +380,7 @@ class TestOrderingGuarantees:
             list(padded_positions(iter(range(5)), count=6, world_size=3))
 
     def test_every_rank_gets_the_same_number_of_batches(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             per_rank = [
                 list(
@@ -383,7 +405,7 @@ class TestOrderingGuarantees:
         assert sorted(real_ids) == sorted(row["sid"] for row in ANCHORS if row["split"] == "train")
 
     def test_the_padding_marker_never_leaks_into_request_metadata(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             batches = list(task.batches(split="train", batch_size=4, rank=2, world_size=3))
         assert all(
@@ -405,7 +427,7 @@ class TestPaddingIdentity:
     def _materialize(plan, requests, source):
         if source == "table":
             return plan.materialize(
-                AnchorTable(
+                native_anchor_table(
                     source=InMemoryRows(
                         rows=[
                             {
@@ -423,12 +445,26 @@ class TestPaddingIdentity:
                     metadata=("source",),
                 )
             )
-        return plan.materialize(requests)
+        if source in {"materialized_requests", "explicit_requests"}:
+            # Only the heterogeneous-ID compatibility check uses request records.
+            return plan.materialize(requests)
+        table = request_anchor_table(requests, schema=plan.contract.schema)
+        task = plan.materialize(table)
+        if source == "reused_state":
+            task = plan.materialize(table, fitted=task.fitted_state)
+        assert callable(task._anchors.batches)
+        return task
 
     @staticmethod
     def _assert_rows(batches, ids, positions, padding):
-        assert [sid for batch in batches for sid in batch.metadata["sample_ids"]] == ids
-        assert len(set(ids)) == len(ids)
+        actual_ids = [sid for batch in batches for sid in batch.metadata["sample_ids"]]
+        assert len(actual_ids) == len(ids) == len(set(actual_ids))
+        real_ids = {sid for sid, flag in zip(ids, padding, strict=True) if not flag}
+        for actual, expected, flag in zip(actual_ids, ids, padding, strict=True):
+            if flag:
+                assert actual not in real_ids
+            else:
+                assert actual == expected
         assert [p for batch in batches for p in batch.metadata["is_padding"].tolist()] == padding
         assert [i for batch in batches for i in batch.metadata["entity_ids"].tolist()] == [
             index + 1 for index in positions
@@ -436,16 +472,19 @@ class TestPaddingIdentity:
         assert [t for batch in batches for t in batch.metadata["as_of_time"].tolist()] == [
             10 + index for index in positions
         ]
-        assert [m for batch in batches for m in batch.metadata["request_metadata"]] == [
-            {"split": None, "source": f"row-{index}"} for index in positions
-        ]
+        metadata = [m for batch in batches for m in batch.metadata["request_metadata"]]
+        assert len(metadata) == len(positions)
+        for entry, index in zip(metadata, positions, strict=True):
+            assert entry["source"] == f"row-{index}"
+            assert entry.get("split") is None
+            assert entry.keys() <= {"source", "split"}
         assert [
             value
             for batch in batches
             for value in batch.inputs["entity"]["score"]["values"].tolist()
         ] == [float(index + 1) for index in positions]
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests", "explicit_requests"])
+    @pytest.mark.parametrize("source", ["table", "projected", "reused_state"])
     @pytest.mark.parametrize("batch_size", [1, 3])
     @pytest.mark.parametrize(
         ("ids", "world_size", "expected_ids", "positions", "padding"),
@@ -460,9 +499,9 @@ class TestPaddingIdentity:
                 [False, False, True],
             ),
             (
-                ["a", 1, "c", "1#padding2", "e"],
+                ["a", "1", "c", "1#padding2", "e"],
                 2,
-                [1, "1#padding2", "1#padding3"],
+                ["1", "1#padding2", "1#padding3"],
                 [1, 3, 1],
                 [False, False, True],
             ),
@@ -494,28 +533,43 @@ class TestPaddingIdentity:
         self, source, batch_size, ids, world_size, expected_ids, positions, padding
     ) -> None:
         requests = self._requests(ids)
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = self._materialize(plan, requests, source)
             settings = {
                 "batch_size": batch_size,
                 "rank": world_size - 1,
                 "world_size": world_size,
             }
-            explicit = requests if source == "explicit_requests" else None
-            batches = list(task.batches(explicit, **settings))
+            if source == "explicit_requests":
+                settings["requests"] = requests
+            batches = list(task.batches(**settings))
             self._assert_rows(batches, expected_ids, positions, padding)
-            assert [b.metadata["sample_ids"] for b in task.batches(explicit, **settings)] == [
+            assert [b.metadata["sample_ids"] for b in task.batches(**settings)] == [
                 b.metadata["sample_ids"] for b in batches
             ]
         assert [request.sample_id for request in requests] == ids
         assert all("_is_padding" not in request.metadata for request in requests)
 
-    @pytest.mark.parametrize("source", ["table", "materialized_requests"])
+    @pytest.mark.parametrize("source", ["materialized_requests", "explicit_requests"])
+    @pytest.mark.parametrize("batch_size", [1, 3])
+    def test_mixed_typed_request_ids_remain_distinct(self, source, batch_size):
+        # Requests accept heterogeneous identities; a Parquet ID column has one dtype.
+        self.test_padding_preserves_real_identity_and_row_ownership(
+            source,
+            batch_size,
+            ["a", 1, "c", "1#padding2", "e"],
+            2,
+            [1, "1#padding2", "1#padding3"],
+            [1, 3, 1],
+            [False, False, True],
+        )
+
+    @pytest.mark.parametrize("source", ["table", "projected"])
     def test_padding_in_a_later_chunk_is_unique_and_resumable(self, source) -> None:
         requests = self._requests(["a", "b", "c", "d", "e", "f", "g", "b#padding1", "i"])
         # The first chunk owns b/d/f. The final chunk owns b#padding1 and the
         # repeat of b; its locally generated b#padding1 must avoid the real row.
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = self._materialize(plan, requests, source)
             settings = {"batch_size": 3, "chunk_batches": 1, "rank": 1, "world_size": 2}
             batches = list(task.batches(**settings))
@@ -560,7 +614,7 @@ class TestPaddingIdentity:
 
 class TestResume:
     def test_a_saved_position_continues_the_same_sequence(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             settings = {"split": "train", "batch_size": 2, "shuffle": True, "seed": 9, "epoch": 4}
             full = [b.metadata["sample_ids"] for b in task.batches(**settings)]
@@ -573,7 +627,7 @@ class TestResume:
         assert rest == full[1:]
 
     def test_a_position_is_refused_under_another_configuration(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             first = task.batches(split="train", batch_size=2, seed=1)
             next(first)
@@ -585,10 +639,18 @@ class TestResume:
 
 class TestIdentity:
     def test_a_task_carries_its_fingerprints_and_output_schema(self) -> None:
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        """Repeated materialization preserves task identity.
+
+        Expected: Identical inputs produce identical fingerprints; changing the
+        anchors changes their fingerprint. The output schema describes the inputs.
+        """
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             again = plan.materialize(_table(), fit_split="train")
-            other = plan.materialize(_requests_for("train"), fit_split="train")
+            other = plan.materialize(
+                request_anchor_table(_requests_for("train"), schema=plan.contract.schema),
+                fit_split="train",
+            )
         assert set(task.fingerprints) == {
             "contract",
             "inputs",
@@ -606,7 +668,7 @@ class TestIdentity:
     def test_the_artifact_records_the_task_identity(self, tmp_path) -> None:
         import json
 
-        with prepare(_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_contract(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             task.to_artifact().save(tmp_path)
         written = json.loads((tmp_path / "task.json").read_text())
@@ -615,7 +677,7 @@ class TestIdentity:
 
 class TestRefusals:
     def test_a_missing_prediction_time_is_refused(self) -> None:
-        issues = check(_contract(), DATASET, InMemoryEngine(), anchors=_table(as_of_time=None))
+        issues = check_rows(_contract(), DATASET, anchors=_table(as_of_time=None))
         issue = next(item for item in issues if item.path == "anchors.as_of_time")
         assert "no column holding each anchor's prediction time" in issue.message
 
@@ -634,15 +696,15 @@ class TestRefusals:
             _contract(temporal=False).batch,
         )
         dataset = Dataset(tables={"users": InMemoryRows(rows=USERS)})
-        issues = check(static, dataset, InMemoryEngine(), anchors=_table())
+        issues = check_rows(static, dataset, anchors=_table())
         assert [item.path for item in issues] == ["anchors.as_of_time"]
-        assert check(static, dataset, InMemoryEngine(), anchors=_table(as_of_time=None)) == ()
+        assert check_rows(static, dataset, anchors=_table(as_of_time=None)) == ()
 
     def test_materialize_refuses_before_the_table_is_read(self) -> None:
-        engine = InMemoryEngine()
+        engine = native_engine()
         read: list[AnchorTable] = []
         engine.materialize_anchors = read.append
-        with prepare(_contract(), DATASET, engine) as plan:
+        with prepare(_contract(), parquet_dataset(_contract().schema, DATASET), engine) as plan:
             with pytest.raises(ValidationError) as error:
                 plan.materialize(_table(as_of_time=None), fit_split="train")
         assert [item.path for item in error.value.issues] == ["anchors.as_of_time"]
@@ -675,8 +737,8 @@ class TestRefusals:
         )
         assert "anchors.targets" in _check_anchors(contract, _table(targets={"y": "label"}))
 
-    def test_an_engine_refuses_a_format_it_does_not_read(self) -> None:
-        assert "anchors.source" in _check_anchors(
+    def test_a_missing_anchor_path_is_named(self) -> None:
+        assert "anchors.source.path" in _check_anchors(
             _contract(), _table(source=Parquet("/lake/anchors"))
         )
 
@@ -722,8 +784,8 @@ class TestCandidates:
             ),
         )
 
-    def _table(self) -> AnchorTable:
-        rows = [
+    def _candidate_rows(self):
+        return [
             {
                 "sid": f"s{index}",
                 "user_id": index,
@@ -736,8 +798,10 @@ class TestCandidates:
             }
             for index in range(1, 5)
         ]
-        return AnchorTable(
-            source=InMemoryRows(rows=rows),
+
+    def _table(self) -> AnchorTable:
+        return native_anchor_table(
+            source=InMemoryRows(rows=self._candidate_rows()),
             entity_id="user_id",
             as_of_time="at",
             sample_id="sid",
@@ -765,7 +829,7 @@ class TestCandidates:
                     )
                 },
             )
-            for row in self._table().source.rows
+            for row in self._candidate_rows()
         ]
 
     def test_an_undeclared_candidate_set_is_refused(self) -> None:
@@ -776,9 +840,9 @@ class TestCandidates:
                 "strangers": CandidateColumn(column="strangers", entity_id="peer_id"),
             },
         )
-        assert _check_anchors(self._contract_with_candidates(), table) == [
-            "anchors.candidates.strangers"
-        ]
+        assert "anchors.candidates.strangers" in _check_anchors(
+            self._contract_with_candidates(), table
+        )
 
     def test_a_candidate_label_cannot_be_both_supplied_and_computed(self) -> None:
         contract = self._contract_with_candidates()
@@ -796,15 +860,19 @@ class TestCandidates:
         contract = replace(
             contract, sample=replace(contract.sample, candidate_sets={"peers": computed})
         )
-        assert _check_anchors(contract, self._table()) == ["anchors.candidates.peers.targets"]
+        assert "anchors.candidates.peers.targets" in _check_anchors(contract, self._table())
 
     def test_a_nested_column_matches_caller_supplied_candidates(self) -> None:
         contract = self._contract_with_candidates()
         requests = self._requests()
-        with prepare(contract, DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(contract, DATASET) as plan:
             task = plan.materialize(self._table(), fit_split="train")
             from_table = next(iter(task.batches(split="train", batch_size=4)))
-            from_requests = next(iter(task.batches(requests, batch_size=4)))
+            projected = plan.materialize(
+                request_anchor_table(requests, schema=plan.contract.schema),
+                fitted=task.fitted_state,
+            )
+            from_requests = next(projected.batches(split="train", batch_size=4))
         assert from_table.inputs["peers"]["score"]["values"].equal(
             from_requests.inputs["peers"]["score"]["values"]
         )
@@ -814,19 +882,20 @@ class TestCandidates:
 
     def test_candidate_order_is_the_column_order(self) -> None:
         contract = self._contract_with_candidates()
-        with prepare(contract, DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(contract, DATASET) as plan:
             task = plan.materialize(self._table(), fit_split="train")
             batch = next(iter(task.batches(batch_size=4)))
         assert batch.targets["clicked"]["values"][0].tolist() == [1.0, 0.0]
 
     def test_an_anchor_with_no_candidates_is_empty_not_an_error(self) -> None:
         table = self._table()
-        rows = [dict(row) for row in table.source.rows]
+        rows = self._candidate_rows()
         rows[0]["peers"] = None
         contract = self._contract_with_candidates()
-        with prepare(contract, DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(contract, DATASET) as plan:
             task = plan.materialize(
-                replace(table, source=InMemoryRows(rows=rows)), fit_split="train"
+                native_anchor_table(replace(table, source=InMemoryRows(rows=rows))),
+                fit_split="train",
             )
             batch = next(iter(task.batches(split="train", batch_size=4)))
         assert batch.inputs["peers"]["valid"][0].tolist() == [False, False]
@@ -894,10 +963,10 @@ class TestTimeDeclaredAnywhereNeedsAnAnchorTime:
             },
         )
         assert contract.requires_anchor_time
-        engine = InMemoryEngine()
+        engine = native_engine()
         read: list[AnchorTable] = []
         engine.materialize_anchors = read.append
-        with prepare(contract, DATASET, engine) as plan:
+        with prepare(contract, parquet_dataset(contract.schema, DATASET), engine) as plan:
             with pytest.raises(ValidationError) as error:
                 plan.materialize(_table(as_of_time=None), fit_split="train")
         assert "anchors.as_of_time" in [item.path for item in error.value.issues]
@@ -990,12 +1059,12 @@ class TestDistributedTokenBudgets:
         )
 
     def test_a_token_budget_is_refused_across_ranks(self) -> None:
-        with prepare(self._budgeted(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(self._budgeted(), DATASET) as plan:
             task = plan.materialize(_table(), fit_split="train")
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
                 task.batches(split="train", rank=0, world_size=2)
             with pytest.raises(ValueError, match="max_tokens with world_size > 1"):
-                task.batches(_requests_for("train"), rank=1, world_size=2)
+                task.batches(split="train", rank=1, world_size=2)
             assert list(task.batches(split="train"))
 
 
@@ -1037,7 +1106,7 @@ class TestFitSelection:
         return _table(source=InMemoryRows(rows=rows))
 
     def _fit(self, table: AnchorTable, **selection: object):
-        with prepare(_scored_contract(), DATASET, InMemoryEngine()) as plan:
+        with prepare_rows(_scored_contract(), DATASET) as plan:
             return plan.materialize(table, **selection)
 
     def test_a_table_with_a_split_column_requires_a_selector(self) -> None:

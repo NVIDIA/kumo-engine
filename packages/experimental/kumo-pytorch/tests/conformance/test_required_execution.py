@@ -29,6 +29,17 @@ def run_pytest(command, directory):
             str((REPOSITORY / entry).resolve()) if not Path(entry).is_absolute() else entry
             for entry in env["PYTHONPATH"].split(os.pathsep)
         )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            str(REPOSITORY),
+            str(REPOSITORY / "src"),
+            *[
+                str(Path(entry).resolve())
+                for entry in env.get("PYTHONPATH", "").split(os.pathsep)
+                if entry
+            ],
+        ]
+    )
     return subprocess.run(
         command, cwd=directory, env=env, capture_output=True, text=True, timeout=30
     )
@@ -101,9 +112,9 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
         # The property module itself drops a batch; the conftest pin still requires it.
         module = tmp_path / "conformance/properties.py"
         text = module.read_text()
-        assert '"in_memory": (0, 1, 2)' in text
-        module.write_text(text.replace('"in_memory": (0, 1, 2)', '"in_memory": (0, 1)'))
-        properties = [item for item in properties if not item.endswith("in_memory-seed2")]
+        assert '"diskgraph": (0,)' in text
+        module.write_text(text.replace('"diskgraph": (0,)', '"diskgraph": ()'))
+        properties = [item for item in properties if not item.endswith("diskgraph-seed0")]
     gaps = [gap.id for gap in REPLAYED]
     body = {name: "pass" for name in ("test_property", "test_corpus", "test_known_gap")}
     if scenario in ("skip_property", "skip_corpus", "skip_known_gap"):
@@ -155,7 +166,6 @@ def test_complete_run_requires_actual_case_execution(tmp_path, scenario):
 @pytest.mark.parametrize(
     "engine,body,returncode,passed",
     (
-        ("in_memory", "pass", 0, 1),
         ("all", "pass", 0, 2),
         ("diskgraph", "pass", 0, 2),
         ("all", "raise ImportError('no diskgraph')", 1, 1),

@@ -465,10 +465,12 @@ def test_sampled_reuses_relation_field_encodings(sampled_plan, encoding):
 @pytest.mark.parametrize("output_format", ["model", "inspectable"])
 @pytest.mark.parametrize("cutoff", [-1, 0, 1])
 @pytest.mark.parametrize(
-    "topology,requests", [("sampled", False), ("relations", False), ("relations", True)]
+    "topology,split",
+    [("sampled", api.ALL_ANCHORS), ("relations", api.ALL_ANCHORS), ("relations", "train")],
+    ids=["sampled-all", "relations-all", "relations-train"],
 )
 def test_sampled_enforces_entity_availability(
-    sampled_plan, tmp_path, output_format, cutoff, topology, requests
+    sampled_plan, tmp_path, output_format, cutoff, topology, split
 ):
     plan, _ = sampled_plan
     contract = replace(
@@ -490,20 +492,23 @@ def test_sampled_enforces_entity_availability(
     )
     path = tmp_path / "availability.parquet"
     pq.write_table(
-        pa.table({"entity": [1], "cutoff": pa.array([cutoff], type=pa.timestamp("s", tz="UTC"))}),
+        pa.table(
+            {
+                "entity": [1],
+                "cutoff": pa.array([cutoff], type=pa.timestamp("s", tz="UTC")),
+                "split": ["train"],
+            }
+        ),
         path,
     )
-    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff")
+    anchors = api.AnchorTable(api.Parquet(str(path)), "entity", "cutoff", split="split")
     with api.prepare(contract, plan.dataset, plan.engine) as bound:
-        with bound.materialize(anchors) as task:
-            arguments = {}
-            if requests:
-                arguments["requests"] = task._anchors.fetch(api.ALL_ANCHORS, [0])
+        with bound.materialize(anchors, fit_split="train") as task:
             if cutoff <= 0:
                 with pytest.raises(ValueError, match="did not exist"):
-                    next(task.batches(output_format=output_format, **arguments))
+                    next(task.batches(split=split, output_format=output_format))
             else:
-                assert next(task.batches(output_format=output_format, **arguments)).inputs["graph"]
+                assert next(task.batches(split=split, output_format=output_format)).inputs["graph"]
 
 
 def _refit_anchors(tmp_path, counts):

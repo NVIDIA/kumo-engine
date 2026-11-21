@@ -19,6 +19,7 @@ from kumo.pytorch.column_stats import DROPPED, TableColumnEncoder, read_token_le
 from kumo.pytorch.encoding import fit_encoder, train_text
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
 from kumo.pytorch.materialization import ensure_diskgraph_index
+from tests.native_fixtures import request_anchor_table
 from tests.test_column_stats import LATEST, _column, _contract, _requests, _setup
 from tests.test_diskgraph_backend import _fixture_rows, _write_parquet
 
@@ -76,36 +77,41 @@ def _tokenizer(task: api.Task) -> str:
     return task.output("transactions").field(name="description").encoder.tokenizer_json
 
 
-@pytest.mark.parametrize("engine_name", ("in_memory", "diskgraph"))
+@pytest.mark.parametrize("engine_name", ("diskgraph",))
 def test_a_stored_text_column_trains_on_its_rows_up_to_the_cutoff(tmp_path, engine_name):
     dataset, engine = _setup(engine_name, tmp_path)
     expected = train_text(TEXT, [_column("card_transactions", "description", LATEST)])
     published = []
     for _ in range(2):
         with api.prepare(_text_contract(), dataset, engine) as plan:
-            with plan.materialize(_requests(), fit_split="train") as task:
+            with plan.materialize(
+                request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 assert _tokenizer(task) == expected
                 statistics = task.fitted_state.fit["inputs"]["statistics"]
         texts = tmp_path.glob("index/col_stats/*/*.text-*.tokenizer.json")
         published.append({path: path.stat().st_mtime_ns for path in texts})
-    if engine_name == "diskgraph":
-        assert any(".text-" in name for name in statistics["col_stats"])
-        assert published[0] == published[1]
-        (path,) = published[0]
-        assert json.loads(path.read_text())["tokenizer"] == expected
-        umask = os.umask(0)
-        os.umask(umask)
-        assert path.stat().st_mode & 0o777 == 0o666 & ~umask
+    assert any(".text-" in name for name in statistics["col_stats"])
+    assert published[0] == published[1]
+    (path,) = published[0]
+    assert json.loads(path.read_text())["tokenizer"] == expected
+    umask = os.umask(0)
+    os.umask(umask)
+    assert path.stat().st_mode & 0o777 == 0o666 & ~umask
 
 
 def test_both_engines_and_every_thread_count_train_the_same_tokenizer(tmp_path):
     tokenizers = set()
-    for name, threads in (("in_memory", None), ("diskgraph", 1), ("diskgraph", 4)):
+    for name, threads in (("diskgraph", 1), ("diskgraph", 4)):
         dataset, engine = _setup(name, tmp_path / f"{name}-{threads}")
         if threads:
             engine = api.DiskGraphEngine(index=engine.index, num_threads=threads)
         with api.prepare(_text_contract(), dataset, engine) as plan:
-            with plan.materialize(_requests(), fit_split="train", encoder_cutoff=None) as task:
+            with plan.materialize(
+                request_anchor_table(_requests(), schema=plan.contract.schema),
+                fit_split="train",
+                encoder_cutoff=None,
+            ) as task:
                 tokenizers.add(_tokenizer(task))
     assert len(tokenizers) == 1
 
@@ -159,7 +165,9 @@ def test_the_index_trains_the_tokenizer_python_trains_on_every_thread_count(tmp_
 def test_a_fit_without_length_input_keeps_no_token_lengths(tmp_path):
     dataset, engine = _setup("diskgraph", tmp_path)
     with api.prepare(_text_contract(), dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             assert "token_lengths" not in task.fitted_state.fit["inputs"]["statistics"]
     assert not list(tmp_path.glob("index/col_stats/*/*.lengths-*.bin"))
 
@@ -179,7 +187,9 @@ def test_a_measured_fit_keeps_each_event_rows_token_count(tmp_path, padded):
     kept = []
     for _ in range(2):
         with api.prepare(_measured(_text_contract(encoding)), dataset, engine) as plan:
-            with plan.materialize(_requests(), fit_split="train") as task:
+            with plan.materialize(
+                request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+            ) as task:
                 encoder = task.output("transactions").field(name="description").encoder
                 tokenizer = encoder.tokenizer
                 lengths = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"]
@@ -208,7 +218,9 @@ def _edited(directory, column: str, value, step: int):
 
 def _entry(contract: api.DataLoaderSpec, dataset, engine) -> dict:
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
     return entry
 
@@ -234,7 +246,9 @@ def test_an_empty_string_counts_the_unknown_id_it_emits(tmp_path):
     with api.prepare(
         _measured(_text_contract(replace(TEXT, empty="unknown"))), dataset, engine
     ) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             encoder = task.output("transactions").field(name="description").encoder
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
     _, pieces = read_token_lengths(tmp_path / "index", entry)
@@ -286,7 +300,9 @@ def test_a_required_field_every_component_must_store_once(tmp_path, again, messa
     dataset, engine = _setup("diskgraph", tmp_path)
     with api.prepare(contract, dataset, engine) as plan:
         with pytest.raises(ValueError, match=message):
-            plan.materialize(_requests(), fit_split="train")
+            plan.materialize(
+                request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+            )
 
 
 def test_a_changed_empty_policy_or_required_field_never_reuses_counts(tmp_path):
@@ -332,11 +348,13 @@ def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkey
         batching=replace(contract.batch.batching, max_tokens=64),
     )
     with api.prepare(replace(contract, batch=spec), dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
             emitted = [
                 batch.inputs["transactions"]["field_offsets"].diff().tolist()
-                for batch in task.batches(_requests())
+                for batch in task.batches()
             ]
     assert read_token_lengths(tmp_path / "index", entry) == (2, None)
     assert {count for counts in emitted for count in counts} == {2}
@@ -346,7 +364,9 @@ def test_a_fixed_width_recipe_records_a_constant_without_a_scan(tmp_path, monkey
 def _lengths(contract: api.DataLoaderSpec, directory) -> tuple[dict, bytes]:
     dataset, engine = _setup("diskgraph", directory)
     with api.prepare(contract, dataset, engine) as plan:
-        with plan.materialize(_requests(), fit_split="train") as task:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+        ) as task:
             (entry,) = task.fitted_state.fit["inputs"]["statistics"]["token_lengths"].values()
     return entry, (directory / "index" / "col_stats" / entry["file"]).read_bytes()
 
@@ -365,7 +385,9 @@ def test_a_column_two_encoders_read_counts_once(tmp_path):
     dataset, engine = _setup("diskgraph", tmp_path)
     with api.prepare(twice, dataset, engine) as plan:
         with pytest.raises(ValueError, match="different tokenizers"):
-            plan.materialize(_requests(), fit_split="train")
+            plan.materialize(
+                request_anchor_table(_requests(), schema=plan.contract.schema), fit_split="train"
+            )
 
 
 def test_chunked_encoding_matches_one_string_at_a_time(monkeypatch):

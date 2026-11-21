@@ -25,7 +25,7 @@ def test_wrong_expected_answer_does_not_pass():
     case = discover_cases()["C-ROWS-001"]
     wrong = {sample_id: {"entity_values": {"event_count": 99}} for sample_id in case.expected}
     with pytest.raises(AssertionError, match="expected.*got"):
-        assert_answer(replace(case, expected=wrong), "in_memory")
+        assert_answer(replace(case, expected=wrong), "diskgraph")
 
 
 @pytest.mark.parametrize(
@@ -37,11 +37,11 @@ def test_refusal_proof_is_specific_and_pre_read(damage):
 
     @contextmanager
     def binding(*args, **kwargs):
-        with bound_case(case, "in_memory", refusal=True) as (dataset, engine):
+        with bound_case(case, "diskgraph", refusal=True) as (dataset, engine):
 
             def preflight(contract):
                 if damage == "read":
-                    list(dataset.tables["events"].rows)
+                    raise AssertionError("refusal read rows while checking the request")
                 if damage == "accepted":
                     return ()
                 message = "unrelated error" if damage == "wrong_reason" else "not implemented"
@@ -55,7 +55,7 @@ def test_refusal_proof_is_specific_and_pre_read(damage):
             yield dataset, engine
 
     with patch("conformance.assertions.bound_case", binding), pytest.raises(AssertionError):
-        assert_refusal(case, "in_memory", expected)
+        assert_refusal(case, "diskgraph", expected)
 
 
 def test_missing_native_dependency_is_a_failure():

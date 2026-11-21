@@ -17,7 +17,7 @@ from conformance.properties import seed_batches
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--engine", choices=("in_memory", "diskgraph", "all"), default="in_memory")
+    parser.add_argument("--engine", choices=("diskgraph", "all"), default="diskgraph")
     parser.add_argument(
         "--seeds",
         type=int,
@@ -39,8 +39,6 @@ def main() -> int:
                 parser.error(str(error))
     os.chdir(REPOSITORY)
     print(f"Checking goldens, generated properties and corpus on: {args.engine}", flush=True)
-    if args.engine == "in_memory":
-        print("DiskGraph is not executed by this command; use --engine all for both.", flush=True)
     return pytest.main(
         [
             "-q",

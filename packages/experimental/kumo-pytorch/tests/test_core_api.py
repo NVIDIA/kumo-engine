@@ -62,9 +62,9 @@ from kumo.pytorch.contract.sample import (
 )
 from kumo.pytorch.contract.schema import NON_TEMPORAL, DataSchema, RelationSpec, TableSpec
 from kumo.pytorch.data.records import EntityHistory, EntityState, Event, FieldValue
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
 from kumo.pytorch.spec import DataLoaderSpec, ValidationError
 from tests.helpers import Plans as _Plans
+from tests.native_fixtures import NativeSamples
 
 
 def _schema() -> DataSchema:
@@ -250,7 +250,7 @@ def test_one_aggregate_expression_works_for_context_and_future_targets() -> None
     spec = _sample_spec()
     assert isinstance(spec.entity_values["transaction_count"], Aggregate)
     assert isinstance(spec.targets["spend_next_30s"], Aggregate)
-    sample = InMemorySampleBuilder(_schema(), _tables()).build(
+    sample = NativeSamples(_schema(), _tables()).build(
         spec, [SampleRequest("user-1-at-100", entity_id=1, as_of_time=100, split="train")]
     )[0]
     entity_values = {field.key: field.value for field in sample.history.entity.values}
@@ -293,7 +293,7 @@ def test_aggregate_comparisons_round_trip_with_the_contract() -> None:
 
 
 def test_grouped_aggregate_supports_mean_of_per_account_counts() -> None:
-    sample = InMemorySampleBuilder(_schema(), _tables()).build(
+    sample = NativeSamples(_schema(), _tables()).build(
         _sample_spec(), [SampleRequest("sample", entity_id=1, as_of_time=100)]
     )[0]
     entity_values = {field.key: field.value for field in sample.history.entity.values}
@@ -301,7 +301,7 @@ def test_grouped_aggregate_supports_mean_of_per_account_counts() -> None:
 
 
 def test_next_row_target_is_after_cutoff_and_never_enters_history() -> None:
-    sample = InMemorySampleBuilder(_schema(), _tables()).build(
+    sample = NativeSamples(_schema(), _tables()).build(
         _sample_spec(), [SampleRequest("sample", entity_id=1, as_of_time=100)]
     )[0]
     target = next(item.value for item in sample.targets if item.name == "next_transaction")
@@ -377,7 +377,7 @@ def test_structured_future_target_uses_declared_field_encodings() -> None:
     contract = DataLoaderSpec(schema=_schema(), sample=_sample_spec(), batch=_batch_spec())
     requests = (SampleRequest("sample", 1, 100, split="train"),)
     plan = _Plans(_schema(), _tables()).prepare(contract, requests)
-    batch = next(plan.batches(requests))
+    batch = next(plan.batches())
     assert batch.targets["next_transaction"]["amount"]["values"].tolist() == [4.0]
     assert batch.targets["next_transaction"]["channel"]["values"].tolist() == [2]
     assert batch.metadata["splits"] == ("train",)
@@ -424,12 +424,12 @@ def test_current_event_is_explicit_and_can_also_appear_in_history() -> None:
     )
     contract = DataLoaderSpec(_schema(), sample_spec, batch_spec)
     request = SampleRequest("scored-transaction", 1, 100)
-    built = InMemorySampleBuilder(_schema(), tables).build(sample_spec, [request])[0]
+    built = NativeSamples(_schema(), tables).build(sample_spec, [request])[0]
     assert all(event.timestamp <= 100 for event in built.history.events)
     assert any(event.timestamp == 100 for event in built.history.events)
     assert built.current_events["transaction"][0].timestamp == 100
     plan = _Plans(_schema(), tables).prepare(contract, [request])
-    batch = next(plan.batches([request]))
+    batch = next(plan.batches())
     assert batch.inputs["current_transaction"]["amount"]["values"].tolist() == [[7.0]]
     assert batch.targets["channel"]["channel"]["values"].tolist() == [[2]]
 
@@ -710,8 +710,8 @@ def test_supplied_field_encoder_state_reproduces_local_and_final_ids():
         DataLoaderSpec(schema=_schema(), sample=_sample_spec(), batch=batch), [request]
     )
     supplied = engine.prepare(fitted.bound_contract(), [request])
-    before = next(fitted.batches([request], seed=7)).inputs["events"]
-    after = next(supplied.batches([request], seed=7)).inputs["events"]
+    before = next(fitted.batches(seed=7)).inputs["events"]
+    after = next(supplied.batches(seed=7)).inputs["events"]
     assert after["field_ids"].equal(before["field_ids"])
     assert after["value_ids"].equal(before["value_ids"])
     assert supplied.encoders["categories"].entries == fitted.encoders["categories"].entries
@@ -736,7 +736,7 @@ def test_supplied_normalization_state_is_used_without_refitting() -> None:
     )
     contract = DataLoaderSpec(_schema(), _sample_spec(), batch)
     request = SampleRequest("sample", 1, 100)
-    encoded = next(_Plans(_schema(), _tables()).prepare(contract, [request]).batches([request]))
+    encoded = next(_Plans(_schema(), _tables()).prepare(contract, [request]).batches())
     assert encoded.inputs["entity"]["transaction_count"]["values"].tolist() == [-3.5]
 
 

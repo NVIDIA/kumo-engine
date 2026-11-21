@@ -4,13 +4,14 @@
 
 """The generated-case machinery: wrong engines fail every property, repros round-trip."""
 
+import copy
 import json
 import random
 import re
-import tempfile
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,7 +19,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from conformance.assertions import bound_tables, write_parquet
+from conformance.assertions import bound_tables
 from conformance.cases import ENGINES, REPOSITORY
 from conformance.generate import (
     PHYSICAL_TYPES,
@@ -37,7 +38,6 @@ from conformance.properties import (
     PROPERTIES,
     SEEDS,
     PropertyFailure,
-    answer,
     obligations,
     replay,
     run_obligation,
@@ -58,17 +58,16 @@ from conformance.repro import CORPUS, load_corpus, load_repro, repro_payload, wr
 from conformance.sequence_cases import SEQUENCE_CHECKS
 from conformance.variants import VARIANTS
 from kumo.pytorch.api import (
-    Dataset,
-    InMemoryEngine,
-    InMemoryRows,
-    Parquet,
+    DiskGraphEngine,
     ValidationIssue,
 )
 from kumo.pytorch.contract.sample import BuiltSample
 from kumo.pytorch.data.records import FieldValue
-from kumo.pytorch.engines.in_memory.anchors import InMemoryAnchors
+from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from kumo.pytorch.engines.native_anchors import NativeAnchors
+from tests.native_fixtures import directory, parquet_dataset
 
-CASES = generate_batch(0, "in_memory")
+CASES = generate_batch(0, "diskgraph")
 FILTERS = "sample.entity_values.filtered.source.filters"
 
 
@@ -91,43 +90,161 @@ def _shifted(sample: BuiltSample, delta: float) -> BuiltSample:
     return replace(sample, history=replace(sample.history, entity=entity))
 
 
-class Mutant(InMemoryEngine):
-    """The reference with exactly one deliberate defect."""
+class FaultAnchors(NativeAnchors):
+    """Faults at the actual native anchor iteration boundary."""
+
+    def _selection(self, selection):
+        stages = super()._selection(selection)
+        if self._fault.defect == "null_split_dropped":
+            return [stage for stage in stages if stage["split"] is not None]
+        return stages
+
+    def batches(self, assembler, *args, **kwargs):
+        owner = self._fault
+        assembler = copy.copy(assembler)
+        assembler._model_sample = owner.sample(assembler._model_sample)
+        owner.orders += 1
+        if owner.defect == "no_shuffle":
+            kwargs.update(shuffle=False)
+        elif owner.defect == "reseeded_on_open":
+            kwargs["seed"] += owner.opened
+        elif owner.defect == "unstable_order":
+            kwargs["seed"] += owner.orders
+        batches = list(super().batches(assembler, *args, **kwargs))
+        if owner.defect == "anchor_dropped":
+            batches = batches[:-1]
+        if owner.defect == "union_unsorted":
+            batches.reverse()
+        yield from batches
+
+
+class FaultSource(DiskGraphSource):
+    """Corrupt native requests/results, including materialized task views."""
+
+    def _fault_requests(self, requests):
+        defect = self._fault.defect
+        if defect in {"future_visible", "absolute_time"}:
+            requests = [
+                replace(r, as_of_time=int(r.as_of_time.timestamp()))
+                if isinstance(r.as_of_time, datetime)
+                else r
+                for r in requests
+            ]
+        if defect == "future_visible":
+            return [replace(r, as_of_time=r.as_of_time + 10**6) for r in requests]
+        if defect == "absolute_time":
+            return [replace(r, as_of_time=r.as_of_time // 1000 * 1000) for r in requests]
+        return requests
+
+    def _delta(self):
+        defect = self._fault.defect
+        return (
+            sum(len(t.columns) for t in self.schema.tables)
+            if defect == "reads_declared_columns"
+            else random.random()
+            if defect == "noise"
+            else 1.0
+            if defect == "off_by_one"
+            else 0.0
+        )
+
+    def build(self, spec, requests):
+        result = super().build(self._fault.sample(spec), self._fault_requests(requests))
+        if self._fault.defect == "growing_work":
+            self._fault.calls += 1
+            self._last_temporal_profile = {"native_stats": {"profiled": self._fault.calls}}
+        return [_shifted(sample, self._delta()) for sample in result]
+
+    def build_model_ordered(self, spec, requests, **kwargs):
+        result = super().build_model_ordered(
+            self._fault.sample(spec), self._fault_requests(requests), **kwargs
+        )
+        return self._fault_model(result)
+
+    def _fault_model(self, result):
+        import pyarrow.compute as pc
+
+        delta = self._delta()
+        if not delta:
+            return result
+        return replace(
+            result,
+            entity_values={
+                key: pc.add(values, pa.scalar(delta, type=values.type))
+                if pa.types.is_integer(values.type) or pa.types.is_floating(values.type)
+                else values
+                for key, values in result.entity_values.items()
+            },
+        )
+
+    def build_model_batch(self, spec, runtime, anchors, compiled):
+        result = super().build_model_batch(spec, runtime, anchors, compiled)
+        if self._fault.defect == "growing_work":
+            self._fault.calls += 1
+            self._last_temporal_profile = {"native_stats": {"profiled": self._fault.calls}}
+        return self._fault_model(result)
+
+    def materialize_scalar_batches(self, sample, anchors, batch_size):
+        if self._fault.defect == "late_refusal":
+            raise ValueError("row filters are unsupported")
+        try:
+            yield from super().materialize_scalar_batches(
+                self._fault.sample(sample), anchors, batch_size
+            )
+        except ValueError:
+            if self._fault.defect == "missing_root_bare":
+                raise RuntimeError("lookup failed") from None
+            raise
+
+    def _cutoff_array(self, values):
+        import pyarrow.compute as pc
+
+        cutoffs = super()._cutoff_array(values)
+        second = 10**9 // self._tick_nanos
+        if self._fault.defect == "future_visible":
+            return pc.add(cutoffs, 10**6 * second)
+        if self._fault.defect == "absolute_time":
+            return pa.array([t // (1000 * second) * (1000 * second) for t in cutoffs.to_pylist()])
+        return cutoffs
+
+    def materialize_anchors(self, table, sample, **kwargs):
+        anchors = super().materialize_anchors(table, self._fault.sample(sample), **kwargs)
+        anchors.__class__ = FaultAnchors
+        anchors._fault = self._fault
+        return anchors
+
+    def _root_ids(self, table, requests):
+        try:
+            return super()._root_ids(table, requests)
+        except ValueError:
+            if self._fault.defect == "missing_root_bare":
+                raise RuntimeError("lookup failed") from None
+            raise
+
+
+class Mutant(DiskGraphEngine):
+    """Real DiskGraph with exactly one deliberate fault."""
 
     def __init__(self, defect: str):
-        super().__init__()
+        super().__init__(index=directory() / "index", num_threads=1, num_shards=1)
         self.defect = defect
         self.calls = self.orders = self.opened = 0
 
+    def sample(self, spec):
+        return spec
+
     def open(self, dataset, schema):
-        tables = {name: list(source.rows) for name, source in dataset.tables.items()}
+        self.opened += 1
         if self.defect == "first_row_dropped":
+            tables = {
+                name: pq.read_table(source.path).to_pylist()
+                for name, source in dataset.tables.items()
+            }
             tables["events"] = tables["events"][1:]
-        source = super().open(Dataset({n: InMemoryRows(r) for n, r in tables.items()}), schema)
-        build, columns = source.build, sum(len(table.columns) for table in schema.tables)
-
-        def defective(spec, requests):
-            self.calls += 1
-            if self.defect == "future_visible":
-                requests = [replace(r, as_of_time=r.as_of_time + 10**6) for r in requests]
-            if self.defect == "absolute_time":
-                requests = [replace(r, as_of_time=r.as_of_time // 1000 * 1000) for r in requests]
-            if self.defect == "late_refusal" and any(
-                getattr(value.source, "filters", ())
-                for value in spec.entity_values.values()
-                if hasattr(value, "source")
-            ):
-                raise ValueError("row filters are not supported")
-            if self.defect == "growing_work":
-                source.last_temporal_profile = {"native_stats": {"profiled": self.calls}}
-            delta = {
-                "reads_declared_columns": float(columns),
-                "noise": random.random(),
-                "off_by_one": 1.0,
-            }.get(self.defect, 0.0)
-            return [_shifted(sample, delta) for sample in build(spec, requests)]
-
-        source.build = defective
+            dataset = parquet_dataset(schema, tables)
+        source = super().open(dataset, schema)
+        source.__class__ = FaultSource
+        source._fault = self
         return source
 
     def check_contract(self, contract):
@@ -136,46 +253,26 @@ class Mutant(InMemoryEngine):
             for value in contract.sample.entity_values.values()
             if hasattr(value, "source")
         )
-        if self.defect == "refusal_reads_rows":
-            list(self._dataset.tables["events"].rows)
-        refusing = ("no_suggestion", "refusal_reads_rows", "vague_refusal", "unnamed_refusal")
+        if filtered and self.defect == "refusal_reads_rows":
+            raise PropertyFailure("refusal read rows")
+        refusing = ("no_suggestion", "vague_refusal", "unnamed_refusal")
         if filtered and self.defect in refusing:
-            suggestion = None if self.defect == "no_suggestion" else "use another engine"
+            suggestion = None if self.defect == "no_suggestion" else "remove the filter"
             path = "sample" if self.defect == "vague_refusal" else FILTERS
             issue = ValidationIssue(path, "row filters are unsupported", suggestion)
             if self.defect == "unnamed_refusal":
                 return (issue, ValidationIssue("sample", "unsupported", suggestion))
             return (issue,)
-        return ()
-
-    def materialize_anchors(self, table):
-        anchors = InMemoryAnchors(table)
-        self.opened += 1
-        if self.defect in ("anchor_dropped", "unstable_order", "no_shuffle", "reseeded_on_open"):
-            order, opened = anchors.order, self.opened
-
-            def defective(selection, **arguments):
-                self.orders += 1
-                if self.defect == "reseeded_on_open":
-                    return order(selection, **{**arguments, "seed": arguments["seed"] + opened})
-                if self.defect == "no_shuffle":
-                    arguments.update(seed=0, epoch=0)
-                positions = list(order(selection, **arguments))
-                if self.defect == "anchor_dropped":
-                    return iter(positions[:-1])
-                if self.defect == "no_shuffle":
-                    return iter(positions)
-                return iter(positions[self.orders % 2 :] + positions[: self.orders % 2])
-
-            anchors.order = defective
-        return anchors
+        if self.defect in ("late_refusal", "accept_refusal"):
+            return ()
+        return super().check_contract(contract)
 
 
-class ParquetReference(InMemoryEngine):
-    """Reads Parquet into the reference, with a defect in how files are read."""
+class ParquetFault(DiskGraphEngine):
+    """Read real Parquet with a deliberate file-selection or error-reporting fault."""
 
     def __init__(self, defect: str):
-        super().__init__()
+        super().__init__(index=directory() / "index", num_threads=1, num_shards=1)
         self.defect = defect
 
     @staticmethod
@@ -205,30 +302,23 @@ class ParquetReference(InMemoryEngine):
                         seconds = table[column].cast(pa.timestamp("s")).cast(pa.int64())
                         table = table.set_column(index, column, seconds)
                 rows.extend(table.to_pylist())
-            tables[name] = InMemoryRows(rows)
-        return super().open(Dataset(tables), schema)
+            tables[name] = rows
+        return super().open(parquet_dataset(schema, tables), schema)
 
 
-def _binding(native: InMemoryEngine | None = None, reference: Mutant | None = None):
-    """Stand in for one engine of `bound_tables`, without the native package."""
+def _binding(native=None):
+    """Inject a fault into the real native binding, never an alternate engine."""
 
     @contextmanager
     def binding(contract, tables, engine_name, *, refusal=False, parts=1, types=None):
-        if engine_name == "in_memory" or isinstance(native, Mutant):
-            with bound_tables(contract, tables, "in_memory", refusal=refusal) as (dataset, engine):
-                chosen = (reference if engine_name == "in_memory" else native) or engine
-                chosen._dataset = dataset
-                yield dataset, chosen
-            return
-        with tempfile.TemporaryDirectory() as directory:
-            bindings = {}
-            for table in contract.schema.tables:
-                path = Path(directory) / (table.name if parts > 1 else f"{table.name}.parquet")
-                if not refusal:
-                    types_of = (types or {}).get(table.name)
-                    write_parquet(table, tables[table.name], path, parts=parts, types=types_of)
-                bindings[table.name] = Parquet(str(path))
-            yield Dataset(bindings), native
+        with bound_tables(
+            contract, tables, "diskgraph", refusal=refusal, parts=parts, types=types
+        ) as (dataset, engine):
+            chosen = native or engine
+            chosen.index = engine.index
+            chosen.num_shards, chosen.num_threads = engine.num_shards, engine.num_threads
+            chosen._dataset = dataset
+            yield dataset, chosen
 
     return binding
 
@@ -242,7 +332,7 @@ WRONG_ENGINES = {
         "late_refusal",
         r"accepted at check\(\), then",
     ),
-    "differential": ({}, "native", "off_by_one", "vs reference changed samples"),
+    "aggregate_answers": ({}, "native", "off_by_one", "fixture answers changed samples"),
     "permutation": ({}, "reference", "first_row_dropped", "row and request order changed"),
     "partition": ({}, "parquet", "first_file_only", "files per table changed samples"),
     "time_shift": ({}, "reference", "absolute_time", "shift changed samples"),
@@ -273,9 +363,9 @@ def _check(name: str, defect: str) -> None:
     dimensions, kind, _, _ = WRONG_ENGINES[name]
     position, case = _case(**dimensions)
     if kind == "reference":
-        binding, engine = _binding(reference=Mutant(defect)), "in_memory"
+        binding, engine = _binding(native=Mutant(defect)), "diskgraph"
     else:
-        native = Mutant(defect) if kind == "native" else ParquetReference(defect)
+        native = Mutant(defect) if kind == "native" else ParquetFault(defect)
         binding, engine = _binding(native=native), "diskgraph"
     with patch("conformance.properties.bound_tables", binding):
         PROPERTIES[name].check(case, engine, position)
@@ -290,13 +380,10 @@ def test_every_property_has_a_wrong_engine():
     assert WRONG_ENGINES.keys() | FUNCTIONAL_COVERED == PROPERTIES.keys() - sampling
 
 
-def test_the_parquet_stand_in_answers_like_the_reference():
+def test_parquet_fault_wrapper_matches_independent_fixture_answers():
     position, case = _case()
-    expected = answer(case.contract, case.tables, case.requests, "in_memory")
-    with patch("conformance.properties.bound_tables", _binding(native=ParquetReference("none"))):
-        for parts in (1, 2):
-            actual = answer(case.contract, case.tables, case.requests, "diskgraph", parts=parts)
-            assert actual == expected and any(sample["count"] for sample in actual.values())
+    with patch("conformance.properties.bound_tables", _binding(native=ParquetFault("none"))):
+        PROPERTIES["aggregate_answers"].check(case, "diskgraph", position)
 
 
 @pytest.mark.parametrize("name", sorted(WRONG_ENGINES))
@@ -329,14 +416,14 @@ def test_longer_runs_add_seed_batches_and_keep_the_required_ones():
 def test_an_empty_batch_fails_the_obligation():
     with patch("conformance.properties.generate_batch", lambda seed, engine: []):
         with pytest.raises(PropertyFailure, match="the batch has no case"):
-            run_obligation("point_in_time", "in_memory", 0)
+            run_obligation("point_in_time", "diskgraph", 0)
 
 
 def test_a_failing_obligation_writes_a_repro_that_replays(tmp_path):
-    binding = _binding(None, Mutant("future_visible"))
+    binding = _binding(Mutant("future_visible"))
     with patch("conformance.properties.bound_tables", binding):
         with pytest.raises(PropertyFailure, match="repro: ") as failure:
-            run_obligation("point_in_time", "in_memory", 0, tmp_path)
+            run_obligation("point_in_time", "diskgraph", 0, tmp_path)
         paths = sorted(tmp_path.glob("repro-*.json"))
         assert paths and all(str(path) in str(failure.value) for path in paths)
         repro = load_repro(paths[0])
@@ -344,17 +431,17 @@ def test_a_failing_obligation_writes_a_repro_that_replays(tmp_path):
             replay(repro)
     replay(repro)  # the same file passes on the correct reference
     payload = json.loads(paths[0].read_text())
-    assert payload["engine"] == "in_memory" and payload["seed"] == 0
+    assert payload["engine"] == "diskgraph" and payload["seed"] == 0
     assert set(payload["versions"]) == {"package", "diskgraph", "registry", "python"}
     assert GeneratedCase.from_dict(payload["case"]).to_dict() == payload["case"]
 
 
 def test_repro_files_are_named_by_content(tmp_path):
     position, case = _case()
-    first = write_repro("permutation", "in_memory", case, position, ValueError("a"), tmp_path)
-    second = write_repro("permutation", "in_memory", case, position, ValueError("b"), tmp_path)
+    first = write_repro("permutation", "diskgraph", case, position, ValueError("a"), tmp_path)
+    second = write_repro("permutation", "diskgraph", case, position, ValueError("b"), tmp_path)
     assert first == second
-    payload = repro_payload("permutation", "in_memory", case, position, ValueError("a"))
+    payload = repro_payload("permutation", "diskgraph", case, position, ValueError("a"))
     for damage in ({"issue": ""}, {"extra": 1}, {"format_version": 2}, {"seed": 99}):
         broken = tmp_path / "broken" / first.name
         broken.parent.mkdir(exist_ok=True)
@@ -373,13 +460,13 @@ def test_corpus_loader(tmp_path):
         load_corpus(tmp_path / "missing")
     assert load_corpus(tmp_path) == {}
     position, case = _case()
-    path = write_repro("time_shift", "in_memory", case, position, ValueError("x"), tmp_path)
+    path = write_repro("time_shift", "diskgraph", case, position, ValueError("x"), tmp_path)
     with pytest.raises(ValueError, match="issue"):
         load_corpus(tmp_path)
     path.write_text(json.dumps({**json.loads(path.read_text()), "issue": "#1"}))
     entry = load_corpus(tmp_path)[path.stem]
     assert entry.issue == "#1" and entry.case.to_dict() == case.to_dict()
-    replay(entry, "in_memory")
+    replay(entry, "diskgraph")
 
 
 @pytest.mark.parametrize("seed", (0, 1))

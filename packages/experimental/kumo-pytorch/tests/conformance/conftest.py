@@ -32,18 +32,9 @@ PINNED_ENCODERS = ("raw", "vocabulary", "zscore", "buckets", "text")
 #: Pinned here, apart from the parametrization: dropping a property or a seed
 #: batch from conformance.properties leaves a required ID unpassed.
 PINNED_PROPERTIES = {
-    "in_memory": (
-        "delivery",
-        "epoch_trend",
-        "irrelevance",
-        "permutation",
-        "point_in_time",
-        "refusal_timing",
-        "time_shift",
-    ),
     "diskgraph": (
         "delivery",
-        "differential",
+        "aggregate_answers",
         "epoch_trend",
         "irrelevance",
         "partition",
@@ -55,7 +46,6 @@ PINNED_PROPERTIES = {
     ),
 }
 # -- Functional areas: targets, anchors, packing, the model path, fitted state --
-PINNED_PROPERTIES["in_memory"] += ("anchor_splits", "label_window", "packing", "root_availability")
 PINNED_PROPERTIES["diskgraph"] += (
     "anchor_splits",
     "contract_transfer",
@@ -75,15 +65,14 @@ _SAMPLING = (
     "sequence_permutation",
     "sequence_point_in_time",
 )
-PINNED_PROPERTIES["in_memory"] += _SAMPLING
 PINNED_PROPERTIES["diskgraph"] += ("index_layout",)
 PINNED_PROPERTIES["diskgraph"] += (
     *_SAMPLING,
-    "graph_differential",
+    "graph_expected",
     "graph_inference_exact",
-    "sequence_differential",
+    "sequence_expected",
 )
-PINNED_SEEDS = {"in_memory": (0, 1, 2), "diskgraph": (0,)}
+PINNED_SEEDS = {"diskgraph": (0,)}
 PASSED = pytest.StashKey[set[str]]()
 
 
@@ -100,9 +89,9 @@ def add_conformance_options(parser):
     try:
         parser.addoption(
             "--conformance-engine",
-            choices=("in_memory", "diskgraph", "all"),
-            default="in_memory",
-            help="engine whose goldens and properties must execute (default: in_memory)",
+            choices=("diskgraph", "all"),
+            default="diskgraph",
+            help="engine whose goldens and properties must execute (default: diskgraph)",
         )
         parser.addoption("--conformance-complete", action="store_true", help="require every case")
         parser.addoption(
@@ -132,7 +121,7 @@ def pytest_collection_modifyitems(config, items):
     A selected engine that can't be imported fails them (require_engine), never skips.
     """
     selected = config.getoption("--conformance-engine")
-    engines = ("in_memory", "diskgraph") if selected == "all" else (selected,)
+    engines = ("diskgraph",) if selected == "all" else (selected,)
     items[:] = [
         item
         for item in items

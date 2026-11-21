@@ -170,7 +170,7 @@ def _run(batch, *, seed=0):
     plan = _Plans(schema, tables).prepare(
         DataLoaderSpec(schema=schema, sample=sample, batch=batch), requests
     )
-    return (plan, next(plan.batches(requests, batch_size=2, seed=seed)))
+    return (plan, next(plan.batches(batch_size=2, seed=seed)))
 
 
 def test_shared_vocabulary_is_fitted_once_across_entity_and_event_fields():
@@ -275,7 +275,7 @@ def test_sample_calculations_and_explicit_encoders_define_flattened_field_order(
     plan = _Plans(schema, tables).prepare(
         DataLoaderSpec(schema=schema, sample=sample, batch=batch), requests
     )
-    result = next(plan.batches(requests, batch_size=2))
+    result = next(plan.batches(batch_size=2))
     assert result.inputs["history"]["value_ids"].shape[0] == 2
     assert result.inputs["history"]["valid"].any()
     first = result.inputs["history"]["value_ids"][0, 0].item()
@@ -426,7 +426,7 @@ def test_supplied_text_and_bucket_state_runs_without_training_a_tokenizer(monkey
     schema, sample, tables, requests = _data()
     engine = _Plans(schema, tables)
     fitted = engine.prepare(DataLoaderSpec(schema=schema, sample=sample, batch=batch), requests)
-    original = next(fitted.batches(requests, batch_size=2))
+    original = next(fitted.batches(batch_size=2))
     bound = fitted.bound_contract()
     import tokenizers.trainers
 
@@ -435,7 +435,7 @@ def test_supplied_text_and_bucket_state_runs_without_training_a_tokenizer(monkey
         "BpeTrainer",
         lambda *args, **kwargs: pytest.fail("supplied Text state must not train"),
     )
-    restored = next(engine.prepare(bound, requests).batches(requests, batch_size=2))
+    restored = next(engine.prepare(bound, requests).batches(batch_size=2))
     assert original.inputs["history"]["value_ids"].equal(restored.inputs["history"]["value_ids"])
 
 
@@ -459,9 +459,9 @@ def test_supplied_shared_encoders_preserve_local_and_final_mappings():
     schema, sample, tables, requests = _data()
     engine = _Plans(schema, tables)
     fitted = engine.prepare(DataLoaderSpec(schema=schema, sample=sample, batch=batch), requests)
-    original = next(fitted.batches(requests, batch_size=2))
+    original = next(fitted.batches(batch_size=2))
     restored_plan = engine.prepare(fitted.bound_contract(), requests)
-    restored = next(restored_plan.batches(requests, batch_size=2))
+    restored = next(restored_plan.batches(batch_size=2))
     assert original.inputs["history"]["field_ids"].equal(restored.inputs["history"]["field_ids"])
     assert original.inputs["history"]["value_ids"].equal(restored.inputs["history"]["value_ids"])
     assert fitted.spaces["tokens"].state_dict() == restored_plan.spaces["tokens"].state_dict()

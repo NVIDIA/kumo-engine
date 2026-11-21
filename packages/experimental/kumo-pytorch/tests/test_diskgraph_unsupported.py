@@ -57,6 +57,7 @@ from kumo.pytorch.api import (
 from kumo.pytorch.contract.batch import Encode, Fields
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 from kumo.pytorch.materialization import _compile_diskgraph_config
+from tests.native_fixtures import request_anchor_table
 
 STAMP = DType("timestamp", unit="s", timezone="UTC")
 USERS = TableSpec(
@@ -362,7 +363,9 @@ def _duplicate_layer_relation(tmp_path: Path) -> None:
     dataset = _written(tmp_path)
     engine = DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with prepare(contract, dataset, engine) as plan:
-        task = plan.materialize([SampleRequest("a", 1, 100)])
+        task = plan.materialize(
+            request_anchor_table([SampleRequest("a", 1, 100)], schema=plan.contract.schema)
+        )
         next(iter(task.batches(batch_size=1)))
 
 

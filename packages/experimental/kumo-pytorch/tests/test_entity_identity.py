@@ -13,16 +13,16 @@ import pytest
 from conformance.assertions import bound_case
 from conformance.cases import GUARANTEES, load_case
 from kumo.pytorch import api, build
+from tests.native_fixtures import preview_rows, request_anchor_table
 
 
 def _case():
     return load_case(GUARANTEES / "G-ENTITY-001/golden/C-ENTITY-001.json")
 
 
-@pytest.fixture(params=("in_memory", "diskgraph"))
+@pytest.fixture(params=("diskgraph",))
 def engine_name(request):
-    if request.param == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     return request.param
 
 
@@ -48,11 +48,11 @@ def test_table_only_entity_defaults_its_type_and_preserves_optional_settings():
     )
     contract = replace(case.contract, schema=api.DataSchema((table,), ()), sample=sample)
     dataset = api.Dataset({"users": api.InMemoryRows([{"pk": 1, "external": 2, "created": 5}])})
-    result = api.preview(contract, dataset, api.InMemoryEngine(), case.requests[:1])
+    result = preview_rows(contract, dataset, case.requests[:1])
     assert result.samples[0]["entity"]["type"] == "customer"
     assert result.to_dict()["samples"][0]["entity"]["values"] == {"external": 2}
     with pytest.raises(ValueError, match="did not exist"):
-        api.preview(contract, dataset, api.InMemoryEngine(), (api.SampleRequest("early", 1, 5),))
+        preview_rows(contract, dataset, (api.SampleRequest("early", 1, 5),))
     rejected = replace(
         contract,
         sample=replace(
@@ -60,7 +60,7 @@ def test_table_only_entity_defaults_its_type_and_preserves_optional_settings():
         ),
     )
     with pytest.raises(ValueError, match="filters"):
-        api.preview(rejected, dataset, api.InMemoryEngine(), case.requests[:1])
+        preview_rows(rejected, dataset, case.requests[:1])
 
 
 def test_entity_and_builder_key_overrides_are_not_accepted():
@@ -97,14 +97,14 @@ def test_primary_key_answers_metadata_and_artifact_contract(engine_name, tmp_pat
     with bound_case(case, engine_name) as (dataset, engine):
         assert not api.check(case.contract, dataset, engine)
         with api.prepare(case.contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 formats = (
                     ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
                 )
                 for output_format in formats:
-                    batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
-                    )
+                    batch = next(iter(task.batches(batch_size=2, output_format=output_format)))
                     assert batch.inputs["values"]["external"]["values"].tolist() == [2, 1]
                     assert list(batch.metadata["entity_ids"]) == [1, 2]
                 task.to_artifact().save(tmp_path)
@@ -176,7 +176,7 @@ def test_candidates_use_their_own_tables_primary_key():
             ),
         }
     )
-    result = api.preview(contract, dataset, api.InMemoryEngine(), requests).batch
+    result = preview_rows(contract, dataset, requests).batch
     assert result.inputs["items"]["external"]["values"].tolist() == [[1, 2]]
     assert result.metadata["candidate_entity_ids"]["items"] == ((2, 1),)
 
@@ -218,7 +218,9 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
     )
     with bound_case(case, engine_name) as (dataset, engine):
         with api.prepare(contract, dataset, engine) as plan:
-            with plan.materialize(case.requests) as task:
+            with plan.materialize(
+                request_anchor_table(case.requests, schema=plan.contract.schema)
+            ) as task:
                 vocabulary = (
                     task.bound_contract()
                     .batch.inputs["graph"]
@@ -230,9 +232,7 @@ def test_graph_roots_and_fitted_attributes_use_the_same_primary_key(engine_name)
                     ("inspectable", "model") if engine_name == "diskgraph" else ("inspectable",)
                 )
                 for output_format in formats:
-                    batch = next(
-                        iter(task.batches(case.requests, batch_size=2, output_format=output_format))
-                    )
+                    batch = next(iter(task.batches(batch_size=2, output_format=output_format)))
                     nodes = batch.inputs["graph"]["nodes"]["users"]
                     edges = batch.inputs["graph"]["edges"]["peer"]["index"]
                     assert edges.shape == (2, 2)

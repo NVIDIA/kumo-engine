@@ -16,6 +16,7 @@ import torch
 from kumo.pytorch import api
 from kumo.pytorch.contract.batch.tokens import MAX_SPECIAL_ID
 from kumo.pytorch.spec import _encode
+from tests.native_fixtures import prepare_rows, request_anchor_table
 
 LABELS: dict[str, str] = {
     "pad": "[PAD]",
@@ -104,14 +105,18 @@ def _blueprint() -> api.IdSpace:
 
 
 def _batch(contract: api.DataLoaderSpec, fitted: api.FittedState | None = None) -> api.Batch:
-    with api.prepare(contract, _dataset(ROWS), api.InMemoryEngine()) as plan:
-        with plan.materialize(_requests(), fitted=fitted) as task:
+    with prepare_rows(contract, _dataset(ROWS)) as plan:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema), fitted=fitted
+        ) as task:
             return next(task.batches(batch_size=3))
 
 
 def _state_space(contract: api.DataLoaderSpec, name: str = "tokens") -> Mapping[str, object]:
-    with api.prepare(contract, _dataset(ROWS), api.InMemoryEngine()) as plan:
-        with plan.materialize(_requests()) as task:
+    with prepare_rows(contract, _dataset(ROWS)) as plan:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema)
+        ) as task:
             return task.fitted_state.to_dict()["spaces"][name]
 
 
@@ -198,8 +203,10 @@ def test_field_ids_pad_with_the_declared_pad_role() -> None:
 
 def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     contract = _contract(_blueprint())
-    with api.prepare(contract, _dataset(ROWS), api.InMemoryEngine()) as plan:
-        with plan.materialize(_requests()) as task:
+    with prepare_rows(contract, _dataset(ROWS)) as plan:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema)
+        ) as task:
             task.to_artifact().save(tmp_path)
             trained = next(task.batches(batch_size=3))
     artifact = api.Artifact.load(tmp_path)
@@ -207,8 +214,12 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     assert artifact.fitted_state.to_dict()["spaces"]["tokens"]["roles"] == BLUEPRINT
 
     unseen = [{"id": 1, "country": "FR"}, {"id": 2, "country": "US"}, {"id": 3, "country": None}]
-    with api.prepare(artifact.contract, _dataset(unseen), api.InMemoryEngine()) as plan:
-        with plan.materialize(_requests(), fitted=artifact.fitted_state, inference=True) as task:
+    with prepare_rows(artifact.contract, _dataset(unseen)) as plan:
+        with plan.materialize(
+            request_anchor_table(_requests(), schema=plan.contract.schema),
+            fitted=artifact.fitted_state,
+            inference=True,
+        ) as task:
             batch = next(task.batches(batch_size=3))
     emitted = batch.inputs["emitted"]["value_ids"]
     assert emitted[0].tolist() == [BLUEPRINT["unknown"]]

@@ -71,14 +71,27 @@ def transfer_command(*directories: Path) -> list[str]:
 
 
 def main(directory: Path) -> None:
+    from conformance.assertions import write_anchor_table
+
     contract = DataLoaderSpec.from_json((directory / "contract.json").read_text())
     inputs = json.loads((directory / "inputs.json").read_text())
     dataset = Dataset({name: Parquet(path) for name, path in inputs["tables"].items()})
     requests = [SampleRequest(**request) for request in inputs["requests"]]
     engine = DiskGraphEngine(index=directory / "index", num_threads=1, num_shards=1)
     with prepare(contract, dataset, engine) as plan:
-        task = plan.materialize(requests[:FRESH_FIT])
-        output = batches_json(task.batches(requests, **TRANSFER_ARGUMENTS))
+        task = plan.materialize(
+            write_anchor_table(
+                requests[:FRESH_FIT], directory / "fit-anchors.parquet", schema=contract.schema
+            )
+        )
+        epoch = plan.materialize(
+            write_anchor_table(
+                requests, directory / "epoch-anchors.parquet", schema=contract.schema
+            ),
+            fitted=task.fitted_state,
+        )
+        assert callable(epoch._anchors.batches)
+        output = batches_json(epoch.batches(**TRANSFER_ARGUMENTS))
     (directory / "batches.json").write_text(json.dumps(output, sort_keys=True))
 
 

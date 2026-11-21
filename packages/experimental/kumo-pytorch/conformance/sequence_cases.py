@@ -13,12 +13,16 @@ the inspectable one. Self-contained: no other model-path collector is shared.
 from __future__ import annotations
 
 import random
+import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from pathlib import Path
 from typing import Literal
 
 import torch
 
-from conformance.assertions import bound_tables, require
+from conformance.assertions import PropertyFailure, bound_tables, require, write_anchor_table
 from conformance.generate import (
     GeneratedCase,
     Row,
@@ -55,7 +59,6 @@ from kumo.pytorch.api import (
     TableSpec,
     Task,
     TimeWindow,
-    check,
     prepare,
 )
 
@@ -221,7 +224,7 @@ def generate_sequence_case(
 
 
 def sequence_batch(seed: int, engine: str, property_name: str) -> list[GeneratedCase]:
-    scale: Scale = "XS" if engine == "in_memory" else "S"
+    scale: Scale = "S"
     rows = covering_rows(seed, engine, SEQUENCE_DIMENSIONS, property_name)
     return [generate_sequence_case(seed, index, row, scale) for index, row in rows]
 
@@ -240,14 +243,19 @@ def sequence_answers(
         for row in tables[table]
     }
     with bound_tables(contract, tables, engine) as (dataset, bound):
-        issues = check(contract, dataset, bound)
-        require(not issues, f"{engine} refused a generated sequence contract: {issues}")
+        from conformance.refusals import check_or_refuse
+
+        check_or_refuse(contract, dataset, bound)
         formats: tuple[OutputFormat, ...] = (
             ("inspectable", "model") if isinstance(bound, DiskGraphEngine) else ("inspectable",)
         )
-        with prepare(contract, dataset, bound) as plan:
-            task = plan.materialize(requests)
-            return {output: collect_sequences(task, requests, output, clocks) for output in formats}
+        with tempfile.TemporaryDirectory(prefix="sequence-anchors-") as directory:
+            anchors = write_anchor_table(requests, Path(directory) / "anchors.parquet")
+            with prepare(contract, dataset, bound) as plan:
+                task = plan.materialize(anchors)
+                return {
+                    output: collect_sequences(task, requests, output, clocks) for output in formats
+                }
 
 
 def collect_sequences(
@@ -259,11 +267,11 @@ def collect_sequences(
     """Each sample's delivered events; ``clocks`` dates a row by its table and ID."""
 
     result: SequenceAnswer = {}
-    for batch in task.batches(requests, batch_size=8, output_format=output):
+    for batch in task.batches(batch_size=8, shuffle=False, output_format=output):
         for position, sample_id in enumerate(batch.metadata["sample_ids"]):
             require(str(sample_id) not in result, f"{output}: duplicate sample {sample_id}")
             result[str(sample_id)] = {
-                name: _events(value, position, clocks)
+                name: _events(value, position, clocks, len(batch.metadata["sample_ids"]))
                 for name, value in sorted(batch.inputs.items())
             }
     expected = {str(request.sample_id) for request in requests}
@@ -272,30 +280,67 @@ def collect_sequences(
 
 
 def _events(
-    padded: Mapping[str, object], position: int, clocks: Mapping[tuple[str, Scalar], int]
+    padded: Mapping[str, object],
+    position: int,
+    clocks: Mapping[tuple[str, Scalar], int],
+    batch_size: int,
 ) -> tuple[Event, ...]:
     """One sample's delivered events from a Padded input, in slot order.
 
     An event's time is its source row's clock, found by the component's table and the
     delivered ID, so it doesn't depend on the engine's own time arithmetic.
     """
-
+    require(set(padded) == {"id", "amount", "delta", COMPONENT, "valid"}, "Padded fields")
+    mask = padded["valid"]
+    require(
+        isinstance(mask, torch.Tensor) and mask.dtype == torch.bool and mask.ndim == 2,
+        "Padded validity dtype/layout",
+    )
+    require(mask.shape[0] == batch_size, "Padded batch dimension differs from sample count")
+    for name, dtype in (
+        ("id", torch.int64),
+        (COMPONENT, torch.int64),
+        ("amount", torch.float64),
+        ("delta", torch.float64),
+    ):
+        field = padded[name]
+        require(
+            isinstance(field, Mapping) and set(field) == {"valid", "values"},
+            f"{name}: field structure",
+        )
+        for key, expected in (("valid", torch.bool), ("values", dtype)):
+            value = field[key]
+            require(
+                isinstance(value, torch.Tensor)
+                and value.dtype == expected
+                and value.shape == mask.shape,
+                f"{name}.{key}: dtype/layout",
+            )
+        require(not bool((field["valid"] & ~mask).any()), f"{name}: valid padding")
+    present = _row(mask, position)
+    require(present == sorted(present, reverse=True), "Noncontiguous Padded events")
     fields = {
         name: (_row(value["valid"], position), _row(value["values"], position))
         for name, value in sorted(padded.items())
         if isinstance(value, Mapping)
     }
-    _, components = fields.pop(COMPONENT)
+    components_valid, components = fields.pop(COMPONENT)
     ids_valid, ids = fields["id"]
     events = []
-    for slot, present in enumerate(_row(padded["valid"], position)):
-        if not present:
+    for slot, valid in enumerate(present):
+        if not valid:
             continue
-        source = tuple(COMPONENT_TABLES)[int(str(components[slot]))]
+        require(
+            bool(components_valid[slot]) and 0 <= components[slot] < len(COMPONENT_TABLES),
+            f"slot {slot}: invalid component",
+        )
+        source = tuple(COMPONENT_TABLES)[components[slot]]
         require(bool(ids_valid[slot]), f"{source} event in slot {slot} has no ID")
+        identity = (COMPONENT_TABLES[source], ids[slot])
+        require(identity in clocks, f"{source} event in slot {slot}: unknown source identity")
         events.append(
             (
-                clocks[(COMPONENT_TABLES[source], ids[slot])],
+                clocks[identity],
                 source,
                 tuple(
                     (name, bool(valid[slot]), values[slot] if valid[slot] else None)
@@ -325,24 +370,83 @@ def _base(case: GeneratedCase, engine: str) -> dict[OutputFormat, SequenceAnswer
     return _RUNS[key]
 
 
-def _same_sequences(before: SequenceAnswer, after: SequenceAnswer, label: str) -> None:
-    differences = [
-        f"{key}: {before.get(key)} != {after.get(key)}"
-        for key in sorted(before.keys() | after.keys())
-        if before.get(key) != after.get(key)
-    ]
-    require(not differences, f"{label} changed sequences:\n  " + "\n  ".join(differences[:3]))
+def assert_sequence_answers(case: GeneratedCase, answer: SequenceAnswer, label: str) -> None:
+    """Check raw values and timestamp quotas through both clipping stages.
+
+    Ties can permute or choose different eligible rows at a cap. Component
+    quotas preserve EventSpec limits before the merged EventSource cap; comparing
+    only final event counts would miss invalid selections at the first stage.
+    """
+    require(set(answer) == {str(r.sample_id) for r in case.requests}, f"{label}: sample identities")
+    for request in case.requests:
+        eligible, quotas = {}, {}
+        for name, spec in case.contract.sample.events.items():
+            table = COMPONENT_TABLES[name]
+            rows = [
+                row
+                for row in case.tables[table]
+                if row["user_id"] == request.entity_id and row["at"] <= request.as_of_time
+            ]
+            clocks = sorted((row["at"] for row in rows), reverse=spec.order == "descending")
+            quotas[name] = Counter(clocks if spec.limit is None else clocks[: spec.limit])
+            eligible[name] = Counter(
+                (
+                    row["at"],
+                    name,
+                    (
+                        ("amount", row["amount"] is not None, row["amount"]),
+                        (
+                            "delta",
+                            True,
+                            (request.as_of_time - row["at"])
+                            / SECONDS_PER_UNIT[spec.fields["delta"].unit],
+                        ),
+                        ("id", True, row[f"{table[:-1]}_id"]),
+                    ),
+                )
+                for row in rows
+            )
+        inputs = answer[str(request.sample_id)]
+        require(set(inputs) == set(case.contract.batch.inputs), f"{label}: input names")
+        for name, spec in case.contract.batch.inputs.items():
+            source, emitted = spec.source, inputs[name]
+            where = f"{label}: sample {request.sample_id}/{name}"
+            available = sum((eligible[c] for c in source.events), Counter())
+            require(
+                not (Counter(emitted) - available),
+                f"{where}: ineligible, repeated or wrong-valued event",
+            )
+            for component in source.events:
+                observed = Counter(event[0] for event in emitted if event[1] == component)
+                require(not (observed - quotas[component]), f"{where}: component limit violated")
+            clocks = sorted(t for c in source.events for t in quotas[c].elements())
+            if source.max_events is not None:
+                clocks = (
+                    clocks[: source.max_events]
+                    if source.keep == "first"
+                    else clocks[-source.max_events :]
+                    if source.max_events
+                    else []
+                )
+            actual = [event[0] for event in emitted]
+            require(
+                actual == clocks,
+                f"{where}: chronological order/limit; "
+                f"expected clocks={clocks!r}, actual={actual!r}",
+            )
 
 
-# -- Properties --------------------------------------------------------------
-
-
-def sequence_differential(case: GeneratedCase, engine: str, position: int) -> None:
-    """DiskGraph delivers the reference's sequences, on each output format."""
-
-    reference = _base(case, "in_memory")["inspectable"]
+def sequence_expected(case: GeneratedCase, engine: str, position: int) -> None:
+    """Both native formats satisfy independent selection, values and clipping rules."""
+    failures = []
     for output, answer in _base(case, engine).items():
-        _same_sequences(reference, answer, f"{engine} {output} vs reference")
+        try:
+            assert_sequence_answers(
+                case, answer, f"{engine} {output} fixture answers changed sequences"
+            )
+        except PropertyFailure as error:
+            failures.append(str(error))
+    require(not failures, "\n".join(failures))
 
 
 def with_future_events(case: GeneratedCase, rng: random.Random) -> tuple[Tables, set[str]]:
@@ -397,27 +501,26 @@ def sequence_point_in_time(case: GeneratedCase, engine: str, position: int) -> N
     require(bool(guarded), "no anchor is guarded by the future rows")
     after = sequence_answers(case.contract, tables, case.requests, engine)
     for output, answer in base.items():
-        _same_sequences(
-            {key: answer[key] for key in guarded},
-            {key: after[output][key] for key in guarded},
-            f"{output}: future rows",
+        assert_sequence_answers(case, answer, f"{output}: base source rows")
+        assert_sequence_answers(
+            replace(case, tables=tables), after[output], f"{output}: future source rows"
         )
 
 
 def sequence_permutation(case: GeneratedCase, engine: str, position: int) -> None:
-    """A second run, and row and request order, deliver the same sequences (determinism)."""
-
+    """Each independent preparation obeys the same source semantics; ties may vary."""
     base = _base(case, engine)
     again = sequence_answers(case.contract, case.tables, case.requests, engine)
     shuffled = permuted(case, random.Random(f"{case.id}:permute"))
     moved = sequence_answers(shuffled.contract, shuffled.tables, shuffled.requests, engine)
     for output, answer in base.items():
-        _same_sequences(answer, again[output], f"{output}: a second run")
-        _same_sequences(answer, moved[output], f"{output}: row and request order")
+        assert_sequence_answers(case, answer, f"{output}: original")
+        assert_sequence_answers(case, again[output], f"{output}: a second preparation")
+        assert_sequence_answers(shuffled, moved[output], f"{output}: row and request order")
 
 
 SEQUENCE_CHECKS = {
-    "sequence_differential": sequence_differential,
+    "sequence_expected": sequence_expected,
     "sequence_point_in_time": sequence_point_in_time,
     "sequence_permutation": sequence_permutation,
 }

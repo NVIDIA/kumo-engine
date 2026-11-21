@@ -10,6 +10,7 @@ import pytest
 
 from conformance.assertions import bound_tables
 from kumo.pytorch import api
+from tests.native_fixtures import request_anchor_table
 
 USERS = [{"user_id": 1, "at": 0}, {"user_id": 2, "at": 0}]
 EVENTS = [
@@ -59,10 +60,9 @@ def _contract() -> api.DataLoaderSpec:
     )
 
 
-@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+@pytest.mark.parametrize("engine_name", ["diskgraph"])
 def test_revisited_edges_appear_once_per_sample(engine_name):
-    if engine_name == "diskgraph":
-        pytest.importorskip("diskgraph")
+    pytest.importorskip("diskgraph")
     contract = api.DataLoaderSpec.from_json(_contract().to_json())
     # Two samples of user 1 share the stored edges; each keeps its own copy.
     requests = [
@@ -81,7 +81,7 @@ def test_revisited_edges_appear_once_per_sample(engine_name):
             engine,
         ),
         api.prepare(contract, dataset, engine) as plan,
-        plan.materialize(requests) as task,
+        plan.materialize(request_anchor_table(requests, schema=plan.contract.schema)) as task,
     ):
         batches = list(
             task.batches(

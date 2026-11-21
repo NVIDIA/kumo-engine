@@ -32,7 +32,7 @@ from kumo.pytorch.api import (
     TimeWindow,
 )
 from kumo.pytorch.contract.batch import Encode, Fields
-from kumo.pytorch.engines.in_memory.samples import InMemorySampleBuilder
+from tests.native_fixtures import NativeSamples
 
 USER = EntitySpec("users", entity_type="user")
 REQUEST = (SampleRequest("s1", 1, 100),)
@@ -66,7 +66,7 @@ def _event_schema(*, clock: str | NonTemporal = "occurred_at") -> DataSchema:
 
 def _build(schema: DataSchema, sample: SampleSpec, tables=None):
     data = tables if tables is not None else {"users": USER_ROWS, "events": EVENT_ROWS}
-    return InMemorySampleBuilder(schema, data).build(sample, REQUEST)[0]
+    return NativeSamples(schema, data).build(sample, REQUEST)[0]
 
 
 def _value(sample, name: str):
@@ -262,5 +262,5 @@ def test_generated_targets_still_require_an_explicit_future_window() -> None:
     sample = SampleSpec(
         USER, targets={"future": Aggregate(Rows(("user_events",)), "count", dtype=DType("int64"))}
     )
-    with pytest.raises(ValueError, match="future time window"):
+    with pytest.raises(ValueError, match="generated target window must start at or after"):
         _build(_event_schema(), sample)
