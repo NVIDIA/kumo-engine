@@ -21,6 +21,37 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 | `flows/common.py` | What both flows share: the schema, the anchors, the caller's row lookup, the training loop |
 | `../tests/e2e/` | Tests that the generator is deterministic and its ceiling is right; the T2a and T2b checks (`test_lifecycle.py`) and what differs between the tiers (`tiers.py`) |
 
+## Pinned nightly datasets
+
+The scheduled CPU suite on `NVIDIA/kumo-engine` main stages the six objects in
+`datasets/pins/aml-e01.json` for the AML HI-Small v8 account-daily v2 E01 test. The
+manifest pins the transactions, account mapping, anchors and their three
+provenance records (234.6 MB total). The protected `gha-kumo-workflow-tests`
+role session allows only GetObject under the existing dataset and anchor prefixes,
+subject to the role's object grants. Files stay on the temporary runner.
+
+To run the same test locally, use an AWS identity with GetObject access and the
+AWS CLI. From the package root:
+
+```bash
+export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
+python -m e2e.datasets.staging e2e/datasets/pins/aml-e01.json --root "$KUMO_PYTORCH_DATA_ROOT"
+python -m pytest -q tests/e2e/test_aml_e01.py
+```
+
+The helper verifies size and SHA-256, downloads only missing files and reports
+corruption before exposing a downloaded file. A complete verified directory can
+be used offline. The ordinary package tests run with no dataset credentials.
+
+A benchmark can pass the verified files and its chosen physical anchor rows to
+`e2e.datasets.aml.prepare_e01(files, fresh_directory, anchor_rows=rows)`. The
+returned contract, dataset and anchor table can be reused across measured runs.
+
+To add another dataset, put its store, keys, sizes and SHA-256 digests in a new
+`e2e/datasets/pins/*.json` manifest. Have its pytest case pass that manifest and
+`KUMO_PYTORCH_DATA_ROOT` to `e2e.datasets.staging.verify`. The nightly stages
+all manifests before pytest; the role needs GetObject access to each new key.
+
 ## The H&M-shaped dataset
 
 ```bash

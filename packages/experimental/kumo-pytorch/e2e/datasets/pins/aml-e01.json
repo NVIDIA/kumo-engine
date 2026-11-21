@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "bucket": "kumo-engine-arena",
+  "region": "us-west-2",
+  "expected_bucket_owner": "926922431314",
+  "objects": {
+    "source_manifest": {
+      "key": "datasets/aml-data/v8/manifest.json",
+      "size": 24273,
+      "sha256": "bcc4a7de107745b747162cb28d4106a9c623fff5869ecf632f7528e23156f02b"
+    },
+    "transactions": {
+      "key": "datasets/aml-data/v8/hi-small/transactions.parquet",
+      "size": 90728135,
+      "sha256": "9bfe6d172e7d4c527f791bc0b2e2fb0297288098c19814bc81ad77b8ddf74d26"
+    },
+    "mapping_manifest": {
+      "key": "anchors/aml-data/v8/hi-small/_bindings/v1/binding.json",
+      "size": 1273,
+      "sha256": "8e728588893185bec8d812c6f58ddf45abd81feb7e7ab64d1f61c81c96f58277"
+    },
+    "mapping": {
+      "key": "anchors/aml-data/v8/hi-small/_bindings/v1/accounts.parquet",
+      "size": 10549556,
+      "sha256": "471e991f31e3e36e65c69f94df70cae01aec6fc43b08eaf3bee4c2af429696b2"
+    },
+    "anchor_manifest": {
+      "key": "anchors/aml-data/v8/hi-small/account-daily/v2/manifest.json",
+      "size": 13679,
+      "sha256": "14593bc40bbed727dfea7ba12fc9513419d751e3284a32f99104f9c038a9ec72"
+    },
+    "anchors": {
+      "key": "anchors/aml-data/v8/hi-small/account-daily/v2/anchors.parquet",
+      "size": 133322520,
+      "sha256": "0fe71590809e0949ee058b6900c996ac25c7cd7a6a0aa3512724277654210271"
+    }
+  }
+}
