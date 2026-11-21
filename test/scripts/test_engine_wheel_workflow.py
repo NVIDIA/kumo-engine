@@ -299,3 +299,79 @@ def test_cpu_qualification_uses_candidate_artifacts_on_all_pythons():
     # artifact while publishing the current build.
     assert 'run-id' not in download['with']
     assert 'github-token' not in download['with']
+
+
+def test_windows_reload_blocks_publication_with_current_wheel():
+    caller = JOBS['platform-qualification']
+    assert caller['permissions']['id-token'] == 'write'
+    workflow = yaml.safe_load((WORKFLOW.parent /
+                              'kumo-engine-platform-smoke.yml').read_text())
+    job = workflow['jobs']['windows-reload']
+    assert job['runs-on'] == 'windows-amd64-cpu4'
+    native_build = next(row for row in BUILDS
+                        if row['arch'] == 'windows-x86_64')
+    assert native_build['runner'] == 'windows-2022'
+    cleanup_step = _step('build', 'Verify native Windows process cleanup')
+    assert cleanup_step['if'] == "${{ matrix.arch == 'windows-x86_64' }}"
+    assert cleanup_step['run'] == (
+        'python -I packages/kumo-engine/test/windows_cleanup_check.py')
+    steps = [step['name'] for step in JOBS['build']['steps']]
+    assert (steps.index('Set up Python') <
+            steps.index('Verify native Windows process cleanup') <
+            steps.index('Set up Rust') < steps.index('Build wheel'))
+    smoke_targets = {row['platform']: row['runner'] for row in
+                     workflow['jobs']['smoke']['strategy']['matrix']['target']}
+    assert smoke_targets['windows-native'] == 'windows-amd64-cpu4'
+    assert smoke_targets['windows-wsl'] == 'wsl-amd64-gpu-t4-latest-1'
+    assert set(job['strategy']['matrix']['python']) == {
+        '3.11', '3.12', '3.13', '3.14'}
+    assert job['environment']['name'] == 'gha-kumo-workflow-tests'
+    download = next(step['with'] for step in job['steps']
+                    if step.get('uses', '').startswith(
+                        'actions/download-artifact@'))
+    assert download == {
+        'name': 'kumo-engine-wheel-windows-x86_64-${{ github.sha }}',
+        'path': '${{ runner.temp }}/windows-reload/artifacts'}
+    run = next(step['run'] for step in job['steps']
+               if step.get('name') ==
+               'Qualify the installed Windows wheel in fresh processes')
+    assert 'venv/Scripts/python.exe' in run
+    assert '--torch-backend=cpu "${wheels[0]}[cpu]"' in run
+    assert 'uv pip check --python "$python"' in run
+    assert 'wheel_gpu_smoke,windows_cleanup_check}.py' in run
+    cleanup = ('"$python" -I test/windows_cleanup_check.py '
+               '2>&1 | tee results/cleanup.log')
+    assert cleanup in run
+    assert 'set -euo pipefail' in run
+    assert run.index(cleanup) < run.index('desktop_reload_qualification.py run')
+    assert 'desktop_reload_qualification.py run' in run
+    assert '--commit "$CANDIDATE_SHA"' in run
+    assert 'platform-qualification' in JOBS['attach-to-release']['needs']
+    build = _step('build', 'Test Windows path validation')['run']
+    assert '-p diskgraph-index --lib' in build
+    assert ('graph::scratch_cleanup_tests::'
+            'sync_directory_flushes_completed_entry') in build
+    assert '-- --exact | tee directory-sync-tests.log' in build
+    assert "grep -Eq '^test result: ok\\. 1 passed;'" in build
+    assert 'snapshot_mirror::tests | tee snapshot-mirror-tests.log' in build
+    assert 'success_marker::tests | tee success-marker-tests.log' in build
+    assert ("grep -Eq '^test result: ok\\. [1-9][0-9]* passed;' "
+            'success-marker-tests.log') in build
+
+
+@pytest.mark.parametrize('marker_tests', [0, 1])
+def test_windows_marker_guard_requires_executed_tests(tmp_path, marker_tests):
+    cargo = '''cargo() {
+      count=1
+      if [[ "$*" == *success_marker::tests* ]]; then
+        count="$MARKER_TESTS"
+      fi
+      printf 'test result: ok. %s passed;\\n' "$count"
+    }
+    '''
+    result = subprocess.run(
+        ['bash', '-e', '-o', 'pipefail', '-c', cargo +
+         _step('build', 'Test Windows path validation')['run']],
+        cwd=tmp_path, env=dict(os.environ, MARKER_TESTS=str(marker_tests)),
+        capture_output=True, text=True, timeout=15)
+    assert (result.returncode == 0) == (marker_tests > 0)

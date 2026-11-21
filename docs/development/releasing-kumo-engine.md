@@ -52,6 +52,15 @@ targets does not establish published availability or installed-wheel runtime
 qualification. Native Windows builds and tests are experimental: their wheels
 remain CI artifacts and are excluded from public release attachments and
 Kitmaker publication. The supported Windows route for this release is WSL2.
+Every wheel build also qualifies the native Windows CPU wheel on Python
+3.11–3.14 in fresh producer and consumer processes, with the `cpu` extra for
+Faiss retrieval. This check is a prerequisite for release attachment; it does
+not enable Windows publication. It exports and restores both models and
+snapshots after deleting the producer's temporary storage, and checks ordinary
+loader defaults without CI or synchronous-loader overrides. Results are saved
+in `engine-wheel-reload-windows-native-cpu-*` artifacts. Native Windows CUDA
+is not qualified by this check. The GitHub-hosted Windows account may have
+administrator privileges; this is not restricted-account qualification.
 The merger reads
 every bundled wheel's `Requires-Python` and writes their intersection into the
 final wheel.
