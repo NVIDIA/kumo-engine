@@ -7,70 +7,52 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from e2e.datasets.staging import verify
 
 
-def _pins(directory, name, key, data):
-    pin = {"key": key, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-    spec = {
-        "version": 1,
-        "bucket": "test-bucket",
-        "region": "us-west-2",
-        "expected_bucket_owner": "123456789012",
-        "objects": {name: pin},
-    }
-    manifest = directory / f"{name}.json"
-    manifest.write_text(json.dumps(spec))
-    return manifest
-
-
-def test_verify_and_reuse_pinned_download(tmp_path):
-    data = b"input"
-    key = "source/table"
-    manifest = _pins(tmp_path, "table", key, data)
+def test_stage_pinned_datasets(tmp_path, monkeypatch):
     root = tmp_path / "staged"
-    path = root / key
-    with patch("e2e.datasets.staging.subprocess.run") as get_object:
-        with pytest.raises(FileNotFoundError):
-            verify(root, manifest)
-        get_object.assert_not_called()
+    payload = None
 
-        def download(command, **options):
-            assert command[:3] == ["aws", "s3api", "get-object"]
-            assert command[command.index("--expected-bucket-owner") + 1] == "123456789012"
-            assert command[command.index("--key") + 1] == key
-            Path(command[-1]).write_bytes(payload)
+    def fetch(command, **kwargs):
+        assert payload is not None, "local-only verification attempted a download"
+        assert command[:3] == ["aws", "s3api", "get-object"]
+        assert command[command.index("--expected-bucket-owner") + 1] == "123456789012"
+        assert command[command.index("--key") + 1] == "one"
+        Path(command[-1]).write_bytes(payload)
 
-        get_object.side_effect = download
-        payload = b"wrong"
-        with pytest.raises(ValueError, match="SHA-256 mismatch"):
-            verify(root, manifest, download=True)
-        assert not path.exists()
-
-        payload = data
-        assert verify(root, manifest, download=True) == {"table": path}
-        get_object.reset_mock()
-        assert verify(root, manifest, download=True) == {"table": path}
-        path.write_bytes(b"truncated")
-        with pytest.raises(ValueError, match="Size mismatch"):
-            verify(root, manifest, download=True)
-        get_object.assert_not_called()
-
-
-def test_cli_verifies_every_manifest(tmp_path):
-    root = tmp_path / "data"
-    root.mkdir()
     manifests = []
-    for name in ("first", "second"):
-        data = name.encode()
-        (root / name).write_bytes(data)
-        manifests.append(_pins(tmp_path, name, name, data))
+    for key in ("one", "two"):
+        pin = {"key": key, "size": 2, "sha256": hashlib.sha256(b"ok").hexdigest()}
+        spec = {
+            "version": 1,
+            "bucket": "test-bucket",
+            "region": "us-west-2",
+            "expected_bucket_owner": "123456789012",
+            "objects": {"table": pin},
+        }
+        manifest = tmp_path / f"{key}.json"
+        manifest.write_text(json.dumps(spec))
+        manifests.append(manifest)
+    with monkeypatch.context() as patch:
+        patch.setattr(subprocess, "run", fetch)
+        with pytest.raises(FileNotFoundError):
+            verify(root, manifests[0])
+        payload = b"no"
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            verify(root, manifests[0], download=True)
+        assert not (root / "one").exists()
+        payload = b"ok"
+        assert verify(root, manifests[0], download=True) == {"table": root / "one"}
+    (root / "two").write_bytes(payload)
     command = [sys.executable, "-m", "e2e.datasets.staging", *manifests, "--root", root]
+    # Fully cached inputs work with no AWS executable.
+    monkeypatch.setenv("PATH", "")
     subprocess.run(command, check=True)
-    (root / "second").write_bytes(b"broken")
-    failed = subprocess.run(command, capture_output=True, text=True)
-    assert failed.returncode and "SHA-256 mismatch: second" in failed.stderr
+    for bad, message in ((b"no", "SHA-256"), (b"longer", "Size")):
+        (root / "two").write_bytes(bad)
+        failed = subprocess.run(command, capture_output=True, text=True)
+        assert failed.returncode and f"{message} mismatch: two" in failed.stderr

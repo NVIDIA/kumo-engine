@@ -535,14 +535,12 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
         with plan.materialize(
             list(tied_requests.values()), fitted=artifact.fitted_state, inference=True
         ) as task:
-            seen = []
             for batch in task.batches(batch_size=1, output_format="model"):
                 (sample_id,) = batch.metadata["sample_ids"]
-                request = tied_requests[int(sample_id)]
+                request = tied_requests.pop(int(sample_id))
                 (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
                 _assert_recent_graphs(task, store, request, served, batch)
-                seen.append(int(sample_id))
-            assert sorted(seen) == sorted(tied_requests)
+            assert not tied_requests
 
 
 def test_a_history_batch_without_any_event_assembles(
@@ -699,10 +697,8 @@ def _assert_recent_graphs(
         (pc.field("customer_id") == customer) & (pc.field("t_dat") <= cutoff)
     )
     bought = {row["transaction_id"]: row for row in eligible.to_pylist()}
-    boundary = sorted((row["t_dat"] for row in bought.values()), reverse=True)[RECENT_PURCHASES - 1]
-    required = {key for key, row in bought.items() if row["t_dat"] > boundary}
-    allowed = {key for key, row in bought.items() if row["t_dat"] >= boundary}
-    article_ids = {bought[key]["article_id"] for key in allowed}
+    recent = sorted(row["t_dat"] for row in bought.values())[-RECENT_PURCHASES:]
+    article_ids = {row["article_id"] for row in bought.values()}
     listed = store.tables["articles"].filter(
         pc.field("article_id").isin(article_ids) & (pc.field("listed_at") <= cutoff)
     )
@@ -715,7 +711,7 @@ def _assert_recent_graphs(
         graph = batch.inputs["graph"]
         selected = graph["nodes"]["transactions"]["ids"].tolist()
         assert len(set(selected)) == RECENT_PURCHASES
-        assert required <= set(selected) <= allowed, request.sample_id
+        assert sorted(bought[key]["t_dat"] for key in selected) == recent, request.sample_id
         article_edges = [
             (bought[key]["article_id"], key)
             for key in selected

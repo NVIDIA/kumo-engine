@@ -42,26 +42,24 @@ def _select_anchors(path, positions, account_ids):
     in_range = positions and positions[0] >= 0 and positions[-1] < source.count_rows()
     if not in_range or len(set(positions)) != len(positions):
         raise ValueError("Select distinct, in-range physical E01 anchor rows")
-    columns = ["sample_id", "entity_id", "as_of_time", "graph_as_of_time"]
-    columns += ["forecast_split", "involvement"]
-    rows = source.take(positions, columns=columns).append_column("position", pa.array(positions))
-    rows = rows.filter(pc.is_valid(rows["forecast_split"]))
+    field = ds.field
+    columns = {
+        "sample_id": field("sample_id"),
+        "registered_entity_id": field("entity_id"),
+        "prediction_time_ns": field("as_of_time").cast(pa.int64()),
+        "as_of_time": field("graph_as_of_time"),
+        "split": field("forecast_split"),
+        "label": field("involvement").cast(pa.float32()),
+    }
+    rows = source.take(positions, columns=columns).append_column(
+        "anchor_row_position", pa.array(positions)
+    )
+    rows = rows.filter(pc.is_valid(rows["split"]))
     if not len(rows):
         raise ValueError("No eligible E01 forecast anchors in the selection")
-    roots = rows["entity_id"].to_pylist()
-    table = pa.table(
-        {
-            "sample_id": rows["sample_id"],
-            "entity_id": [account_ids[key] for key in roots],
-            "as_of_time": rows["graph_as_of_time"].cast(pa.timestamp("s")).cast(pa.int64()),
-            "split": rows["forecast_split"],
-            "label": rows["involvement"].cast(pa.float32()),
-            "registered_entity_id": rows["entity_id"],
-            "prediction_time_ns": rows["as_of_time"].cast(pa.int64()),
-            "anchor_row_position": rows["position"],
-        }
-    )
-    return table, set(roots)
+    roots = rows["registered_entity_id"].to_pylist()
+    rows = rows.append_column("entity_id", pa.array([account_ids[key] for key in roots]))
+    return rows, set(roots)
 
 
 def _write_transactions(path, destination, roots, account_ids):
@@ -106,14 +104,10 @@ def _write_transactions(path, destination, roots, account_ids):
     return sorted(degrees.keys() | root_ids), max(degrees.values(), default=1)
 
 
-def _contract(accounts_schema, fanout):
-    def table(name, fields, clock):
-        types = {f.name: api.DType.from_arrow(f.type) for f in fields}
-        return api.TableSpec(name, fields.names[0], types, time_column=clock)
-
+def _contract(fanout):
     tables = (
-        table("accounts", accounts_schema, "first_observed_time"),
-        table("transactions", _TRANSACTIONS, "event_time"),
+        api.TableSpec("accounts", "account_id", time_column="first_observed_time"),
+        api.TableSpec("transactions", "transaction_id", time_column="event_time"),
     )
     relations = tuple(
         api.RelationSpec(role, "accounts", "account_id", "transactions", f"{role}_id")
@@ -189,4 +183,4 @@ def prepare_e01(files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequ
         targets={"label": "label"},
         metadata=("registered_entity_id", "prediction_time_ns", "anchor_row_position"),
     )
-    return _contract(accounts.schema, fanout), dataset, anchors
+    return _contract(fanout).resolve(dataset=dataset), dataset, anchors

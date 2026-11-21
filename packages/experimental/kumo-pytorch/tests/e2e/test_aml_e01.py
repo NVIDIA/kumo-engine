@@ -41,12 +41,8 @@ def _source_rows(files):
     manifest = json.loads(files["anchor_manifest"].read_text())
     binding = json.loads(files["mapping_manifest"].read_text())
     definition = manifest["definition"]
-    assert (
-        definition["dataset_id"],
-        definition["dataset_version"],
-        definition["task_id"],
-        definition["anchor_version"],
-    ) == ("aml-data/hi-small", "v8", "account-daily", "v2")
+    keys = ("dataset_id", "dataset_version", "task_id", "anchor_version")
+    assert tuple(definition[k] for k in keys) == ("aml-data/hi-small", "v8", "account-daily", "v2")
     assert definition["metadata"]["source_binding"] == binding
     assert binding["sha256"]["accounts.parquet"] == pins["mapping"]["sha256"]
     source = json.loads(files["source_manifest"].read_text())
@@ -60,14 +56,8 @@ def _source_rows(files):
     # Physical positions in the pinned v2 population: split boundary, covered negative,
     # sender-only positive, receiver-only positive, and end of observation.
     positions = (0, 313, 4245, 11800, 409216)
-    columns = [
-        "sample_id",
-        "entity_id",
-        "as_of_time",
-        "graph_as_of_time",
-        "forecast_split",
-        "involvement",
-    ]
+    columns = ["sample_id", "entity_id", "as_of_time", "graph_as_of_time"]
+    columns += ["forecast_split", "involvement"]
     rows = ds.dataset(files["anchors"]).take(positions, columns=columns).to_pylist()
     return dict(zip(positions, rows, strict=True))
 
@@ -94,16 +84,8 @@ def _source_history(files, anchors):
 
     amounts = ("amount_paid", "amount_received")
     categories = ("payment_currency", "receiving_currency", "payment_format")
-    columns = [
-        "timestamp",
-        "from_bank",
-        "from_account",
-        "to_bank",
-        "to_account",
-        "is_laundering",
-        *amounts,
-        *categories,
-    ]
+    columns = ["timestamp", "from_bank", "from_account", "to_bank", "to_account"]
+    columns += ["is_laundering", *amounts, *categories]
     timeline = Counter()
     events = {}
     offset = 0
@@ -152,6 +134,16 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
     ):
         # Two immature forecasts are excluded; each named split has one eligible anchor.
         assert task.count() == 3
+        bindings = task.output("graph").bindings["transactions"]
+        expected_encoders = {
+            "amount_paid": api.ZScore(),
+            "amount_received": api.ZScore(),
+            "payment_currency": api.Vocabulary(),
+            "receiving_currency": api.Vocabulary(),
+            "payment_format": api.Vocabulary(),
+            "event_time_seconds": api.Raw(),
+        }
+        assert {name: field.encoder.config for name, field in bindings.items()} == expected_encoders
         for pos, row in anchors.items():
             root_id = account_ids[row["entity_id"]]
             cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
@@ -191,8 +183,6 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
                     "receiver": sorted((e.receiver, i) for i, e in history.items()),
                 },
             }
-            bindings = task.output("graph").bindings["transactions"]
-            assert set(bindings) == set(history[ids[0]].features)
             fields = {
                 name: binding.encode_values([history[i].features[name] for i in ids])
                 for name, binding in bindings.items()
