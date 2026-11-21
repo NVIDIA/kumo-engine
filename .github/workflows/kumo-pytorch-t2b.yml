@@ -4,23 +4,13 @@
 
 name: kumo-pytorch nightly end-to-end
 
-# The nightly tier: the end-to-end flows at M, and conformance properties on
-# more generated seed batches, on both engines. Not a required check. Pull
-# requests run it only when they change this workflow or the tiers'
-# configuration.
+# Manually run the same Medium suite used by the package PR and nightly jobs.
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       seed_start:
         description: First extra conformance seed batch (default derived from the date)
         required: false
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/tests/e2e/tiers.py'
-      - 'packages/experimental/kumo-pytorch/tests/e2e/runs.py'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/workflows/kumo-pytorch-t2b.yml'
-      - '.github/workflows/_kumo-pytorch-t2b.yml'
 
 permissions:
   contents: read

@@ -16,6 +16,8 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/_diskgraph-wheel.yml'
       - '.github/actions/kumo-pytorch-setup/**'
       - '.github/workflows/kumo-pytorch-tests.yml'
+      - '.github/workflows/kumo-pytorch-t2b.yml'
+      - '.github/workflows/_kumo-pytorch-t2b.yml'
   push:
     branches: [main]
     paths:
@@ -110,6 +112,6 @@ jobs:
         run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
 
   hm-lifecycle:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'pull_request'
     needs: diskgraph-wheel
     uses: ./.github/workflows/_kumo-pytorch-t2b.yml
