@@ -1185,3 +1185,160 @@ def test_nested_padding_budget_and_token_map_lifetime(history_data, tmp_path):
             mapped = weakref.ref(task._anchors._token_maps[0])
         gc.collect()
         assert mapped() is None
+
+
+@pytest.fixture
+def text_history(history_data, tmp_path):
+    from dataclasses import replace
+
+    from tests.test_target_layouts import _text
+
+    schema, dataset, _, _, _ = history_data
+    # Three eligible events on root 1, a future-only root 2 and one event on root 3.
+    source = pq.read_table(dataset.tables["orders"].path).take([0, 1, 2, 6, 7])
+    source = source.set_column(
+        source.schema.get_field_index("kind"), "kind", pa.array(["ababab", "a", None, "a", "b"])
+    )
+    source = source.set_column(
+        source.schema.get_field_index("owner"), "owner", pa.array([1, 1, 1, 2, 3])
+    )
+    path = tmp_path / "words.parquet"
+    pq.write_table(source, path)
+    dataset = replace(dataset, tables={**dataset.tables, "orders": api.Parquet(str(path))})
+    engine = api.DiskGraphEngine(index=tmp_path / "text-index", num_threads=1)
+    roles = ("pad", "unknown", "missing", "mask", "bos", "eos")
+
+    def configuration(fields, layout, target, budget):
+        sample = api.SampleSpec(
+            api.EntitySpec("users"),
+            events={"orders": api.EventSpec(api.Rows(("orders",), api.TimeWindow("at")), fields)},
+        )
+        tokens = api.Fields(
+            tuple(api.Encode(k, api.UseEncoding("words"), "tokens") for k in fields),
+            row=api.Tokens(missing="emit"),
+            history=api.Flatten(
+                6, keep="last", prefer_event_boundary=False, before="bos", after="eos"
+            ),
+        )
+        batch = api.BatchSpec(
+            {"history": api.Input(api.EventSource(("orders",)), tokens, layout)},
+            encodings={"words": _text()},
+            id_spaces={"tokens": api.IdSpace({k: k for k in roles})},
+            targets={} if target is None else {"answer": target},
+            batching=api.Batching(max_samples=3)
+            if budget is None
+            else api.Batching(
+                max_samples=3, max_tokens=budget, bucket_by_length=True, length_input="history"
+            ),
+        )
+        return api.DataLoaderSpec(schema, sample, batch), dataset, engine
+
+    return configuration
+
+
+_MASKED = api.MaskedValuesTarget(
+    "history", token_probability=1.0, event_probability=0.0, key_probability=0.0
+)
+
+
+@pytest.mark.parametrize("layout", [api.Packed(), api.Padded()])
+@pytest.mark.parametrize(
+    "objective,budget", [("next", 5), ("next", 6), ("next", 12), ("masked", 12)]
+)
+def test_native_text_supervision_counts_emitted_slots_and_resumes(
+    text_history, tmp_path, layout, objective, budget
+):
+    import torch
+
+    from tests.test_inference_lifecycle import assert_same_batches
+
+    target = api.NextTokenTarget("history") if objective == "next" else _MASKED
+    configuration = text_history({"text": api.Field("kind")}, layout, target, budget)
+    owners = (1, 2, 3, 1, 2)
+    # Special IDs precede the two ordinary BPE pieces a=6, b=7.
+    expected = {1: [4, 6, 7, 6, 2, 5], 2: [4, 5], 3: [4, 7, 5]}
+    with (
+        api.prepare(*configuration) as plan,
+        plan.materialize(_review_anchors(tmp_path, owners)) as task,
+    ):
+        for epoch in (0, 1):
+            options = dict(epoch=epoch, output_format="model")
+            batches = list(task.batches(**options))
+            assert task._anchors._last_length_planning_stats == ((5, 0) if epoch == 0 else (0, 5))
+            assert sorted(s for batch in batches for s in batch.metadata["sample_ids"]) == list(
+                range(5)
+            )
+            for batch in batches:
+                source, labels = batch.inputs["history"], batch.targets["answer"]
+                assert source["value_ids"].numel() <= budget
+                assert source["valid"].dtype == labels["valid"].dtype == torch.bool
+                if isinstance(layout, api.Packed):
+                    _equal(source["offsets"], labels["offsets"])
+                for i, sample in enumerate(batch.metadata["sample_ids"]):
+                    tokens = expected[owners[sample]]
+                    if objective == "next":
+                        inputs, answers = tokens[:-1], tokens[1:]
+                    else:
+                        inputs = [v if v in (4, 5) else 3 for v in tokens]
+                        answers = [-100 if v in (4, 5) else v for v in tokens]
+                    if isinstance(layout, api.Packed):
+                        select = slice(*source["offsets"][i : i + 2].tolist())
+                    else:
+                        select = (i, slice(0, len(inputs)))
+                        assert not source["valid"][i, len(inputs) :].any()
+                        assert not labels["valid"][i, len(inputs) :].any()
+                    assert source["valid"][select].all()
+                    assert source["value_ids"][select].tolist() == inputs
+                    assert labels["values"][select].tolist() == answers
+                    assert labels["valid"][select].tolist() == [v != -100 for v in answers]
+                    if objective == "masked":
+                        _equal(labels["corruption"][select], labels["valid"][select])
+        interrupted = task.batches(**options)
+        prefix = next(interrupted)
+        torch.save(interrupted.state_dict(), tmp_path / "iterator.pt")
+        restored = task.batches(**options)
+        restored.load_state_dict(torch.load(tmp_path / "iterator.pt", weights_only=True))
+        assert_same_batches([prefix, *restored], batches)
+
+
+@pytest.mark.parametrize("constant,label", [("a", 6), (None, 2)])
+@pytest.mark.parametrize("budget", [None, 12])
+def test_native_text_budget_preserves_typed_constant_supervision(
+    text_history, tmp_path, constant, label, budget
+):
+    fields = {"text": api.Constant(constant, api.DType("string"))}
+    configuration = text_history(fields, api.Packed(), _MASKED, budget)
+    with (
+        api.prepare(*configuration) as plan,
+        plan.materialize(_review_anchors(tmp_path, (1,))) as task,
+    ):
+        batch = next(task.batches(output_format="model"))
+    source, target = batch.inputs["history"], batch.targets["answer"]
+    assert source["value_ids"].tolist() == [4, 3, 3, 3, 5]
+    assert source["valid"].all() and source["offsets"].tolist() == [0, 5]
+    assert target["values"].tolist() == [-100, label, label, label, -100]
+    assert target["valid"].tolist() == [False, True, True, True, False]
+    _equal(target["corruption"], target["valid"])
+
+
+@pytest.mark.parametrize("copies", [1, 2])
+def test_text_source_aliases_are_checked_before_delivery_or_keep_both_fields(
+    text_history, tmp_path, copies
+):
+    fields = {name: api.Field("kind") for name in ("first", "second")[:copies]}
+    configuration = text_history(fields, api.Packed(), None, 12)
+    anchors = _review_anchors(tmp_path, (3,))
+    issues = api.check(*configuration, anchors=anchors)
+    if issues:
+        assert copies == 2
+        assert all(
+            any(word in issue.message.lower() for word in ("duplicate", "alias", "twice"))
+            for issue in issues
+        )
+        with pytest.raises(ValueError, match=r"(?i)duplicate|alias|twice"):
+            api.prepare(*configuration)
+        return
+    with api.prepare(*configuration) as plan, plan.materialize(anchors) as task:
+        history = next(task.batches(output_format="model")).inputs["history"]
+    assert history["value_ids"].tolist() == [4, *([7] * copies), 5]
+    assert history["valid"].all()

@@ -13,6 +13,7 @@ from decimal import Decimal
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.data import cutoff_to_epoch
@@ -582,3 +583,78 @@ def test_fractional_anchor_never_admits_a_later_event(tmp_path, mode, anchor, ev
     graph = batch.inputs["graph"]["nodes"].get("events")
     assert (len(_list(graph["ids"])) if graph else 0) == past
     assert _list(batch.targets["future"]["values"]) == [1 - past]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize(
+    "mode,filtered", [("reference", False), ("reference", True), ("native_model", False)]
+)
+def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, grouped):
+    schema = api.DataSchema(
+        (
+            api.TableSpec("users", "id", {"id": INT}, time_column=api.NON_TEMPORAL),
+            api.TableSpec("accounts", "id", {"id": INT, "user": INT}, time_column=api.NON_TEMPORAL),
+            api.TableSpec(
+                "events",
+                "id",
+                {"id": INT, "user": INT, "at": TIME, "v": INT, "group": INT},
+                time_column="at",
+            ),
+        ),
+        (
+            api.RelationSpec("accounts", "users", "id", "accounts", "user"),
+            api.RelationSpec("events", "accounts", "id", "events", "user"),
+        ),
+    )
+    window = api.Rows(
+        ("accounts", "events"),
+        api.TimeWindow("at", -10, 0),
+        filters=(api.RowFilter("v", "not_null"),) if filtered else (),
+    )
+    source = (
+        api.GroupBy(window, ("group",), {"part": api.Reduce("sum", "v", dtype=INT)})
+        if grouped
+        else window
+    )
+    values = {
+        "count": api.Aggregate(window, "count", dtype=INT),
+        "difference": api.Derived("subtract", ("total", "one")),
+        "one": api.Constant(1, INT),
+        "total": api.Aggregate(source, "sum", "part" if grouped else "v", dtype=INT),
+    }
+    fields = api.Fields(
+        tuple(api.Encode(name, api.Raw()) for name in ("total", "difference", "count"))
+    )
+    contract = api.DataLoaderSpec(
+        schema,
+        api.SampleSpec(api.EntitySpec("users"), entity_values=values),
+        api.BatchSpec({"x": api.Input(api.EntitySource(), fields, api.Separate())}),
+    )
+    events = [
+        (1, 90, 777, 0),
+        (1, 91, 2**53 + 1, 0),
+        (1, 92, 1, 0),
+        (1, 99, -(2**53), 1),
+        (1, 100, None, 1),
+        (1, 101, 999, 0),
+        (2, 101, 2**53 + 1, 0),
+        (3, 100, 7, 0),
+    ]
+    rows = {
+        "users": [{"id": i} for i in (1, 2, 3)],
+        "accounts": [{"id": i, "user": i} for i in (1, 2, 3)],
+        "events": [
+            dict(id=i, user=user, at=t, v=v, group=group)
+            for i, (user, t, v, group) in enumerate(events)
+        ],
+    }
+    with _prepared(tmp_path, contract, rows, mode) as plan:
+        out = _batch(plan, tuple(api.SampleRequest(i, i, 100) for i in (1, 2, 3)), mode).inputs["x"]
+    for name, expected in (
+        ("total", [2, 0, 7]),
+        ("difference", [1, -1, 6]),
+        ("count", [3 if filtered else 4, 0, 1]),
+    ):
+        assert out[name]["values"].dtype == torch.int64
+        assert out[name]["valid"].tolist() == [True] * 3
+        assert out[name]["values"].tolist() == expected

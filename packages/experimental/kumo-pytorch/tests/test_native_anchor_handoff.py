@@ -168,21 +168,7 @@ def test_unshuffled_mixed_splits_preserve_source_order(native_task, selection, e
         assert list(_by_sample(actual)) == [sid for group in groups for sid in group[rank::3]]
 
 
-class _AnchorOrderMismatch(AssertionError):
-    pass
-
-
-_MULTISHARD_ORDER = pytest.mark.xfail(
-    strict=True,
-    raises=_AnchorOrderMismatch,
-    reason="Physical shard traversal changes unshuffled anchor order",
-)
-
-
-@pytest.mark.parametrize(
-    "num_shards",
-    [1, pytest.param(2, marks=_MULTISHARD_ORDER), pytest.param(3, marks=_MULTISHARD_ORDER)],
-)
+@pytest.mark.parametrize("num_shards", [1, 2, 3])
 def test_unshuffled_single_split_preserves_source_order_across_storage_shards(
     monkeypatch, request, num_shards
 ):
@@ -206,9 +192,7 @@ def test_unshuffled_single_split_preserves_source_order_across_storage_shards(
     groups = [b.metadata["sample_ids"] for b in batches]
     assert [len(group) for group in groups] == [2, 2]
     ids = [sid for group in groups for sid in group]
-    assert sorted(ids) == list("abdf")
-    if ids != list("abdf"):
-        raise _AnchorOrderMismatch(f"expected a,b,d,f in source order, got {ids}")
+    assert ids == list("abdf")
 
 
 def _by_sample(batches):
@@ -848,3 +832,19 @@ def test_materialized_entity_fields_skip_projection_and_keep_graph_reuse(
             batches = list(task.batches(split=frozenset({"train", "valid"}), shuffle=True, epoch=1))
             assert sum(batch.batch_size for batch in batches) == 6
             assert projections and all("score" not in p["users"] for p in projections)
+            batches = task.batches(split="train", shuffle=False, output_format="model")
+            assert next(batches).metadata["sample_ids"] == ("a", "b")
+            cursor = batches.state_dict()
+            (last,) = batches
+            assert last.metadata["sample_ids"] == ("d", "f")
+            assert last.targets["label"]["values"].tolist() == [4.0, 6.0]
+            path = tmp_path / "artifact"
+            task.to_artifact().save(path)
+        with prepared.materialize(table, fitted=api.Artifact.load(path).fitted_state) as reloaded:
+            resumed = reloaded.batches(split="train", shuffle=False, output_format="model")
+            resumed.load_state_dict(cursor)
+            (restored,) = resumed
+            assert restored.metadata["sample_ids"] == last.metadata["sample_ids"]
+            torch.testing.assert_close(
+                restored.targets["label"]["values"], last.targets["label"]["values"]
+            )

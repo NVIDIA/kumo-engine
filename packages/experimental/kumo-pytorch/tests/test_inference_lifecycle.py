@@ -94,12 +94,23 @@ def _dataset(engine_name: str, rows: Rows, directory: Path) -> tuple[api.Dataset
     )
 
 
-def _train(contract: api.DataLoaderSpec, dataset: api.Dataset, engine: api.Engine, out: Path):
+def _train(
+    contract: api.DataLoaderSpec,
+    dataset: api.Dataset,
+    engine: api.Engine,
+    out: Path,
+    *,
+    cursor: Path | None = None,
+):
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_requests(), fit_split="train") as task:
             task.to_artifact().save(out)
-            batches = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
-            return task.fingerprints, task.fitted_state.to_dict(), batches
+            batches = task.batches(batch_size=1, seed=SEED, epoch=EPOCH)
+            prefix = []
+            if cursor is not None:
+                prefix.append(next(batches))
+                cursor.write_text(json.dumps(batches.state_dict()))
+            return task.fingerprints, task.fitted_state.to_dict(), [*prefix, *batches]
 
 
 def _infer(
@@ -141,6 +152,9 @@ def _fresh_process(
         with plan.materialize(_requests(), fitted=artifact.fitted_state) as task:
             training = list(task.batches(batch_size=1, seed=SEED, epoch=EPOCH))
             fingerprints = dict(task.fingerprints)
+            resumed = task.batches(batch_size=1, seed=SEED, epoch=EPOCH)
+            resumed.load_state_dict(json.loads((directory / "cursor.json").read_text()))
+            remaining = list(resumed)
     inference = _infer(artifact, dataset, engine)
     torch.save(
         {
@@ -148,6 +162,8 @@ def _fresh_process(
             "fitted": artifact.fitted_state.to_dict(),
             "training": training,
             "inference": inference,
+            "remaining": remaining,
+            "consumed": resumed.state_dict()["batches"],
         },
         out,
     )
@@ -160,7 +176,9 @@ def test_a_fresh_process_rebuilds_the_same_batches(
 ) -> None:
     contract = CONTRACTS[contract_name](_schema())
     dataset, engine = _dataset(engine_name, _fixture_rows(), tmp_path)
-    fingerprints, fitted, training = _train(contract, dataset, engine, tmp_path / "artifact")
+    fingerprints, fitted, training = _train(
+        contract, dataset, engine, tmp_path / "artifact", cursor=tmp_path / "cursor.json"
+    )
     inference = _infer(api.Artifact.load(tmp_path / "artifact"), dataset, engine)
 
     out = tmp_path / "child.pt"
@@ -176,6 +194,8 @@ def test_a_fresh_process_rebuilds_the_same_batches(
     assert child["fitted"] == json.loads(json.dumps(fitted))
     assert_same_batches(child["training"], training)
     assert_same_batches(child["inference"], inference)
+    assert child["consumed"] == len(training) > 1
+    assert_same_batches(child["remaining"], training[1:])
 
 
 @pytest.mark.parametrize("name", sorted(BATCH_SPECS))
@@ -410,16 +430,20 @@ def test_inference_scores_every_anchor_even_when_training_drops_the_last_batch(
     assert [i for batch in served for i in batch.metadata["sample_ids"]] == scored
 
 
-def test_diskgraph_model_output_inference_matches_inspectable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("rebuild", [False, True], ids=["original-index", "rebuilt-index"])
+def test_diskgraph_model_output_inference_matches_inspectable(
+    tmp_path: Path, rebuild: bool
+) -> None:
     contract = _pragma_contract(_schema())
     dataset, engine = _dataset("diskgraph", _fixture_rows(), tmp_path)
     _train(contract, dataset, engine, tmp_path / "artifact")
     artifact = api.Artifact.load(tmp_path / "artifact")
-    model = _infer(artifact, dataset, engine, output_format="model")
     inspectable = _infer(artifact, dataset, engine)
-    for left, right in zip(model, inspectable, strict=True):
-        assert left.targets == {}
-        assert_same(left.inputs, right.inputs)
+    if rebuild:
+        engine = api.DiskGraphEngine(index=tmp_path / "rebuilt", num_threads=1, num_shards=1)
+    model = _infer(artifact, dataset, engine, output_format="model")
+    assert all(batch.targets == {} for batch in model)
+    assert_same_batches(model, inspectable)
 
 
 @pytest.mark.parametrize("output_format", ["inspectable", "model"])
