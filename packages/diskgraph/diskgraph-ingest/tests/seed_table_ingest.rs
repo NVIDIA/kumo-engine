@@ -1207,11 +1207,11 @@ fn test_engine_from_reader_exposes_merged_catalog() {
 //   2. Walks seed.edges.bin for each batch row → task.seed_node_ids
 //      (the parent entity row ids, pre-resolved at Phase 1 ingest).
 //   3. Calls engine.sample() with the resolved parent ids as the seed,
-//      a RuntimeBatchOutput collator, and the seed-namespace's rel ids
+//      a SamplingBatchOutput collator, and the seed-namespace's rel ids
 //      registered as seed_src_rel_ids (belt-and-suspenders — they aren't
 //      reachable from this entry point, but the filter stays correct if
 //      the entry point is ever changed).
-//   4. Returns a RuntimeBatch matching PR 28765's runtime_batch_to_hetero
+//   4. Returns a SamplingBatch matching PR 28765's runtime_batch_to_hetero
 //      contract.
 // ---------------------------------------------------------------------------
 
@@ -2158,7 +2158,7 @@ fn test_sample_runtime_batch_hop1_temporal_filter_no_leak() {
 fn run_sample_runtime_batch_with_flags(
     fused: bool,
     swap_edge_direction: bool,
-) -> diskgraph_engine::output::RuntimeBatch {
+) -> diskgraph_engine::output::SamplingBatch {
     use diskgraph_core::dataset::DatasetId;
     use diskgraph_core::sampling::{
         AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
@@ -2456,7 +2456,7 @@ fn test_sample_runtime_batch_swap_edge_direction_preserves_rel_name() {
 // threshold (env-var overridable). Below threshold → fused (cache locality);
 // above → non-fused (parallel map-reduce amortizes memory latency).
 //
-// Both modes still produce the same RuntimeBatch shape; this heuristic is
+// Both modes still produce the same SamplingBatch shape; this heuristic is
 // purely about which sampler dispatch path is more efficient for the
 // workload. Pinned by tests `test_sample_runtime_batch_{fused,non_fused}_path`.
 //
@@ -3384,7 +3384,7 @@ fn run_projected_runtime_batch(
     tmp_root: &std::path::Path,
     fused: bool,
     feature_columns: std::collections::HashMap<String, Vec<String>>,
-) -> diskgraph_engine::output::RuntimeBatch {
+) -> diskgraph_engine::output::SamplingBatch {
     use diskgraph_core::dataset::DatasetId;
     use diskgraph_core::sampling::{
         AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
@@ -3444,7 +3444,7 @@ type Int64Columns = Vec<(String, Vec<Option<i64>>)>;
 
 /// `namespace -> (column name -> concatenated Int64 values)`, in emission order.
 fn int64_features_by_namespace(
-    batch: &diskgraph_engine::output::RuntimeBatch,
+    batch: &diskgraph_engine::output::SamplingBatch,
 ) -> std::collections::HashMap<String, Int64Columns> {
     let mut out = std::collections::HashMap::new();
     for (ns, bank) in &batch.raw_features {

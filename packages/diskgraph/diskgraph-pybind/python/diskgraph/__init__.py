@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import TYPE_CHECKING
+
 from ._c import (
     __version__,
     BUILD_COMMIT,
@@ -76,10 +78,35 @@ from .sampling_plan import (
     WeightedSampling,
 )
 
+if TYPE_CHECKING:
+    from .runtime_batch import (
+        RuntimeBatch,
+        RuntimeEdge,
+        RuntimeEdgeCounts,
+        RuntimeEdgeType,
+        RuntimeFeatureBlock,
+        RuntimeGraph,
+        RuntimeHistory,
+        RuntimeHistoryAggregate,
+        RuntimeHistorySequence,
+        RuntimeHistoryStats,
+        RuntimeHistoryTimings,
+        RuntimeTask,
+    )
+
 from .sampling_options import InheritEngineSeed, SamplingOptions, WeightedSeedSampling
 
-# Lazy imports for modules that have external dependencies (kumoapi)
+
+# Keep optional runtime dependencies out of installation bootstrap imports.
 def __getattr__(name):
+    if name in {
+        "RuntimeBatch", "RuntimeTask", "RuntimeGraph", "RuntimeEdge",
+        "RuntimeEdgeType", "RuntimeEdgeCounts", "RuntimeFeatureBlock",
+        "RuntimeHistory", "RuntimeHistoryAggregate", "RuntimeHistorySequence",
+        "RuntimeHistoryStats", "RuntimeHistoryTimings",
+    }:
+        from . import runtime_batch
+        return getattr(runtime_batch, name)
     if name == "DiskGraphPlanCompiler":
         from .compiler import DiskGraphPlanCompiler
         return DiskGraphPlanCompiler
@@ -142,6 +169,18 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "RuntimeBatch",
+    "RuntimeHistory",
+    "RuntimeHistoryAggregate",
+    "RuntimeHistorySequence",
+    "RuntimeHistoryStats",
+    "RuntimeHistoryTimings",
+    "RuntimeTask",
+    "RuntimeGraph",
+    "RuntimeEdge",
+    "RuntimeEdgeType",
+    "RuntimeEdgeCounts",
+    "RuntimeFeatureBlock",
     "StringLookup",
     "pack_token_stream",
     "merge_event_streams",

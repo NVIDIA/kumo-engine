@@ -4,9 +4,10 @@
 
 from unittest.mock import MagicMock
 
+import pyarrow as pa
 import pytest
 import torch
-from diskgraph import SamplingPlan
+from diskgraph import RuntimeBatch, RuntimeTask, SamplingPlan
 from kumo_core.diskgraph import lightning_data
 from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
 from kumo_core.features.stores.feature import FeatureStore
@@ -37,16 +38,26 @@ def test_prediction_discovery_skips_model_and_features(monkeypatch, module):
     def batches(**kwargs):
         calls.append(kwargs)
         return [
-            {'task': {'seed_node_ids': [7, 7], 'tt_stage_node_ids': [20, 5]}},
-            {'task': {'seed_node_ids': [9, 8], 'tt_stage_node_ids': [11, 19]}},
+            RuntimeBatch(
+                task=RuntimeTask(
+                    seed_node_ids=pa.array([7, 7], type=pa.uint64()),
+                    tt_stage_node_ids=pa.array([20, 5], type=pa.uint64()),
+                )
+            ),
+            RuntimeBatch(
+                task=RuntimeTask(
+                    seed_node_ids=pa.array([9, 8], type=pa.uint64()),
+                    tt_stage_node_ids=pa.array([11, 19], type=pa.uint64()),
+                )
+            ),
         ]
 
-    monkeypatch.setattr(lightning_data, 'DiskgraphTaskBatchIterable', batches)
+    monkeypatch.setattr(lightning_data, "DiskgraphTaskBatchIterable", batches)
     nodes, rows = module.prediction_inputs(3)
     assert nodes.tolist() == [7, 7, 9]
     assert rows.tolist() == [20, 5, 11]
     keys = MagicMock(spec=FeatureStore)
-    keys.entity_table_names = ['users']
+    keys.entity_table_names = ["users"]
     keys.__getitem__.side_effect = lambda key: key[2] + 1000
     selected, mapping = select_prediction_inputs(keys, nodes, rows, 3)
     assert selected.tolist() == [5, 11, 20]
@@ -77,18 +88,26 @@ def test_seed_resolution_matches_selected_replay(stage, monkeypatch, module):
     options = calls[0]['runtime_options']
     assert options['selected_stage_node_ids'] == [20, 5]
     assert options['entity_node_type'] == 'users'
-    if stage == 'predict':
-        assert 'target_node_type' not in options
+    if stage == "predict":
+        assert "target_node_type" not in options
     else:
-        assert options['target_node_type'] == 'items'
+        assert options["target_node_type"] == "items"
 
 
 def test_prediction_discovery_rejects_misaligned_rows(monkeypatch, module):
     monkeypatch.setattr(
-        lightning_data, 'DiskgraphTaskBatchIterable', lambda **kwargs: [
-            {'task': {'seed_node_ids': [7], 'tt_stage_node_ids': [20, 5]}},
-        ])
-    with pytest.raises(RuntimeError, match='differ in length'):
+        lightning_data,
+        "DiskgraphTaskBatchIterable",
+        lambda **kwargs: [
+            RuntimeBatch(
+                task=RuntimeTask(
+                    seed_node_ids=pa.array([7], type=pa.uint64()),
+                    tt_stage_node_ids=pa.array([20, 5], type=pa.uint64()),
+                )
+            ),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="differ in length"):
         module.prediction_inputs(3)
 
 

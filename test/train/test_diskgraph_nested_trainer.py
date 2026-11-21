@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from diskgraph import RuntimeBatch, RuntimeTask
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
 from kumo_core.diskgraph.runtime_adapter import runtime_batch_to_hetero
 from kumo_core.explain.subgraph_collector import SubgraphCollector
@@ -2038,18 +2039,15 @@ def test_eval_df_uses_adapter_normalized_seed_time() -> None:
     import torch
 
     seed_seconds = [1_592_956_800, 1_593_043_200]
-    batch = {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint64()),
-            "tt_stage_node_ids": pa.array([0, 1], type=pa.uint64()),
-            "seed_node_ids": pa.array([100, 101], type=pa.uint64()),
-            "seed_timestamps": pa.array(seed_seconds, type=pa.int64()),
-            "target": pa.array([1.0, 0.0], type=pa.float64()),
-        },
-        "graphs": {},
-        "raw_features": {},
-        "metadata": {},
-    }
+    batch = RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint64()),
+            tt_stage_node_ids=pa.array([0, 1], type=pa.uint64()),
+            seed_node_ids=pa.array([100, 101], type=pa.uint64()),
+            seed_timestamps=pa.array(seed_seconds, type=pa.int64()),
+            target=pa.array([1.0, 0.0], type=pa.float64()),
+        ),
+    )
 
     hetero, _, _ = runtime_batch_to_hetero(
         batch,

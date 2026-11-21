@@ -57,10 +57,10 @@ def test_timestamp_batches_mix_without_repeating_rows(tmp_path, parent_index):
         )
         output = []
         for batch in islice(iterator, cap):
-            task = batch["task"]
-            times = task["seed_timestamps"].to_pylist()
+            task = batch.task
+            times = task.seed_timestamps.to_pylist()
             assert len(set(times)) == 1
-            output.append((times[0], tuple(task["tt_stage_node_ids"].to_pylist())))
+            output.append((times[0], tuple(task.tt_stage_node_ids.to_pylist())))
         return output
 
     full = batches(0)

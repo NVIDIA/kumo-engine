@@ -95,8 +95,8 @@ impl OutputHandler for InMemoryOutput {
 }
 
 // ---------------------------------------------------------------------------
-// RuntimeBatch — the shape PR-28765's `runtime_batch_to_hetero` consumes.
-// Engine emits via this collator; pybind converts to PyDict.
+// SamplingBatch — engine output consumed by diskgraph-runtime.
+// The runtime attaches history and neighborhoods before language conversion.
 //
 // Mostly Arrow data already produced by the engine. Three additions over
 // what InMemoryOutput captures:
@@ -204,10 +204,9 @@ pub struct GraphChannel {
     pub num_sampled_edges: HashMap<(String, String, String), Vec<u64>>,
 }
 
-/// The full runtime batch — shape PR-28765's `runtime_batch_to_hetero` adapter
-/// consumes. Pybind translates this struct into a PyDict at the FFI boundary.
+/// Engine sampling output before runtime history and neighborhood enrichment.
 #[derive(Debug, Default, Clone)]
-pub struct RuntimeBatch {
+pub struct SamplingBatch {
     pub task: TaskBag,
     pub graphs: HashMap<String, GraphChannel>,
     /// raw_features by namespace name. Each namespace's record batches are
@@ -223,7 +222,7 @@ pub struct RawFeatureBank {
     pub batches: Vec<RecordBatch>,
 }
 
-/// An OutputHandler that collates engine events into a `RuntimeBatch`.
+/// An OutputHandler that collates engine events into a `SamplingBatch`.
 ///
 /// The seed namespaces (the stage seed tables, e.g. `<tt_id>/train_seeds`,
 /// `<tt_id>/val_seeds`, `<tt_id>/test_seeds`, `<tt_id>/predict_seeds`) are
@@ -244,7 +243,7 @@ pub struct RawFeatureBank {
 /// The current stage's seed `raw_features` entry is NOT topology and is
 /// preserved — it carries the train-table / seed feature columns consumed by
 /// the kumo adapter.
-pub struct RuntimeBatchOutput {
+pub struct SamplingBatchOutput {
     /// Channel name to write into (we only use "main" for node prediction).
     pub channel: String,
     /// Relation ids whose src_type is any seed namespace — these edges are
@@ -265,10 +264,10 @@ pub struct RuntimeBatchOutput {
     /// Namespace name for the currently-flushing feature batches (set by
     /// pybind orchestrator before each `fetch_features_for_type` call).
     pub current_features_namespace: Option<String>,
-    pub batch: RuntimeBatch,
+    pub batch: SamplingBatch,
 }
 
-impl RuntimeBatchOutput {
+impl SamplingBatchOutput {
     pub fn new(
         channel: impl Into<String>,
         seed_src_rel_ids: std::collections::HashSet<u16>,
@@ -283,7 +282,7 @@ impl RuntimeBatchOutput {
             type_id_to_name,
             seed_type_ids,
             current_features_namespace: None,
-            batch: RuntimeBatch::default(),
+            batch: SamplingBatch::default(),
         }
     }
 
@@ -294,12 +293,12 @@ impl RuntimeBatchOutput {
         self.current_features_namespace = Some(namespace.into());
     }
 
-    pub fn into_runtime_batch(self) -> RuntimeBatch {
+    pub fn into_sampling_batch(self) -> SamplingBatch {
         self.batch
     }
 }
 
-impl OutputHandler for RuntimeBatchOutput {
+impl OutputHandler for SamplingBatchOutput {
     fn handle_edge(
         &mut self,
         _hop: usize,

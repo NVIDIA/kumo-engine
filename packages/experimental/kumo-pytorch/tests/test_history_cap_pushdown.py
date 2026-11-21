@@ -9,6 +9,7 @@ import json
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from diskgraph import RuntimeHistory
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.native_anchors import NativeAnchors
@@ -101,9 +102,10 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
             assert [item["limit"] for item in plan["sequences"]] == [3, 3]
         for runtime in original(self, stage, **options):
             if history:
-                for sequence in runtime["history"]["sequences"]:
-                    assert sequence["batch"].num_rows <= 3
-                observed.append(runtime["history"]["stats"])
+                assert isinstance(runtime.history, RuntimeHistory)
+                for sequence in runtime.history.sequences:
+                    assert sequence.batch.num_rows <= 3
+                observed.append(runtime.history.stats)
             yield runtime
 
     with api.prepare(
@@ -129,4 +131,4 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
     assert actual == ([expected, [0.0] * 3] if isinstance(layout, api.Padded) else expected)
     assert observed
     # PK + clock + one payload field; only three rows per component survive.
-    assert observed[0]["values_decoded"] <= 2 * 3 * 3
+    assert observed[0].values_decoded <= 2 * 3 * 3

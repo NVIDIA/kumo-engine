@@ -4,6 +4,8 @@
 
 """Columnar graphs preserve selected occurrences and bypass tensor assembly."""
 
+from dataclasses import replace
+
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
@@ -112,8 +114,8 @@ def test_columnar_reuses_native_buffers(graph_task, monkeypatch):
         graph = batch.inputs["graph"]
         native_edge_buffers = {
             values.buffers()[1].address
-            for edge in runtime["graphs"]["main"]["edge_index_dict"]
-            for values in (edge["src"], edge["dst"])
+            for edge in runtime.graphs["main"].edge_index_dict
+            for values in (edge.src, edge.dst)
             if len(values)
         }
         for edge in graph.edges.values():
@@ -126,10 +128,10 @@ def test_columnar_reuses_native_buffers(graph_task, monkeypatch):
                 continue
             assert (
                 node.owners.buffers()[1].address
-                == runtime["graphs"]["main"]["batch_dict"][name].buffers()[1].address
+                == runtime.graphs["main"].batch_dict[name].buffers()[1].address
             )
             if name == "events":
-                raw = pa.Table.from_batches(runtime["raw_features"][name]["record_batches"])
+                raw = pa.Table.from_batches(runtime.raw_features[name].record_batches)
                 for field in ("note",):
                     assert (
                         node.features[field].chunk(0).buffers()[1].address
@@ -313,18 +315,18 @@ def test_columnar_stable_deduplication_across_chunks(graph_task, monkeypatch, dt
     raw_graphs = []
 
     def capture(sample, spec, runtime, **kwargs):
-        graph = runtime["graphs"]["main"]
+        graph = runtime.graphs["main"]
         parts = []
-        for edge in graph["edge_index_dict"]:
+        for edge in graph.edge_index_dict:
             # Reorder and repeat valid pairs within and across native chunks.
-            assert len(edge["src"]) >= 2
-            part = {
-                **edge,
-                "src": edge["src"].take(pa.array(selection, type=pa.int64())).cast(dtype),
-                "dst": edge["dst"].take(pa.array(selection, type=pa.int64())).cast(dtype),
-            }
+            assert len(edge.src) >= 2
+            part = replace(
+                edge,
+                src=edge.src.take(pa.array(selection, type=pa.int64())).cast(dtype),
+                dst=edge.dst.take(pa.array(selection, type=pa.int64())).cast(dtype),
+            )
             parts.extend([part, part] if len(selection) > 1 else [part])
-        runtime = {**runtime, "graphs": {"main": {**graph, "edge_index_dict": parts}}}
+        runtime = replace(runtime, graphs={"main": replace(graph, edge_index_dict=parts)})
         raw_graphs.append(original(sample, spec, runtime))
         return original(sample, spec, runtime, **kwargs)
 

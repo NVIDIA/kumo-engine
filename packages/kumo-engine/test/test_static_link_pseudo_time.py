@@ -118,9 +118,9 @@ def _batches(loader):
 
 
 def _ids(batch, node_type):
-    graph = batch['graphs']['main']
-    ids = graph['node_ids'].get(node_type)
-    seeds = graph['batch_dict'].get(node_type)
+    graph = batch.graphs["main"]
+    ids = graph.node_ids.get(node_type)
+    seeds = graph.batch_dict.get(node_type)
     if ids is None:
         return [], []
     return np.asarray(ids).tolist(), np.asarray(seeds).tolist()
@@ -130,11 +130,12 @@ def _labels(batches):
     """``(user, item)`` node-id links scored by these batches."""
     links = set()
     for batch in batches:
-        task = batch['task']
-        users = np.repeat(np.asarray(task['seed_node_ids']),
-                          np.asarray(task['lp_pos_counts']))
-        items = np.asarray(task['lp_pos_rhs_global'])
-        keep = ~np.asarray(task['lp_pos_mask'])
+        task = batch.task
+        users = np.repeat(
+            np.asarray(task.seed_node_ids), np.asarray(task.lp_pos_counts)
+        )
+        items = np.asarray(task.lp_pos_rhs_global)
+        keep = ~np.asarray(task.lp_pos_mask)
         links |= set(zip(users[keep].tolist(), items[keep].tolist()))
     return links
 
@@ -143,7 +144,7 @@ def _user_side(batches):
     """``(seed user, item)`` pairs each user seed reaches in its subgraph."""
     reached = set()
     for batch in batches:
-        users = np.asarray(batch['task']['seed_node_ids']).tolist()
+        users = np.asarray(batch.task.seed_node_ids).tolist()
         for item, seed in zip(*_ids(batch, 'items')):
             if seed < len(users):
                 reached.add((users[seed], item))
@@ -154,7 +155,7 @@ def _item_side(batches):
     """``(user, seed item)`` pairs each item seed reaches in its subgraph."""
     reached = set()
     for batch in batches:
-        items = np.asarray(batch['task']['seed_node_ids']).tolist()
+        items = np.asarray(batch.task.seed_node_ids).tolist()
         for user, seed in zip(*_ids(batch, 'users')):
             reached.add((user, items[seed]))
     return reached

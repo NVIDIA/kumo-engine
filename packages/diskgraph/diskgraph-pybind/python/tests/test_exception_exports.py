@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import diskgraph
 import pytest
 
@@ -35,3 +39,27 @@ def test_snapshot_range_checksums_match_zlib(tmp_path):
         zlib.crc32((tmp_path / "_MANIFEST.json").read_bytes())]
     with pytest.raises(diskgraph.DiskgraphCorruptionError):
         diskgraph.snapshot_range_checksums(str(tmp_path / "missing"), 512)
+
+
+def test_build_identity_import_does_not_require_pyarrow() -> None:
+    """Allow dependency-free installation checks before Arrow is installed."""
+    script = (
+        "import sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "sys.modules['pyarrow'] = None\n"
+        "import diskgraph\n"
+        "assert diskgraph.__version__\n"
+        "assert diskgraph.BUILD_COMMIT\n"
+        "assert diskgraph.SamplingPlan().layers == ()\n"
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(Path(diskgraph.__file__).resolve().parent.parent),
+        ],
+        check=True,
+    )
