@@ -264,6 +264,16 @@ say that instead. The approval covers the confirmed population name only: the no
 as `POPULATION_CONFIRMED` and stops before staging if the name it would replace differs
 (`kumoai-reference/references/kumo_finetuning_sdk.md` §7.1).
 
+**Check every value the user's words put in a condition against its column's type.** Take the
+type from the catalog (preflight). A number compared with a text column (`= 1` on a TEXT
+column), a quoted value compared with a numeric one (`= '5'`), a quoted date, or a word compared
+with a boolean is a type mismatch between the request and the data, not a formatting detail: as
+written the query is refused or matches nothing (`kumoai-reference/references/pql_writing.md`,
+*Gotchas* 14). Never re-quote or cast the value silently. Put it on its own line in the
+restatement — `Type mismatch: <table>.<column> is <column type>; the request compares it with
+<value> (<value type>)` — with the two fixes: rewrite the value in the column's type (`'1'`,
+`5`), or change the column's type in the source. Say which one the Outcome line uses, and ask.
+
 | Condition | Transition |
 |---|---|
 | User confirms | ACCEPT — proceed to Step 2 |
