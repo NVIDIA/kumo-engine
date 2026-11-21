@@ -61,9 +61,10 @@ Previous local trial artifacts remain in their original volume; moving to these
 names requires seeding the wheel and fixture into the new volume once.
 The runner never silently falls back to the old namespace or customer resources.
 
-Use the GitHub environment `databricks-mlops-test`, require approval from
-`NVIDIA/kumo-engineers`, enable `prevent_self_review`, disable administrator
-bypass, and allow only `main`. Trial branches, wildcard rules and tags are rejected. Its required secrets are
+Use the GitHub environment `databricks-mlops-test`, with no required deployment
+reviewers, administrator bypass disabled, and exact deployment branches `main`
+and `egu/byom-mlops-lifecycle`. Wildcards, tags and other branches are rejected.
+Its required secrets are
 `KUMO_DATABRICKS_TEST_PAT`, containing the dedicated test identity's PAT, and
 `KUMO_DATABRICKS_TEST_HOST`, containing its HTTPS workspace origin.
 Both jobs require `KUMO_DATABRICKS_TEST_USER`, identifying the expected PAT
@@ -71,9 +72,9 @@ principal. Retention checks the authenticated identity before writing or recover
 control records; the lifecycle checks it again inside every fresh worker.
 The PAT identity needs Jobs submission/export, workspace notebook import and
 read/write access to the dedicated Unity Catalog volume. GitHub's built-in token
-checks environment protections before approval and again before consuming the PAT.
-The cloud jobs accept manual dispatch only on `main`, with approval from a
-maintainer other than the person who started the run. Push and pull-request events do not launch cloud jobs.
+checks the environment policy before building and again before consuming the PAT.
+The graph/UI workflow accepts manual dispatch only on `main`; the shared customer-model
+matrix also admits the exact BYOM development branch. Push and pull-request events do not launch cloud jobs.
 
 Every scenario requires `--cluster-id ID` for an existing dedicated single-node
 `KUMO_TEST_` x86 cluster using `i3.xlarge` or `i3.2xlarge`, with attach and Volume
@@ -82,7 +83,7 @@ The runner validates the cluster ID, name, worker count, node type and effective
 driver type before assets and again before submission. It accepts running,
 starting, restarting or terminated test compute. [Databricks Jobs automatically
 starts terminated assigned compute](https://docs.databricks.com/aws/en/compute/clusters-manage#compute-autostart-for-jobs-and-jdbcodbc-queries),
-so the cluster’s idle shutdown does not require a manual restart after approval.
+so the cluster’s idle shutdown does not require a manual restart between runs.
 The existing bounded Job/task deadlines cover startup and execution. The runner
 never creates, resizes or stops supplied compute and calls no cluster-start API.
 Actions allows 110 minutes for graph checks and 130 minutes for the lifecycle,
@@ -136,7 +137,7 @@ Existing assets are hash-verified and reused without upload. The test helpers ar
 uploaded only when their contents change. Asset bytes are checked before installation
 and again inside the notebook; installed graph modules must match the test revision.
 
-GitHub Actions runs this same command after environment approval. It requires the
+GitHub Actions runs this same command after manual dispatch. It requires the
 protected PAT and host secrets. Select `main` after the squash merge; resource
 names come from the code. Feature-branch dispatches are intentionally skipped,
 so final-head live validation must run after merging.
@@ -322,3 +323,57 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer model lifecycle
+
+The lifecycle launcher accepts `--workload` for a committed module implementing
+[the workload interface](mlops-validation.md#customer-models-and-kumo-pytorch).
+The module declares its phases in one top-level literal `PHASES` list or tuple
+and owns its model, metrics and registry loader. The submission client reads
+that declaration without importing customer code; top-level model imports are
+resolved only in the prepared notebook environment. Computed phase declarations
+are refused before cloud access.
+The notebook installs additional wheels supplied with repeated
+`--workload-wheel` arguments and runs the selected phases in isolated processes.
+The permission prerequisite, installed Engine checksum, runtime identity,
+`pip check`, source admission, evidence collection and attempt cleanup remain
+required. The custom workload's phases and SHA-256 are checked on readback.
+Native UI review remains separate. Custom workloads may publish versions 1–20
+of the supplied attempt-scoped model. Cleanup retains the ownership, creation-time
+and concurrency checks, with this bound included in the signed recovery record.
+The default Kumo scenario keeps its two-version bound.
+
+For the experimental PyTorch regression example, build `kumo-pytorch` from the
+same checkout. Also retain the exact DiskGraph constituent wheel from the
+complete Engine build (`--keep-work` retains its build directory). Install it
+alongside Engine so pip can satisfy `kumo-pytorch`'s DiskGraph requirement.
+The launcher rejects dependency wheels that overwrite any candidate Engine
+file with different bytes, including members relocated from wheel `purelib`
+or `platlib` directories and conflicting dependency wheels. Additional wheels
+must install their files into site-packages; prefix-level `data`, `scripts`, and
+`headers` layouts are refused because their destinations vary with the runtime.
+A separately built native wheel is not equivalent.
+
+```sh
+python packages/kumo-engine/test/databricks_notebook/lifecycle_notebook.py \
+  --execute --engine-checks-only --cluster-id DEDICATED_TEST_CLUSTER_ID \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --candidate /absolute/path/candidate.json \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
+  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
+  --output-dir /tmp/databricks-customer-model-001
+```
+
+This example checks two registered PyTorch versions, MSE/RMSE history,
+preprocessing/weight fingerprints, alias promotion and identical predictions
+after removing producer scratch. It uses the in-memory batch engine and does
+not qualify DiskGraph execution, model quality or native registry UI.
+
+
+For CPU and GPU customer-model coverage, use the
+[shared platform matrix](mlops-validation.md#cpu-and-gpu-platform-matrix).
+Its GPU case admits only dedicated single-node `g5.xlarge` or `g4dn.xlarge`
+clusters with a GPU runtime. The legacy graph/UI scenario retains its CPU
+cluster restrictions. Both routes keep source, wheel and attempt-ownership checks.

@@ -116,8 +116,6 @@ def validate(config):
                     or '..' in Path(context).parts):
         raise ValueError(
             'notebook_context requires an absolute SageMaker runtime path')
-    if platform == 'sagemaker' and config['accelerator'] != 'cpu':
-        raise ValueError('Notebook lifecycle validation requires CPU')
     if config['accelerator'] not in ('cpu', 'gpu'):
         raise ValueError('accelerator must be cpu or gpu')
     if config['environment'] not in ('venv', 'managed'):
@@ -641,11 +639,15 @@ def drift_record(profile, cfg, run, drift):
 
 
 def run_notebook(*, config, wheel, expected_version, output_dir,
-                 python_executable=None, phase=None, attempt=None):
+                 python_executable=None, phase=None, attempt=None,
+                 workload=None):
     """Launch fresh lifecycle processes from a Snowflake Container Runtime notebook."""
     profile = validate(json.loads(Path(config).read_text()))
     if profile['platform'] != 'snowflake':
         raise ValueError('This notebook entrypoint is for Snowflake')
+    if workload is not None and phase is not None:
+        raise ValueError(
+            'A custom workload requires a full lifecycle invocation')
     if phase not in (None, 'negative'):
         raise ValueError('The standalone notebook phase must be negative')
     from IPython import get_ipython
@@ -684,6 +686,8 @@ def run_notebook(*, config, wheel, expected_version, output_dir,
         '--output-dir',
         str(Path(output_dir).resolve())
     ]
+    if workload is not None:
+        command += ['--workload', str(Path(workload).resolve(strict=True))]
     if phase == 'negative':
         Path(output_dir).mkdir(parents=True, exist_ok=False)
         prepare(Path(output_dir), Path(config), attempt=attempt)

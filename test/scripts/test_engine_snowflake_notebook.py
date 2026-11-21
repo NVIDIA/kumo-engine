@@ -234,3 +234,109 @@ def test_public_result_does_not_print_provider_error_text(modules, capsys):
     output = capsys.readouterr().out
     assert private not in output
     assert 'inspect private evidence' in output
+
+
+def custom_workload():
+    return dict(file='wheel_mlops_pytorch_snowflake.py',
+                helpers=['wheel_mlops_pytorch.py'], phases=['train', 'reload'],
+                sha256='c' * 64, wheels=[])
+
+
+@pytest.mark.parametrize('fault',
+                         [None, 'worker_sha', 'summary_sha', 'exit', 'gap'])
+def test_customer_lifecycle_requires_its_declared_receipts_and_workload_identity(
+        modules, tmp_path, fault):
+    launch, _, verify = modules
+    custom = custom_workload()
+    names = ('platform-prerequisite', *custom['phases'])
+    paths, recorded = {}, {}
+    for name in names:
+        value = dict(status='passed', environment=dict(sha256='a' * 64),
+                     workload=dict(sha256=custom['sha256']))
+        if fault == 'worker_sha' and name == 'reload':
+            value['workload']['sha256'] = 'd' * 64
+        path = tmp_path / (name + '.json')
+        path.write_text(json.dumps(value))
+        paths['lifecycle/' + name + '.json'] = path
+        recorded[name] = dict(
+            value, returncode=1 if fault == 'exit' and name == 'train' else 0)
+    summary = dict(
+        status='blocked', phases=recorded,
+        workload=dict(sha256='d' *
+                      64 if fault == 'summary_sha' else custom['sha256']),
+        required_gaps=dict(ui_review=dict(status='blocked')))
+    if fault == 'gap':
+        summary['required_gaps']['exported_epoch_history'] = dict(
+            status='not implemented')
+    summary_file = tmp_path / 'summary.json'
+    summary_file.write_text(json.dumps(summary))
+    paths['lifecycle/summary.json'] = summary_file
+    manifest = dict(mode='lifecycle', wheel_sha256='a' * 64, workload=custom)
+    receipt = dict(status='blocked', lifecycle=dict(returncode=1,
+                                                    summary=summary))
+    if fault is not None:
+        with pytest.raises(AssertionError):
+            launch.validate_lifecycle_exit(receipt, paths, manifest)
+        return
+    launch.validate_lifecycle_exit(receipt, paths, manifest)
+    checks = launch.lifecycle_verdict(paths, manifest)
+    assert checks['phases'] == dict.fromkeys(names, 'passed')
+    assert checks['workload'] == custom
+    report = completed()
+    report['engine_checks'] = checks
+    assert verify.verdict(report)['engine_checks'] == 'passed'
+
+
+@pytest.mark.parametrize('dirty', [False, True])
+def test_customer_payload_pins_committed_sources_and_dependency_inventory(
+        modules, monkeypatch, tmp_path, dirty):
+    launch, prepare, _ = modules
+    repo = DIRECTORY.parents[3]
+    workload = DIRECTORY.parent / 'wheel_mlops_pytorch_snowflake.py'
+    helper = DIRECTORY.parent / 'wheel_mlops_pytorch.py'
+    descriptor = json.loads(
+        (Path(__file__).parent / 'data/snowflake-candidate.json').read_text())
+    wheel = 'diskgraph-0.2.0-cp311-abi3-linux_x86_64.whl'
+    descriptor['workload_wheels'] = [wheel]
+    descriptor['dependencies']['workload_wheels'] = [wheel]
+    descriptor['dependencies']['wheels'][wheel] = dict(sha256='d' * 64, size=1,
+                                                       name='diskgraph',
+                                                       version='0.2.0')
+    candidate = tmp_path / 'candidate.json'
+    candidate.write_text(json.dumps(descriptor))
+
+    def committed(command, **kwargs):
+        path = repo / command[-1].removeprefix('HEAD:')
+        return b'different committed source' if dirty else path.read_bytes()
+
+    monkeypatch.setattr(prepare.subprocess, 'check_output', committed)
+    copyfile = prepare.shutil.copyfile
+
+    def copy_frozen(source, destination):
+        assert source not in (workload,
+                              helper), 'Do not reread admitted customer sources'
+        return copyfile(source, destination)
+
+    monkeypatch.setattr(prepare.shutil, 'copyfile', copy_frozen)
+    output = tmp_path / 'payload'
+    if dirty:
+        with pytest.raises(ValueError,
+                           match='Commit the exact workload source'):
+            prepare.prepare(output, candidate, workload, [helper])
+        assert not output.exists()
+        return
+    approved = prepare.prepare(output, candidate, workload, [helper])
+    for mode in ('preflight', 'negative', 'lifecycle'):
+        plan = launch.prepare_payload(tmp_path / mode, 'V2.9-CPU-PY3.12',
+                                      output / mode, approved=approved)
+        assert plan['workload']['phases'] == ['train', 'reload']
+        assert plan['workload']['wheels'] == [wheel]
+        assert (tmp_path / mode / 'payload' / workload.name).is_file()
+        assert (tmp_path / mode / 'payload' / helper.name).is_file()
+    config_path = output / 'lifecycle/lifecycle-config.json'
+    config = json.loads(config_path.read_text())
+    config['workload']['phases'] = ['unapproved']
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='Workload differs'):
+        launch.prepare_payload(tmp_path / 'changed', 'V2.9-CPU-PY3.12',
+                               output / 'lifecycle', approved=approved)

@@ -43,6 +43,10 @@ def execute(config):
             dict(status='not implemented',
                  reason='Full epoch history is not available in model exports'),
         })
+    custom = config.get('workload')
+    if custom is not None:
+        report['workload'] = custom
+        report['required_gaps'] = {}
     session = boto3.Session(region_name=config['region'])
     credentials = session.get_credentials().get_frozen_credentials()
     secrets = [
@@ -105,12 +109,15 @@ def execute(config):
                     denied_artifact_root=config['denied_artifact_root'],
                     tracking_arn=config['tracking_arn'],
                     experiment='kumo-test-mlops',
-                    model_prefix='kumo-test-mlops', accelerator='cpu',
+                    model_prefix='kumo-test-mlops', accelerator=config.get('accelerator', 'cpu'),
                     execution_context='sagemaker', environment='venv',
                     notebook_context=str(payload / 'runtime-context.json'))
                 (lifecycle / 'platform.json').write_text(
                     json.dumps(dict(config=profile, attempt=config['attempt'])))
-                for phase in ('negative', 'fit', 'score', 'evaluate'):
+                selected_phases = (('platform-prerequisite',
+                                    *custom['phases']) if custom else
+                                   ('negative', 'fit', 'score', 'evaluate'))
+                for phase in selected_phases:
                     command = [
                         sys.executable, '-I',
                         str(payload / 'wheel_mlops_lifecycle.py'),
@@ -119,12 +126,19 @@ def execute(config):
                         config['candidate']['expected_version'], '--output-dir',
                         str(lifecycle), '--phase', phase
                     ]
+                    if custom is not None:
+                        command += ['--workload', str(payload / custom['file'])]
                     with (evidence / (phase + '.log')).open('w') as log:
                         code = helpers.execute(command, lifecycle, log,
                                                budget.remaining(root, 900))
                     path = lifecycle / (phase + '.json')
                     result = json.loads(path.read_text())
                     result['returncode'] = code
+                    if custom and result.get(
+                            'workload', {}).get('phases') != custom['phases']:
+                        result.update(
+                            status='failed',
+                            error='Runtime workload phases differ from admission')
                     if code and result['status'] == 'passed':
                         result.update(status='failed',
                                       error='Nonzero worker exit after receipt')
@@ -135,17 +149,16 @@ def execute(config):
                     scratch = lifecycle / ('scratch-' + phase)
                     if scratch.exists():
                         shutil.rmtree(scratch)
-                    if phase == 'fit':
+                    if custom is None and phase == 'fit':
                         for directory in lifecycle.glob('data-*'):
                             shutil.rmtree(directory)
             phases = report['phases']
             graph_ok = (config['scenario'] == 'engine'
                         or report.get('graph', {}).get('status') == 'passed')
-            engine_ok = (
-                config['scenario'] == 'graph'
-                or set(phases) == {'fit', 'score', 'evaluate', 'negative'}
-                and all(v['status'] == 'passed' and v['returncode'] == 0
-                        for v in phases.values()))
+            engine_ok = (config['scenario'] == 'graph'
+                         or set(phases) == set(selected_phases) and all(
+                             v['status'] == 'passed' and v['returncode'] == 0
+                             for v in phases.values()))
             report['status'] = 'passed' if graph_ok and engine_ok else 'failed'
     except Exception:
         report['error'] = traceback.format_exc()

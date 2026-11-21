@@ -209,3 +209,15 @@ def test_failed_explanations_preserve_graph_checkpoints_without_data():
     assert exported['interactive'] == dict(
         status='failed', graph='passed', explanations='failed')
     assert 'PRIVATE' not in json.dumps(exported)
+
+
+def test_customer_pytorch_phases_survive_publication_without_arbitrary_names():
+    result = summary.aggregate(dict(
+        status='passed', phases={
+            'platform-prerequisite': {'status': 'passed'},
+            'train': {'status': 'passed'},
+            'reload': {'status': 'passed'},
+            'PRIVATE customer name': {'status': 'passed'},
+        }))
+    assert result == dict(status='passed', phases={
+        'platform-prerequisite': 'passed', 'train': 'passed', 'reload': 'passed'})

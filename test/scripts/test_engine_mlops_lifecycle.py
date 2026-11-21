@@ -264,9 +264,10 @@ def test_platform_permission_prerequisite_runs_before_any_fit(
     def blocked(command, cwd, log, timeout):
         phase = command[command.index('--phase') + 1]
         phases.append(phase)
-        runner.write(cwd / (phase + '.json'),
-                     dict(status='passed') if ready else
-                     dict(status='blocked', error='Denied stage not ready'))
+        runner.write(
+            cwd / (phase + '.json'),
+            dict(status='passed') if ready else dict(
+                status='blocked', error='Denied stage not ready'))
         return 0 if ready else 1
 
     monkeypatch.setattr(runner, 'execute', blocked)
@@ -277,8 +278,10 @@ def test_platform_permission_prerequisite_runs_before_any_fit(
     assert phases == (['negative', 'fit', 'score', 'evaluate']
                       if ready else ['negative'])
     assert report['status'] == 'blocked'
-    assert report['phases']['negative']['status'] == ('passed' if ready else 'blocked')
-    assert report['phases']['fit']['status'] == ('passed' if ready else 'blocked')
+    assert report['phases']['negative']['status'] == ('passed'
+                                                      if ready else 'blocked')
+    assert report['phases']['fit']['status'] == ('passed'
+                                                 if ready else 'blocked')
     assert report['required_gaps']['exported_epoch_history'][
         'status'] == 'not implemented'
 
@@ -371,3 +374,140 @@ def test_final_scratch_failure_overrides_all_passed_phase_receipts(
     assert all(phase['status'] == 'passed'
                for phase in report['phases'].values())
     assert 'Cannot remove final producer scratch' in report['error']
+
+
+def customer_module(tmp_path, phases="('train', 'recover')",
+                    body='return dict(rows=3)'):
+    path = tmp_path / 'customer.py'
+    path.write_text(
+        f'PHASES = {phases}\ndef run_phase(name, root, profile):\n    {body}\n')
+    return path
+
+
+@pytest.mark.parametrize('phases', [
+    "()", "('train', 'train')", "('../escape',)", "('platform-prerequisite',)",
+    "('summary',)", "('platform',)", "'train'", '(42,)'
+])
+def test_invalid_customer_phases_are_rejected(tmp_path, phases):
+    args = SimpleNamespace(workload=customer_module(tmp_path, phases))
+    with pytest.raises(AssertionError):
+        runner.workload(args)
+
+
+def test_customer_workload_owns_phases_and_does_not_use_kumo_helpers(
+        tmp_path, monkeypatch):
+    path = customer_module(tmp_path)
+    root = tmp_path / 'attempt'
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *a, **kw: None)
+    phases = []
+
+    def completed(command, cwd, log, timeout):
+        name = command[command.index('--phase') + 1]
+        phases.append(name)
+        assert command[command.index('--workload') + 1] == str(path)
+        scratch = cwd / ('scratch-' + name)
+        scratch.mkdir()
+        (scratch / 'temporary').touch()
+        if name == 'recover':
+            assert not (cwd / 'scratch-train').exists()
+        runner.write(cwd / (name + '.json'), dict(status='passed'))
+        return 0
+
+    monkeypatch.setattr(runner, 'execute', completed)
+    args = SimpleNamespace(output_dir=root, wheel=tmp_path / 'x',
+                           expected_version='1', phase_timeout=1, workload=path)
+    assert runner.run(args) == 0
+    report = runner.read(root / 'summary.json')
+    assert phases == ['train', 'recover']
+    assert set(report['phases']) == set(phases)
+    assert report['workload']['sha256'] == runner.digest(path)
+    assert 'gpu_helpers_sha256' not in report
+    assert not (root / 'scratch-recover').exists()
+
+
+def test_customer_phase_does_not_configure_or_load_engine_trainer(
+        tmp_path, monkeypatch):
+    path = customer_module(tmp_path)
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    # Custom code must not need Engine configuration, metrics, or model types.
+    monkeypatch.setitem(sys.modules, 'kumo.engine', None)
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'x',
+                           expected_version='1', phase='recover', workload=path)
+    assert runner.phase(args) == 0
+    report = runner.read(tmp_path / 'recover.json')
+    assert report['result'] == {'rows': 3}
+    assert report['resources']['torch_threads'] is None
+
+
+@pytest.mark.parametrize('ready', [True, False])
+def test_custom_platform_workload_preserves_permission_gate(
+        tmp_path, monkeypatch, ready):
+    path = customer_module(tmp_path)
+    profile = SimpleNamespace(
+        config=dict(environment='managed', execution_context='sagemaker'))
+    monkeypatch.setattr(runner, 'platform_backend', lambda _: profile)
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    monkeypatch.setattr(runner.subprocess, 'run', lambda *a, **kw: None)
+    phases = []
+
+    def completed(command, cwd, log, timeout):
+        name = command[command.index('--phase') + 1]
+        assert '--execute-platform' in command
+        phases.append(name)
+        runner.write(cwd / (name + '.json'),
+                     dict(status='passed' if ready else 'blocked'))
+        return 0 if ready else 1
+
+    monkeypatch.setattr(runner, 'execute', completed)
+    args = SimpleNamespace(output_dir=tmp_path / 'attempt',
+                           wheel=tmp_path / 'x', expected_version='1',
+                           phase_timeout=1, workload=path)
+    assert runner.run(args) == 1  # UI review remains required.
+    report = runner.read(args.output_dir / 'summary.json')
+    assert phases == (['platform-prerequisite', 'train', 'recover']
+                      if ready else ['platform-prerequisite'])
+    assert 'exported_epoch_history' not in report['required_gaps']
+    assert report['required_gaps']['ui_review']['status'] == 'blocked'
+
+
+def test_custom_exception_produces_failed_receipt(tmp_path, monkeypatch):
+    path = customer_module(tmp_path,
+                           body="raise ValueError('bad customer weights')")
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'x',
+                           expected_version='1', phase='recover', workload=path)
+    assert runner.phase(args) == 1
+    receipt = runner.read(tmp_path / 'recover.json')
+    assert receipt['status'] == 'failed'
+    assert 'bad customer weights' in receipt['error']
+
+
+def test_custom_phase_runs_in_a_fresh_isolated_process(tmp_path):
+    path = customer_module(
+        tmp_path, body="return dict(previous=(root / 'train.json').is_file())")
+    # Exercise actual -I imports and receipts without installing a candidate wheel.
+    program = (
+        'import importlib.util; from pathlib import Path; from types import SimpleNamespace; '
+        f's=importlib.util.spec_from_file_location("runner", {str(SCRIPT)!r}); '
+        'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+        'm.check_install=lambda *a, **kw: {}; '
+        f'a=SimpleNamespace(workload=Path({str(path)!r}), output_dir=Path({str(tmp_path)!r}), '
+        'wheel=Path("unused"), expected_version="1", phase=PHASE); '
+        'raise SystemExit(m.phase(a))')
+    for name in ('train', 'recover'):
+        subprocess.run(
+            [sys.executable, '-I', '-c',
+             program.replace('PHASE', repr(name))], check=True)
+    assert runner.read(tmp_path / 'recover.json')['result']['previous'] is True
+
+
+def test_customer_worker_records_the_loaded_phase_list(tmp_path, monkeypatch):
+    path = customer_module(tmp_path, phases="['train']")
+    path.write_text(path.read_text() + "PHASES.append('recover')\n")
+    monkeypatch.setattr(runner, 'check_install', lambda *a, **kw: {})
+    args = SimpleNamespace(output_dir=tmp_path, wheel=tmp_path / 'x',
+                           expected_version='1', phase='train', workload=path)
+    assert runner.phase(args) == 0
+    receipt = runner.read(tmp_path / 'train.json')
+    assert receipt['workload']['phases'] == ['train', 'recover']

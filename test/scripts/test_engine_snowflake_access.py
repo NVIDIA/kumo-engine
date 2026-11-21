@@ -139,6 +139,8 @@ def test_environment_guard_checks_main_before_api_access(
     import io
 
     guard, environment, policies = environment_guard
+    if environment_name in guard.BRANCH_TEST_ENVIRONMENTS:
+        environment['protection_rules'] = []
     monkeypatch.setenv('GITHUB_REPOSITORY', repository)
     monkeypatch.setenv('GITHUB_REF', ref)
     monkeypatch.setenv('GITHUB_EVENT_NAME', event)
@@ -222,3 +224,122 @@ def test_legacy_dependency_hashes_do_not_block_new_candidates(resources, monkeyp
                                'dependency-asset.json': 'b' * 64})
     monkeypatch.setenv('SNOWFLAKE_TEST_CONFIG', json.dumps(value))
     assert resources.require() == resources.expected()
+
+
+@pytest.mark.parametrize('environment_name', [
+    'snowflake-mlops-test', 'sagemaker-mlops-test', 'databricks-mlops-test',
+    'other-platform-test'
+])
+@pytest.mark.parametrize('dispatch', ['main', 'egu/byom-mlops-lifecycle'])
+def test_only_selected_platforms_admit_the_exact_test_branch(
+        environment_guard, monkeypatch, environment_name, dispatch):
+    import io
+
+    guard, environment, policies = environment_guard
+    selected = environment_name in guard.BRANCH_TEST_ENVIRONMENTS
+    if selected:
+        environment['protection_rules'] = []
+        policies['branch_policies'].append(
+            dict(name=guard.TEST_BRANCH, type='branch'))
+    policies['total_count'] = len(policies['branch_policies'])
+    monkeypatch.setenv('GITHUB_REPOSITORY', guard.REPOSITORY)
+    monkeypatch.setenv('GITHUB_EVENT_NAME', 'workflow_dispatch')
+    monkeypatch.setenv('GITHUB_REF', 'refs/heads/' + dispatch)
+    monkeypatch.setenv('GITHUB_TOKEN', 'synthetic-token')
+    calls = []
+
+    def get(request, timeout):
+        calls.append(request.full_url)
+        value = policies if 'deployment-branch-policies' in request.full_url else environment
+        return io.BytesIO(json.dumps(value).encode())
+
+    monkeypatch.setattr(guard.urllib.request, 'urlopen', get)
+    if selected or dispatch == 'main':
+        guard.main(environment=environment_name)
+        assert len(calls) == 2
+    else:
+        with pytest.raises(SystemExit, match='manual dispatch'):
+            guard.main(environment=environment_name)
+        assert calls == []
+
+
+@pytest.mark.parametrize('fault', [
+    'missing-branch', 'missing-main', 'wildcard', 'other-branch', 'tag',
+    'duplicate', 'count', 'bypass', 'reviewer'
+])
+def test_branch_exception_preserves_environment_restrictions(environment_guard, fault):
+    guard, environment, policies = environment_guard
+    policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
+    environment['protection_rules'] = []
+    if fault == 'missing-branch':
+        policies['branch_policies'].pop()
+    elif fault == 'missing-main':
+        policies['branch_policies'].pop(0)
+    elif fault == 'wildcard':
+        policies['branch_policies'][1]['name'] = 'egu/*'
+    elif fault == 'other-branch':
+        policies['branch_policies'].append(dict(name='unapproved', type='branch'))
+    elif fault == 'tag':
+        policies['branch_policies'][1]['type'] = 'tag'
+    elif fault == 'duplicate':
+        policies['branch_policies'].append(dict(name=guard.TEST_BRANCH, type='branch'))
+    elif fault == 'bypass':
+        environment['can_admins_bypass'] = True
+    elif fault == 'reviewer':
+        environment['protection_rules'] = [dict(type='required_reviewers')]
+    policies['total_count'] = len(policies['branch_policies']) + (fault == 'count')
+    with pytest.raises(ValueError):
+        guard.validate(environment, policies,
+                       allowed_branches=('main', guard.TEST_BRANCH),
+                       required_branch=guard.TEST_BRANCH, require_approval=False)
+
+
+def test_workflows_admit_the_same_explicit_branch():
+    for platform in ('snowflake', 'sagemaker'):
+        path = ROOT / '.github/workflows' / f'kumo-engine-{platform}-notebook.yml'
+        source = path.read_text()
+        condition = "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')"
+        assert source.count(condition) == (3 if platform == 'snowflake' else 2)
+        assert "github.event_name == 'workflow_dispatch'" in source
+
+
+@pytest.mark.parametrize('selected', ['kumo', 'pytorch'])
+def test_actions_dispatch_stages_matching_wheels_and_native_workload(tmp_path, selected):
+    import os
+    import subprocess
+    import sys
+
+    import yaml
+
+    workflow = yaml.safe_load((ROOT / '.github/workflows/kumo-engine-snowflake-notebook.yml').read_text())
+    steps = workflow['jobs']['engine-lifecycle']['steps']
+    capture = tmp_path / 'commands.jsonl'
+    python = tmp_path / 'python'
+    python.write_text(f'#!{sys.executable}\n' +
+                      'import json, os, sys\n' +
+                      "with open(os.environ['CAPTURE'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+    python.chmod(0o755)
+    for folder, files in {'snowflake-wheel': ['engine.whl'], 'pytorch-wheels':
+                          ['diskgraph-matching.whl', 'kumo_pytorch-candidate.whl']}.items():
+        directory = tmp_path / folder
+        directory.mkdir()
+        for name in files:
+            (directory / name).touch()
+    env = dict(os.environ, WORKLOAD=selected, RUNNER_TEMP=str(tmp_path),
+               GITHUB_ENV=str(tmp_path / 'environment'), GITHUB_SHA='a' * 40,
+               GITHUB_RUN_ID='123', SNOWFLAKE_TEST_CANDIDATE=str(tmp_path / 'candidate.json'),
+               PATH=f'{tmp_path}:{os.environ["PATH"]}', CAPTURE=str(capture))
+    for title in ("Stage this dispatch's candidate", "Prepare this revision's notebook tests"):
+        script = next(s['run'] for s in steps if s.get('name') == title)
+        result = subprocess.run(['bash', '-e', '-c', script], env=env,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    stage, prepare = [json.loads(line) for line in capture.read_text().splitlines()]
+    if selected == 'pytorch':
+        assert stage.count('--workload-wheel') == 2
+        assert str(tmp_path / 'pytorch-wheels/diskgraph-matching.whl') in stage
+        assert prepare[prepare.index('--workload') + 1].endswith('/wheel_mlops_pytorch_snowflake.py')
+        assert prepare[prepare.index('--workload-helper') + 1].endswith('/wheel_mlops_pytorch.py')
+    else:
+        assert '--workload-wheel' not in stage
+        assert '--workload' not in prepare

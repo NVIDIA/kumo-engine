@@ -604,3 +604,23 @@ def test_short_inventory_page_keeps_page_size_across_continuation(
                              now_ms=10**15)
     assert second['cleaned'] == 2 and second['inventory_has_more'] is False
     assert sizes == [[str(retention.MAX_ATTEMPTS)]] * 2
+
+
+def test_custom_model_version_bound_is_retained_in_signed_control_record(setup, tmp_path):
+    retention, cleanup, config, cloud = setup
+    folder = '/Shared/kumo_test_catalogue/KUMO_TEST/lifecycle'
+    attempt = 'a' * 12
+    spec = dict(attempt=attempt, experiment=folder + '/KUMO_TEST_MLOPS',
+                notebook_path=folder + '/kumo-test-lifecycle-' + attempt,
+                output=config['volume'] + '/lifecycle/runs/' + attempt + '/outputs',
+                model_version_limit=20)
+    cleanup.AttemptResources(cloud, config, spec, tmp_path,
+                             lifecycle=True).__enter__()
+    saved = retention.read(cloud, retention.file_path(config, attempt))
+    assert saved['spec']['model_version_limit'] == 20
+    recovered = tmp_path / 'recovered'
+    recovered.mkdir()
+    (recovered / 'resources.json').write_text(json.dumps(saved['ledger']))
+    resumed = cleanup.AttemptResources(cloud, config, saved['spec'], recovered,
+                                       lifecycle=True, resume=True)
+    assert resumed.model_version_limit == 20

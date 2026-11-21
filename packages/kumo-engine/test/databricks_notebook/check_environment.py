@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Require main-only dispatch and independent maintainer approval."""
+"""Require manual dispatch and the configured Databricks test policy."""
 import sys
 from pathlib import Path
 

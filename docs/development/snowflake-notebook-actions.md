@@ -218,10 +218,10 @@ limit and use the existing lifecycle process-group cleanup.
 
 In repository **Settings → Environments**, configure `snowflake-mlops-test`:
 
-1. Allow only `main` under deployment branch rules. Do not allow trial
-   branches, wildcard branches, or tags.
-2. Require `NVIDIA/kumo-engineers` as the only reviewer, enable
-   `prevent_self_review`, and disable administrator bypass.
+1. Allow `main` and the exact `egu/byom-mlops-lifecycle` test branch under
+   deployment branch rules. Reject other branches, wildcards and tags.
+2. Leave required deployment reviewers empty for this test environment and
+   keep administrator bypass disabled.
 3. Add these environment secrets:
 
 | Secret | Value |
@@ -237,8 +237,7 @@ Browser artifacts require the current authenticated test page; session expiry
 suppresses captures. Raw browser errors and authentication URLs are not retained.
 
 Open **Actions → Snowflake notebook platform checks → Run workflow**, select
-`main`, and choose `engine` or `graph-ui`. A maintainer other than the
-person who started the run must approve the environment before credentials are available. The workflow is
+`main` or `egu/byom-mlops-lifecycle`, and choose `engine` or `graph-ui`. The test environment has no deployment-reviewer gate. The workflow is
 manual-only. Lifecycle UI verification is currently a separate local command.
 
 ## Results
@@ -298,9 +297,9 @@ Keep notebook credentials separate from ordinary pull-request Snowflake CI.
 The existing workflow uses `SNOWFLAKE_CI_USER`/`SNOWFLAKE_CI_PRIVATE_KEY` in a
 different environment; do not give that user the notebook role or grants.
 
-The Snowflake guard requires independent maintainer approval and a main-only
-deployment allowlist. It rejects feature-branch dispatches before reading
-environment settings or accessing platform credentials.
+The Snowflake guard requires the explicit test deployment allowlist and no
+deployment-reviewer gate. It rejects unapproved branch dispatches before reading environment settings or
+accessing platform credentials.
 After an interrupted engine step, Actions attempts bounded recovery of the owned
 query, Code Bundle and submission prefix. Atomic local journals distinguish
 completed bundle creation from execution intent. Before any CREATE intent, or
@@ -321,3 +320,78 @@ upright bounding boxes alone can overlap when the labels themselves are apart.
 
 PDF exports use scoped TrueType font embedding to preserve Unicode class titles
 as searchable text instead of unextractable Type 3 glyph paths.
+
+
+## Customer PyTorch lifecycle
+
+The native [customer workload](../../packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py)
+uses `kumo-pytorch` batches, a user-owned `torch.nn.Linear`, Snowflake Experiment
+Tracking and the native Model Registry. It logs MSE/RMSE over two epochs,
+registers two PyTorch versions and uploads preprocessing state, weights and
+expected predictions with a SHA-256 inventory. After producer scratch is removed,
+a fresh process downloads those artifacts, checks native metric/run identities,
+promotes the registry alias and compares all 32 predictions through both the
+custom weight loader and native `ModelVersion.load`. It never uses Engine's
+`Trainer` loader. This fixture checks the small in-memory batch engine, not
+DiskGraph execution, model quality or a deployed inference endpoint.
+
+Build a `kumo-pytorch` wheel from the same source checkout. Retain the exact
+DiskGraph constituent wheel produced by the complete Engine build (`--keep-work`
+retains its build directory). The extra native wheel supplies the distribution
+metadata needed by `kumo-pytorch`; its installed files must match Engine's
+bundled native files. Staging rejects dependency wheels that replace Engine or
+another supplied dependency with different bytes.
+
+Stage the extra wheels as dependency-resolution roots so the notebook can
+install them offline:
+
+```sh
+python packages/kumo-engine/test/snowflake_notebook/staging.py \
+  --wheel /absolute/path/kumo_engine-CANDIDATE.whl \
+  --source-ref "$(git rev-parse HEAD)" \
+  --workload-wheel /absolute/path/diskgraph-MATCHING.whl \
+  --workload-wheel /absolute/path/kumo_pytorch-CANDIDATE.whl \
+  --output /tmp/customer-snowflake-candidate.json
+python packages/kumo-engine/test/snowflake_notebook/prepare.py \
+  --candidate /tmp/customer-snowflake-candidate.json \
+  --workload packages/kumo-engine/test/wheel_mlops_pytorch_snowflake.py \
+  --workload-helper packages/kumo-engine/test/wheel_mlops_pytorch.py \
+  --output-dir /tmp/customer-snowflake-payload
+```
+
+Workloads declare a top-level literal `PHASES` tuple/list, which preparation reads
+without importing the customer module. Workload/helper files must be committed,
+regular Python files with distinct basenames. The manifest pins their bytes,
+phase declaration and dependency-wheel inventory. The shared admission helper
+is included in every prepared payload.
+
+Run the existing launcher against this payload's `preflight` and `lifecycle`
+directories and `manifest.json`. Preflight installs and checks all identified
+wheels; only lifecycle mode dispatches the customer workload. A standalone
+negative run still uses the built-in permission probe. Custom lifecycle evidence
+must contain `platform-prerequisite` plus every declared phase, with matching
+workload and candidate hashes and successful worker exits. `verify.py` accepts
+those selected engine checks while retaining the separate native UI review gap.
+The default Kumo scenario retains its four phases and existing qualification gaps.
+
+
+
+In Actions, select `workload=pytorch` and `mode=engine`. The dispatch builds
+the adapter, retains the matching DiskGraph constituent wheel and selects the
+native Snowflake customer workload plus its shared helper. Published phase
+results include `platform-prerequisite`, `train` and `reload`.
+
+The temporary branch exception is limited to `egu/byom-mlops-lifecycle` in the
+workflow and `snowflake-mlops-test` environment. Manual dispatch remains required; its deployment-reviewer gate is disabled.
+Administrator bypass remains disabled. Remove the exact branch rule and guard exception when branch testing
+finishes. Older main-only, reviewer-gated guard revisions reject this environment policy
+until the guard update is merged.
+
+
+For CPU and GPU coverage, use the
+[shared customer-model matrix](mlops-validation.md#cpu-and-gpu-platform-matrix).
+The GPU case uses `V2.9-GPU-PY3.12` on the separate single-node
+`KUMO_TEST_GPU_POOL` and preserves the official CUDA-tagged PyTorch dependency
+through offline staging. Each case registers two versions on its selected device and validates native
+reload on that device; it does not disable dependency checks or claim
+GPU serving-endpoint qualification.

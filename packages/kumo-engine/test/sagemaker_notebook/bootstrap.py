@@ -113,13 +113,24 @@ def prepare(config, session=None):
         ('product-install',
          [str(payload / config['candidate']['wheel_file']) + '[sagemaker]']),
     ]:
+        if name == 'product-install' and config.get('workload') is not None:
+            requirements += [
+                str(payload / item) for item in config['workload']['wheels']
+            ]
+        if name == 'product-install' and config.get('accelerator') == 'gpu':
+            tools_spec = importlib.util.spec_from_file_location(
+                'workload_tools', payload / 'wheel_mlops_workload.py')
+            tools = importlib.util.module_from_spec(tools_spec)
+            tools_spec.loader.exec_module(tools)
+            requirements += tools.pytorch_install_args('gpu')
         with (evidence / (name + '.log')).open('w') as log:
             command = [
                 sys.executable, '-I', '-m', 'pip', '--isolated', '--python',
                 str(python), 'install', '--index-url',
                 'https://pypi.org/simple', *requirements
             ]
-            if helpers.execute(command, root, log, budget.remaining(root, 1200)):
+            if helpers.execute(command, root, log, budget.remaining(root,
+                                                                    1200)):
                 raise RuntimeError(name + ' failed')
     with (evidence / 'pip-check.log').open('w') as log:
         subprocess.run([str(python), '-I', '-m', 'pip', '--isolated', 'check'],
@@ -131,7 +142,12 @@ def prepare(config, session=None):
     ], check=True, timeout=budget.remaining(root, 120))
     (evidence / 'installation.json').write_text(
         json.dumps(
-            dict(pip_check_returncode=0, interpreter=str(python),
-                 identity=identity['Arn'],
-                 version=config['candidate']['expected_version'],
-                 wheel_sha256=config['candidate']['wheel_sha256']), indent=2))
+            dict(
+                pip_check_returncode=0, interpreter=str(python),
+                identity=identity['Arn'],
+                version=config['candidate']['expected_version'],
+                wheel_sha256=config['candidate']['wheel_sha256'],
+                workload_wheels={
+                    name: config['assets'][name]['sha256']
+                    for name in config.get('workload', {}).get('wheels', [])
+                }), indent=2))

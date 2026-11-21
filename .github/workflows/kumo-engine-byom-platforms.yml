@@ -1,0 +1,241 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Customer PyTorch platform matrix
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platforms to test (all runs the full platform matrix)
+        type: choice
+        default: all
+        options: [all, databricks, sagemaker, snowflake]
+      accelerator:
+        description: Device coverage on every platform (two versions on the selected device)
+        type: choice
+        default: all
+        options: [all, cpu, gpu]
+      cpu_cluster_id:
+        description: Dedicated single-node KUMO_TEST_ CPU Databricks cluster
+        type: string
+      gpu_cluster_id:
+        description: Dedicated single-node KUMO_TEST_ GPU Databricks cluster
+        type: string
+  workflow_call:
+    inputs:
+      platform:
+        type: string
+        default: all
+      accelerator:
+        type: string
+        default: all
+      cpu_cluster_id:
+        type: string
+        default: ''
+      gpu_cluster_id:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: byom-platform-matrix
+  cancel-in-progress: false
+
+jobs:
+  configuration:
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' &&
+      github.event_name == 'workflow_dispatch' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/egu/byom-mlops-lifecycle')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit test environments and select all platform cases
+        id: matrix
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ inputs.platform }}
+          ACCELERATOR: ${{ inputs.accelerator }}
+          CPU_CLUSTER: ${{ inputs.cpu_cluster_id }}
+          GPU_CLUSTER: ${{ inputs.gpu_cluster_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          from check_environment import main
+          if os.environ['PLATFORM'] not in ('all', 'databricks', 'sagemaker', 'snowflake') or os.environ['ACCELERATOR'] not in ('all', 'cpu', 'gpu'):
+              raise SystemExit('Select known test platforms and accelerators')
+          platforms = ('databricks', 'sagemaker', 'snowflake') if os.environ['PLATFORM'] == 'all' else (os.environ['PLATFORM'],)
+          accelerators = ['cpu', 'gpu'] if os.environ['ACCELERATOR'] == 'all' else [os.environ['ACCELERATOR']]
+          for accelerator in accelerators if 'databricks' in platforms else []:
+              if not re.fullmatch(r'[0-9]{4}-[0-9]{6}-[a-z0-9]+', os.environ[accelerator.upper() + '_CLUSTER']):
+                  raise SystemExit('Provide the dedicated ' + accelerator + ' Databricks test cluster ID')
+          cases = []
+          for platform in platforms:
+              environment = platform + '-mlops-test'
+              main(environment=environment)
+              cases.extend(dict(platform=platform, accelerator=a, environment=environment) for a in accelerators)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': cases}) + '\n')
+          PY
+  wheel:
+    needs: configuration
+    uses: ./.github/workflows/kumo-engine-pr.yml
+    with:
+      build_only: true
+      build_pytorch: true
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
+  lifecycle:
+    needs: [configuration, wheel]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configuration.outputs.matrix) }}
+    name: ${{ matrix.platform }} / ${{ matrix.accelerator }} customer model
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      SAGEMAKER_TEST_DOMAIN_ID: ${{ vars.SAGEMAKER_TEST_DOMAIN_ID }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Recheck the selected test environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TEST_ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          python - <<'PYTHON'
+          import os, sys
+          sys.path.insert(0, 'packages/kumo-engine/test/snowflake_notebook')
+          from check_environment import main
+          main(environment=os.environ['TEST_ENVIRONMENT'])
+          PYTHON
+      - name: Install SageMaker submission tools
+        if: matrix.platform == 'sagemaker'
+        run: python -m pip --isolated install --require-hashes -r packages/kumo-engine/test/sagemaker_notebook/requirements.txt
+      - name: Install Snowflake submission tools
+        if: matrix.platform == 'snowflake'
+        run: python -m pip --isolated install --require-hashes -r packages/kumo-engine/test/snowflake_notebook/client-requirements.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: engine-pr-wheel-${{ github.sha }}
+          path: ${{ runner.temp }}/engine-wheel
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: engine-pytorch-wheels-${{ github.sha }}
+          path: ${{ runner.temp }}/pytorch-wheels
+      - name: Authenticate as the dedicated SageMaker test runner
+        if: matrix.platform == 'sagemaker'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/kumo-engine-sagemaker-test-runner
+          aws-region: us-west-2
+          allowed-account-ids: '926922431314'
+          role-session-name: kumo-test-byom-${{ github.run_id }}
+          role-duration-seconds: 10800
+      - name: Expire old owned Databricks attempts
+        if: matrix.platform == 'databricks' && (matrix.accelerator == 'cpu' || inputs.accelerator == 'gpu')
+        timeout-minutes: 7
+        env:
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: python packages/kumo-engine/test/databricks_notebook/retention_ledger.py --execute --output-dir "$RUNNER_TEMP/byom-retention"
+      - name: Expire old terminal Snowflake attempts
+        if: matrix.platform == 'snowflake' && (matrix.accelerator == 'cpu' || inputs.accelerator == 'gpu')
+        timeout-minutes: 7
+        env:
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: python packages/kumo-engine/test/snowflake_notebook/retention.py --execute
+      - name: Execute the shared CPU/GPU customer-model test
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ACCELERATOR: ${{ matrix.accelerator }}
+          CPU_CLUSTER: ${{ inputs.cpu_cluster_id }}
+          GPU_CLUSTER: ${{ inputs.gpu_cluster_id }}
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          wheels=("$RUNNER_TEMP"/pytorch-wheels/*.whl)
+          test "${#wheels[@]}" -eq 2
+          python packages/kumo-engine/test/byom_platform_test.py --execute \
+            --platform "$PLATFORM" --accelerator "$ACCELERATOR" \
+            --wheel "$RUNNER_TEMP"/engine-wheel/*.whl \
+            --workload-wheel "${wheels[0]}" --workload-wheel "${wheels[1]}" \
+            --cpu-cluster-id "$CPU_CLUSTER" --gpu-cluster-id "$GPU_CLUSTER" \
+            --output-dir "$RUNNER_TEMP/byom-result"
+      - name: Recover owned Databricks attempt resources
+        if: always() && matrix.platform == 'databricks'
+        timeout-minutes: 7
+        env:
+          ACCELERATOR: ${{ matrix.accelerator }}
+          KUMO_DATABRICKS_TEST_HOST: ${{ secrets.KUMO_DATABRICKS_TEST_HOST }}
+          KUMO_DATABRICKS_TEST_PAT: ${{ secrets.KUMO_DATABRICKS_TEST_PAT }}
+          KUMO_DATABRICKS_TEST_USER: ${{ secrets.KUMO_DATABRICKS_TEST_USER }}
+        run: |
+          attempt="$RUNNER_TEMP/byom-result/databricks-$ACCELERATOR/execution"
+          if [[ -f "$attempt/resources.json" ]]; then
+            python packages/kumo-engine/test/databricks_notebook/cleanup.py --output-dir "$attempt"
+          fi
+      - name: Recover owned Snowflake notebook submissions
+        if: always() && matrix.platform == 'snowflake'
+        timeout-minutes: 5
+        env:
+          ACCELERATOR: ${{ matrix.accelerator }}
+          SNOWFLAKE_TEST_CONFIG: ${{ secrets.SNOWFLAKE_TEST_CONFIG }}
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: python packages/kumo-engine/test/snowflake_notebook/recover.py --execute --output-dir "$RUNNER_TEMP/byom-result/snowflake-$ACCELERATOR/execution"
+      - name: Retain public model/device results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: byom-${{ matrix.platform }}-${{ matrix.accelerator }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/byom-result/summary.json
+          if-no-files-found: error
+          retention-days: 7
+  result:
+    needs: [configuration, wheel, lifecycle]
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected platform/device case
+        env:
+          CONFIGURATION: ${{ needs.configuration.result }}
+          WHEEL: ${{ needs.wheel.result }}
+          LIFECYCLE: ${{ needs.lifecycle.result }}
+        run: test "$CONFIGURATION" = success && test "$WHEEL" = success && test "$LIFECYCLE" = success

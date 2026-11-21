@@ -65,11 +65,12 @@ def test_probe_wrapper_does_not_turn_transport_errors_into_denial_proof(
     assert platform.denied_access(wrapped) is expected
 
 
+@pytest.mark.parametrize('custom', [False, True])
 @pytest.mark.parametrize('phase', [None, 'negative'])
 @pytest.mark.parametrize('notebook', [False, True])
 @pytest.mark.parametrize('workspace', [None, 'workspace-123'])
 def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
-        phase, notebook, workspace, tmp_path, monkeypatch):
+        phase, notebook, workspace, custom, tmp_path, monkeypatch):
     import sys
 
     profile = tmp_path / 'profile.json'
@@ -105,6 +106,15 @@ def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
     args = dict(config=profile, wheel=tmp_path / 'candidate.whl',
                 expected_version='1.2.3', output_dir=tmp_path / 'evidence',
                 phase=phase)
+    if custom:
+        path = tmp_path / 'customer.py'
+        path.write_text('PHASES = ("train",)')
+        args['workload'] = path
+        if phase is not None:
+            with pytest.raises(ValueError, match='full lifecycle'):
+                platform.run_notebook(**args)
+            assert not calls
+            return
     if not notebook:
         with pytest.raises(platform.PlatformUnavailable,
                            match='notebook kernel'):
@@ -119,6 +129,8 @@ def test_notebook_launch_requires_kernel_and_passes_only_identifiers(
     command, options = calls[0]
     assert options['timeout'] == (300 if phase else None)
     assert command[1] == '-I' and '--execute-platform' in command
+    if custom:
+        assert command[command.index('--workload') + 1] == str(args['workload'])
     assert json.loads(options['env'][platform.NOTEBOOK_CONTEXT]) == dict(
         session='123', workspace=workspace, notebook_extension=True,
         identity=identity)
