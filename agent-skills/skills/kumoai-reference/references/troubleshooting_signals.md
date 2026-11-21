@@ -123,9 +123,34 @@ print(table.has_primary_key())
 **silently ignored** when linkages are built, so a broken join looks like a sparse one. If the two
 linked columns have different types, both are **cast to strings** — values equal as numbers may not
 match as strings (`1.0` vs `1`).
-**Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot reports the match rate
-(§1a). Report it, and put a low one to the user before training: a wrong link to correct, or keys
-to fix upstream so both sides hold the same values in the same type. Do not cast either side.
+**Fix:** There is **no `get_edge_stats()` in this SDK.** The snapshot warns about a low match
+rate (§1a) but keeps going, so the notebook measures it itself, read-only, before
+`graph.snapshot()`, for every link, and stops when fewer than half the rows match. It also counts
+how many would match if the foreign key were padded with leading zeros to the primary key's
+width — the signature of an id that was read as a number somewhere upstream (`007` became `7`):
+```python
+def q(name):                                   # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+LINKS = [('<src_table>', '<fkey>', '<dst_table>', '<pkey>')]   # every confirmed link
+for src, fk, dst, pk in LINKS:
+    n, matched, padded = session.sql(          # the session from kumo_finetuning_sdk.md §3.3
+        f'WITH p AS (SELECT DISTINCT TO_VARCHAR({q(pk)}) AS k FROM {DATABASE}.{SCHEMA}.{q(dst)}), '
+        f'w AS (SELECT MAX(LENGTH(k)) AS w FROM p) '
+        f'SELECT COUNT(f.{q(fk)}), COUNT(a.k), COUNT(b.k) '
+        f'FROM {DATABASE}.{SCHEMA}.{q(src)} f CROSS JOIN w '
+        f'LEFT JOIN p a ON a.k = TO_VARCHAR(f.{q(fk)}) '
+        f'LEFT JOIN p b ON b.k = LPAD(TO_VARCHAR(f.{q(fk)}), w.w, \'0\')').collect()[0]
+    print(f'{src}.{fk} -> {dst}.{pk}: {matched} of {n} rows match; {padded} if zero-padded')
+    if n and matched < 0.5 * n:
+        raise RuntimeError(f'{src}.{fk} matched {matched} of {n} rows to {dst}.{pk} '
+                           f'({padded} would match zero-padded to the key width).')
+```
+The probe only diagnoses; it never feeds the graph. Report the counts and put the choice to the
+user before training. When the zero-padded count is high, say that the ids lost their leading
+zeros, that this cannot be recovered in the notebook, and that the fix is upstream: load or store
+`<table>.<fkey>` as text so the zeros survive. Otherwise the link is wrong, or the parent rows are
+missing. Do not cast or pad either side in the notebook.
 Set every foreign key to `Stype.ID`; left as numerical it is treated as a feature rather than a
 link.
 
