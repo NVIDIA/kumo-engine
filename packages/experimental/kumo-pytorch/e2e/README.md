@@ -30,7 +30,7 @@ To fill the local cache, run these commands from the package root with the AWS C
 ```bash
 export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
 python -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$KUMO_PYTORCH_DATA_ROOT"
-python -m pytest -q tests/e2e/test_aml.py tests/e2e/test_synthetic.py
+python -m pytest -q tests/e2e/test_aml.py tests/e2e/test_synthetic.py tests/e2e/test_mbd.py
 ```
 
 Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
@@ -43,6 +43,12 @@ Its graph runs one second before prediction. All three share the original source
 their event IDs against a full scan of all 1,610 published shards before applying a time cutoff.
 To repeat the scan, pass `read_synthetic(files, entity_type)` the verified files with all shards keyed by
 `<table>/<filename>`. Fit with `fit_split="train"` and `encoder_cutoff` one second before the latest training anchor.
+
+For MBD M04, use `read_m04(verify(root, M04_MANIFEST))` and `prepare_m04(tables, fresh_directory)`
+from `e2e.datasets.mbd`. The three registered clients have complete histories in transaction parts
+00171 (fold 0), 00014 (fold 3), and 00196 (fold 4). The nine pinned objects total 1,029,139,562 bytes.
+To verify the extract against all clients and transactions, add the original shards to the file mapping
+using their paths from `extraction.json` and call `read_m04` again.
 
 ## The H&M-shaped dataset
 

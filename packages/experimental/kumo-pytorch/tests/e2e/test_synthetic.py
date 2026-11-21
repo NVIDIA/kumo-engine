@@ -20,7 +20,12 @@ import torch
 
 from e2e.datasets.synthetic import _events, load_synthetic, prepare_synthetic
 from kumo.pytorch import api
-from tests.e2e.history import check_normalized_aggregates, check_scalar_history, scalar_token
+from tests.e2e.history import (
+    check_normalized_aggregates,
+    check_scalar_history,
+    check_source_graph,
+    scalar_token,
+)
 from tests.test_inference_lifecycle import assert_same
 
 _SOURCE_FIELDS = {
@@ -225,59 +230,20 @@ def _check_account_batch(task, batch, fields, cutoff, rows):
 
 
 def _check_ltv_graph(task, batch, histories):
-    roots = list(batch.metadata["entity_ids"])
     expected = {
         (owner, row["source_kind"], row["event_id"]): row
         for owner, (_, history) in enumerate(histories)
         for _, row in history
     }
-    graph = batch.inputs["graph"]
-    nodes, edges = graph["nodes"], graph["edges"]
-    keys = {}
-    for family, node in nodes.items():
-        ids, owners = node["ids"], node["batch"]
-        assert ids.dtype == owners.dtype == torch.int64 and ids.ndim == owners.ndim == 1
-        keys[family] = list(zip(owners.tolist(), ids.tolist(), strict=True))
-    root_keys = keys.pop("roots")
-    assert not nodes["roots"]["features"] and sorted(root_keys) == list(enumerate(roots))
-    assert sorted((o, family, i) for family, rows in keys.items() for o, i in rows) == sorted(
-        expected
-    )
-    assert set(edges) == {f"root_{family}" for family in keys}
-    for family, members in keys.items():
-        _, columns = _SOURCE_FIELDS[family]
-        edge = edges[f"root_{family}"]
-        assert (edge["source_type"], edge["destination_type"]) == ("roots", family)
-        index = edge["index"]
-        assert (
-            index.dtype == torch.int64 and index.shape == (2, len(members)) and (index >= 0).all()
-        )
-        assert sorted((root_keys[a], members[b]) for a, b in index.T.tolist()) == sorted(
-            ((owner, roots[owner]), (owner, i)) for owner, i in members
-        )
-        features = nodes[family]["features"]
+    layouts = {}
+    for family, (_, columns) in _SOURCE_FIELDS.items():
         configs = {
             name: api.ZScore() if name == "amount" else api.Vocabulary()
             for name in ("source_kind", *columns)
         }
         configs["event_time_seconds"] = api.Raw()
-        bindings = task.output("graph").bindings[family]
-        assert {name: binding.encoder.config for name, binding in bindings.items()} == configs
-        assert set(features) == set(configs)
-        for name, binding in bindings.items():
-            encoder = binding.encoder
-            raw = [expected[owner, family, i][name] for owner, i in members]
-            valid = torch.tensor([v is not None for v in raw], dtype=torch.bool)
-            assert_same(features[name]["valid"], valid)
-            values = [v for v in raw if v is not None]
-            dtype = torch.int64
-            if isinstance(encoder.config, api.ZScore):
-                values = [(v - encoder.mean) / encoder.scale for v in values]
-                dtype = torch.float32
-            elif isinstance(encoder.config, api.Vocabulary):
-                lookup = dict(encoder.entries)
-                values = [lookup.get(v, encoder.config.unknown_id) for v in values]
-            assert_same(features[name]["values"][valid], torch.tensor(values, dtype=dtype))
+        layouts[family] = (f"root_{family}", configs)
+    check_source_graph(task, batch, expected, layouts)
 
 
 @pytest.mark.parametrize(

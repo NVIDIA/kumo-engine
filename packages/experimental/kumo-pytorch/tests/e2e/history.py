@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare native batch histories and aggregates with answers from source rows."""
+"""Compare native graphs, histories and aggregates with answers from source rows."""
 
 from bisect import bisect_right
 from datetime import UTC, datetime
@@ -13,6 +13,53 @@ import torch
 
 from kumo.pytorch import api
 from tests.test_inference_lifecycle import assert_same
+
+
+def check_source_graph(task, batch, expected, layouts):
+    """Compare one-hop root graphs with original rows keyed by owner, type and physical ID."""
+    roots = list(batch.metadata["entity_ids"])
+    graph = batch.inputs["graph"]
+    nodes, edges = graph["nodes"], graph["edges"]
+    keys = {}
+    for family, node in nodes.items():
+        ids, owners = node["ids"], node["batch"]
+        assert ids.dtype == owners.dtype == torch.int64 and ids.ndim == owners.ndim == 1
+        keys[family] = list(zip(owners.tolist(), ids.tolist(), strict=True))
+    root_keys = keys.pop("roots")
+    assert not nodes["roots"]["features"] and sorted(root_keys) == list(enumerate(roots))
+    assert sorted((o, family, i) for family, rows in keys.items() for o, i in rows) == sorted(
+        expected
+    )
+    assert set(edges) == {layouts[family][0] for family in keys}
+    for family, members in keys.items():
+        relation, configs = layouts[family]
+        edge = edges[relation]
+        assert (edge["source_type"], edge["destination_type"]) == ("roots", family)
+        index = edge["index"]
+        assert (
+            index.dtype == torch.int64 and index.shape == (2, len(members)) and (index >= 0).all()
+        )
+        assert sorted((root_keys[a], members[b]) for a, b in index.T.tolist()) == sorted(
+            ((owner, roots[owner]), (owner, i)) for owner, i in members
+        )
+        features = nodes[family]["features"]
+        bindings = task.output("graph").bindings[family]
+        assert {name: binding.encoder.config for name, binding in bindings.items()} == configs
+        assert set(features) == set(configs)
+        for name, binding in bindings.items():
+            encoder = binding.encoder
+            raw = [expected[owner, family, i][name] for owner, i in members]
+            valid = torch.tensor([v is not None for v in raw], dtype=torch.bool)
+            assert_same(features[name]["valid"], valid)
+            values = [v for v in raw if v is not None]
+            dtype = torch.int64
+            if isinstance(encoder.config, api.ZScore):
+                values = [(v - encoder.mean) / encoder.scale for v in values]
+                dtype = torch.float32
+            elif isinstance(encoder.config, api.Vocabulary):
+                lookup = dict(encoder.entries)
+                values = [lookup.get(v, encoder.config.unknown_id) for v in values]
+            assert_same(features[name]["values"][valid], torch.tensor(values, dtype=dtype))
 
 
 def check_normalized_aggregates(task, batch, answers, training, *, raw_only=()):
