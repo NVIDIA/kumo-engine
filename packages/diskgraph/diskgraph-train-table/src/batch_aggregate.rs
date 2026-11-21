@@ -35,6 +35,7 @@ use diskgraph_core::tt_builder::{
 };
 use diskgraph_engine::edge_unpacker::EdgeUnpacker;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
+use diskgraph_rowpack::IngestedType;
 use rayon::prelude::*;
 use regex::Regex;
 use serde::Deserialize;
@@ -1302,7 +1303,7 @@ fn aggregate_result(
                 .entity_col_indices
                 .iter()
                 .map(|(_, column)| {
-                    crate::ttgen_traversal::read_column_value(
+                    crate::ttgen_traversal::read_column_number(
                         &selection.entity_table,
                         roots[anchor],
                         *column,
@@ -1366,6 +1367,34 @@ fn aggregate_result(
         values,
         kind: aggregate_kind(frame, plan),
     })
+}
+
+/// Frames carry decimals as text, which would order lexicographically.
+fn refuse_decimal_extrema(
+    reader: &GraphIndexReader,
+    frame: &MaterializedFrame,
+    plan: &AggregatePlan,
+) -> Result<(), String> {
+    let Some(table) = reader.table(&frame.destination) else {
+        return Ok(());
+    };
+    let Some(decoder) = table.node_data_decoder() else {
+        return Ok(());
+    };
+    let reductions = std::iter::once((&plan.operation, &plan.column)).chain(
+        plan.groups.iter().flat_map(|group| group.values.iter().map(|v| (&v.operation, &v.column))),
+    );
+    for (operation, column) in reductions {
+        let Some(column) = column else { continue };
+        let decimal = decoder.context().columns.iter().any(|c| {
+            &c.name == column
+                && matches!(c.logical_type, IngestedType::Decimal128 | IngestedType::Decimal256)
+        });
+        if decimal && matches!(operation.as_str(), "min" | "max") {
+            return Err(format!("{operation} over decimal column {column:?} is not supported"));
+        }
+    }
+    Ok(())
 }
 
 /// The scalar kind an aggregate produces, independent of its values.
@@ -2576,6 +2605,7 @@ fn execute_query(
                     aggregate.name, aggregate.frame
                 )
             })?;
+            refuse_decimal_extrema(reader, frame, aggregate)?;
             aggregate_result(frame, aggregate, cutoffs, roots, plan.selection.as_ref())
         })
         .collect::<Result<Vec<_>, String>>()?;

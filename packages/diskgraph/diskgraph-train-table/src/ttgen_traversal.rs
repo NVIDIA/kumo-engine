@@ -217,6 +217,24 @@ pub fn row_column_value(table: &TableReader, row: Option<&[u8]>, col_idx: usize)
     }
 }
 
+/// [`read_column_value`] for computing with and comparing values: a decimal
+/// reads as its number instead of its text. Keys keep [`read_column_value`].
+pub fn read_column_number(table: &TableReader, node_id: u64, col_idx: usize) -> Option<Value> {
+    row_column_number(table, node_row(table, node_id), col_idx)
+}
+
+/// [`read_column_number`] on a row already fetched with [`node_row`].
+pub fn row_column_number(table: &TableReader, row: Option<&[u8]>, col_idx: usize) -> Option<Value> {
+    let value = row_column_value(table, row, col_idx)?;
+    let kind = table.node_data_decoder()?.context().columns[col_idx].logical_type;
+    Some(match (kind, value) {
+        (IngestedType::Decimal128 | IngestedType::Decimal256, Value::Str(text)) => {
+            Value::Float(text.parse().ok()?)
+        }
+        (_, value) => value,
+    })
+}
+
 /// Read a column value, distinguishing explicit NULL from missing data.
 ///
 /// Returns:
@@ -251,8 +269,7 @@ pub fn read_column_f64(
     node_id: u64,
     col_idx: usize,
 ) -> Option<f64> {
-    read_column_value_nullable(table, node_id, col_idx)
-        .flatten()
+    read_column_number(table, node_id, col_idx)
         .and_then(|v| match v {
             Value::Int(i) => Some(i as f64),
             Value::Float(f) => Some(f),

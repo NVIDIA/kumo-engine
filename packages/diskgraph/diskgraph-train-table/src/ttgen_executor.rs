@@ -1851,7 +1851,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     let entity_cols: Vec<Option<Value>> = plan
         .entity_col_indices
         .iter()
-        .map(|(_, col_idx)| read_column_value(&plan.entity_table, entity_node, *col_idx))
+        .map(|(_, col_idx)| read_column_number(&plan.entity_table, entity_node, *col_idx))
         .collect();
     let split_value = plan
         .split_projection
@@ -2591,7 +2591,7 @@ fn execute_target_sequence<U: UnitSystem>(
                             continue;
                         }
                     }
-                    if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
+                    if let Some(v) = read_column_number(dst_table, e.dst_node, col_idx) {
                         oldest = Some(v);
                         break;
                     }
@@ -2606,7 +2606,7 @@ fn execute_target_sequence<U: UnitSystem>(
                             continue;
                         }
                     }
-                    if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
+                    if let Some(v) = read_column_number(dst_table, e.dst_node, col_idx) {
                         newest = Some(v);
                         break;
                     }
@@ -2821,15 +2821,7 @@ fn execute_stages<U: UnitSystem>(
                                     None
                                 }
                             } else {
-                                match read_column_value_nullable(
-                                    &col.table,
-                                    column_node,
-                                    col.col_idx,
-                                ) {
-                                    Some(Some(v)) => Some(v),
-                                    Some(None) => None,
-                                    None => None,
-                                }
+                                read_column_number(&col.table, column_node, col.col_idx)
                             }
                         }
                         None => None,
@@ -3467,7 +3459,7 @@ pub(crate) fn execute_aggregate<U: UnitSystem>(
                         });
                         val = Some(Value::List(tokens));
                     } else {
-                        val = read_column_value(dst_table, dst, col_idx);
+                        val = read_column_number(dst_table, dst, col_idx);
                     }
                 } else {
                     val = Some(Value::Int(dst as i64));
@@ -3503,7 +3495,7 @@ pub(crate) fn execute_aggregate<U: UnitSystem>(
                         });
                         val = Some(Value::List(tokens));
                     } else {
-                        val = read_column_value(dst_table, dst, col_idx);
+                        val = read_column_number(dst_table, dst, col_idx);
                     }
                 } else {
                     val = Some(Value::Int(dst as i64));

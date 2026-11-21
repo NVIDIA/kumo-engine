@@ -2027,14 +2027,14 @@ fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[Resolv
         Some(Op::Aggregate { func: AggFunc::ListDistinct, .. })
             if matches!(plan.prediction_type, PredictionType::Link { .. }) =>
         {
-            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
+            lookup_last_agg_col_dtype(stages, ingested_type_to_arrow).unwrap_or(DataType::Float64)
         }
         // ListDistinct + Node prediction (CLASSIFY): pipe-separated string.
         Some(Op::Aggregate { func: AggFunc::ListDistinct, .. }) => DataType::Utf8,
         Some(op) => infer_op_dtype(op, stages),
         None => {
             // No ops (e.g. LP with implicit ListDistinct): look up ingested type.
-            lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
+            lookup_last_agg_col_dtype(stages, ingested_type_to_arrow).unwrap_or(DataType::Float64)
         }
     }
 }
@@ -2066,7 +2066,7 @@ fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> Dat
         Op::Aggregate {
             func: AggFunc::First | AggFunc::Last,
             ..
-        } => lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64),
+        } => lookup_last_agg_col_dtype(stages, target_type_to_arrow).unwrap_or(DataType::Float64),
         // Direct column prediction: look up the column's ingested type.
         Op::Column { .. } => {
             let last_col = stages.iter().rev()
@@ -2077,7 +2077,7 @@ fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> Dat
             if let Some(col) = last_col {
                 if let Some(decoder) = col.table.node_data_decoder() {
                     let c = &decoder.context().columns[col.col_idx];
-                    return ingested_type_to_arrow(&c.logical_type);
+                    return target_type_to_arrow(&c.logical_type);
                 }
             }
             DataType::Float64
@@ -2087,7 +2087,10 @@ fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> Dat
 }
 
 /// Look up the ingested column type from the last resolved aggregate.
-fn lookup_last_agg_col_dtype<U: UnitSystem>(stages: &[ResolvedStage<U>]) -> Option<DataType> {
+fn lookup_last_agg_col_dtype<U: UnitSystem>(
+    stages: &[ResolvedStage<U>],
+    to_arrow: fn(&IngestedType) -> DataType,
+) -> Option<DataType> {
     let last_agg = stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .find_map(|op| {
@@ -2097,7 +2100,15 @@ fn lookup_last_agg_col_dtype<U: UnitSystem>(stages: &[ResolvedStage<U>]) -> Opti
     let dst_table = &last_agg.path.last()?.dst_table;
     let decoder = dst_table.node_data_decoder()?;
     let col = &decoder.context().columns[col_idx];
-    Some(ingested_type_to_arrow(&col.logical_type))
+    Some(to_arrow(&col.logical_type))
+}
+
+/// A decimal target is its number, as `read_column_number` reads it.
+fn target_type_to_arrow(it: &IngestedType) -> DataType {
+    match it {
+        IngestedType::Decimal128 | IngestedType::Decimal256 => DataType::Float64,
+        _ => ingested_type_to_arrow(it),
+    }
 }
 
 /// Map an ingested column type to the Arrow DataType used for the ENTITY column.
