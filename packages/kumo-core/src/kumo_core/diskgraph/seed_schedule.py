@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from kumo_core.diskgraph.batch_contract import SamplingOptions
+from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
 
 if TYPE_CHECKING:
     from diskgraph._c import SeedSchedule
@@ -70,6 +70,8 @@ def make_seed_schedule(
     )
     from diskgraph.seed_schedule import SeedScheduleConfig
 
+    if options.rnd_seed is InheritEngineSeed.DEFAULT:
+        raise DiskgraphConfigError("seed scheduling requires a resolved rnd_seed")
     manifest, split_info = _manifest_view(dataset_ref)
     stage = options.stage
     ref = cast(SeedStageRef | None, _stage_tables(manifest).get(stage))
@@ -96,11 +98,7 @@ def make_seed_schedule(
             raise DiskgraphConfigError("empty RHS candidate domain")
         ranges = [(min(lo for lo, _ in nonempty), max(hi for _, hi in nonempty))]
     weighted_sampling = _weighted_seed_sampling_json(
-        ref,
-        stage,
-        options.weighted_seed_sampling.to_native_kwargs()
-        if options.weighted_seed_sampling is not None
-        else None,
+        ref, stage, options.weighted_seed_sampling
     )
     stage_key = rhs_type or ref["table_name"]
     if (

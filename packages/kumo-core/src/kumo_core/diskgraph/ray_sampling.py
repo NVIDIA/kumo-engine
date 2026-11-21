@@ -16,11 +16,13 @@ import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from types import ModuleType
-from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, Unpack, cast
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast
+
+from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
 
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
@@ -28,9 +30,7 @@ from kumo_core.diskgraph.batch_contract import (
     BatchRequest,
     ConsumerToken,
     NativeBatch,
-    SamplingArguments,
     SamplingContractError,
-    SamplingOptions,
     content_digest,
 )
 
@@ -371,7 +371,7 @@ class _SamplerReplica:
                 self.contexts.append(self.contexts.pop(index))
                 break
         else:
-            native_context, _ = self.index.iter(**options.to_native_kwargs())
+            native_context, _ = self.index.iter(options)
             context = cast(BatchContext, native_context)
             self.contexts.append((options, context))
             if len(self.contexts) > self.config.context_capacity:
@@ -460,13 +460,11 @@ class RayRuntimeIndex:
         self._manifest_verified = False
         self.samplers = _SamplerPool(config)
 
-    def iter(
-        self, **options: Unpack[SamplingArguments]
-    ) -> tuple[Iterator[NativeBatch], int]:
+    def iter(self, options: SamplingOptions) -> tuple[Iterator[NativeBatch], int]:
         """Create a seed iterator without opening local adjacency/features.
 
         Args:
-            **options: Existing native iterator options and logical shard identity.
+            options: DiskGraph configuration and logical shard identity.
 
         Returns:
             Synchronous remote-batch iterator and worker-local sample/bucket count.
@@ -474,16 +472,16 @@ class RayRuntimeIndex:
         Raises:
             SamplingContractError: If inherited through fork or options are invalid.
         """
-        requests, count = self.iter_requests(**options)
+        requests, count = self.iter_requests(options)
         return map(self._sample, requests), count
 
     def iter_requests(
-        self, **options: Unpack[SamplingArguments]
+        self, options: SamplingOptions
     ) -> tuple[Iterator[BatchRequest], int]:
         """Schedule logical requests without submitting remote sampling work.
 
         Args:
-            **options: Native iterator options and logical shard identity.
+            options: DiskGraph configuration; omitted RNG seed inherits the engine seed.
 
         Returns:
             Lazy requests and the worker-local sample/bucket count.
@@ -502,12 +500,24 @@ class RayRuntimeIndex:
             if digest != self.config.artifacts.task_digest:
                 raise SamplingContractError("trainer task manifest digest differs")
             self._manifest_verified = True
-        options["rnd_seed"] = options.get("rnd_seed", self.config.engine_seed)
-        configuration = SamplingOptions.from_kwargs(**options)
+        configuration = (
+            replace(options, rnd_seed=self.config.engine_seed)
+            if options.rnd_seed is InheritEngineSeed.DEFAULT
+            else options
+        )
         schedule, count = make_seed_schedule(self.manifest_path, configuration)
-        return self._requests(
-            schedule, configuration, configuration.sampling_only()
-        ), count
+        sampling = replace(
+            configuration,
+            num_workers=1,
+            worker_id=0,
+            shuffle=False,
+            epoch=0,
+            drop_last=False,
+            group_by_timestamp=False,
+            weighted_seed_sampling=None,
+            selected_stage_node_ids=None,
+        )
+        return self._requests(schedule, configuration, sampling), count
 
     def _requests(
         self,

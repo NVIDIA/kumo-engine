@@ -2,8 +2,8 @@
 
 The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants must use
 that version and a DiskGraph build with `SeedScheduleConfig`, `SeedSchedule`, and
-`RuntimeBatchIterator.sample_request` support, plus the native `SamplingPlan` API
-from #445.
+`RuntimeBatchIterator.sample_request` support, plus native `SamplingPlan` and
+DiskGraph-owned `SamplingOptions` from #449 (stacked on #445).
 
 This backend returns complete native Arrow batches. Feature encoding, hetero
 assembly, asynchronous trainer prefetch, and training integration are separate
@@ -13,8 +13,10 @@ layers. It does not change the existing DataLoader implementation.
 
 - `batch_contract.py` defines immutable artifact identities, consumer generations,
   explicit seed requests, and validated batch envelopes.
-  `SamplingOptions` and `WeightedSeedSampling` are frozen dataclasses carrying
-  DiskGraph's immutable native `SamplingPlan` directly. Requests and cached
+  Requests use DiskGraph's `SamplingOptions` and `WeightedSeedSampling` directly;
+  kumo-core defines no duplicate configuration or keyword adapters. These frozen
+  dataclasses contain ordinary lists/dictionaries, which callers must not mutate
+  during iteration. The native `SamplingPlan` is immutable. Requests and cached
   contexts compare typed values; no plan JSON, copies, digests, or serialized
   cache keys are needed. The actor retains at most `context_capacity` contexts,
   using structural equality and least-recently-used eviction.
@@ -41,10 +43,13 @@ actor restart and method retry are disabled.
 
 Create a `RayBackendConfig` from the replica handles, artifact identities, and a
 `RayConnection`, then construct `RayRuntimeIndex` with a `ConsumerToken`.
-`iter_requests(**options)` lazily enumerates requests without sampling RPCs.
-`iter(**options)` is a synchronous reference client returning raw batches and
+`iter_requests(options)` lazily enumerates requests without sampling RPCs.
+`iter(options)` is a synchronous reference client returning raw batches and
 sample/bucket count, using native iterator stage, epoch, shard, selection, and
-sampling options. The client cannot be inherited across processes. Remote
+sampling options. Omitted RNG seeds inherit the backend engine seed; explicit
+`None` keeps DiskGraph's existing unseeded semantics. Scheduling fields are reset
+in actor requests without changing the caller's configuration. The client cannot
+be inherited across processes. Remote
 neighborhood/history decorators are not exposed by this interface.
 
 ## Concurrency, cancellation, and ownership
