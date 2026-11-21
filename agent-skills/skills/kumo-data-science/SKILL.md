@@ -188,6 +188,17 @@ for every included table and add an `Excluded columns` section to the proposal.
   candidate feature whose value is determined only after that time: the interval's eventual
   endpoint, its realized duration, or a summary of the completed interval. At the row timestamp
   those values are future information. Decide by semantic role, never by matching column names.
+- For a query with a time window, flag every **current-state attribute**: a column on a
+  one-row-per-entity table that describes a state the entity can move in and out of (status,
+  plan, tier, stage, active or closed flag, current balance), when the table has no time column
+  recording when that value took effect and no end-time column. A creation or signup date does not
+  count: it dates the row, not the value. Such a column holds only today's value, so every past
+  anchor in training sees today's state — leakage when the state follows the outcome (a status
+  set by recent activity, for a churn or activity target). Fixed traits (birth year, signup
+  channel) are not flagged. List each under a `Flagged columns` section as
+  `<table>.<column> — current-state attribute, <row count> rows, no history [inferred]` and ask
+  whether its past values exist, for example as a history table with a time column. Flag only:
+  it stays selected unless the user chooses to leave it out or supplies the history.
 - Separate the target column from columns derived from it; both rules apply at once.
   - The target column itself **always stays** in the positional column list. The query references
     it by name, so dropping it fails with a missing column.

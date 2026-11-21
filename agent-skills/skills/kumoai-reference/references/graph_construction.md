@@ -273,7 +273,8 @@ Leakage causes to screen for:
 - An event timestamp marks the start of a period while another column summarizes what happened
   by the end of that period.
 - A supposedly static entity column is overwritten over time, so the historical value is not
-  recoverable.
+  recoverable. Flagged at the graph gate (`kumo-data-science/SKILL.md` Node 1c, current-state
+  attributes); the user decides.
 - Training and holdout periods overlap or are ordered incorrectly.
 
 Fix the source timeline or drop the leaking field. Do not compensate with model tuning.
