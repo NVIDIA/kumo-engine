@@ -34,7 +34,8 @@ def test_request_compares_typed_options_and_rejects_wrong_plan() -> None:
         42,
         1,
     )
-    assert request.validate() is options
+    request.validate()
+    assert request.options is options
     assert type(request.options) is SamplingOptions
     restored = pickle.loads(pickle.dumps(request))
     assert restored == request

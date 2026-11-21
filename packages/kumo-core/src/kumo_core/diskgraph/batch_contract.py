@@ -122,11 +122,8 @@ class BatchRequest:
     wire_version: int = WIRE_VERSION
     sampling_version: int = SAMPLING_VERSION
 
-    def validate(self) -> SamplingOptions:
-        """Validate immutable metadata and return typed native sampling options.
-
-        Returns:
-            Sampling options suitable for native context construction.
+    def validate(self) -> None:
+        """Validate request metadata and sampling options.
 
         Raises:
             SamplingContractError: If versions, seeds, or RNG settings are invalid.
@@ -188,7 +185,6 @@ class BatchRequest:
             raise SamplingContractError("request exceeds native batch size")
         if options.neg_rhs_node_type and options.neg_rnd_seed is None:
             raise SamplingContractError("remote negatives require neg_rnd_seed")
-        return options
 
 
 @dataclass(frozen=True)
@@ -211,7 +207,8 @@ class BatchPayload:
         Raises:
             SamplingContractError: If identity or native batch structure differs.
         """
-        options = expected.validate()
+        expected.validate()
+        options = expected.options
         if self.request != expected:
             raise SamplingContractError("wrong request, artifact, or phase generation")
         if not all(key in self.batch for key in ("task", "graphs", "raw_features")):
