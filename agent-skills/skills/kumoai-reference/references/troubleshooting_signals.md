@@ -129,6 +129,31 @@ to fix upstream so both sides hold the same values in the same type. Do not cast
 Set every foreign key to `Stype.ID`; left as numerical it is treated as a feature rather than a
 link.
 
+### Symptom: an event table's foreign key never repeats
+**Cause:** The column holds a per-event id (a new value on every row) instead of the stable id of
+the customer or other entity. Every entity then has a single event and no history; Kumo says
+nothing, and training may still return confident scores or fail without saying why.
+**Fix:** Kumo does not check this, so the notebook does, read-only, before `graph.snapshot()`,
+for every link whose source table is an event table — unless preflight already probed it — and
+stops with the counts:
+```python
+def q(name):                                   # a quoted Snowflake identifier
+    return '"' + name.replace('"', '""') + '"'
+
+EVENT_LINKS = [('<event_table>', '<foreign_key>')]   # every link out of an event table
+for table, fkey in EVENT_LINKS:
+    n, n_distinct = session.sql(                     # the session from kumo_finetuning_sdk.md §3.3
+        f'SELECT COUNT({q(fkey)}), COUNT(DISTINCT {q(fkey)}) '
+        f'FROM {DATABASE}.{SCHEMA}.{q(table)}').collect()[0]
+    print(f'{table}.{fkey}: {n} non-null rows, {n_distinct} distinct values')
+    if n and n_distinct == n:
+        raise RuntimeError(f'{table}.{fkey} never repeats ({n} rows, {n} distinct): no entity '
+                           'has more than one event. Ask for the stable entity id.')
+```
+Report the table, the column, the counts and whether the link was inferred or supplied, and ask
+the user for the column that repeats across an entity's events. Do not drop the link or train
+anyway. A one-to-one link between two entity tables is normal; do not probe it.
+
 ### Symptom: the edge direction looks wrong / no neighbors are sampled
 **Cause:** `src_table` must be the table holding the **foreign key**; `dst_table` holds the matching **primary key**. Edges are bidirectional once declared, but the declaration itself is directional.
 **Fix:**

@@ -862,6 +862,9 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 - [ ] `with_column(...)` results assigned or chained — it returns a new Table.
 - [ ] `Graph(tables=[...], edges=[Edge(...)])` — list form; `graph.validate()` emitted.
 - [ ] `pquery.validate()` and `get_task_type()` run before training, both called with no arguments.
+- [ ] Every link out of an event table that preflight did not probe is probed before
+      `graph.snapshot()`, and the notebook stops if it never repeats
+      (`troubleshooting_signals.md` §2).
 - [ ] `graph.snapshot()` before generating any table.
 - [ ] **`trainer.fit(training_table, snapshot=snapshot)`** — `snapshot=` present.
 - [ ] **`trainer.predict(prediction_table, snapshot=snapshot, ...)`** — `snapshot=` present.

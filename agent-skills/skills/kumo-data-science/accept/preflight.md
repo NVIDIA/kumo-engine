@@ -176,6 +176,16 @@ A link is proposed when a column in table A has the **same name** as the primary
 taken as well, where the source declares any. Nothing else is inferred — no fuzzy matching,
 no value overlap checks, no joins executed.
 
+**A link out of an event table must repeat.** For every link whose source is an event table (it
+has a time column and its rows are occurrences), probe the foreign key with the §3 count:
+`N_DISTINCT = N_NON_NULL` means no parent has more than one event, so no entity has a history to
+learn from — typically a per-event id where the stable entity id belongs. List it under
+`Not found` with the counts and whether the link was inferred or supplied, and ask for the stable
+id. A one-to-one link between two entity tables is normal and needs no probe. If the probe cannot
+run here, the notebook runs it before the snapshot and stops when it fails
+(`kumoai-reference/references/troubleshooting_signals.md` §2); a user's go-ahead is not a probe
+result.
+
 ## 7. Seeds and table mode
 
 - **Seeds** are the tables behind `prediction_entity` and `prediction_target` (for link
