@@ -311,9 +311,7 @@ class NativeAnchors:
         iterator, _ = self._runtime.iter(
             self._source._diskgraph.SamplingOptions(
                 stage=stage["name"],
-                sampling_plan=(
-                    self._source._diskgraph.SamplingPlan() if plan is None else plan
-                ),
+                sampling_plan=SamplingPlan() if plan is None else plan,
                 num_workers=world_size,
                 worker_id=rank,
                 shuffle=shuffle,

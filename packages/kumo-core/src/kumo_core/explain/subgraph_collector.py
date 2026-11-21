@@ -783,6 +783,7 @@ class SubgraphCollector(Explainer):
                         src_stack.append((dst_table_name, dst_index))
 
             if self.task_type.is_link_pred:
+                assert rhs_name is not None
                 # Residual aggregation can omit RHS nodes from the export
                 # even when those nodes are present in the sampled batch.
                 retained_rhs = [
