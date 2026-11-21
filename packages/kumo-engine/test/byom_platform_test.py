@@ -77,7 +77,7 @@ def verify(platform, accelerator, execution):
             for phase in phases.values()):
         raise ValueError('All customer-model phases must pass')
     expected_hash = hashlib.sha256(workload(platform).read_bytes()).hexdigest()
-    selected = ('cpu', 'cuda') if accelerator == 'gpu' else ('cpu',)
+    selected = ('cuda',) if accelerator == 'gpu' else ('cpu',)
     identities = []
     for phase in ('train', 'reload'):
         receipt = phases[phase]

@@ -392,6 +392,6 @@ For CPU and GPU coverage, use the
 [shared customer-model matrix](mlops-validation.md#cpu-and-gpu-platform-matrix).
 The GPU case uses `V2.9-GPU-PY3.12` on the separate single-node
 `KUMO_TEST_GPU_POOL` and preserves the official CUDA-tagged PyTorch dependency
-through offline staging. It registers CPU and GPU versions and validates native
-reload on the recorded device; it does not disable dependency checks or claim
+through offline staging. Each case registers two versions on its selected device and validates native
+reload on that device; it does not disable dependency checks or claim
 GPU serving-endpoint qualification.

@@ -12,7 +12,7 @@ on:  # yamllint disable-line rule:truthy
         default: all
         options: [all, databricks, sagemaker, snowflake]
       accelerator:
-        description: Device coverage on every platform (GPU runs cover CPU and CUDA models)
+        description: Device coverage on every platform (two versions on the selected device)
         type: choice
         default: all
         options: [all, cpu, gpu]

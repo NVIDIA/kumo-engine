@@ -78,7 +78,7 @@ def devices(profile):
         return ('cpu',)
     require(profile.accelerator == 'gpu', 'Unknown workload accelerator')
     require(torch.cuda.is_available(), 'GPU workload requires an available CUDA device')
-    return ('cpu', 'cuda')
+    return ('cuda',)
 
 
 @contextmanager

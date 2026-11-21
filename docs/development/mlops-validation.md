@@ -197,8 +197,8 @@ the complete Engine wheel, its matching DiskGraph constituent wheel and
 `kumo-pytorch` supplies batches and persisted preprocessing; the customer owns
 the PyTorch model and optimizer. This example uses the in-memory batch engine.
 
-Each CPU case registers two model versions. Each GPU case registers two CPU and
-two CUDA versions in the same environment. A fresh worker restores preprocessing
+Each CPU case registers two model versions. Each GPU case registers two CUDA
+versions. Each case uses its selected device throughout training and recovery. A fresh worker restores preprocessing
 and weights, loads each version through the native registry, checks its device,
 compares predictions and promotes the alias. The common verifier requires
 matching workload hashes, distinct versions/runs, successful worker exits and

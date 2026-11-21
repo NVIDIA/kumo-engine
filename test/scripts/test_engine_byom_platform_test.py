@@ -19,7 +19,7 @@ SPEC.loader.exec_module(runner)
 
 
 def phases(platform, accelerator):
-    devices = ('cpu', 'cuda') if accelerator == 'gpu' else ('cpu',)
+    devices = ('cuda',) if accelerator == 'gpu' else ('cpu',)
     versions = [dict(version=str(i), run='run-' + str(i), device=device)
                 for i, device in enumerate(d for d in devices for _ in range(2))]
     receipt = dict(status='passed', returncode=0,
@@ -33,7 +33,7 @@ def phases(platform, accelerator):
 def test_every_platform_uses_the_same_device_and_version_contract(monkeypatch, platform, accelerator):
     monkeypatch.setattr(runner, 'phase_receipts', lambda *_: phases(platform, accelerator))
     result = runner.verify(platform, accelerator, Path('/unused'))
-    expected = dict(cpu='passed', gpu='passed') if accelerator == 'gpu' else dict(cpu='passed')
+    expected = dict(gpu='passed') if accelerator == 'gpu' else dict(cpu='passed')
     assert result['status'] == 'passed'
     assert result['devices'] == expected
 
@@ -44,7 +44,8 @@ def test_gpu_evidence_cannot_pass_with_missing_or_substituted_work(monkeypatch, 
     evidence = phases('sagemaker', 'gpu')
     if fault == 'cpu-only':
         for phase in ('train', 'reload'):
-            evidence[phase]['result']['versions'] = evidence[phase]['result']['versions'][:2]
+            for version in evidence[phase]['result']['versions']:
+                version['device'] = 'cpu'
     elif fault == 'missing-phase':
         evidence.pop('reload')
     elif fault == 'default-kumo':
@@ -108,11 +109,11 @@ def test_interrupted_matrix_never_reports_unrun_cases_as_passed(tmp_path, monkey
     assert all(case['status'] == 'planned' for case in report['cases'].values())
 
 
-def test_cpu_versions_cannot_be_replayed_as_distinct_gpu_registrations(monkeypatch):
+def test_distinct_gpu_runs_cannot_reuse_one_registry_version(monkeypatch):
     evidence = phases('sagemaker', 'gpu')
     for phase in ('train', 'reload'):
         for index, version in enumerate(evidence[phase]['result']['versions']):
-            version.update(version=str(index % 2), run='run-' + str(index % 2))
+            version.update(version='one-version', run='run-' + str(index))
     monkeypatch.setattr(runner, 'phase_receipts', lambda *_: evidence)
     with pytest.raises(ValueError, match='duplicates'):
         runner.verify('sagemaker', 'gpu', Path('/unused'))
