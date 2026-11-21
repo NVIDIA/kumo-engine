@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    from diskgraph.runtime_batch import RuntimeBatch
     from kumo_core.diskgraph.ray_sampling import RayRuntimeIndex
+    from torch_geometric.data import HeteroData
 
 import pytest
 from diskgraph import RuntimeIndex, SamplingOptions
@@ -33,6 +35,7 @@ class SeedTableFixture(TypedDict):
 
 @pytest.fixture(scope="module")
 def remote_index(
+    request: pytest.FixtureRequest,
     seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
 ) -> Iterator[RayRuntimeIndex]:
     """Open two native samplers on a local Ray cluster; close only owned actors."""
@@ -65,6 +68,11 @@ def remote_index(
             ray.get_runtime_context().get_node_id(), soft=False
         )
         replica = backend.ReplicaConfig(manifest, snapshot, artifacts, 42, 1)
+        if getattr(request, "param", None) == "encoded":
+            import sys
+
+            ray.cloudpickle.register_pickle_by_value(sys.modules[__name__])
+            replica = replace(replica, batch_encoder=_encode_native_runtime)
         actors = backend.start_sampling_replicas(
             [replica, replica], [placement, placement]
         )
@@ -119,3 +127,64 @@ def test_remote_native_batches_match_local(
     assert len(received) == len(references) > 0
     for batch, reference in zip(received, references, strict=True):
         _assert_equal(batch, reference)
+
+
+def _encode_native_runtime(batch: RuntimeBatch) -> HeteroData:
+    from kumo_core.diskgraph.runtime_adapter import (
+        FeatureSchema,
+        MapperBank,
+        runtime_batch_to_hetero,
+    )
+
+    names = set(batch.raw_features) | set(batch.graphs["main"].node_ids) | {"users"}
+    mappers: MapperBank = {name: {} for name in names}
+    schema: FeatureSchema = {
+        "node_types": {name: {"mapper_key": name} for name in names}
+    }
+    return runtime_batch_to_hetero(
+        batch,
+        train_table_name="users",
+        seed_node_type="users",
+        mapper_bank=mappers,
+        feature_schema=schema,
+        attach_pkeys=False,
+    )[0]
+
+
+@pytest.mark.parametrize("remote_index", ["encoded"], indirect=True)
+def test_remote_encoded_numpy_batches_match_local(
+    remote_index: RayRuntimeIndex,
+    seed_table_fixture: SeedTableFixture,  # noqa: F811 -- imported pytest fixture
+) -> None:
+    """Real actors encode typed samples and Ray delivers buffers for Python decoding."""
+    torch = pytest.importorskip("torch")
+    from torch_frame import TensorFrame
+
+    options = SamplingOptions(
+        stage="train",
+        sampling_plan=_sampling_plan(),
+        entity_node_type="users",
+        rnd_seed=42,
+        batch_size=2,
+    )
+    local = RuntimeIndex(
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
+    )
+    reference, expected_count = local.iter(options)
+    received, count = remote_index.iter_hetero(options)
+    assert count == expected_count
+    for batch, raw in zip(received, reference, strict=True):
+        expected = _encode_native_runtime(raw)
+        assert set(batch.node_types) == set(expected.node_types)
+        assert set(batch.edge_types) == set(expected.edge_types)
+        for name in batch.node_types + batch.edge_types:
+            assert set(batch[name].keys()) == set(expected[name].keys())
+            for key, value in expected[name].items():
+                actual = batch[name][key]
+                if isinstance(value, torch.Tensor):
+                    torch.testing.assert_close(actual, value, equal_nan=True)
+                elif isinstance(value, TensorFrame):
+                    assert actual.num_rows == value.num_rows
+                    assert actual.col_names_dict == value.col_names_dict
+                else:
+                    assert actual == value

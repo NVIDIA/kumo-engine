@@ -12,8 +12,10 @@ from types import ModuleType
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
+import diskgraph.runtime_batch as _records
 import pyarrow as pa
 import pytest
+from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import (
     InheritEngineSeed,
     SamplingOptions,
@@ -26,7 +28,6 @@ from kumo_core.diskgraph.batch_contract import (
     BatchPayload,
     BatchRequest,
     ConsumerToken,
-    NativeBatch,
     SamplingContractError,
     content_digest,
 )
@@ -76,7 +77,7 @@ def _config() -> ReplicaConfig:
     return ReplicaConfig("runtime.json", "snapshot.json", _request().artifacts, 42, 2)
 
 
-def _batch(request: BatchRequest) -> NativeBatch:
+def _batch(request: BatchRequest) -> RuntimeBatch:
     ids = pa.array(request.seed_ids, type=pa.uint64())
     # Exercise Array slices and separate RecordBatches, including ragged/nulls.
     feature = pa.record_batch(
@@ -85,28 +86,27 @@ def _batch(request: BatchRequest) -> NativeBatch:
             "time": pa.array([None, 2], type=pa.timestamp("ns")),
         }
     )
-    return {
-        "task": {
-            "input_ids": pa.array([0, 1], type=pa.uint32()),
-            "tt_stage_node_ids": ids,
-            "seed_node_ids": ids,
+    return _records.RuntimeBatch(
+        task=_records.RuntimeTask(
+            input_ids=pa.array([0, 1], type=pa.uint32()),
+            tt_stage_node_ids=ids,
+            seed_node_ids=ids,
+        ),
+        graphs={
+            "main": _records.RuntimeGraph(
+                node_ids={"nodes": ids},
+                batch_dict={"nodes": pa.array([0, 1], type=pa.uint32())},
+                edge_index_dict=[],
+                num_sampled_nodes_dict={"nodes": pa.array([2], type=pa.uint64())},
+                num_sampled_edges_dict=[],
+            )
         },
-        "graphs": {
-            "main": {
-                "node_ids": {"nodes": ids},
-                "batch_dict": {"nodes": pa.array([0, 1], type=pa.uint32())},
-                "edge_index_dict": [],
-                "num_sampled_nodes_dict": {"nodes": pa.array([2], type=pa.uint64())},
-                "num_sampled_edges_dict": [],
-            }
+        raw_features={
+            "nodes": _records.RuntimeFeatureBlock(
+                num_rows=2, record_batches=[feature.slice(0, 1), feature.slice(1, 1)]
+            )
         },
-        "raw_features": {
-            "nodes": {
-                "num_rows": 2,
-                "record_batches": [feature.slice(0, 1), feature.slice(1, 1)],
-            }
-        },
-    }
+    )
 
 
 def test_request_identity_and_envelope_validation() -> None:
@@ -123,9 +123,9 @@ def test_request_identity_and_envelope_validation() -> None:
         with pytest.raises(SamplingContractError, match="wrong request"):
             payload.validate(wrong)
     with pytest.raises(SamplingContractError, match="incomplete native"):
-        BatchPayload(request, cast(NativeBatch, {}), 0).validate(request)
+        BatchPayload(request, cast(RuntimeBatch, {}), 0).validate(request)
     wrong_batch = _batch(request)
-    wrong_batch["task"]["tt_stage_node_ids"] = pa.array([14, 9], type=pa.uint64())
+    wrong_batch.task.tt_stage_node_ids = pa.array([14, 9], type=pa.uint64())
     with pytest.raises(SamplingContractError, match="membership/order"):
         BatchPayload(request, wrong_batch, 0).validate(request)
 
@@ -180,8 +180,9 @@ def test_replica_reuses_context_without_advancing_it() -> None:
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         one = replica.sample(request)
         two = replica.sample(request)
-    assert one.validate(request)["task"]["tt_stage_node_ids"].equals(
-        two.validate(request)["task"]["tt_stage_node_ids"]
+    assert isinstance(one, BatchPayload) and isinstance(two, BatchPayload)
+    assert one.validate(request).task.tt_stage_node_ids.equals(
+        two.validate(request).task.tt_stage_node_ids
     )
     assert index.iter.call_count == 1
     assert context.sample_request.call_count == 2
@@ -253,7 +254,7 @@ config, request = ray.cloudpickle.loads(sys.stdin.buffer.read())
 assert not ray.is_initialized()
 client = RayRuntimeIndex('metadata-only.json', config, request.consumer)
 batch = client._sample(request)
-assert batch['task']['tt_stage_node_ids'].to_pylist() == [9, 14]
+assert batch.task.tt_stage_node_ids.to_pylist() == [9, 14]
 ray.shutdown()
 """
     try:
@@ -466,14 +467,16 @@ def test_real_actor_tracking_and_direct_arrow_delivery(ray_cluster: ModuleType) 
         with pytest.raises(SamplingUnavailableError, match="consume a result"):
             pool.submit(_request())
         second_actor = pool.pending[two]
-        received = pool.get(two).validate(_request())
-        assert received["raw_features"]["nodes"]["record_batches"][0].equals(
-            _batch(_request())["raw_features"]["nodes"]["record_batches"][0]
+        received = cast(BatchPayload, pool.get(two)).validate(_request())
+        assert (
+            received.raw_features["nodes"]
+            .record_batches[0]
+            .equals(_batch(_request()).raw_features["nodes"].record_batches[0])
         )
         three = pool.submit(_request())
         assert pool.pending[three] == second_actor
-        pool.get(one).validate(_request())
-        pool.get(three).validate(_request())
+        cast(BatchPayload, pool.get(one)).validate(_request())
+        cast(BatchPayload, pool.get(three)).validate(_request())
         assert not pool.pending and len(pool.available) == 2
     finally:
         pool.close()
@@ -493,7 +496,7 @@ def test_real_actor_death_retries_on_survivor(ray_cluster: ModuleType) -> None:
     )
     try:
         batch = client._sample(_request())
-        assert batch["task"]["tt_stage_node_ids"].to_pylist() == [9, 14]
+        assert batch.task.tt_stage_node_ids.to_pylist() == [9, 14]
         assert list(client.samplers.available) == [1]
     finally:
         client.close()
@@ -513,7 +516,7 @@ def test_direct_call_has_no_control_rpcs() -> None:
     )
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)
-        pool.get(pool.submit(_request())).validate(_request())
+        cast(BatchPayload, pool.get(pool.submit(_request()))).validate(_request())
         pool.close()
     actor.sample.remote.assert_called_once_with(_request())
     ray.get.assert_called_once_with(ref, timeout=config.request_timeout)
@@ -578,7 +581,9 @@ def test_cancellation_drains_native_work_before_reuse(
         with pytest.raises(SamplingUnavailableError):
             pool.get(result)
         restarted = _SamplerPool(_backend((replica,)))
-        restarted.get(restarted.submit(_request())).validate(_request())
+        cast(BatchPayload, restarted.get(restarted.submit(_request()))).validate(
+            _request()
+        )
         restarted.close()
     finally:
         ray.get(gate.release.remote(), timeout=10)

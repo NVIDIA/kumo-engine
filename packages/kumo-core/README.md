@@ -75,8 +75,8 @@ support for the full training pipeline on MPS.
 ## Distributed sampling
 
 The optional [Ray Core sampling backend](docs/distributed-sampling.md) shares
-native seed schedules across explicitly placed sampler actors and returns raw
-Arrow batches. It is a backend building block; training integration is separate.
+native seed schedules across explicitly placed sampler actors and returns typed
+Arrow batches or actor-encoded graphs. It is a backend building block; training integration is separate.
 
 ## Development and validation
 

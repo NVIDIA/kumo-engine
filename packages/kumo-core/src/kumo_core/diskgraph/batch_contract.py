@@ -5,65 +5,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import NotRequired, TypedDict
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
+from diskgraph.runtime_batch import (
+    RuntimeBatch,
+    RuntimeFeatureBlock,
+    RuntimeGraph,
+    RuntimeTask,
+)
 from diskgraph.sampling_options import SamplingOptions
 
+if TYPE_CHECKING:
+    from torch_geometric.data import HeteroData
 
-class NativeTask(TypedDict):
-    """Required seed identity arrays in a complete native task block."""
-
-    input_ids: pa.Array
-    tt_stage_node_ids: pa.Array
-    seed_node_ids: pa.Array
-
-
-class NativeEdge(TypedDict):
-    """Typed relation and aligned source/destination arrays."""
-
-    edge_type: dict[str, str]
-    src: pa.Array
-    dst: pa.Array
-
-
-class NativeEdgeCounts(TypedDict):
-    """Per-hop sampling counts for one relation."""
-
-    edge_type: dict[str, str]
-    counts: pa.Array
-
-
-class NativeGraph(TypedDict):
-    """Required topology and provenance arrays for one graph channel."""
-
-    node_ids: dict[str, pa.Array]
-    batch_dict: dict[str, pa.Array]
-    edge_index_dict: list[NativeEdge]
-    num_sampled_nodes_dict: dict[str, pa.Array]
-    num_sampled_edges_dict: list[NativeEdgeCounts]
-
-
-class NativeFeatureBlock(TypedDict):
-    """Arrow feature chunks and the row count used to verify completeness."""
-
-    num_rows: int
-    record_batches: list[pa.RecordBatch]
-    node_ids: NotRequired[pa.Array]
-
-
-class NativeBatch(TypedDict):
-    """Required sections of the complete native batch transported by this backend.
-
-    Native dictionaries retain additional task/history fields without repacking.
-    """
-
-    task: NativeTask
-    graphs: dict[str, NativeGraph]
-    raw_features: dict[str, NativeFeatureBlock]
+    from kumo_core.diskgraph.hetero_wire import TensorBuffer
 
 
 WIRE_VERSION = 2
@@ -192,17 +150,17 @@ class BatchPayload:
     """One complete batch retaining Arrow/native buffer owners until conversion."""
 
     request: BatchRequest
-    batch: NativeBatch
+    batch: RuntimeBatch
     sampling_seconds: float
 
-    def validate(self, expected: BatchRequest) -> NativeBatch:
+    def validate(self, expected: BatchRequest) -> RuntimeBatch:
         """Check identity and required complete-batch fields before tensor mapping.
 
         Args:
             expected: Issued logical request.
 
         Returns:
-            Existing native batch mapping, without repacking its Arrow buffers.
+            Existing typed native batch, without repacking its Arrow buffers.
 
         Raises:
             SamplingContractError: If identity or native batch structure differs.
@@ -211,51 +169,77 @@ class BatchPayload:
         options = expected.options
         if self.request != expected:
             raise SamplingContractError("wrong request, artifact, or phase generation")
-        if not all(key in self.batch for key in ("task", "graphs", "raw_features")):
+        if not isinstance(self.batch, RuntimeBatch):
             raise SamplingContractError("incomplete native batch")
-        sections: Mapping[str, object] = self.batch
-        if not all(
-            isinstance(sections[key], Mapping)
-            for key in ("task", "graphs", "raw_features")
-        ):
-            raise SamplingContractError("native batch sections must be mappings")
-        task = self.batch["task"]
-        graph = self.batch["graphs"].get("main")
-        if graph is None or not all(
-            key in graph
-            for key in (
-                "node_ids",
-                "batch_dict",
-                "edge_index_dict",
-                "num_sampled_nodes_dict",
-                "num_sampled_edges_dict",
-            )
-        ):
+        task = self.batch.task
+        if not isinstance(task, RuntimeTask):
+            raise SamplingContractError("incomplete native task")
+        if "main" not in self.batch.graphs:
             raise SamplingContractError("incomplete graph channel")
         for name in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
-            if not isinstance(task.get(name), pa.Array):
+            if not isinstance(getattr(task, name), pa.Array):
                 raise SamplingContractError(f"missing native task array: {name}")
         seed_ids = (
-            task["seed_node_ids"]
-            if options.rhs_seed_node_type
-            else task["tt_stage_node_ids"]
+            task.seed_node_ids if options.rhs_seed_node_type else task.tt_stage_node_ids
         )
         if not seed_ids.equals(pa.array(expected.seed_ids, type=pa.uint64())):
             raise SamplingContractError("response seed membership/order differs")
-        for channel in self.batch["graphs"].values():
-            for node_type, ids in channel["node_ids"].items():
-                provenance = channel["batch_dict"].get(node_type)
+        for channel in self.batch.graphs.values():
+            if not isinstance(channel, RuntimeGraph):
+                raise SamplingContractError("incomplete graph channel")
+            for node_type, ids in channel.node_ids.items():
+                provenance = channel.batch_dict.get(node_type)
                 if provenance is None or len(ids) != len(provenance):
                     raise SamplingContractError("node provenance length differs")
-            for edge in channel["edge_index_dict"]:
-                if len(edge["src"]) != len(edge["dst"]):
+            for edge in channel.edge_index_dict:
+                if len(edge.src) != len(edge.dst):
                     raise SamplingContractError("edge endpoint length differs")
-        for bank in self.batch["raw_features"].values():
-            batches = bank.get("record_batches")
+        for bank in self.batch.raw_features.values():
             if (
-                not isinstance(batches, list)
-                or any(not isinstance(batch, pa.RecordBatch) for batch in batches)
-                or sum(batch.num_rows for batch in batches) != bank.get("num_rows")
+                not isinstance(bank, RuntimeFeatureBlock)
+                or any(
+                    not isinstance(batch, pa.RecordBatch)
+                    for batch in bank.record_batches
+                )
+                or sum(batch.num_rows for batch in bank.record_batches) != bank.num_rows
             ):
                 raise SamplingContractError("incomplete native feature bank")
         return self.batch
+
+
+@dataclass(frozen=True)
+class HeteroBatchPayload:
+    """Actor-encoded graph metadata and separate NumPy tensor buffers.
+
+    Args:
+        request: Logical request and artifact identity for the encoded batch.
+        metadata: Versioned MessagePack graph layout and tensor descriptors.
+        buffers: Contiguous NumPy views owning the tensor data.
+        sampling_seconds: Actor sampling, encoding, and packing duration.
+    """
+
+    request: BatchRequest
+    metadata: bytes
+    buffers: list[TensorBuffer]
+    sampling_seconds: float
+
+    def decode(self, expected: BatchRequest) -> HeteroData:
+        """Verify request identity and reconstruct the encoded graph.
+
+        Args:
+            expected: Request whose response is being consumed.
+
+        Returns:
+            HeteroData retaining the received NumPy buffer owners.
+
+        Raises:
+            SamplingContractError: If request identity differs.
+            TypeError: If buffer types are unsupported.
+            ValueError: If wire metadata or tensor layout is invalid.
+        """
+        from kumo_core.diskgraph.hetero_wire import unpack_python_hetero
+
+        expected.validate()
+        if self.request != expected:
+            raise SamplingContractError("wrong request, artifact, or phase generation")
+        return unpack_python_hetero(self.metadata, self.buffers)
