@@ -338,8 +338,10 @@ in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetun
 - Report the outcome: the training metrics, or the exception and the cell that raised it
 - **Read what Kumo said about the data first.** A warning or error about the data — duplicate
   primary keys, a foreign key that matched few rows, invalid values read as null, a float or
-  mismatched key, an empty training table — leads the report, with the table, column and count,
-  and the decision goes to the user: fix the source, change the key or link, or accept the loss.
+  mismatched key, an empty training table, or a nonzero count from a read-only check cell such as
+  entities whose history is cut off by sampling — leads the report, with the table, column and
+  count, and the decision goes to the user: fix the source, change the key or link, or accept the
+  loss.
   A run that finished is not a success until they have decided. Never change the data, a column's
   type or the query to make such a message go away
   (`kumoai-reference/references/troubleshooting_signals.md` §1a). A failure that is not about the

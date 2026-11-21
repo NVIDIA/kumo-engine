@@ -92,6 +92,11 @@ Before returning code:
   exclusions.
 - If the active host adapter restricts a semantic type, confirm the generated code includes the
   adapter's runtime type guard before `graph.snapshot()`.
+- For a temporal task, the notebook runs the sampled-history check from
+  `kumoai-reference/references/troubleshooting_signals.md` §2 (*far more events than the model
+  samples*) before `graph.snapshot()`, read-only, through the host's own SQL session
+  (`kumoai-reference/references/kumo_finetuning_sdk.md` §3.3), never the Kumo connector, and
+  prints each table, the number kept and the count. It reports; it never filters or aggregates.
 - Confirm that the output table in the generated code matches the output location from the original request.
 - Check against known error patterns in `kumoai-reference/references/troubleshooting_signals.md`.
 

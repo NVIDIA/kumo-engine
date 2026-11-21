@@ -154,6 +154,29 @@ transaction = kumo.Table.from_source_table(
 ```
 Entity tables may use the entity creation time. Tables with no meaningful timeline can remain without a time column — that is legal. Do **not** designate an administrative "last modified" timestamp unless it represents when the row became valid for modeling.
 
+### Symptom: some entities have far more events than the model samples
+**Cause:** Training samples a fixed number of neighbours per entity per hop and keeps the **most
+recent** ones before the anchor (`temporal_strategy='last'`). An entity with more linked rows
+than that has its older history cut off, silently. On the edge from the entity to the target's
+table, hop 1 keeps `ceil(sqrt(ceil(target rows / entity rows)) * 8)` rows, held between 64 and
+512; every other edge keeps the run mode's per-hop default (8 `DEBUG`, 12 `FAST`, 16 `NORMAL`, 24
+`BEST`).
+**Check (read-only, before training):** for each table with a time column that links directly to
+the entity table, count the entities whose rows in it exceed that number, and the largest count:
+
+```sql
+SELECT COUNT(*) AS ENTITIES_OVER, MAX(N) AS MOST_ROWS
+FROM (SELECT <FK>, COUNT(*) AS N FROM <DB>.<SCHEMA>.<TABLE> GROUP BY <FK>) WHERE N > <KEPT>;
+```
+
+The count is over all history, so it bounds the entities cut off at any one anchor.
+**Fix (the user's, upstream):** a nonzero count goes to the user with the table, the number kept
+and the count: those entities are modelled on their most recent rows only. Very dense events
+(clicks, readings) can be rolled up in the source, for example daily. The agent never aggregates
+or samples them itself.
+Source: shipped package (`kumo_core.automl.target_fanout`, `kumo_core.model_plan`,
+`kumo_core.training.config`)
+
 ### Symptom: the user supplies pre-aggregated features (`logins_last_30_days`, etc.)
 **Cause:** Aggregating before ingestion removes the sequence/relationship information the GNN learns from. Kumo reports aggregated features can perform **5–10% worse** than an equivalent GBDT model, while raw data performs better.
 **Fix:** Ask for the raw timestamped event table instead. Do not do feature engineering on Kumo's behalf.
