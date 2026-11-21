@@ -53,23 +53,22 @@ fn py_bool_array<'py>(py: Python<'py>, values: Vec<bool>) -> PyResult<Bound<'py,
 // done by Phase-1 ingest, so this hot loop is just:
 //
 //   1. Pick the next `batch_size` row offsets for this worker shard.
-//   2. `engine.sample_runtime_batch(...)` — walks `seed.edges.bin` to
-//      recover parent row ids, reads seed rowpack, calls `engine.sample`,
-//      and returns a `RuntimeBatch`.
-//   3. `runtime_batch_to_pydict(...)` — converts the Rust struct to the
-//      PyDict shape the trainer adapter expects, zero-copy where possible
+//   2. The native runtime samples topology/features and attaches configured
+//      neighborhoods, temporal history and event merges to `RuntimeBatch`.
+//   3. `runtime_batch_to_python(...)` — converts the Rust struct to the
+//      typed Python records the trainer adapter expects, zero-copy where possible
 //      (via `to_data().to_pyarrow` and `RecordBatch.to_pyarrow`).
 // ---------------------------------------------------------------------------
 
-use diskgraph_engine::output::{GraphChannel, RawFeatureBank, RuntimeBatch, TaskBag};
+use diskgraph_engine::output::{GraphChannel, RawFeatureBank, SamplingBatch, TaskBag};
+use diskgraph_runtime::{RuntimeBatch, RuntimeHistory};
 
-/// Convert our Rust `RuntimeBatch` to PR-28765's PyDict shape. All Arrow
-/// payloads cross the FFI boundary via Arrow C Data Interface (zero-copy);
-/// the only allocations are the Python dict scaffolding itself.
-fn runtime_batch_to_pydict<'py>(
+/// Construct DiskGraph-owned Python records while retaining Arrow buffer owners.
+fn runtime_batch_to_python<'py>(
     py: Python<'py>,
     batch: &RuntimeBatch,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<Bound<'py, PyAny>> {
+    let types = py.import("diskgraph.runtime_batch")?;
     let dict = PyDict::new(py);
 
     // task ----
@@ -153,29 +152,33 @@ fn runtime_batch_to_pydict<'py>(
         let exclude_rhs = Int64Array::from(lp_exclude_rhs_global.clone());
         task.set_item("lp_exclude_rhs_global", py_array(py, &exclude_rhs)?)?;
     }
-    dict.set_item("task", task)?;
+    dict.set_item("task", types.getattr("RuntimeTask")?.call((), Some(&task))?)?;
 
     // graphs ----
     let graphs = PyDict::new(py);
     for (channel_name, channel) in &batch.graphs {
-        graphs.set_item(channel_name, graph_channel_to_pydict(py, channel)?)?;
+        graphs.set_item(channel_name, graph_channel_to_python(py, channel)?)?;
     }
     dict.set_item("graphs", graphs)?;
 
     // raw_features ----
     let raw_features = PyDict::new(py);
     for (ns, bank) in &batch.raw_features {
-        raw_features.set_item(ns, raw_feature_bank_to_pydict(py, ns, bank)?)?;
+        raw_features.set_item(ns, raw_feature_bank_to_python(py, ns, bank)?)?;
     }
     dict.set_item("raw_features", raw_features)?;
 
-    Ok(dict)
+    types.getattr("RuntimeBatch")?.call((), Some(&dict))
 }
 
-fn graph_channel_to_pydict<'py>(
+fn graph_channel_to_python<'py>(
     py: Python<'py>,
     channel: &GraphChannel,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<Bound<'py, PyAny>> {
+    let types = py.import("diskgraph.runtime_batch")?;
+    let edge_type_class = types.getattr("RuntimeEdgeType")?;
+    let edge_class = types.getattr("RuntimeEdge")?;
+    let counts_class = types.getattr("RuntimeEdgeCounts")?;
     let ch = PyDict::new(py);
 
     // node_ids (per type)
@@ -209,10 +212,10 @@ fn graph_channel_to_pydict<'py>(
         key.set_item("rel", rel)?;
         key.set_item("dst", dst)?;
         let entry = PyDict::new(py);
-        entry.set_item("edge_type", key)?;
+        entry.set_item("edge_type", edge_type_class.call((), Some(&key))?)?;
         entry.set_item("src", py_u32_array(py, srcs.clone())?)?;
         entry.set_item("dst", py_u32_array(py, dsts.clone())?)?;
-        edge_index_dict.append(entry)?;
+        edge_index_dict.append(edge_class.call((), Some(&entry))?)?;
     }
     ch.set_item("edge_index_dict", edge_index_dict)?;
 
@@ -236,26 +239,28 @@ fn graph_channel_to_pydict<'py>(
         key.set_item("rel", rel)?;
         key.set_item("dst", dst)?;
         let entry = PyDict::new(py);
-        entry.set_item("edge_type", key)?;
+        entry.set_item("edge_type", edge_type_class.call((), Some(&key))?)?;
         entry.set_item("counts", py_u64_array(py, counts.clone())?)?;
-        num_sampled_edges.append(entry)?;
+        num_sampled_edges.append(counts_class.call((), Some(&entry))?)?;
     }
     ch.set_item("num_sampled_edges_dict", num_sampled_edges)?;
 
-    Ok(ch)
+    types.getattr("RuntimeGraph")?.call((), Some(&ch))
 }
 
-fn raw_feature_bank_to_pydict<'py>(
+fn raw_feature_bank_to_python<'py>(
     py: Python<'py>,
     namespace: &str,
     bank: &RawFeatureBank,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<Bound<'py, PyAny>> {
     let block = PyDict::new(py);
     block.set_item("key", namespace)?;
     let num_rows: usize = bank.batches.iter().map(|b| b.num_rows()).sum();
     block.set_item("num_rows", num_rows)?;
     block.set_item("record_batches", py_record_batch_list(py, &bank.batches)?)?;
-    Ok(block)
+    py.import("diskgraph.runtime_batch")?
+        .getattr("RuntimeFeatureBlock")?
+        .call((), Some(&block))
 }
 
 #[pyclass]
@@ -409,7 +414,6 @@ impl SeedSchedule {
 #[pyclass]
 pub struct RuntimeBatchIterator {
     inner: diskgraph_runtime::RuntimeBatchIterator,
-    history: Option<HistoryIteration>,
     planning: Option<LengthPlanning>,
 }
 
@@ -536,8 +540,8 @@ fn length_error(message: impl Into<String>) -> PyErr {
 impl LengthPlanning {
     fn enqueue(
         &mut self,
-        batch: &RuntimeBatch,
-        history: &HistoryIteration,
+        batch: &SamplingBatch,
+        history: &RuntimeHistory,
         final_pool: bool,
     ) -> PyResult<()> {
         let ids = &batch.task.tt_stage_node_ids;
@@ -568,11 +572,12 @@ impl LengthPlanning {
                 .collect::<Vec<_>>();
             // Only clock/identity and length metadata are projected. Actual feature
             // decoding and encoding happen once when the final batch is delivered.
-            let result = self.query.execute(
-                &history.reader, &roots, &cutoffs, &history.engine.thread_pool,
-            )
-            .map_err(length_error)?;
-            let selection = history.merges.iter()
+            let result = history
+                .execute_query(&self.query, &roots, &cutoffs)
+                .map_err(map_runtime_err)?;
+            let selection = history
+                .merges()
+                .iter()
                 .find(|plan| plan.name == self.contract.merge)
                 .ok_or_else(|| length_error("unknown length input merge"))?;
             let merges = result
@@ -638,9 +643,13 @@ impl LengthPlanning {
                             cost = usize::MAX;
                             break;
                         }
-                        if counted_row && !column.validity_only
+                        if counted_row
+                            && !column.validity_only
                             && value == Some((u16::MAX - 1) as u64)
-                            && self.contract.row_maximum.is_none_or(|max| max > (u16::MAX - 1) as usize)
+                            && self
+                                .contract
+                                .row_maximum
+                                .is_none_or(|max| max > (u16::MAX - 1) as usize)
                         {
                             return Err(length_error("saturated event token metadata requires a row token cap no greater than 65534"));
                         }
@@ -724,7 +733,8 @@ impl LengthPlanning {
         let (mut current, mut sum, mut maximum, mut history_sum) =
             (Vec::new(), 0usize, 0usize, 0usize);
         for id in ordered {
-            let [history_length, length, row_maximum] = cache.get(id as usize).expect("planned length");
+            let [history_length, length, row_maximum] =
+                cache.get(id as usize).expect("planned length");
             let single_cost = if self.contract.nested_padded {
                 history_length
                     .checked_mul(row_maximum)
@@ -776,13 +786,6 @@ impl LengthPlanning {
     }
 }
 
-struct HistoryIteration {
-    root_type: String,
-    reader: std::sync::Arc<diskgraph_index::graph::GraphIndexReader>,
-    engine: std::sync::Arc<diskgraph_engine::engine::DiskGraphEngine>,
-    plan: diskgraph_train_table::batch_aggregate::PreparedTemporalPlan,
-    merges: Vec<crate::temporal_query::EventMerge>,
-}
 fn map_runtime_err(error: diskgraph_runtime::RuntimeError) -> PyErr {
     use diskgraph_runtime::RuntimeError;
     match error {
@@ -889,7 +892,6 @@ impl RuntimeIndex {
     ) -> PyResult<RuntimeBatchIterator> {
         let sampling_plan = sampling_plan.inner.clone();
         Ok(RuntimeBatchIterator {
-            history: None,
             planning: None,
             inner: self
                 .inner
@@ -929,41 +931,11 @@ impl RuntimeIndex {
 }
 impl RuntimeBatchIterator {
     fn batch_to_python(&self, py: Python<'_>, mut batch: RuntimeBatch) -> PyResult<Py<PyAny>> {
-        let (batch, history) = py.detach(|| {
-            self.inner
-                .add_neighborhoods(&mut batch)
-                .map_err(map_runtime_err)?;
-            let history = self
-                .history
-                .as_ref()
-                .map(|config| {
-                    let cutoffs = batch
-                        .task
-                        .seed_timestamps
-                        .clone()
-                        .unwrap_or_else(|| vec![0; batch.task.seed_node_ids.len()]);
-                    config
-                        .plan
-                        .execute(
-                            &config.reader,
-                            &batch.task.seed_node_ids,
-                            &cutoffs,
-                            &config.engine.thread_pool,
-                        )
-                        .and_then(|result| {
-                            let orders = result.merged_event_orders(&config.merges)?;
-                            Ok((result, orders))
-                        })
-                        .map_err(DiskgraphConfigError::new_err)
-                })
-                .transpose()?;
-            Ok::<_, PyErr>((batch, history))
-        })?;
-        let output = runtime_batch_to_pydict(py, &batch)?;
-        if let Some((result, orders)) = history {
-            output.set_item("history", result.into_python(py, true)?)?;
+        let output = runtime_batch_to_python(py, &batch)?;
+        if let Some(history) = batch.history.take() {
+            output.setattr("history", history.into_python(py, true)?)?;
             let merged = PyDict::new(py);
-            for (name, bounds, order) in orders {
+            for (name, bounds, order) in batch.history_merges {
                 merged.set_item(
                     name,
                     (
@@ -972,7 +944,7 @@ impl RuntimeBatchIterator {
                     ),
                 )?;
             }
-            output.set_item("history_merges", merged)?;
+            output.setattr("history_merges", merged)?;
         }
         Ok(output.into())
     }
@@ -1055,7 +1027,6 @@ impl RuntimeBatchIterator {
     ) -> PyResult<Self> {
         let sampling_plan = sampling_plan.inner.clone();
         Ok(Self {
-            history: None,
             planning: None,
             inner: diskgraph_runtime::RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)
                 .map_err(map_runtime_err)?
@@ -1137,27 +1108,14 @@ impl RuntimeBatchIterator {
         plan: String,
         merges: String,
     ) -> PyResult<()> {
-        let plan = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
-            &sampler.reader, &root_type, &plan,
-        ).map_err(DiskgraphConfigError::new_err)?;
-        let merges: Vec<crate::temporal_query::EventMerge> = serde_json::from_str(&merges)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid history merges: {e}")))?;
-        for merge in &merges {
-            if merge.sequences.len() != merge.ascending.len() {
-                return Err(DiskgraphConfigError::new_err("merge sequence/order counts differ"));
-            }
-            for sequence in &merge.sequences {
-                plan.require_timed_sequence(sequence).map_err(DiskgraphConfigError::new_err)?;
-            }
-        }
-        self.history = Some(HistoryIteration {
-            root_type,
-            reader: std::sync::Arc::clone(&sampler.reader),
-            engine: std::sync::Arc::clone(&sampler.engine),
-            plan,
-            merges,
-        });
-        Ok(())
+        self.inner
+            .with_history(
+                (Arc::clone(&sampler.reader), Arc::clone(&sampler.engine)),
+                &root_type,
+                &plan,
+                &merges,
+            )
+            .map_err(map_runtime_err)
     }
 
     /// Bounded shuffled pools; sample composition and epoch cache stay native.
@@ -1169,7 +1127,10 @@ impl RuntimeBatchIterator {
     ) -> PyResult<()> {
         let contract: LengthContract =
             serde_json::from_str(&contract).map_err(|e| length_error(e.to_string()))?;
-        if self.history.is_none() || contract.max_samples == 0 || contract.max_tokens == Some(0) {
+        if self.inner.history().is_none()
+            || contract.max_samples == 0
+            || contract.max_tokens == Some(0)
+        {
             return Err(length_error(
                 "length planning requires attached history and positive limits",
             ));
@@ -1201,10 +1162,10 @@ impl RuntimeBatchIterator {
             }
             metadata.insert(name.extract::<String>()?, LengthMetadata { chunks, ends });
         }
-        let history = self.history.as_ref().expect("checked attached history");
-        let query = diskgraph_train_table::batch_aggregate::PreparedTemporalPlan::prepare_history(
-            &history.reader, &history.root_type, &contract.query,
-        ).map_err(length_error)?;
+        let history = self.inner.history().expect("checked attached history");
+        let query = history
+            .prepare_query(&contract.query)
+            .map_err(map_runtime_err)?;
         self.planning = Some(LengthPlanning {
             query,
             contract,
@@ -1235,13 +1196,17 @@ impl RuntimeBatchIterator {
         let next = py.detach(|| {
             let batch = if let Some(planning) = self.planning.as_mut() {
                 while planning.batches.is_empty() {
-                    let Some(pool) = self.inner.next_batch().map_err(map_runtime_err)? else {
+                    let Some(pool) = self
+                        .inner
+                        .next_sampling_batch()
+                        .map_err(map_runtime_err)?
+                    else {
                         return Ok(None);
                     };
                     planning.consumed += pool.task.tt_stage_node_ids.len();
                     planning.enqueue(
                         &pool,
-                        self.history.as_ref().unwrap(),
+                        self.inner.history().unwrap(),
                         planning.consumed == self.inner.num_samples(),
                     )?;
                 }

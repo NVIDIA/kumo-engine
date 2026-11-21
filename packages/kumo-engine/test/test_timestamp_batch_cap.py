@@ -95,10 +95,10 @@ def temporal_manifest(tmp_path):
 
 
 def batch_rows(batch):
-    task = batch['task']
+    task = batch.task
     return list(
-        zip(task['seed_timestamps'].to_pylist(),
-            task['tt_stage_node_ids'].to_pylist()))
+        zip(task.seed_timestamps.to_pylist(), task.tt_stage_node_ids.to_pylist())
+    )
 
 
 def make_dataset(manifest, stages, cap, workers, **kwargs):

@@ -21,7 +21,7 @@ from datetime import UTC
 from pathlib import Path
 from typing import Any
 
-from diskgraph import SamplingPlan
+from diskgraph import RuntimeLengthCache, SamplingPlan
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
@@ -87,7 +87,7 @@ class NativeAnchors:
         )
         self.path = Path(self._temporary.name)
         self._closed = False
-        self._length_caches = {}
+        self._length_caches: dict[tuple[str, str], RuntimeLengthCache] = {}
         self._last_length_planning_stats = (0, 0)
         try:
             self._materialize(pq)
@@ -204,11 +204,12 @@ class NativeAnchors:
         finally:
             for writer in writers.values():
                 writer.close()
+        stage_manifest: dict[str, dict[str, object]] = {}
         manifest = {
             "kind": "diskgraph_task_dataset",
             "graph": {"index_path": str(view)},
             "task": {"is_temporal": table.as_of_time is not None},
-            "stages": {},
+            "stages": stage_manifest,
         }
         if self._stages:
             specs = []
@@ -229,7 +230,7 @@ class NativeAnchors:
                         },
                     }
                 )
-                manifest["stages"][stage["name"]] = {
+                stage_manifest[stage["name"]] = {
                     "table_name": stage["name"],
                     "index_path": str(extension),
                     "row_count": stage["count"],
@@ -375,8 +376,8 @@ class NativeAnchors:
         from kumo.pytorch.data.model import ModelSourceBatch
 
         pa = self._pa
-        key = next(k for k in runtime["raw_features"] if k.endswith("/" + stage["name"]))
-        data = pa.Table.from_batches(runtime["raw_features"][key]["record_batches"])
+        key = next(k for k in runtime.raw_features if k.endswith("/" + stage["name"]))
+        data = pa.Table.from_batches(runtime.raw_features[key].record_batches)
         columns = {}
         for name, alias in self._aliases.items():
             values = data[alias]
@@ -413,7 +414,7 @@ class NativeAnchors:
             if table.sample_id
             else tuple(data["anchor_position"].to_pylist()),
             entity_ids=tuple(columns[table.entity_id].to_pylist()),
-            evaluation_times=tuple(runtime["task"]["seed_timestamps"].to_pylist())
+            evaluation_times=tuple(runtime.task.seed_timestamps.to_pylist())
             if table.as_of_time
             else (0,) * n,
             entity_type=self._sample.entity.entity_type,
@@ -869,7 +870,7 @@ class NativeAnchors:
                 stage, **options, shuffle=shuffle, rank=rank, world_size=world_size
             )
             for runtime in iterator:
-                ids = runtime["task"]["tt_stage_node_ids"]
+                ids = runtime.task.tt_stage_node_ids
                 n = len(ids)
                 if first is None:
                     first = ids[0].as_py()
@@ -904,7 +905,7 @@ class NativeAnchors:
             if sample.entity.available_from is not None:
                 source._validate_root_ids_availability(
                     sample,
-                    runtime["task"]["seed_node_ids"].to_pylist(),
+                    runtime.task.seed_node_ids.to_pylist(),
                     anchors.evaluation_times,
                 )
             if padded:
@@ -934,7 +935,7 @@ class NativeAnchors:
                 values = replace(
                     values,
                     merged_events={
-                        key: runtime["history_merges"][str(i)] for i, key in enumerate(merge_keys)
+                        key: runtime.history_merges[str(i)] for i, key in enumerate(merge_keys)
                     },
                 )
                 batch = _surface_padding(
@@ -952,8 +953,8 @@ class NativeAnchors:
 
     def _requests(self, stage: Any, runtime: Any) -> list[SampleRequest]:
         pa = self._pa
-        key = next(name for name in runtime["raw_features"] if name.endswith("/" + stage["name"]))
-        data = pa.Table.from_batches(runtime["raw_features"][key]["record_batches"])
+        key = next(name for name in runtime.raw_features if name.endswith("/" + stage["name"]))
+        data = pa.Table.from_batches(runtime.raw_features[key].record_batches)
         columns = {}
         for name, alias in self._aliases.items():
             values = data[alias]
@@ -1000,21 +1001,17 @@ class NativeAnchors:
                 rank=(rank - offset) % world_size,
                 world_size=world_size,
             ):
-                yield from (
-                    offset + value for value in batch["task"]["tt_stage_node_ids"].to_pylist()
-                )
+                yield from (offset + value for value in batch.task.tt_stage_node_ids.to_pylist())
             offset += stage["count"]
 
     def _stage_rows(self, stage: Any, offset: int):
         for runtime in self._iter(stage, projections={name: [] for name in self._source._tables}):
-            key = next(
-                name for name in runtime["raw_features"] if name.endswith("/" + stage["name"])
-            )
-            data = self._pa.Table.from_batches(runtime["raw_features"][key]["record_batches"])
+            key = next(name for name in runtime.raw_features if name.endswith("/" + stage["name"]))
+            data = self._pa.Table.from_batches(runtime.raw_features[key].record_batches)
             rows = self._requests(stage, runtime)
             yield from zip(
                 data["anchor_position"].to_pylist(),
-                (offset + i for i in runtime["task"]["tt_stage_node_ids"].to_pylist()),
+                (offset + i for i in runtime.task.tt_stage_node_ids.to_pylist()),
                 rows,
                 strict=True,
             )
@@ -1186,7 +1183,7 @@ class NativeAnchors:
         }
         name = next(iter(neighborhoods)) if fixed and len(neighborhoods) == 1 else None
         plan = None
-        projections = {table: [] for table in source._tables}
+        projections: dict[str, list[str]] = {table: [] for table in source._tables}
         if name is not None:
             plan, _ = source._sampling_plan(self._sample.neighborhoods[name])
             for prepared in assembler._prepared_inputs.values():
@@ -1273,7 +1270,7 @@ class NativeAnchors:
                             )
                             first_owned = (
                                 candidate,
-                                runtime["task"]["tt_stage_node_ids"][0].as_py(),
+                                runtime.task.tt_stage_node_ids[0].as_py(),
                             )
                             break
                     else:
@@ -1343,11 +1340,11 @@ class NativeAnchors:
             if requests and first is None:
                 first = requests[0]
             if runtime is not None:
-                runtime["_anchor_roots"] = tuple(
+                runtime.metadata["_anchor_roots"] = tuple(
                     (request.sample_id, request.entity_id, source._cutoff(request.as_of_time))
                     for request in requests
                 )
-                runtime["_anchor_neighborhood"] = name
+                runtime.metadata["_anchor_neighborhood"] = name
             if not pending and len(requests) == size:
                 yield from assemble(requests, runtime, False)
             else:

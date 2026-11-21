@@ -101,9 +101,10 @@ def test_component_caps_preserve_global_ties_and_empty_histories(
             assert [item["limit"] for item in plan["sequences"]] == [3, 3]
         for runtime in original(self, stage, **options):
             if history:
-                for sequence in runtime["history"]["sequences"]:
+                assert isinstance(runtime.history, dict)
+                for sequence in runtime.history["sequences"]:
                     assert sequence["batch"].num_rows <= 3
-                observed.append(runtime["history"]["stats"])
+                observed.append(runtime.history["stats"])
             yield runtime
 
     with api.prepare(

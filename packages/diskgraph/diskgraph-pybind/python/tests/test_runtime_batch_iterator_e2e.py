@@ -7,7 +7,7 @@
 Pins the Phase 3 acceptance criterion from plan doc §2.5: build a parent
 DG index + a seed-table extension under ``train_tables/<tt_id>/``, open
 the merged reader via ``RuntimeBatchIterator``, iterate, and assert the
-emitted PyDict structurally matches PR 28765's ``runtime_batch_to_hetero``
+emitted RuntimeBatch structurally matches PR 28765's ``runtime_batch_to_hetero``
 contract.
 
 This is the test we lacked when we declared "Phase 3 done" at the Rust
@@ -17,8 +17,8 @@ component level — it exercises:
     pkmap loader resolves cross-boundary FKs at ingest time
   * a flat ``kind=diskgraph_task_dataset`` runtime manifest
   * ``make_runtime_batch_iterator`` → multi-worker offset sharding +
-    shuffle determinism + Arrow round-trip → PyDict iteration
-  * structural assertions on the dict against the documented contract
+    shuffle determinism + Arrow round-trip → typed record iteration
+  * structural assertions on the records against the documented contract
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ import inspect
 import json
 import pathlib
 import struct
+from dataclasses import fields
 from typing import Any
 
 import diskgraph
@@ -229,66 +230,48 @@ def _sampling_plan() -> SamplingPlan:
 # ---------------------------------------------------------------------------
 
 
-def _assert_runtime_batch_dict_contract(batch: dict, batch_size: int, n_users: int) -> None:
-    assert "task" in batch, f"batch missing 'task'; keys: {list(batch.keys())}"
-    assert "graphs" in batch, f"batch missing 'graphs'; keys: {list(batch.keys())}"
-    assert "raw_features" in batch, f"batch missing 'raw_features'; keys: {list(batch.keys())}"
-
-    task = batch["task"]
-    for key in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
-        assert key in task, f"task missing {key!r}; got: {list(task.keys())}"
-        assert len(task[key]) == batch_size, (
-            f"task.{key} length {len(task[key])} != batch_size {batch_size}"
-        )
-
-    # ENTITY1 = i → parent users pk = i → row i. seed_node_ids should be < n_users.
-    for sid in task["seed_node_ids"].to_pylist():
-        assert sid < n_users, f"seed_node_id {sid} not a valid users row (n_users={n_users})"
-
-    # seed_timestamps should be populated since the fixture has TIMESTAMP.
-    assert "seed_timestamps" in task, "task missing seed_timestamps despite TIMESTAMP column"
-    assert len(task["seed_timestamps"]) == batch_size
-
-    # task.target is a RecordBatch with at least TARGET1.
-    assert "target" in task, "task missing target"
-    target = task["target"]
-    target_cols = {f.name for f in target.schema}
-    assert "TARGET1" in target_cols, f"target missing TARGET1; cols: {target_cols}"
+def _assert_runtime_batch_contract(
+    batch: diskgraph.RuntimeBatch,
+    batch_size: int,
+    n_users: int,
+) -> None:
+    """Check typed native batch identities, topology and Arrow ownership."""
+    assert isinstance(batch, diskgraph.RuntimeBatch)
+    task = batch.task
+    assert isinstance(task, diskgraph.RuntimeTask)
+    for name in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
+        values = getattr(task, name)
+        assert isinstance(values, pa.Array)
+        assert len(values) == batch_size
+    assert all(sid < n_users for sid in task.seed_node_ids.to_pylist())
+    assert task.seed_timestamps is not None
+    assert len(task.seed_timestamps) == batch_size
+    target = task.target
+    assert isinstance(target, pa.RecordBatch)
+    assert "TARGET1" in target.schema.names
     assert target.num_rows == batch_size
-
-    # graphs.main is the canonical channel.
-    assert "main" in batch["graphs"], f"graphs missing 'main'; keys: {list(batch['graphs'].keys())}"
-    main = batch["graphs"]["main"]
-    for key in ("node_ids", "batch_dict", "edge_index_dict"):
-        assert key in main, f"graphs.main missing {key!r}; got: {list(main.keys())}"
-
-    # node_ids[users] should include seed_node_ids.
-    assert "users" in main["node_ids"], (
-        f"graphs.main.node_ids missing 'users'; got: {list(main['node_ids'].keys())}"
+    main = batch.graphs["main"]
+    assert isinstance(main, diskgraph.RuntimeGraph)
+    assert "users" in main.node_ids
+    assert set(task.seed_node_ids.to_pylist()) <= set(
+        main.node_ids["users"].to_pylist()
     )
-    users_in_subgraph = set(main["node_ids"]["users"].to_pylist())
-    for sid in task["seed_node_ids"].to_pylist():
-        assert sid in users_in_subgraph, (
-            f"seed_node_id {sid} not in graphs.main.node_ids[users]={users_in_subgraph}"
+    assert "tt_e2e/train_seeds" not in main.node_ids
+    for entry in main.edge_index_dict:
+        assert isinstance(entry, diskgraph.RuntimeEdge)
+        src_type, dst_type = entry.edge_type.src, entry.edge_type.dst
+        assert src_type != "tt_e2e/train_seeds"
+        assert src_type in main.node_ids and dst_type in main.node_ids
+        assert all(
+            index < len(main.node_ids[src_type]) for index in entry.src.to_pylist()
         )
-
-    # The seed namespace must NOT appear in graphs.main.node_ids.
-    seed_ns = "tt_e2e/train_seeds"
-    assert seed_ns not in main["node_ids"], (
-        f"seed namespace {seed_ns} appears as topology in node_ids — should be task data only"
+        assert all(
+            index < len(main.node_ids[dst_type]) for index in entry.dst.to_pylist()
+        )
+    assert all(
+        isinstance(block, diskgraph.RuntimeFeatureBlock)
+        for block in batch.raw_features.values()
     )
-
-    # Every edge's bounds must be valid against its declared edge_type.
-    for entry in main["edge_index_dict"]:
-        et = entry["edge_type"]
-        src_t, _rel, dst_t = et["src"], et["rel"], et["dst"]
-        assert src_t != seed_ns, f"seed-src edge leaked: {entry}"
-        assert src_t in main["node_ids"], f"edge_type.src={src_t} not in node_ids"
-        assert dst_t in main["node_ids"], f"edge_type.dst={dst_t} not in node_ids"
-        for s in entry["src"].to_pylist():
-            assert s < len(main["node_ids"][src_t])
-        for d in entry["dst"].to_pylist():
-            assert d < len(main["node_ids"][dst_t])
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +302,7 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
     # ceil(6 / 3) = 2 batches.
     assert len(batches) == 2, f"expected 2 batches of size 3; got {len(batches)}"
     for batch in batches:
-        _assert_runtime_batch_dict_contract(
+        _assert_runtime_batch_contract(
             batch,
             batch_size=3,
             n_users=seed_table_fixture["n_users"],
@@ -354,7 +337,7 @@ def test_static_task_manifest_suppresses_seed_timestamps(
     )
 
     batch = next(iter(iterator))
-    assert "seed_timestamps" not in batch["task"]
+    assert batch.task.seed_timestamps is None
 
 
 def test_iterator_selected_stage_node_ids_preserve_order(seed_table_fixture):
@@ -376,18 +359,18 @@ def test_iterator_selected_stage_node_ids_preserve_order(seed_table_fixture):
 
     assert num_samples == len(selected)
     batches = list(iterator)
-    assert [b["task"]["tt_stage_node_ids"].to_pylist() for b in batches] == [[4, 1], [3]]
-    assert [b["task"]["input_ids"].to_pylist() for b in batches] == [[0, 1], [0]]
+    assert [b.task.tt_stage_node_ids.to_pylist() for b in batches] == [[4, 1], [3]]
+    assert [b.task.input_ids.to_pylist() for b in batches] == [[0, 1], [0]]
 
     seen: list[int] = []
     for batch in batches:
-        batch_size = len(batch["task"]["input_ids"])
-        _assert_runtime_batch_dict_contract(
+        batch_size = len(batch.task.input_ids)
+        _assert_runtime_batch_contract(
             batch,
             batch_size=batch_size,
             n_users=seed_table_fixture["n_users"],
         )
-        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+        seen.extend(int(v) for v in batch.task.tt_stage_node_ids.to_pylist())
     assert seen == selected
 
 
@@ -427,13 +410,13 @@ def test_iterator_selected_stage_node_ids_partitions_across_workers(
 
         seen: list[int] = []
         for batch in batches:
-            batch_size_actual = len(batch["task"]["input_ids"])
-            _assert_runtime_batch_dict_contract(
+            batch_size_actual = len(batch.task.input_ids)
+            _assert_runtime_batch_contract(
                 batch,
                 batch_size=batch_size_actual,
                 n_users=seed_table_fixture["n_users"],
             )
-            seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+            seen.extend(int(v) for v in batch.task.tt_stage_node_ids.to_pylist())
         assert seen == expected
         seen_by_worker.append(seen)
 
@@ -522,7 +505,7 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
     assert num_samples == 6
     seen: list[int] = []
     for batch in iterator:
-        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+        seen.extend(int(v) for v in batch.task.tt_stage_node_ids.to_pylist())
     assert len(seen) == 6
     assert set(seen) <= {0, 1, 2}
     assert seen.count(2) > seen.count(0)
@@ -580,9 +563,7 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
         )
         seen: list[int] = []
         for batch in iterator:
-            seen.extend(
-                int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist()
-            )
+            seen.extend(int(v) for v in batch.task.tt_stage_node_ids.to_pylist())
         return seen, num_samples
 
     global_seen, global_num_samples = collect(worker_id=0, num_workers=1)
@@ -659,7 +640,7 @@ def test_iterator_row_weight_seed_sampling_uses_cdf(
     assert num_samples == 12
     seen: list[int] = []
     for batch in iterator:
-        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+        seen.extend(int(v) for v in batch.task.tt_stage_node_ids.to_pylist())
     assert len(seen) == 12
     assert set(seen) <= {0, 1, 2}
     assert seen.count(2) > seen.count(0)
@@ -754,7 +735,7 @@ def test_iterator_accepts_num_threads_kwarg(seed_table_fixture):
     )
     batches = list(it_threads)
     assert batches, "iterator built with num_threads=2 must yield at least one batch"
-    _assert_runtime_batch_dict_contract(
+    _assert_runtime_batch_contract(
         batches[0], batch_size=3, n_users=seed_table_fixture["n_users"]
     )
 
@@ -798,7 +779,7 @@ def test_iterator_multi_worker_offsets_are_disjoint(seed_table_fixture):
     for it in iters:
         seen: set[int] = set()
         for batch in it:
-            for sid in batch["task"]["tt_stage_node_ids"].to_pylist():
+            for sid in batch.task.tt_stage_node_ids.to_pylist():
                 seen.add(int(sid))
         worker_stage_ids.append(seen)
 
@@ -830,7 +811,7 @@ def test_iterator_shuffle_is_deterministic_per_epoch(seed_table_fixture):
             batch_size=3,
             drop_last=False,
         )
-        return [batch["task"]["tt_stage_node_ids"].to_pylist() for batch in it]
+        return [batch.task.tt_stage_node_ids.to_pylist() for batch in it]
 
     # Invariant 1: replay determinism.
     run_a = collect_stage_ids(epoch=3)
@@ -868,7 +849,7 @@ def test_iterator_drop_last_drops_partial_final_batch(seed_table_fixture):
     )
     batches = list(it)
     assert len(batches) == 1
-    assert len(batches[0]["task"]["input_ids"]) == 4
+    assert len(batches[0].task.input_ids) == 4
 
 
 def test_task_stage_size_reads_manifest(seed_table_fixture):
@@ -1032,18 +1013,18 @@ def test_execute_tt_plan_end_to_end(tmp_path):
 
     seen = 0
     for batch in iterator:
-        seen += len(batch["task"]["input_ids"])
+        seen += len(batch.task.input_ids)
         # task fields populated
         for key in ("input_ids", "tt_stage_node_ids", "seed_node_ids"):
-            assert key in batch["task"]
+            assert getattr(batch.task, key) is not None
         # parent entity must appear in graphs.main.node_ids
-        assert "users" in batch["graphs"]["main"]["node_ids"], (
+        assert "users" in batch.graphs["main"].node_ids, (
             f"users missing from emitted dict for execute_tt_plan-produced extension; "
-            f"got: {list(batch['graphs']['main']['node_ids'].keys())}"
+            f"got: {list(batch.graphs['main'].node_ids.keys())}"
         )
         # seed namespace must NOT be in topology
         seed_ns = f"{tt_id}/train_seeds"
-        assert seed_ns not in batch["graphs"]["main"]["node_ids"], (
+        assert seed_ns not in batch.graphs["main"].node_ids, (
             f"seed namespace {seed_ns} leaked into topology"
         )
     assert seen == train_stage["row_count"]
@@ -1068,11 +1049,15 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
         )
         batch = next(iter(it))
         return {
-            "task": sorted(batch["task"].keys()),
-            "graphs.main": sorted(batch["graphs"]["main"].keys()),
-            "raw_features": sorted(batch["raw_features"].keys()),
-            "task.input_ids.len": len(batch["task"]["input_ids"]),
-            "task.seed_node_ids.len": len(batch["task"]["seed_node_ids"]),
+            "task": sorted(
+                item.name
+                for item in fields(batch.task)
+                if getattr(batch.task, item.name) is not None
+            ),
+            "graphs.main": sorted(item.name for item in fields(batch.graphs["main"])),
+            "raw_features": sorted(batch.raw_features.keys()),
+            "task.input_ids.len": len(batch.task.input_ids),
+            "task.seed_node_ids.len": len(batch.task.seed_node_ids),
         }
 
     assert collect_keys(fused=True) == collect_keys(fused=False)
@@ -1119,11 +1104,11 @@ def _namespace_columns(
     batch: dict[str, Any], namespace: str
 ) -> dict[str, list[Any]] | None:
     """`column name -> flat list of values` for a raw_features namespace."""
-    block = batch["raw_features"].get(namespace)
+    block = batch.raw_features.get(namespace)
     if block is None:
         return None
     out: dict[str, list[Any]] = {}
-    for rb in block["record_batches"]:
+    for rb in block.record_batches:
         for name in rb.schema.names:
             out.setdefault(name, []).extend(rb.column(name).to_pylist())
     return out
@@ -1176,25 +1161,19 @@ def test_feature_projection_is_value_equivalent(
         )
 
     # Topology and the task bag are untouched by a feature projection.
-    assert list(full["task"]["input_ids"]) == list(projected["task"]["input_ids"])
-    assert list(full["task"]["seed_node_ids"]) == list(
-        projected["task"]["seed_node_ids"]
-    )
-    assert sorted(full["graphs"]["main"].keys()) == sorted(
-        projected["graphs"]["main"].keys()
-    )
+    assert list(full.task.input_ids) == list(projected.task.input_ids)
+    assert list(full.task.seed_node_ids) == list(projected.task.seed_node_ids)
+    assert fields(full.graphs["main"]) == fields(projected.graphs["main"])
     # NOTE: sets, not lists -- the engine's per-type maps are Rust hash maps and
     # their iteration order is not stable across processes.
-    assert set(full["graphs"]["main"]["node_ids"]) == set(
-        projected["graphs"]["main"]["node_ids"]
-    )
-    for namespace, ids in full["graphs"]["main"]["node_ids"].items():
-        assert list(ids) == list(projected["graphs"]["main"]["node_ids"][namespace]), (
+    assert set(full.graphs["main"].node_ids) == set(projected.graphs["main"].node_ids)
+    for namespace, ids in full.graphs["main"].node_ids.items():
+        assert list(ids) == list(projected.graphs["main"].node_ids[namespace]), (
             f"sampled node ids for {namespace} changed"
         )
 
     # Namespaces with no projection entry stay at select-all.
-    for namespace in full["raw_features"]:
+    for namespace in full.raw_features:
         if namespace == "orders":
             continue
         assert _namespace_columns(full, namespace) == _namespace_columns(
@@ -1219,8 +1198,8 @@ def test_fused_true_ignores_non_empty_projections(
         )
 
     assert "ignoring feature projections" in caplog.text
-    assert set(projected["raw_features"]) == set(full["raw_features"])
-    for namespace in full["raw_features"]:
+    assert set(projected.raw_features) == set(full.raw_features)
+    for namespace in full.raw_features:
         assert _namespace_columns(projected, namespace) == _namespace_columns(
             full, namespace
         )
@@ -1257,7 +1236,7 @@ def test_absent_projections_means_select_all(
     rename."""
     without_key = _projected_batch(seed_table_fixture, fused=fused)
     empty_map = _projected_batch(seed_table_fixture, fused=fused, projections={})
-    for namespace in without_key["raw_features"]:
+    for namespace in without_key.raw_features:
         assert _namespace_columns(without_key, namespace) == _namespace_columns(
             empty_map, namespace
         ), namespace
@@ -1280,7 +1259,7 @@ def test_empty_list_means_select_nothing(seed_table_fixture: dict[str, Any]) -> 
         f"{sorted(_namespace_columns(skipped, 'orders') or {})}"
     )
     # Every OTHER namespace is untouched -- skipping is per-type, not global.
-    for namespace in full["raw_features"]:
+    for namespace in full.raw_features:
         if namespace == "orders":
             continue
         assert _namespace_columns(full, namespace) == _namespace_columns(
@@ -1300,28 +1279,28 @@ def test_skipped_type_is_still_traversed(seed_table_fixture: dict[str, Any]) -> 
     skipped = _projected_batch(
         seed_table_fixture, fused=False, projections={"orders": []}
     )
-    main_full = full["graphs"]["main"]
-    main_skipped = skipped["graphs"]["main"]
+    main_full = full.graphs["main"]
+    main_skipped = skipped.graphs["main"]
 
-    assert "orders" in main_full["node_ids"], "fixture must sample orders as a node"
-    assert set(main_full["node_ids"]) == set(main_skipped["node_ids"])
-    for namespace, ids in main_full["node_ids"].items():
-        assert list(ids) == list(main_skipped["node_ids"][namespace]), (
+    assert "orders" in main_full.node_ids, "fixture must sample orders as a node"
+    assert set(main_full.node_ids) == set(main_skipped.node_ids)
+    for namespace, ids in main_full.node_ids.items():
+        assert list(ids) == list(main_skipped.node_ids[namespace]), (
             f"sampled node ids for {namespace} changed"
         )
 
-    edges_full = main_full["edge_index_dict"]
-    edges_skipped = main_skipped["edge_index_dict"]
+    edges_full = main_full.edge_index_dict
+    edges_skipped = main_skipped.edge_index_dict
     assert len(edges_full) == len(edges_skipped)
     total = 0
     for left, right in zip(edges_full, edges_skipped):
-        assert list(left["src"]) == list(right["src"])
-        assert list(left["dst"]) == list(right["dst"])
-        total += len(left["src"])
+        assert list(left.src) == list(right.src)
+        assert list(left.dst) == list(right.dst)
+        total += len(left.src)
     assert total > 0, "fixture must produce edges for this to prove anything"
 
-    assert list(full["task"]["input_ids"]) == list(skipped["task"]["input_ids"])
-    assert list(full["task"]["seed_node_ids"]) == list(skipped["task"]["seed_node_ids"])
+    assert list(full.task.input_ids) == list(skipped.task.input_ids)
+    assert list(full.task.seed_node_ids) == list(skipped.task.seed_node_ids)
 
 
 def test_feature_projection_of_the_seed_namespace_is_ignored(
@@ -1336,13 +1315,9 @@ def test_feature_projection_of_the_seed_namespace_is_ignored(
         fused=False,
         projections={"tt_e2e/train_seeds": ["TARGET1"]},
     )
-    assert list(baseline["task"]["seed_node_ids"]) == list(
-        named["task"]["seed_node_ids"]
-    )
-    assert (baseline["task"].get("target") is None) == (
-        named["task"].get("target") is None
-    )
-    for namespace in baseline["raw_features"]:
+    assert list(baseline.task.seed_node_ids) == list(named.task.seed_node_ids)
+    assert (baseline.task.target is None) == (named.task.target is None)
+    for namespace in baseline.raw_features:
         assert _namespace_columns(baseline, namespace) == _namespace_columns(
             named, namespace
         ), namespace
@@ -1501,8 +1476,8 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     # Check the first batch. FK-free LP resolution roots lhs entities and emits
     # RHS positives as ragged labels from `target_node_ids`.
     b0 = batches[0]
-    node_ids = b0["graphs"]["main"]["node_ids"]
-    batch_dict = b0["graphs"]["main"]["batch_dict"]
+    node_ids = b0.graphs["main"].node_ids
+    batch_dict = b0.graphs["main"].batch_dict
 
     # By contract, the node batch contains lhs user roots. RHS items are labels,
     # not roots, unless negative sampling or RHS NodeRange mode is enabled.
@@ -1519,7 +1494,7 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     all_user_keys = [
         user_key_by_node_id[node_id]
         for batch in batches
-        for node_id in batch["graphs"]["main"]["node_ids"]["users"].to_pylist()
+        for node_id in batch.graphs["main"].node_ids["users"].to_pylist()
     ]
     assert sorted(all_user_keys) == [0, 1, 2]
     assert len(users_nodes) == 2
@@ -1528,19 +1503,19 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     users_batch = batch_dict["users"].to_pylist()
     assert users_batch == [0, 1]
 
-    task = b0["task"]
-    assert task["num_positives"] == 2
-    assert task["lp_pos_counts"].to_pylist() == [1, 1]
-    assert task["lp_pos_mask"].to_pylist() == [False, False]
+    task = b0.task
+    assert task.num_positives == 2
+    assert task.lp_pos_counts.to_pylist() == [1, 1]
+    assert task.lp_pos_mask.to_pylist() == [False, False]
     if weighted:
         # Pins the routing decision, not just hydration: a list WEIGHT is the
         # only thing that populates this field.
-        assert set(task["lp_pos_weight"].to_pylist()) <= {2.0, 3.0, 4.0}
-        assert len(task["lp_pos_weight"]) == 2
+        assert set(task.lp_pos_weight.to_pylist()) <= {2.0, 3.0, 4.0}
+        assert len(task.lp_pos_weight) == 2
     else:
         # Gen emits a frequency column for every LP bundle, but a count is not
         # a weight: with no WEIGHT column here, no weights are supplied at all.
-        assert "lp_pos_weight" not in task
+        assert task.lp_pos_weight is None
 
 
 # ---------------------------------------------------------------------------
@@ -1597,7 +1572,7 @@ def _expected_target_node_ids(fx: dict[str, Any], task: dict[str, Any]) -> list[
     """Return expected RHS internal IDs in the task's emitted seed-row order."""
     return [
         fx["target_node_id_by_entity_node_id"][entity_node_id]
-        for entity_node_id in task["seed_node_ids"].to_pylist()
+        for entity_node_id in task.seed_node_ids.to_pylist()
     ]
 
 
@@ -1810,16 +1785,16 @@ def test_negative_sampling_present_nontemporal(tmp_path):
     assert num_samples == B
 
     batch = next(iter(iterator))
-    task = batch["task"]
+    task = batch.task
 
-    assert task["amount_m"] == M, task["amount_m"]
-    assert task["num_positives"] == B, task["num_positives"]
-    assert task["rhs_seed_type"] == "items", task["rhs_seed_type"]
+    assert task.amount_m == M, task.amount_m
+    assert task.num_positives == B, task.num_positives
+    assert task.rhs_seed_type == "items", task.rhs_seed_type
 
     # seed_node_ids stays positives-only (lhs users), length B.
-    assert len(task["seed_node_ids"]) == B
+    assert len(task.seed_node_ids) == B
 
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     # node set is [B positives, B*M negatives] anchor-major.
     assert len(items) >= B * (1 + M), (len(items), B, M)
     positives = items[:B]
@@ -1852,20 +1827,20 @@ def test_negative_sampling_absent_regression(tmp_path):
         batch_size=B, drop_last=False,
     )
     batch = next(iter(iterator))
-    task = batch["task"]
+    task = batch.task
 
-    assert task["amount_m"] == 0, task["amount_m"]
-    assert task["rhs_seed_type"] is None, task["rhs_seed_type"]
-    assert task["num_positives"] == B, task["num_positives"]
-    assert len(task["seed_node_ids"]) == B
+    assert task.amount_m == 0, task.amount_m
+    assert task.rhs_seed_type is None, task.rhs_seed_type
+    assert task.num_positives == B, task.num_positives
+    assert len(task.seed_node_ids) == B
 
     # Positives are labels, not rooted — no items node set without negatives.
-    assert "items" not in batch["graphs"]["main"]["node_ids"], (
+    assert "items" not in batch.graphs["main"].node_ids, (
         "positives must not be rooted (leak-free label path)"
     )
     expected_positives = _expected_target_node_ids(fx, task)
-    assert task["lp_pos_rhs_global"].to_pylist() == expected_positives, (
-        task["lp_pos_rhs_global"].to_pylist()
+    assert task.lp_pos_rhs_global.to_pylist() == expected_positives, (
+        task.lp_pos_rhs_global.to_pylist()
     )
 
 
@@ -1925,11 +1900,11 @@ def test_negative_sampling_temporal_rhs(tmp_path):
         neg_rnd_seed=777,
     )
     batch = next(iter(iterator))
-    task = batch["task"]
-    assert task["amount_m"] == M
-    assert task["rhs_seed_type"] == "items"
+    task = batch.task
+    assert task.amount_m == M
+    assert task.rhs_seed_type == "items"
 
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     negatives = items[B:B + B * M]
     assert len(negatives) == B * M
     # Every negative must be a "past" item (id < n_past); no future item may be
@@ -1948,7 +1923,7 @@ def test_negative_sampling_temporal_rhs(tmp_path):
 
     # neg_mask is present, length B*M, parallel to the negative slots. Here
     # valid candidates dominate so the budget is never exhausted → all true.
-    neg_mask = task["neg_mask"].to_pylist()
+    neg_mask = task.neg_mask.to_pylist()
     assert len(neg_mask) == B * M, (len(neg_mask), B, M)
     assert all(neg_mask), "no slot should be masked when valid candidates dominate"
 
@@ -1975,9 +1950,9 @@ def test_negative_sampling_neg_mask_present_nontemporal(tmp_path):
         neg_rnd_seed=12345,
     )
     batch = next(iter(iterator))
-    task = batch["task"]
+    task = batch.task
 
-    neg_mask = task["neg_mask"].to_pylist()
+    neg_mask = task.neg_mask.to_pylist()
     assert len(neg_mask) == B * M, (len(neg_mask), B, M)
     assert all(neg_mask), "non-temporal RHS must never mask a slot"
 
@@ -2021,10 +1996,10 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
         neg_rnd_seed=777,
     )
     batch = next(iter(iterator))
-    task = batch["task"]
-    assert task["amount_m"] == M
+    task = batch.task
+    assert task.amount_m == M
 
-    neg_mask = task["neg_mask"].to_pylist()
+    neg_mask = task.neg_mask.to_pylist()
     assert len(neg_mask) == B * M, (len(neg_mask), B, M)
     # Every slot exhausted the budget → all masked false.
     assert not any(neg_mask), (
@@ -2032,7 +2007,7 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
     )
 
     # Dense: the masked negatives are still present as real, in-range item ids.
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     negatives = items[B:B + B * M]
     assert len(negatives) == B * M
     for neg in negatives:
@@ -2172,8 +2147,8 @@ def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
 
     batches = list(iterator)
 
-    assert batches[0]["task"]["weight"].to_pylist() == [0.5, 2.0]
-    assert batches[1]["task"]["weight"].to_pylist() == [4.0]
+    assert batches[0].task.weight.to_pylist() == [0.5, 2.0]
+    assert batches[1].task.weight.to_pylist() == [4.0]
 
 
 # ---------------------------------------------------------------------------
@@ -2278,9 +2253,9 @@ def _collect_negatives(manifest_path, *, B, M, neg_rnd_seed):
     )
     assert num_samples == B
     batch = next(iter(iterator))
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     negatives = items[B:B + B * M]
-    neg_mask = batch["task"]["neg_mask"].to_pylist()
+    neg_mask = batch.task.neg_mask.to_pylist()
     return negatives, neg_mask
 
 
@@ -2362,15 +2337,15 @@ def test_negative_sampling_parallel_split_and_range_at_scale(tmp_path, multithre
     )
     assert num_samples == B
     batch = next(iter(iterator))
-    task = batch["task"]
+    task = batch.task
 
-    assert task["amount_m"] == M
-    assert task["num_positives"] == B
-    assert task["rhs_seed_type"] == "items"
+    assert task.amount_m == M
+    assert task.num_positives == B
+    assert task.rhs_seed_type == "items"
     # negatives are extra sampling seeds — they must NOT inflate seed_node_ids.
-    assert len(task["seed_node_ids"]) == B
+    assert len(task.seed_node_ids) == B
 
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     # Exactly [B positives, B*M negatives] — no dedup/merge may collapse the
     # anchor-major prefix the Python side slices on.
     assert len(items) == B + B * M, (len(items), B, M)
@@ -2382,7 +2357,7 @@ def test_negative_sampling_parallel_split_and_range_at_scale(tmp_path, multithre
     for neg in negatives:
         assert 0 <= neg < fx["n_items"], neg
 
-    neg_mask = task["neg_mask"].to_pylist()
+    neg_mask = task.neg_mask.to_pylist()
     assert len(neg_mask) == B * M, (len(neg_mask), B, M)
     # Non-temporal RHS → nothing is ever masked.
     assert all(neg_mask), "non-temporal RHS must never mask a slot, even at scale"
@@ -2417,13 +2392,13 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
         neg_rnd_seed=31337,
     )
     batch = next(iter(iterator))
-    task = batch["task"]
-    assert task["amount_m"] == M
-    assert task["rhs_seed_type"] == "items"
+    task = batch.task
+    assert task.amount_m == M
+    assert task.rhs_seed_type == "items"
 
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
+    items = batch.graphs["main"].node_ids["items"].to_pylist()
     negatives = items[B:B + B * M]
-    neg_mask = task["neg_mask"].to_pylist()
+    neg_mask = task.neg_mask.to_pylist()
     assert len(negatives) == B * M
     assert len(neg_mask) == B * M
 
@@ -2457,5 +2432,9 @@ def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_
     )
     assert count == seed_table_fixture["n_users"]
     batches = list(iterator)
-    roots = [int(value) for batch in batches for value in batch["task"]["seed_node_ids"].to_pylist()]
+    roots = [
+        int(value)
+        for batch in batches
+        for value in batch.task.seed_node_ids.to_pylist()
+    ]
     assert roots == list(range(seed_table_fixture["n_users"]))

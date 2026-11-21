@@ -5,11 +5,14 @@
 //! Python-independent index ownership and worker-sharded batch iteration.
 
 use diskgraph_core::sampling::{NegativeSamplingSpec, SamplingFlags, SamplingPlan};
-use diskgraph_engine::{engine::DiskGraphEngine, output::RuntimeBatch};
+use diskgraph_engine::{engine::DiskGraphEngine, output::SamplingBatch};
 use diskgraph_index::graph::TableReader;
 use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use serde::Deserialize;
 use std::{collections::VecDeque, sync::Arc};
+
+mod batch;
+pub use batch::{RuntimeBatch, RuntimeHistory};
 
 mod errors;
 pub use errors::{Result, RuntimeError};
@@ -1190,6 +1193,7 @@ pub struct RuntimeBatchIterator {
     stage_table_catalog_key: String,
     stage_table: Arc<TableReader>,
     plan: SamplingPlan,
+    history: Option<RuntimeHistory>,
     neighborhoods: Vec<(
         String,
         SamplingPlan,
@@ -1602,6 +1606,7 @@ impl RuntimeBatchIterator {
             stage_table: Arc::clone(&stage_table_arc),
             feature_projection,
             plan: sampling_plan,
+            history: None,
             neighborhoods: Vec::new(),
             flags: SamplingFlags {
                 replace,
@@ -1704,7 +1709,42 @@ impl RuntimeBatchIterator {
             .collect();
     }
 
-    pub fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
+    /// Prepare optional history once; every yielded batch includes its results.
+    ///
+    /// `context` shares the query reader and engine; `root_type` identifies the
+    /// batch seed entity. `plan` and `merges` contain temporal-query JSON.
+    ///
+    /// # Errors
+    /// Returns a configuration error for invalid plans or event merges.
+    pub fn with_history(
+        &mut self,
+        context: (
+            Arc<diskgraph_index::graph::GraphIndexReader>,
+            Arc<DiskGraphEngine>,
+        ),
+        root_type: &str,
+        plan: &str,
+        merges: &str,
+    ) -> Result<()> {
+        self.history = Some(RuntimeHistory::prepare(context, root_type, plan, merges)?);
+        Ok(())
+    }
+
+    /// Return the attached history context for projected length queries.
+    pub fn history(&self) -> Option<&RuntimeHistory> {
+        self.history.as_ref()
+    }
+
+    fn complete_batch(&self, sampled: SamplingBatch) -> Result<RuntimeBatch> {
+        let mut batch = RuntimeBatch::from(sampled);
+        self.add_neighborhoods(&mut batch)?;
+        if let Some(history) = &self.history {
+            history.execute(&mut batch)?;
+        }
+        Ok(batch)
+    }
+
+    fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
         if self.neighborhoods.is_empty() {
             return Ok(());
         }
@@ -1736,6 +1776,10 @@ impl RuntimeBatchIterator {
     /// Sample a planner-selected native anchor batch with this iterator's contract.
     /// Selection stays native; callers do not rebuild per-row requests.
     pub fn sample_stage_ids(&self, ids: &[u64]) -> Result<RuntimeBatch> {
+        self.complete_batch(self.sample_stage_output(ids)?)
+    }
+
+    fn sample_stage_output(&self, ids: &[u64]) -> Result<SamplingBatch> {
         self.engine.sample_runtime_batch(
             self.reader.as_ref(), &self.stage_table_catalog_key, ids,
             diskgraph_core::dataset::DatasetId::nil(), &self.plan, &self.flags,
@@ -1754,6 +1798,10 @@ impl RuntimeBatchIterator {
     /// Sample an explicit immutable batch without advancing the seed cursor.
     /// Invalid or empty requests fail before sampling begins.
     pub fn sample_request(&self, node_ids: &[u64]) -> Result<RuntimeBatch> {
+        self.complete_batch(self.sample_request_output(node_ids)?)
+    }
+
+    fn sample_request_output(&self, node_ids: &[u64]) -> Result<SamplingBatch> {
         if node_ids.is_empty() || node_ids.len() > self.seeds.batch_size {
             return Err(RuntimeError::config(
                 "request seed count must be in [1, batch_size]",
@@ -1811,7 +1859,15 @@ impl RuntimeBatchIterator {
             return Ok(runtime_batch);
         }
 
-        self.sample_stage_ids(node_ids)
+        self.sample_stage_output(node_ids)
+    }
+
+    /// Yield an unenriched sampling pool for native length planning.
+    /// History and additional neighborhoods are deferred until final delivery.
+    pub fn next_sampling_batch(&mut self) -> Result<Option<SamplingBatch>> {
+        self.next_seed_ids()?
+            .map(|ids| self.sample_request_output(&ids))
+            .transpose()
     }
 
     /// Yield one complete batch using the same stateless operation as remote callers.

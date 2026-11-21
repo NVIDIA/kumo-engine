@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 import pyarrow as pa
@@ -31,6 +32,10 @@ from test_runtime_batch_iterator_e2e import (
 def _assert_equal(actual: object, expected: object) -> None:
     if isinstance(actual, (pa.Array, pa.ChunkedArray, pa.RecordBatch, pa.Table)):
         assert actual.equals(expected)
+    elif is_dataclass(actual) and not isinstance(actual, type):
+        assert type(actual) is type(expected)
+        for item in fields(actual):
+            _assert_equal(getattr(actual, item.name), getattr(expected, item.name))
     elif isinstance(actual, Mapping):
         assert isinstance(expected, Mapping)
         assert actual.keys() == expected.keys()
@@ -47,12 +52,22 @@ def _assert_equal(actual: object, expected: object) -> None:
     elif isinstance(actual, (list, tuple)):
         assert isinstance(expected, (list, tuple))
         assert len(actual) == len(expected)
-        if actual and isinstance(actual[0], Mapping) and "edge_type" in actual[0]:
+        if actual and hasattr(actual[0], "edge_type"):
             actual = sorted(
-                actual, key=lambda entry: tuple(entry["edge_type"].values())
+                actual,
+                key=lambda entry: (
+                    entry.edge_type.src,
+                    entry.edge_type.rel,
+                    entry.edge_type.dst,
+                ),
             )
             expected = sorted(
-                expected, key=lambda entry: tuple(entry["edge_type"].values())
+                expected,
+                key=lambda entry: (
+                    entry.edge_type.src,
+                    entry.edge_type.rel,
+                    entry.edge_type.dst,
+                ),
             )
         for value, reference in zip(actual, expected, strict=True):
             _assert_equal(value, reference)
@@ -148,14 +163,14 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
         SamplingOptions(**{**options, "sampling_plan": _sampling_plan()})
     )
     full = next(full_iterator)
-    assert len(first["graphs"]["main"]["node_ids"]["orders"]) < len(
-        full["graphs"]["main"]["node_ids"]["orders"]
+    assert len(first.graphs["main"].node_ids["orders"]) < len(
+        full.graphs["main"].node_ids["orders"]
     )
     if extras == "neighborhood":
-        assert "context" in first["graphs"]
+        assert "context" in first.graphs
     elif extras == "history":
-        assert "history" in first
-    seeds = first["task"]["tt_stage_node_ids"].to_pylist()
+        assert first.history is not None
+    seeds = first.task.tt_stage_node_ids.to_pylist()
     replay = iterator.sample_request(seeds)
     _assert_equal(replay, first)
     _assert_equal(iterator.sample_request(seeds), first)
@@ -166,7 +181,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
     with pytest.raises(DiskgraphDataError, match="outside stage"):
         iterator.sample_request([2**63])
     second = next(iterator)
-    assert second["task"]["tt_stage_node_ids"].to_pylist() != seeds
+    assert second.task.tt_stage_node_ids.to_pylist() != seeds
     next(reference)
     _assert_equal(second, next(reference))
     list(iterator)
@@ -216,7 +231,7 @@ def test_seed_only_schedule_matches_native_iterator(
     assert count == expected_count
     for batch in iterator:
         field = "seed_node_ids" if mode == "rhs" else "tt_stage_node_ids"
-        seed_ids = batch["task"][field].to_pylist()
+        seed_ids = getattr(batch.task, field).to_pylist()
         assert schedule.next_seed_ids() == seed_ids
         _assert_equal(iterator.sample_request(seed_ids), batch)
     assert schedule.next_seed_ids() is None

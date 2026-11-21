@@ -27,3 +27,5 @@ pub mod kumo_contract_bridge;
 pub mod rhs_catalog;
 
 pub mod batch_aggregate;
+
+pub mod event_stream;

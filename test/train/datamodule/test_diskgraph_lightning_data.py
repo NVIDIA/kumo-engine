@@ -24,6 +24,12 @@ import pyarrow as pa
 import pytest
 import pytorch_lightning as pl
 import torch
+from diskgraph.runtime_batch import (
+    RuntimeBatch,
+    RuntimeFeatureBlock,
+    RuntimeGraph,
+    RuntimeTask,
+)
 from diskgraph.sampling_options import (
     InheritEngineSeed,
     SamplingOptions,
@@ -334,41 +340,30 @@ def _manifest(
     )
 
 
-def _runtime_batch(input_ids: list[int] | None = None) -> dict[str, Any]:
+def _runtime_batch(input_ids: list[int] | None = None) -> RuntimeBatch:
     input_ids = input_ids or [0, 1, 2]
     num_rows = len(input_ids)
-    return {
-        "task": {
-            "input_ids":
-            pa.array(input_ids, type=pa.uint64()),
-            "tt_stage_node_ids":
-            pa.array([10 + i for i in input_ids], type=pa.uint64()),
-            "seed_node_ids":
-            pa.array([100 + i for i in input_ids], type=pa.uint64()),
-            "target":
-            pa.array([float((i + 1) % 2) for i in input_ids],
-                     type=pa.float64()),
-            "weight":
-            pa.array([1.0] * num_rows, type=pa.float64()),
+    return RuntimeBatch(
+        task=RuntimeTask(
+            input_ids=pa.array(input_ids, type=pa.uint64()),
+            tt_stage_node_ids=pa.array([10 + i for i in input_ids], type=pa.uint64()),
+            seed_node_ids=pa.array([100 + i for i in input_ids], type=pa.uint64()),
+            target=pa.array([float((i + 1) % 2) for i in input_ids], type=pa.float64()),
+            weight=pa.array([1.0] * num_rows, type=pa.float64()),
+        ),
+        graphs={
+            "main": RuntimeGraph(
+                node_ids={
+                    "User": pa.array([100 + i for i in input_ids], type=pa.uint64())
+                },
+                batch_dict={"User": pa.array(list(range(num_rows)), type=pa.uint32())},
+                edge_index_dict=[],
+                num_sampled_nodes_dict={"User": pa.array([num_rows], type=pa.uint64())},
+                num_sampled_edges_dict=[],
+            )
         },
-        "graphs": {
-            "main": {
-                "node_ids": {
-                    "User": pa.array([100 + i for i in input_ids],
-                                     type=pa.uint64())
-                },
-                "batch_dict": {
-                    "User": pa.array(list(range(num_rows)), type=pa.uint32())
-                },
-                "edge_index_dict": [],
-                "num_sampled_nodes_dict": {
-                    "User": pa.array([num_rows], type=pa.uint64())
-                },
-                "num_sampled_edges_dict": [],
-            }
-        },
-        "raw_features": {},
-    }
+        raw_features={},
+    )
 
 
 class _FakeTaskIterator:
@@ -396,17 +391,18 @@ def _backpressure_runtime_iter(*, worker_id: int, **_kwargs: Any):
     def _batches():
         while True:
             batch = _runtime_batch([worker_id])
-            batch["raw_features"] = {
-                "User": {
-                    "record_batches": [
-                        pa.RecordBatch.from_pydict({
-                            "pk": [payload],
-                            "age": [18.0],
-                        })
+            batch.raw_features = {
+                "User": RuntimeFeatureBlock(
+                    record_batches=[
+                        pa.RecordBatch.from_pydict(
+                            {
+                                "pk": [payload],
+                                "age": [18.0],
+                            }
+                        )
                     ],
-                    "node_ids":
-                    pa.array([100 + worker_id], type=pa.uint64()),
-                }
+                    node_ids=pa.array([100 + worker_id], type=pa.uint64()),
+                )
             }
             yield batch
 
@@ -1043,17 +1039,16 @@ def test_capped_refit_interleaves_all_training_stages(
     )
 
     batches = list(dm.train_dataloader().dataset)
-    seen = [batch["task"]["input_ids"][0].as_py() for batch in batches]
+    seen = [batch.task.input_ids[0].as_py() for batch in batches]
 
     assert len(batches) == 10
     assert sum(value < 100 for value in seen) == 9
     assert sum(value >= 100 for value in seen) == 1
     assert seen.index(100) < len(seen) - 1
-    assert {call["kwargs"]["stage"]
-            for call in calls["history"]} == {
-                "train",
-                "val",
-            }
+    assert {call["kwargs"]["stage"] for call in calls["history"]} == {
+        "train",
+        "val",
+    }
 
 
 def test_runtime_options_are_passed_to_wheel_iterator(
@@ -2998,9 +2993,8 @@ def test_rhs_dataloader_covers_node_ids_in_order_with_seed_time_and_bs(
     orig_to_hetero = dm._to_hetero
 
     def _collate(batch: Any) -> Any:
-        ids = batch["task"]["input_ids"].to_pylist()
-        batch["task"]["seed_timestamps"] = pa.array([3] * len(ids),
-                                                    type=pa.int64())
+        ids = batch.task.input_ids.to_pylist()
+        batch.task.seed_timestamps = pa.array([3] * len(ids), type=pa.int64())
         return orig_to_hetero(batch)
 
     dm._to_hetero = _collate  # type: ignore[method-assign]
@@ -3043,15 +3037,12 @@ def test_rhs_dataloader_seed_time_on_distinct_target_type(
     orig_to_hetero = dm._to_hetero
 
     def _collate(batch: Any) -> Any:
-        ids = batch["task"]["input_ids"].to_pylist()
-        batch["task"]["seed_timestamps"] = pa.array([3] * len(ids),
-                                                    type=pa.int64())
-        main = batch["graphs"]["main"]
-        main["node_ids"] = {"Item": main["node_ids"].pop("User")}
-        main["batch_dict"] = {"Item": main["batch_dict"].pop("User")}
-        main["num_sampled_nodes_dict"] = {
-            "Item": main["num_sampled_nodes_dict"].pop("User")
-        }
+        ids = batch.task.input_ids.to_pylist()
+        batch.task.seed_timestamps = pa.array([3] * len(ids), type=pa.int64())
+        main = batch.graphs["main"]
+        main.node_ids = {"Item": main.node_ids.pop("User")}
+        main.batch_dict = {"Item": main.batch_dict.pop("User")}
+        main.num_sampled_nodes_dict = {"Item": main.num_sampled_nodes_dict.pop("User")}
         return orig_to_hetero(batch)
 
     dm._to_hetero = _collate  # type: ignore[method-assign]
@@ -3304,15 +3295,15 @@ def test_temporal_lp_train_loader_enables_grouping(
 
     list(dm.train_dataloader())
     assert calls["history"], "train loader never opened the iterator"
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is True for c in calls["history"])
 
     for method in ("val_dataloader", "test_dataloader", "predict_dataloader"):
         calls["history"].clear()
         list(getattr(dm, method)())
         assert calls["history"], f"{method} never opened the iterator"
-        assert all(c["kwargs"].get("group_by_timestamp") is False
-                   for c in calls["history"]), f"{method} must not group"
+        assert all(
+            c["kwargs"].get("group_by_timestamp") is False for c in calls["history"]
+        ), f"{method} must not group"
 
 
 def test_static_lp_with_lhs_loader_and_temporal_rhs_groups(
@@ -3337,8 +3328,7 @@ def test_static_lp_with_lhs_loader_and_temporal_rhs_groups(
     )
     list(dm.train_dataloader())
     assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is True for c in calls["history"])
 
 
 def test_non_lp_task_never_groups(
@@ -3359,8 +3349,7 @@ def test_non_lp_task_never_groups(
     )
     list(dm.train_dataloader())
     assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is False for c in calls["history"])
 
 
 def test_two_tower_no_lhs_loader_does_not_group(
@@ -3383,8 +3372,7 @@ def test_two_tower_no_lhs_loader_does_not_group(
     )
     list(dm.train_dataloader())
     assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is False for c in calls["history"])
 
 
 def _install_plain_fake_diskgraph(
@@ -3457,8 +3445,7 @@ def test_atemporal_rhs_temporal_lp_train_loader_does_not_group(
     assert dm._rhs_is_temporal is False
     list(dm.train_dataloader())
     assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is False
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is False for c in calls["history"])
 
 
 def test_temporal_rhs_temporal_lp_train_loader_groups(
@@ -3488,8 +3475,7 @@ def test_temporal_rhs_temporal_lp_train_loader_groups(
     assert dm._rhs_is_temporal is True
     list(dm.train_dataloader())
     assert calls["history"]
-    assert all(c["kwargs"].get("group_by_timestamp") is True
-               for c in calls["history"])
+    assert all(c["kwargs"].get("group_by_timestamp") is True for c in calls["history"])
 
 
 def test_rhs_is_temporal_end_time_only(
@@ -3787,7 +3773,8 @@ def test_grouped_multistage_refit_spans_all_stages(
     # The two stages were actually opened (group mode) for iteration.
     grouped_stages = {
         c["kwargs"]["stage"]
-        for c in calls["history"] if c["kwargs"].get("group_by_timestamp")
+        for c in calls["history"]
+        if c["kwargs"].get("group_by_timestamp")
     }
     assert grouped_stages == {"train", "val"}
 

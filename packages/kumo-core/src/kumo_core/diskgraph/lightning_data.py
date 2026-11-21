@@ -28,6 +28,7 @@ from multiprocessing.reduction import ForkingPickler
 from typing import TYPE_CHECKING, Any
 
 import pytorch_lightning as pl
+from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import SamplingPlan
 from torch._utils import ExceptionWrapper
@@ -1550,7 +1551,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
         state.pop('_runtime_index_handle', None)
         return state
 
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+    def __iter__(self) -> Iterator[RuntimeBatch]:
         worker = get_worker_info()
         local_num_workers = worker.num_workers if worker is not None else 1
         local_worker_id = worker.id if worker is not None else 0
@@ -1607,7 +1608,7 @@ class DiskgraphTaskBatchIterable(IterableDataset):
                 ))
 
             schedule = _interleave_stage_batches(local_targets)
-            iterators: dict[str, Iterator[Mapping[str, Any]]] = {}
+            iterators: dict[str, Iterator[RuntimeBatch]] = {}
             replays = {stage: 0 for stage in self.stages}
             yielded = {stage: 0 for stage in self.stages}
             for stage in schedule:
@@ -2117,13 +2118,13 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     def _capture_explain_selection_batch(
         self,
-        batch: Mapping[str, Any],
+        batch: RuntimeBatch,
     ) -> None:
         if self._explain_capture_stage is None:
             return
-        task = batch.get("task") or {}
-        seed_node_ids = task.get("seed_node_ids")
-        stage_node_ids = task.get("tt_stage_node_ids")
+        task = batch.task
+        seed_node_ids = task.seed_node_ids
+        stage_node_ids = task.tt_stage_node_ids
         if seed_node_ids is None or stage_node_ids is None:
             raise RuntimeError(
                 "TT-NG explain selection capture requires task.seed_node_ids "
@@ -2325,8 +2326,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         self._assert_rhs_loader_ordering(loader)
         return loader
 
-    def _rhs_to_hetero(self, batch: Mapping[str, Any],
-                       target_node_type: str) -> Any:
+    def _rhs_to_hetero(self, batch: RuntimeBatch, target_node_type: str) -> Any:
         """Collate a NodeRange RHS batch, stamping ``seed_time`` onto the TARGET
         block. The shared adapter mirrors ``seed_time`` only onto the LHS seed
         type, but ``init_mips_structure`` reads it off ``batch[rhs_name]`` (the
@@ -2336,7 +2336,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         import torch
 
         hetero = self._to_hetero(batch)
-        seed_ts = (batch.get("task") or {}).get("seed_timestamps")
+        seed_ts = batch.task.seed_timestamps
         if seed_ts is not None and target_node_type in hetero.node_types:
             block = hetero[target_node_type]
             if "seed_time" not in block:
@@ -2707,7 +2707,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             return None
         return max_steps
 
-    def _to_hetero_train(self, batch: Mapping[str, Any]) -> Any:
+    def _to_hetero_train(self, batch: RuntimeBatch) -> Any:
         r"""Collate for the TRAIN loader, which does not need ``.pkey``.
 
         Building it is not free: the primary key arrives as an Arrow column
@@ -2722,8 +2722,7 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         """
         return self._to_hetero(batch, attach_pkeys=False)
 
-    def _to_hetero(self, batch: Mapping[str, Any], *,
-                   attach_pkeys: bool = True) -> Any:
+    def _to_hetero(self, batch: RuntimeBatch, *, attach_pkeys: bool = True) -> Any:
         self._capture_explain_selection_batch(batch)
         hetero, _, _ = runtime_batch_to_hetero(
             batch,
@@ -3099,9 +3098,9 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         nodes: list[torch.Tensor] = []
         rows: list[torch.Tensor] = []
         for batch in iterable:
-            task = batch.get('task') or {}
-            entity_ids = task.get('seed_node_ids')
-            stage_ids = task.get('tt_stage_node_ids')
+            task = batch.task
+            entity_ids = task.seed_node_ids
+            stage_ids = task.tt_stage_node_ids
             if entity_ids is None or stage_ids is None:
                 raise RuntimeError('Prediction selection requires entity and '
                                    'task-row IDs')
