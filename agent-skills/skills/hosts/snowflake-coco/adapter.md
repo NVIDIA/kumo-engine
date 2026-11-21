@@ -45,7 +45,9 @@ must be kept. Never relabel natural-language content as categorical to dodge the
 is a host restriction, not a portable Kumo restriction.
 
 Preflight cannot predict Kumo's sampled type inference, so a column name is not proof either way:
-at the graph gate, exclude only columns whose text semantics are already established. The
+at the graph gate, exclude only columns whose text semantics are already established, and put an
+open-vocabulary string whose type is not settled to the user as a `Column types` line
+(`kumoai-reference/references/graph_construction.md` *How a semantic type is inferred*). The
 generated code carries the runtime guard, because the user may run it without the agent: after
 `infer_metadata()` and the `with_column` corrections, and before `graph.snapshot()`, emit a cell
 that fails on any retained `Stype.text` column.

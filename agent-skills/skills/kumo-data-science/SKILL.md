@@ -207,6 +207,16 @@ Carry the confirmed exclusion set into code generation: a table with any exclusi
 with an explicit positional column list, because omitting it silently restores every source
 column.
 
+**Column types.** `infer_metadata()` types each column from its name, its physical type and its
+sampled values (`kumoai-reference/references/graph_construction.md` *How a semantic type is
+inferred*), and those rules can contradict what a column means. Add a `Column types` section to
+the proposal with one line for every selected non-key column a rule there matches: the type Kumo
+will give it, the rule behind it, and the type its meaning calls for. Where the two differ, the
+choice is the user's, at this gate; the notebook declares the confirmed type with
+`with_column(...)`. A type confirmed here is a declaration, like a foreign key's `ID` — not a
+change made to silence a data message (`kumoai-reference/references/troubleshooting_signals.md`
+§1a).
+
 **Assert what preflight could not find.** The proposal must state these explicitly rather than
 leaving them unmentioned, because each one changes whether the task is expressible:
 

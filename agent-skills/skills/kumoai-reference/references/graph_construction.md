@@ -183,6 +183,29 @@ Rules:
 - Both `dtype` and `stype` must be resolved before a table is used in a `PredictiveQuery`;
   `infer_metadata()` resolves whatever is missing.
 
+### How a semantic type is inferred
+
+For a column with no declared type, `infer_metadata()` reads, in order: its role (a primary key
+is `ID`, a time column `timestamp`), its physical type (date, time, boolean and list types decide
+on their own), its **name**, and then its **values**, in a sample of up to 10,000 rows. The first
+that decides wins. The name and value rules below can contradict what a column means; the graph
+gate reports each selected column they match (router Node 1c, *Column types*), and a confirmed
+correction is declared with `with_column`.
+
+- **A string is a category or free text by its distinct count.** A string column that is not a
+  key, not typed by its name and not split as a list is typed `categorical` with at most 4,000
+  distinct sampled values and `text` above that. The count decides, not the meaning: an
+  open-vocabulary attribute — a place name, a job title, a product or company name, a short
+  description — is a category in a small table and free text in a large one, and can change type
+  when the data grows. Closed sets (a status, a tier, a channel) are categorical either way and
+  need no line. For each selected open-vocabulary string, report the type you expect and the
+  4,000 cut-off behind it, ask whether it is a category or free text, and declare the answer
+  (`Stype.categorical` or `Stype.text`) so a refresh cannot flip it. Above 4,000 distinct values
+  a category exceeds what the categorical encoder represents. Where the host adapter makes text
+  features unavailable, a column the user calls free text is excluded, and the proposal says so.
+
+Source: shipped package (`kumo_core.stype_inference`, `kumo.engine.table`)
+
 ---
 
 ## Step 4: build the graph

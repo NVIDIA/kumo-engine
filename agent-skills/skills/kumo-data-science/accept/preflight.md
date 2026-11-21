@@ -217,6 +217,10 @@ Excluded columns
 - fraud_events.DAYS_TO_RESOLVE [inferred] — duration of an interval that has not ended yet
 - ...
 
+Column types
+- <table>.<column> [inferred] — Kumo: <stype> (<rule>); its meaning: <stype> — <the user's choice>
+- ...
+
 Not found
 - payments: no primary key inferred [inferred] — treated as keyless; edge source only unless corrected
 - events: no usable time column [inferred] — a time-ranged target cannot reference this table
@@ -225,8 +229,8 @@ Not found
 Confirm, or correct any line (your values take precedence).
 ```
 
-`Excluded columns` and `Not found` are local availability-gate extensions to the confirmation
-format.
+`Excluded columns`, `Column types` and `Not found` are local availability-gate extensions to the
+confirmation format. `Column types` follows router Node 1c, *Column types*.
 
 ## 9. Never
 
