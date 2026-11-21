@@ -115,7 +115,9 @@ def pack_python_hetero(data: HeteroData) -> tuple[bytes, list[TensorBuffer]]:
     for key in data.edge_types:
         block = data[key]
         if set(block) - {"edge_index", "num_sampled_edges"}:
-            raise NotImplementedError("Extra edge attributes require pickle transport")
+            raise NotImplementedError(
+                "Extra edge attributes are unsupported by this wire format"
+            )
         edges.append((key, describe(block.edge_index), block.num_sampled_edges))
     metadata = {
         "version": 1,
