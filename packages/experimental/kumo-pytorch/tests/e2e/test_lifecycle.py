@@ -50,6 +50,7 @@ from e2e.flows.common import (  # noqa: E402
     serving_requests,
 )
 from e2e.flows.hm_gnn import RECENT_PURCHASES  # noqa: E402
+from e2e.flows.hm_gnn import contract as gnn_contract  # noqa: E402
 from e2e.metrics import auroc  # noqa: E402
 from kumo.pytorch.api import (  # noqa: E402
     Artifact,
@@ -512,9 +513,13 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     future_scores: FutureScores,
     hm: HMDataset,
     root: Path,
+    reference: dict[str, dict[int, Batch]],
 ) -> None:
-    """At a tied 16th purchase, later rows can change the index order and the GNN score.
-    Serving and DiskGraph must each return a graph supported by the source at the cutoff."""
+    """Recent sampling orders by time, then primary key (docs/limitations.md).
+    When the 16th and 17th most recent purchases share a timestamp, DiskGraph's choice
+    follows its index, so rows added after the cutoff change it, and the in-memory
+    engine compares keys as strings. The GNN's DiskGraph checks above skip those
+    samples; when this fails, lift the gap from them."""
 
     times = _purchase_times(hm)
     customers = _test_customers(hm)
@@ -528,19 +533,41 @@ def test_known_gap_recent_sampling_ties_depend_on_the_engine_and_on_later_rows(
     artifact = Artifact.load(runs["gnn"][0].work / "artifact")
     tied_requests = _tie_cut_requests(hm)
     assert tied_requests, "no served request cuts a tie; the gap can no longer be seen here"
-    store = CustomerRows.open(hm.root)
-    server = ServingAssembler(artifact)
+    sample_id = min(tied_requests)
+    in_memory = reference["gnn"][sample_id]
     engine = DiskGraphEngine(index=root / "tie-index")
     with prepare(artifact.contract, dataset(hm.root), engine) as plan:
         with plan.materialize(
-            list(tied_requests.values()), fitted=artifact.fitted_state, inference=True
+            [tied_requests[sample_id]], fitted=artifact.fitted_state, inference=True
         ) as task:
-            for batch in task.batches(batch_size=1, output_format="model"):
+            (batch,) = list(task.batches(output_format="model"))
+    purchases = [
+        set(b.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()) for b in (in_memory, batch)
+    ]
+    assert len(purchases[0]) == len(purchases[1]) == RECENT_PURCHASES
+    assert purchases[0] != purchases[1]
+
+
+def test_native_graph_at_tied_purchase_cutoff(
+    hm: HMDataset, data: HMDataset, tmp_path: Path, native_anchor_delivery
+) -> None:
+    """Every tied anchor must receive a graph supported by the H&M rows at its cutoff."""
+
+    tied = _tie_cut_requests(hm)
+    assert tied, "no test anchor cuts a tie at the purchase fanout"
+    selected = pq.read_table(hm.anchors, filters=[("sample_id", "in", list(tied))])
+    pq.write_table(selected, tmp_path / "anchors.parquet")
+    store = CustomerRows.open(hm.root)
+    with prepare(
+        gnn_contract(), dataset(hm.root), DiskGraphEngine(index=tmp_path / "index")
+    ) as plan:
+        with plan.materialize(anchors(data.root), fit_split="train") as training:
+            fitted = training.fitted_state
+        with plan.materialize(anchors(tmp_path), fitted=fitted, inference=True) as task:
+            for batch in native_anchor_delivery(task, batch_size=1):
                 (sample_id,) = batch.metadata["sample_ids"]
-                request = tied_requests.pop(int(sample_id))
-                (served,) = server.assemble(store.lookup(server.rows_spec, request), [request])
-                _assert_recent_graphs(task, store, request, served, batch)
-            assert not tied_requests
+                _assert_recent_graph(task, store, tied.pop(int(sample_id)), batch)
+            assert not tied, f"missing tied samples: {sorted(tied)}"
 
 
 def test_a_history_batch_without_any_event_assembles(
@@ -687,8 +714,8 @@ def _serving_cutoff(hm: HMDataset) -> datetime:
     return datetime.fromisoformat(hm.metadata.cutoffs["test"][-1])
 
 
-def _assert_recent_graphs(
-    task: Task, store: CustomerRows, request: SampleRequest, *batches: Batch
+def _assert_recent_graph(
+    task: Task, store: CustomerRows, request: SampleRequest, batch: Batch
 ) -> None:
     """At a tied fanout boundary, each graph must explain its own IDs, edges and features."""
 
@@ -707,42 +734,41 @@ def _assert_recent_graphs(
         "articles": {row["article_id"]: row for row in listed.to_pylist()},
     }
     fields = task.output("graph").bindings
-    for batch in batches:
-        graph = batch.inputs["graph"]
-        selected = graph["nodes"]["transactions"]["ids"].tolist()
-        assert len(set(selected)) == RECENT_PURCHASES
-        assert sorted(bought[key]["t_dat"] for key in selected) == recent, request.sample_id
-        article_edges = [
-            (bought[key]["article_id"], key)
-            for key in selected
-            if bought[key]["article_id"] in rows["articles"]
-        ]
-        for name, left in (
-            ("customer_transactions", "customers"),
-            ("article_transactions", "articles"),
-        ):
-            edge = graph["edges"][name]
-            assert (edge["source_type"], edge["destination_type"]) == (left, "transactions")
-            assert edge["index"].dtype == torch.int64 and torch.all(edge["index"] >= 0)
-        assert _canonical_graph(graph) == {
-            "nodes": {
-                "customers": [(customer, 0)],
-                "transactions": [(key, 0) for key in sorted(set(selected))],
-                "articles": [(key, 0) for key in sorted({article for article, _ in article_edges})],
-            },
-            "edges": {
-                "customer_transactions": sorted((customer, key) for key in selected),
-                "article_transactions": sorted(article_edges),
-            },
-        }, request.sample_id
-        for table, bindings in fields.items():
-            node = graph["nodes"][table]
-            selected_rows = [rows[table][key] for key in node["ids"].tolist()]
-            expected = {
-                name: binding.encode_values([row[name] for row in selected_rows])
-                for name, binding in bindings.items()
-            }
-            assert_same(node["features"], expected, f"{request.sample_id}.{table}.features")
+    graph = batch.inputs["graph"]
+    selected = graph["nodes"]["transactions"]["ids"].tolist()
+    assert len(set(selected)) == RECENT_PURCHASES
+    assert sorted(bought[key]["t_dat"] for key in selected) == recent, request.sample_id
+    article_edges = [
+        (bought[key]["article_id"], key)
+        for key in selected
+        if bought[key]["article_id"] in rows["articles"]
+    ]
+    for name, left in (
+        ("customer_transactions", "customers"),
+        ("article_transactions", "articles"),
+    ):
+        edge = graph["edges"][name]
+        assert (edge["source_type"], edge["destination_type"]) == (left, "transactions")
+        assert edge["index"].dtype == torch.int64 and torch.all(edge["index"] >= 0)
+    assert _canonical_graph(graph) == {
+        "nodes": {
+            "customers": [(customer, 0)],
+            "transactions": [(key, 0) for key in sorted(set(selected))],
+            "articles": [(key, 0) for key in sorted({article for article, _ in article_edges})],
+        },
+        "edges": {
+            "customer_transactions": sorted((customer, key) for key in selected),
+            "article_transactions": sorted(article_edges),
+        },
+    }, request.sample_id
+    for table, bindings in fields.items():
+        node = graph["nodes"][table]
+        selected_rows = [rows[table][key] for key in node["ids"].tolist()]
+        expected = {
+            name: binding.encode_values([row[name] for row in selected_rows])
+            for name, binding in bindings.items()
+        }
+        assert_same(node["features"], expected, f"{request.sample_id}.{table}.features")
 
 
 def _cuts_a_tie(times: Mapping[int, npt.NDArray[np.int64]], customer: int, cutoff: int) -> bool:
