@@ -17,7 +17,7 @@ from kumo.pytorch import api
 from tests.test_inference_lifecycle import assert_same
 
 
-def check_source_graph(task, batch, expected, layouts):
+def check_source_graph(task, batch, expected, layouts, *, root_table="roots"):
     """Compare one-hop root graphs with original rows keyed by owner, type and physical ID."""
     roots = list(batch.metadata["entity_ids"])
     graph = batch.inputs["graph"]
@@ -27,8 +27,8 @@ def check_source_graph(task, batch, expected, layouts):
         ids, owners = node["ids"], node["batch"]
         assert ids.dtype == owners.dtype == torch.int64 and ids.ndim == owners.ndim == 1
         keys[family] = list(zip(owners.tolist(), ids.tolist(), strict=True))
-    root_keys = keys.pop("roots")
-    assert not nodes["roots"]["features"] and sorted(root_keys) == list(enumerate(roots))
+    root_keys = keys.pop(root_table)
+    assert not nodes[root_table]["features"] and sorted(root_keys) == list(enumerate(roots))
     assert sorted((o, family, i) for family, rows in keys.items() for o, i in rows) == sorted(
         expected
     )
@@ -36,7 +36,7 @@ def check_source_graph(task, batch, expected, layouts):
     for family, members in keys.items():
         relation, configs = layouts[family]
         edge = edges[relation]
-        assert (edge["source_type"], edge["destination_type"]) == ("roots", family)
+        assert (edge["source_type"], edge["destination_type"]) == (root_table, family)
         index = edge["index"]
         assert (
             index.dtype == torch.int64 and index.shape == (2, len(members)) and (index >= 0).all()
