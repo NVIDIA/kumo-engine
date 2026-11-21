@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "readiness": {
+      "description": "Small public output/workflow checks used by OSS Readiness; no model training.",
+      "cwd": ".",
+      "argv": [
+        "{python}",
+        "-m",
+        "pytest",
+        "-c",
+        "/dev/null",
+        "--confcutdir=test/scripts",
+        "-p",
+        "no:cacheprovider",
+        "-q",
+        "test/scripts/test_engine_gpu_smoke.py",
+        "test/scripts/test_engine_pr_workflow.py",
+        "test/scripts/test_author_checks.py",
+        "test/scripts/test_benchmark_pair.py"
+      ],
+      "tools": [],
+      "modules": [
+        "pytest",
+        "numpy",
+        "pandas",
+        "yaml"
+      ],
+      "parameters": {},
+      "timeout_seconds": 300,
+      "limits": "Pure output/workflow checks. Does not perform the eight CUDA training cases or benchmark inference.",
+      "guide": "docs/development/engine-pr-ci.md"
+    },
+    "public-connectors": {
+      "description": "Existing Docker public reader suites, with generated/fake data and no cloud credentials.",
+      "cwd": ".",
+      "argv": [
+        "{python}",
+        "scripts/test_public.py",
+        "--group",
+        "connectors",
+        "--reports",
+        "{results}"
+      ],
+      "tools": [
+        "docker",
+        "openssl"
+      ],
+      "modules": [],
+      "parameters": {
+        "results": "new-dir"
+      },
+      "timeout_seconds": 3600,
+      "limits": "Builds/downloads public container dependencies and uses Docker. Doctor checks executable presence, not Docker daemon access, Buildx or available image architectures.",
+      "guide": "docs/development/public-tests.md"
+    },
+    "diskgraph-rust": {
+      "description": "Existing locked Rust workspace tests on the author's own machine.",
+      "cwd": ".",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "packages/diskgraph/Cargo.toml",
+        "--workspace"
+      ],
+      "tools": [
+        "cargo"
+      ],
+      "modules": [],
+      "parameters": {},
+      "timeout_seconds": 3600,
+      "limits": "Compiles native code and may download Cargo dependencies. Needs the repository toolchain and native prerequisites; this is correctness coverage, not a performance comparison.",
+      "guide": "docs/development/testing.md"
+    },
+    "commerce-generate-smoke": {
+      "description": "Generate the existing small public commerce fixture with one worker.",
+      "cwd": "benchmark/commerce/generator",
+      "argv": [
+        "{python}",
+        "-m",
+        "scalebench.generate",
+        "run",
+        "--graph",
+        "commerce",
+        "--rung",
+        "smoke",
+        "--shards",
+        "4",
+        "--config",
+        "smoke-config.json",
+        "--root",
+        "{data_root}",
+        "--workers",
+        "1"
+      ],
+      "tools": [],
+      "modules": [
+        "numpy",
+        "pyarrow",
+        "scipy"
+      ],
+      "parameters": {
+        "data_root": "new-dir"
+      },
+      "disk_budget_required": true,
+      "timeout_seconds": 600,
+      "limits": "Small fixture generation only; excludes generation from any later benchmark. Install the generator's requirements in a separate environment. Budget is a free-space preflight, not a filesystem quota.",
+      "guide": "packages/diskgraph/scripts/benchmarks/commerce/README.md"
+    },
+    "commerce-verify-smoke": {
+      "description": "Verify generated commerce hashes, row counts and schemas with the existing verifier.",
+      "cwd": "benchmark/commerce/generator",
+      "argv": [
+        "{python}",
+        "verify.py",
+        "--root",
+        "{data_root}",
+        "--rung",
+        "smoke"
+      ],
+      "tools": [],
+      "modules": [
+        "numpy",
+        "pyarrow"
+      ],
+      "parameters": {
+        "data_root": "input-dir"
+      },
+      "timeout_seconds": 300,
+      "limits": "Checks generated data, not sampling equivalence or model learning quality.",
+      "guide": "packages/diskgraph/scripts/benchmarks/commerce/README.md"
+    },
+    "commerce-snapshot-smoke": {
+      "description": "Run the existing commerce workflow's snapshot stage against local smoke data.",
+      "cwd": ".",
+      "argv": [
+        "{python}",
+        "benchmark/commerce/run_e2e.py",
+        "--graph",
+        "commerce",
+        "--data",
+        "{data}",
+        "--scratch",
+        "{scratch}",
+        "--out",
+        "{results}",
+        "--stages",
+        "snapshot",
+        "--num-workers",
+        "0"
+      ],
+      "tools": [],
+      "modules": [
+        "numpy",
+        "pyarrow",
+        "torch",
+        "diskgraph",
+        "kumo.engine"
+      ],
+      "parameters": {
+        "data": "input-dir",
+        "scratch": "new-dir",
+        "results": "new-dir"
+      },
+      "disk_budget_required": true,
+      "timeout_seconds": 900,
+      "limits": "Snapshot-only smoke; requires installed matching in-tree Engine and DiskGraph. Does not run training, GPU inference, or the 50B reference workload. Use local SSD scratch.",
+      "guide": "benchmark/commerce/README.md"
+    },
+    "temporal-ranges-smoke": {
+      "description": "Small-degree mode of the existing oracle-checked paired DiskGraph temporal-range harness.",
+      "cwd": ".",
+      "argv": [
+        "{python}",
+        "packages/diskgraph/scripts/benchmarks/shared_temporal_ranges.py",
+        "{results}",
+        "--baseline",
+        "{baseline}",
+        "--candidate",
+        "{candidate}",
+        "--degrees",
+        "256",
+        "--cycles",
+        "2",
+        "--repeats",
+        "3"
+      ],
+      "tools": [],
+      "modules": [
+        "numpy",
+        "pyarrow"
+      ],
+      "parameters": {
+        "baseline": "input-dir",
+        "candidate": "input-dir",
+        "results": "new-dir"
+      },
+      "disk_budget_required": true,
+      "timeout_seconds": 600,
+      "limits": "Requires two separately built diskgraph package directories with different native-library hashes. Pins one available CPU; warm-cache query measurements only. Cannot establish GPU, cold-cache, or end-to-end training performance.",
+      "guide": "packages/diskgraph/scripts/benchmarks/shared_temporal_ranges.md"
+    }
+  }
+}

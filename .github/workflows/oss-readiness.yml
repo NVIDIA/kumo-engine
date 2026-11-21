@@ -53,7 +53,9 @@ jobs:
             test/scripts/test_engine_e2e_case_hardware.py \
             test/scripts/test_engine_e2e_case_results.py \
             test/scripts/test_engine_pr_workflow.py \
-            test/scripts/test_engine_wheel_workflow.py
+            test/scripts/test_engine_wheel_workflow.py \
+            test/scripts/test_author_checks.py \
+            test/scripts/test_benchmark_pair.py
 
       - name: Test the Engine runner pool without AWS
         run: node --test test/scripts/test-engine-e2e-pool.cjs
