@@ -149,6 +149,32 @@ environment that already installs `kumo-api`.
 
 ## Native batch runtime
 
+### Build identity and external extensions
+
+Allocate `index_build_id` with `diskgraph.new_index_build_id()` before ingest
+and pass it to `diskgraph.ingest(index_build_id=...)` when the output directory
+must be chosen first. Otherwise ingest allocates a fresh ID. A fresh ingest
+with a supplied ID refuses an existing output directory; resume the partial
+build or choose a new ID instead.
+If resume must restart a partial build with more shards, it may reuse the
+supplied ID only when the saved Encode state records that same ID and the
+output has not been published. The base's
+`index_metadata.json` records this ID; extension ingest records the exact
+parent ID there as well. The reader rejects an extension whose parent ID does
+not match. Old indexes without IDs remain readable with their old extensions,
+but cannot be mixed with ID-bearing builds.
+Partial builds with version-2 Encode state cannot resume because that state lacks
+build identity; restart them as a fresh ingest, choosing a new ID and output
+path if the ID was preallocated.
+An exact metadata-preserving copy keeps the ID; distinct ingests allocate new
+IDs by default, even for the same source.
+
+The managed-cache writer and external-extension opener are private bindings.
+Kumo owns their layout under its configured root. Public `cutoff_col_stats`
+writes into the index, and the native `RuntimeIndex` constructor accepts
+index-local extension references. The private native opener accepts absolute
+external paths and validates parent build identity, not a Kumo placement rule.
+
 [`diskgraph-runtime`](diskgraph-runtime/README.md) provides reusable index ownership
 and worker-sharded batch generation without Python or transport dependencies. The
 Python binding uses this runtime and converts its batches to Arrow-backed Python

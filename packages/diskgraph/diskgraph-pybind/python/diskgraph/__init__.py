@@ -12,6 +12,7 @@ from ._c import (
     convert_kumo_config,
     convert_ticks,
     ingest,
+    new_index_build_id,
     ExportConfig,
     FkeyConfig,
     TimeUnit,
