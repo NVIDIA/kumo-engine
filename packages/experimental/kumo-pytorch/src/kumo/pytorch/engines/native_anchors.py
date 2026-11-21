@@ -19,13 +19,16 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kumo.pytorch.anchors import ALL_ANCHORS, AllAnchors, AnchorTable
 from kumo.pytorch.contract.dtypes import _arrow_scalar_value, _arrow_values
 from kumo.pytorch.contract.sample import SampleRequest, TargetValue, sample_value_types
 from kumo.pytorch.engines.parquet_anchors import _files, _physical, check_parquet_anchors
 from kumo.pytorch.materialization import _diskgraph_dtype
+
+if TYPE_CHECKING:
+    from diskgraph import SamplingPlan
 
 
 def _column_values(pa: Any, values: Any, dtype: Any) -> list[Any]:
@@ -300,7 +303,7 @@ class NativeAnchors:
         shuffle=False,
         rank=0,
         world_size=1,
-        plan=None,
+        plan: SamplingPlan | None = None,
         projections=None,
         history=None,
         neighborhoods=None,
@@ -308,7 +311,7 @@ class NativeAnchors:
     ):
         iterator, _ = self._runtime.iter(
             stage["name"],
-            plan or {"layers": []},
+            self._source._diskgraph.SamplingPlan() if plan is None else plan,
             world_size,
             rank,
             shuffle,
@@ -323,7 +326,7 @@ class NativeAnchors:
             disable_pseudo_time=True,
         )
         if neighborhoods:
-            iterator.with_neighborhoods(json.dumps(neighborhoods))
+            iterator.with_neighborhoods(neighborhoods)
         if history is not None:
             plan_json, merges_json = history
             iterator.with_history(

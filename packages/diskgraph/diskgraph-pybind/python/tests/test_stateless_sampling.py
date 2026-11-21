@@ -310,3 +310,94 @@ def test_local_and_standalone_validate_all_selected_ids(
             epoch=config.epoch,
             selected_stage_node_ids=config.selected_stage_node_ids,
         )
+
+
+def test_standalone_sampler_accepts_native_plans_without_json(
+    seed_table_fixture: dict[str, Any],  # noqa: F811 -- imported pytest fixture
+) -> None:
+    """Native plans and existing JSON plans produce the same standalone events."""
+    plan = SamplingPlan(
+        [
+            LayerSpec(
+                default_fanout=FanoutSpec(
+                    2, "deterministic_uniform", "uniform_fallback"
+                )
+            )
+        ]
+    )
+    legacy = json.dumps(
+        {
+            "layers": [
+                {
+                    "fanouts": {},
+                    "default_fanout": {
+                        "fanout": 2,
+                        "mode": "deterministic_uniform",
+                        "absent_key_policy": "uniform_fallback",
+                    },
+                }
+            ]
+        }
+    )
+    results = []
+    for value in (plan, legacy):
+        sampler = SamplerEngine(
+            seed_table_fixture["parent_root"], random_seed=42, num_threads=1
+        )
+        events = (
+            event
+            for event in sampler.sample({"users": [0]}, value, fused=False)
+            if event["type"] != "stats"
+        )
+        results.append(
+            sorted(
+                events,
+                key=lambda event: (
+                    event["type"],
+                    event.get("type_id", event.get("rel_id", -1)),
+                ),
+            )
+        )
+
+    _assert_equal(results[0], results[1])
+
+
+def test_named_neighborhoods_accept_native_plans_without_json(
+    seed_table_fixture: dict[str, Any],  # noqa: F811 -- imported pytest fixture
+) -> None:
+    """Typed named plans preserve the existing JSON neighborhood results."""
+    index = RuntimeIndex(
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=1
+    )
+    options = {
+        "stage": "train",
+        "sampling_plan": SamplingPlan(),
+        "entity_node_type": "users",
+        "num_workers": 1,
+        "worker_id": 0,
+        "shuffle": False,
+        "epoch": 0,
+        "batch_size": 2,
+    }
+    native, _ = index.iter(**options)
+    legacy, _ = index.iter(**options)
+    native.with_neighborhoods(
+        {"context": {"plan": _sampling_plan(), "projections": {}}}
+    )
+    fanout = {"fanout": 4, "mode": "uniform", "absent_key_policy": "uniform_fallback"}
+    legacy.with_neighborhoods(
+        json.dumps(
+            {
+                "context": {
+                    "plan": {"layers": [{"fanouts": {}, "default_fanout": fanout}] * 2},
+                    "projections": {},
+                }
+            }
+        )
+    )
+
+    _assert_equal(next(native), next(legacy))
+    with pytest.raises(TypeError, match="SamplingPlan"):
+        native.with_neighborhoods(
+            {"invalid": {"plan": {"layers": []}, "projections": {}}}
+        )

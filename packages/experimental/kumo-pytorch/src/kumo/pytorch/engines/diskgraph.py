@@ -16,7 +16,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import torch
@@ -52,6 +52,7 @@ from kumo.pytorch.contract.sample import (
     Field,
     GroupBy,
     MapValues,
+    NeighborhoodSpec,
     Rows,
     RowTarget,
     SampleRequest,
@@ -81,6 +82,9 @@ from kumo.pytorch.engines.parquet_anchors import ParquetAnchors, check_parquet_a
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED, Unsupported
 from kumo.pytorch.materialization import _DiskGraphIndex, ensure_diskgraph_index
 from kumo.pytorch.spec import DataLoaderSpec, ValidationIssue
+
+if TYPE_CHECKING:
+    from diskgraph import SamplingPlan
 
 __all__ = ["DiskGraphEngine"]
 
@@ -1552,7 +1556,7 @@ class DiskGraphSource:
         events = list(
             self._sampler.sample(
                 {sample.entity.table: root_ids},
-                json.dumps(plan),
+                plan,
                 fused=False,
                 seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
                 swap_edge_direction=False,
@@ -2125,7 +2129,9 @@ class DiskGraphSource:
             raise RuntimeError(f"DiskGraph result has no projected column {name!r}")
         return columns[name]
 
-    def _sampling_plan(self, neighborhood: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    def _sampling_plan(
+        self, neighborhood: NeighborhoodSpec
+    ) -> tuple[SamplingPlan, dict[str, str]]:
         layers = []
         physical_relations = {}
         for layer in neighborhood.layers:
@@ -2161,13 +2167,15 @@ class DiskGraphSource:
                         f"{traversal.relation!r} resolve to the same physical relation {physical!r}"
                     )
                 physical_relations[physical] = traversal.relation
-                fanouts[physical] = {
-                    "fanout": traversal.fanout,
-                    "mode": "temporal_most_recent" if traversal.strategy == "recent" else "uniform",
-                    "absent_key_policy": "reject_plan",
-                }
-            layers.append({"fanouts": fanouts, "default_fanout": None})
-        return {"layers": layers}, physical_relations
+                fanouts[physical] = self._diskgraph.FanoutSpec(
+                    traversal.fanout,
+                    "temporal_most_recent"
+                    if traversal.strategy == "recent"
+                    else "uniform",
+                    "reject_plan",
+                )
+            layers.append(self._diskgraph.LayerSpec(fanouts=fanouts))
+        return self._diskgraph.SamplingPlan(layers), physical_relations
 
     def _graph_output(
         self,

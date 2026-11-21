@@ -111,6 +111,11 @@ to change the configuration. Native values support pickle, including complete
 plans passed to spawned worker processes. Construction opens no index and
 imports no Torch or training modules.
 
+`SamplerEngine.sample` also accepts native plans. Named neighborhoods accept
+`{"name": {"plan": plan, "projections": {}}}` through
+`RuntimeBatchIterator.with_neighborhoods`. Both APIs retain their existing JSON
+string inputs; the native path passes Rust values without serialization.
+
 `WeightedSampling(weighting, temporal=False)` represents the native `weighted`
 variant; `temporal=True` selects `temporal_weighted`. Weightings are
 `ExponentialDecay(rate)` (per-second rate, native `lambda`),

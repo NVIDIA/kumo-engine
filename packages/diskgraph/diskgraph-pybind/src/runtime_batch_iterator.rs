@@ -1109,10 +1109,24 @@ impl RuntimeBatchIterator {
     }
 
     /// Attach named neighborhoods to the SAME native anchor schedule.
-    pub fn with_neighborhoods(&mut self, specs: String) -> PyResult<()> {
-        self.inner
-            .with_neighborhoods(&specs)
-            .map_err(map_runtime_err)
+    pub fn with_neighborhoods(&mut self, specs: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(specs) = specs.extract::<String>() {
+            return self.inner.with_neighborhoods(&specs).map_err(map_runtime_err);
+        }
+        let mut plans = std::collections::BTreeMap::new();
+        for (name, spec) in specs.cast::<PyDict>()? {
+            let spec = spec.cast::<PyDict>()?;
+            let plan = spec.get_item("plan")?.ok_or_else(|| {
+                DiskgraphConfigError::new_err("neighborhood requires a native plan")
+            })?;
+            let plan: PyRef<'_, crate::sampling_plan::PySamplingPlan> = plan.extract()?;
+            let projections = spec.get_item("projections")?.ok_or_else(|| {
+                DiskgraphConfigError::new_err("neighborhood requires projections")
+            })?;
+            plans.insert(name.extract()?, (plan.inner.clone(), projections.extract()?));
+        }
+        self.inner.with_neighborhood_plans(plans);
+        Ok(())
     }
 
     /// Attach history work once per epoch; next_batch remains the only batch call.

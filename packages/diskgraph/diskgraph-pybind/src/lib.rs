@@ -178,7 +178,7 @@ pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
 
 
 use diskgraph_core::features::{BatchFeatureRequest, FeatureRequest};
-use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags, SamplingPlan};
+use diskgraph_core::sampling::{BatchSamplingRequest, SamplingFlags};
 use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
@@ -1038,7 +1038,7 @@ impl SamplerEngine {
         &self,
         py: Python<'_>,
         seed_nodes: Bound<'_, PyDict>,
-        plan_json: String,
+        plan_json: &Bound<'_, PyAny>,
         fused: bool,
         seed_timestamps: Option<Bound<'_, PyDict>>,
         swap_edge_direction: Option<bool>,
@@ -1062,8 +1062,13 @@ impl SamplerEngine {
             timestamps = Some(ts_map);
         }
 
-        let plan: SamplingPlan = serde_json::from_str(&plan_json)
-            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {}", e)))?;
+        let plan = if let Ok(plan) = plan_json.extract::<PyRef<'_, sampling_plan::PySamplingPlan>>() {
+            plan.inner.clone()
+        } else {
+            let plan_json: String = plan_json.extract()?;
+            serde_json::from_str(&plan_json)
+                .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {e}")))?
+        };
 
         let flags = SamplingFlags {
             replace: false,

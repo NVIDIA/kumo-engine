@@ -8,14 +8,15 @@ from unittest.mock import Mock
 
 import pytest
 from diskgraph.sampling_plan import SamplingPlan
-from kumo.engine.trainer._scoring import ScoringDefaults
-from kumo.engine.trainer.trainer import Trainer
 from kumo_core import prediction
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from kumo_core.types import TaskType
 from kumo_core.types.enums import PredictionArtifactType
 from kumoapi.model_plan import ModelPlan
+
+from kumo.engine.trainer._scoring import ScoringDefaults
+from kumo.engine.trainer.trainer import Trainer
 
 
 def _spawn_probe(*, worker_id, directory, fail=False):

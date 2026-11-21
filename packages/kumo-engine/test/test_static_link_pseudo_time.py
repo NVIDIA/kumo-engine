@@ -4,17 +4,18 @@
 
 import random
 
-import kumo.engine as kumo
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from diskgraph.sampling_plan import FanoutSpec, LayerSpec, SamplingPlan
-from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
-from kumo.engine.table import TableDefinition
 from kumoapi.graph import Edge
 from kumoapi.table import Column
 from kumoapi.typing import Dtype, Stype
+
+import kumo.engine as kumo
+from kumo.engine import FileConnector, Graph, PredictiveQuery, Table, Trainer
+from kumo.engine.table import TableDefinition
 
 QUERY = ('PREDICT LIST_DISTINCT(orders.item_id) RANK TOP 10 '
          'FOR EACH users.id')

@@ -14,6 +14,12 @@ use std::{collections::VecDeque, sync::Arc};
 mod errors;
 pub use errors::{Result, RuntimeError};
 
+/// Native traversal plans and feature projections keyed by neighborhood name.
+pub type NeighborhoodPlans = std::collections::BTreeMap<
+    String,
+    (SamplingPlan, std::collections::HashMap<String, Vec<String>>),
+>;
+
 /// Task-owned, sparse-on-disk length metadata. Zero denotes an uncomputed row;
 /// history count is stored plus one, so an empty computed history is distinct.
 /// Only the requested u32 fields are mapped; no stage-sized private Vec exists.
@@ -1673,7 +1679,7 @@ impl RuntimeBatchIterator {
         let specs: std::collections::BTreeMap<String, serde_json::Value> =
             serde_json::from_str(specs)
                 .map_err(|e| RuntimeError::config(format!("invalid neighborhoods: {e}")))?;
-        self.neighborhoods = specs
+        let specs = specs
             .into_iter()
             .map(|(name, value)| {
                 let plan = serde_json::from_value(value["plan"].clone()).map_err(|e| {
@@ -1681,14 +1687,21 @@ impl RuntimeBatchIterator {
                 })?;
                 let projections = serde_json::from_value(value["projections"].clone())
                     .map_err(|e| RuntimeError::config(format!("invalid projection {name}: {e}")))?;
-                Ok((
-                    name,
-                    plan,
-                    Arc::new(self.engine.resolve_projection(&projections)),
-                ))
+                Ok((name, (plan, projections)))
             })
             .collect::<Result<_>>()?;
+        self.with_neighborhood_plans(specs);
         Ok(())
+    }
+
+    /// Resolve owned native plans once, sharing this iterator's selected rows.
+    pub fn with_neighborhood_plans(&mut self, specs: NeighborhoodPlans) {
+        self.neighborhoods = specs
+            .into_iter()
+            .map(|(name, (plan, projections))| {
+                (name, plan, Arc::new(self.engine.resolve_projection(&projections)))
+            })
+            .collect();
     }
 
     pub fn add_neighborhoods(&self, batch: &mut RuntimeBatch) -> Result<()> {
