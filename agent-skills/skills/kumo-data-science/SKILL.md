@@ -178,7 +178,9 @@ preflight inside it.
 Present the graph proposal — seeds, tables,
 primary keys, time columns, links, `table_mode: all-connected [default]` — each line tagged
 `[supplied]` / `[declared]` / `[inferred]` / `[inferred, unverified]` / `[default]`. A semantic
-view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. **Stop and wait for confirmation.**
+view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. Every time column carries
+its reason and the table's other timestamp columns; a table with several asks which one is the
+event time (`accept/preflight.md` §4). **Stop and wait for confirmation.**
 User-supplied values take precedence over inferred ones.
 
 **Mandatory column-availability pass.** Before presenting the graph, decide the selected columns

@@ -144,6 +144,15 @@ entity. Confirmation is what lifts that restriction, not the existence of a cand
 The first `TIMESTAMP*`, `DATE`, or `DATETIME` column, preferring names ending in `_AT`, `_TS`,
 `_TIME`, `_DATE`, or named `EVENT_TIME` / `TIMESTAMP`. A table with none is static.
 
+The time column decides which rows count as history and which fall into a target window, so the
+pick is never silent. On **every** table's time-column line — even with a single candidate, and
+even when the line came from a host-supplied preflight result — say why it was picked (the only
+timestamp column; named as the row's creation or event time; the first candidate by type and
+name) and list the table's **other** timestamp columns, or say there are none. When a table has
+more than one, ask in the proposal which one marks when the row's fact happened or became known,
+and say how to change it: name the column, and the notebook sets it as `time_column`. Names and
+values cannot settle this; the user does. A column not chosen is still placed in time by §5.
+
 For every time-ranged target aggregation, the table it references must have a usable
 `time_column`. If it does not, say so in the proposal and say what would make the task
 expressible: a timestamp on some other table does not repair the target.
@@ -205,7 +214,8 @@ Table mode: all-connected [default] — 7 of 7 tables reachable from the seeds
 Metadata
 - customers: primary key CUSTOMER_ID [inferred]
 - fraud_events: primary key EVENT_ID [inferred]
-- fraud_events: time column EVENT_AT [inferred]
+- fraud_events: time column EVENT_AT [inferred] — named as the event time; other timestamp
+  columns: RESOLVED_AT. Which one marks when the event happened? Name another to use it instead
 - ...
 
 Links
