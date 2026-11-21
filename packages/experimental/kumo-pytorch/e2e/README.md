@@ -30,12 +30,18 @@ To fill the local cache, run these commands from the package root with the AWS C
 ```bash
 export KUMO_PYTORCH_DATA_ROOT=/tmp/kumo-pytorch-data
 python -m e2e.datasets.staging e2e/datasets/pins/*.json --root "$KUMO_PYTORCH_DATA_ROOT"
-python -m pytest -q tests/e2e/test_aml.py
+python -m pytest -q tests/e2e/test_aml.py tests/e2e/test_synthetic.py
 ```
 
 Benchmarks pass the files from `e2e.datasets.staging.verify(root, manifest)` to
 `prepare_e01` (HI Small) or `prepare_l01` (LI Medium) in `e2e.datasets.aml`. Both take
 `(files, fresh_directory, anchor_rows=rows)` and return the contract, dataset and anchors.
+For Synthetic Medium, `load_s02(files)` and `prepare_s02(tables, fresh_directory)` in
+`e2e.datasets.synthetic` use four weekly-customer anchors. Fit with `fit_split="train"` and
+`encoder_cutoff` one second before the latest training anchor. The S02 manifest pins every shard
+containing an event for either customer, including transfers received from another partition.
+`load_s02` checks the selected event IDs against a full scan of the 1,610 published shards before
+applying any time cutoff. To repeat that scan, supply all verified shard paths keyed by `<table>/<filename>`.
 
 ## The H&M-shaped dataset
 

@@ -26,6 +26,7 @@ import torch
 from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST, prepare_e01, prepare_l01
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
+from tests.e2e.history import check_scalar_history
 from tests.test_inference_lifecycle import assert_same
 
 
@@ -213,7 +214,6 @@ def test_hi_small_e01_graph_and_forecast(tmp_path):
 def _check_history(task, batch, histories):
     buckets, category = api.Buckets(bins=64), api.Vocabulary()
     fields = {
-        "age_range": buckets,
         "direction": category,
         "amount_paid": buckets,
         "payment_currency": category,
@@ -221,63 +221,17 @@ def _check_history(task, batch, histories):
         "receiving_currency": category,
         "payment_format": category,
     }
-    for name, values in (("hour", range(24)), ("weekday", range(7)), ("day", range(1, 32))):
-        fields[name] = api.Vocabulary(values=tuple((i, i + 2) for i in values))
-    bindings = task.output("history").bindings
-    assert {name: binding.encoder.config for name, binding in bindings.items()} == fields
-    space = task.spaces["history"]
-
-    def token(name, value):
-        encoder = bindings[name].encoder
-        if fields[name] == buckets:
-            local = bisect_right(encoder.boundaries, float(value)) + 1
-        else:
-            local = dict(encoder.entries).get(value, encoder.config.unknown_id)
-        return space.members[encoder.identity][local]
-
-    stream = batch.inputs["history"]
-    valid = stream["valid"]
-    assert valid.dtype == torch.bool and valid.ndim == 2 and valid.shape[0] == len(histories)
-    assert set(stream) == {"value_ids", "source_event_indices", "position_ids", "valid"}
-    for name in ("value_ids", "source_event_indices", "position_ids"):
-        assert stream[name].dtype == torch.int64 and stream[name].shape == valid.shape
-
-    width = len(fields)
-    offset = 0
-    for owner, (root, cutoff, history) in enumerate(histories):
-        expected = []
+    rows = []
+    for root, cutoff, history in histories:
+        events = []
         for event in history.values():
-            stamp = datetime.fromtimestamp(event.time, UTC)
             direction = "outgoing" if event.sender == root else "incoming"
-            values = dict(
-                event.features,
-                age_range=cutoff - event.time,
-                hour=stamp.hour,
-                weekday=stamp.weekday(),
-                day=stamp.day,
-                direction="self" if event.sender == event.receiver else direction,
+            features = dict(
+                event.features, direction="self" if event.sender == event.receiver else direction
             )
-            tokens = tuple(token(name, values[name]) for name in fields)
-            expected.append((event.time, tokens))
-
-        sources = []
-        for index in range(offset, offset + len(history)):
-            if sources:
-                sources.append(-1)
-            sources.extend([index] * width)
-        offset += len(history)
-        mask = valid[owner]
-        assert_same(mask, torch.arange(mask.numel()) < len(sources))
-        assert stream["source_event_indices"][owner][mask].tolist() == sources
-        assert not stream["position_ids"][owner][mask].any()
-        tokens = stream["value_ids"][owner]
-        assert (tokens[~mask] == space.special(role="pad")).all()
-        ids = tokens[mask].tolist()
-        assert ids[width :: width + 1] == [space.special(role="separator")] * (len(history) - 1)
-        # Attach the expected chronological slots before comparing whole records within ties.
-        times = sorted(event.time for event in history.values())
-        records = [tuple(ids[i : i + width]) for i in range(0, len(ids), width + 1)]
-        assert sorted(zip(times, records, strict=True)) == sorted(expected)
+            events.append((event.time, features))
+        rows.append((cutoff, events))
+    check_scalar_history(task, batch, fields, rows)
 
 
 def _check_delivered_targets(batch, expected, currency_ids):
