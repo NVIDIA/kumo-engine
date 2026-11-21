@@ -73,6 +73,7 @@ disposes must be displayed again.
 import json
 import os
 from base64 import b64encode
+from collections.abc import Callable
 from hashlib import sha256
 from html import escape
 from string import Template
@@ -198,8 +199,9 @@ return dispose;
 
 def render_anywidget(body: str, *, style: str = '', script: str = '',
                      data: dict | None = None, class_name: str = '',
-                     namespace: str = ''):
-    """Create an optional AFM widget with independent state for each view."""
+                     namespace: str = '',
+                     fallback_mime: Callable[[], dict[str, str]] | None = None):
+    """Create an AFM widget with independent views and optional saved output."""
     try:
         import anywidget
         import traitlets
@@ -217,6 +219,10 @@ def render_anywidget(body: str, *, style: str = '', script: str = '',
             'and Markdown exports remain available through '
             'graph.visualize("graph.svg"), graph.visualize("graph.pdf"), '
             'or graph.visualize("graph.md").') from error
+
+    # initialize() restores the saved body before surfacing a feature error.
+    mount_failure = ('console.error(error)' if fallback_mime is not None else
+                     'host.remove();throw error')
 
     class NotebookWidget(anywidget.AnyWidget):
         _css = (_STYLE + style +
@@ -237,13 +243,21 @@ def render_anywidget(body: str, *, style: str = '', script: str = '',
                 'host.classList.add("kumo-widget-inherit-theme");'
                 'try{dispose=initialize(host,model.get("data"),'
                 '({host,widgetId,data,signal,onDispose})=>{' + script + '},false);}'
-                'catch(error){host.remove();throw error}};'
+                'catch(error){' + mount_failure + '}};'
                 'const mounted=new ResizeObserver(mount);mounted.observe(host);mount();'
                 'return()=>{initialized=true;mounted.disconnect();'
                 'dispose?.();host.remove()};}};')
         body = traitlets.Unicode().tag(sync=True)
         data = traitlets.Dict().tag(sync=True)
         namespace = traitlets.Unicode().tag(sync=True)
+
+        def _repr_mimebundle_(self, **kwargs):
+            native = super()._repr_mimebundle_(**kwargs)
+            if fallback_mime is None:
+                return native
+            data, metadata = native if isinstance(native, tuple) else (native,
+                                                                       {})
+            return {**(data or {}), **fallback_mime()}, metadata
 
     NotebookWidget.__name__ += '_' + sha256(
         (NotebookWidget._esm + NotebookWidget._css).encode()).hexdigest()
