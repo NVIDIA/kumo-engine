@@ -2,69 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stage a directly referenced connector table as local parquet parts."""
+"""Validate the schema of a staged custom training or prediction table."""
 
-import errno
-import os
-import shutil
 from pathlib import Path
-from typing import Optional, Tuple
 
-import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-
-from kumo.engine.connector.source_table import SourceTable
-
-
-def stage_source_table(source_table: SourceTable,
-                       destination: Path) -> Tuple[Path, Optional[str]]:
-    """Stage ``source_table``'s parquet parts; returns them and their version."""
-    if not isinstance(source_table, SourceTable):
-        raise TypeError("source_table must be a kumo.engine SourceTable")
-    destination.mkdir(parents=True, exist_ok=False)
-    prepared = source_table.connector.source_backend.prepare_ingest(
-        source_table.connector,
-        source_table.table_name,
-        str(destination / "source"),
-        sql=source_table.sql,
-    )
-    if prepared.credentials is not None:
-        raise NotImplementedError(
-            "Custom tables require a source backend that stages local "
-            "parquet without scoped ingest credentials.")
-    if prepared.source.get("type") != "parquet":
-        raise NotImplementedError(
-            "Custom tables require a source backend that stages local "
-            f"parquet; got {prepared.source.get('type')!r}.")
-    paths = [Path(path) for path in prepared.source.get("paths", ())]
-    if not paths:
-        path = prepared.source.get("path")
-        if path:
-            paths = [Path(path)]
-    if not paths or any(not path.exists() for path in paths):
-        raise RuntimeError("Custom-table staging produced no parquet files.")
-    # DiskGraph accepts one file or a flat directory of parquet parts. Flatten
-    # connector directories without re-encoding or combining their row groups.
-    output = destination / "parts"
-    output.mkdir()
-    parts = [
-        Path(fragment.path) for path in paths
-        for fragment in ds.dataset(str(path), format="parquet").get_fragments()
-    ]
-    if not parts:
-        raise RuntimeError("Custom-table staging produced no parquet files.")
-    for index, part in enumerate(parts):
-        target = output / f"part-{index:05d}.parquet"
-        try:
-            # Relative links keep the retained source and parts directory
-            # together if the staging tree moves.
-            target.symlink_to(os.path.relpath(part.resolve(), output.resolve()))
-        except OSError as error:
-            if error.errno not in (
-                    errno.EPERM, errno.EACCES, errno.EOPNOTSUPP, errno.ENOSYS):
-                raise
-            shutil.copyfile(part, target)
-    return output, prepared.version
 
 
 def _validate_source(path, query, graph, *, weight_col, split_col,

@@ -526,7 +526,7 @@ def test_custom_training_table_materializes_weight_and_manual_split(
         task_dataset=SimpleNamespace(required_stages=('train', 'val', 'test')),
     )
 
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
+    monkeypatch.setattr('kumo.engine.connector._staging.stage_source_table',
                         lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_training_source',
@@ -573,7 +573,7 @@ def test_custom_training_table_uses_the_normal_inferred_split(
     rows.touch()
     staging = tmp_path / 'staging'
     captured = {}
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
+    monkeypatch.setattr('kumo.engine.connector._staging.stage_source_table',
                         lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_training_source',
@@ -696,7 +696,7 @@ def test_custom_prediction_table_materializes_exact_source_rows(
         compiler_options={'lag_offsets_secs': (-1, -2, -3)},
     )
     captured = {}
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
+    monkeypatch.setattr('kumo.engine.connector._staging.stage_source_table',
                         lambda source_table, destination: (rows, None))
     monkeypatch.setattr(
         'kumo.engine.pquery._custom_source.validate_prediction_source',

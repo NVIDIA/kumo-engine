@@ -693,12 +693,17 @@ jobs:
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           uv build --wheel packages/kumo-settings \
             --out-dir "$RUNNER_TEMP/kumo-engine-dist"
+          # For the kumo.engine.integrations.pytorch tests.
+          uv build --wheel packages/experimental/kumo-pytorch \
+            --out-dir "$RUNNER_TEMP/kumo-engine-dist"
           wheel=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_engine-*.whl' -print -quit)
           settings=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
             -name 'kumo_settings-*.whl' -print -quit)
-          test -n "$wheel" && test -n "$settings"
-          uv pip install --no-deps "$wheel" "$settings"
+          pytorch=$(find "$RUNNER_TEMP/kumo-engine-dist" -maxdepth 1 \
+            -name 'kumo_pytorch-*.whl' -print -quit)
+          test -n "$wheel" && test -n "$settings" && test -n "$pytorch"
+          uv pip install --no-deps "$wheel" "$settings" "$pytorch"
           python - <<'PY'
           from pathlib import Path
 
@@ -745,7 +750,7 @@ jobs:
               -c "$KUMO_ENGINE_SOURCE_ROOT/pyproject.toml" -rs \
               "$KUMO_ENGINE_SOURCE_ROOT/test"
           ) || status=$?
-          uv pip uninstall kumo-engine kumo-settings
+          uv pip uninstall kumo-engine kumo-settings kumo-pytorch
           python - <<'PY'
           import importlib.util
 
