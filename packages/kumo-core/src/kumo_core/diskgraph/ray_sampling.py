@@ -365,7 +365,8 @@ class _SamplerReplica:
             or request.num_threads != self.config.num_threads
         ):
             raise SamplingContractError("request does not match replica artifacts/RNG")
-        options = request.validate()
+        request.validate()
+        options = request.options
         for index, (cached_options, context) in enumerate(self.contexts):
             if cached_options == options:
                 self.contexts.append(self.contexts.pop(index))

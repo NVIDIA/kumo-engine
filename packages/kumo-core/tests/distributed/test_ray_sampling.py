@@ -346,7 +346,7 @@ def test_request_lookahead_does_not_start_sampling(
             selected_stage_node_ids=None,
         )
         assert first.options.sampling_plan is options.sampling_plan
-        assert first.validate() is first.options
+        first.validate()
         assert options.rnd_seed is seed
         assert options.selected_stage_node_ids == [9, 14, 17]
         sample.assert_not_called()
