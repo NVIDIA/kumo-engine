@@ -272,6 +272,7 @@ def test_native_request_reconstruction_preserves_ns_without_pandas():
                     raise ModuleNotFoundError('pandas deliberately unavailable')
         sys.meta_path.insert(0, WithoutPandas())
         import pyarrow as pa
+        from diskgraph import RuntimeBatch, RuntimeFeatureBlock
         from kumo.pytorch import api
         from kumo.pytorch.engines.native_anchors import NativeAnchors
         anchors = NativeAnchors.__new__(NativeAnchors)
@@ -281,9 +282,12 @@ def test_native_request_reconstruction_preserves_ns_without_pandas():
         anchors._ipc = set()
         anchors._table = api.AnchorTable(api.Parquet('unused'), 'entity', 'at')
         batch = pa.record_batch({'entity': [1], 'at': [1], 'anchor_position': [0]})
-        requests = anchors._requests({'name': 'one', 'split': None}, {
-            'raw_features': {'anchors/one': {'record_batches': [batch]}}
+        runtime = RuntimeBatch(raw_features={
+            'anchors/one': RuntimeFeatureBlock(
+                key='anchors/one', num_rows=1, record_batches=[batch],
+            ),
         })
+        requests = anchors._requests({'name': 'one', 'split': None}, runtime)
         assert requests[0].as_of_time.value == 1
         assert 'pandas' not in sys.modules
     """)

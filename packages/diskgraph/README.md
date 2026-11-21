@@ -25,6 +25,27 @@ inherits the index seed, while explicit `None` disables it and is rejected when
 shuffling. Projections and selected seed IDs retain their existing dictionary
 and list formats; treat those containers as read-only while options are in use.
 
+Both iteration and `iterator.sample_request(seed_ids)` return `RuntimeBatch`
+records owned by DiskGraph:
+
+```python
+batch = next(batches)
+seed_ids = batch.task.seed_node_ids
+node_ids = batch.graphs["main"].node_ids
+feature_chunks = batch.raw_features["users"].record_batches
+```
+
+`RuntimeBatch`, `RuntimeTask`, `RuntimeGraph`, `RuntimeEdge`, `RuntimeEdgeType`,
+`RuntimeEdgeCounts`, and `RuntimeFeatureBlock` are mutable dataclasses. Fixed
+fields use attributes; graph channels, node types and feature namespaces remain
+name-keyed dictionaries. Optional task arrays are `None` when absent. Arrow
+arrays and RecordBatches retain their original native buffer owners. No
+batch-to-dictionary conversion or adapter-owned batch schema is needed.
+Consumer annotations belong in `batch.metadata`. Optional `batch.history`
+retains the temporal-query output format, and `batch.history_merges` contains
+named Arrow offset/order pairs. These classes support ordinary pickle transport;
+all processes must use a matching DiskGraph version.
+
 ## Install Rust
 
 ```bash

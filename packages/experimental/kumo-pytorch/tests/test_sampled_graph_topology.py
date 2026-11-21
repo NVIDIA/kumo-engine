@@ -182,7 +182,7 @@ def test_sampled_buffers_match_native_without_reconstruction(
         assert len(actual) == len(native) == 4 // batch_size
         for result, raw in zip(actual, native, strict=True):
             graph = result.inputs["graph"]
-            original = raw["graphs"]["main"]
+            original = raw.graphs["main"]
             edges = graph.edges if output_format == "columnar" else graph["edges"]
             counts = (
                 graph.num_sampled_edges
@@ -195,34 +195,34 @@ def test_sampled_buffers_match_native_without_reconstruction(
                 else graph["num_sampled_nodes"]
             )
             count_values = tuple if output_format == "columnar" else list
-            for table, values in original["num_sampled_nodes_dict"].items():
+            for table, values in original.num_sampled_nodes_dict.items():
                 if table in {"people", "events"}:
                     assert type(nodes[table]) is count_values
                     assert nodes[table] == count_values(values.to_pylist())
             physical = plan._source._sampling_plan(plan.contract.sample.neighborhoods["g"])[1]
             assert dict(counts) == {
-                kind["rel"]: count_values(entry["counts"].to_pylist())
-                for entry in original["num_sampled_edges_dict"]
-                if (kind := entry["edge_type"])["rel"] in physical
+                kind.rel: count_values(entry.counts.to_pylist())
+                for entry in original.num_sampled_edges_dict
+                if (kind := entry.edge_type).rel in physical
             }
             assert all(type(values) is count_values for values in counts.values())
             selected = {
-                entry["edge_type"]["rel"]: entry
-                for entry in original["edge_index_dict"]
-                if entry["edge_type"]["rel"] in physical
+                entry.edge_type.rel: entry
+                for entry in original.edge_index_dict
+                if entry.edge_type.rel in physical
             }
             kinds = {
-                entry["edge_type"]["rel"]: entry["edge_type"]
-                for entry in (*original["edge_index_dict"], *original["num_sampled_edges_dict"])
-                if entry["edge_type"]["rel"] in physical
+                entry.edge_type.rel: entry.edge_type
+                for entry in (*original.edge_index_dict, *original.num_sampled_edges_dict)
+                if entry.edge_type.rel in physical
             }
             assert edges.keys() == kinds.keys()
             for key, kind in kinds.items():
                 assert isinstance(key, str)
                 edge = edges[key]
                 entry = selected.get(key)
-                left = [] if entry is None else entry["src"].to_pylist()
-                right = [] if entry is None else entry["dst"].to_pylist()
+                left = [] if entry is None else entry.src.to_pylist()
+                right = [] if entry is None else entry.dst.to_pylist()
                 if output_format == "columnar":
                     assert edge.index["source"].to_pylist() == left
                     assert edge.index["destination"].to_pylist() == right
@@ -231,9 +231,9 @@ def test_sampled_buffers_match_native_without_reconstruction(
                     assert edge["index"].tolist() == [left, right]
                     metadata = edge
                 assert (metadata["source_type"], key, metadata["destination_type"]) == (
-                    kind["src"],
+                    kind.src,
                     key,
-                    kind["dst"],
+                    kind.dst,
                 )
                 logical = physical[key]
                 assert metadata["relation"] == logical
@@ -244,12 +244,8 @@ def test_sampled_buffers_match_native_without_reconstruction(
                 )
                 assert sum(counts[key]) == len(left)
             # Both directions survive as separate native relation keys.
-            assert any(
-                kind["src"] == "people" and kind["dst"] == "events" for kind in kinds.values()
-            )
-            assert any(
-                kind["src"] == "events" and kind["dst"] == "people" for kind in kinds.values()
-            )
+            assert any(kind.src == "people" and kind.dst == "events" for kind in kinds.values())
+            assert any(kind.src == "events" and kind.dst == "people" for kind in kinds.values())
             if output_format != "columnar":
                 assert graph["nodes"]["people"]["batch"].dtype == torch.long
 
@@ -857,25 +853,23 @@ def test_sampled_count_only_edge_type_has_empty_buffer(sampled_plan, monkeypatch
         removed = []
 
         def count_only(sample, spec, runtime, **kwargs):
-            graph = dict(runtime["graphs"]["main"])
+            graph = replace(runtime.graphs["main"])
             _, selected = source._sampling_plan(sample.neighborhoods[spec.source])
             entry = next(
-                item
-                for item in graph["num_sampled_edges_dict"]
-                if item["edge_type"]["rel"] in selected
+                item for item in graph.num_sampled_edges_dict if item.edge_type.rel in selected
             )
-            physical = entry["edge_type"]["rel"]
+            physical = entry.edge_type.rel
             removed.append(physical)
-            graph["num_sampled_edges_dict"] = [
-                {**item, "counts": pa.array([0] * len(item["counts"]), type=item["counts"].type)}
-                if item["edge_type"]["rel"] == physical
+            graph.num_sampled_edges_dict = [
+                replace(item, counts=pa.array([0] * len(item.counts), type=item.counts.type))
+                if item.edge_type.rel == physical
                 else item
-                for item in graph["num_sampled_edges_dict"]
+                for item in graph.num_sampled_edges_dict
             ]
-            graph["edge_index_dict"] = [
-                item for item in graph["edge_index_dict"] if item["edge_type"]["rel"] != physical
+            graph.edge_index_dict = [
+                item for item in graph.edge_index_dict if item.edge_type.rel != physical
             ]
-            return original(sample, spec, {**runtime, "graphs": {"main": graph}}, **kwargs)
+            return original(sample, spec, replace(runtime, graphs={"main": graph}), **kwargs)
 
         monkeypatch.setattr(source, "columnar_graph_batch", count_only)
         graph = next(task.batches(output_format="columnar")).inputs["graph"]

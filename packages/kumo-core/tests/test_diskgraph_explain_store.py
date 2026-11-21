@@ -10,6 +10,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 import torch
+from diskgraph import RuntimeEdge, RuntimeEdgeCounts, RuntimeEdgeType, RuntimeGraph
 from kumo_core.diskgraph.runtime_adapter import _attach_graph_topology
 from kumo_core.encoders import TensorMapper
 from kumo_core.encoders.tensor_frame_encoder import HeteroTensorFrameEncoder
@@ -121,44 +122,53 @@ _TXN_USER = 'transactions_PARTY_ID_MAIN_CLIENT_to_users_PARTY_ID_MAIN_CLIENT'
 _LOT_PK = 'lots_TXN_KEY_to_transactions_TXN_KEY'
 
 
-def _lp_explain_batch(relations, node_ids, batch_dict, per_hop_counts):
-    channel = {
-        'node_ids': {
-            name: pa.array(ids, type=pa.uint64())
-            for name, ids in node_ids.items()
+def _lp_explain_batch(
+    relations: list[tuple[str, str, str, list[int], tuple[list[int], list[int]]]],
+    node_ids: dict[str, list[int]],
+    batch_dict: dict[str, list[int]],
+    per_hop_counts: bool,
+) -> HeteroData:
+    """Build an explanation batch from producer-owned topology records."""
+    channel = RuntimeGraph(
+        node_ids={
+            name: pa.array(ids, type=pa.uint64()) for name, ids in node_ids.items()
         },
-        'batch_dict': {
-            name: pa.array(ids, type=pa.uint32())
-            for name, ids in batch_dict.items()
+        batch_dict={
+            name: pa.array(ids, type=pa.uint32()) for name, ids in batch_dict.items()
         },
-        'edge_index_dict': [{
-            'edge_type': {
-                'src': src,
-                'rel': rel,
-                'dst': dst
-            },
-            'src': pa.array(edges[0], type=pa.uint32()),
-            'dst': pa.array(edges[1], type=pa.uint32()),
-        } for src, rel, dst, _, edges in relations if edges[0]],
-    }
+        edge_index_dict=[
+            RuntimeEdge(
+                edge_type=RuntimeEdgeType(src=src, rel=rel, dst=dst),
+                src=pa.array(edges[0], type=pa.uint32()),
+                dst=pa.array(edges[1], type=pa.uint32()),
+            )
+            for src, rel, dst, _, edges in relations
+            if edges[0]
+        ],
+    )
     if per_hop_counts:
-        channel['num_sampled_edges_dict'] = [{
-            'edge_type': {
-                'src': src,
-                'rel': rel,
-                'dst': dst
-            },
-            'counts': pa.array(counts, type=pa.uint64()),
-        } for src, rel, dst, counts, _ in relations]
+        channel.num_sampled_edges_dict = [
+            RuntimeEdgeCounts(
+                edge_type=RuntimeEdgeType(src=src, rel=rel, dst=dst),
+                counts=pa.array(counts, type=pa.uint64()),
+            )
+            for src, rel, dst, counts, _ in relations
+        ]
     batch = HeteroData()
     _attach_graph_topology(batch, channel)
-    batch['lots'].batch_size = len(node_ids['lots'])
+    batch["lots"].batch_size = len(node_ids["lots"])
     return batch
 
 
-def _format_rfm(tmp_path, batch, pred, y_idx, y_batch,
-                entity_path=('transactions', 'SALE_LOT_KEY', 'lots')):
-    batch['lots'].edge_label_index = torch.stack([y_batch, y_idx])
+def _format_rfm(
+    tmp_path,
+    batch,
+    pred,
+    y_idx,
+    y_batch,
+    entity_path=("transactions", "SALE_LOT_KEY", "lots"),
+):
+    batch["lots"].edge_label_index = torch.stack([y_batch, y_idx])
     module = ShallowRHSLinkGNNLightningModule(
         encoder=HeteroTensorFrameEncoder(table_encoder_dict={'users': {}},
                                          out_channels=4, time_col_dict={},

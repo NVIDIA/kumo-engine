@@ -2463,11 +2463,11 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
     // pybind dict (and Python e2e) rely on to split positives from negatives.
     //
     // Seeds are inserted into `TypeState.nodes` first, in seed order, at hop 0
-    // (see RuntimeBatchOutput::finalize, which maps `type_state.nodes` →
+    // (see SamplingBatchOutput::finalize, which maps `type_state.nodes` →
     // `global_id` in order). Here we drive `finalize` directly over a
     // SamplingState whose rhs TypeState holds the post-`append_global_negatives`
     // seed set, then assert the prefix ordering survives finalize verbatim.
-    use crate::output::{OutputHandler, RuntimeBatchOutput};
+    use crate::output::{OutputHandler, SamplingBatchOutput};
     use crate::state::{NodeRecord, SamplingState, TypeState};
     use std::collections::HashSet;
 
@@ -2509,7 +2509,7 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
     state.type_states.insert(lhs_type_id, lhs_state);
     state.type_states.insert(rhs_type_id, rhs_state);
 
-    let mut output = RuntimeBatchOutput::new(
+    let mut output = SamplingBatchOutput::new(
         "main",
         HashSet::new(),
         HashMap::new(),
@@ -2518,7 +2518,7 @@ fn test_finalize_preserves_anchor_major_seed_prefix() {
         HashSet::new(),
     );
     output.finalize(&state).unwrap();
-    let batch = output.into_runtime_batch();
+    let batch = output.into_sampling_batch();
     let rhs_node_ids = &batch.graphs["main"].node_ids["rhs"];
 
     assert_eq!(

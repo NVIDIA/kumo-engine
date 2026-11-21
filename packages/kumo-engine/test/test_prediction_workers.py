@@ -367,7 +367,7 @@ def test_shards_with_different_loader_workers_cover_seeds_once(
         assert len(dataset) == len(batches)
         seeds += [
             seed for batch in batches
-            for seed in batch['task']['tt_stage_node_ids'].to_pylist()
+            for seed in batch.task.tt_stage_node_ids.to_pylist()
         ]
     population = DiskgraphTaskManifest.load(
         predict_manifest).stage_counts['predict']

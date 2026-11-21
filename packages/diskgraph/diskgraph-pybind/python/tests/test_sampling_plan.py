@@ -251,8 +251,8 @@ def test_typed_plans_produce_native_batches_and_unsupported_mode_errors(
             next(typed)
     else:
         batches = list(typed)
-        assert sum(len(batch["task"]["input_ids"]) for batch in batches) == typed_count
-        assert all("main" in batch["graphs"] for batch in batches)
+        assert sum(len(batch.task.input_ids) for batch in batches) == typed_count
+        assert all("main" in batch.graphs for batch in batches)
 
 
 @pytest.mark.parametrize("fanout", [-1, 2**32])
@@ -296,8 +296,8 @@ def test_native_iterators_keep_values_when_the_plan_is_replaced(
         )
     )
 
-    before_nodes = next(before)["graphs"]["main"]["node_ids"]
-    after_nodes = next(after)["graphs"]["main"]["node_ids"]
+    before_nodes = next(before).graphs["main"].node_ids
+    after_nodes = next(after).graphs["main"].node_ids
     assert len(before_nodes["orders"]) > 0
     assert "orders" not in after_nodes or len(after_nodes["orders"]) == 0
 
