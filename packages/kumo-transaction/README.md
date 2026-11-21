@@ -2,73 +2,31 @@
 
 **Kumo Transaction**, or **TxFM**, brings transaction foundation models to Kumo Engine.
 
-This package is based on the **Transaction Foundation Model kit**, a
-reference-architecture kit for composing, training, and evaluating transaction foundation models. The
-kit is for education and solution architecture; it is not a production
-authorization, fraud-decisioning, or model-serving system.
+## Motivation
 
-Source: <https://gitlab-master.nvidia.com/globalfsiteam/fsi_samples/transaction-foundation-model-dev> (branch `v2`)
+Payments, cards, and banking systems generate huge streams of transactions.
+Teams use that data to predict things like fraud, customer churn, and spending
+behavior. Today this usually means:
 
-## What it answers
+- **Hand-built features.** Analysts turn raw transaction history into
+  aggregates (spend in the last 7 days, count of merchants, and so on), which
+  is slow, specific to one task, and easy to get wrong.
+- **One model per task.** Each new prediction problem repeats the same
+  feature work from scratch.
+- **Lost signal.** Summaries throw away the order, timing, and detail of the
+  individual transactions.
 
-Every recipe in the kit asks the same question: does adding a transaction foundation model embedding to
-raw features beat XGBoost on raw features alone? Three reference architectures
-answer it:
+## What problem it solves
 
-- **`blueprint_v1`**: NVIDIA's TFM Blueprint on public TabFormer card data, with
-  flat field tokens and a causal decoder.
-- **`pragma_like`**: a PRAGMA-style stack with bidirectional profile, event, and
-  history encoders.
-- **`blueprint_v2`**: PRAGMA's encoders under a causal history decoder.
+A transaction foundation model learns directly from the raw sequence of
+transactions and turns it into a compact, reusable representation (an
+embedding). Kumo Transaction makes that practical in Kumo Engine:
 
-`pragma_like` and `blueprint_v2` run on the same pragmatiq rows and tasks, so
-they can be compared directly.
+- Learn from raw transaction history instead of hand-built features.
+- Reuse one representation across many prediction tasks.
+- Add the representation to the features you already use, to improve accuracy
+  on tasks such as fraud detection.
 
-## Composing a model
+## Status
 
-A model is one choice in each of five slots: data, event representation,
-sequence architecture, objective, and readout and adaptation. The kit refuses
-pairings that would leak or cannot learn.
-
-```python
-from tfm import TrxFM, Flat, Decoder, NoPE, EagerAttention, LastTokenPool, NextEvent, Binary
-
-model = TrxFM(
-    granularity=Flat(Decoder(depth=2, mask="causal")),
-    position=NoPE(),
-    attention=EagerAttention(),
-    objective=NextEvent(),
-    readout=LastTokenPool(),
-    heads={"fraud": Binary()},
-)
-```
-
-A recipe's YAML is a serialization of this API. The hierarchical stacks are
-experimental and import from `tfm.experimental`.
-
-## Getting started with the upstream kit
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync --extra dev
-uv run tfm smoke --recipe blueprint_v1     # CPU, generated data, about a minute
-```
-
-Full-size runs need a local dataset (`TFM_TABFORMER_ROOT` or
-`TFM_PRAGMATIQ_ROOT`) and, at reference size, a GPU.
-
-## Upstream layout
-
-| Path | Contents |
-|---|---|
-| `src/` | The `tfm` library |
-| `recipes/` | Reference architectures and their commands |
-| `notebooks/` | Step-by-step notebooks for `blueprint_v1` and pragmatiq |
-| `benchmarks/` | Evaluation harness and recorded results |
-| `configs/` | Recipe YAML |
-| `docs/` | Concepts, reference, and migration guides |
-
-## License
-
-Apache 2.0.
+This package is new. Usage documentation will be added as the package grows.
