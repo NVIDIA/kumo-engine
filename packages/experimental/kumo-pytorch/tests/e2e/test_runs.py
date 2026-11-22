@@ -43,6 +43,17 @@ def test_loader_stage_observer_scopes_calls_and_restores_patches():
     assert observer.stages["owner"]["elapsed_ns"] > 0
 
 
+def test_fused_native_profile_counts_the_interval_once():
+    from tests.e2e.loader_timing import _native_totals
+
+    fused = {"operation": "runtime", "fused": True, "sampling_ns": 7, "retrieval_ns": 7}
+    assert _native_totals([[fused]]) == {"sample_and_retrieve_ns": 7}
+    assert _native_totals([[fused], []]) is None
+    assert _native_totals([[fused], [dict(fused, rows_decoded=4)]]) == {
+        "sample_and_retrieve_ns": 14
+    }
+
+
 @pytest.fixture(scope="module")
 def xs(tmp_path_factory: pytest.TempPathFactory) -> HMDataset:
     return generate("XS", 7, tmp_path_factory.mktemp("hm-xs"))

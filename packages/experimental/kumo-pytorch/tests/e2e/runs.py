@@ -15,6 +15,9 @@ is an error instead.
 33-anchor CPU fixture in fresh pytest workers and prints the timing report path.
 Each worker records setup once, fit stages per mode and batch stages per epoch.
 Stage times include nested calls. A missing stage did not run on that workload.
+Use ``banking`` in place of ``loader`` to time one CPU PyG training step per
+worker on the package banking fixture. Its step includes batch adaptation through
+the optimizer update and excludes model initialization and batch delivery.
 """
 
 from __future__ import annotations
@@ -40,7 +43,11 @@ from tests.e2e.tiers import BY_NAME, Tier
 REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
-LOADER_CASE = "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing"
+TIMING_CASES = {
+    "loader": "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing",
+    "banking": "tests/test_diskgraph_backend.py::"
+    "test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible",
+}
 LOADER_BATCHING = {"split": "train", "batch_size": 5}
 
 
@@ -124,42 +131,45 @@ def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options
                     task.to_artifact().save(artifact)
                 for epoch in range(2):
                     with stage_observer(install_stages) as profile:
-                        record = measure_epoch(task, make_batches, epoch=epoch, **options)
-                    results[mode]["epochs"].append({**record, "stages": profile.stages})
+                        record = {"epoch": epoch, "complete": False, "stages": profile.stages}
+                        results[mode]["epochs"].append(record)
+                        measure_epoch(task, make_batches, record, profile, **options)
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
     return results
 
 
 def _ranges(rows):
-    """Summarize numeric metrics shared by the workers. Raw observations stay per worker."""
+    """Keep each completed worker's value alongside the median and range."""
     metrics = {}
     for key in rows[0]:
         values = [row.get(key) for row in rows]
         if all(isinstance(v, dict) for v in values):
             metrics[key] = _ranges(values)
-        elif all(isinstance(v, (int, float)) for v in values):
+        elif all(type(v) in (int, float) for v in values):
             metrics[key] = {
+                "values": values,
                 "median": statistics.median(values),
                 "range": [min(values), max(values)],
             }
     return metrics
 
 
-def _loader_campaign(directory: Path, repetitions: int) -> Path:
+def _timing_campaign(workload: str, directory: Path, repetitions: int) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    root = Path(tempfile.mkdtemp(prefix="loader-", dir=directory.resolve()))
+    root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=directory.resolve()))
+    case = TIMING_CASES[workload]
     report = root / "timings.json"
     completed = []
     workers = []
     for index in range(repetitions):
         work = root / str(index)
         worker = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", LOADER_CASE, "--e2e-dir", str(work)],
+            [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work)],
             cwd=REPOSITORY,
-            env={**os.environ, "KUMO_PYTORCH_PROFILE_LOADER": "1"},
+            env={**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"},
         )
-        result = work / "loader" / "results.json"
+        result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
         workers.append(
             {
@@ -176,7 +186,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     for mode in completed[0] if completed else ():
         fits = [run[mode] for run in completed]
         summary[mode] = _ranges(fits)
-        if mode == "setup":
+        if "epochs" not in fits[0]:
             continue
         summary[mode]["epochs"] = [
             _ranges(rows) for rows in zip(*(fit["epochs"] for fit in fits), strict=True)
@@ -184,7 +194,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     sources = [
         Path(__file__),
         Path(__file__).with_name("loader_timing.py"),
-        REPOSITORY / LOADER_CASE.split("::")[0],
+        REPOSITORY / case.split("::")[0],
     ]
     revision = tracked_diff = None
     try:
@@ -196,10 +206,10 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     except (OSError, subprocess.CalledProcessError):
         pass  # Source distributions can run outside a Git checkout.
     metadata = {
-        "workload": LOADER_CASE,
+        "workload": case,
         "device": "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
-        **LOADER_BATCHING,
+        **(LOADER_BATCHING if workload == "loader" else {"batch_size": 2}),
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
@@ -208,7 +218,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
         "versions": {
             d.name: d.version
             for d in distributions()
-            if d.name in ("torch", "pyarrow", "diskgraph")
+            if d.name in ("torch", "pyarrow", "diskgraph", "torch-geometric")
         },
         "workers": workers,
         "summary": summary,
@@ -225,12 +235,12 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--e2e-dir", type=Path, required=True)
-    if argv[:1] == ["loader"]:
+    if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
         args = parser.parse_args(argv[1:])
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
-        print(_loader_campaign(args.e2e_dir, args.repetitions))
+        print(_timing_campaign(argv[0], args.e2e_dir, args.repetitions))
         return
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))

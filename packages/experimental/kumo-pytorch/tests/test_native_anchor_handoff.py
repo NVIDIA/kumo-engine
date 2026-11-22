@@ -474,6 +474,29 @@ def _index_bytes(index):
     return sum(files.values())
 
 
+@pytest.mark.parametrize("native_task", ["profile"], indirect=True)
+def test_loader_failure_keeps_delivered_batch(native_task, native_anchor_delivery, tmp_path):
+    from tests.e2e.loader_timing import parquet_metadata
+    from tests.e2e.runs import time_loader
+
+    plan, _, table = native_task
+
+    def interrupted(task, **options):
+        yield next(native_anchor_delivery(task, **options))
+        raise RuntimeError("second batch failed")
+
+    work = tmp_path / "interrupted"
+    setup = {"anchor_sha256": parquet_metadata(table.source.path)["sha256"]}
+    with pytest.raises(RuntimeError, match="second batch failed"):
+        time_loader(plan, table, work, interrupted, setup=setup, batch_size=2)
+    (epoch,) = json.loads((work / "results.json").read_text())["fresh"]["epochs"]
+    assert not epoch["complete"] and "samples_per_s" not in epoch
+    assert epoch["batch_sizes"] == [epoch["samples"]] == [2]
+    (raw,) = epoch["native_profiles"]
+    assert epoch["native_operations"] == [[{"operation": "runtime", **raw}]]
+    assert epoch["wait_ns"] == sum(epoch["request_ns"]) + epoch["failed_request_ns"]
+
+
 @pytest.mark.skipif(
     os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1",
     reason="run the loader benchmark with python -m tests.e2e.runs loader --e2e-dir DIR",
@@ -555,9 +578,22 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
             assert (row["nodes"], row["edges"], row["events"]) == (33 * 3, 33 * 2, 33 * 2)
             assert row["latency"]["p95_ns"] == max(row["request_ns"])
             assert row["wait_ns"] == sum(row["request_ns"]) + row["terminal_ns"]
-            assert (row["post_warmup"]["batches"], row["post_warmup"]["samples"]) == (5, 23)
+            steady = row["post_warmup"]
+            assert (steady["batches"], steady["samples"], steady["nodes"], steady["edges"]) == (
+                5,
+                23,
+                69,
+                46,
+            )
+            for key in ("samples", "nodes", "edges"):
+                assert steady[key + "_per_s"] == steady[key] * 1e9 / steady["elapsed_ns"]
             # Every batch decodes the shared root and two events, and examines each seed.
             profile = row["native_profile"]
+            assert [p["rows_examined"] for p in row["native_profiles"]] == [8] * 6 + [6]
+            assert row["native_operations"] == [
+                [{"operation": "runtime", **raw}] for raw in row["native_profiles"]
+            ]
+            assert row["native_totals"] == profile
             assert (profile["rows_examined"], profile["rows_decoded"]) == (33 + 7 * 3, 7 * 3)
             assert profile["sampling_ns"] > 0 and profile["retrieval_ns"] > 0
 
