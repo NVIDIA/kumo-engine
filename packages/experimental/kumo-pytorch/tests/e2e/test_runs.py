@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import mmap
 import os
 import subprocess
@@ -33,6 +34,30 @@ def test_cuda_campaign_requires_the_selected_junit_cases(tmp_path, contents, pas
     path = tmp_path / "junit.xml"
     path.write_text(f"<testsuite>{contents}</testsuite>")
     assert (runs._cuda_junit_error(path, ["tests/model.py::test_cuda"]) is None) == passes
+
+
+def test_aml_campaign_requires_candidate_workers_and_both_epochs(tmp_path):
+    path = tmp_path / "timings.json"
+    workers = []
+    epochs = [{"epoch": i, "complete": True} for i in range(2)]
+    for i, action in enumerate(("build", "reopen", "reopen")):
+        result = tmp_path / str(i) / "fresh/l01/results.json"
+        result.parent.mkdir(parents=True)
+        result.write_text(json.dumps({"fresh": {"epochs": epochs}}))
+        worker = dict(fit="fresh", returncode=0, complete=True, index_action=action)
+        workers.append(dict(worker, results=str(result.relative_to(tmp_path))))
+    report = dict(workload=runs.TIMING_CASES["l01"], device="cpu", workers=workers)
+    report.update(revision="candidate", tracked_diff_sha256=None)
+    path.write_text(json.dumps(report))
+    runs._aml_evidence("l01-index", path, "candidate")
+    with pytest.raises(ValueError, match="candidate"):
+        runs._aml_evidence("l01-index", path, "another-revision")
+    result.write_text(json.dumps({"fresh": {"epochs": epochs[:1]}}))
+    with pytest.raises(ValueError, match="epochs"):
+        runs._aml_evidence("l01-index", path, "candidate")
+    path.write_text(json.dumps({**report, "workers": workers[:-1]}))
+    with pytest.raises(ValueError, match="coverage"):
+        runs._aml_evidence("l01-index", path, "candidate")
 
 
 def test_loader_stage_observer_scopes_calls_and_restores_patches():

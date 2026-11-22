@@ -40,6 +40,9 @@ checks native cache reuse on uncontrolled file pages.
 memory and verified cold/warm index pages on a Linux GPU worker.
 Use ``hi-small --host-memory sampled --cgroup-parent DIR`` to compare fresh fits
 on 25k and 400k train anchors for all five HI Small bindings (three pairs each).
+Use ``aml --cgroup-parent DIR`` for all four L01 modes and 15 HI Small pairs
+on one clean candidate revision. Pass ``--sudo`` if the two cgroup supervisors
+require root. The linked measurements are descriptive.
 """
 
 from __future__ import annotations
@@ -82,6 +85,14 @@ CUDA_REGRESSIONS = (
 )
 LOADER_BATCHING = {"split": "train", "batch_size": 5}
 L01_BATCHING = LOADER_BATCHING | {"batch_size": 4}
+AML_MODES = {
+    "l01-cpu": ("l01",),
+    "l01-index": ("l01", "--index-lifecycle"),
+    "l01-length": ("l01", "--length-planning"),
+    "l01-cuda": ("l01", "--cuda"),
+    "hi-small": ("hi-small", "--host-memory", "sampled"),
+}
+HI_SMALL_BINDINGS = ("E01", "E02", "E03", "E04", "E05")
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
@@ -305,7 +316,7 @@ def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
     sizes = (25_000, 400_000)
     metrics = ("peak_host_bytes", "peak_anonymous_bytes")
     try:
-        for binding in ("E01", "E02", "E03", "E04", "E05"):
+        for binding in HI_SMALL_BINDINGS:
             identity = None
             peaks = {size: [] for size in sizes}
             for repeat in range(3):
@@ -521,12 +532,105 @@ def _timing_campaign(
     return report
 
 
+def _aml_evidence(mode, path, revision):
+    data = json.loads(path.read_text())
+    if (
+        data["revision"] != revision
+        or data["tracked_diff_sha256"] is not None
+        or data["workload"] != TIMING_CASES[AML_MODES[mode][0]]
+    ):
+        raise ValueError(f"Wrong candidate or workload in {path}")
+    workers = data["workers"]
+    if mode == "hi-small":
+        expected = {
+            f"{binding}/{rep}/{stage}/results.json"
+            for binding, rep, stage in product(
+                HI_SMALL_BINDINGS, range(3), ("index-setup", "25000", "400000")
+            )
+        }
+        ok = data["complete"] and set(data["summary"]) == set(HI_SMALL_BINDINGS)
+    else:
+        lifecycle = mode == "l01-index"
+        fits = ("fresh",) if lifecycle else ("fresh", "reloaded")
+        expected = {f"{rep}/{fit}/l01/results.json" for rep, fit in product(range(3), fits)}
+        ok = data["device"] == ("cuda" if mode == "l01-cuda" else "cpu")
+        ok &= data.get("length_planning", False) == (mode == "l01-length")
+        if lifecycle:
+            ok &= [w.get("index_action") for w in workers] == ["build", "reopen", "reopen"]
+    if not ok or len(workers) != len(expected) or {w["results"] for w in workers} != expected:
+        raise ValueError(f"Incomplete {mode} coverage in {path}")
+    for worker in workers:
+        result = path.parent / worker["results"]
+        if worker["returncode"] or not result.is_file():
+            raise ValueError(f"Missing successful worker for {result}")
+        if mode != "hi-small":
+            epochs = json.loads(result.read_text())[worker["fit"]]["epochs"]
+            if not worker["complete"] or [(e["epoch"], e["complete"]) for e in epochs] != [
+                (0, True),
+                (1, True),
+            ]:
+                raise ValueError(f"Incomplete epochs in {result}")
+
+
+def _aml_campaign(e2e_dir, cgroup_parent, sudo=False):
+    candidate = _revision()
+    revision = candidate["revision"]
+    if (
+        not revision
+        or candidate["tracked_diff_sha256"]
+        or os.getenv("GITHUB_SHA", revision) != revision
+    ):
+        raise ValueError("The AML campaign requires a clean checkout of the candidate revision")
+    e2e_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="aml-", dir=e2e_dir.resolve()))
+    report = {"revision": revision, "complete": False, "reports": {}, "hi_small_pairs": []}
+    try:
+        for mode, args in AML_MODES.items():
+            directory = root / mode
+            command = [sys.executable, "-m", "tests.e2e.runs", *args, "--e2e-dir", str(directory)]
+            if mode in ("hi-small", "l01-cuda"):
+                command.extend(["--cgroup-parent", str(cgroup_parent)])
+                if sudo:
+                    command = [
+                        "sudo",
+                        "-n",
+                        "--",
+                        "env",
+                        f"PATH={os.environ['PATH']}",
+                        f"KUMO_PYTORCH_DATA_ROOT={os.environ['KUMO_PYTORCH_DATA_ROOT']}",
+                        *command,
+                    ]
+            print(f"Running {mode}", flush=True)
+            subprocess.run(command, cwd=REPOSITORY, check=True)
+            (path,) = directory.glob("*/timings.json")
+            _aml_evidence(mode, path, revision)
+            report["reports"][mode] = str(path.relative_to(root))
+        report["hi_small_pairs"] = [
+            {"binding": binding, "repetition": rep}
+            for binding, rep in product(HI_SMALL_BINDINGS, range(3))
+        ]
+        report["complete"] = True
+    finally:
+        (root / "campaign.json").write_text(json.dumps(report, indent=2) + "\n")
+    return root
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--e2e-dir", type=Path, required=True)
+    if argv and argv[0] == "aml":
+        parser.add_argument("--cgroup-parent", type=Path, required=True)
+        parser.add_argument(
+            "--sudo", action="store_true", help="elevate the two cgroup supervisors"
+        )
+        args = parser.parse_args(argv[1:])
+        if sys.platform != "linux":
+            parser.error("aml requires a Linux GPU worker with delegated memory cgroups")
+        print(_aml_campaign(**vars(args)) / "campaign.json")
+        return
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
         if argv[0] == "l01":

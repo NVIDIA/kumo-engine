@@ -34,7 +34,7 @@ on:  # yamllint disable-line rule:truthy
         type: choice
         required: true
         default: package
-        options: [package, cuda, l01-cuda, hi-small-memory, all, smoke, training, lifecycle, full]
+        options: [package, cuda, aml, l01-cuda, hi-small-memory, all, smoke, training, lifecycle, full]
   schedule:
     - cron: '17 10 * * *'
 
@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ endsWith(inputs.mode, 'cuda') && 'cuda' || inputs.mode == 'hi-small-memory' && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (endsWith(inputs.mode, 'cuda') || inputs.mode == 'aml') && 'cuda' || inputs.mode == 'hi-small-memory' && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -104,7 +104,7 @@ jobs:
         run: |
           root="$RUNNER_TEMP/kumo-pytorch-data"
           pins=(e2e/datasets/pins/*.json)
-          if [[ -n "${DATASET_PIN:-}" ]]; then pins=("$DATASET_PIN"); fi
+          if [[ -n "${DATASET_PINS:-}" ]]; then read -ra pins <<< "$DATASET_PINS"; fi
           python3 -m e2e.datasets.staging "${pins[@]}" --root "$root"
           echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
           # Bash also reads this before running package code inside the shared setup action.
@@ -152,24 +152,30 @@ jobs:
           if-no-files-found: error
 
   aml-source:
-    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'l01-cuda' || inputs.mode == 'hi-small-memory') && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["aml","l01-cuda","hi-small-memory"]'), inputs.mode) && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
     runs-on: ubuntu-24.04
     permissions: {contents: read, pull-requests: read}
-    outputs: {policy: '${{ steps.source.outputs.policy }}'}
+    outputs: {pins: '${{ steps.source.outputs.pins }}', policy: '${{ steps.source.outputs.policy }}'}
     steps:
       - *checkout
       - id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          DATASET_PIN: &aml_pin ${{ inputs.mode == 'l01-cuda' && 'e2e/datasets/pins/aml-l01.json' || 'e2e/datasets/pins/aml-e01.json' }}
+          MODE: ${{ inputs.mode }}
         run: |
           if [[ "$GITHUB_REF" != refs/heads/main ]]; then
             gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
               '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
           fi
-          jq -c '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
-            Resource:[.objects[].key | "arn:aws:s3:::kumo-engine-arena/" + .]}]}' \
-            "$DATASET_PIN" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
+          pins=(e2e/datasets/pins/aml-{l01,e01}.json)
+          case "$MODE" in
+            l01-cuda) pins=("${pins[0]}");;
+            hi-small-memory) pins=("${pins[1]}");;
+          esac
+          echo "pins=${pins[*]}" >> "$GITHUB_OUTPUT"
+          jq -sc '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
+            Resource:([.[].objects[].key | "arn:aws:s3:::kumo-engine-arena/" + .] | unique)}]}' \
+            "${pins[@]}" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
 
   aml-benchmark:
     name: ${{ inputs.mode }}
@@ -180,20 +186,23 @@ jobs:
     permissions: {contents: read, id-token: write}
     env:
       STAGE_PINNED_DATASETS: 'true'
-      DATASET_PIN: *aml_pin
+      DATASET_PINS: ${{ needs.aml-source.outputs.pins }}
       DATASET_SESSION_POLICY: ${{ needs.aml-source.outputs.policy }}
-      WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || 'hi-small' }}
+      WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || inputs.mode == 'hi-small-memory' && 'hi-small' || 'aml' }}
     steps:
       - *checkout
-      - run: test -n "$DATASET_SESSION_POLICY"
+      - run: test -n "$DATASET_SESSION_POLICY" && test -n "$DATASET_PINS"
       - *dataset_credentials
       - *stage_datasets
       - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
-          torch-backend: ${{ inputs.mode == 'l01-cuda' && 'cu130' || 'cpu' }}
+          torch-backend: ${{ inputs.mode == 'hi-small-memory' && 'cpu' || 'cu130' }}
       - name: Run paired AML fits
         run: |
+          if [[ "$WORKLOAD" == aml ]]; then
+            exec python -m tests.e2e.runs aml --e2e-dir "$RUNNER_TEMP/aml" --cgroup-parent /sys/fs/cgroup --sudo
+          fi
           args=(--host-memory sampled)
           if [[ "$WORKLOAD" == l01 ]]; then args=(--cuda); fi
           sudo -n -- env PATH="$PATH" KUMO_PYTORCH_DATA_ROOT="$KUMO_PYTORCH_DATA_ROOT" \
@@ -204,10 +213,11 @@ jobs:
         with:
           name: ${{ inputs.mode }}-measurements
           path: |
-            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/timings.json
-            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/prepared/identity.json
-            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/*/*/*/results.json
-            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/*/*/cuda.xml
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/**/campaign.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/**/timings.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/**/prepared/identity.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/**/results.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/**/cuda.xml
           if-no-files-found: error
 
   streaming-25b:
