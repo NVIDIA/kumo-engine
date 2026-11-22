@@ -50,10 +50,11 @@ if TYPE_CHECKING:
 
 pytest.importorskip("ray", reason="Install kumo-core[ray] for backend tests")
 
+_ARTIFACTS = ArtifactIdentity("snapshot", "task", "mapping")
+
 
 def _request() -> BatchRequest:
     return BatchRequest(
-        ArtifactIdentity("snapshot", "task", "mapping"),
         3,
         0,
         1,
@@ -76,7 +77,7 @@ def _config() -> ReplicaConfig:
     return ReplicaConfig(
         "runtime.json",
         "snapshot.json",
-        _request().artifacts,
+        _ARTIFACTS,
         42,
         2,
         batch_encoder=_encode_batch,
@@ -175,7 +176,7 @@ def test_replica_verifies_artifacts_and_budgets() -> None:
     with patch("pathlib.Path.read_bytes", return_value=content):
         config.verify()
         with pytest.raises(SamplingContractError, match="digest"):
-            replace(config, artifacts=_request().artifacts).verify()
+            replace(config, artifacts=_ARTIFACTS).verify()
     with pytest.raises(SamplingContractError, match="thread/context"):
         replace(config, num_threads=0).verify()
 
@@ -252,7 +253,7 @@ def test_backend_descriptor_delays_actor_handle_deserialization(
     config = RayBackendConfig(
         RayConnection("auto", "sampling-tests"),
         tuple(replicas),
-        _request().artifacts,
+        _ARTIFACTS,
         42,
         2,
     )
@@ -310,7 +311,7 @@ def test_request_lookahead_does_not_start_sampling(
     client._manifest_verified = True
     client.manifest_path = "metadata-only.json"
     client.config = MagicMock()
-    client.config.artifacts = _request().artifacts
+    client.config.artifacts = _ARTIFACTS
     client.config.engine_seed = 42
     client.config.num_threads = 2
     schedule = MagicMock()
@@ -450,7 +451,7 @@ def _backend(
     return RayBackendConfig(
         RayConnection("auto", "sampling-tests"),
         replicas,
-        _request().artifacts,
+        _ARTIFACTS,
         42,
         2,
         request_timeout=request_timeout,
@@ -516,7 +517,7 @@ def test_direct_call_has_no_control_rpcs() -> None:
     ray.cloudpickle.loads.return_value = (actor,)
     ray.get.return_value = _payload(_request())
     config = RayBackendConfig(
-        RayConnection("unused", "unused"), b"actors", _request().artifacts, 42, 2
+        RayConnection("unused", "unused"), b"actors", _ARTIFACTS, 42, 2
     )
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)

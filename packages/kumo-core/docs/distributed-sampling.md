@@ -34,7 +34,9 @@ Actor restart and automatic method retries are disabled.
 `batch_contract.py` defines artifact identities, explicit seed requests,
 and `HeteroBatchPayload`. DiskGraph owns sampling configuration and raw runtime
 records; kumo-core defines no duplicate native batch schemas or JSON option
-adapters. `BatchRequest.validate()` checks validity and returns `None`.
+adapters. Artifact identities stay in replica/backend configuration and are not
+repeated in batch requests. Local manifests are verified during initialization.
+`BatchRequest.validate()` checks validity and returns `None`.
 
 `seed_schedule.py` builds the native seed schedule using only task metadata and
 seed sidecars. The trainer never opens graph adjacency/features. Omitted RNG
