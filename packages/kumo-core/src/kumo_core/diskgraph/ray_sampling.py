@@ -24,8 +24,10 @@ from types import ModuleType
 from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, cast
 
 import pyarrow as pa
+from diskgraph._c import SeedSchedule
 from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
+from torch_geometric.data import HeteroData
 
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
@@ -36,10 +38,8 @@ from kumo_core.diskgraph.batch_contract import (
 )
 
 if TYPE_CHECKING:
-    from diskgraph._c import SeedSchedule
     from ray import ObjectRef
     from ray.util.scheduling_strategies import SchedulingStrategyT
-    from torch_geometric.data import HeteroData
 
 _MethodArgs = ParamSpec("_MethodArgs")
 _MethodResult = TypeVar("_MethodResult")
@@ -396,9 +396,7 @@ class _SamplerReplica:
         if not seed_ids.equals(pa.array(request.seed_ids, type=pa.uint64())):
             raise SamplingContractError("sample seed membership/order differs")
         metadata, buffers = pack_python_hetero(self.config.batch_encoder(batch))
-        return HeteroBatchPayload(
-            request, metadata, buffers, time.monotonic() - started
-        )
+        return HeteroBatchPayload(metadata, buffers, time.monotonic() - started)
 
 
 def start_sampling_replicas(
@@ -563,7 +561,7 @@ class RayRuntimeIndex:
         payload = self._receive(request)
         if not isinstance(payload, HeteroBatchPayload):
             raise SamplingContractError("sampler did not return an encoded graph")
-        return payload.decode(request)
+        return payload.decode()
 
     def _receive(self, request: BatchRequest) -> HeteroBatchPayload:
         ray = _ray()

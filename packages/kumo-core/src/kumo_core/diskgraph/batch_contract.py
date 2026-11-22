@@ -6,15 +6,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from diskgraph.sampling_options import SamplingOptions
+from torch_geometric.data import HeteroData
 
-if TYPE_CHECKING:
-    from torch_geometric.data import HeteroData
-
-    from kumo_core.diskgraph.hetero_wire import TensorBuffer
-
+from kumo_core.diskgraph.hetero_wire import TensorBuffer, unpack_python_hetero
 
 WIRE_VERSION = 2
 SAMPLING_VERSION = 1
@@ -130,45 +126,23 @@ class HeteroBatchPayload:
     """Actor-encoded graph metadata and separate NumPy tensor buffers.
 
     Args:
-        request: Logical request and artifact identity for the encoded batch.
         metadata: Versioned MessagePack graph layout and tensor descriptors.
         buffers: Contiguous NumPy views owning the tensor data.
         sampling_seconds: Actor sampling, encoding, and packing duration.
     """
 
-    request: BatchRequest
     metadata: bytes
     buffers: list[TensorBuffer]
     sampling_seconds: float
 
-    def decode(self, expected: BatchRequest) -> HeteroData:
-        """Verify request identity and reconstruct the encoded graph.
-
-        Args:
-            expected: Request whose response is being consumed.
+    def decode(self) -> HeteroData:
+        """Reconstruct the graph associated with the trainer's pending Ray request.
 
         Returns:
             HeteroData retaining the received NumPy buffer owners.
 
         Raises:
-            SamplingContractError: If request identity differs.
             TypeError: If buffer types are unsupported.
             ValueError: If wire metadata or tensor layout is invalid.
         """
-        from kumo_core.diskgraph.hetero_wire import unpack_python_hetero
-
-        self.validate(expected)
         return unpack_python_hetero(self.metadata, self.buffers)
-
-    def validate(self, expected: BatchRequest) -> None:
-        """Check response identity before decoding its metadata and buffers.
-
-        Args:
-            expected: Logical request whose response is being consumed.
-
-        Raises:
-            SamplingContractError: If request identity differs.
-        """
-        expected.validate()
-        if self.request != expected:
-            raise SamplingContractError("wrong request, artifact, or phase generation")
