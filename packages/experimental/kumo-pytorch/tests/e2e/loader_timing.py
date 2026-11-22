@@ -6,7 +6,7 @@
 
 import os
 from collections import Counter
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from functools import wraps
 from math import ceil
 from statistics import mean, median, pstdev
@@ -58,8 +58,11 @@ class _StageObserver:
 
 
 @contextmanager
-def stage_observer(install=None):
+def stage_observer(install=None, *, optional=False):
     """Scope inclusive stage timers to one loader thread and restore every wrapped call."""
+    if optional and os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1":
+        yield None
+        return
     with ExitStack() as stack:
         if not _OBSERVER_LOCK.acquire(blocking=False):
             raise RuntimeError("a loader stage observer is already active")
@@ -68,12 +71,6 @@ def stage_observer(install=None):
         if install is not None:
             install(observer)
         yield observer
-
-
-def optional_stages(install):
-    if os.getenv("KUMO_PYTORCH_PROFILE_LOADER") == "1":
-        return stage_observer(install)
-    return nullcontext()
 
 
 def install_stages(observer):
@@ -227,20 +224,17 @@ def measure_epoch(task, make_batches, *, split, epoch, batch_size, event_tables=
     }
 
 
-def parquet_inputs(paths):
-    """Count encoded Parquet bytes and rows, and identify the input read by the benchmark."""
+def parquet_metadata(path):
+    """Count the rows and encoded bytes of one Parquet file and identify it by content."""
     import hashlib
-    from pathlib import Path
 
     import pyarrow.parquet as pq
 
-    tables = {}
-    for name, path in paths.items():
-        path = Path(path)
-        with path.open("rb") as stream:
-            tables[name] = {
-                "rows": pq.read_metadata(path).num_rows,
-                "bytes": path.stat().st_size,
-                "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
-            }
-    return tables
+    with open(path, "rb") as stream:
+        rows = pq.read_metadata(stream).num_rows
+        stream.seek(0)
+        return {
+            "rows": rows,
+            "bytes": os.fstat(stream.fileno()).st_size,
+            "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
+        }

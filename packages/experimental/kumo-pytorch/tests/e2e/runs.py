@@ -99,8 +99,6 @@ def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options
     options = LOADER_BATCHING | batch_options
     results = {"setup": setup}
     artifact = work / "artifact"
-    with Path(table.source.path).open("rb") as anchors:
-        anchor_sha = hashlib.file_digest(anchors, "sha256").hexdigest()
     try:
         for mode in ("fresh", "reloaded"):
             with ExitStack() as tasks:
@@ -117,7 +115,7 @@ def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options
                     "stages": profile.stages,
                     "fitted_state": task.fitted_state.fingerprint,
                     "anchors": task.fingerprints["anchors"],
-                    "anchor_sha256": anchor_sha,
+                    "anchor_sha256": setup["anchor_sha256"],
                     "contract": task.fingerprints["contract"],
                     "num_threads": plan.engine.num_threads,
                     "epochs": [],

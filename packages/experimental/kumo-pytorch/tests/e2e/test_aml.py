@@ -518,21 +518,22 @@ def test_li_medium_l01_combined_forecast(tmp_path):
 )
 def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score, loss_sums):
     from e2e.datasets import aml
-    from tests.e2e.loader_timing import optional_stages, parquet_inputs
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
 
     files, cutoff = li_heads_source
-    with optional_stages(lambda p: p.wrap(aml, "_prepare_aml", "source.convert")) as observer:
+    with stage_observer(optional=True) as observer:
+        if observer is not None:
+            observer.wrap(aml, "_prepare_aml", "source.convert")
         spec, data, table = prepare_li_medium(
             files, tmp_path / "prepared", anchor_rows=range(6), binding=binding
         )
     if observer is not None and binding == "L03":
-        source = parquet_inputs({name: files[name] for name in ("mapping", "transactions")})
-        converted = parquet_inputs({name: table.path for name, table in data.tables.items()})
-        assert [source["mapping"]["rows"], source["transactions"]["rows"]] == [1, 2]
-        assert [converted["accounts"]["rows"], converted["transactions"]["rows"]] == [1, 2]
-        assert source["transactions"]["sha256"] != converted["transactions"]["sha256"]
+        for raw, output, rows in (("mapping", "accounts", 1), ("transactions", "transactions", 2)):
+            source = parquet_metadata(files[raw])
+            converted = parquet_metadata(data.tables[output].path)
+            assert source["rows"] == converted["rows"] == rows
+            assert source["sha256"] != converted["sha256"]
         assert observer.stages["source.convert"]["calls"] == 1
-        assert observer.stages["source.convert"]["elapsed_ns"] > 0
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,

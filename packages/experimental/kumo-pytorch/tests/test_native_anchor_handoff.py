@@ -474,10 +474,14 @@ def _index_bytes(index):
     return sum(files.values())
 
 
-@pytest.fixture
-def loader_setup(tmp_path, request):
+@pytest.mark.skipif(
+    os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1",
+    reason="run the loader benchmark with python -m tests.e2e.runs loader --e2e-dir DIR",
+)
+def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
     from kumo.pytorch.engines import diskgraph
-    from tests.e2e.loader_timing import parquet_inputs, stage_observer
+    from tests.e2e import runs
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
 
     index = tmp_path / "index"
     manifest = index / "index_manifest.json"
@@ -491,50 +495,36 @@ def loader_setup(tmp_path, request):
         with observer.measure("ingestion"):
             contract, dataset, table = _native_inputs(tmp_path)
             with observer.measure("source.read"):
-                sources = parquet_inputs(
-                    {name: table.path for name, table in dataset.tables.items()}
-                )
+                sources = {name: parquet_metadata(src.path) for name, src in dataset.tables.items()}
             with observer.measure("anchors.prepare"):
-                table, rows = _anchor_population(table, tmp_path / "population.parquet", 33)
+                table, _ = _anchor_population(table, tmp_path / "population.parquet", 33)
             with observer.measure("task.setup"):
                 plan = api.prepare(contract, dataset, api.DiskGraphEngine(**engine))
             request.addfinalizer(plan.close)
         with api.prepare(contract, dataset, api.DiskGraphEngine(**engine, ingest="never")):
             pass
+    anchors = parquet_metadata(table.source.path)
     setup = {
         "stages": observer.stages,
         "source_tables": sources,
         "source_read_scope": "Parquet footers and SHA-256 input identity",
         "conversion": "The source Parquet files are the prepared tables.",
-        "anchors": len(rows),
-        "anchor_bytes": Path(table.source.path).stat().st_size,
+        "anchors": anchors["rows"],
+        "anchor_bytes": anchors["bytes"],
+        "anchor_sha256": anchors["sha256"],
         "index_bytes": _index_bytes(index),
         "dataset_fingerprint": json.loads(manifest.read_text())["dataset_fingerprint"],
     }
-    return plan, table, setup
-
-
-@pytest.mark.skipif(
-    os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1",
-    reason="run the loader benchmark with python -m tests.e2e.runs loader --e2e-dir DIR",
-)
-def test_native_cpu_loader_timing(loader_setup, tmp_path, request, native_anchor_delivery):
-    from tests.e2e import runs
-
-    plan, table, setup = loader_setup
     work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
     results = runs.time_loader(
         plan, table, work, native_anchor_delivery, setup=setup, event_tables=("events",)
     )
     fitted = api.Artifact.load(work / "artifact").fitted_state
-    setup = results["setup"]
-    assert (
-        setup["anchors"] == 33 and setup["anchor_bytes"] == Path(table.source.path).stat().st_size
-    )
+    assert results["setup"]["anchors"] == 33
+    assert setup["anchor_bytes"] == Path(table.source.path).stat().st_size
     assert setup["index_bytes"] > 0
-    tables = setup["source_tables"]
-    assert {name: meta["rows"] for name, meta in tables.items()} == {"users": 3, "events": 9}
-    for name, meta in tables.items():
+    assert {name: meta["rows"] for name, meta in sources.items()} == {"users": 3, "events": 9}
+    for name, meta in sources.items():
         assert meta["bytes"] == (tmp_path / f"{name}.parquet").stat().st_size
     assert set(setup["stages"]) == {
         "ingestion",
@@ -547,6 +537,7 @@ def test_native_cpu_loader_timing(loader_setup, tmp_path, request, native_anchor
     assert all(v["calls"] == 1 and v["elapsed_ns"] > 0 for v in setup["stages"].values())
     for mode in ("fresh", "reloaded"):
         run = results[mode]
+        assert run["anchor_sha256"] == anchors["sha256"]
         for stage in ("input.fit", "target.fit"):
             assert run["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
         assert run["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")

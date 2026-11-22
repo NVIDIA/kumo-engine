@@ -1532,7 +1532,7 @@ def _native_pragma_contract():
 
 @pytest.mark.usefixtures("native_anchor_delivery")
 def test_native_banking_pragma_supervision(tmp_path):
-    from tests.e2e.loader_timing import install_stages, optional_stages
+    from tests.e2e.loader_timing import install_stages, stage_observer
 
     pytest.importorskip("diskgraph")
     contract = _native_pragma_contract()
@@ -1540,7 +1540,8 @@ def test_native_banking_pragma_supervision(tmp_path):
     dataset = _write_parquet(rows, tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     requests = _requests()
-    with optional_stages(install_stages) as profile, api.prepare(contract, dataset, engine) as plan:
+    observer = stage_observer(install_stages, optional=True)
+    with observer as profile, api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task:
             state = task.fitted_state.to_dict()
             key = '["shared","categories"]'
@@ -1549,16 +1550,10 @@ def test_native_banking_pragma_supervision(tmp_path):
             (model_batch,) = task.batches(output_format="model", seed=17, epoch=3)
 
     if profile is not None:
-        for stage in (
-            "vocabulary.fit",
-            "statistics.fit",
-            "python.assemble",
-            "python.merge",
-            "python.encode",
-            "python.tokenize",
-            "python.masks",
-        ):
-            assert profile.stages[stage]["elapsed_ns"] > 0
+        timed = {name for name, stage in profile.stages.items() if stage["elapsed_ns"] > 0}
+        assert {"vocabulary.fit", "statistics.fit"} <= timed
+        assert {"python.merge", "python.encode", "python.assemble"} <= timed
+        assert {"python.tokenize", "python.masks"} <= timed
         assert profile.stages["bpe.fit"]["calls"] == 1
     history = model_batch.inputs["history"]
     targets = model_batch.targets["masked_values"]
