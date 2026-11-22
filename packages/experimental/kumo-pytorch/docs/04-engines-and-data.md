@@ -168,7 +168,7 @@ consume a completed core snapshot with `from_snapshot(snapshot)`.
 import kumo.settings
 
 kumo.settings.configure(scratch_dir=root)
-engine = api.DiskGraphEngine(ingest="if_missing", num_shards=1)
+engine = api.DiskGraphEngine(num_shards=1)
 with (
     api.prepare(contract=contract, dataset=parquet, engine=engine) as plan,
     plan.materialize(anchors=(request,)) as task,
@@ -212,7 +212,8 @@ tokenizer is trained on the first fit at its cutoff and saved beside them.
 The manifest binds the schema, source files and resolved types. If it differs
 from the dataset and schema you pass, `prepare` refuses reuse. The shard count
 is not part of that check; an existing index keeps the shard count it was built
-with. With `ingest="never"`, `prepare` requires an existing index.
+with. Use `DiskGraphEngine.from_snapshot(snapshot)` to prepare an existing index
+without source ingestion.
 
 ### Open an existing snapshot
 

@@ -216,7 +216,7 @@ dataset = api.Dataset(
 import kumo.settings
 
 kumo.settings.configure(scratch_dir=data / "scratch")
-engine = api.DiskGraphEngine(ingest="if_missing")
+engine = api.DiskGraphEngine()
 with (
     api.prepare(contract=contract, dataset=dataset, engine=engine) as plan,
     plan.materialize(anchors=anchors, fit_split="train") as task,

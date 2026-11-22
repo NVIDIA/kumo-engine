@@ -1094,8 +1094,6 @@ def test_prepare_builds_declared_columns_drops_null_clocks_and_reuses_index(tmp_
     engine = api.DiskGraphEngine(num_threads=1)
     index = engine.index
     request = api.SampleRequest("one", 1, datetime(2024, 2, 1))
-    with pytest.raises(FileNotFoundError):
-        api.prepare(contract, dataset, api.DiskGraphEngine(ingest="never"))
     with pytest.warns(UserWarning, match="dropped source rows"):
         with api.prepare(contract, dataset, engine) as plan:
             graph = next(plan.materialize((request,)).batches((request,))).inputs["graph"]

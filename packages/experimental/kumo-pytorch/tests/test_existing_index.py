@@ -43,6 +43,14 @@ def test_engine_has_no_public_index_opener():
     assert not hasattr(api.DiskGraphEngine, "from_index")
 
 
+@pytest.mark.parametrize("policy", ["if_missing", "never"])
+def test_engine_rejects_public_ingest_policy(policy):
+    with pytest.raises(TypeError, match="ingest"):
+        api.DiskGraphEngine(ingest=policy)
+    with pytest.raises(TypeError, match="ingest"):
+        api.engine_from_name("diskgraph", ingest=policy)
+
+
 def snapshot(index):
     return SimpleNamespace(index_path=index, id="graph@version", graph_config={})
 
