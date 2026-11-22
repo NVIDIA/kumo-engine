@@ -31,7 +31,9 @@ def test_unbound_engine_has_no_schema():
     assert not hasattr(engine, "schema")
 
 
-@pytest.mark.parametrize("option", ["index", "index_build_id", "root", "root_dir", "output_dir"])
+@pytest.mark.parametrize(
+    "option", ["index", "index_build_id", "root", "root_dir", "output_dir", "work_dir"]
+)
 def test_engine_rejects_public_storage_options(tmp_path, option):
     with pytest.raises(TypeError, match=option):
         api.DiskGraphEngine(**{option: str(tmp_path / "outside")})
