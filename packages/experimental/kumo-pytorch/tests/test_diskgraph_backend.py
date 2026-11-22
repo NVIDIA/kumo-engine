@@ -1532,13 +1532,15 @@ def _native_pragma_contract():
 
 @pytest.mark.usefixtures("native_anchor_delivery")
 def test_native_banking_pragma_supervision(tmp_path):
+    from tests.e2e.loader_timing import install_stages, optional_stages
+
     pytest.importorskip("diskgraph")
     contract = _native_pragma_contract()
     rows = _fixture_rows()
     dataset = _write_parquet(rows, tmp_path / "parquet")
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     requests = _requests()
-    with api.prepare(contract, dataset, engine) as plan:
+    with optional_stages(install_stages) as profile, api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task:
             state = task.fitted_state.to_dict()
             key = '["shared","categories"]'
@@ -1546,6 +1548,18 @@ def test_native_banking_pragma_supervision(tmp_path):
             categories = {value: shared_ids[i] for value, i in state["encoders"][key]["entries"]}
             (model_batch,) = task.batches(output_format="model", seed=17, epoch=3)
 
+    if profile is not None:
+        for stage in (
+            "vocabulary.fit",
+            "statistics.fit",
+            "python.assemble",
+            "python.merge",
+            "python.encode",
+            "python.tokenize",
+            "python.masks",
+        ):
+            assert profile.stages[stage]["elapsed_ns"] > 0
+        assert profile.stages["bpe.fit"]["calls"] == 1
     history = model_batch.inputs["history"]
     targets = model_batch.targets["masked_values"]
     users = {r["user_id"]: r for r in rows["users"]}

@@ -7,6 +7,8 @@
 import json
 import os
 from dataclasses import replace
+from pathlib import Path
+from stat import S_ISREG
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,8 +21,7 @@ from kumo.pytorch.engines.native_anchors import NativeAnchors
 pytest.importorskip("diskgraph", reason="requires the optional native DiskGraph engine")
 
 
-@pytest.fixture
-def native_task(tmp_path, request):
+def _native_inputs(tmp_path, variant=None):
     schema = api.DataSchema(
         tables=(
             api.TableSpec("users", "id", {"id": api.DType("string")}, time_column=api.NON_TEMPORAL),
@@ -73,7 +74,7 @@ def native_task(tmp_path, request):
                             "events": api.Fields((api.Encode("amount", api.Raw()),)),
                             **(
                                 {"users": api.Fields((api.Encode("id", api.Raw()),))}
-                                if getattr(request, "param", None) == "raw-string"
+                                if variant == "raw-string"
                                 else {}
                             ),
                         }
@@ -111,15 +112,17 @@ def native_task(tmp_path, request):
     dataset = api.Dataset(
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
-    with api.prepare(
-        contract,
-        dataset,
-        api.DiskGraphEngine(
-            index=tmp_path / "index",
-            num_threads=1,
-            profile=getattr(request, "param", None) == "profile",
-        ),
-    ) as plan:
+    return contract, dataset, table
+
+
+@pytest.fixture
+def native_task(tmp_path, request):
+    variant = getattr(request, "param", None)
+    contract, dataset, table = _native_inputs(tmp_path, variant)
+    engine = api.DiskGraphEngine(
+        index=tmp_path / "index", num_threads=1, profile=variant == "profile"
+    )
+    with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
 
@@ -462,21 +465,91 @@ def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count
     assert plan._source._sampler is not None
 
 
+def _index_bytes(index):
+    files = {}
+    for path in index.rglob("*"):
+        info = path.lstat()
+        if S_ISREG(info.st_mode):
+            files[info.st_dev, info.st_ino] = info.st_size
+    return sum(files.values())
+
+
+@pytest.fixture
+def loader_setup(tmp_path, request):
+    from kumo.pytorch.engines import diskgraph
+    from tests.e2e.loader_timing import parquet_inputs, stage_observer
+
+    index = tmp_path / "index"
+    manifest = index / "index_manifest.json"
+    engine = {"index": index, "num_threads": 1, "profile": True}
+
+    def index_action(schema, dataset, destination, **options):
+        return "index.reopen" if destination.exists() else "index.build"
+
+    with stage_observer() as observer:
+        observer.wrap(diskgraph, "ensure_diskgraph_index", index_action)
+        with observer.measure("ingestion"):
+            contract, dataset, table = _native_inputs(tmp_path)
+            with observer.measure("source.read"):
+                sources = parquet_inputs(
+                    {name: table.path for name, table in dataset.tables.items()}
+                )
+            with observer.measure("anchors.prepare"):
+                table, rows = _anchor_population(table, tmp_path / "population.parquet", 33)
+            with observer.measure("task.setup"):
+                plan = api.prepare(contract, dataset, api.DiskGraphEngine(**engine))
+            request.addfinalizer(plan.close)
+        with api.prepare(contract, dataset, api.DiskGraphEngine(**engine, ingest="never")):
+            pass
+    setup = {
+        "stages": observer.stages,
+        "source_tables": sources,
+        "source_read_scope": "Parquet footers and SHA-256 input identity",
+        "conversion": "The source Parquet files are the prepared tables.",
+        "anchors": len(rows),
+        "anchor_bytes": Path(table.source.path).stat().st_size,
+        "index_bytes": _index_bytes(index),
+        "dataset_fingerprint": json.loads(manifest.read_text())["dataset_fingerprint"],
+    }
+    return plan, table, setup
+
+
 @pytest.mark.skipif(
     os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1",
     reason="run the loader benchmark with python -m tests.e2e.runs loader --e2e-dir DIR",
 )
-@pytest.mark.parametrize("native_task", ["profile"], indirect=True)
-def test_native_cpu_loader_timing(native_task, tmp_path, request, native_anchor_delivery):
+def test_native_cpu_loader_timing(loader_setup, tmp_path, request, native_anchor_delivery):
     from tests.e2e import runs
 
-    plan, _, table = native_task
-    table, _ = _anchor_population(table, tmp_path / "population.parquet", 33)
+    plan, table, setup = loader_setup
     work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
-    results = runs.time_loader(plan, table, work, native_anchor_delivery, event_tables=("events",))
+    results = runs.time_loader(
+        plan, table, work, native_anchor_delivery, setup=setup, event_tables=("events",)
+    )
     fitted = api.Artifact.load(work / "artifact").fitted_state
-    assert set(results) == {"fresh", "reloaded"}
-    for run in results.values():
+    setup = results["setup"]
+    assert (
+        setup["anchors"] == 33 and setup["anchor_bytes"] == Path(table.source.path).stat().st_size
+    )
+    assert setup["index_bytes"] > 0
+    tables = setup["source_tables"]
+    assert {name: meta["rows"] for name, meta in tables.items()} == {"users": 3, "events": 9}
+    for name, meta in tables.items():
+        assert meta["bytes"] == (tmp_path / f"{name}.parquet").stat().st_size
+    assert set(setup["stages"]) == {
+        "ingestion",
+        "source.read",
+        "anchors.prepare",
+        "task.setup",
+        "index.build",
+        "index.reopen",
+    }
+    assert all(v["calls"] == 1 and v["elapsed_ns"] > 0 for v in setup["stages"].values())
+    for mode in ("fresh", "reloaded"):
+        run = results[mode]
+        for stage in ("input.fit", "target.fit"):
+            assert run["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
+        assert run["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")
         assert run["fitted_state"] == fitted.fingerprint
         assert run["contract"] == plan.contract.fingerprint
         for record in fitted.fit.values():
@@ -484,6 +557,9 @@ def test_native_cpu_loader_timing(native_task, tmp_path, request, native_anchor_
         assert [row["epoch"] for row in run["epochs"]] == [0, 1]
         for row in run["epochs"]:
             assert row["batch_sizes"] == [5] * 6 + [3]
+            for stage in ("python.postprocess", "python.labels"):
+                assert row["stages"][stage]["calls"] == len(row["batch_sizes"])
+            assert not {"python.tokenize", "python.masks"} & row["stages"].keys()
             assert (row["samples"], row["padded"], row["profiled_batches"]) == (33, 0, 7)
             assert (row["nodes"], row["edges"], row["events"]) == (33 * 3, 33 * 2, 33 * 2)
             assert row["latency"]["p95_ns"] == max(row["request_ns"])

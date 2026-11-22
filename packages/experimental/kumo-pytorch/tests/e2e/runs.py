@@ -13,6 +13,8 @@ is an error instead.
 
 ``python -m tests.e2e.runs loader --e2e-dir DIR [--repetitions N]`` times the
 33-anchor CPU fixture in fresh pytest workers and prints the timing report path.
+Each worker records setup once, fit stages per mode and batch stages per epoch.
+Stage times include nested calls. A missing stage did not run on that workload.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import ExitStack
 from importlib.metadata import distributions
 from pathlib import Path
 
@@ -87,28 +90,31 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
     return work, seconds
 
 
-def time_loader(plan, table, work: Path, make_batches, **batch_options) -> dict:
+def time_loader(plan, table, work: Path, make_batches, *, setup, **batch_options) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
-    from tests.e2e.loader_timing import measure_epoch
+    from tests.e2e.loader_timing import install_stages, measure_epoch, stage_observer
 
     work.mkdir(parents=True, exist_ok=True)
     options = LOADER_BATCHING | batch_options
-    results = {}
+    results = {"setup": setup}
     artifact = work / "artifact"
     with Path(table.source.path).open("rb") as anchors:
         anchor_sha = hashlib.file_digest(anchors, "sha256").hexdigest()
     try:
         for mode in ("fresh", "reloaded"):
-            started = time.perf_counter_ns()
-            fit = (
-                {"fit_split": options["split"]}
-                if mode == "fresh"
-                else {"fitted": api.Artifact.load(artifact).fitted_state}
-            )
-            with plan.materialize(table, **fit) as task:
+            with ExitStack() as tasks:
+                with stage_observer(install_stages) as profile:
+                    started = time.perf_counter_ns()
+                    fit = {"fit_split": options["split"]}
+                    if mode == "reloaded":
+                        with profile.measure("artifact.load"):
+                            fit = {"fitted": api.Artifact.load(artifact).fitted_state}
+                    task = tasks.enter_context(plan.materialize(table, **fit))
+                    materialize_ns = time.perf_counter_ns() - started
                 results[mode] = {
-                    "materialize_ns": time.perf_counter_ns() - started,
+                    "materialize_ns": materialize_ns,
+                    "stages": profile.stages,
                     "fitted_state": task.fitted_state.fingerprint,
                     "anchors": task.fingerprints["anchors"],
                     "anchor_sha256": anchor_sha,
@@ -119,9 +125,9 @@ def time_loader(plan, table, work: Path, make_batches, **batch_options) -> dict:
                 if mode == "fresh":
                     task.to_artifact().save(artifact)
                 for epoch in range(2):
-                    results[mode]["epochs"].append(
-                        measure_epoch(task, make_batches, epoch=epoch, **options)
-                    )
+                    with stage_observer(install_stages) as profile:
+                        record = measure_epoch(task, make_batches, epoch=epoch, **options)
+                    results[mode]["epochs"].append({**record, "stages": profile.stages})
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
     return results
@@ -172,6 +178,8 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     for mode in completed[0] if completed else ():
         fits = [run[mode] for run in completed]
         summary[mode] = _ranges(fits)
+        if mode == "setup":
+            continue
         summary[mode]["epochs"] = [
             _ranges(rows) for rows in zip(*(fit["epochs"] for fit in fits), strict=True)
         ]
@@ -192,6 +200,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     metadata = {
         "workload": LOADER_CASE,
         "device": "cpu",
+        "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **LOADER_BATCHING,
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,

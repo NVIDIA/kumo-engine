@@ -4,10 +4,15 @@
 
 """Time a complete CPU model-batch epoch on an existing package task."""
 
+import os
 from collections import Counter
+from contextlib import ExitStack, contextmanager, nullcontext
+from functools import wraps
 from math import ceil
 from statistics import mean, median, pstdev
+from threading import Lock, get_ident
 from time import perf_counter_ns
+from unittest.mock import patch
 
 import torch
 from torch.utils._pytree import tree_leaves
@@ -15,6 +20,106 @@ from torch.utils._pytree import tree_leaves
 from kumo.pytorch import api
 
 NATIVE_COUNTERS = ("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded")
+_OBSERVER_LOCK = Lock()
+
+
+class _StageObserver:
+    def __init__(self, stack):
+        self._stack = stack
+        self._thread = get_ident()
+        self.stages = {}
+
+    @contextmanager
+    def measure(self, stage, /, *args, **kwargs):
+        name = None
+        if get_ident() == self._thread:
+            name = stage(*args, **kwargs) if callable(stage) else stage
+        if name is None:
+            yield
+            return
+        started = perf_counter_ns()
+        try:
+            yield
+        finally:
+            elapsed = perf_counter_ns() - started
+            totals = self.stages.setdefault(name, {"calls": 0, "elapsed_ns": 0})
+            totals["calls"] += 1
+            totals["elapsed_ns"] += elapsed
+
+    def wrap(self, owner, name, stage):
+        original = getattr(owner, name)
+
+        @wraps(original)
+        def timed(*args, **kwargs):
+            with self.measure(stage, *args, **kwargs):
+                return original(*args, **kwargs)
+
+        self._stack.enter_context(patch.object(owner, name, timed))
+
+
+@contextmanager
+def stage_observer(install=None):
+    """Scope inclusive stage timers to one loader thread and restore every wrapped call."""
+    with ExitStack() as stack:
+        if not _OBSERVER_LOCK.acquire(blocking=False):
+            raise RuntimeError("a loader stage observer is already active")
+        stack.callback(_OBSERVER_LOCK.release)
+        observer = _StageObserver(stack)
+        if install is not None:
+            install(observer)
+        yield observer
+
+
+def optional_stages(install):
+    if os.getenv("KUMO_PYTORCH_PROFILE_LOADER") == "1":
+        return stage_observer(install)
+    return nullcontext()
+
+
+def install_stages(observer):
+    import diskgraph
+
+    from kumo.pytorch import assembly, encoding, preparation
+    from kumo.pytorch.engines.diskgraph import DiskGraphSource
+    from kumo.pytorch.engines.native_anchors import NativeAnchors
+
+    def encoder_fit(config, dtype):
+        if encoding.learns_from_values(config, dtype):
+            if isinstance(config, api.Vocabulary):
+                return "vocabulary.fit"
+            if isinstance(config, (api.Buckets, api.ZScore)):
+                return "statistics.fit"
+        return None
+
+    observer.wrap(assembly, "_fit_inputs", "input.fit")
+    observer.wrap(assembly, "_fit_targets", "target.fit")
+    observer.wrap(
+        assembly, "fit_encoder", lambda identity, config, dtype, values: encoder_fit(config, dtype)
+    )
+    observer.wrap(
+        preparation,
+        "fit_from_stats",
+        lambda identity, encoder, stats: encoder_fit(encoder.config, encoder.dtype),
+    )
+    # Cached and supplied tokenizers skip both training calls.
+    observer.wrap(encoding, "train_text", "bpe.fit")
+    observer.wrap(diskgraph, "train_tokenizer", "bpe.fit")
+    # Native iterator setup includes attaching the plan. Length evaluation happens in next().
+    observer.wrap(NativeAnchors, "_iter", "python.plan")
+    observer.wrap(assembly.PreparedBatchPlan, "_compose_batches", "python.plan")
+    observer.wrap(assembly.PreparedBatchPlan, "_collate", "python.postprocess")
+    observer.wrap(
+        assembly,
+        "_rows_for_inputs",
+        lambda spec, declarations, *args, **kwargs: "python.merge" if declarations else None,
+    )
+    observer.wrap(encoding.FittedEncoder, "encode_arrow", "python.encode")
+    observer.wrap(assembly, "_token_rows", "python.tokenize")
+    observer.wrap(assembly, "_mask_tokens", "python.masks")
+    observer.wrap(assembly, "_target_outputs", "python.labels")
+    observer.wrap(assembly, "_column_output", "python.assemble")
+    observer.wrap(assembly, "_token_output", "python.assemble")
+    observer.wrap(DiskGraphSource, "sample_graph_batch", "python.assemble")
 
 
 def _latencies(waits):
@@ -120,3 +225,22 @@ def measure_epoch(task, make_batches, *, split, epoch, batch_size, event_tables=
         "later_latency": _latencies(requests[1:]),
         "post_warmup": steady,
     }
+
+
+def parquet_inputs(paths):
+    """Count encoded Parquet bytes and rows, and identify the input read by the benchmark."""
+    import hashlib
+    from pathlib import Path
+
+    import pyarrow.parquet as pq
+
+    tables = {}
+    for name, path in paths.items():
+        path = Path(path)
+        with path.open("rb") as stream:
+            tables[name] = {
+                "rows": pq.read_metadata(path).num_rows,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
+            }
+    return tables
