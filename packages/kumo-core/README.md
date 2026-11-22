@@ -77,7 +77,8 @@ support for the full training pipeline on MPS.
 The optional [Ray Core sampling backend](docs/distributed-sampling.md) shares
 native seed schedules across explicitly placed sampler actors. Every actor samples
 and encodes; the trainer consumes HeteroData reconstructed from typed metadata
-and NumPy buffers. It is a backend building block; training integration is separate.
+and NumPy buffers. `DiskgraphLightningDataModule` can use an asynchronous
+in-process loader for remote training, while retaining local evaluation loaders.
 
 ## Development and validation
 

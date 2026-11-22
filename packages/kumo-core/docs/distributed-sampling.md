@@ -39,7 +39,7 @@ repeated in batch requests. Local manifests are verified during initialization.
 `BatchRequest.validate()` checks validity and returns `None`.
 
 `seed_schedule.py` builds the native seed schedule using only task metadata and
-seed sidecars. The trainer never opens graph adjacency/features. Omitted RNG
+seed sidecars. Remote training schedules never open graph adjacency/features. Omitted RNG
 seeds inherit the backend engine seed; explicit `None` and zero preserve native
 semantics. Sharding, epoch, shuffle, selection, and weighted scheduling stay on
 the trainer and are reset in actor-side options. Options are shallow frozen:
@@ -54,9 +54,86 @@ response does not echo request metadata. It reconstructs tensors using
 entry point is unnecessary because every response is encoded.
 
 `iter_requests(options)` enumerates logical requests without issuing sampling
-RPCs, for the subsequent asynchronous trainer loader. The synchronous reference
-iterator issues one call at a time. Neither interface supports inheriting a Ray
-client across processes. Subprocess DataLoader integration is outside this PR.
+RPCs. The synchronous reference iterator issues one call at a time. Neither
+interface supports inheriting a Ray client across processes.
+
+## DataModule and asynchronous delivery
+
+`DiskgraphLightningDataModule.remote_batch_encoder()` captures its fitted Python
+mappers, target encoder, schema, and timestamp settings in a `RuntimeBatchEncoder`.
+Use it as `ReplicaConfig.batch_encoder`. It calls the same
+`runtime_batch_to_hetero(..., attach_pkeys=False)` conversion as local training;
+the actor performs sampling and column encoding serially in its own process.
+It does not capture the DataModule, worker pools, or trainer connection.
+
+Attach the resulting `RayBackendConfig` as the DataModule's `sampling_backend`
+before constructing a training iterator, or supply it to the constructor. Engine
+seed and DataModule base seed must match. Actor CPU/thread settings belong to
+the backend and need not equal the trainer's local evaluation thread settings.
+
+The train loader becomes `RemoteDataLoader`, with `num_workers=0` regardless of
+the local worker setting. One receiver thread issues requests and uses
+`ray.wait(..., num_returns=1)` to receive whichever actor finishes first. The
+trainer main thread reconstructs `HeteroData` using NumPy-backed tensors; it does
+not encode columns or send tensors through a multiprocessing queue. Ordinary
+DataLoader pinning and Lightning's device transfer still run on the trainer.
+
+The global window equals the number of sampler actors. A slot covers a pending
+RPC, received buffers, and reconstruction until delivery to DataLoader. Releasing
+it wakes the receiver immediately, including while the model processes the
+previous batch. Local `num_workers` and `prefetch_factor` do not change this
+remote window. Batches arrive in completion order, so graph contents and logical
+seed membership match local sampling but optimizer order can differ.
+
+The same iterable schedule handles stage mixing, rank sharding, shuffle epochs,
+grouped timestamps, epoch caps/replay, weighted sampling, and feature projections.
+Each rank needs an exclusively owned actor pool. Resetting the iterator closes
+and drains the preceding epoch before reusing its actors. DataModule shutdown,
+teardown, and existing Lightning lifecycle callbacks also close remote loaders,
+including when Lightning stops before the dataset's natural end.
+
+Validation, test, prediction, explanation, and auxiliary RHS loaders retain their
+local paths and primary-key support. With a remote backend attached, these
+DataModule loaders also use zero subprocesses to avoid forking an initialized Ray
+client. Their graph artifacts must still be
+available on the trainer. Remote explanation capture is rejected explicitly.
+This integration changes the core DataModule, not the public SDK initialization
+or cluster provisioning API.
+
+After the launcher places immutable artifacts and attaches Ray, wiring is:
+
+```python
+encoder = datamodule.remote_batch_encoder()
+configs = [
+    ReplicaConfig(
+        manifest_path=task_path,
+        snapshot_manifest_path=snapshot_path,
+        artifacts=artifacts,
+        engine_seed=datamodule.base_seed,
+        num_threads=sampling_threads,
+        batch_encoder=encoder,
+    )
+    for _ in placements
+]
+actors = start_sampling_replicas(configs, placements)
+try:
+    datamodule.sampling_backend = RayBackendConfig(
+        connection=connection,
+        replicas=actors,
+        artifacts=artifacts,
+        engine_seed=datamodule.base_seed,
+        num_threads=sampling_threads,
+    )
+    trainer.fit(model, datamodule=datamodule)
+finally:
+    datamodule.shutdown_dataloader_workers()
+    stop_sampling_replicas(actors)
+```
+
+Here `placements` selects the sampler nodes, each path identifies the matching
+node-local artifact, and `artifacts.mapping_digest` identifies the fitted encoder
+state. Launchers retain snapshot leases until loader drain and actor shutdown
+succeed. Snapshot copying, artifact distribution, and Ray lifetime are separate.
 
 ## Wire format and ownership
 
@@ -109,11 +186,16 @@ From the repository root, run native actor parity:
 ```bash
 PYTHONPATH=packages/kumo-core/src python -m pytest -q \
   packages/diskgraph/diskgraph-pybind/python/tests/test_ray_sampling_backend.py
+PYTHONPATH=packages/kumo-core/src python -m pytest -q \
+  packages/diskgraph/diskgraph-pybind/python/tests/test_ray_datamodule.py
 ```
 
 Tests cover mandatory encoders, native seed membership before encoding, metadata
 scheduling, context reuse, request tracking, feature/buffer parity, malformed
 layouts, actor ownership, retry, cancellation/drain races, and real encoded Ray
-delivery for shuffled, selected, and RHS samples. Only local Ray clusters start.
-Training integration, asynchronous trainer prefetch, and artifact distribution
-follow separately; Rust feature encoding and native Rust decoding are excluded.
+delivery for shuffled, selected, and RHS samples. Async tests cover the aggregate
+window, completion order, refill during model work, failure propagation, empty
+epochs, cancellation, and retrying a failed drain. A native integration test
+compares encoded batches and runs a two-epoch CPU Lightning fit with early limits.
+Only local Ray clusters start. Artifact distribution, Rust feature encoding, and
+native Rust decoding are excluded.
