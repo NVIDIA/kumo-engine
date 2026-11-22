@@ -14,7 +14,7 @@ import pytest
 
 
 @pytest.fixture(scope="module")
-def numeric_graph(tmp_path_factory):
+def numeric_graph(tmp_path_factory, profile=False):
     root = tmp_path_factory.mktemp("shared_numeric")
     pq.write_table(pa.table({"id": list(range(1, 9))}), root / "users.parquet")
     owners = [1, 1, 1, 2, 3, 3, 4, 4] + [6] * 600
@@ -44,7 +44,7 @@ def numeric_graph(tmp_path_factory):
         json.dumps(config), str(root / "index"), col_stats=False,
         context_threads=2, encode_threads=2, pk_map_threads=2, edges_map_threads=2, index_threads=2,
     )
-    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=1)
+    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=1, profile=profile)
     relation = next(
         r["name"] for r in json.loads(engine.get_type_mapping())["edge_relations"]
         if r["src_type"] == "users"
@@ -73,6 +73,7 @@ def query(numeric_graph, keys, *, general=False, future=False, operations=("coun
         {"users": engine.lookup_node_ids("users", pa.array(keys, type=pa.int64()))},
         {"users": [0 if future else 1000] * len(keys)}, json.dumps(plan), output_format="model",
     )
+    assert "rows_considered" not in result["stats"]
     return {a["name"]: a["values"] for a in result["aggregates"] if a["name"] != "variance"}
 
 

@@ -300,7 +300,7 @@ def test_schema_mapping(orders_graph):
     assert "orders_parquet" in mapping["node_types"]
 
 def test_fused_sampling_1hop(orders_graph):
-    dg = diskgraph_py.SamplerEngine(orders_graph)
+    dg = diskgraph_py.SamplerEngine(orders_graph, profile=True)
 
     # User 0 -> Orders
     plan = {
@@ -352,7 +352,7 @@ def test_fused_sampling_1hop(orders_graph):
     assert first_feat.num_rows > 0
 
 def test_standalone_sampling(orders_graph):
-    dg = diskgraph_py.SamplerEngine(orders_graph)
+    dg = diskgraph_py.SamplerEngine(orders_graph, profile=True)
 
     # User 0 -> Orders (Topology Only)
     plan = {
@@ -392,7 +392,7 @@ def test_standalone_sampling(orders_graph):
     assert len(node_events) > 0
 
 def test_fetch_features(orders_graph):
-    dg = diskgraph_py.SamplerEngine(orders_graph)
+    dg = diskgraph_py.SamplerEngine(orders_graph, profile=True)
 
     # Repeated IDs produce repeated output rows from a single decode.
     req = [
@@ -427,6 +427,15 @@ def test_fetch_features(orders_graph):
     with pytest.raises(DiskgraphConfigError, match="Unknown node type"):
         for _ in iter_bad: pass
     assert iter_bad.native_profile is None
+
+def test_native_profiles_disabled_by_default(orders_graph):
+    engine = diskgraph_py.SamplerEngine(orders_graph)
+    sampler = engine.sample({"users": [0]}, json.dumps({"layers": []}), fused=False)
+    fetch = engine.fetch_features([{"node_type": "users", "node_ids": [0], "feature_names": []}])
+    for iterator in (sampler, fetch):
+        assert list(iterator)
+        assert iterator.native_profile is None
+
 
 def test_fused_sampling_2hop_consistency(orders_graph):
     dg = diskgraph_py.SamplerEngine(orders_graph)

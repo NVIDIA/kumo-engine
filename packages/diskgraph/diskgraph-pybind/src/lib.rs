@@ -285,7 +285,7 @@ enum SampleEvent {
 
 /// Bridge between Rust Engine and Python Iterator.
 struct PyOutputHandler {
-    decoded_rows: u64,
+    profile: Option<NativeProfile>,
     sender: Sender<SampleEvent>,
     edge_builders: HashMap<u16, (UInt64Builder, UInt64Builder)>,
     chunk_size: usize,
@@ -305,7 +305,7 @@ impl PyOutputHandler {
             .and_then(|s| s.parse().ok())
             .unwrap_or(64 * 1024);
         Self {
-            decoded_rows: 0,
+            profile: None,
             sender,
             edge_builders: HashMap::new(),
             chunk_size,
@@ -360,8 +360,8 @@ impl PyOutputHandler {
 }
 
 impl OutputHandler for PyOutputHandler {
-    fn record_decoded_rows(&mut self, rows: u64) {
-        self.decoded_rows += rows;
+    fn profile_mut(&mut self) -> Option<&mut NativeProfile> {
+        self.profile.as_mut()
     }
 
     fn handle_edge(
@@ -749,17 +749,22 @@ fn lookup_node_ids_from_arrow(
 #[pymethods]
 impl SamplerEngine {
     #[new]
-    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
+    #[pyo3(signature = (path, random_seed=None, num_threads=None, *, profile=false))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>,
+    pub fn new(
+        path: String,
+        random_seed: Option<u64>,
+        num_threads: Option<usize>,
+        profile: bool,
     ) -> PyResult<Self> {
         let root = std::path::Path::new(&path);
         let reader = Arc::new(
             diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
                 .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
         );
-        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
+        let mut engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
+        engine.profile = profile;
         info!("SamplerEngine initialized successfully");
         Ok(Self {
             reader,
@@ -838,14 +843,9 @@ impl SamplerEngine {
         let engine = Arc::clone(&self.engine);
         let result = py
             .detach(move || {
-                temporal_query::execute_parallel(
-                    reader.as_ref(),
-                    &root_type,
-                    &roots,
-                    &cutoffs,
-                    &plan_json,
-                    &engine.thread_pool,
-                )
+                temporal_query::PreparedTemporalPlan::prepare(&reader, &root_type, &plan_json)?
+                    .with_profile(engine.profile)
+                    .execute(&reader, &roots, &cutoffs, &engine.thread_pool)
             })
             .map_err(temporal_query::config_error)?;
         result.into_python(py, model_format)
@@ -869,7 +869,7 @@ impl SamplerEngine {
         Ok(PreparedAggregateQuery {
             reader: Arc::clone(&self.reader),
             engine: Arc::clone(&self.engine),
-            plan: Arc::new(plan),
+            plan: Arc::new(plan.with_profile(self.engine.profile)),
         })
     }
 
@@ -911,15 +911,9 @@ impl SamplerEngine {
         let engine = Arc::clone(&self.engine);
         let result = py
             .detach(move || {
-                temporal_query::execute_aggregate_plan(
-                    reader.as_ref(),
-                    &root,
-                    &roots,
-                    &cutoffs,
-                    &plan_json,
-                    anchor_batch_size,
-                    &engine.thread_pool,
-                )
+                temporal_query::PreparedAggregatePlan::prepare(&reader, &root, &plan_json)?
+                    .with_profile(engine.profile)
+                    .execute(&reader, &roots, &cutoffs, anchor_batch_size, &engine.thread_pool)
             })
             .map_err(temporal_query::config_error)?;
         result.into_python(py, model_format)
@@ -1130,8 +1124,8 @@ impl SamplerEngine {
         }
 
         let (tx, rx) = bounded(1);
-        let profile = Arc::new(OnceLock::new());
-        let completed = Arc::clone(&profile);
+        let profile = self.engine.profile.then(|| Arc::new(OnceLock::new()));
+        let completed = profile.clone();
         let engine = Arc::clone(&self.engine);
         let mut state = self.pool.acquire();
 
@@ -1142,17 +1136,19 @@ impl SamplerEngine {
                     engine.relation_src_type.clone(),
                     engine.relation_info.clone(),
                 );
-                let started = Instant::now();
+                let started = completed.as_ref().map(|_| Instant::now());
+                handler.profile = engine.profile.then(NativeProfile::default);
                 match engine.sample(&request, &mut state, &mut handler) {
                     Ok(()) => {
-                        let elapsed = started.elapsed().as_nanos() as u64;
-                        let _ = completed.set(NativeProfile {
-                            sampling_ns: elapsed,
-                            retrieval_ns: if fused { elapsed } else { 0 },
-                            rows_examined: state.stats.rows_examined + handler.decoded_rows,
-                            rows_decoded: handler.decoded_rows,
-                            fused,
-                        });
+                        if let (Some(started), Some(completed), Some(mut stats)) =
+                            (started, completed, handler.profile)
+                        {
+                            stats.sampling_ns = started.elapsed().as_nanos() as u64;
+                            stats.retrieval_ns = if fused { stats.sampling_ns } else { 0 };
+                            stats.rows_examined += stats.rows_decoded;
+                            stats.fused = fused;
+                            let _ = completed.set(stats);
+                        }
                         if count % 100 == 0 {
                             info!(
                                 total_nodes = state.stats.total_nodes,
@@ -1234,14 +1230,15 @@ impl SamplerEngine {
         }
 
         let (tx, rx) = bounded(1);
-        let profile = Arc::new(OnceLock::new());
-        let completed = Arc::clone(&profile);
+        let profile = self.engine.profile.then(|| Arc::new(OnceLock::new()));
+        let completed = profile.clone();
         let engine = Arc::clone(&self.engine);
 
         py.detach(move || {
             thread::spawn(move || {
                 let mut handler = PyOutputHandler::new(tx.clone(), Vec::new(), Vec::new());
-                let started = Instant::now();
+                let started = completed.as_ref().map(|_| Instant::now());
+                handler.profile = engine.profile.then(NativeProfile::default);
 
                 for feature_req in request.batch {
                     let node_type_id = match engine.node_type_to_id.get(&feature_req.node_type) {
@@ -1266,12 +1263,13 @@ impl SamplerEngine {
                         return;
                     }
                 }
-                let _ = completed.set(NativeProfile {
-                    retrieval_ns: started.elapsed().as_nanos() as u64,
-                    rows_examined: handler.decoded_rows,
-                    rows_decoded: handler.decoded_rows,
-                    ..Default::default()
-                });
+                if let (Some(started), Some(completed), Some(mut stats)) =
+                    (started, completed, handler.profile)
+                {
+                    stats.retrieval_ns = started.elapsed().as_nanos() as u64;
+                    stats.rows_examined = stats.rows_decoded;
+                    let _ = completed.set(stats);
+                }
                 if count % 100 == 0 {
                     info!(
                         process_rss_mb = get_current_rss_mb(),
@@ -1328,7 +1326,7 @@ impl ProfileOperation {
 #[pyclass]
 pub struct PySampleIterator {
     receiver: Receiver<SampleEvent>,
-    profile: Arc<OnceLock<NativeProfile>>,
+    profile: Option<Arc<OnceLock<NativeProfile>>>,
     operation: ProfileOperation,
 }
 
@@ -1338,8 +1336,7 @@ impl PySampleIterator {
     /// Pending or failed calls return None.
     #[getter]
     fn native_profile<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        self.profile
-            .get()
+        self.profile.as_deref().and_then(OnceLock::get)
             .map(|profile| self.operation.to_dict(py, profile))
             .transpose()
     }

@@ -1263,15 +1263,25 @@ impl RuntimeIndex {
         rnd_seed: Option<u64>,
         num_threads: Option<usize>,
     ) -> Result<Self> {
+        Self::with_profiling(parent_root, tt_id, rnd_seed, num_threads, false)
+    }
+
+    pub fn with_profiling(
+        parent_root: String,
+        tt_id: String,
+        rnd_seed: Option<u64>,
+        num_threads: Option<usize>,
+        profile: bool,
+    ) -> Result<Self> {
         let parent_path = std::path::Path::new(&parent_root);
         let reader = diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
             .map_err(|e| RuntimeError::system(e.to_string()))?;
         let namespace = tt_id.rsplit('/').next().unwrap_or(&tt_id).to_string();
         let reader = Arc::new(reader);
-        let engine = Arc::new(
-            DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
-                .map_err(RuntimeError::from)?,
-        );
+        let mut engine = DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
+            .map_err(RuntimeError::from)?;
+        engine.profile = profile;
+        let engine = Arc::new(engine);
         Ok(Self {
             reader,
             engine,
@@ -1714,10 +1724,12 @@ impl RuntimeBatchIterator {
                     Arc::clone(projection),
                 )
                 .map_err(RuntimeError::from)?;
-            batch.profile.sampling_ns += result.profile.sampling_ns;
-            batch.profile.retrieval_ns += result.profile.retrieval_ns;
-            batch.profile.rows_examined += result.profile.rows_examined;
-            batch.profile.rows_decoded += result.profile.rows_decoded;
+            if let (Some(total), Some(profile)) = (&mut batch.profile, result.profile) {
+                total.sampling_ns += profile.sampling_ns;
+                total.retrieval_ns += profile.retrieval_ns;
+                total.rows_examined += profile.rows_examined;
+                total.rows_decoded += profile.rows_decoded;
+            }
             batch.graphs.extend(result.graphs);
             for (table, values) in result.raw_features {
                 batch.raw_features.insert(format!("{name}/{table}"), values);

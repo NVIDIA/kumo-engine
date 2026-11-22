@@ -300,12 +300,15 @@ class RuntimeIndex:
         dataset_ref: TaskDatasetRef,
         rnd_seed: Optional[int] = None,
         num_threads: Optional[int] = None,
+        *,
+        profile: bool = False,
     ) -> None:
         # Resolved lazily, on first iter(). Reading the manifest in the
         # constructor would put file I/O ahead of argument validation, and a
         # caller who passes an out-of-range worker_id should get a config
         # error rather than a FileNotFoundError for a path that was never the
         # problem. test_task_dataset_mock pins that ordering.
+        self._profile = profile
         self._dataset_ref = dataset_ref
         self._resolved: Any = None
         self._rnd_seed = int(rnd_seed) if rnd_seed is not None else None
@@ -335,6 +338,7 @@ class RuntimeIndex:
                 extension_ref,
                 self._rnd_seed,
                 self._num_threads,
+                self._profile,
             )
             self._indexes[extension_ref] = idx
         return idx

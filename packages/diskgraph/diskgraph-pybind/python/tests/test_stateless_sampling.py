@@ -67,7 +67,7 @@ def test_stateless_requests_replay_without_advancing_local_cursor(
 ) -> None:
     """Explicit requests preserve graph/history outputs and the iterator cursor."""
     index = RuntimeIndex(
-        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2
+        seed_table_fixture["manifest_path"], rnd_seed=42, num_threads=2, profile=True
     )
     sampling_plan = _sampling_plan()
     for layer in sampling_plan["layers"]:

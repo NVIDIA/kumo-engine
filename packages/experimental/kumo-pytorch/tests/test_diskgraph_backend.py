@@ -1291,7 +1291,7 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
                     assert actual_value == expected_value
     assert_equal(actual_batch.targets, expected_batch.targets)
     with api.prepare(
-        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1)
+        contract, parquet, api.DiskGraphEngine(index=artifact.path, num_threads=1, profile=True)
     ) as plan:
         task = plan.materialize(requests, fit_split="train")
         inspectable_batch = next(

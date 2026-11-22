@@ -42,6 +42,8 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct QueryPlan {
+    #[serde(skip)]
+    profile: bool,
     frames: Vec<FramePlan>,
     #[serde(default)]
     sequences: Vec<SequencePlan>,
@@ -368,10 +370,22 @@ pub struct QueryStats {
     pub frames_materialized: usize,
     pub rows_materialized: usize,
     /// Candidate row occurrences returned by traversal, before projection and selection.
-    pub rows_considered: usize,
+    pub rows_considered: Option<usize>,
     pub rows_decoded: usize,
     pub values_decoded: usize,
     pub edges_visited: u64,
+}
+
+impl QueryStats {
+    fn new(profile: bool) -> Self {
+        Self { rows_considered: profile.then_some(0), ..Self::default() }
+    }
+
+    fn merge_candidates(&mut self, other: &Self) {
+        if let (Some(total), Some(count)) = (&mut self.rows_considered, other.rows_considered) {
+            *total += count;
+        }
+    }
 }
 
 #[derive(Default)]
@@ -944,7 +958,9 @@ fn materialize_frame(
         .map(|(index, name)| (name.clone(), index))
         .collect::<HashMap<_, _>>();
     let flat_nodes = rows_by_anchor.iter().flatten().copied().collect::<Vec<_>>();
-    stats.rows_considered += flat_nodes.len();
+    if let Some(count) = &mut stats.rows_considered {
+        *count += flat_nodes.len();
+    }
     if !projection_indices.is_empty() {
         stats.rows_decoded += flat_nodes.len();
     }
@@ -1760,7 +1776,7 @@ fn shared_numeric_frame(
         .map(Abs::from_raw)
         .collect::<Vec<_>>();
     let mut selection_times = QueryTimings::default();
-    let mut selection_stats = QueryStats::default();
+    let mut selection_stats = QueryStats::new(prepared.profile);
     let mut selected: Option<MaterializedFrame> = retained_frame.take();
     let mut anchor = 0;
     let started = Instant::now();
@@ -1823,7 +1839,7 @@ fn shared_numeric_frame(
     );
     stats.frames_materialized += selection_stats.frames_materialized;
     stats.rows_materialized += selection_stats.rows_materialized;
-    stats.rows_considered += selection_stats.rows_considered;
+    stats.merge_candidates(&selection_stats);
     stats.rows_decoded += selection_stats.rows_decoded;
     stats.values_decoded += selection_stats.values_decoded;
     stats.edges_visited += selection_stats.edges_visited;
@@ -2023,6 +2039,11 @@ struct PreparedRowSelection {
 }
 
 impl PreparedAggregatePlan {
+    pub fn with_profile(mut self, profile: bool) -> Self {
+        self.query.profile = profile;
+        self
+    }
+
     pub fn prepare(reader: &GraphIndexReader, root: &str, json: &str) -> Result<Self, String> {
         use diskgraph_core::tt_builder::{plan_timestamp_unit, DiskGraphTTPlan, Op};
         let plan_clock = plan_timestamp_unit(json)
@@ -2038,6 +2059,7 @@ impl PreparedAggregatePlan {
         }
         let mut selected = plan.clone();
         let mut query = QueryPlan {
+            profile: false,
             frames: vec![],
             sequences: vec![],
             aggregates: vec![],
@@ -2226,7 +2248,7 @@ impl PreparedAggregatePlan {
                     output.timings.total += result.timings.total;
                     output.stats.frames_materialized += result.stats.frames_materialized;
                     output.stats.rows_materialized += result.stats.rows_materialized;
-                    output.stats.rows_considered += result.stats.rows_considered;
+                    output.stats.merge_candidates(&result.stats);
                     output.stats.rows_decoded += result.stats.rows_decoded;
                     output.stats.values_decoded += result.stats.values_decoded;
                     output.stats.edges_visited += result.stats.edges_visited;
@@ -2279,6 +2301,11 @@ pub struct PreparedTemporalPlan {
 }
 
 impl PreparedTemporalPlan {
+    pub fn with_profile(mut self, profile: bool) -> Self {
+        self.query.profile = profile;
+        self
+    }
+
     pub fn prepare(reader: &GraphIndexReader, root: &str, json: &str) -> Result<Self, String> {
         let query: QueryPlan = serde_json::from_str(json)
             .map_err(|e| format!("invalid temporal query JSON: {e}"))?;
@@ -2402,7 +2429,7 @@ fn execute_prepared_parallel(
             .frames_materialized
             .max(result.stats.frames_materialized);
         output.stats.rows_materialized += result.stats.rows_materialized;
-        output.stats.rows_considered += result.stats.rows_considered;
+        output.stats.merge_candidates(&result.stats);
         output.stats.rows_decoded += result.stats.rows_decoded;
         output.stats.values_decoded += result.stats.values_decoded;
         output.stats.edges_visited += result.stats.edges_visited;
@@ -2451,7 +2478,7 @@ fn execute_query(
         validate_sequence_plan(sequence)?;
     }
     let mut timings = QueryTimings::default();
-    let mut stats = QueryStats::default();
+    let mut stats = QueryStats::new(plan.profile);
     let mut frames = HashMap::new();
     let mut seen_frames = HashSet::new();
     let mut shared_results = HashMap::new();

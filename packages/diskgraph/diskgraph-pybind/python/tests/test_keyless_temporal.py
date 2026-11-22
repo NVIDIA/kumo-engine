@@ -64,7 +64,7 @@ def keyless_graph(request, tmp_path_factory):
         ],
     }
     diskgraph.ingest(json.dumps(config), str(root / "index"), col_stats=False)
-    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=2)
+    engine = diskgraph.SamplerEngine(str(root / "index"), num_threads=2, profile=True)
     relation = next(
         r["name"]
         for r in json.loads(engine.get_type_mapping())["edge_relations"]

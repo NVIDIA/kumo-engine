@@ -54,6 +54,7 @@ def make_runtime_batch_iterator(dataset_ref, **kwargs):
         dataset_ref,
         rnd_seed=kwargs.get("rnd_seed"),
         num_threads=kwargs.pop("num_threads", None),
+        profile=kwargs.pop("profile", False),
     )
     return index.iter(**kwargs)
 
@@ -1081,7 +1082,7 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
             fused=fused,
         )
         batch = next(iter(it))
-        _assert_native_profile(batch, fused)
+        assert "native_profile" not in batch
         return {
             "task": sorted(batch["task"].keys()),
             "graphs.main": sorted(batch["graphs"]["main"].keys()),
@@ -1110,6 +1111,7 @@ def _projected_batch(
     fused: bool | None,
     projections: dict[str, list[str]] | None = None,
     neighborhoods=(),
+    profile=False,
 ) -> dict[str, Any]:
     # `projections` is an ARGUMENT to iter(), not a key inside the plan:
     # the plan describes the traversal, this describes what the caller consumes.
@@ -1119,6 +1121,7 @@ def _projected_batch(
         entity_node_type="users",
         sampling_plan=_sampling_plan(),
         projections=projections,
+        profile=profile,
         num_workers=1,
         worker_id=0,
         shuffle=False,
@@ -1135,10 +1138,10 @@ def _projected_batch(
 
 
 def test_named_neighborhoods_count_each_root_once(seed_table_fixture):
-    main = _projected_batch(seed_table_fixture, fused=False)
+    main = _projected_batch(seed_table_fixture, fused=False, profile=True)
     root_count = len(set(main["task"]["seed_node_ids"].to_pylist()))
     for names in (("left",), ("left", "right")):
-        batch = _projected_batch(seed_table_fixture, fused=False, neighborhoods=names)
+        batch = _projected_batch(seed_table_fixture, fused=False, neighborhoods=names, profile=True)
         assert set(batch["graphs"]) == {"main", *names}
         for counter in ("rows_examined", "rows_decoded"):
             assert batch["native_profile"][counter] == (
@@ -2484,7 +2487,7 @@ def test_node_range_without_extra_neighborhoods_keeps_legacy_root_contract(seed_
         dataset_ref=seed_table_fixture["manifest_path"], stage="train",
         sampling_plan=_sampling_plan(), num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0, batch_size=3, drop_last=False,
-        rhs_seed_node_type="users", rhs_seed_time=100, fused=fused,
+        rhs_seed_node_type="users", rhs_seed_time=100, fused=fused, profile=True,
     )
     assert count == seed_table_fixture["n_users"]
     batches = list(iterator)

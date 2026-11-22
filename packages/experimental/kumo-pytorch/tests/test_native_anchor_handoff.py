@@ -5,6 +5,7 @@
 """Native anchor identity/partition and real model-facing GNN parity."""
 
 import json
+import os
 from dataclasses import replace
 
 import pyarrow as pa
@@ -111,7 +112,13 @@ def native_task(tmp_path, request):
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+        contract,
+        dataset,
+        api.DiskGraphEngine(
+            index=tmp_path / "index",
+            num_threads=1,
+            profile=getattr(request, "param", None) == "profile",
+        ),
     ) as plan:
         with plan.materialize(table, fit_split="train") as task:
             yield plan, task, table
@@ -455,6 +462,11 @@ def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count
     assert plan._source._sampler is not None
 
 
+@pytest.mark.skipif(
+    os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1",
+    reason="run the loader benchmark with python -m tests.e2e.runs loader --e2e-dir DIR",
+)
+@pytest.mark.parametrize("native_task", ["profile"], indirect=True)
 def test_native_cpu_loader_timing(native_task, tmp_path, request, native_anchor_delivery):
     from tests.e2e import runs
 
@@ -748,6 +760,7 @@ def test_replacing_closed_anchor_task_releases_old_reader(native_task):
         assert sum(len(b.metadata["sample_ids"]) for b in restored.batches(split="train")) == 4
 
 
+@pytest.mark.parametrize("native_task", [None, "profile"], indirect=True)
 def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, monkeypatch):
     plan, task, table = native_task
     sample = replace(
@@ -778,7 +791,10 @@ def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, mon
             batches = list(native.batches(split="train", output_format="model"))
             assert _by_sample(batches) == {"a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0}
             profile = native._assembler._source.last_sampling_profile
-            assert profile["rows_examined"] >= profile["rows_decoded"] > 0
+            if plan.engine.profile:
+                assert profile["rows_examined"] >= profile["rows_decoded"] > 0
+            else:
+                assert profile is None
             for batch in batches:
                 assert len(batch.inputs["small"]["nodes"]["events"]["ids"]) == batch.batch_size
                 assert len(batch.inputs["medium"]["nodes"]["events"]["ids"]) == 2 * batch.batch_size

@@ -20,7 +20,7 @@ use gxhash::HashMap as GxHashMap;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -417,6 +417,8 @@ impl NodeCutoff<'_> {
 
 /// The core engine responsible for executing graph sampling requests.
 pub struct DiskGraphEngine {
+    /// Collect native operation timers and work counters. Disabled by default.
+    pub profile: bool,
     /// Shard readers mapped by dense Node Type ID.
     pub readers: Vec<Vec<ShardHandle>>,
     /// Map from dense Relation ID to DstTypeID.
@@ -886,6 +888,7 @@ impl DiskGraphEngine {
             local_to_merged_rel,
             random_seed,
             thread_pool,
+            profile: false,
             legacy_recording: false,
             parallel_commit_min_edges: 1 << 15,
         }
@@ -1293,10 +1296,13 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
-        let sampling_started = Instant::now();
+        if self.profile {
+            output.enable_profile();
+        }
+        let sampling_started = self.profile.then(Instant::now);
         self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
         output.finalize(&state)?;
-        let sampling_ns = sampling_started.elapsed().as_nanos() as u64;
+        let sampling_ns = sampling_started.map(|t| t.elapsed().as_nanos() as u64);
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
         // `raw_features` would be empty. Fetch them post-sampling per visited
@@ -1308,7 +1314,7 @@ impl DiskGraphEngine {
         let retrieval_ns = if fused {
             sampling_ns
         } else {
-            let retrieval_started = Instant::now();
+            let retrieval_started = self.profile.then(Instant::now);
             for (type_id, type_state) in &state.type_states {
                 if self
                     .node_decoders
@@ -1340,14 +1346,18 @@ impl DiskGraphEngine {
                 let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
                 self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
             }
-            retrieval_started.elapsed().as_nanos() as u64
+            retrieval_started.map(|t| t.elapsed().as_nanos() as u64)
         };
 
         let mut batch = output.into_runtime_batch();
-        batch.profile.sampling_ns = sampling_ns;
-        batch.profile.retrieval_ns = retrieval_ns;
-        batch.profile.rows_examined = state.stats.rows_examined + batch.profile.rows_decoded;
-        batch.profile.fused = fused;
+        if let (Some(profile), Some(sample), Some(fetch)) =
+            (&mut batch.profile, sampling_ns, retrieval_ns)
+        {
+            profile.sampling_ns = sample;
+            profile.retrieval_ns = fetch;
+            profile.rows_examined += profile.rows_decoded;
+            profile.fused = fused;
+        }
         Ok(batch)
     }
 
@@ -2452,7 +2462,8 @@ impl DiskGraphEngine {
         let chunk_size = (num_nodes / ideal_chunks).clamp(2048, 64_000);
         let chunks: Vec<_> = node_ids.chunks(chunk_size).collect();
 
-        let results: Vec<Result<(arrow_array::RecordBatch, u64)>> = self.thread_pool.install(|| chunks
+        let decoded = output.profile_mut().map(|_| AtomicU64::new(0));
+        let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
             .into_par_iter()
             .map(|chunk_ids| {
                 // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
@@ -2539,17 +2550,20 @@ impl DiskGraphEngine {
                 let expanded_columns = expanded_columns
                     .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
 
+                if let Some(counter) = &decoded {
+                    counter.fetch_add(unique_batch.num_rows() as u64, Relaxed);
+                }
                 arrow_array::RecordBatch::try_new(unique_batch.schema(), expanded_columns)
-                    .map(|batch| (batch, unique_batch.num_rows() as u64))
                     .map_err(|e| EngineError::Internal(format!("batch creation failed: {}", e)))
             })
             .collect()
         );
 
+        if let (Some(counter), Some(profile)) = (decoded, output.profile_mut()) {
+            profile.rows_decoded += counter.into_inner();
+        }
         for res in results {
-            let (batch, decoded_rows) = res?;
-            output.record_decoded_rows(decoded_rows);
-            output.handle_feature_batch(batch)?;
+            output.handle_feature_batch(res?)?;
         }
 
         Ok(())
@@ -2599,7 +2613,9 @@ impl DiskGraphEngine {
             .map_err(|e| EngineError::Internal(e.to_string()))?;
 
         output.handle_fused_features(type_id, batch)?;
-        output.record_decoded_rows(type_state.builder_rows as u64);
+        if let Some(profile) = output.profile_mut() {
+            profile.rows_decoded += type_state.builder_rows as u64;
+        }
         type_state.builder_rows = 0;
         type_state.builder_bytes = 0;
 
@@ -2924,7 +2940,9 @@ impl DiskGraphEngine {
                         EngineError::Internal(format!("no decoder for type {}", src_type_id))
                     })?;
 
-                state.stats.rows_examined += frontier.len() as u64;
+                if let Some(profile) = output.profile_mut() {
+                    profile.rows_examined += frontier.len() as u64;
+                }
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
@@ -2981,7 +2999,9 @@ impl DiskGraphEngine {
             }
 
             // group nodes by shard
-            state.stats.rows_examined += frontier.len() as u64;
+            if let Some(profile) = output.profile_mut() {
+                profile.rows_examined += frontier.len() as u64;
+            }
             let mut shard_groups: Vec<Vec<&NodeRecord>> = vec![Vec::new(); shards.len()];
             for item in &frontier {
                 let idx = self.find_shard(shards, item.global_id)?;

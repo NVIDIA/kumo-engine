@@ -117,12 +117,16 @@ for event in features:
     print(event["batch"].schema)
 ```
 
-Runtime batches expose `native_profile` for the main graph and all named neighborhoods
-combined. `sampling_ns` and `retrieval_ns` measure native elapsed time. When `fused`
+Native graph profiling is disabled by default. Pass `profile=True` when constructing
+a `RuntimeIndex`, `RuntimeBatchIterator`, or `SamplerEngine` to enable it for that instance.
+Profiled runtime batches expose `native_profile` for the main graph and all named
+neighborhoods combined. `sampling_ns` and `retrieval_ns` measure native elapsed time. When `fused`
 is true they describe the same interval, so count it once. `rows_decoded` counts
 feature rows before duplicate output expansion. `rows_examined` adds adjacency
 source-row visits to those decodes. Direct sample and fetch iterators expose their
 operation's fields after successful completion, including time waiting to deliver output.
+The runtime iterator benchmark reports throughput by default. Add `--profile` to
+`python/tests/bench_runtime_batch_iterator.py` to include the native counters.
 
 ### Prepared scalar materialization
 
@@ -247,8 +251,8 @@ Missing/mismatched clocks or unsafe decoder arithmetic keep the scan fallback.
 This does not change storage precision, query units, ordering or aggregates.
 
 `edges_visited` counts unpacked candidates, excluding binary-search probes;
-materialization and length queries report `rows_considered` after seeking and distinct
-handling. These counters describe work, not the original adjacency degree.
+profiled materialization queries report `rows_considered` after seeking and distinct
+handling. Length queries retain their existing candidate counts. These counters describe work, not the original adjacency degree.
 The specialized PQL numeric executor retains its existing traversal. See the
 [shared-range benchmark](../scripts/benchmarks/shared_temporal_ranges.md) for
 the scoped comparison protocol.

@@ -10694,7 +10694,7 @@ fn integ_parallel_history_preserves_ragged_batches() {
         });
         let prepared = PreparedTemporalPlan::prepare_history(
             &reader, "users", &json.to_string(),
-        ).unwrap();
+        ).unwrap().with_profile(true);
         for size in [0, 1, 7, 8, 31, 32, 63, 64, 65, 128, 256] {
             for repeated in [false, true] {
                 let roots = (0..size).map(|i| ids[if repeated { 0 } else { i % ids.len() }])

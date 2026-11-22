@@ -153,6 +153,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
         worker = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", LOADER_CASE, "--e2e-dir", str(work)],
             cwd=REPOSITORY,
+            env={**os.environ, "KUMO_PYTORCH_PROFILE_LOADER": "1"},
         )
         result = work / "loader" / "results.json"
         ok = worker.returncode == 0 and result.is_file()
