@@ -73,7 +73,7 @@ REGRESSION before generation settings promote it to forecasting; use the generat
 This example forecasts `FORECAST_STEPS` consecutive windows for the confirmed temporal query:
 
 ```python
-from kumoapi.model_plan import TrainingTableGenerationPlan, RunMode
+from kumoapi.model_plan import RunMode
 from kumoapi.task import TaskType
 
 pq = kumo.PredictiveQuery(graph=graph, query=FORECAST_QUERY)
@@ -81,7 +81,7 @@ pq.validate()
 if pq.get_task_type() not in (TaskType.REGRESSION, TaskType.FORECASTING):
     raise ValueError("Forecast query must have a supported numerical temporal target")
 snapshot = graph.snapshot()
-generation = TrainingTableGenerationPlan(forecast_length=FORECAST_STEPS)
+generation = kumo.TrainingTableGenerationPlan(forecast_length=FORECAST_STEPS)
 training_table = pq.generate_training_table(snapshot, plan=generation)
 plan = pq.suggest_model_plan(snapshot, run_mode=RunMode.FAST)
 trainer = kumo.Trainer(plan)

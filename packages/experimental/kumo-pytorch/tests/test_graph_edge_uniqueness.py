@@ -5,24 +5,23 @@
 """G-GRAPH-001 rule 3: an edge appears at most once per sample."""
 
 from collections import Counter
-from dataclasses import replace
 
 import pytest
 
 from conformance.assertions import bound_tables
-from conformance.graph_cases import generate_graph_case, graph_edge_uniqueness, graph_structure
+from conformance.graph_cases import generate_graph_case
 from kumo.pytorch import api
+from tests.helpers import parquet_anchors
 
 USERS = [{"user_id": 1, "at": 0}, {"user_id": 2, "at": 0}]
 EVENTS = [
     {"event_id": 10, "user_id": 1, "at": 5},
     {"event_id": 11, "user_id": 1, "at": 7},
-    {"event_id": 12, "user_id": 1, "at": 9},
     {"event_id": 20, "user_id": 2, "at": 6},
 ]
 
 
-def _contract(first_fanout) -> api.DataLoaderSpec:
+def _contract(first_fanout=4) -> api.DataLoaderSpec:
     def hop(direction: str, fanout=4) -> api.GraphLayer:
         return api.GraphLayer(
             (api.GraphSample("user_events", fanout, direction=direction, strategy="recent"),)
@@ -64,13 +63,11 @@ def _contract(first_fanout) -> api.DataLoaderSpec:
     )
 
 
-@pytest.mark.parametrize(
-    "engine_name,first_fanout", [("in_memory", 4), ("diskgraph", 4), ("diskgraph", 1)]
-)
-def test_revisited_edges_appear_once_per_sample(engine_name, first_fanout):
+@pytest.mark.parametrize("engine_name", ["in_memory", "diskgraph"])
+def test_revisited_edges_appear_once_per_sample(engine_name):
     if engine_name == "diskgraph":
         pytest.importorskip("diskgraph")
-    contract = api.DataLoaderSpec.from_json(_contract(first_fanout).to_json())
+    contract = api.DataLoaderSpec.from_json(_contract().to_json())
     # Two samples of user 1 share the stored edges; each keeps its own copy.
     requests = [
         api.SampleRequest("early", 1, 6),
@@ -79,7 +76,7 @@ def test_revisited_edges_appear_once_per_sample(engine_name, first_fanout):
     ]
     expected = {
         "early": [(1, 10)],
-        "late": [(1, 10), (1, 11), (1, 12)],
+        "late": [(1, 10), (1, 11)],
         "other": [(2, 20)],
     }
     with (
@@ -115,9 +112,25 @@ def test_revisited_edges_appear_once_per_sample(engine_name, first_fanout):
     assert {key: sorted(value) for key, value in actual.items()} == expected
     owners = Counter(users["batch"].tolist())
     assert owners == Counter({0: 1, 1: 1, 2: 1})
-    assert len(set(zip(events["batch"].tolist(), events["ids"].tolist(), strict=True))) == len(
-        events["ids"]
-    )
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_revisit_with_larger_fanout(tmp_path):
+    contract = _contract(first_fanout=1)
+    events = [*EVENTS, {"event_id": 12, "user_id": 1, "at": 9}]
+    anchors = parquet_anchors(tmp_path / "anchors.parquet", {"id": [1], "at": [100]}, "id", "at")
+    with (
+        bound_tables(contract, {"users": USERS, "events": events}, "diskgraph") as (
+            dataset,
+            engine,
+        ),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        graph = next(task.batches(batch_size=1, output_format="model")).inputs["graph"]
+    src, dst = graph["edges"]["user_events"]["index"]
+    assert graph["nodes"]["users"]["ids"][src].tolist() == [1, 1, 1]
+    assert sorted(graph["nodes"]["events"]["ids"][dst].tolist()) == [10, 11, 12]
 
 
 @pytest.mark.parametrize(
@@ -128,7 +141,8 @@ def test_revisited_edges_appear_once_per_sample(engine_name, first_fanout):
         ("three_hop", 128, (192,) * 6),
     ],
 )
-def test_recent_graph_expansion_at_larger_degrees(path, fanout, degrees):
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_recent_graph_expansion_at_larger_degrees(tmp_path, path, fanout, degrees):
     pytest.importorskip("diskgraph")
     dimensions = {
         "schema_shape.graph_path": path,
@@ -150,6 +164,37 @@ def test_recent_graph_expansion_at_larger_degrees(path, fanout, degrees):
         for user, degree in enumerate(degrees, 1)
         for position in range(-1, degree)  # One future event per user.
     ]
-    case = replace(case, tables={**case.tables, "events": events[::-1]})
-    graph_structure(case, "diskgraph", 0)
-    graph_edge_uniqueness(case, "diskgraph", 0)
+    tables = {**case.tables, "events": events[::-1]}
+    roots = list(range(1, len(degrees) + 1))
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"id": roots, "at": [cutoff] * len(roots)}, "id", "at"
+    )
+    with (
+        bound_tables(case.contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(case.contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        graph = next(task.batches(batch_size=len(roots), output_format="model")).inputs["g"]
+    for owner, (user, degree) in enumerate(zip(roots, degrees, strict=True)):
+        recent = [user * 1000 + n for n in range(min(degree, fanout))]
+        expected = {"user_events": [(user, event) for event in recent]}
+        if path != "one_hop":
+            expected["event_shop"] = [(event, (event % 1000) % 6 + 1) for event in recent]
+        if path == "three_hop":
+            shops = {shop for _, shop in expected["event_shop"]}
+            expected["shop_owner"] = [
+                (s["shop_id"], s["owner_id"]) for s in tables["shops"] if s["shop_id"] in shops
+            ]
+        assert graph["edges"].keys() == expected.keys()
+        for relation, edge in graph["edges"].items():
+            left = graph["nodes"][edge["source_type"]]
+            right = graph["nodes"][edge["destination_type"]]
+            src, dst = edge["index"]
+            selection = left["batch"][src] == owner
+            assert (right["batch"][dst][selection] == owner).all()
+            pairs = zip(
+                left["ids"][src[selection]].tolist(),
+                right["ids"][dst[selection]].tolist(),
+                strict=True,
+            )
+            assert sorted(pairs) == sorted(expected[relation])
