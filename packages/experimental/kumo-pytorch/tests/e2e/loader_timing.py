@@ -6,7 +6,7 @@
 
 import os
 from collections import Counter
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from functools import wraps
 from math import ceil
 from statistics import mean, median, pstdev
@@ -18,6 +18,7 @@ import torch
 from torch.utils._pytree import tree_leaves
 
 from kumo.pytorch import api
+from tests.e2e.host_memory import memory_interval
 
 NATIVE_COUNTERS = ("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded")
 _OBSERVER_LOCK = Lock()
@@ -245,13 +246,7 @@ def _rates(counts, elapsed):
     }
 
 
-def memory_interval(memory, record, operation):
-    return memory.measure(record, operation) if memory is not None else nullcontext()
-
-
-def measure_epoch(
-    task, make_batches, record, observer, *, split, batch_size, event_tables=(), memory=None
-):
+def measure_epoch(task, make_batches, record, observer, *, split, batch_size, event_tables=()):
     """Count returned batches once. Terminal exhaustion contributes only to elapsed and wait."""
     install_native(observer)
     source = task._assembler._source
@@ -265,7 +260,7 @@ def measure_epoch(
     totals = Counter(samples=0, padded=0)
     epoch = record["epoch"]
     start = perf_counter_ns()
-    with memory_interval(memory, record, "iterator.startup"):
+    with memory_interval(record, "iterator.startup"):
         startup = perf_counter_ns()
         batches = make_batches(
             task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
@@ -277,7 +272,7 @@ def measure_epoch(
         request = perf_counter_ns()
         end = None
         try:
-            with memory_interval(memory, record, "batch.request"):
+            with memory_interval(record, "batch.request"):
                 request = perf_counter_ns()
                 try:
                     batch = next(batches, None)

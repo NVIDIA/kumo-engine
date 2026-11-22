@@ -495,18 +495,16 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
     from kumo.pytorch.engines import diskgraph
     from tests.e2e import runs
     from tests.e2e.file_cache import IndexPageCache
-    from tests.e2e.loader_timing import memory_interval, parquet_metadata, stage_observer
+    from tests.e2e.host_memory import memory_interval
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
 
     index = tmp_path / "index"
     manifest = index / "index_manifest.json"
     engine = {"index": index, "num_threads": 1, "profile": True}
     setup = {}
     work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
-    memory = None
-    if method := os.getenv("KUMO_PYTORCH_HOST_MEMORY"):
-        from tests.e2e.host_memory import HostMemory
-
-        memory = HostMemory(os.environ["KUMO_PYTORCH_MEMORY_CGROUP"], method)
+    memory = os.getenv("KUMO_PYTORCH_HOST_MEMORY")
+    if memory:
 
         def save_failed_ingestion():
             if setup.get("host_memory", {}).get("complete") is False:
@@ -520,7 +518,7 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
 
     with stage_observer() as observer:
         observer.wrap(diskgraph, "ensure_diskgraph_index", index_action)
-        with memory_interval(memory, setup, "ingestion"), observer.measure("ingestion"):
+        with memory_interval(setup, "ingestion"), observer.measure("ingestion"):
             contract, dataset, table = _native_inputs(tmp_path)
             with observer.measure("source.read"):
                 sources = {name: parquet_metadata(src.path) for name, src in dataset.tables.items()}
@@ -553,7 +551,6 @@ def test_native_cpu_loader_timing(tmp_path, request, native_anchor_delivery):
         native_anchor_delivery,
         setup=setup,
         cache=cache,
-        memory=memory,
         event_tables=("events",),
     )
     fitted = api.Artifact.load(work / "artifact").fitted_state

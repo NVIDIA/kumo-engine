@@ -107,16 +107,12 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
 
 
 def time_loader(
-    plan, table, work: Path, make_batches, *, setup, cache=None, memory=None, **batch_options
+    plan, table, work: Path, make_batches, *, setup, cache=None, **batch_options
 ) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
-    from tests.e2e.loader_timing import (
-        install_stages,
-        measure_epoch,
-        memory_interval,
-        stage_observer,
-    )
+    from tests.e2e.host_memory import memory_interval
+    from tests.e2e.loader_timing import install_stages, measure_epoch, stage_observer
 
     work.mkdir(parents=True, exist_ok=True)
     options = LOADER_BATCHING | batch_options
@@ -128,7 +124,7 @@ def time_loader(
             with ExitStack() as tasks:
                 with (
                     stage_observer(install_stages) as profile,
-                    memory_interval(memory, results[mode], "materialization"),
+                    memory_interval(results[mode], "materialization"),
                 ):
                     started = time.perf_counter_ns()
                     fit = {"fit_split": options["split"]}
@@ -158,7 +154,7 @@ def time_loader(
                             cache.condition(
                                 "cold" if epoch == 0 else "warm", record["file_page_cache"]
                             )
-                        measure_epoch(task, make_batches, record, profile, memory=memory, **options)
+                        measure_epoch(task, make_batches, record, profile, **options)
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
     return results
