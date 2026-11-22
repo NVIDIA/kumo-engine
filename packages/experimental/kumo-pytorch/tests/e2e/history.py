@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
-from tests.test_inference_lifecycle import assert_same
+from tests.test_inference_lifecycle import assert_same, batch_location
 
 
 def check_source_graph(task, batch, expected, layouts, *, root_table="roots"):
@@ -53,7 +53,14 @@ def check_source_graph(task, batch, expected, layouts, *, root_table="roots"):
             encoder = binding.encoder
             raw = [expected[owner, family, i][name] for owner, i in members]
             valid = torch.tensor([v is not None for v in raw], dtype=torch.bool)
-            assert_same(features[name]["valid"], valid)
+            owners = nodes[family]["batch"]
+            path = f"graph.{family}.{name}"
+            assert_same(
+                features[name]["valid"],
+                valid,
+                f"{path}.valid",
+                locate=batch_location(batch, owners),
+            )
             values = [v for v in raw if v is not None]
             dtype = torch.int64
             if isinstance(encoder.config, api.ZScore):
@@ -62,7 +69,12 @@ def check_source_graph(task, batch, expected, layouts, *, root_table="roots"):
             elif isinstance(encoder.config, api.Vocabulary):
                 lookup = dict(encoder.entries)
                 values = [lookup.get(v, encoder.config.unknown_id) for v in values]
-            assert_same(features[name]["values"][valid], torch.tensor(values, dtype=dtype))
+            assert_same(
+                features[name]["values"][valid],
+                torch.tensor(values, dtype=dtype),
+                f"{path}.values",
+                locate=batch_location(batch, owners[valid]),
+            )
 
 
 def check_normalized_aggregates(task, batch, answers, training, *, raw_only=()):
@@ -77,11 +89,17 @@ def check_normalized_aggregates(task, batch, answers, training, *, raw_only=()):
         assert (encoder.mean, encoder.scale) == pytest.approx((center, scale))
         values = [answers[s][name] for s in samples]
         valid = torch.tensor([v is not None for v in values], dtype=torch.bool)
-        assert_same(field["valid"], valid)
+        assert_same(field["valid"], valid, f"aggregates.{name}.valid", locate=batch_location(batch))
         expected = torch.tensor(
             [(v - center) / scale for v in values if v is not None], dtype=torch.float32
         )
-        torch.testing.assert_close(field["values"][valid], expected, rtol=2e-6, atol=2e-6)
+        assert_same(
+            field["values"][valid],
+            expected,
+            f"aggregates.{name}.values",
+            tolerance=(2e-6, 2e-6),
+            locate=batch_location(batch, valid.nonzero().flatten()),
+        )
 
 
 def _scalar_id(encoder, value):
@@ -327,7 +345,8 @@ def check_mbd_packed_history(task, batch, registered, events, fields):
     assert tokens.dtype == torch.int64 and tokens.shape == (size,)
     indices = dict(position_ids=torch.zeros_like(tokens), source_event_indices=torch.arange(size))
     assert_same(history, dict(layout, **indices, valid=valid, value_ids=tokens))
-    assert_same(columns["valid"], valid)
+    owners = torch.arange(len(samples)).repeat_interleave(torch.tensor(lengths))
+    assert_same(columns["valid"], valid, "events.valid", locate=batch_location(batch, owners))
     packed = [tokens.tolist()]
     for stream, names, extras in ((columns, encoders, {"valid"}), (aligned, heads, set())):
         assert set(stream) == layout.keys() | set(names) | extras
@@ -338,9 +357,20 @@ def check_mbd_packed_history(task, batch, registered, events, fields):
             assert values.shape == mask.shape == (size,)
             packed.append(zip(values.tolist(), mask.tolist(), strict=True))
     actual = iter(zip(*packed, strict=True))
-    for sample in samples:
+    for owner, sample in enumerate(samples):
         cutoff = registered[sample]["as_of_time"] // 10**9
         for ns, tied in groupby(histories[sample], key=lambda event: event[0]):
             expected = [record(cutoff, row) for _, _, row in tied]
             # Only complete events sharing an original nanosecond can exchange positions.
-            assert sorted(next(actual) for _ in expected) == sorted(expected), (sample, ns)
+            seen = sorted(next(actual) for _ in expected)
+            wanted = sorted(expected)
+            if seen != wanted:
+                names = ("history.value_ids", *encoders, *heads)
+                for left, right in zip(seen, wanted, strict=True):
+                    for field, value, answer in zip(names, left, right, strict=True):
+                        assert_same(
+                            value,
+                            answer,
+                            f"packed.{field}[{ns}]",
+                            locate=batch_location(batch, owner),
+                        )

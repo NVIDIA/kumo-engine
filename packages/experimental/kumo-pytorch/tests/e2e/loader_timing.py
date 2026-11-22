@@ -4,9 +4,12 @@
 
 """Time a complete CPU model-batch epoch on an existing package task."""
 
+import hashlib
+import json
 import os
 from collections import Counter
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
+from contextvars import ContextVar
 from functools import wraps
 from math import ceil
 from statistics import mean, median, pstdev
@@ -22,6 +25,7 @@ from tests.e2e.host_memory import memory_interval
 
 NATIVE_COUNTERS = ("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded")
 _OBSERVER_LOCK = Lock()
+_CORRECTNESS = ContextVar("correctness_observer", default=None)
 
 
 class _StageObserver:
@@ -63,7 +67,7 @@ class _StageObserver:
 
 
 @contextmanager
-def stage_observer(install=None, *, optional=False):
+def stage_observer(install=None, *, optional=False, observer_type=_StageObserver):
     """Scope inclusive stage timers to one loader thread and restore every wrapped call."""
     if optional and os.getenv("KUMO_PYTORCH_PROFILE_LOADER") != "1":
         yield None
@@ -72,10 +76,109 @@ def stage_observer(install=None, *, optional=False):
         if not _OBSERVER_LOCK.acquire(blocking=False):
             raise RuntimeError("a loader stage observer is already active")
         stack.callback(_OBSERVER_LOCK.release)
-        observer = _StageObserver(stack)
+        observer = observer_type(stack)
         if install is not None:
             install(observer)
         yield observer
+
+
+class _CorrectnessObserver(_StageObserver):
+    active_stage = None
+    error = None
+    failure = None
+
+    @contextmanager
+    def measure(self, name, /, *args, _checkpoint=True, **kwargs):
+        if get_ident() != self._thread:
+            yield
+            return
+        previous, self.active_stage = self.active_stage, name
+        totals = self.stages.setdefault(name, {"calls": 0, "elapsed_ns": 0, "failures": 0})
+        if _checkpoint:
+            self.checkpoint()
+        try:
+            with super().measure(name):
+                yield
+        except BaseException as exc:
+            totals["failures"] += 1
+            if self.error is None or self.error[1] is not exc:
+                self.error = (name, exc)
+            raise
+        finally:
+            self.active_stage = previous
+            if _checkpoint:
+                self.checkpoint()
+
+
+def correctness_stage(name):
+    observer = _CORRECTNESS.get()
+    return observer.measure(name) if observer is not None else nullcontext()
+
+
+def record_correctness_failure(exc):
+    """Keep the first failing pytest phase, including assertions outside measured operations."""
+    observer = _CORRECTNESS.get()
+    if observer is None or observer.failure is not None:
+        return
+    if observer.error and observer.error[1] is exc:
+        name = observer.error[0]
+    else:
+        name = observer.active_stage
+        observer.stages[name]["failures"] += 1
+    observer.failure = {"stage": name, "type": type(exc).__name__, "message": str(exc)[:2048]}
+    observer.checkpoint()
+
+
+@contextmanager
+def correctness_observer(directory, nodeid):
+    """Checkpoint coarse ordinary-test stages, including work in shared pytest fixtures."""
+    from e2e.datasets import staging
+    from kumo.pytorch.preparation import Plan
+    from kumo.pytorch.task import TaskBatches
+
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"stages-{hashlib.sha256(nodeid.encode()).hexdigest()[:16]}.json"
+    with stage_observer(observer_type=_CorrectnessObserver) as observer:
+
+        def checkpoint():
+            data = dict(nodeid=nodeid, active_stage=observer.active_stage, stages=observer.stages)
+            if observer.failure:
+                data["error"] = observer.failure
+            pending = path.with_suffix(f".{os.getpid()}.tmp")
+            pending.write_text(json.dumps(data) + "\n")
+            pending.replace(path)
+
+        observer.checkpoint = checkpoint
+        observer.wrap(staging, "_stage", "verification")
+        observer.wrap(api, "prepare", "prepare")
+        observer.wrap(Plan, "materialize", "materialize")
+        # Batch retrieval is nested in delivery. Only the first request checkpoints to disk.
+        original = TaskBatches.__next__
+
+        def retrieve(iterator):
+            if observer._thread != get_ident():
+                return original(iterator)
+            before = observer.stages.get("batch.next", {}).get("elapsed_ns", 0)
+            first = iterator._iterator is None
+            with observer.measure("batch.next", _checkpoint="batch.next" not in observer.stages):
+                try:
+                    batch = original(iterator)
+                except StopIteration:
+                    batch = None
+            if batch is None:
+                raise StopIteration
+            if first:
+                row = observer.stages["batch.next"]
+                row.setdefault("first_batch_ns", []).append(row["elapsed_ns"] - before)
+            return batch
+
+        observer._stack.enter_context(patch.object(TaskBatches, "__next__", retrieve))
+        token = _CORRECTNESS.set(observer)
+        try:
+            with observer.measure("correctness"):
+                yield
+        finally:
+            _CORRECTNESS.reset(token)
 
 
 def install_stages(observer):

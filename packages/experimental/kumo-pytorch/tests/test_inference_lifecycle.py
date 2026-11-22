@@ -54,24 +54,92 @@ ENGINES = ("in_memory", "diskgraph")
 SEED, EPOCH = 7, 2
 
 
-def assert_same(actual: object, expected: object, path: str = "batch") -> None:
-    """Exact equality through mappings, sequences and tensors (dtype included)."""
+def batch_location(batch, owners=None):
+    """Resolve a compared row to its original anchor, after masking or packing."""
+
+    def locate(row):
+        offset = row if owners is None else owners
+        if not isinstance(offset, int):
+            if row >= len(owners):
+                return f"unmapped output row {row}"
+            offset = int(owners[row])
+        metadata = batch.metadata
+        if not 0 <= offset < len(metadata["sample_ids"]):
+            return f"batch_offset={offset} (outside the source anchors)"
+        requests = metadata.get("request_metadata")
+        position = requests[offset].get("anchor_row_position") if requests else None
+        sample = metadata["sample_ids"][offset]
+        return f"batch_offset={offset}, anchor_row_position={position}, sample_id={sample!r}"
+
+    return locate
+
+
+def assert_same(
+    actual: object, expected: object, path: str = "batch", *, locate=None, tolerance=None
+) -> None:
+    """Compare nested tensors and report the first differing value with its source anchor."""
 
     if isinstance(expected, torch.Tensor):
         assert isinstance(actual, torch.Tensor), path
         assert actual.dtype == expected.dtype, path
-        assert torch.equal(actual, expected), path
+        if actual.shape != expected.shape:
+            row = (
+                min(len(actual), len(expected))
+                if actual.ndim and expected.ndim and actual.shape[1:] == expected.shape[1:]
+                else 0
+            )
+            _value_mismatch(
+                f"{path}.shape", (row,), tuple(actual.shape), tuple(expected.shape), locate, None
+            )
+        if tolerance:
+            assert actual.device == expected.device and actual.layout == expected.layout, path
+        if torch.equal(actual, expected):
+            return
+        if tolerance:
+            rtol, atol = tolerance
+            equal = torch.isclose(actual, expected, rtol=rtol, atol=atol)
+            if equal.all():
+                return
+        else:
+            equal = actual == expected
+        index = tuple((~equal).nonzero()[0].tolist())
+        _value_mismatch(
+            path, index, actual[index].item(), expected[index].item(), locate, tolerance
+        )
     elif isinstance(expected, Mapping):
         assert isinstance(actual, Mapping), path
         assert actual.keys() == expected.keys(), path
         for key in expected:
-            assert_same(actual[key], expected[key], f"{path}.{key}")
+            assert_same(
+                actual[key], expected[key], f"{path}.{key}", locate=locate, tolerance=tolerance
+            )
     elif isinstance(expected, (tuple, list)):
-        assert isinstance(actual, (tuple, list)) and len(actual) == len(expected), path
-        for index, (left, right) in enumerate(zip(actual, expected, strict=True)):
-            assert_same(left, right, f"{path}[{index}]")
+        assert isinstance(actual, (tuple, list)), path
+        for index, (left, right) in enumerate(zip(actual, expected, strict=False)):
+            row = (lambda _, index=index: locate(index)) if locate else None
+            assert_same(left, right, f"{path}[{index}]", locate=row, tolerance=tolerance)
+        if len(actual) != len(expected):
+            index = min(len(actual), len(expected))
+            _value_mismatch(
+                path,
+                (index,),
+                actual[index] if index < len(actual) else "<absent>",
+                expected[index] if index < len(expected) else "<absent>",
+                locate,
+                None,
+            )
     else:
-        assert actual == expected, path
+        if actual != expected:
+            _value_mismatch(path, (), actual, expected, locate, tolerance)
+
+
+def _value_mismatch(path, index, actual, expected, locate, tolerance):
+    location = f", {locate(index[0] if index else 0)}" if locate else ""
+    precision = f"rtol={tolerance[0]}, atol={tolerance[1]}" if tolerance else "exact"
+    raise AssertionError(
+        f"{path}{index or ''}{location}: expected={expected!r}, "
+        f"actual={actual!r}, precision={precision}"
+    )
 
 
 def assert_same_batches(actual: list[api.Batch], expected: list[api.Batch]) -> None:

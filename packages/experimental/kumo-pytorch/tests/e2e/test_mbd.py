@@ -6,6 +6,7 @@
 
 import math
 import os
+from collections import Counter
 from pathlib import Path
 
 import pyarrow as pa
@@ -15,8 +16,10 @@ import torch
 
 from e2e.datasets.mbd import CATEGORIES, M03_MANIFEST, M04_MANIFEST, load_mbd, prepare_mbd
 from kumo.pytorch import api
+from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import check_mbd_packed_history, check_source_graph, source_vocabulary
-from tests.test_inference_lifecycle import assert_same
+from tests.e2e.loader_timing import correctness_stage
+from tests.test_inference_lifecycle import assert_same, batch_location
 
 _HEADS = ("event_type", "event_subtype")
 
@@ -29,6 +32,7 @@ _HEADS = ("event_type", "event_subtype")
     ],
     ids=["m04-count", "m03-category"],
 )
+@pytest.mark.binding_report("correctness")
 def test_mbd_transaction_forecast(tmp_path, manifest, verified):
     root = os.environ.get("KUMO_PYTORCH_DATA_ROOT")
     if root is None:
@@ -36,6 +40,7 @@ def test_mbd_transaction_forecast(tmp_path, manifest, verified):
     _check_forecast(load_mbd(Path(root), manifest), manifest, tmp_path, verified)
 
 
+@pytest.mark.binding_report("correctness")
 def test_mbd_category_ties_and_independent_masks(tmp_path):
     pytest.importorskip("diskgraph")
     tick, window = 10**9, 30 * 86400
@@ -71,10 +76,16 @@ def test_mbd_category_ties_and_independent_masks(tmp_path):
             "next_event_subtype_valid": [True, False],
         }
     )
-    _check_forecast((anchors, events, {"client": 0}), M03_MANIFEST, tmp_path, {0: 0, 1: 0})
+    _check_forecast(
+        (anchors, events, {"client": 0}),
+        M03_MANIFEST,
+        tmp_path,
+        {0: 0, 1: 0},
+        selector="ties fixture",
+    )
 
 
-def _check_forecast(tables, manifest, tmp_path, verified):
+def _check_forecast(tables, manifest, tmp_path, verified, selector=None):
     anchors, raw, ranks = tables
     category = manifest == M03_MANIFEST
     clocks = {"as_of_time", "outcome_end", "graph_as_of_time"}
@@ -141,10 +152,29 @@ def _check_forecast(tables, manifest, tmp_path, verified):
         max(row["as_of_time"] for row in registered.values() if row["split"] == "train") // 10**9
         - 1
     )
+    population = Counter(row["split"] for row in registered.values())
+    if category:
+        heads = {
+            name: Counter(
+                row["split"] for row in registered.values() if row["next_" + name + "_valid"]
+            )
+            for name in _HEADS
+        }
+    else:
+        heads = dict.fromkeys(("count", "generated_count"), population)
+    evidence = BindingReport(
+        "M03" if category else "M04",
+        selector or manifest.name,
+        "nuformer" if category else "graphsage",
+        population,
+        heads,
+        ("history", "identity") if category else ("graph",),
+    )
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(table, fit_split="train", encoder_cutoff=cutoff) as task,
+        correctness_stage("delivery"),
     ):
         delivered = []
         for batch in task.batches(batch_size=3, output_format="model"):
@@ -180,6 +210,7 @@ def _check_forecast(tables, manifest, tmp_path, verified):
             if category:
                 _check_category_targets(task, batch, registered, forecasts, ranks)
                 check_mbd_packed_history(task, batch, registered, events, fields)
+                evidence.observe(batch)
                 continue
             assert set(batch.inputs) == {"graph"}
             check_source_graph(
@@ -194,8 +225,12 @@ def _check_forecast(tables, manifest, tmp_path, verified):
                     }
                     for name, dtype in (("count", torch.float32), ("generated_count", torch.int64))
                 },
+                "targets",
+                locate=batch_location(batch),
             )
+            evidence.observe(batch)
         assert sorted(delivered) == sorted(registered)
+        evidence.publish()
 
 
 def _category_forecasts(registered, events):
@@ -233,12 +268,19 @@ def _check_category_targets(task, batch, registered, forecasts, ranks):
                 "values": torch.tensor([0 if v is None else vocab.get(v, 1) for v in values]),
                 "valid": torch.tensor([v is not None for v in values]),
             },
+            f"targets.{name}",
+            locate=batch_location(batch),
         )
     train_roots = sorted({ranks[registered[s]["entity_id"]] for s in train})
     group_ids = {root: i for i, root in enumerate(train_roots)}
     roots = [ranks[registered[s]["entity_id"]] for s in samples]
     groups = torch.tensor([group_ids.get(root, -1) for root in roots])
-    assert_same(batch.targets["matching"], {"values": groups, "valid": groups >= 0})
+    assert_same(
+        batch.targets["matching"],
+        {"values": groups, "valid": groups >= 0},
+        "targets.matching",
+        locate=batch_location(batch),
+    )
     assert_same(
         batch.inputs["identity"],
         {
@@ -247,4 +289,6 @@ def _check_category_targets(task, batch, registered, forecasts, ranks):
                 "valid": torch.ones_like(groups, dtype=torch.bool),
             }
         },
+        "inputs.identity",
+        locate=batch_location(batch),
     )

@@ -20,13 +20,15 @@ import torch
 
 from e2e.datasets.synthetic import _events, load_synthetic, prepare_synthetic
 from kumo.pytorch import api
+from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import (
     check_masked_history,
     check_normalized_aggregates,
     check_scalar_history,
     check_source_graph,
 )
-from tests.test_inference_lifecycle import assert_same
+from tests.e2e.loader_timing import correctness_stage
+from tests.test_inference_lifecycle import assert_same, batch_location
 
 _SOURCE_FIELDS = {
     "card_txns": ("txn_id", ("amount", "mcc", "channel")),
@@ -201,6 +203,7 @@ def _check_ltv_graph(task, batch, histories):
     ["customer", "account", "ltv"],
     ids=["s02-next-token", "s01-masked-values", "s04-positive-ltv"],
 )
+@pytest.mark.binding_report("correctness")
 def test_registered_history(tmp_path, entity_type):
     ltv = entity_type == "ltv"
     root = os.environ.get("KUMO_PYTORCH_DATA_ROOT")
@@ -217,6 +220,20 @@ def test_registered_history(tmp_path, entity_type):
         tables, dataset, {int(r["entity_id"]) for r in anchors.values()}, entity_type
     )
     training = [s for s, r in anchors.items() if r["split"] == "train"]
+    population = Counter(r["split"] for r in anchors.values())
+    binding, representation, head = {
+        "account": ("S01", "pragma", "masked_values"),
+        "customer": ("S02", "nuformer", "next_token"),
+        "ltv": ("S04", "combined", "label"),
+    }[entity_type]
+    evidence = BindingReport(
+        binding,
+        f"synthetic-medium/{entity_type}",
+        representation,
+        population,
+        {head: population if ltv else None},
+        ("history", "graph", "aggregates", "aggregate_checks") if ltv else ("history",),
+    )
     cutoff = max(anchors[s]["cutoff_epoch_seconds"] for s in training)
     if ltv:
         onboarded = {r["customer_id"]: r["onboarded_at"] for r in tables["customers"].to_pylist()}
@@ -231,6 +248,7 @@ def test_registered_history(tmp_path, entity_type):
     with (
         api.prepare(spec, dataset, engine) as plan,
         plan.materialize(table, fit_split="train", encoder_cutoff=cutoff - 1) as task,
+        correctness_stage("delivery"),
     ):
         for split in ("train", "valid", "test"):
             (batch,) = task.batches(
@@ -272,11 +290,15 @@ def test_registered_history(tmp_path, entity_type):
                     assert_same(
                         batch.targets["label"],
                         {"values": labels, "valid": torch.ones_like(labels, dtype=torch.bool)},
+                        "targets.label",
+                        locate=batch_location(batch),
                     )
                     _check_ltv_graph(task, batch, expected)
                     _check_ltv_aggregates(task, batch, answers, training)
                 else:
                     assert set(batch.inputs) == {"history"} and set(batch.targets) == {"next_token"}
+            evidence.observe(batch)
+        evidence.publish()
 
 
 def _ltv_answers(spec, cutoff, history):

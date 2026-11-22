@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: Publish package test evidence
+description: Upload the current job’s evidence and link its failure summary.
+inputs:
+  name:
+    description: Artifact name.
+    required: true
+  path:
+    description: Additional workload outputs to upload.
+    default: ''
+  retention-days:
+    description: Artifact retention period. Zero uses the repository default.
+    default: '0'
+runs:
+  using: composite
+  steps:
+    - id: upload
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
+      with:
+        name: ${{ inputs.name }}${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
+        path: |
+          ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/*.xml
+          ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/*.log
+          ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/stages-*.json
+          ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/binding-*.json
+          ${{ inputs.path }}
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}
+    - if: always()
+      shell: bash
+      env:
+        JOB_STATUS: ${{ job.status }}
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        REPORT_FILES: ${{ inputs.path }}
+      run: |
+        python3 "$GITHUB_WORKSPACE/packages/experimental/kumo-pytorch/tests/e2e/ci_summary.py" \
+          "$RUNNER_TEMP/pytorch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_STEP_SUMMARY"

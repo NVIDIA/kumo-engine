@@ -53,7 +53,7 @@ def count_loss(model, batch):
     return loss
 
 
-def _train(task, probe):
+def _train(task, probe, evidence=None):
     torch.random.default_generator.manual_seed(17)
     model = CountSAGE(task)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0)
@@ -68,6 +68,8 @@ def _train(task, probe):
             digest.update(batch)
             optimizer.zero_grad()
             loss = count_loss(model, batch)
+            if epoch == 0 and evidence is not None:
+                evidence.observe(batch)
             loss.backward()
             for name, weight in model.named_parameters():
                 assert weight.grad is not None and weight.grad.isfinite().all(), name
@@ -91,7 +93,7 @@ def _train(task, probe):
         assert len(steps) > start, "empty training split"
 
 
-def run_training(task: api.Task, work: Path) -> None:
+def run_training(task: api.Task, work: Path, evidence):
     frozen = task.fitted_state.fingerprint
     probe = next(task.batches(split="train", batch_size=4, output_format="model"))
     with ExitStack() as scope:
@@ -100,7 +102,7 @@ def run_training(task: api.Task, work: Path) -> None:
         scope.callback(torch.set_deterministic_debug_mode, torch.get_deterministic_debug_mode())
         torch.set_num_threads(1)
         torch.use_deterministic_algorithms(True)
-        model, reference = _train(task, probe)
+        model, reference = _train(task, probe, evidence)
         _, repeat = _train(task, probe)
         assert_same(repeat, reference)
         api.save_weights(work / "weights.pt", model.state_dict(), task.fitted_state)
@@ -112,6 +114,8 @@ def run_training(task: api.Task, work: Path) -> None:
                 delivered = 0
                 for batch in task.batches(split=split, batch_size=4, output_format="model"):
                     count_loss(loaded, batch)
+                    evidence.observe(batch)
                     delivered += batch.batch_size
                 assert delivered == task.count(split) > 0, split
     assert task.fitted_state.fingerprint == frozen
+    return {"updates": [len(reference[2]), len(repeat[2])], "reproducible": True}

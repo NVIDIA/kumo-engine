@@ -9,6 +9,10 @@ name: DiskGraph wheel
 # DiskGraph from source.
 on:  # yamllint disable-line rule:truthy
   workflow_call:
+    inputs:
+      diagnostics:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -63,8 +67,16 @@ jobs:
           workspaces: packages/diskgraph -> target
           key: python-wheel-py${{ steps.python.outputs.version }}
       - name: Build wheel
+        id: build
         if: steps.cache.outputs.cache-hit != 'true'
-        run: uv build --wheel --out-dir /tmp/diskgraph-wheel packages/diskgraph
+        env:
+          DIAGNOSTICS: ${{ inputs.diagnostics }}
+        run: |
+          cmd=(uv build --wheel --out-dir /tmp/diskgraph-wheel packages/diskgraph)
+          if [[ "$DIAGNOSTICS" == true ]]; then
+            exec python packages/experimental/kumo-pytorch/tests/e2e/ci_command.py "$RUNNER_TEMP/pytorch-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/wheel.log" "${cmd[@]}"
+          fi
+          exec "${cmd[@]}"
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
@@ -77,3 +89,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always() && inputs.diagnostics && steps.build.outcome != 'skipped'
+        with: {name: diskgraph-wheel-log}

@@ -36,13 +36,15 @@ from e2e.datasets.aml import (
 )
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
+from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import (
     check_masked_history,
     check_normalized_aggregates,
     check_scalar_history,
     scalar_token,
 )
-from tests.test_inference_lifecycle import assert_same
+from tests.e2e.loader_timing import correctness_stage
+from tests.test_inference_lifecycle import assert_same, batch_location
 
 
 class Transfer(NamedTuple):
@@ -190,7 +192,12 @@ def _check_graph(task, batch, histories):
         name: binding.encode_values([events[key].features[name] for key in transactions])
         for name, binding in bindings.items()
     }
-    assert_same(nodes["transactions"]["features"], expected_features)
+    assert_same(
+        nodes["transactions"]["features"],
+        expected_features,
+        "graph.transactions",
+        locate=batch_location(batch, nodes["transactions"]["batch"]),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -266,10 +273,11 @@ def hi_small():
         ("E02", {"graph", "history", "aggregates"}, "label"),
         ("E03", {"history", "history_calendar", "history_timing"}, "masked_values"),
         ("E04", {"history"}, "next_token"),
-        ("E05", {"history"}, "label"),
+        pytest.param("E05", {"history"}, "label", marks=pytest.mark.binding_report("histories")),
     ],
     ids=["e01-graph", "e02-combined", "e03-masked-values", "e04-next-token", "e05-involvement"],
 )
+@pytest.mark.binding_report("correctness")
 def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
     files, anchors, histories = hi_small
     positions = [row["anchor_row_position"] for row in anchors.values()]
@@ -279,6 +287,15 @@ def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
     split_col = "forecast_split" if target == "label" else "split"
     eligible = {s: r[split_col] for s, r in anchors.items() if r[split_col] is not None}
     training = [s for s, split in eligible.items() if split == "train"]
+    population = Counter(eligible.values())
+    evidence = BindingReport(
+        binding,
+        E01_MANIFEST.name,
+        "+".join(sorted(inputs)),
+        population,
+        {target: population if target == "label" else None},
+        inputs,
+    )
     fit_cutoff = max(histories[s][1] for s in training) - 1
     graph_clock = "graph" in inputs
     if "history" in inputs:
@@ -293,6 +310,7 @@ def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(table, fit_split="train", encoder_cutoff=fit_cutoff) as task,
+        correctness_stage("delivery"),
     ):
         assert task.count() == len(eligible)
         for split in ("train", "valid", "test"):
@@ -330,8 +348,12 @@ def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
                 _check_history(task, batch, selected)
             if "aggregates" in inputs:
                 check_normalized_aggregates(task, batch, counts, training)
+            evidence.observe(batch)
+    evidence.publish()
     if binding == "E05":
-        _check_role_windows(spec.schema, data, table, engine, {s: histories[s] for s in eligible})
+        _check_role_windows(
+            spec.schema, data, table, engine, {s: histories[s] for s in eligible}, population
+        )
 
 
 def _check_history(task, batch, histories):
@@ -368,14 +390,31 @@ def _check_l01_targets(batch, expected, currency_ids):
     assert sorted(samples) == sorted(expected)
     amounts, currencies = zip(*(expected[s] for s in samples), strict=True)
     amount, currency = batch.targets["amount"], batch.targets["currency"]
-    assert_same(amount["valid"], torch.tensor([v is not None for v in amounts]))
-    assert_same(currency["valid"], torch.tensor([v is not None for v in currencies]))
+    assert_same(
+        amount["valid"],
+        torch.tensor([v is not None for v in amounts]),
+        "targets.amount.valid",
+        locate=batch_location(batch),
+    )
+    assert_same(
+        currency["valid"],
+        torch.tensor([v is not None for v in currencies]),
+        "targets.currency.valid",
+        locate=batch_location(batch),
+    )
     assert_same(
         amount["values"][amount["valid"]],
         torch.tensor([float(v) for v in amounts if v is not None], dtype=torch.float32),
+        "targets.amount.values",
+        locate=batch_location(batch, amount["valid"].nonzero().flatten()),
     )
     ids = [0 if value is None else currency_ids.get(value, 1) for value in currencies]
-    assert_same(currency["values"], torch.tensor(ids, dtype=torch.int64))
+    assert_same(
+        currency["values"],
+        torch.tensor(ids, dtype=torch.int64),
+        "targets.currency.values",
+        locate=batch_location(batch),
+    )
 
     # One amount score, then distinct currency logits for missing, UNKNOWN and fitted IDs.
     columns = torch.arange(3 + len(currency_ids), dtype=torch.float32)
@@ -507,7 +546,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
     from tests.e2e.file_cache import IndexPageCache
     from tests.e2e.host_memory import memory_interval
     from tests.e2e.loader_timing import parquet_metadata, stage_observer
-    from tests.e2e.runs import L01_BATCHING, time_loader
+    from tests.e2e.runs import L01_BATCHING, check_l01_epochs, time_loader
 
     work = request.config.getoption("--e2e-dir")
     prepared = work.parents[1] / "prepared"
@@ -596,28 +635,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         assert [Counter(ids) for ids in delivered] == [Counter(expected)] * 2
     else:
         assert delivered == [expected, expected]
-    for epoch in fit["epochs"]:
-        assert epoch["complete"] and epoch["batch_sizes"] == [4] * 128
-        assert (epoch["samples"], epoch["padded"], epoch["post_warmup"]["batches"]) == (512, 0, 126)
-        assert epoch["native_totals"]
-        if length_planning:
-            assert "file_page_cache" not in epoch and "train_step_ns" not in epoch
-            assert (epoch["lengths_computed"], epoch["length_cache_hits"]) == (
-                (512, 0) if epoch["epoch"] == 0 else (0, 512)
-            )
-            assert epoch["length_cache_reused"] == (epoch["epoch"] == 1)
-            assert epoch["merged_history_batches"] == epoch["batches"] == 128
-            assert epoch["events"] == 10_293  # Causal account events for the pinned train anchors.
-        if cuda:
-            pages = epoch["file_page_cache"]
-            assert (
-                pages["status"] == "verified" and pages["mode"] == ("cold", "warm")[epoch["epoch"]]
-            )
-            assert (epoch["eligible_amount"], epoch["eligible_currency"]) == (512, 512)
-            assert epoch["optimizer_updates"] == len(epoch["batch_sizes"])
-            assert epoch["cuda"]["complete"] and epoch["cuda"]["steady_samples"] >= 2
-            assert len(epoch["cuda"]["transfers"]) == epoch["optimizer_updates"]
-            assert epoch["host_memory"]["complete"]
+    check_l01_epochs(fit["epochs"], cuda=cuda, length_planning=length_planning, where=work)
     for stage in ("input.fit", "target.fit"):
         assert fit["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
     assert fit["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")
@@ -634,6 +652,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         )
 
 
+@pytest.mark.binding_report("correctness")
 def test_li_medium_l01_combined_forecast(tmp_path):
     # The two train anchors share an account but differ on all twelve historical counts.
     # The other anchors cover a held-out currency, tied transfers and the 24-hour boundary.
@@ -670,10 +689,23 @@ def test_li_medium_l01_combined_forecast(tmp_path):
     assert all(value != counts[second][name] for name, value in counts[first].items())
     (train_currency,) = {currency for _, currency in answers["train"].values()} - {None}
     currency_ids = {train_currency: 2}
+    heads = {
+        name: {s: sum(row[i] is not None for row in a.values()) for s, a in answers.items()}
+        for i, name in enumerate(("amount", "currency"))
+    }
+    evidence = BindingReport(
+        "L01",
+        L01_MANIFEST.name,
+        "combined",
+        {s: len(a) for s, a in answers.items()},
+        heads,
+        ("graph", "history", "aggregates"),
+    )
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(table, fit_split="train") as task,
+        correctness_stage("delivery"),
     ):
         assert task.count() == len(positions)
         assert dict(task.target("currency").field(name="value").encoder.entries) == currency_ids
@@ -689,6 +721,8 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             _check_graph(task, batch, selected)
             _check_history(task, batch, selected)
             check_normalized_aggregates(task, batch, counts, answers["train"])
+            evidence.observe(batch)
+        evidence.publish()
 
         # The short rank gets a copy with valid labels and zero eligible loss.
         (padded,) = task.batches(split="test", rank=1, world_size=2, output_format="model")
@@ -727,6 +761,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
     ],
     ids=["l02-delay", "l03-format", "l04-involvement"],
 )
+@pytest.mark.binding_report("correctness")
 def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score, loss_sums):
     from e2e.datasets import aml
     from tests.e2e.loader_timing import parquet_metadata, stage_observer
@@ -749,6 +784,7 @@ def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(table, fit_split="train", encoder_cutoff=cutoff - 1) as task,
+        correctness_stage("delivery"),
     ):
         assert task.count() == 5
         if binding == "L03":
@@ -766,6 +802,14 @@ def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score
             ]
         valid = torch.tensor([True, True, False, True, False])
         splits = (("train", slice(3)), ("valid", slice(3, 4)), ("test", slice(4, 5)))
+        evidence = BindingReport(
+            binding,
+            "six-row fixture",
+            {"L02": "nuformer", "L03": "graphsage", "L04": "pragma"}[binding],
+            {s: len(labels[r]) for s, r in splits},
+            {"label": {s: int(valid[r].sum()) for s, r in splits}},
+            ("graph" if binding == "L03" else "history",),
+        )
         for (split, rows), expected_loss in zip(splits, loss_sums, strict=True):
             (batch,) = task.batches(split=split, batch_size=3, output_format="model")
             size = len(labels[rows])
@@ -797,9 +841,11 @@ def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score
                 assert total.dtype == torch.float64
             total.backward()
             assert_same(prediction.grad.reshape(size, -1).any(dim=1), valid[rows])
+            evidence.observe(batch)
+        evidence.publish()
 
 
-def _check_role_windows(schema, data, table, engine, histories):
+def _check_role_windows(schema, data, table, engine, histories, population):
     # At prediction time T, senders use all prior events and receivers use [T-24h, T-1h].
     events = {
         role: api.EventSpec(
@@ -823,9 +869,13 @@ def _check_role_windows(schema, data, table, engine, histories):
     spec = api.DataLoaderSpec(
         schema, api.SampleSpec(api.EntitySpec("accounts"), events=events), api.BatchSpec(inputs)
     )
+    evidence = BindingReport(
+        "E05", E01_MANIFEST.name, "packed", population, {}, inputs, mode="histories"
+    )
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(replace(table, targets={}), fit_split="train") as task,
+        correctness_stage("delivery"),
     ):
         seen = []
         for batch in task.batches(batch_size=len(histories), output_format="model"):
@@ -853,4 +903,6 @@ def _check_role_windows(schema, data, table, engine, histories):
                     assert [times[key] for key in actual] == (
                         selected if order == "ascending" else selected[::-1]
                     )
+            evidence.observe(batch)
         assert sorted(seen) == sorted(histories)
+        evidence.publish()

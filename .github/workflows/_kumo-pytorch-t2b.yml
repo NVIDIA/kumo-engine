@@ -46,9 +46,12 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Train, persist, infer and serve
         env:
+          KUMO_PYTORCH_DIAGNOSTICS: &evidence_dir ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}
           FLOW: ${{ matrix.flow }}
           SEED: ${{ matrix.seed }}
-        run: python -m tests.e2e.runs t2b "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs t2b "$FLOW" "$SEED" --e2e-dir "$RUNNER_TEMP/e2e"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kumo-pytorch-t2b-${{ matrix.flow }}-seed${{ matrix.seed }}
@@ -56,6 +59,9 @@ jobs:
             ${{ runner.temp }}/e2e/t2b/${{ matrix.flow }}-seed${{ matrix.seed }}/
             !${{ runner.temp }}/e2e/t2b/**/index/**
           retention-days: 14
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with: {name: 't2b-log-${{ matrix.flow }}-${{ matrix.seed }}'}
 
   checks:
     name: kumo-pytorch-t2b
@@ -81,9 +87,11 @@ jobs:
           done
       - name: Check the runs
         env:
+          KUMO_PYTORCH_DIAGNOSTICS: *evidence_dir
           KUMO_PYTORCH_E2E_REUSE_ONLY: '1'
         run: |
-          python -m pytest -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
+            python -m pytest --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml" -q --t2b --e2e-dir "$RUNNER_TEMP/e2e" --durations=0 \
             tests/e2e/test_lifecycle.py
       - name: Summarize metrics and run times
         if: ${{ always() }}
@@ -96,9 +104,10 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: ./.github/actions/kumo-pytorch-results
         if: ${{ always() }}
         with:
+          retention-days: 14
           name: kumo-pytorch-t2b-predictions-and-metrics
           path: |
             ${{ runner.temp }}/e2e/t2b/metrics.json
@@ -108,7 +117,6 @@ jobs:
             !${{ runner.temp }}/e2e/t2b/hm-m/**
             !${{ runner.temp }}/e2e/t2b/sampled/**
             !${{ runner.temp }}/e2e/t2b/**/index/**
-          retention-days: 14
 
   conformance:
     name: kumo-pytorch-t2b-conformance
@@ -139,13 +147,15 @@ jobs:
           diskgraph-wheel-artifact: diskgraph-wheel
       - name: Check every property on the day's seed batches
         env:
+          KUMO_PYTORCH_DIAGNOSTICS: *evidence_dir
           CONFORMANCE_REPROS: ${{ runner.temp }}/conformance-repros
           START: ${{ steps.seeds.outputs.start }}
-        run: python -m conformance --engine all --seeds 12 --seed-start "$START"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ failure() }}
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/conformance.log" \
+            python -m conformance --engine all --seeds 12 --seed-start "$START"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
         with:
+          retention-days: 14
           name: kumo-pytorch-t2b-conformance-repros
           path: ${{ runner.temp }}/conformance-repros
-          if-no-files-found: ignore
-          retention-days: 14

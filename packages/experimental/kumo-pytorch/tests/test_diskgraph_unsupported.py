@@ -426,9 +426,16 @@ def test_check_refuses_with_the_entry_code(code: str) -> None:
 
 
 @pytest.mark.parametrize("code", sorted(PREPARE_CASES))
+@pytest.mark.binding_report("refusal")
 def test_prepare_refuses_with_the_entry_code(code: str, tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match=rf"\[{code}\]"):
+    from tests.e2e.binding_report import BindingReport
+
+    with pytest.raises(ValueError, match=rf"\[{code}\]") as error:
         PREPARE_CASES[code](tmp_path)
+    actual = str(error.value).split("[", 1)[1].split("]", 1)[0]
+    BindingReport(code, "unsupported fixture", "diskgraph", {}, {}, (), mode="refusal").publish(
+        refusal=(actual, code)
+    )
 
 
 def test_check_contract_emits_only_listed_codes() -> None:

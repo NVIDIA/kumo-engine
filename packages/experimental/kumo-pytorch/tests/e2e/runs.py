@@ -128,14 +128,17 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
             return work, float(recorded["seconds"])
     if os.environ.get("KUMO_PYTORCH_E2E_REUSE_ONLY") == "1":
         raise RuntimeError(f"no finished run on this data at {work}")
+    from tests.e2e.loader_timing import correctness_stage
+
     shutil.rmtree(work, ignore_errors=True)
     started = time.perf_counter()
-    subprocess.run(
-        [sys.executable, "-m", FLOWS[flow], "--data", str(data.root), "--work", str(work)]
-        + ["--seed", str(seed)],
-        cwd=REPOSITORY,
-        check=True,
-    )
+    with correctness_stage("training"):
+        subprocess.run(
+            [sys.executable, "-m", FLOWS[flow], "--data", str(data.root), "--work", str(work)]
+            + ["--seed", str(seed)],
+            cwd=REPOSITORY,
+            check=True,
+        )
     seconds = time.perf_counter() - started
     marker.write_text(json.dumps({**identity, "seconds": seconds}) + "\n")
     return work, seconds
@@ -523,15 +526,23 @@ def _timing_campaign(
 
 
 def _aml_evidence(mode, path, revision):
+    from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST
+    from tests.e2e.binding_report import require_fields
+
     data = json.loads(path.read_text())
     if (
-        data["revision"] != revision
+        not revision
+        or data["revision"] != revision
         or data["tracked_diff_sha256"] is not None
         or data["workload"] != TIMING_CASES[AML_MODES[mode][0]]
     ):
         raise ValueError(f"Wrong candidate or workload in {path}")
     workers = data["workers"]
     if mode == "hi-small":
+        prepared = json.loads((path.parent / "prepared/identity.json").read_text())
+        pin = hashlib.sha256(E01_MANIFEST.read_bytes()).hexdigest()
+        require_fields(data, {"source_pin_sha256": pin}, path)
+        require_fields(prepared, {"source_manifest_sha256": pin}, path)
         expected = {
             f"{binding}/{rep}/{stage}/results.json"
             for binding, rep, stage in product(
@@ -540,6 +551,7 @@ def _aml_evidence(mode, path, revision):
         }
         ok = data["complete"] and set(data["summary"]) == set(HI_SMALL_BINDINGS)
     else:
+        require_fields(data, L01_BATCHING, path)
         lifecycle = mode == "l01-index"
         fits = ("fresh",) if lifecycle else ("fresh", "reloaded")
         expected = {f"{rep}/{fit}/l01/results.json" for rep, fit in product(range(3), fits)}
@@ -553,13 +565,79 @@ def _aml_evidence(mode, path, revision):
         result = path.parent / worker["results"]
         if worker["returncode"] or not result.is_file():
             raise ValueError(f"Missing successful worker for {result}")
-        if mode != "hi-small":
-            epochs = json.loads(result.read_text())[worker["fit"]]["epochs"]
-            if not worker["complete"] or [(e["epoch"], e["complete"]) for e in epochs] != [
-                (0, True),
-                (1, True),
-            ]:
-                raise ValueError(f"Incomplete epochs in {result}")
+        raw = json.loads(result.read_text())
+        if mode == "hi-small":
+            binding, _, stage, _ = Path(worker["results"]).parts
+            identity = prepared["bindings"][binding]
+            require_fields(
+                raw,
+                {
+                    "binding": binding,
+                    "prefix_sha256": identity["prefix_sha256"],
+                    "encoder_cutoff": identity["encoder_cutoff_seconds"],
+                },
+                result,
+            )
+            if stage != "index-setup":
+                require_fields(
+                    raw,
+                    {"anchors": int(stage), "anchor_sha256": identity["anchors_sha256"][stage]},
+                    result,
+                )
+                require_fields(
+                    raw["host_memory"], {"complete": True, "method": data["host_memory"]}, result
+                )
+        else:
+            rep, fit, _, _ = Path(worker["results"]).parts
+            require_fields(worker, {"fit": fit}, result)
+            expected_setup = {
+                "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
+                "split_counts": dict.fromkeys(("train", "valid", "test"), 512),
+            }
+            if mode == "l01-index":
+                expected_setup.update(
+                    index_ingests=int(rep == "0"), index_action="build" if rep == "0" else "reopen"
+                )
+            require_fields(raw["setup"], expected_setup, result)
+            if not worker["complete"]:
+                raise ValueError(f"Incomplete worker in {result}")
+            check_l01_epochs(
+                raw[fit]["epochs"],
+                cuda=mode == "l01-cuda",
+                length_planning=mode == "l01-length",
+                where=result,
+            )
+
+
+def check_l01_epochs(epochs, *, cuda, length_planning, where):
+    from tests.e2e.binding_report import require_fields
+
+    if [e["epoch"] for e in epochs] != [0, 1]:
+        raise ValueError(f"Incomplete epochs in {where}")
+    for i, epoch in enumerate(epochs):
+        expected = dict(complete=True, samples=512, batches=128, padded=0, batch_sizes=[4] * 128)
+        if not epoch["native_totals"] or epoch["post_warmup"]["batches"] != 126:
+            raise ValueError(f"Missing native or post-warmup evidence in {where}")
+        if length_planning:
+            if "file_page_cache" in epoch or "train_step_ns" in epoch:
+                raise ValueError(f"Unexpected cache conditioning or training in {where}")
+            expected.update(
+                lengths_computed=(512, 0)[i],
+                length_cache_hits=(0, 512)[i],
+                length_cache_reused=bool(i),
+                merged_history_batches=128,
+                events=10_293,
+            )
+        if cuda:
+            expected.update(eligible_amount=512, eligible_currency=512, optimizer_updates=128)
+            require_fields(
+                epoch["file_page_cache"], dict(mode=("cold", "warm")[i], status="verified"), where
+            )
+            require_fields(epoch["cuda"], {"complete": True}, where)
+            if epoch["cuda"]["steady_samples"] < 2 or len(epoch["cuda"]["transfers"]) != 128:
+                raise ValueError(f"Incomplete GPU measurements in {where}")
+            require_fields(epoch["host_memory"], {"complete": True}, where)
+        require_fields(epoch, expected, where)
 
 
 def _aml_campaign(e2e_dir, cgroup_parent, sudo=False):
@@ -619,7 +697,11 @@ def main(argv: list[str] | None = None) -> None:
         args = parser.parse_args(argv[1:])
         if sys.platform != "linux":
             parser.error("aml requires a Linux GPU worker with delegated memory cgroups")
-        print(_aml_campaign(**vars(args)) / "campaign.json")
+        try:
+            print(_aml_campaign(**vars(args)) / "campaign.json")
+        except subprocess.CalledProcessError as error:
+            code = error.returncode
+            raise SystemExit(code if code >= 0 else 128 - code) from error
         return
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)

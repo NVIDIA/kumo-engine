@@ -4,6 +4,8 @@
 
 """Reload the T01 checkpoint in a fresh interpreter and continue training."""
 
+import json
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -33,9 +35,13 @@ def _update(batch, model, optimizer):
     return batch.metadata["sample_ids"], loss.item()
 
 
-def _finish(batches, model, optimizer):
+def _finish(batches, model, optimizer, evidence=None):
     initial = torch.nn.utils.parameters_to_vector(model.parameters()).detach()
-    remaining = [_update(batch, model, optimizer) for batch in batches]
+    remaining = []
+    for batch in batches:
+        remaining.append(_update(batch, model, optimizer))
+        if evidence is not None:
+            evidence.observe(batch)
     assert remaining, "the checkpoint must have a nonempty epoch suffix"
     assert not torch.equal(initial, torch.nn.utils.parameters_to_vector(model.parameters()))
     return (
@@ -48,13 +54,15 @@ def _finish(batches, model, optimizer):
 
 
 @torch.no_grad()
-def _predictions(task, model, *, inference):
+def _predictions(task, model, *, inference, evidence=None):
     scores, inputs = {}, BatchDigest()
     for batch in task.batches(split=("valid", "test"), batch_size=4, output_format="model"):
         if inference:
             assert not batch.targets
         inputs.update(batch)
         values = model(batch)
+        if evidence is not None:
+            evidence.observe(batch)
         assert values.isfinite().all()
         for sample, score in zip(batch.metadata["sample_ids"], values.tolist(), strict=True):
             assert sample not in scores
@@ -62,14 +70,16 @@ def _predictions(task, model, *, inference):
     return scores, inputs.hexdigest()
 
 
-def run_lifecycle(task, data, table, index, work):
+def run_lifecycle(task, data, table, index, work, evidence):
     model = CountSAGE(task)
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0)
     batches = _train_batches(task)
-    _update(next(batches), model, optimizer)
+    batch = next(batches)
+    _update(batch, model, optimizer)
+    evidence.observe(batch)
     task.to_artifact().save(work / "artifact")
     api.save_weights(work / "model.pt", model.state_dict(), task.fitted_state)
-    scores, inputs = _predictions(task, model.eval(), inference=False)
+    scores, inputs = _predictions(task, model.eval(), inference=False, evidence=evidence)
     ids = pq.read_table(
         table.source.path, columns=["sample_id"], filters=[("split", "in", ["valid", "test"])]
     )["sample_id"].to_pylist()
@@ -87,8 +97,11 @@ def run_lifecycle(task, data, table, index, work):
         ),
         work / "checkpoint.pt",
     )
-    torch.save(_finish(batches, model.train(), optimizer), work / "expected.pt")
+    torch.save(_finish(batches, model.train(), optimizer, evidence), work / "expected.pt")
     subprocess.run([sys.executable, "-m", __name__, str(work.resolve())], cwd=ROOT, check=True)
+    result = json.loads((work / "reload.json").read_text())
+    result["fresh_process"] = result.pop("pid") != os.getpid()
+    return result
 
 
 @patch("kumo.pytorch.assembly._fit_inputs", side_effect=AssertionError("input encoders refitted"))
@@ -113,7 +126,9 @@ def _reload(work, _fit_inputs):
     ):
         model = CountSAGE(task)
         model.load_state_dict(weights)
-        assert_same(_predictions(task, model.eval(), inference=True), checkpoint["predictions"])
+        predictions = _predictions(task, model.eval(), inference=True)
+        assert_same(predictions, checkpoint["predictions"])
+        evidence = {"inference": len(predictions[0]), "pid": os.getpid()}
     expected = torch.load(work / "expected.pt", weights_only=True)
     with api.prepare(artifact.contract, data, engine) as plan:
         for state, split in ((fitted, None), (fitted.inputs, "train")):
@@ -126,7 +141,10 @@ def _reload(work, _fit_inputs):
                 batches = _train_batches(task)
                 batches.load_state_dict(checkpoint["cursor"])
                 torch.set_rng_state(checkpoint["rng"])
-                assert_same(_finish(batches, model, optimizer), expected)
+                resumed = _finish(batches, model, optimizer)
+                assert_same(resumed, expected)
+                evidence["mid_epoch_resume" if split is None else "finetuning"] = len(resumed[0])
+    (work / "reload.json").write_text(json.dumps(evidence))
 
 
 if __name__ == "__main__":
