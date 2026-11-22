@@ -258,6 +258,15 @@ def artifact_name(name, attempt):
     return name if attempt == 1 else f"{name}-attempt-{attempt}"
 
 
+def evidence_names(plan):
+    names = {r["artifact"] for r in plan["selections"] if r["status"] == "required"}
+    if plan["suite"]:
+        names.add("kumo-pytorch-tests")
+    if plan["t2b"]:
+        names.update(CONFORMANCE)
+    return {artifact_name(name, plan["attempt"]) for name in names}
+
+
 def read_json(path):
     return json.loads(path.read_text())
 
@@ -479,12 +488,21 @@ def results(plan, jobs, artifacts, directory):
         and a["workflow_run"]["id"] == plan["run_id"]
         and a["workflow_run"]["head_sha"] == plan["source_revision"]
     }
+    matched = evidence_names(plan) & {a["name"] for a in artifacts if not a["expired"]}
 
     def evidence(name):
         name = artifact_name(name, plan["attempt"])
-        if name not in links or not (directory / name).is_dir():
-            raise ValueError(f"Missing current-attempt artifact {name}")
-        return directory / name
+        if name in links:
+            if (directory / name).is_dir():
+                return directory / name
+            # download-artifact extracts a single match directly into the destination.
+            if (
+                matched == {name}
+                and directory.is_dir()
+                and any(p.is_file() for p in directory.iterdir())
+            ):
+                return directory
+        raise ValueError(f"Missing current-attempt artifact {name}")
 
     inventory = Counter(r["campaign"] for r in rows if "campaign" in r)
     report = dict(
@@ -510,7 +528,7 @@ def results(plan, jobs, artifacts, directory):
             else:
                 receipt_evidence(source, group, plan["revision"])
             for row in group:
-                row["artifact"] = source.name
+                row["artifact"] = artifact_name(name, plan["attempt"])
                 if row["status"] not in ("executed", "refused"):
                     errors.append(
                         f"{row['binding']} {row['mode']}: {row.get('error', row['status'])}"
@@ -714,6 +732,9 @@ def main():
             with open(output, "a") as handle:
                 for key in ("affected", "suite", "t2a", "t2b", "training_bindings"):
                     print(f"{key}={json.dumps(data[key])}", file=handle)
+                names = sorted(evidence_names(data))
+                pattern = "{" + ",".join(names) + "}" if len(names) > 1 else "".join(names)
+                print(f"evidence_pattern={pattern}", file=handle)
                 print(f"plan={json.dumps(data, separators=(',', ':'))}", file=handle)
     else:
         if args.cmd == "scheduled":

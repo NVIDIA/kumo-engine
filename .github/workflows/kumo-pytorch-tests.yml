@@ -53,6 +53,7 @@ jobs:
       t2a: ${{ steps.select.outputs.t2a }}
       t2b: ${{ steps.select.outputs.t2b }}
       training_bindings: ${{ steps.select.outputs.training_bindings }}
+      evidence_pattern: ${{ steps.select.outputs.evidence_pattern }}
     steps:
       - &checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -460,10 +461,9 @@ jobs:
     steps:
       - *checkout
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        if: needs.plan.outputs.affected == 'true'
+        if: needs.plan.outputs.evidence_pattern != ''
         with:
-          pattern: >-
-            {kumo-pytorch-tests,kumo-pytorch-t2b-conformance-?,*-measurements,binding-full-*,binding-train-*,streaming-25b-*}${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
+          pattern: ${{ needs.plan.outputs.evidence_pattern }}
           path: ${{ runner.temp }}/evidence
       - name: Account for selected jobs and binding results
         if: always()

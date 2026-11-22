@@ -176,6 +176,20 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
 
     result = report()
     ci.gate(p, result)
+    (folder / "report.json").unlink()
+    folder.rmdir()
+    assert (
+        "Missing current-attempt artifact"
+        in ci.results(p, jobs(p), artifacts, tmp_path)["errors"][0]
+    )
+    folder = tmp_path
+    flat = report()
+    ci.gate(p, flat)
+    assert next(r for r in flat["selections"] if r["status"] == "executed")["artifact"] == name
+    stale = [{**artifacts[0], "name": "binding-train-M04"}]
+    assert (
+        "Missing current-attempt artifact" in ci.results(p, jobs(p), stale, tmp_path)["errors"][0]
+    )
     markdown = ci.render(result)
     assert "Mean loss" in markdown and all(label in markdown for _, label, _ in METRICS)
     data["epochs"][1]["samples"] -= 1
