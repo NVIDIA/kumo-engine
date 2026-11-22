@@ -42,9 +42,11 @@ class BindingReport:
             scope=scope,
         )
         self.counts = dict(counts)
-        self.targets = (
-            targets  # head -> per-split source count, or None for generated token targets
-        )
+        # Counter supplies zero for absent source targets. Persist that value across JSON.
+        self.targets = {
+            head: {split: values[split] for split in self.counts} if values is not None else None
+            for head, values in targets.items()
+        }
         self.features = set(features)
         self.splits = {}
 
