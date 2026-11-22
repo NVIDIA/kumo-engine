@@ -32,6 +32,8 @@ The same worker runs the three CUDA regressions and records their JUnit results.
 Use ``l01`` with the pinned LI Medium files in ``KUMO_PYTORCH_DATA_ROOT`` to time
 two CPU loader epochs per fit. Each repetition fits in one worker and reloads
 its artifact in another. The workers share the prepared 512 anchors per split.
+``l01 --cuda --cgroup-parent DIR`` trains on those batches with sampled host
+memory and verified cold/warm index pages on a Linux GPU worker.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from importlib.metadata import distributions
 from itertools import product
 from pathlib import Path
@@ -131,6 +133,7 @@ def time_loader(
     cache=None,
     modes=("fresh", "reloaded"),
     artifact=None,
+    make_step=None,
     **batch_options,
 ) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
@@ -169,6 +172,14 @@ def time_loader(
                 }
                 if mode == "fresh":
                     task.to_artifact().save(artifact)
+                step = None
+                if make_step is not None:
+                    import torch
+
+                    from tests.e2e.cuda_metrics import cuda_epoch
+
+                    device = torch.device("cuda", torch.cuda.current_device())
+                    step = make_step(task, device)
                 for epoch in range(2):
                     with stage_observer(install_stages) as profile:
                         record = {"epoch": epoch, "complete": False, "stages": profile.stages}
@@ -178,7 +189,12 @@ def time_loader(
                             cache.condition(
                                 "cold" if epoch == 0 else "warm", record["file_page_cache"]
                             )
-                        measure_epoch(task, make_batches, record, profile, **options)
+                        with (
+                            cuda_epoch(device, record) if step is not None else nullcontext() as gpu
+                        ):
+                            measure_epoch(
+                                task, make_batches, record, profile, gpu=gpu, step=step, **options
+                            )
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
     return results
@@ -224,6 +240,7 @@ def _timing_campaign(
     cold_warm_cache=False,
     host_memory=None,
     cgroup_parent=None,
+    cuda=False,
 ) -> Path:
     e2e_dir.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=e2e_dir.resolve()))
@@ -231,14 +248,20 @@ def _timing_campaign(
     report = root / "timings.json"
     completed = []
     workers = []
-    cache_args = ["--cold-warm-cache"] if cold_warm_cache else []
     env = {**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"}
     env.pop("KUMO_PYTORCH_HOST_MEMORY", None)
+    env.pop("KUMO_PYTORCH_L01_CUDA", None)
+    if cuda:
+        env["KUMO_PYTORCH_L01_CUDA"] = "1"
     modes = ("",)
+    setup = {}
     if workload == "l01":
         from e2e.datasets.aml import prepare_l01_benchmark
 
-        prepare_l01_benchmark(Path(env["KUMO_PYTORCH_DATA_ROOT"]), root / "prepared")
+        prepared = root / "prepared"
+        started = time.perf_counter_ns()
+        prepare_l01_benchmark(Path(env["KUMO_PYTORCH_DATA_ROOT"]), prepared)
+        setup = {"shared_population_prepare_ns": time.perf_counter_ns() - started}
         modes = ("fresh", "reloaded")
     if host_memory:
         from tests.e2e.memory_worker import run_isolated, worker_identity
@@ -247,17 +270,28 @@ def _timing_campaign(
         if supervisor_root:
             _, gid = worker_identity()
             os.chown(root, -1, gid)
-            root.chmod(0o710)
+            root.chmod(0o750 if cuda else 0o710)
+            if cuda:
+                for path in (prepared, *prepared.iterdir()):
+                    os.chown(path, -1, gid)
+                    path.chmod(0o750 if path.is_dir() else 0o640)
     for index, mode in product(range(repetitions), modes):
         work = root / str(index) / mode
         node = f"{case}[{mode}]" if mode else case
-        command = [sys.executable, "-m", "pytest", "-q", node, "--e2e-dir", str(work), *cache_args]
-        if workload == "cuda":
+        command = [sys.executable, "-m", "pytest", "-q", node, "--e2e-dir", str(work)]
+        if cold_warm_cache:
+            command.append("--cold-warm-cache")
+        expected_cases = [node, *CUDA_REGRESSIONS] if workload == "cuda" else [node]
+        if workload == "cuda" or cuda:
             junit = work / "cuda.xml"
-            command.extend([*CUDA_REGRESSIONS, f"--junitxml={junit}"])
+            command.extend([*expected_cases[1:], f"--junitxml={junit}"])
         if host_memory:
             try:
                 if supervisor_root:
+                    if mode == "fresh":
+                        work.parent.mkdir()
+                        os.chown(work.parent, -1, gid)
+                        work.parent.chmod(0o750)
                     work.mkdir()
                     os.chown(work, -1, gid)
                     work.chmod(0o770)
@@ -272,9 +306,9 @@ def _timing_campaign(
         result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
         evidence = {"pair": index, "fit": mode} if mode else {}
-        if workload == "cuda":
+        if workload == "cuda" or cuda:
             evidence["junit"] = str(junit.relative_to(root))
-            if error := _cuda_junit_error(junit, (case, *CUDA_REGRESSIONS)):
+            if error := _cuda_junit_error(junit, expected_cases):
                 evidence["error"] = error
                 ok = False
         workers.append(
@@ -305,12 +339,15 @@ def _timing_campaign(
         Path(__file__).with_name("loader_timing.py"),
         REPOSITORY / case.split("::")[0],
     ]
-    if workload == "loader":
+    if workload == "loader" or cuda:
         sources.append(Path(__file__).with_name("file_cache.py"))
     if workload == "l01":
         sources.append(REPOSITORY / "e2e/datasets/aml.py")
-    if workload == "cuda":
+    if workload == "cuda" or cuda:
         sources.append(Path(__file__).with_name("cuda_metrics.py"))
+    if cuda:
+        sources.append(Path(__file__).with_name("l01_model.py"))
+    if workload == "cuda":
         sources.extend(REPOSITORY / node.split("::")[0] for node in CUDA_REGRESSIONS)
     if host_memory:
         sources.extend(Path(__file__).with_name(f) for f in ("host_memory.py", "memory_worker.py"))
@@ -325,12 +362,13 @@ def _timing_campaign(
         pass  # Source distributions can run outside a Git checkout.
     metadata = {
         "workload": case,
+        **setup,
+        **({"seed": 0, "file_page_cache": "uncontrolled"} if workload == "l01" else {}),
         **({"file_page_cache": "cold-warm"} if cold_warm_cache else {}),
         **({"host_memory": host_memory} if host_memory else {}),
-        "device": "cuda" if workload == "cuda" else "cpu",
+        "device": "cuda" if workload == "cuda" or cuda else "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **({"banking": {"batch_size": 2}, "l01": L01_BATCHING}.get(workload, LOADER_BATCHING)),
-        **({"seed": 0, "file_page_cache": "uncontrolled"} if workload == "l01" else {}),
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
@@ -359,11 +397,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--e2e-dir", type=Path, required=True)
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
-        if argv[0] == "loader":
-            parser.add_argument("--host-memory", choices=("kernel", "sampled"))
+        if argv[0] == "l01":
+            parser.add_argument("--cuda", action="store_true")
+        if argv[0] in ("loader", "l01"):
             parser.add_argument(
                 "--cgroup-parent", type=Path, help="delegated Linux cgroup v2 parent"
             )
+        if argv[0] == "loader":
+            parser.add_argument("--host-memory", choices=("kernel", "sampled"))
             parser.add_argument(
                 "--cold-warm-cache",
                 action="store_true",
@@ -373,8 +414,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
         options = vars(args)
+        if options.get("cuda"):
+            options.update(host_memory="sampled", cold_warm_cache=True)
         if bool(options.get("host_memory")) != bool(options.get("cgroup_parent")):
-            parser.error("--host-memory and --cgroup-parent must be supplied together")
+            parser.error("--cgroup-parent must accompany --host-memory or l01 --cuda")
         if options.get("host_memory") and sys.platform != "linux":
             parser.error("--host-memory requires a delegated Linux cgroup")
         print(_timing_campaign(argv[0], **options))

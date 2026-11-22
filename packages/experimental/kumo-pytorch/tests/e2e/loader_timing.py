@@ -241,12 +241,14 @@ def _dimensions(task, batch, event_tables):
 def _rates(counts, elapsed):
     return {
         key + "_per_s": counts[key] * 1e9 / elapsed
-        for key in ("samples", "tokens", "nodes", "edges")
+        for key in ("samples", "tokens", "nodes", "edges", "steps", "optimizer_updates")
         if key in counts
     }
 
 
-def measure_epoch(task, make_batches, record, observer, *, split, batch_size, event_tables=()):
+def measure_epoch(
+    task, make_batches, record, observer, *, split, batch_size, event_tables=(), gpu=None, step=None
+):
     """Count returned batches once. Terminal exhaustion contributes only to elapsed and wait."""
     install_native(observer)
     source = task._assembler._source
@@ -259,7 +261,7 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
     )
     totals = Counter(samples=0, padded=0)
     epoch = record["epoch"]
-    start = perf_counter_ns()
+    start = perf_counter_ns() if gpu is None else gpu.data["start_ns"]
     with memory_interval(record, "iterator.startup"):
         startup = perf_counter_ns()
         batches = make_batches(
@@ -267,6 +269,9 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
         )
         record["startup_ns"] = perf_counter_ns() - startup
     while True:
+        if gpu is not None and len(requests) == 2:
+            torch.cuda.synchronize(gpu.device)
+            gpu.mark_steady()
         previous = source.last_sampling_profile
         observer.native = []
         request = perf_counter_ns()
@@ -296,7 +301,7 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
         if not requests:
             first_batch = end - start
         elif len(requests) == 2:
-            warmup_end = request
+            warmup_end = request if gpu is None else gpu.data["steady_start_ns"]
             warmup_counts = totals.copy()
         requests.append(end - request)
         sizes.append(batch.batch_size)
@@ -305,9 +310,21 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
         profiles.append(profile if fresh and all(k in profile for k in NATIVE_COUNTERS) else None)
         operations.append(observer.native)
         totals.update(_dimensions(task, batch, event_tables))
+        if step is not None:
+            dispatch = perf_counter_ns()
+            amount, currency, updated = step(gpu.transfer(batch))
+            totals.update(
+                train_step_ns=perf_counter_ns() - dispatch,
+                steps=1,
+                optimizer_updates=int(updated),
+                eligible_amount=amount,
+                eligible_currency=currency,
+            )
 
-    elapsed = end - start
     terminal = end - request
+    if gpu is not None:
+        end = gpu.finish()
+    elapsed = end - start
     steady = None
     later = requests[2:]
     if len(later) >= 4:

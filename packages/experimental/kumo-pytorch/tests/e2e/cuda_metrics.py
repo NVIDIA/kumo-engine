@@ -19,11 +19,20 @@ class _Window:
         self.device, self.data, self.sample = device, data, sample
         self.events = []
 
+    def mark_steady(self):
+        self.data["steady_start_ns"] = perf_counter_ns()
+        self.sample("steady_start")
+
+    def finish(self):
+        self.sample("dispatch_end")
+        torch.cuda.synchronize(self.device)
+        self.data["end_ns"] = perf_counter_ns()
+        return self.data["end_ns"]
+
     def transfer(self, batch, *, start_steady=False):
         """Measure the host dispatch and queue an event pair on the actual copy stream."""
         if start_steady:
-            self.data["steady_start_ns"] = perf_counter_ns()
-            self.sample("steady_start")
+            self.mark_steady()
         if len(self.events) >= 10_000:
             raise RuntimeError("CUDA transfer event capacity exceeded")
         stream = torch.cuda.current_stream(self.device)
@@ -116,9 +125,8 @@ def cuda_epoch(device, row):
             polling = pool.submit(poll)
             resources.callback(stop.set)
             yield window
-            sample("dispatch_end")
-            torch.cuda.synchronize(device)
-            data["end_ns"] = perf_counter_ns()
+            if "end_ns" not in data:
+                window.finish()
             stop.set()
             polling.result()
             data.update(
@@ -144,5 +152,6 @@ def cuda_epoch(device, row):
             complete=True,
         )
     except BaseException as error:
+        row["complete"] = False
         data["error"] = f"{type(error).__name__}: {error}"
         raise

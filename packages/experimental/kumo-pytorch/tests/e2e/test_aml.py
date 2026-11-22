@@ -9,6 +9,7 @@ import json
 import os
 from bisect import bisect_right
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -428,6 +429,8 @@ def _source_counts(spec, root, cutoff, history):
 @pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_L01") != "1", reason="run the l01 benchmark")
 @pytest.mark.parametrize("mode", ["fresh", "reloaded"])
 def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
+    from tests.e2e.file_cache import IndexPageCache
+    from tests.e2e.host_memory import memory_interval
     from tests.e2e.loader_timing import parquet_metadata
     from tests.e2e.runs import L01_BATCHING, time_loader
 
@@ -457,6 +460,13 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
 
     torch.set_num_threads(4)
     torch.manual_seed(0)
+    cuda = os.getenv("KUMO_PYTORCH_L01_CUDA") == "1"
+    make_step = None
+    if cuda:
+        from tests.e2e.l01_model import make_l01_step
+
+        make_step = make_l01_step
+        assert os.environ["KUMO_PYTORCH_HOST_MEMORY"] == "sampled"
     engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=4, profile=True)
     setup = {
         "pid": os.getpid(),
@@ -465,7 +475,9 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         "anchor_binding": {k: v for k, v in table.to_dict().items() if k != "source"},
         "split_counts": splits,
     }
-    with api.prepare(spec, data, engine) as plan:
+    with ExitStack() as stack:
+        with memory_interval(setup, "index.prepare"):
+            plan = stack.enter_context(api.prepare(spec, data, engine))
         fit = time_loader(
             plan,
             table,
@@ -474,6 +486,8 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
             setup=setup,
             modes=(mode,),
             artifact=fresh / "artifact",
+            cache=IndexPageCache(tmp_path / "index") if cuda else None,
+            make_step=make_step,
             event_tables=("transactions",),
             **L01_BATCHING,
         )[mode]
@@ -482,13 +496,30 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         assert epoch["complete"] and epoch["batch_sizes"] == [4] * 128
         assert (epoch["samples"], epoch["padded"], epoch["post_warmup"]["batches"]) == (512, 0, 126)
         assert epoch["native_totals"]
+        if cuda:
+            pages = epoch["file_page_cache"]
+            assert (
+                pages["status"] == "verified" and pages["mode"] == ("cold", "warm")[epoch["epoch"]]
+            )
+            assert (epoch["eligible_amount"], epoch["eligible_currency"]) == (512, 512)
+            assert epoch["optimizer_updates"] == len(epoch["batch_sizes"])
+            assert epoch["cuda"]["complete"] and epoch["cuda"]["steady_samples"] >= 2
+            assert len(epoch["cuda"]["transfers"]) == epoch["optimizer_updates"]
+            assert epoch["host_memory"]["complete"]
     for stage in ("input.fit", "target.fit"):
         assert fit["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
     assert fit["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")
     if mode == "reloaded":
         prior = json.loads((fresh / "results.json").read_text())
         assert prior["setup"]["pid"] != setup["pid"]
-        assert setup == prior["setup"] | {"pid": setup["pid"]}
+        for key in (
+            "source_sha256",
+            "anchor_sha256",
+            "anchor_binding",
+            "split_counts",
+            "fit_anchors",
+        ):
+            assert setup[key] == prior["setup"][key]
         for key in ("fitted_state", "contract"):
             assert prior["fresh"][key] == fit[key]
     else:
