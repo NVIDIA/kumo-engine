@@ -36,6 +36,8 @@ def jobs(p):
             run_attempt=2,
             html_url="job",
             conclusion="success" if required else "skipped",
+            started_at="2026-11-01T00:00:00Z",
+            completed_at="2026-11-01T01:00:00Z",
         )
         for name, required in ci.planned_jobs(p).items()
     ]
@@ -107,6 +109,12 @@ def test_nightly_keeps_correctness_and_trains_only_the_six_full_bindings():
     assert not ci.account_jobs(p, raw)[1]
     assert all(p["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
     assert plan(paths=None)["training_bindings"] == []
+    manual = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "all"})
+    assert manual["training_bindings"] == p["training_bindings"]
+    assert [r["binding"] for r in manual["selections"] if r["status"] == "required"] == p[
+        "training_bindings"
+    ]
+    assert not manual["jobs"]["streaming-25b"]
     with pytest.raises(ValueError, match="Unknown training binding"):
         plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "E01"})
 
@@ -194,6 +202,7 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
     markdown = ci.render(result)
     assert "Mean loss" in markdown and all(label in markdown for _, label, _ in METRICS)
     assert "64 recent events" in markdown
+    assert "First GPU job start to last finish took **1:00:00**" in markdown
     del data["history_limit"]
     assert "history_limit" in report()["errors"][0]
     data["history_limit"] = 64
@@ -253,7 +262,9 @@ def test_scheduled_verification_distinguishes_firing_and_failing(tmp_path):
     p = plan("schedule")
     raw = jobs(p)
     raw[0]["conclusion"] = "failure"
+    next(j for j in raw if j["name"] == "GPU training S02")["completed_at"] = "2026-11-01T01:30:00Z"
     report = ci.results(p, raw, [], tmp_path)
+    assert report["training_wall_seconds"] == 5400
     for name, result in (("results", "success"), ("kumo-pytorch-gate", "failure")):
         raw.append(dict(raw[0], name=name, conclusion=result))
     run = dict(

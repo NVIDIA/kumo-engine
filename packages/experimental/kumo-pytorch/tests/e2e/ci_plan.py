@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 from collections import Counter
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 from xml.etree import ElementTree
@@ -126,9 +127,9 @@ def make_plan(event_name, event, paths, *, ref, **identity):
     if nightly or mode == "binding-train":
         if repository != "NVIDIA/kumo-engine" or not ref.startswith("refs/heads/"):
             raise ValueError("Full training requires a trusted repository branch")
-        if mode == "binding-train" and binding not in NIGHTLY_TRAINING:
+        if mode == "binding-train" and binding != "all" and binding not in NIGHTLY_TRAINING:
             raise ValueError(f"Unknown training binding: {binding}")
-        training = list(NIGHTLY_TRAINING) if nightly else [binding]
+        training = list(NIGHTLY_TRAINING) if nightly or binding == "all" else [binding]
     private = (
         suite
         and repository == "NVIDIA/kumo-engine"
@@ -514,6 +515,25 @@ def results(plan, jobs, artifacts, directory):
         inventory=inventory,
         artifacts=links,
     )
+    if plan["training_bindings"]:
+        workers = {j["name"]: j for j in jobs}
+        try:
+            intervals = []
+            for binding in plan["training_bindings"]:
+                job = workers[f"GPU training {binding}"]
+                intervals.append(
+                    (
+                        datetime.fromisoformat(job["started_at"]),
+                        datetime.fromisoformat(job["completed_at"]),
+                    )
+                )
+            if any(end < start for start, end in intervals):
+                raise ValueError("job finished before starting")
+            report["training_wall_seconds"] = (
+                max(end for _, end in intervals) - min(start for start, _ in intervals)
+            ).total_seconds()
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(f"Missing or invalid GPU job timing: {exc}")
     for name in sorted({r["artifact"] for r in rows if r["status"] == "required"}):
         group = [r for r in rows if r["status"] == "required" and r["artifact"] == name]
         try:
@@ -559,7 +579,10 @@ def results(plan, jobs, artifacts, directory):
 
 def render(report):
     rows = [f"### Package suite accounting · {report['status']}"]
-    rows += training_tables([r for r in report["selections"] if r["group"] == "GPU training"])
+    rows += training_tables(
+        [r for r in report["selections"] if r["group"] == "GPU training"],
+        report.get("training_wall_seconds"),
+    )
     rows += [
         "",
         "| Job | Outcome |",

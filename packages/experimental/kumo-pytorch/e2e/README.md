@@ -315,7 +315,8 @@ original time windows. The package correctness tests use the original histories.
 HI Small retains its source and behavior checks. The 25B fixtures and campaigns
 run on manual dispatch.
 
-Use workflow mode `binding-train` and a binding ID to replay a single job.
+Use workflow mode `binding-train` with a binding ID to replay one job or with
+`binding=all` to run the six jobs and publish one combined report.
 The manual `cuda` job also runs L01 training row 2,172,838 through this model
 context and checks its 12 counts against the pinned transaction source.
 The existing `KUMO_PYTORCH_BINDING_RUNNER` and `KUMO_PYTORCH_BINDING_SCRATCH`

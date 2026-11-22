@@ -23,10 +23,10 @@ on:  # yamllint disable-line rule:truthy
         description: First extra conformance seed for the package suite (default derived from date)
         required: false
       binding:
-        description: Full-population binding (GPU training supports L01, S01, S02, S04, M03, M04)
+        description: Full-population binding (binding-train accepts one nightly binding or all six)
         type: choice
         default: E01
-        options: [E01, E02, E03, E04, E05, L01, S01, S02, S04, M03, M04]
+        options: [E01, E02, E03, E04, E05, L01, S01, S02, S04, M03, M04, all]
   schedule:
     - cron: '17 10 * * *'
 

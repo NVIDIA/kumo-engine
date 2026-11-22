@@ -5,6 +5,7 @@
 """Validate and display a package binding's full-population training result."""
 
 import json
+from datetime import timedelta
 from math import isclose, isfinite
 
 from e2e.datasets.binding_sources import PINS, _sources
@@ -115,7 +116,7 @@ def validate_training(data, binding, plan):
         raise ValueError(f"{binding}: aggregate metrics differ from the training epochs")
 
 
-def training_tables(rows):
+def training_tables(rows, wall_seconds):
     if not rows:
         return []
     lines = [
@@ -124,6 +125,13 @@ def training_tables(rows):
         "",
         f"Each anchor uses up to {NIGHTLY_HISTORY_EVENTS} recent events and up to "
         f"{NIGHTLY_HISTORY_EVENTS} neighbors per relation. Counts use their full windows.",
+    ]
+    if wall_seconds is not None:
+        lines += [
+            "",
+            f"First GPU job start to last finish took **{timedelta(seconds=wall_seconds)}**.",
+        ]
+    lines += [
         "",
         "| Binding / model | " + " | ".join(label for _, label, _ in METRICS) + " |",
         "| --- " * (1 + len(METRICS)) + "|",
