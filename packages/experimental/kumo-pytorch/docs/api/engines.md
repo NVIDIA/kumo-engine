@@ -331,6 +331,12 @@ Fresh dataset engines ingest independently, even for identical data. Base
 indexes and derived caches persist after task cleanup; no automatic garbage
 collection removes unused builds.
 
+Kumo populates `index` with the resolved `Path` of the base; for a fresh
+dataset engine, that directory may not exist until `prepare()` builds it.
+`index_build_id` is the physical build identity as a `str`, allocated
+internally for a dataset engine or read from its snapshot. These attributes
+describe the engine's storage; they are not constructor selectors.
+
 **Parameters**
 
 - `num_threads`: native sampling threads.

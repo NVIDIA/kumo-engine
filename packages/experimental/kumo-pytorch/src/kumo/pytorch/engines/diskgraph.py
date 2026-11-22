@@ -214,6 +214,12 @@ class DiskGraphEngine:
     indexes and derived caches persist after task cleanup; no automatic garbage
     collection removes unused builds.
 
+    Kumo populates ``index`` with the resolved ``Path`` of the base; for a fresh
+    dataset engine, that directory may not exist until ``prepare()`` builds it.
+    ``index_build_id`` is the physical build identity as a ``str``, allocated
+    internally for a dataset engine or read from its snapshot. These attributes
+    describe the engine's storage; they are not constructor selectors.
+
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
