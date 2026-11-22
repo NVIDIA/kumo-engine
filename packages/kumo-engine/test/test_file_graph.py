@@ -4,7 +4,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -607,3 +607,409 @@ def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
         (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
     assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
     assert stats['null_count'] == 1
+
+
+def _time_snapshot(tmp_path, extension, values):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir(exist_ok=True)
+    table = pa.table({
+        'id': pa.array(range(len(values)), pa.int64()),
+        'ts': values
+    })
+    path = root / f'events.{extension}'
+    if extension == 'csv':
+        csv.write_csv(table, path)
+    else:
+        pq.write_table(table, path)
+    source = Table.from_source_table(
+        FileConnector(root_dir=str(root))[f'events.{extension}'],
+        primary_key='id', time_column='ts')
+    snapshot = Graph({'events': source}).snapshot()
+    assert 'timestamp_format' not in snapshot.graph_config['tables'][0][
+        'time_col']
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    column = next(column for column in native['tables'][0]['columns']
+                  if column['name'] == 'ts')
+    stats = json.loads(
+        (snapshot.index_path / 'col_stats.json').read_text())['events']['ts']
+    ingest = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    return column, stats, ingest
+
+
+def _secs(text):
+    return int(
+        datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp())
+
+
+def _user_warnings(caught):
+    return [str(w.message) for w in caught if w.category is UserWarning]
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, hint, reading, first', [
+    ([20240115, 20240116, 20240117],
+     ('timestamp_format', '%Y%m%d'), 'YYYYMMDD dates', '2024-01-15 00:00:00'),
+    ([20240115103000, 20240116103000], ('timestamp_format', '%Y%m%d%H%M%S'),
+     'YYYYMMDDHHMMSS date-times', '2024-01-15 10:30:00'),
+    ([1705276800, 1705363200],
+     ('timestamp_unit', 'seconds'), 'epoch seconds', '2024-01-15 00:00:00'),
+    ([1705276800000, 1705363200000],
+     ('timestamp_unit', 'millis'), 'epoch milliseconds', '2024-01-15 00:00:00'),
+    ([1705276800000000, 1705363200000000],
+     ('timestamp_unit', 'micros'), 'epoch microseconds', '2024-01-15 00:00:00'),
+    ([1705276800000000000, 1705363200000000000],
+     ('timestamp_unit', 'nanos'), 'epoch nanoseconds', '2024-01-15 00:00:00'),
+])
+def test_integer_time_columns_take_the_one_reading_every_value_allows(
+        tmp_path, extension, values, hint, reading, first):
+    with pytest.warns(
+            UserWarning, match=re.escape(f'Time column events.ts holds whole '
+                                         f'numbers; its {len(values)} values '
+                                         f'are read as {reading} ({values[0]} '
+                                         f'is {first})')) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.int64()))
+    assert len(_user_warnings(caught)) == 1
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == len(values)
+    assert stats['min_secs'] == _secs(first)
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, message', [
+    ([86400, 172800], '2 are too small or too large to be a date '
+     '(e.g. 86400)'),
+    ([2023, 2024, 2025], '3 are too small or too large to be a date '
+     '(e.g. 2023)'),
+    ([202301, 202302], '2 are too small or too large to be a date '
+     '(e.g. 202301)'),
+    ([20240115, 1705276800, 86400], '1 is a YYYYMMDD date (e.g. 20240115), '
+     '1 is epoch seconds (e.g. 1705276800), 1 is too small or too large to '
+     'be a date (e.g. 86400)'),
+    ([0, 0, 0], '3 are too small or too large to be a date (e.g. 0)'),
+    ([1700000000, 1700000000000, 0], '1 is epoch seconds (e.g. 1700000000), '
+     '1 is epoch milliseconds (e.g. 1700000000000), 1 is too small or too '
+     'large to be a date (e.g. 0)'),
+])
+def test_integer_time_columns_without_one_reading_are_refused(
+        tmp_path, extension, values, message):
+    with pytest.raises(
+            ValueError, match=re.escape(
+                f'Time column events.ts holds whole numbers with no single '
+                f'reading: {message}. Set timestamp_format on the column to '
+                f"'s', 'ms', 'us', 'ns', '%Y%m%d' or '%Y%m%d%H%M%S', or "
+                f'convert it to a timestamp at the source.')):
+        _time_snapshot(tmp_path, extension, pa.array(values, pa.int64()))
+    assert not list((tmp_path / 'scratch').rglob('ingest_stats.json'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, hint, read, missing, kept', [
+    ([1700000000, 1700000100, 0], ('timestamp_unit', 'seconds'),
+     'its 2 values are read as epoch seconds (1700000000 is 2023-11-14 '
+     '22:13:20)', '1 value in time column events.ts is not read as epoch '
+     'seconds (e.g. 0); it is treated as missing and its row is dropped like '
+     'any row without a time. Replace placeholders with nulls at the source '
+     "to keep the row, or set timestamp_format on the column to 's' to read "
+     'every value as epoch seconds.',
+     ('2023-11-14 22:13:20', '2023-11-14 22:15:00')),
+    ([20240115, 20241301, 20240116], ('timestamp_format', '%Y%m%d'),
+     'its 2 values are read as YYYYMMDD dates (20240115 is 2024-01-15 '
+     '00:00:00)', '1 value in time column events.ts is not read as a '
+     'YYYYMMDD date (e.g. 20241301); it is treated as missing and its row is '
+     'dropped like any row without a time. Correct it at the source to keep '
+     'the row.', ('2024-01-15 00:00:00', '2024-01-16 00:00:00')),
+])
+def test_integer_time_columns_drop_the_values_without_the_reading(
+        tmp_path, extension, values, hint, read, missing, kept):
+    with pytest.warns(UserWarning) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.int64()))
+    assert _user_warnings(caught) == [
+        f'Time column events.ts holds whole numbers; {read}. Set '
+        'timestamp_format on the column to read them differently.', missing
+    ]
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == len(values) - 1
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs(kept[0]),
+                                                      _secs(kept[1]))
+
+
+@pytest.mark.parametrize('values, hint, read, first, last', [
+    (['20240115.0', ' 20240116', '20240117'], ('timestamp_format', '%Y%m%d'),
+     'its 3 values are read as YYYYMMDD dates (20240115.0 is 2024-01-15 '
+     '00:00:00)', '2024-01-15', '2024-01-17'),
+    (['00000000001705276800', '1705363200'], ('timestamp_unit', 'seconds'),
+     'its 2 values are read as epoch seconds (00000000001705276800 is '
+     '2024-01-15 00:00:00)', '2024-01-15', '2024-01-16'),
+])
+def test_padded_digit_strings_reach_diskgraph_as_the_numbers_they_spell(
+        tmp_path, values, hint, read, first, last):
+    with pytest.warns(UserWarning, match=re.escape(read)) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, 'parquet',
+                                               pa.array(values))
+    assert len(_user_warnings(caught)) == 1
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == len(values)
+    assert (stats['min_secs'], stats['max_secs']) == (_secs(first),
+                                                      _secs(last))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, impossible, far, last', [
+    ([
+        '2024-01-15', '2024-02-30', '0000-00-00', '9999-12-31', '2024-01-16',
+        '2024-02-29'
+    ], '2 values in time column events.ts are not dates on the calendar '
+     '(e.g. 2024-02-30, 0000-00-00)',
+     '1 value in time column events.ts falls outside 1677-09-21 to '
+     '2262-04-11 (e.g. 9999-12-31)', '2024-02-29 00:00:00'),
+    ([
+        '2024-01-15 10:00:00', '2024-01-15 25:00:00', '2024-01-15 10:61:00',
+        '1600-01-01 00:00:00', '2024-01-15 23:59:59'
+    ], '2 values in time column events.ts are not dates on the calendar '
+     '(e.g. 2024-01-15 25:00:00, 2024-01-15 10:61:00)',
+     '1 value in time column events.ts falls outside 1677-09-21 to '
+     '2262-04-11 (e.g. 1600-01-01 00:00:00)', '2024-01-15 23:59:59'),
+])
+def test_impossible_and_far_dates_in_the_time_column_drop_their_rows(
+        tmp_path, extension, values, impossible, far, last):
+    with pytest.warns(UserWarning) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert _user_warnings(caught) == [
+        f'{impossible}; they are treated as missing and their rows are '
+        'dropped like any row without a time. Correct them at the source to '
+        'keep the rows.',
+        f'{far}; it is treated as missing and its row is dropped like any '
+        'row without a time. Replace placeholder dates with nulls at the '
+        'source to keep the row.',
+    ]
+    assert ingest['total_nodes'] == len(values) - 3
+    assert ingest['dropped_rows_counts'] == {'events': 3}
+    assert stats['max_secs'] == _secs(last)
+    assert stats['min_secs'] == _secs(values[0])
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, fmt, last', [
+    (['2024-02-30'] * 1024 + ['2024-01-15', '2024-01-16'], '%Y-%m-%d',
+     '2024-01-16'),
+    (['2024/02/30'] * 1024 + ['2024/01/15', '2024/01/16 10:00'],
+     '%Y/%m/%d %H:%M', '2024-01-16 10:00'),
+])
+def test_a_part_whose_first_rows_are_all_made_missing_still_ingests(
+        tmp_path, extension, values, fmt, last):
+    with pytest.warns(UserWarning, match='1024 values in time column') as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column['timestamp_format'] == fmt
+    assert ingest['total_nodes'] == 2
+    assert ingest['dropped_rows_counts'] == {'events': 1024}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
+                                                      _secs(last))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+def test_a_column_left_to_diskgraph_keeps_every_row_it_reads(
+        tmp_path, extension):
+    values = ['2024-02-30'] * 1024 + ['2024-01-15', '15 Jan 2024']
+    with pytest.warns(UserWarning) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert _user_warnings(caught)[0] == (
+        'Time column events.ts holds 1 value in a shape the scan does not '
+        "read (e.g. 15 Jan 2024), so its format is left to DiskGraph's own "
+        'reading; its 1024 values no calendar holds (e.g. 2024-02-30, '
+        '2024-02-30, 2024-02-30) are read as DiskGraph reads them. Set '
+        'timestamp_format on the column to decide it.')
+    assert len(_user_warnings(caught)) == 2
+    assert ingest['total_nodes'] == 1025
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+    assert stats['min_secs'] == _secs('2024-01-15')
+
+
+def test_parts_a_backend_only_describes_are_copied_before_a_rewrite(
+        tmp_path, monkeypatch):
+    from kumoapi.plugin import PrepareIngestResult
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.connector import file as file_connector
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    originals, connectors = {}, {}
+    for name, values in (('events', ['2024-01-15', '2024-02-30']),
+                         ('users', ['2024-01-15', '2024-01-16'])):
+        folder = tmp_path / 'source' / name
+        folder.mkdir(parents=True)
+        path = folder / f'{name}.parquet'
+        pq.write_table(
+            pa.table({
+                'id': pa.array([0, 1], pa.int64()),
+                'ts': pa.array(values, pa.string())
+            }), path)
+        originals[name] = (path, path.read_bytes())
+        connectors[name] = FileConnector(root_dir=str(folder))
+
+    def describe(self, connector, table_name, dest_dir, *args, **kwargs):
+        path = Path(connector.config.root_dir) / table_name
+        if not path.exists():
+            path = path.with_suffix('.parquet')
+        return PrepareIngestResult(source={
+            'type': 'parquet',
+            'paths': [str(path)]
+        }, source_size=path.stat().st_size, version=table_name)
+
+    monkeypatch.setattr(file_connector._FileSourceBackend, 'prepare_ingest',
+                        describe)
+    tables = {
+        name: Table.from_source_table(connectors[name][f'{name}.parquet'],
+                                      primary_key='id', time_column='ts')
+        for name in originals
+    }
+    with pytest.warns(UserWarning, match='1 value in time column events.ts'):
+        snapshot = Graph(tables).snapshot()
+    assert {
+        name: path.read_bytes()
+        for name, (path, _) in originals.items()
+    } == {name: data
+          for name, (_, data) in originals.items()}
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    sources = {t['name']: t['source']['paths'] for t in native['tables']}
+    (copy, ) = sources['events']
+    assert Path(copy).is_relative_to(tmp_path / 'scratch')
+    assert Path(copy).name == 'events.parquet'
+    assert sources['users'] == [str(originals['users'][0])]
+    ingest = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    assert ingest['dropped_rows_counts'] == {'events': 1}
+
+
+@pytest.mark.parametrize('values, hint', [
+    (pa.array([datetime(9999, 12, 31)] * 1024 +
+              [datetime(2024, 1, 15), datetime(2024, 1, 16)],
+              pa.timestamp('us')), ('timestamp_unit', 'micros')),
+    (pa.array([date(9999, 12, 31)] * 1024 + [date(2024, 1, 15),
+                                             date(2024, 1, 16)], pa.date32()),
+     ('timestamp_format', '%Y-%m-%d')),
+])
+def test_a_native_part_whose_first_rows_are_all_made_missing_still_ingests(
+        tmp_path, values, hint):
+    with pytest.warns(UserWarning, match='1024 values in time column events.ts '
+                      'fall outside') as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, 'parquet', values)
+    assert len(_user_warnings(caught)) == 1
+    assert column[hint[0]] == hint[1]
+    assert ingest['total_nodes'] == 2
+    assert ingest['dropped_rows_counts'] == {'events': 1024}
+    assert (stats['min_secs'], stats['max_secs']) == (_secs('2024-01-15'),
+                                                      _secs('2024-01-16'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, fmt, order, settled, first, last', [
+    (['05/03/1990', '13/01/1990', '06/01/1990'], '%d/%m/%Y', 'day first',
+     '1 of 3 values (e.g. 13/01/1990)', '1990-01-06', '1990-03-05'),
+    (['05/03/1990', '01/13/1990', '12/25/1990'], '%m/%d/%Y', 'month first',
+     '2 of 3 values (e.g. 01/13/1990)', '1990-01-13', '1990-12-25'),
+    (['05/03/1990 10:30:00', '13/01/1990 08:00:00'], '%d/%m/%Y %H:%M:%S',
+     'day first', '1 of 2 values (e.g. 13/01/1990 08:00:00)',
+     '1990-01-13 08:00:00', '1990-03-05 10:30:00'),
+    (['1/13/2024', '1/14/2024', '1/15/2024 10:00'], '%m/%d/%Y %H:%M',
+     'month first', '3 of 3 values (e.g. 1/13/2024)', '2024-01-13',
+     '2024-01-15 10:00'),
+])
+def test_slash_dates_take_the_one_order_every_value_allows(
+        tmp_path, extension, values, fmt, order, settled, first, last):
+    with pytest.warns(
+            UserWarning,
+            match=re.escape(f'Time column events.ts holds slash dates read '
+                            f'{order} ({fmt}) because {settled} read only that '
+                            'way. Set timestamp_format on the column to '
+                            'override.')) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column['timestamp_format'] == fmt
+    assert ingest['total_nodes'] == len(values)
+    assert (stats['min_secs'], stats['max_secs']) == (_secs(first), _secs(last))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values, message', [
+    (['05/03/1990', '06/01/1990', '12/01/1990'],
+     'holds slash dates whose day and month order the data does not settle: '
+     'every one of its 3 values (e.g. 05/03/1990) reads both ways. Set '
+     "timestamp_format on the column to '%d/%m/%Y' or '%m/%d/%Y'."),
+    (['13/01/1990', '01/13/1990', '05/03/1990'],
+     'holds slash dates in both orders: 1 value (e.g. 13/01/1990) reads only '
+     'day first and 1 (e.g. 01/13/1990) only month first. Fix the column at '
+     'the source, or set timestamp_format on the column to the order you '
+     'want and the other values become missing.'),
+])
+def test_slash_dates_without_one_order_are_refused(tmp_path, extension, values,
+                                                   message):
+    with pytest.raises(ValueError,
+                       match=re.escape(f'Time column events.ts {message}')):
+        _time_snapshot(tmp_path, extension, pa.array(values, pa.string()))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+def test_a_mixed_timezone_column_with_an_unread_shape_is_left_to_diskgraph(
+        tmp_path, extension):
+    values = ['2024-01-15T08:00:00Z', '2024-1-16T09:00:00', '2024-01-17T10:00:00']
+    with pytest.warns(
+            UserWarning, match=re.escape(
+                'Time column events.ts holds 1 value in a shape the scan does '
+                'not read (e.g. 2024-1-16T09:00:00), so its format is left to '
+                "DiskGraph's own reading. Set timestamp_format on the column "
+                'to decide it.')) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column.get('timestamp_format') != '%Y-%m-%d %H:%M:%S%.f%#z'
+    assert ingest['total_nodes'] == 3
+    assert ingest['dropped_rows_counts'] == {}
+    assert (stats['min_secs'],
+            stats['max_secs']) == (_secs('2024-01-15 08:00:00'),
+                                   _secs('2024-01-17 10:00:00'))
+
+
+@pytest.mark.parametrize('extension', ['csv', 'parquet'])
+@pytest.mark.parametrize('values', [
+    ['2024-01-16 10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17 10:00:00Z'],
+    [
+        '2024-01-16T10:00:00', '2024-01-15T10:00:00.250+0200',
+        '2024-01-17T10:00:00Z'
+    ],
+    ['2024-01-16T10:00:00', '2024-01-15 10:00:00+02:00', '2024-01-17T10:00:00Z'],
+    ['2024-01-16', '2024-01-15 10:00:00+02:00', '2024-01-17 10:00'],
+])
+def test_mixed_timezones_keep_every_value_and_warn(tmp_path, extension, values):
+    zoned = [v for v in values if v.endswith('Z') or '+' in v]
+    bare = [v for v in values if v not in zoned]
+    with pytest.warns(
+            UserWarning,
+            match=re.escape(f'Time column events.ts mixes {len(zoned)} value'
+                            f"{'s' if len(zoned) != 1 else ''} with a "
+                            f'timezone, converted to UTC, and {len(bare)} '
+                            f'without one, read as UTC (e.g. {zoned[0]} and '
+                            f'{bare[0]}). Declare one timezone at the source '
+                            'so the events line up.')) as caught:
+        column, stats, ingest = _time_snapshot(tmp_path, extension,
+                                               pa.array(values, pa.string()))
+    assert len(_user_warnings(caught)) == 1
+    assert column['timestamp_format'] == '%Y-%m-%d %H:%M:%S%.f%#z'
+    assert ingest['total_nodes'] == 3
+    assert ingest['dropped_rows_counts'] == {}
+    assert (stats['min_secs'],
+            stats['max_secs']) == (_secs('2024-01-15 08:00:00'),
+                                   _secs('2024-01-17 10:00:00'))
