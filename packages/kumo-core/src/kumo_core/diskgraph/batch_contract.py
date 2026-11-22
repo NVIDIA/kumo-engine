@@ -1,16 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Immutable identities and complete native batch envelopes for sampling backends."""
+"""Immutable sampling requests and encoded graph payload types."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from diskgraph.sampling_options import SamplingOptions
-from torch_geometric.data import HeteroData
 
-from kumo_core.diskgraph.hetero_wire import TensorBuffer, unpack_python_hetero
+from kumo_core.diskgraph.hetero_wire import HeteroMetadata, TensorBuffer
 
 WIRE_VERSION = 2
 SAMPLING_VERSION = 1
@@ -105,28 +104,4 @@ class BatchRequest:
             raise SamplingContractError("remote negatives require neg_rnd_seed")
 
 
-@dataclass(frozen=True)
-class HeteroBatchPayload:
-    """Actor-encoded graph metadata and separate NumPy tensor buffers.
-
-    Args:
-        metadata: Versioned MessagePack graph layout and tensor descriptors.
-        buffers: Contiguous NumPy views owning the tensor data.
-        sampling_seconds: Actor sampling, encoding, and packing duration.
-    """
-
-    metadata: bytes
-    buffers: list[TensorBuffer]
-    sampling_seconds: float
-
-    def decode(self) -> HeteroData:
-        """Reconstruct the graph associated with the trainer's pending Ray request.
-
-        Returns:
-            HeteroData retaining the received NumPy buffer owners.
-
-        Raises:
-            TypeError: If buffer types are unsupported.
-            ValueError: If wire metadata or tensor layout is invalid.
-        """
-        return unpack_python_hetero(self.metadata, self.buffers)
+HeteroBatchPayload = tuple[HeteroMetadata, list[TensorBuffer]]

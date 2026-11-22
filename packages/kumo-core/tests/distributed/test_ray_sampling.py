@@ -30,6 +30,7 @@ from kumo_core.diskgraph.batch_contract import (
     HeteroBatchPayload,
     SamplingContractError,
 )
+from kumo_core.diskgraph.hetero_wire import unpack_python_hetero
 from kumo_core.diskgraph.ray_sampling import (
     RAY_VERSION,
     RayBackendConfig,
@@ -134,7 +135,7 @@ def _payload(request: BatchRequest) -> HeteroBatchPayload:
     from kumo_core.diskgraph.hetero_wire import pack_python_hetero
 
     metadata, arrays = pack_python_hetero(_encode_batch(_batch(request)))
-    return HeteroBatchPayload(metadata, arrays, 0.1)
+    return (metadata, arrays)
 
 
 def test_response_does_not_echo_request() -> None:
@@ -143,7 +144,7 @@ def test_response_does_not_echo_request() -> None:
     request.validate()
     payload = _payload(request)
     assert not hasattr(payload, "request")
-    assert payload.decode()["nodes"].n_id.tolist() == [9, 14]
+    assert unpack_python_hetero(*payload)["nodes"].n_id.tolist() == [9, 14]
 
 
 @pytest.mark.parametrize(
@@ -196,8 +197,11 @@ def test_replica_reuses_context_without_advancing_it() -> None:
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         one = replica.sample(request)
         two = replica.sample(request)
-    assert isinstance(one, HeteroBatchPayload) and isinstance(two, HeteroBatchPayload)
-    assert one.decode()["nodes"].n_id.tolist() == two.decode()["nodes"].n_id.tolist()
+    assert isinstance(one, tuple) and isinstance(two, tuple)
+    assert (
+        unpack_python_hetero(*one)["nodes"].n_id.tolist()
+        == unpack_python_hetero(*two)["nodes"].n_id.tolist()
+    )
     assert index.iter.call_count == 1
     assert context.sample_request.call_count == 2
     context.next_batch.assert_not_called()
@@ -430,7 +434,7 @@ class _EncodedReplica:
     """Return encoded graphs with no coordinator calls."""
 
     def sample(self, request: BatchRequest) -> HeteroBatchPayload:
-        """Return the requested MessagePack/NumPy envelope."""
+        """Return the requested dictionary/NumPy tuple."""
         return _payload(request)
 
     def drain(self) -> None:
@@ -478,12 +482,12 @@ def test_real_actor_tracking_and_encoded_delivery(ray_cluster: ModuleType) -> No
         with pytest.raises(SamplingUnavailableError, match="consume a result"):
             pool.submit(_request())
         second_actor = pool.pending[two]
-        received = cast(HeteroBatchPayload, pool.get(two)).decode()
+        received = unpack_python_hetero(*cast(HeteroBatchPayload, pool.get(two)))
         assert received["nodes"].n_id.tolist() == [9, 14]
         three = pool.submit(_request())
         assert pool.pending[three] == second_actor
-        cast(HeteroBatchPayload, pool.get(one)).decode()
-        cast(HeteroBatchPayload, pool.get(three)).decode()
+        unpack_python_hetero(*cast(HeteroBatchPayload, pool.get(one)))
+        unpack_python_hetero(*cast(HeteroBatchPayload, pool.get(three)))
         assert not pool.pending and len(pool.available) == 2
     finally:
         pool.close()
@@ -521,7 +525,9 @@ def test_direct_call_has_no_control_rpcs() -> None:
     )
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)
-        cast(HeteroBatchPayload, pool.get(pool.submit(_request()))).decode()
+        unpack_python_hetero(
+            *cast(HeteroBatchPayload, pool.get(pool.submit(_request())))
+        )
         pool.close()
     actor.sample.remote.assert_called_once_with(_request())
     ray.get.assert_called_once_with(ref, timeout=config.request_timeout)
@@ -586,7 +592,9 @@ def test_cancellation_drains_native_work_before_reuse(
         with pytest.raises(SamplingUnavailableError):
             pool.get(result)
         restarted = _SamplerPool(_backend((replica,)))
-        cast(HeteroBatchPayload, restarted.get(restarted.submit(_request()))).decode()
+        unpack_python_hetero(
+            *cast(HeteroBatchPayload, restarted.get(restarted.submit(_request())))
+        )
         restarted.close()
     finally:
         ray.get(gate.release.remote(), timeout=10)
