@@ -27,6 +27,8 @@ includes collection overhead.
 Use ``banking`` in place of ``loader`` to time one CPU PyG training step per
 worker on the package banking fixture. Its step includes batch adaptation through
 the optimizer update and excludes model initialization and batch delivery.
+Use ``cuda`` to profile two native 33-anchor training epochs on the current GPU.
+The same worker runs the three CUDA regressions and records their JUnit results.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ import time
 from contextlib import ExitStack
 from importlib.metadata import distributions
 from pathlib import Path
+from xml.etree import ElementTree
 
 from e2e.datasets.hm import HMDataset, generate, sample_anchors
 from tests.e2e.tiers import BY_NAME, Tier
@@ -54,9 +57,15 @@ FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
 TIMING_CASES = {
     "loader": "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing",
+    "cuda": "tests/test_native_anchor_handoff.py::test_native_cuda_epochs",
     "banking": "tests/test_diskgraph_backend.py::"
     "test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible",
 }
+CUDA_REGRESSIONS = (
+    "tests/test_masking.py::test_masking_is_bitwise_equal_on_cpu_and_cuda",
+    "tests/test_model.py::test_packed_event_encoder_runs_with_cuda_fp16",
+    "tests/test_varlen_metadata.py::test_varlen_attention_consumes_the_metadata_directly",
+)
 LOADER_BATCHING = {"split": "train", "batch_size": 5}
 
 
@@ -176,6 +185,23 @@ def _ranges(rows):
     return metrics
 
 
+def _cuda_junit_error(path, expected):
+    """Require one passing JUnit case for every selected CUDA test."""
+    try:
+        cases = ElementTree.parse(path).findall(".//testcase")
+    except (OSError, ElementTree.ParseError) as error:
+        return str(error)
+    passed = []
+    for case in cases:
+        if any(case.find(tag) is not None for tag in ("skipped", "failure", "error")):
+            return f"CUDA case did not pass: {case.get('classname')}::{case.get('name')}"
+        module = case.get("classname", "").replace(".", "/")
+        passed.append(f"{module}.py::{case.get('name')}")
+    if sorted(passed) != sorted(expected):
+        return f"Expected CUDA cases {sorted(expected)}, observed {sorted(passed)}"
+    return None
+
+
 def _timing_campaign(
     workload: str,
     e2e_dir: Path,
@@ -204,6 +230,9 @@ def _timing_campaign(
     for index in range(repetitions):
         work = root / str(index)
         command = [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work), *cache_args]
+        if workload == "cuda":
+            junit = work / "cuda.xml"
+            command.extend([*CUDA_REGRESSIONS, f"--junitxml={junit}"])
         if host_memory:
             try:
                 if supervisor_root:
@@ -220,12 +249,19 @@ def _timing_campaign(
             worker = subprocess.run(command, cwd=REPOSITORY, env=env)
         result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
+        evidence = {}
+        if workload == "cuda":
+            evidence["junit"] = str(junit.relative_to(root))
+            if error := _cuda_junit_error(junit, (case, *CUDA_REGRESSIONS)):
+                evidence["error"] = error
+                ok = False
         workers.append(
             {
                 "worker": index,
                 "returncode": worker.returncode,
                 "complete": ok,
                 "results": str(result.relative_to(root)) if result.is_file() else None,
+                **evidence,
             }
         )
         if ok:
@@ -247,6 +283,9 @@ def _timing_campaign(
     ]
     if workload == "loader":
         sources.append(Path(__file__).with_name("file_cache.py"))
+    if workload == "cuda":
+        sources.append(Path(__file__).with_name("cuda_metrics.py"))
+        sources.extend(REPOSITORY / node.split("::")[0] for node in CUDA_REGRESSIONS)
     if host_memory:
         sources.extend(Path(__file__).with_name(f) for f in ("host_memory.py", "memory_worker.py"))
     revision = tracked_diff = None
@@ -262,9 +301,9 @@ def _timing_campaign(
         "workload": case,
         **({"file_page_cache": "cold-warm"} if cold_warm_cache else {}),
         **({"host_memory": host_memory} if host_memory else {}),
-        "device": "cpu",
+        "device": "cuda" if workload == "cuda" else "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
-        **(LOADER_BATCHING if workload == "loader" else {"batch_size": 2}),
+        **({"batch_size": 2} if workload == "banking" else LOADER_BATCHING),
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
