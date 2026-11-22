@@ -174,22 +174,21 @@ def test_actor_uses_existing_python_encoder_and_emits_separate_buffers() -> None
     response = replica.sample(request)
     assert isinstance(response, HeteroBatchPayload)
     assert all(isinstance(array, np.ndarray) for array in response.buffers)
-    decoded = response.decode(request)
+    decoded = response.decode()
     expected = _encode_runtime(raw)
     torch.testing.assert_close(
         decoded["nodes"].tf.feat_dict[Stype.timestamp],
         expected["nodes"].tf.feat_dict[Stype.timestamp],
     )
     torch.testing.assert_close(decoded["nodes"].n_id, expected["nodes"].n_id)
-    with pytest.raises(SamplingContractError, match="wrong request"):
-        response.decode(replace(request, epoch=request.epoch + 1))
+    assert not hasattr(response, "request")
 
 
 def test_reference_client_requires_encoded_response() -> None:
     """The trainer consumes encoded graphs and rejects legacy raw responses."""
     request = _request()
     metadata, arrays = pack_python_hetero(_graph())
-    encoded = HeteroBatchPayload(request, metadata, arrays, 0.1)
+    encoded = HeteroBatchPayload(metadata, arrays, 0.1)
     client = RayRuntimeIndex.__new__(RayRuntimeIndex)
     with patch.object(client, "_receive", return_value=encoded):
         _assert_graph(client._sample(request), _graph())

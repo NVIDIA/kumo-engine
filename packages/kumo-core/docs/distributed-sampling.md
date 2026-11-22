@@ -46,8 +46,9 @@ callers must not mutate their projection/selection containers during iteration.
 Create `RayBackendConfig` from the replica handles, artifact identities, and a
 `RayConnection`, then construct `RayRuntimeIndex` with a `ConsumerToken`.
 `iter(options)` returns a synchronous `HeteroData` iterator and sample/bucket
-count. The trainer validates response identity and reconstructs tensors using
-`torch.from_numpy`; it does not run feature encoders. The former `iter_hetero`
+count. The trainer associates each response with its pending Ray request; the
+response does not echo request metadata. It reconstructs tensors using
+`torch.from_numpy` without running feature encoders. The former `iter_hetero`
 entry point is unnecessary because every response is encoded.
 
 `iter_requests(options)` enumerates logical requests without issuing sampling
@@ -107,7 +108,7 @@ PYTHONPATH=packages/kumo-core/src python -m pytest -q \
 ```
 
 Tests cover mandatory encoders, native seed membership before encoding, metadata
-scheduling, context reuse, response identity, feature/buffer parity, malformed
+scheduling, context reuse, request tracking, feature/buffer parity, malformed
 layouts, actor ownership, retry, cancellation/drain races, and real encoded Ray
 delivery for shuffled, selected, and RHS samples. Only local Ray clusters start.
 Training integration, asynchronous trainer prefetch, and artifact distribution

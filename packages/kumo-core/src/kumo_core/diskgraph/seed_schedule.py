@@ -6,12 +6,10 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TypedDict, cast
 
+from diskgraph._c import SeedSchedule
 from diskgraph.sampling_options import InheritEngineSeed, SamplingOptions
-
-if TYPE_CHECKING:
-    from diskgraph._c import SeedSchedule
 
 
 class SeedShard(TypedDict):

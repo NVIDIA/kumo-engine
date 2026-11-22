@@ -5,15 +5,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
-
-if TYPE_CHECKING:
-    import torch
-    from torch_geometric.data import HeteroData
-
+from torch_geometric.data import HeteroData
 
 TensorBuffer = NDArray[np.int64 | np.float32 | np.float64]
 
@@ -41,7 +38,6 @@ def pack_python_hetero(data: HeteroData) -> tuple[bytes, list[TensorBuffer]]:
         ValueError: If tensors are not CPU int64/float32/float64 arrays.
     """
     import msgpack
-    import torch
     from torch_frame.data import MultiNestedTensor
 
     buffers: list[TensorBuffer] = []
@@ -146,11 +142,9 @@ def unpack_python_hetero(metadata: bytes, buffers: list[TensorBuffer]) -> Hetero
     import math
 
     import msgpack
-    import torch
     from kumoapi.typing import Stype
     from torch_frame import TensorFrame
     from torch_frame.data import MultiNestedTensor
-    from torch_geometric.data import HeteroData
 
     if not isinstance(metadata, bytes) or not isinstance(buffers, list):
         raise TypeError("Heterogeneous wire data requires bytes and a buffer list")
