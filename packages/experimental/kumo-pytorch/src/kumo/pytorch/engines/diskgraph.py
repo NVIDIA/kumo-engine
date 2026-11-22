@@ -22,6 +22,8 @@ import numpy as np
 import torch
 from diskgraph import SamplingPlan
 
+from kumo._managed_paths import _ManagedIndexPaths
+
 from kumo.pytorch._storage import ColumnCache, TaskDirectory, managed_paths, verify_managed_roots
 from kumo.pytorch.anchors import AnchorTable
 from kumo.pytorch.column_stats import (
@@ -244,13 +246,7 @@ class DiskGraphEngine:
         if index is None:
             self._paths = managed_paths(index_build_id)
         else:
-            import kumo.settings
-
-            resolved = Path(index).resolve()
-            managed_root = kumo.settings.scratch_dir().resolve() / "indexes"
-            if resolved.parent != managed_root:
-                raise ValueError("index path must be under the configured Kumo root's indexes")
-            self._paths = managed_paths(resolved.name)
+            self._paths = _ManagedIndexPaths.from_index_dir(Path(index))
         self.index = self._paths.index_dir
         self.index_build_id = self._paths.index_build_id
         self._binding = None
@@ -273,21 +269,15 @@ class DiskGraphEngine:
         """Open a completed managed build under the configured Kumo scratch root.
 
         Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
-        DiskGraph's managed path resolver. A path to the same managed base is
+        Kumo's private managed path resolver. A path to the same managed base is
         accepted. The build ID is physical identity,
         independent of schema/data-version identity. No original sources are read.
         ID-less indexes cannot be adopted. Use index_build_id with a dataset
         for source ingestion and reuse.
         """
         if isinstance(index_build_id, Path) or "/" in index_build_id or "\\" in index_build_id:
-            import kumo.settings
-
-            path = Path(index_build_id).resolve()
-            if path.parent != kumo.settings.scratch_dir().resolve() / "indexes":
-                raise ValueError("index path must be under the configured Kumo root's indexes")
-            index_build_id = path.name
+            index_build_id = _ManagedIndexPaths.from_index_dir(Path(index_build_id)).index_build_id
         result = cls(index_build_id=index_build_id, ingest="never", num_threads=num_threads)
-        result._paths.verify_index()
         verify_managed_roots(result._paths, result.index)
         result._binding = open_index(result.index)
         return result
@@ -518,7 +508,6 @@ class DiskGraphEngine:
             column_stats=(column_stats, self.encoder_cutoffs) if ingests else None,
             index_build_id=self.index_build_id,
         )
-        self._paths.verify_index()
         return DiskGraphSource(
             artifact,
             schema,

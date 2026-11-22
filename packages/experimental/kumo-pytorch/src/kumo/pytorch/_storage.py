@@ -8,23 +8,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kumo._managed_paths import _ManagedIndexPaths
+
 
 def managed_paths(index_build_id: str | None = None):
     """Resolve one physical build under the process-wide Kumo scratch root."""
     try:
         from diskgraph import new_index_build_id
-        from diskgraph.managed_paths import ManagedIndexPaths
     except ImportError as error:
         raise RuntimeError(
             "Managed indexes require DiskGraph build-identity support; install "
             "DiskGraph from the matching kumo-engine revision"
         ) from error
-    import kumo.settings
-
-    return ManagedIndexPaths(
-        kumo.settings.scratch_dir().resolve(),
-        new_index_build_id() if index_build_id is None else index_build_id,
-    )
+    return _ManagedIndexPaths(new_index_build_id() if index_build_id is None else index_build_id)
 
 
 def verify_managed_roots(paths, index: str | Path) -> None:
