@@ -7,13 +7,14 @@ import hashlib
 import json
 import shutil
 
-import kumo.engine as kumo
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from kumo.engine._scratch import get_scratch_dir
 from kumoapi.graph import Edge
 from kumoapi.typing import Stype
+
+import kumo.engine as kumo
+from kumo.engine._scratch import get_scratch_dir
 
 api = pytest.importorskip('kumo.pytorch.api')
 
