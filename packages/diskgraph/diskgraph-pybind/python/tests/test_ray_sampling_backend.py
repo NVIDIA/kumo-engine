@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -38,11 +39,7 @@ def remote_index(
 ) -> Iterator[RayRuntimeIndex]:
     """Open two native samplers on a local Ray cluster; close only owned actors."""
     backend = pytest.importorskip("kumo_core.diskgraph.ray_sampling")
-    from kumo_core.diskgraph.batch_contract import (
-        ArtifactIdentity,
-        ConsumerToken,
-        content_digest,
-    )
+    from kumo_core.diskgraph.batch_contract import ArtifactIdentity, ConsumerToken
 
     ray = pytest.importorskip("ray")
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
@@ -50,8 +47,8 @@ def remote_index(
     manifest = seed_table_fixture["manifest_path"]
     snapshot = str(Path(seed_table_fixture["parent_root"]) / "index_metadata.json")
     artifacts = ArtifactIdentity(
-        content_digest(Path(snapshot).read_bytes()),
-        content_digest(Path(manifest).read_bytes()),
+        sha256(Path(snapshot).read_bytes()).hexdigest(),
+        sha256(Path(manifest).read_bytes()).hexdigest(),
         "native-test-mapping",
     )
     ray.init(

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
 from typing import TYPE_CHECKING
 
 from diskgraph.sampling_options import SamplingOptions
@@ -23,18 +22,6 @@ SAMPLING_VERSION = 1
 
 class SamplingContractError(RuntimeError):
     """A request or response violates the sampling identity or batch contract."""
-
-
-def content_digest(content: bytes) -> str:
-    """Return the SHA-256 identity of configuration or manifest bytes.
-
-    Args:
-        content: Exact immutable artifact bytes.
-
-    Returns:
-        Hexadecimal SHA-256 digest.
-    """
-    return sha256(content).hexdigest()
 
 
 @dataclass(frozen=True)
