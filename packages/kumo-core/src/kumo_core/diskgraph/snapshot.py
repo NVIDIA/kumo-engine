@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
+from kumo._managed_paths import _ManagedIndexPaths
 from kumoapi.plugin import SnapshotStore, _Handle
 
 logger = logging.getLogger(__name__)
@@ -104,12 +105,12 @@ class LocalSnapshotStore:
     def path(self, handle: DiskgraphSnapshotHandle) -> str:
         reference = self._reference(handle)
         if self.config.managed_root is not None and reference.is_file():
-            from diskgraph.managed_paths import ManagedIndexPaths
-
             build_id = json.loads(reference.read_text())["index_build_id"]
-            paths = ManagedIndexPaths(Path(self.config.managed_root), build_id)
+            paths = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root))
             if paths.index_dir.exists():
-                paths.verify_index()
+                metadata = json.loads((paths.index_dir / "index_metadata.json").read_text())
+                if metadata.get("index_build_id") != build_id:
+                    raise ValueError("managed index build ID mismatch")
                 return str(paths.index_dir)
         return self.staging_path(handle)
 
@@ -141,14 +142,13 @@ class LocalSnapshotStore:
         """
         if self.config.managed_root is None:
             return result
-        from diskgraph.managed_paths import ManagedIndexPaths
 
         source = Path(result.index_path)
         metadata = json.loads((source / "index_metadata.json").read_text())
         build_id = metadata.get("index_build_id")
         if not isinstance(build_id, str) or not build_id:
             raise DiskgraphSnapshotError("New snapshot has no index_build_id")
-        paths = ManagedIndexPaths(Path(self.config.managed_root), build_id)
+        paths = _ManagedIndexPaths(build_id, root=Path(self.config.managed_root))
         if not (source / "_SUCCESS").is_file():
             raise DiskgraphSnapshotError("Cannot publish an incomplete snapshot")
         if result.missing_paths():
