@@ -448,6 +448,10 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         return batch
 
     def batches(task, **options):
+        setup["fit_anchors"] = {
+            half: [record["anchors"], record["fit_split"]]
+            for half, record in task.fitted_state.fit.items()
+        }
         delivered.append([])
         return map(observe, native_anchor_delivery(task, seed=0, **options))
 
@@ -458,6 +462,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         "pid": os.getpid(),
         "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
         "anchor_sha256": parquet_metadata(table.source.path)["sha256"],
+        "anchor_binding": {k: v for k, v in table.to_dict().items() if k != "source"},
         "split_counts": splits,
     }
     with api.prepare(spec, data, engine) as plan:
@@ -483,10 +488,13 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
     if mode == "reloaded":
         prior = json.loads((fresh / "results.json").read_text())
         assert prior["setup"]["pid"] != setup["pid"]
-        for key in ("source_sha256", "anchor_sha256", "split_counts"):
-            assert prior["setup"][key] == setup[key]
-        for key in ("anchors", "fitted_state", "contract"):
+        assert setup == prior["setup"] | {"pid": setup["pid"]}
+        for key in ("fitted_state", "contract"):
             assert prior["fresh"][key] == fit[key]
+    else:
+        assert setup["fit_anchors"] == dict.fromkeys(
+            ("inputs", "targets"), [fit["anchors"], ["train"]]
+        )
 
 
 def test_li_medium_l01_combined_forecast(tmp_path):
