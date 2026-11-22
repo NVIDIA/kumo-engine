@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import mmap
 import subprocess
+import sys
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -52,6 +54,40 @@ def test_fused_native_profile_counts_the_interval_once():
     assert _native_totals([[fused], [dict(fused, rows_decoded=4)]]) == {
         "sample_and_retrieve_ns": 14
     }
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux file-page residency")
+def test_loader_file_page_cache(tmp_path, pytestconfig):
+    from tests.e2e.file_cache import IndexPageCache
+
+    if not pytestconfig.getoption("--cold-warm-cache"):
+        pytest.skip("select --cold-warm-cache on a disk-backed Linux filesystem")
+    path = tmp_path / "pages"
+    contents = bytes(range(256)) * (4 * mmap.PAGESIZE // 256)
+    path.write_bytes(contents)
+    cache = IndexPageCache(tmp_path)
+    with (
+        path.open("rb") as stream,
+        mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as reader,
+    ):
+        assert reader[:] == contents
+        for mode, resident in (("warm", 4), ("cold", 0), ("warm", 4)):
+            if mode == "cold":
+                (tmp_path / "length-cache").write_bytes(b"created after the first epoch")
+            evidence = {}
+            cache.condition(mode, evidence)
+            assert evidence["status"] == "verified"
+            assert (evidence["resident_pages"], evidence["pages"]) == (resident, 4)
+            if mode == "cold":
+                assert evidence["unconditioned_new_files"] == ["length-cache"]
+                assert evidence["files"][0]["released_readonly_mappings"] >= 1
+        assert reader[:] == contents
+    with path.open("r+b") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE):
+        with pytest.raises(RuntimeError, match="writable"):
+            cache.condition("cold", {})
+    path.write_bytes(contents[:1])
+    with pytest.raises(RuntimeError, match="changed"):
+        cache.condition("warm", {})
 
 
 @pytest.fixture(scope="module")

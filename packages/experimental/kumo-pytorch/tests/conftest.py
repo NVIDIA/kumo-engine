@@ -23,6 +23,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
     add_conformance_options(parser)
     parser.addoption(
+        "--cold-warm-cache", action="store_true", help="verify Linux index page residency"
+    )
+    parser.addoption(
         "--require-imports",
         action="store_true",
         help="fail if any test is skipped because an optional dependency can't be imported",
