@@ -63,8 +63,8 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
         build_id = json.loads(
             (snapshot.index_path /
              'index_metadata.json').read_text())['index_build_id']
-        assert snapshot.index_path.is_relative_to(tmp_path / 'producer' /
-                                                  'snapshots')
+        assert snapshot.index_path.resolve().is_relative_to(
+            (tmp_path / 'producer').resolve())
         anchor_path = tmp_path / 'anchors.parquet'
         pq.write_table(
             pa.table({
@@ -78,6 +78,7 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
         def run(snapshot):
             before = _files(snapshot.index_path)
             engine = api.DiskGraphEngine.from_snapshot(snapshot, num_threads=1)
+            assert engine.index == snapshot.index_path.resolve()
             relation = engine.schema.relations[0]
             contract = api.DataLoaderSpec(
                 engine.schema,

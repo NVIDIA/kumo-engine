@@ -235,7 +235,7 @@ caches needed for later reuse.
 
 ### Open an existing snapshot
 
-`DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots live under `snapshots/<graph>/<version>`; the loader reads the base there and places its tasks and caches in managed locations keyed by its physical ID. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
+`DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. The loader opens `snapshot.index_path` in place and writes tasks and caches under the configured root at `tasks/<index_build_id>/` and `cache/<index_build_id>/`. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
 
 <!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
 ```python
