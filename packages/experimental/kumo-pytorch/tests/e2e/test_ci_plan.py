@@ -71,6 +71,9 @@ def test_rename_and_incomplete_lists_select_the_package(monkeypatch):
 def test_gate_checks_attempt_membership_and_explicit_exemption(tmp_path):
     p = plan()
     raw = jobs(p)
+    next(j for j in raw if j["name"] == "binding-train")["name"] = (
+        "matrix.binding && format('GPU training {0}', matrix.binding) || 'binding-train'"
+    )
     evidence = ci.results(p, raw, [], tmp_path)
     ci.gate(p, evidence)
     assert evidence["inventory"] == {"correctness": 12, "training": 11, "lifecycle": 6, "full": 11}
@@ -96,6 +99,12 @@ def test_nightly_keeps_correctness_and_trains_only_the_six_full_bindings():
         r["mode"] in {"training", "lifecycle"} or r["binding"] == "T01" for r in required
     )
     assert not p["t2a"] and not p["jobs"]["hm-lifecycle / Nightly H&M training"]
+    raw = jobs(p)
+    next(j for j in raw if j["name"] == "hm-lifecycle / Nightly H&M training")["name"] = (
+        "hm-lifecycle / github.event_name == 'schedule' && 'Nightly H&M training' || "
+        "format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed)"
+    )
+    assert not ci.account_jobs(p, raw)[1]
     assert all(p["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
     assert plan(paths=None)["training_bindings"] == []
     with pytest.raises(ValueError, match="Unknown training binding"):

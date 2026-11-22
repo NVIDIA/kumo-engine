@@ -121,7 +121,7 @@ def training_tables(rows):
         "",
         "### Full-split GPU training",
         "",
-        "| Binding | " + " | ".join(label for _, label, _ in METRICS) + " |",
+        "| Binding / model | " + " | ".join(label for _, label, _ in METRICS) + " |",
         "| --- " * (1 + len(METRICS)) + "|",
     ]
     losses = [
@@ -131,11 +131,12 @@ def training_tables(rows):
     ]
     for row in rows:
         result = row.get("training")
+        model = f"{row['binding']} · {row['representation']}"
         if not result:
-            lines.append(f"| {row['binding']} ({row['status']}) |" + " — |" * len(METRICS))
+            lines.append(f"| {model} ({row['status']}) |" + " — |" * len(METRICS))
             continue
         numbers = [f"{result['metrics'][k] / scale:,.3f}" for k, _, scale in METRICS]
-        lines.append("| " + " | ".join([row["binding"], *numbers]) + " |")
+        lines.append("| " + " | ".join([model, *numbers]) + " |")
         for split in (*result["epochs"], *result["validation"], result["test"]):
             for head, loss in split["heads"].items():
                 mean = "—" if loss["mean_loss"] is None else f"{loss['mean_loss']:.6g}"
@@ -144,4 +145,12 @@ def training_tables(rows):
                     f"{split['samples']:,} | {split['optimizer_updates']:,} | {head} | "
                     f"{loss['eligible']:,} | {mean} |"
                 )
-    return lines + losses
+    return (
+        lines
+        + [
+            "",
+            "Rates cover both training passes. Tokens count valid history inputs. "
+            "M04 uses graph inputs. RAM is peak process RSS. SSD includes staged source and index.",
+        ]
+        + losses
+    )

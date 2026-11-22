@@ -32,6 +32,16 @@ WORKFLOW = ".github/workflows/kumo-pytorch-tests.yml"
 AML = ("aml", "l01-cuda", "hi-small-memory")
 STREAMING = ("all", "smoke", "training", "lifecycle", "full")
 CONFORMANCE = [f"kumo-pytorch-t2b-conformance-{i}" for i in range(3)]
+# Actions returns the literal name expression for a job skipped before matrix expansion.
+SKIPPED_MATRIX_NAMES = {
+    "matrix.binding && format('GPU training {0}', matrix.binding) || 'binding-train'": (
+        "binding-train"
+    ),
+    "hm-lifecycle / github.event_name == 'schedule' && 'Nightly H&M training' || "
+    "format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed)": (
+        "hm-lifecycle / Nightly H&M training"
+    ),
+}
 
 
 def gh(endpoint, *, pages=False):
@@ -214,6 +224,8 @@ def account_jobs(plan, raw):
     jobs, errors = {}, []
     for job in raw:
         name = job["name"]
+        if job["conclusion"] == "skipped":
+            name = SKIPPED_MATRIX_NAMES.get(name, name)
         if name in {"results", "kumo-pytorch-gate"}:
             continue  # These are evaluated at the gate and in the completed scheduled run.
         if (
