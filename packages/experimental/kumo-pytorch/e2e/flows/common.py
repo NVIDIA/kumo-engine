@@ -52,17 +52,12 @@ from kumo.pytorch.serving import RowLimit, ServingRowsSpec
 
 
 def managed_engine(root: Path) -> DiskGraphEngine:
-    """Use one managed build across the stages of a local example run."""
+    """Allocate an engine under the configured root for this example stage."""
     import kumo.settings
 
     kumo.settings.configure(scratch_dir=root)
     root.mkdir(parents=True, exist_ok=True)
-    identity_file = root / "index_build_id"
-    if identity_file.exists():
-        return DiskGraphEngine(index_build_id=identity_file.read_text().strip(), ingest="never")
-    engine = DiskGraphEngine()
-    identity_file.write_text(engine.index_build_id)
-    return engine
+    return DiskGraphEngine()
 
 
 DAY = 86_400

@@ -160,7 +160,8 @@ The DiskGraph engine is built on kumo-engine's DiskGraph, which the
 The first time `prepare` runs, `DiskGraphEngine` builds an index from the
 Parquet files in the dataset. By default it allocates a physical build ID and
 writes the base under the configured Kumo scratch root at
-`indexes/<index_build_id>`. Pass that ID to `from_index` to reopen the same build.
+`indexes/<index_build_id>`. Reuse the engine instance across preparations, or
+consume a completed core snapshot with `from_snapshot(snapshot)`.
 
 <!-- test: diskgraph -->
 ```python
@@ -195,7 +196,10 @@ fitted encoders, so several contracts can share one base. The managed layout is:
 <scratch_root>/cache/<index_build_id>/
 ```
 
-The build ID identifies one physical ingest, independently of schema and data version. New ingests of the same data get different IDs. `engine.index_build_id` exposes the allocated ID; pass `index_build_id=...` to the constructor to reuse the same managed build with its source dataset, or call `from_index(id)` to use it without sources. An explicit `index=` path is accepted only when it resolves to that managed build under the configured root.
+The build ID identifies one physical ingest, independently of schema and data
+version. New engines ingesting the same data get different IDs. Kumo allocates
+IDs and chooses index, task and cache paths internally; callers configure only
+the process-wide scratch root.
 
 Fitting reads any statistics already stored under the base's `col_stats/` and
 writes missing statistics, tokenizers and token lengths under the managed
@@ -210,9 +214,9 @@ from the dataset and schema you pass, `prepare` refuses reuse. The shard count
 is not part of that check; an existing index keeps the shard count it was built
 with. With `ingest="never"`, `prepare` requires an existing index.
 
-### Open an existing snapshot or index
+### Open an existing snapshot
 
-`DiskGraphEngine.from_index(index_build_id)` opens a completed managed build under the configured Kumo root, without original sources. An explicit path resolving to that same `indexes/<index_build_id>` directory also works. It verifies the base's stored build ID. `DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots live under `snapshots/<graph>/<version>`; the loader reads the base there and places its tasks and caches in managed locations keyed by its physical ID. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
+`DiskGraphEngine.from_snapshot(snapshot)` consumes an existing `kumo.engine.GraphSnapshot` under that same root. Core snapshots live under `snapshots/<graph>/<version>`; the loader reads the base there and places its tasks and caches in managed locations keyed by its physical ID. Snapshots without a physical build ID cannot be adopted. Cross-root snapshot import is outside this interface.
 
 <!-- test: skip (snapshot, sample_spec, batch_spec and anchors belong to the caller) -->
 ```python
@@ -234,7 +238,10 @@ The base may be read-only. Task extensions and scalar-materialization scratch ar
 
 Opening requires the resolved `diskgraph_config.json` and the producer's completion metadata. Core snapshots use native inventory/integrity checks; PyTorch indexes use their manifest, published after ingest. Artifacts missing resolved config are refused. Native edge-table layouts, end-time validity and unsupported stored types (including lists) are refused explicitly.
 
-For source ingestion and reuse, pass `index_build_id=...` with the dataset. The manifest checks source paths, file sizes and modification times; a changed source or schema refuses reuse. To use a producer-managed snapshot after sources move, open it with `from_snapshot` or `from_index` without a dataset.
+For source ingestion and reuse, keep the same engine instance with the dataset.
+The manifest checks source paths, file sizes and modification times; a changed
+source or schema refuses reuse. To use a producer-managed snapshot after
+sources move, open it with `from_snapshot(snapshot)` without a dataset.
 
 `output_format="model"` lets the DiskGraph engine build the batch's tensors
 column by column, without building a Python record per event. It refuses raw types

@@ -294,13 +294,11 @@ Release whatever the task holds. Must tolerate repeat calls.
 ```python
 class DiskGraphEngine(
     *,
-    index: str | Path | None = None,
     num_threads: int | None = None,
     random_seed: int | None = 0,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
     encoder_cutoffs: Sequence[str | int | datetime | date | None] = (),
-    index_build_id: str | None = None,
 )
 ```
 
@@ -325,36 +323,17 @@ and row labels, recent or uniform graph neighborhoods with node fields, and colu
 `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
 step, before any data is read.
 
+Configure storage once with `kumo.settings.configure(scratch_dir=...)`.
+Kumo allocates build IDs and paths internally. Reuse this engine with its
+dataset, or consume a completed snapshot with `from_snapshot(snapshot)`.
+
 **Parameters**
 
-- `index`: existing managed index path under the configured root's `indexes/` directory. Omit to allocate a new managed build.
-- `index_build_id`: physical build to create or reuse under the configured root. Omit to allocate a new ID. Cannot be combined with `index`.
 - `num_threads`: native sampling threads.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
 - `encoder_cutoffs`: `encoder_cutoff` values whose column statistics an ingest computes.
-
-#### `DiskGraphEngine.from_index`
-
-*classmethod*
-
-```python
-DiskGraphEngine.from_index(
-    index_build_id: str | Path,
-    *,
-    num_threads: int | None = None,
-) -> DiskGraphEngine
-```
-
-Open a completed managed build under the configured Kumo scratch root.
-
-Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
-DiskGraph's managed path resolver. A path to the same managed base is
-accepted. The build ID is physical identity,
-independent of schema/data-version identity. No original sources are read.
-ID-less indexes cannot be adopted. Use index_build_id with a dataset
-for source ingestion and reuse.
 
 #### `DiskGraphEngine.from_snapshot`
 
@@ -378,7 +357,7 @@ Cross-root imports and snapshots without a build ID are refused.
 
 *property*
 
-Resolved stored schema for a from_index/from_snapshot engine.
+Resolved stored schema for a from_snapshot engine.
 
 #### `DiskGraphEngine.check_contract`
 
@@ -434,8 +413,8 @@ def engine_from_name(name: str, **config: Any) -> Engine
 
 Resolve a registered name to a class and construct it.
 
-`engine_from_name("diskgraph", index_build_id=...)` is exactly
-`DiskGraphEngine(index_build_id=...)`. Nothing is opened, connected or
+`engine_from_name("diskgraph", num_threads=4)` is exactly
+`DiskGraphEngine(num_threads=4)`. Nothing is opened, connected or
 initialized — construction is inert, and resources are acquired by
 `Engine.open`. The two are named differently on purpose.
 

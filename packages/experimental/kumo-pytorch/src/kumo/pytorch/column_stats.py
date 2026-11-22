@@ -317,10 +317,14 @@ def read_column_stats(
     ]
     if missing:
         request = stats_request(missing, [ticks], unit)
-        options = {"output_dir": str(cache.root)} if cache.external else {}
-        diskgraph.cutoff_col_stats(
-            str(index), json.dumps(request), num_threads=num_threads, **options
-        )
+        if cache.external:
+            from diskgraph._c import _cutoff_col_stats_at
+
+            _cutoff_col_stats_at(
+                str(index), str(cache.root), json.dumps(request), num_threads=num_threads
+            )
+        else:
+            diskgraph.cutoff_col_stats(str(index), json.dumps(request), num_threads=num_threads)
         found = read()
     return ColumnStats(
         {item: found[item[0]][item[1]] for item in requests},

@@ -13,13 +13,13 @@ import pytest
 from kumo.pytorch import api
 
 
-@pytest.fixture(scope="module")
-def graph_plan(tmp_path_factory):
-    """Open one real native index for all tiny request and AnchorTable controls."""
+@pytest.fixture
+def graph_plan(tmp_path):
+    """Open a native index under this test's configured scratch root."""
     pytest.importorskip("diskgraph")
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
-    root = tmp_path_factory.mktemp("padding-native")
+    root = tmp_path
     accounts = pa.table({"account_id": [1]})
     transactions = pa.table(
         {

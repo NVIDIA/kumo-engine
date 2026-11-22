@@ -332,7 +332,7 @@ def test_native_integer_min_max_and_distinct_preserve_exact_values(tmp_path, dty
         ),
         (
             api.Dataset(sources),
-            api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1),
+            api.DiskGraphEngine(num_threads=1),
         ),
     ):
         result = api.preview(contract, dataset, engine, requests).batch.inputs["values"]

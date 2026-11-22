@@ -254,8 +254,8 @@ def available_engines() -> tuple[str, ...]:
 def engine_from_name(name: str, **config: Any) -> Engine:
     """Resolve a registered name to a class and construct it.
 
-    ``engine_from_name("diskgraph", index_build_id=...)`` is exactly
-    ``DiskGraphEngine(index_build_id=...)``. Nothing is opened, connected or
+    ``engine_from_name("diskgraph", num_threads=4)`` is exactly
+    ``DiskGraphEngine(num_threads=4)``. Nothing is opened, connected or
     initialized — construction is inert, and resources are acquired by
     :meth:`Engine.open`. The two are named differently on purpose.
 

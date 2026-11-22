@@ -239,10 +239,8 @@ def _hand_shapes() -> list[Shape]:
 @pytest.mark.parametrize("shape", _generated_shapes() + _hand_shapes(), ids=lambda shape: shape.id)
 def test_ingest_config_says_what_the_schema_declares(shape: Shape, tmp_path: Path) -> None:
     dataset = _write(shape.schema, shape.tables, tmp_path)
-    index = tmp_path / "indexes" / "index"
-    engine = DiskGraphEngine(
-        index=index, num_shards=shape.num_shards, num_threads=shape.num_threads
-    )
+    engine = DiskGraphEngine(num_shards=shape.num_shards, num_threads=shape.num_threads)
+    index = engine.index
     fake = FakeDiskGraph()
     source = _open(engine, dataset, shape.schema, fake)
 
@@ -268,7 +266,7 @@ def test_a_wrong_config_or_an_unknown_type_is_a_violation(tmp_path: Path) -> Non
 
     dataset = _write(SCHEMA, ROWS, tmp_path)
     fake = FakeDiskGraph()
-    _open(DiskGraphEngine(index=tmp_path / "indexes" / "index"), dataset, SCHEMA, fake)
+    _open(DiskGraphEngine(), dataset, SCHEMA, fake)
     (call,) = fake.calls
     types = _arrow_types(dataset)
     assert types["events"]["at"] == "timestamp[ms, tz=UTC]"
@@ -301,7 +299,7 @@ def test_parallel_relation_emits_a_duplicate_fkey(tmp_path: Path) -> None:
     assert [r.left_key for r in schema.relations] == ["user_id", "user_id"]
     dataset = _write(schema, case.tables, tmp_path)
     fake = FakeDiskGraph()
-    _open(DiskGraphEngine(index=tmp_path / "indexes" / "index"), dataset, schema, fake)
+    _open(DiskGraphEngine(), dataset, schema, fake)
     (call,) = fake.calls
     problems = config_violations(schema, dataset, call.config, _arrow_types(dataset), num_shards=1)
     assert problems == ["events.user_id: 2 fkeys"]

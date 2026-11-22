@@ -307,7 +307,7 @@ distributed training is up to your training loop.
 ## Engine support
 
 `DiskGraphEngine` builds indexes from local Parquet files or opens a completed
-[snapshot or managed index](04-engines-and-data.md#open-an-existing-snapshot-or-index)
+[snapshot](04-engines-and-data.md#open-an-existing-snapshot)
 without the original sources. It builds model output column by column. It
 raises an error for the joins, filters, graph strategies and sampling features
 it doesn't support; see

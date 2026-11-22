@@ -31,9 +31,20 @@ def test_unbound_engine_has_no_schema():
     assert not hasattr(engine, "schema")
 
 
-def test_explicit_index_must_be_managed(tmp_path):
-    with pytest.raises(ValueError, match="configured Kumo root's indexes"):
-        api.DiskGraphEngine(index=tmp_path / "outside")
+@pytest.mark.parametrize("option", ["index", "index_build_id", "root", "root_dir", "output_dir"])
+def test_engine_rejects_public_storage_options(tmp_path, option):
+    with pytest.raises(TypeError, match=option):
+        api.DiskGraphEngine(**{option: str(tmp_path / "outside")})
+    with pytest.raises(TypeError, match=option):
+        api.engine_from_name("diskgraph", **{option: str(tmp_path / "outside")})
+
+
+def test_engine_has_no_public_index_opener():
+    assert not hasattr(api.DiskGraphEngine, "from_index")
+
+
+def snapshot(index):
+    return SimpleNamespace(index_path=index, id="graph@version", graph_config={})
 
 
 def test_external_cache_refuses_redirected_cutoff(tmp_path):
@@ -191,12 +202,14 @@ def test_managed_index_without_sources_or_base_writes(indexed, tmp_path, monkeyp
 
     monkeypatch.setattr(diskgraph, "ingest", ingest)
     with read_only(index):
-        engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
+        engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
         assert engine.schema == spec.schema
         sample(engine, spec, anchors)
         assert extensions
         spec_path = tmp_path / "contract.json"
         spec_path.write_text(spec.to_json())
+        snapshot_file = tmp_path / "snapshot.json"
+        snapshot_file.write_text(json.dumps({"id": "graph@version", "index_path": str(index)}))
         subprocess.run(
             [
                 sys.executable,
@@ -206,9 +219,13 @@ import sys
 from pathlib import Path
 import kumo.settings
 from kumo.pytorch import api
-root, build, spec, anchors = sys.argv[1:]
+root, snapshot_file, spec, anchors = sys.argv[1:]
 kumo.settings.configure(scratch_dir=root)
-engine = api.DiskGraphEngine.from_index(build, num_threads=1)
+from types import SimpleNamespace
+import json
+engine = api.DiskGraphEngine.from_snapshot(
+    SimpleNamespace(**json.loads(Path(snapshot_file).read_text())), num_threads=1
+)
 contract = api.DataLoaderSpec.from_json(Path(spec).read_text())
 with api.prepare(contract=contract, engine=engine) as plan:
     with plan.materialize(api.AnchorTable(api.Parquet(anchors), 'user', 'at', 'sample')) as task:
@@ -216,7 +233,7 @@ with api.prepare(contract=contract, engine=engine) as plan:
         assert set(graph.nodes['events'].ids.to_pylist()) == {'a', 'b', 'd'}
 """,
                 str(tmp_path),
-                index.name,
+                str(snapshot_file),
                 str(spec_path),
                 anchors.source.path,
             ],
@@ -252,7 +269,7 @@ def test_snapshot_binding_needs_no_pytorch_manifest(indexed, tmp_path):
 def test_external_fitting_statistics_tokenizer_and_lengths(indexed, tmp_path):
     index, _, _, spec, _ = indexed
     before = inventory(index)
-    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         stats = source.column_stats([("events", "value", "numerical")], 20 * 10**9)
@@ -285,7 +302,8 @@ def test_existing_base_statistics_are_reused_and_reported(indexed, tmp_path, mon
         pytest.fail("the requested statistics already exist in the base")
 
     monkeypatch.setattr(diskgraph, "cutoff_col_stats", unexpected_compute)
-    engine = api.DiskGraphEngine.from_index(index.name)
+    monkeypatch.setattr(diskgraph._c, "_cutoff_col_stats_at", unexpected_compute)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index))
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         reused = plan._source.column_stats(requests, 20 * 10**9)
         assert reused.columns == stored.columns
@@ -302,17 +320,19 @@ def test_external_statistics_compute_only_missing_requests(indexed, tmp_path, mo
     stored = read_column_stats(index, [known], 20, "seconds")
     before = inventory(index)
     calls = []
-    original = diskgraph.cutoff_col_stats
+    from diskgraph._c import _cutoff_col_stats_at
 
-    def compute(index_path, request_json, **options):
+    original = _cutoff_col_stats_at
+
+    def compute(index_path, output_dir, request_json, **options):
         request = json.loads(request_json)
         assert request["columns"] == {"events": {"value": ["categorical"]}}
-        assert not Path(options["output_dir"]).is_relative_to(index)
+        assert not Path(output_dir).is_relative_to(index)
         calls.append(request)
-        return original(index_path, request_json, **options)
+        return original(index_path, output_dir, request_json, **options)
 
-    monkeypatch.setattr(diskgraph, "cutoff_col_stats", compute)
-    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
+    monkeypatch.setattr(diskgraph._c, "_cutoff_col_stats_at", compute)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
     with read_only(index), api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -357,7 +377,7 @@ def test_native_clock_precision_preserves_cutoff(indexed, tmp_path, unit, clock)
     pq.write_table(
         pa.table({"user": [-2, 7], "at": pa.array([1002, 1002], pa.timestamp(unit))}), anchor_path
     )
-    engine = api.DiskGraphEngine.from_index(native.name, num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(native), num_threads=1)
     schema = replace(engine.schema, relations=spec.schema.relations)
     with api.prepare(contract=contract(schema), engine=engine) as plan:
         with plan.materialize(api.AnchorTable(api.Parquet(str(anchor_path)), "user", "at")) as task:
@@ -374,7 +394,7 @@ def test_concurrent_consumers_keep_task_cleanup_separate(indexed, tmp_path):
 
     def run(_):
         return sample(
-            api.DiskGraphEngine.from_index(index.name, num_threads=1),
+            api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1),
             spec,
             anchors,
         )
@@ -386,7 +406,7 @@ def test_concurrent_consumers_keep_task_cleanup_separate(indexed, tmp_path):
 
 def test_projection_alias_validation_and_bad_bindings(indexed, tmp_path):
     index, _, dataset, spec, anchors = indexed
-    engine = api.DiskGraphEngine.from_index(index.name)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index))
     assert api.check(spec, engine=engine) == ()
     with pytest.raises(api.ValidationError, match="does not accept Dataset"):
         api.prepare(spec, dataset, engine)
@@ -426,7 +446,7 @@ def test_projection_alias_validation_and_bad_bindings(indexed, tmp_path):
 def test_physically_present_self_relation(indexed, tmp_path):
     index, source, _, spec, anchors = indexed
     shutil.rmtree(source)
-    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
     spec = replace(
         spec,
         sample=replace(
@@ -491,7 +511,7 @@ def test_incompatible_artifacts_fail_before_sampling(indexed, tmp_path, change, 
                     entry["size_bytes"] = path.stat().st_size
             manifest_path.write_text(json.dumps(manifest))
     with pytest.raises((ValueError, RuntimeError), match=match):
-        api.DiskGraphEngine.from_index(index.name)
+        api.DiskGraphEngine.from_snapshot(snapshot(index))
 
 
 def test_rebuilt_managed_index_changes_plan_identity(indexed, tmp_path):
@@ -511,7 +531,7 @@ def test_managed_layout_and_physical_identity(indexed, tmp_path):
     assert index.parent == tmp_path / "indexes"
     assert json.loads((index / "index_metadata.json").read_text())["index_build_id"] == build
     before = inventory(index)
-    engine = api.DiskGraphEngine.from_index(build, num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
     with api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         source.column_stats([("events", "value", "categorical")], 20 * 10**9)
@@ -541,7 +561,8 @@ def test_independent_builds_keep_node_indexed_caches_separate(indexed, tmp_path)
         pass
     roots = []
     for index in (first_index, second.index):
-        with api.prepare(contract=spec, engine=api.DiskGraphEngine.from_index(index.name)) as plan:
+        engine = api.DiskGraphEngine.from_snapshot(snapshot(index))
+        with api.prepare(contract=spec, engine=engine) as plan:
             source = plan._source
             encoder = TableColumnEncoder(
                 api.Text(vocabulary_size=300, min_frequency=1),
@@ -558,44 +579,15 @@ def test_independent_builds_keep_node_indexed_caches_separate(indexed, tmp_path)
     assert roots[0] != roots[1]
 
 
-@pytest.mark.parametrize("alias", ["absolute", "relative", "symlink"])
-def test_explicit_managed_index_path_reuses_same_cache(indexed, tmp_path, monkeypatch, alias):
-    index, _, dataset, spec, _ = indexed
-    if alias == "relative":
-        monkeypatch.chdir(tmp_path)
-        path = Path("indexes") / index.name
-    elif alias == "symlink":
-        path = tmp_path / "alias"
-        path.symlink_to(index, target_is_directory=True)
-    else:
-        path = index
-    assert api.DiskGraphEngine.from_index(path).index_build_id == index.name
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=path, num_threads=1)) as plan:
-        source = plan._source
-        source.column_stats([("events", "value", "categorical")], 20 * 10**9)
-        assert source._cache_root == tmp_path / "cache" / index.name
-        assert source.artifact_identity == index.name
-    assert (tmp_path / "cache" / index.name / "col_stats").is_dir()
-
-
-def test_managed_binding_refuses_mismatched_or_legacy_build(indexed, tmp_path):
-    index, _, dataset, spec, _ = indexed
-    with pytest.raises((FileNotFoundError, ValueError), match="index_metadata|build ID"):
-        api.DiskGraphEngine.from_index("unknown-build")
+def test_snapshot_binding_detects_replaced_metadata(indexed):
+    index, _, _, spec, _ = indexed
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index))
     metadata = index / "index_metadata.json"
     value = json.loads(metadata.read_text())
-    value["index_build_id"] = "wrong-build"
+    value["index_build_id"] = "replacement-build"
     metadata.write_text(json.dumps(value))
-    with pytest.raises(ValueError, match="build ID mismatch"):
-        api.DiskGraphEngine.from_index(index.name)
-    with pytest.raises(ValueError, match="index build ID mismatch"):
-        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, ingest="never"))
-    value.pop("index_build_id")
-    metadata.write_text(json.dumps(value))
-    with pytest.raises(ValueError, match="build ID mismatch"):
-        api.DiskGraphEngine.from_index(index.name)
-    with pytest.raises(ValueError, match="index build ID mismatch"):
-        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, ingest="never"))
+    with pytest.raises(ValueError, match="metadata changed after binding"):
+        api.prepare(contract=spec, engine=engine)
 
 
 def test_core_snapshot_requires_same_root_and_physical_id(indexed, tmp_path):
@@ -620,7 +612,7 @@ def test_managed_writable_roots_cannot_overlap_base(indexed, tmp_path, root):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.symlink_to(index, target_is_directory=True)
     with pytest.raises(ValueError, match="disjoint"):
-        api.DiskGraphEngine.from_index(index.name)
+        api.DiskGraphEngine.from_snapshot(snapshot(index))
 
 
 def test_managed_col_stats_redirect_is_refused(indexed, tmp_path):
@@ -629,27 +621,29 @@ def test_managed_col_stats_redirect_is_refused(indexed, tmp_path):
     cache.mkdir(parents=True)
     (cache / "col_stats").symlink_to(index / "col_stats", target_is_directory=True)
     with pytest.raises(ValueError, match="col_stats path must not redirect"):
-        api.DiskGraphEngine.from_index(index.name)
+        api.DiskGraphEngine.from_snapshot(snapshot(index))
 
 
 def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monkeypatch):
     index, _, _, spec, _ = indexed
     known = ("events", "value", "numerical")
     missing = ("events", "value", "categorical")
-    engine = api.DiskGraphEngine.from_index(index.name, num_threads=1)
+    engine = api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
     with api.prepare(contract=spec, engine=engine) as plan:
         source = plan._source
         initial = source.column_stats([known], 20 * 10**9)
-        original = diskgraph.cutoff_col_stats
+        from diskgraph._c import _cutoff_col_stats_at
+
+        original = _cutoff_col_stats_at
         calls = []
 
-        def compute(index_path, request_json, **options):
+        def compute(index_path, output_dir, request_json, **options):
             request = json.loads(request_json)
             assert request["columns"] == {"events": {"value": ["categorical"]}}
             calls.append(request)
-            return original(index_path, request_json, **options)
+            return original(index_path, output_dir, request_json, **options)
 
-        monkeypatch.setattr(diskgraph, "cutoff_col_stats", compute)
+        monkeypatch.setattr(diskgraph._c, "_cutoff_col_stats_at", compute)
         result = source.column_stats([known, missing], 20 * 10**9)
         assert result.columns[known]["mean"] == initial.columns[known]["mean"]
         assert result.files == initial.files
@@ -660,8 +654,8 @@ def test_external_statistics_reuse_overlapping_requests(indexed, tmp_path, monke
 
 def test_source_ingest_refuses_column_renames(indexed, tmp_path):
     _, _, dataset, spec, _ = indexed
-    index = tmp_path / "indexes" / "explicit"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index)):
+    engine = api.DiskGraphEngine()
+    with api.prepare(spec, dataset, engine):
         pass
     renamed = api.Dataset(
         {
@@ -672,7 +666,7 @@ def test_source_ingest_refuses_column_renames(indexed, tmp_path):
         }
     )
     with pytest.raises(ValueError, match="DG-COLUMN-RENAME"):
-        api.prepare(spec, renamed, api.DiskGraphEngine(index=index))
+        api.prepare(spec, renamed, engine)
 
 
 def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_path, monkeypatch):
@@ -693,9 +687,10 @@ def test_legacy_ingest_checks_the_snapshot_recorded_in_provenance(indexed, tmp_p
         return payload
 
     monkeypatch.setattr(materialization, "_dataset_payload", capture)
-    index = tmp_path / "indexes" / "new-index"
+    engine = api.DiskGraphEngine(num_threads=1)
+    index = engine.index
     with pytest.raises(ValueError, match="changed while DiskGraph was ingesting"):
-        api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=1))
+        api.prepare(spec, dataset, engine)
     assert not index.exists()
 
 

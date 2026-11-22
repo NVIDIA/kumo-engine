@@ -84,7 +84,7 @@ def _prepared(tmp_path, contract, tables, mode):
         import kumo.settings
 
         kumo.settings.configure(scratch_dir=directory)
-        engine = api.DiskGraphEngine(index=directory / "indexes" / "index")
+        engine = api.DiskGraphEngine()
     assert api.check(contract, dataset, engine) == ()
     with api.prepare(contract=contract, dataset=dataset, engine=engine) as plan:
         yield plan
@@ -352,7 +352,7 @@ def test_repeated_row_target_field_refuses_before_open(tmp_path, monkeypatch, en
         engine = api.InMemoryEngine()
         dataset = api.Dataset(tables={name: api.InMemoryRows(()) for name in ("users", "events")})
     else:
-        engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index")
+        engine = api.DiskGraphEngine()
         dataset = api.Dataset(
             tables={
                 name: api.Parquet(str(tmp_path / f"nonexistent-{name}.parquet"))
@@ -454,7 +454,7 @@ def test_native_subsecond_storage_records_physical_unit_and_ceil_values(
         source,
     )
     contract = _root_contract({"v": TIME}, {"v": api.Field("v")}, "v")
-    engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index")
+    engine = api.DiskGraphEngine()
     dataset = api.Dataset(tables={"rows": api.Parquet(str(source))})
     assert api.check(contract, dataset, engine) == ()
     requests = tuple(api.SampleRequest(str(index), index, 0) for index in (1, 2, 3, 4))
@@ -464,7 +464,7 @@ def test_native_subsecond_storage_records_physical_unit_and_ceil_values(
     assert _list(batch.inputs["x"]["v"]["values"]) == [
         epoch + dt.timedelta(seconds=seconds) for seconds in (-1, 0, 1, 2)
     ]
-    manifest = json.loads((tmp_path / "indexes" / "index" / "index_manifest.json").read_text())
+    manifest = json.loads((engine.index / "index_manifest.json").read_text())
     assert manifest["source_types"]["rows"][str(source)]["v"] == f"timestamp[{unit}, tz=UTC]"
     assert manifest["column_types"]["rows"]["v"]["unit"] == "s"
     assert manifest["column_types"]["rows"]["v"]["timezone"] == "UTC"
@@ -576,7 +576,7 @@ def test_fractional_anchor_never_admits_a_later_event(tmp_path, mode, anchor, ev
             pq.write_table(pa.Table.from_pylist(tables[table.name], schema=schema), path)
             bindings[table.name] = api.Parquet(str(path))
         dataset = api.Dataset(tables=bindings)
-        engine = api.DiskGraphEngine(index=tmp_path / "indexes" / "index")
+        engine = api.DiskGraphEngine()
     assert api.check(contract, dataset, engine) == ()
     with api.prepare(contract=contract, dataset=dataset, engine=engine) as plan:
         batch = _batch(plan, (api.SampleRequest("one", 1, anchor),), mode)

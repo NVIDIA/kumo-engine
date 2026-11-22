@@ -198,7 +198,7 @@ def graph_task(tmp_path, request):
         tables={"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}
     )
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
+        contract, dataset, api.DiskGraphEngine(num_threads=1)
     ) as plan:
         with plan.materialize(table, fit_split="a") as task:
             yield task

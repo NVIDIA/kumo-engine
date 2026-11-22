@@ -178,7 +178,7 @@ def prepare(
 
 Validate, then bind sources or an existing index through the engine.
 
-Omit `dataset` only for a DiskGraphEngine created with `from_index` or
+Omit `dataset` only for a DiskGraphEngine created with
 `from_snapshot`. Its stored schema supplies omitted types; it never reads
 the original sources or rebuilds the base. `engine` is always required.
 

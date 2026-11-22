@@ -66,7 +66,7 @@ def test_materialized_label_stats_accept_declared_types(tmp_path, dtype, labels)
     with api.prepare(
         spec,
         api.Dataset(sources),
-        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         values = plan._materialize_values(table, tmp_path / "values", stats_split="train")
         with plan.materialize(values.anchors, fit_split="train") as task:
@@ -348,7 +348,7 @@ def _target_free_diskgraph_case(history_data, tmp_path):
 def test_fitted_target_free_task_reuse_needs_no_fit_split(history_data, tmp_path, monkeypatch):
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
     with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2)
+        spec, dataset, api.DiskGraphEngine(num_threads=2)
     ) as plan:
         with plan.materialize(anchors, fit_split="train") as initial:
             fitted = initial.fitted_state.inputs
@@ -375,8 +375,9 @@ def test_saved_fit_record_omits_temporary_values_paths(history_data, tmp_path):
     from pathlib import Path
 
     spec, dataset, anchors = _target_free_diskgraph_case(history_data, tmp_path)
-    index = tmp_path / "indexes" / "index"
-    with api.prepare(spec, dataset, api.DiskGraphEngine(index=index, num_threads=2)) as plan:
+    engine = api.DiskGraphEngine(num_threads=2)
+    index = engine.index
+    with api.prepare(spec, dataset, engine) as plan:
         with plan.materialize(anchors, fit_split="train") as task:
             directory = Path(task._anchors._extension.name)
             assert directory.parent == tmp_path / "tasks" / index.name

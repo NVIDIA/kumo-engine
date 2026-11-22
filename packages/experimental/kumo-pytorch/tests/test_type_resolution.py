@@ -81,7 +81,7 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
     with api.prepare(
         contract=_source_contract(),
         dataset=dataset,
-        engine=api.DiskGraphEngine(index=tmp_path / "indexes" / "first"),
+        engine=api.DiskGraphEngine(),
     ) as plan:
         saved = plan.contract.to_json()
         with plan.materialize(
@@ -95,7 +95,7 @@ def test_inferred_parquet_types_are_used_by_prepare_and_checked_on_reload(tmp_pa
         api.prepare(
             contract=api.DataLoaderSpec.from_json(saved),
             dataset=dataset,
-            engine=api.DiskGraphEngine(index=tmp_path / "indexes" / "changed"),
+            engine=api.DiskGraphEngine(),
         )
 
 
@@ -198,7 +198,7 @@ def test_missing_binding_is_reported_before_unresolved_native_preflight(tmp_path
         issues = api.check(
             contract=contract,
             dataset=dataset,
-            engine=api.DiskGraphEngine(index=tmp_path / "indexes" / "index"),
+            engine=api.DiskGraphEngine(),
         )
     assert len(issues) == 2
     assert all(issue.path == "dataset" for issue in issues)

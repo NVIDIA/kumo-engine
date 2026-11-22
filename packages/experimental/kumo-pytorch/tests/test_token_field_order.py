@@ -72,9 +72,7 @@ def binding(request, tmp_path):
         path = tmp_path / f"{name}.parquet"
         pq.write_table(table, path)
         sources[name] = api.Parquet(str(path))
-    return api.Dataset(sources), api.DiskGraphEngine(
-        index=tmp_path / "indexes" / "index", num_threads=1, num_shards=1
-    )
+    return api.Dataset(sources), api.DiskGraphEngine(num_threads=1, num_shards=1)
 
 
 def _batch(source, representation, layout, *, encodings=None):

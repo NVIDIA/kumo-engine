@@ -205,10 +205,10 @@ class DiskGraphEngine:
     `DiskGraphEngine.unsupported`; each entry is refused with its code and a next
     step, before any data is read.
 
-    :param index: existing managed index path under the configured root's
-        ``indexes/`` directory. Omit to allocate a new managed build.
-    :param index_build_id: physical build to create or reuse under the configured root.
-        Omit to allocate a new ID. Cannot be combined with ``index``.
+    Configure storage once with ``kumo.settings.configure(scratch_dir=...)``.
+    Kumo allocates build IDs and paths internally. Reuse this engine with its
+    dataset, or consume a completed snapshot with ``from_snapshot(snapshot)``.
+
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
         ``None`` uses fresh randomness. A fixed seed repeats selections for the
@@ -229,24 +229,17 @@ class DiskGraphEngine:
     def __init__(
         self,
         *,
-        index: str | Path | None = None,
         num_threads: int | None = None,
         random_seed: int | None = 0,
         num_shards: int = 1,
         ingest: Literal["if_missing", "never"] = "if_missing",
         encoder_cutoffs: Sequence[str | int | dt.datetime | dt.date | None] = (),
-        index_build_id: str | None = None,
     ):
         if ingest not in {"if_missing", "never"}:
             raise ValueError("ingest must be 'if_missing' or 'never'")
         if isinstance(encoder_cutoffs, str):
             raise TypeError("encoder_cutoffs is a list of cutoffs; wrap a single one in a list")
-        if index is not None and index_build_id is not None:
-            raise ValueError("index and index_build_id cannot be combined")
-        if index is None:
-            self._paths = managed_paths(index_build_id)
-        else:
-            self._paths = _ManagedIndexPaths.from_index_dir(Path(index))
+        self._paths = managed_paths()
         self.index = self._paths.index_dir
         self.index_build_id = self._paths.index_build_id
         self._binding = None
@@ -261,26 +254,6 @@ class DiskGraphEngine:
         self.encoder_cutoffs = tuple(
             dict.fromkeys(cutoff_nanos(value) for value in encoder_cutoffs)
         )
-
-    @classmethod
-    def from_index(
-        cls, index_build_id: str | Path, *, num_threads: int | None = None
-    ) -> DiskGraphEngine:
-        """Open a completed managed build under the configured Kumo scratch root.
-
-        Resolve indexes/<build>, tasks/<build>/<task> and cache/<build> with
-        Kumo's private managed path resolver. A path to the same managed base is
-        accepted. The build ID is physical identity,
-        independent of schema/data-version identity. No original sources are read.
-        ID-less indexes cannot be adopted. Use index_build_id with a dataset
-        for source ingestion and reuse.
-        """
-        if isinstance(index_build_id, Path) or "/" in index_build_id or "\\" in index_build_id:
-            index_build_id = _ManagedIndexPaths.from_index_dir(Path(index_build_id)).index_build_id
-        result = cls(index_build_id=index_build_id, ingest="never", num_threads=num_threads)
-        verify_managed_roots(result._paths, result.index)
-        result._binding = open_index(result.index)
-        return result
 
     @classmethod
     def from_snapshot(cls, snapshot: Any, *, num_threads: int | None = None) -> DiskGraphEngine:
@@ -298,7 +271,9 @@ class DiskGraphEngine:
                 "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
             )
         binding = open_index(base, snapshot_id=snapshot.id)
-        result = cls(index_build_id=binding.identity, ingest="never", num_threads=num_threads)
+        result = cls(ingest="never", num_threads=num_threads)
+        result._paths = _ManagedIndexPaths(binding.identity)
+        result.index_build_id = binding.identity
         result.index = base
         result._binding = binding
         verify_managed_roots(result._paths, base)
@@ -306,9 +281,9 @@ class DiskGraphEngine:
 
     @property
     def schema(self) -> DataSchema:
-        """Resolved stored schema for a from_index/from_snapshot engine."""
+        """Resolved stored schema for a from_snapshot engine."""
         if self._binding is None:
-            raise AttributeError("schema is available on from_index/from_snapshot engines")
+            raise AttributeError("schema is available on from_snapshot engines")
         return self._binding.schema
 
     def _resolve_index_schema(self, schema: DataSchema) -> DataSchema:

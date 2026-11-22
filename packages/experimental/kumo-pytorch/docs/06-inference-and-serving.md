@@ -461,12 +461,11 @@ user-3-at-34 scores 0.647
 ```
 
 The first `prepare` builds the index under the configured scratch root's
-`indexes/<index_build_id>/`. Persist `engine.index_build_id` with the model if
-a scheduled scoring job will reuse that build. The job passes that ID and
-`ingest="never"`, so it fails if the expected index is missing. See
+`indexes/<index_build_id>/`. Reuse the same engine for later preparations in
+this process. For a scheduled scoring job, reopen a core snapshot through
+`DiskGraphEngine.from_snapshot(snapshot)`. See
 [building and reusing the index](04-engines-and-data.md#building-and-reusing-the-index).
-To score from a completed build without source tables, [open its snapshot or
-managed index](04-engines-and-data.md#open-an-existing-snapshot-or-index).
+To score from a completed build without source tables, [open its snapshot](04-engines-and-data.md#open-an-existing-snapshot).
 
 ### What inference mode changes
 

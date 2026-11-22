@@ -5,6 +5,7 @@
 """Independent fractional-time goldens through scalar and native history paths."""
 
 import json
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -247,7 +248,7 @@ def test_unpinned_graph_fitting_uses_the_source_clock(tmp_path, monkeypatch, uni
     data = api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))})
     cutoff = dt.datetime.fromtimestamp(1700000000, tz=dt.UTC) + dt.timedelta(milliseconds=3)
     with api.prepare(
-        contract, data, api.DiskGraphEngine(index=tmp_path / "indexes" / "index")
+        contract, data, api.DiskGraphEngine()
     ) as plan:
         # Exercise the supported fallback for an encoder that is not pinned by column stats.
         monkeypatch.setattr(plan._require_open(), "column_stats", None)
@@ -262,9 +263,12 @@ def test_native_request_reconstruction_preserves_ns_without_pandas():
     import textwrap
     from pathlib import Path
 
+    import kumo.settings
+
     code = (
         "import sys, types\nk=types.ModuleType('kumo');k.__path__=["
         + repr(str(Path(api.__file__).parents[1]))
+        + ", " + repr(str(Path(kumo.settings.__file__).parent))
         + "];sys.modules['kumo']=k\n"
     )
     code += textwrap.dedent("""
@@ -391,10 +395,10 @@ def test_fractional_cutoffs_values_merge_and_deltas_survive_native_iteration(
     with api.prepare(
         contract,
         api.Dataset(sources),
-        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=2),
+        api.DiskGraphEngine(num_threads=2),
     ) as plan:
         assert (
-            json.loads((tmp_path / "indexes" / "index" / "index_metadata.json").read_text())[
+            json.loads((Path(plan._source._index_path) / "index_metadata.json").read_text())[
                 "timestamp_unit"
             ]
             == name
@@ -735,7 +739,7 @@ def _timestamp_lifecycle(directory, unit):
         )
 
     with api.prepare(
-        spec, dataset, api.DiskGraphEngine(index=directory / "indexes" / "index", num_threads=2)
+        spec, dataset, api.DiskGraphEngine(num_threads=2)
     ) as plan:
         with plan.materialize(anchors) as task:
             assert ticks(task.output("entity").field(name="joined").encoder) == [1]
@@ -853,7 +857,7 @@ def test_integer_timestamp_labels_use_target_units(
     )
     table = api.AnchorTable(api.Parquet(str(path)), "entity", "at", targets={"label": "label"})
     with api.prepare(
-        contract, dataset, api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
+        contract, dataset, api.DiskGraphEngine(num_threads=1)
     ) as plan:
         with plan.materialize(table, fit_split=api.ALL_ANCHORS) as task:
             for output in ("inspectable", "model"):
@@ -922,7 +926,7 @@ def test_graph_timestamp_fields_keep_declared_units(tmp_path, unit, native_ancho
     with api.prepare(
         contract,
         api.Dataset({"users": api.Parquet(str(users)), "events": api.Parquet(str(events))}),
-        api.DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1),
+        api.DiskGraphEngine(num_threads=1),
     ) as plan:
         with plan.materialize(anchors) as task:
             batch = next(iter(task.batches(batch_size=1, output_format="model", shuffle=False)))

@@ -360,7 +360,7 @@ def _duplicate_layer_relation(tmp_path: Path) -> None:
         contract, batch=replace(contract.batch, inputs={**contract.batch.inputs, "g": graph})
     )
     dataset = _written(tmp_path)
-    engine = DiskGraphEngine(index=tmp_path / "indexes" / "index", num_threads=1)
+    engine = DiskGraphEngine(num_threads=1)
     with prepare(contract, dataset, engine) as plan:
         task = plan.materialize([SampleRequest("a", 1, 100)])
         next(iter(task.batches(batch_size=1)))

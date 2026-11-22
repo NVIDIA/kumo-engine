@@ -13,8 +13,8 @@ engine lists what it doesn't support yet in `DiskGraphEngine.unsupported`.
 Constructing one is the contract; the short names exist so configuration can
 resolve to the same classes:
 
-    engine = DiskGraphEngine(index_build_id=build_id)
-    engine = engine_from_name("diskgraph", index_build_id=build_id)  # identical
+    engine = DiskGraphEngine(num_threads=4)
+    engine = engine_from_name("diskgraph", num_threads=4)  # identical
 """
 
 from kumo.pytorch.engines.diskgraph import DiskGraphEngine
