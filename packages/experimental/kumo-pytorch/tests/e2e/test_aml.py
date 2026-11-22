@@ -554,13 +554,13 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         num_threads=4,
         profile=True,
     )
-    setup = {
-        "pid": os.getpid(),
+    population = {
         "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
         "anchor_sha256": parquet_metadata(table.source.path)["sha256"],
         "anchor_binding": {k: v for k, v in table.to_dict().items() if k != "source"},
         "split_counts": splits,
     }
+    setup = {"pid": os.getpid(), **population}
     with ExitStack() as stack:
         with memory_interval(setup, "index.prepare"), stage_observer() as observer:
             if action:
@@ -624,13 +624,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
     if mode == "reloaded":
         prior = json.loads((fresh / "results.json").read_text())
         assert prior["setup"]["pid"] != setup["pid"]
-        for key in (
-            "source_sha256",
-            "anchor_sha256",
-            "anchor_binding",
-            "split_counts",
-            "fit_anchors",
-        ):
+        for key in (*population, "fit_anchors"):
             assert setup[key] == prior["setup"][key]
         for key in ("fitted_state", "contract"):
             assert prior["fresh"][key] == fit[key]

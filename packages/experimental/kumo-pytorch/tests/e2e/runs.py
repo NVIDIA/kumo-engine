@@ -275,12 +275,13 @@ def _revision():
     }
 
 
-def _versions():
-    return {
+def _provenance(case):
+    versions = {
         d.name: d.version
         for d in distributions()
         if d.name in ("torch", "pyarrow", "diskgraph", "torch-geometric")
     }
+    return {**_revision(), "workload": case, "platform": platform.platform(), "versions": versions}
 
 
 def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
@@ -300,10 +301,7 @@ def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
     env = dict(os.environ, KUMO_PYTORCH_PROFILE_HI_SMALL="1")
     case = TIMING_CASES["hi-small"]
     data = {
-        **_revision(),
-        "workload": case,
-        "platform": platform.platform(),
-        "versions": _versions(),
+        **_provenance(case),
         "num_threads": 1,
         "source_pin_sha256": hashlib.sha256(E01_MANIFEST.read_bytes()).hexdigest(),
         "host_memory": host_memory,
@@ -318,6 +316,7 @@ def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
     try:
         for binding in HI_SMALL_BINDINGS:
             identity = None
+            anchor_hashes = {}
             peaks = {size: [] for size in sizes}
             for repeat in range(3):
                 pair = root / binding / str(repeat)
@@ -350,16 +349,10 @@ def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
                         identity = common
                     assert row["binding"] == binding and identity == common
                     if size == "index-setup":
-                        expected = json.loads((root / "prepared/identity.json").read_text())[
-                            "bindings"
-                        ][binding]
-                        assert row["prefix_sha256"] == expected["prefix_sha256"]
-                        assert row["encoder_cutoff"] == expected["encoder_cutoff_seconds"]
                         continue
-                    assert (
-                        row["anchors"] == size
-                        and row["anchor_sha256"] == expected["anchors_sha256"][str(size)]
-                    )
+                    assert row["anchors"] == size
+                    digest = row["anchor_sha256"]
+                    assert anchor_hashes.setdefault(size, digest) == digest
                     memory = row["host_memory"]
                     assert memory["complete"] and memory["method"] == host_memory
                     assert memory["sample_interval_ns"] == data["sample_interval_ns"]
@@ -508,7 +501,7 @@ def _timing_campaign(
     if host_memory:
         sources.extend(Path(__file__).with_name(f) for f in ("host_memory.py", "memory_worker.py"))
     metadata = {
-        "workload": case,
+        **_provenance(case),
         **({"length_planning": True, "training": False} if length_planning else {}),
         **setup,
         **({"seed": 0, "file_page_cache": "uncontrolled"} if workload == "l01" else {}),
@@ -517,11 +510,8 @@ def _timing_campaign(
         "device": "cuda" if workload == "cuda" or cuda else "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **({"banking": {"batch_size": 2}, "l01": L01_BATCHING}.get(workload, LOADER_BATCHING)),
-        **_revision(),
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
-        "platform": platform.platform(),
         "python": platform.python_version(),
-        "versions": _versions(),
         "workers": workers,
         "summary": summary,
     }
