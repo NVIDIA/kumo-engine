@@ -72,6 +72,13 @@ Scores retain the input dtype, exclusions are applied on MPS, and query
 gradients are computed with PyTorch. This retrieval path does not establish
 support for the full training pipeline on MPS.
 
+## Distributed sampling
+
+The optional [Ray Core sampling backend](docs/distributed-sampling.md) shares
+native seed schedules across explicitly placed sampler actors. Every actor samples
+and encodes; the trainer consumes HeteroData reconstructed from typed metadata
+and NumPy buffers. It is a backend building block; training integration is separate.
+
 ## Development and validation
 
 The legacy in-memory feature stores and graph-store abstractions are retired.

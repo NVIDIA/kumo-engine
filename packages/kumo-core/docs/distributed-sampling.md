@@ -1,0 +1,119 @@
+# Ray sampling and encoding backend
+
+The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants need the
+DiskGraph-owned `SamplingPlan`, `SamplingOptions`, and `RuntimeBatch` APIs from
+#454 (stacked on #449 and #445), plus the native stateless sampling operation.
+
+Every remote actor samples and encodes a batch. The trainer receives frozen dataclass
+graph metadata and separate NumPy tensor buffers, then reconstructs `HeteroData`.
+There is no remote raw-batch mode or whole-HeteroData pickle mode. Local DiskGraph
+iteration continues to return typed runtime batches for local collation.
+
+## Actors and encoding
+
+`ReplicaConfig.batch_encoder` is a required serializable callable taking a
+DiskGraph `RuntimeBatch` and returning CPU `HeteroData`. The actor invokes it after
+sampling, then calls `pack_python_hetero`. Existing fitted Kumo mappers can be
+reused through `runtime_batch_to_hetero` with `attach_pkeys=False`; fitted state
+must agree with `ArtifactIdentity.mapping_digest` across replicas. Encoder state
+is sent at actor creation rather than in each request.
+
+The launcher owns artifact distribution, file-checksum verification, consistent
+local paths, and snapshot leases. `ReplicaConfig.verify()` checks snapshot/task
+manifest digests and rejects a missing encoder before opening graph data. A
+manifest digest alone does not verify every underlying graph file.
+
+`start_sampling_replicas(configs, placements)` takes an explicit placement per
+actor. Each serial actor reserves `num_threads` CPUs, preopens task extensions,
+and caches at most `context_capacity` native iterators (16 by default). Contexts
+use structural `SamplingOptions` equality with least-recently-used eviction.
+Actor restart and automatic method retries are disabled.
+
+## Requests and consumption
+
+`batch_contract.py` defines artifact identities, explicit seed requests,
+and the `HeteroBatchPayload` tuple type alias. DiskGraph owns sampling configuration and raw runtime
+records; kumo-core defines no duplicate native batch schemas or JSON option
+adapters. Artifact identities stay in replica/backend configuration and are not
+repeated in batch requests. Local manifests are verified during initialization.
+`BatchRequest.validate()` checks validity and returns `None`.
+
+`seed_schedule.py` builds the native seed schedule using only task metadata and
+seed sidecars. The trainer never opens graph adjacency/features. Omitted RNG
+seeds inherit the backend engine seed; explicit `None` and zero preserve native
+semantics. Sharding, epoch, shuffle, selection, and weighted scheduling stay on
+the trainer and are reset in actor-side options. Options are shallow frozen:
+callers must not mutate their projection/selection containers during iteration.
+
+Create `RayBackendConfig` from the replica handles, artifact identities, and a
+`RayConnection`, then construct `RayRuntimeIndex(manifest_path, config)`.
+`iter(options)` returns a synchronous `HeteroData` iterator and sample/bucket
+count. The trainer associates each response with its pending Ray request; the
+response does not echo request metadata. It reconstructs tensors using
+`torch.from_numpy` without running feature encoders. The former `iter_hetero`
+entry point is unnecessary because every response is encoded.
+
+`iter_requests(options)` enumerates logical requests without issuing sampling
+RPCs, for the subsequent asynchronous trainer loader. The synchronous reference
+iterator issues one call at a time. Neither interface supports inheriting a Ray
+client across processes. Subprocess DataLoader integration is outside this PR.
+
+## Wire format and ownership
+
+The metadata records contain node/edge types, feature names, sampling counts, tensor
+shapes/dtypes, and buffer indices. Tensor contents remain separate contiguous
+NumPy arrays. Actors return `(metadata, buffers)` directly. Ray handles the
+tuple, frozen metadata dataclasses, and out-of-band array serialization.
+Metadata uses Ray's default Python-object serialization; buffers remain separate.
+There is no application-level binary metadata codec or outer response wrapper.
+
+Graph wire version 1 supports CPU int64/float32/float64 tensors and numerical,
+categorical, timestamp, and ragged multi-categorical TensorFrame features.
+Nonempty primary keys, global attributes, extra edge attributes, and unsupported
+feature layouts fail explicitly. Noncontiguous tensors require a contiguous
+copy; contiguous storage is borrowed. Received tensors retain NumPy owners.
+Treat the received buffers as read-only and clone before in-place writes.
+Receiver-side zero-copy does not eliminate cross-host network transfer.
+
+Request wire version 2 and graph wire version 1 are independent. All participants
+must run the matching implementation. Old raw or whole-graph responses are
+rejected rather than routed to trainer-side feature encoding.
+
+## Concurrency and cancellation
+
+One trainer dispatcher exclusively owns each replica set and keeps at most one
+outstanding RPC per actor. Consuming a result makes that actor available again.
+Multiple independent trainers must use distinct replica sets.
+
+Cancellation fences local submission/delivery, then cancels outstanding Ray refs.
+A cancelled ref may become ready before native execution exits. `close()` waits
+for serial actor drain barriers before permitting replica reuse. A drain timeout
+retains ownership; retry close before replacing iterators or releasing snapshots.
+Only confirmed actor death/object loss permits bounded retry of the same logical
+request. There are no remote admission tokens or per-batch control RPCs.
+
+`stop_sampling_replicas` kills only owned actors; it does not shut down the Ray
+runtime. The launcher releases the snapshot lease after actor shutdown.
+
+## Focused validation
+
+With the matching native build, Ray extra, and CPU Torch runtime installed:
+
+```bash
+cd packages/kumo-core
+PYTHONPATH=src python -m pytest -q --confcutdir=tests/distributed tests/distributed
+```
+
+From the repository root, run native actor parity:
+
+```bash
+PYTHONPATH=packages/kumo-core/src python -m pytest -q \
+  packages/diskgraph/diskgraph-pybind/python/tests/test_ray_sampling_backend.py
+```
+
+Tests cover mandatory encoders, native seed membership before encoding, metadata
+scheduling, context reuse, request tracking, feature/buffer parity, malformed
+layouts, actor ownership, retry, cancellation/drain races, and real encoded Ray
+delivery for shuffled, selected, and RHS samples. Only local Ray clusters start.
+Training integration, asynchronous trainer prefetch, and artifact distribution
+follow separately; Rust feature encoding and native Rust decoding are excluded.

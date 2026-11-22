@@ -63,6 +63,7 @@ homepage = "https://kumo.ai"
 documentation = "https://kumo.ai/docs"
 
 [project.optional-dependencies]
+ray = ["ray==2.59.0"]
 # Named faiss-cpu/faiss-gpu, not cpu/gpu: the root `kumo` package has its
 # own "cpu"/"cu130" extras selecting the Torch build, and
 # `uv sync --all-packages --extra cpu` applies a same-named extra to every
