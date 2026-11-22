@@ -9,6 +9,7 @@ import json
 import math
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC
 from functools import partial
 from itertools import chain
@@ -24,10 +25,36 @@ import torch
 
 from e2e.datasets.binding_sources import full_source
 from kumo.pytorch import api
-from tests.e2e.binding_plan import BINDINGS
+from tests.e2e.binding_plan import BINDINGS, NIGHTLY_HISTORY_EVENTS
 from tests.e2e.cuda_metrics import training_gpu_window
 
 _SPLITS = ("train", "valid", "test")
+
+
+def training_contract(spec):
+    """Select the latest events before fitting and after merging event families."""
+    limit = NIGHTLY_HISTORY_EVENTS
+    events = {
+        name: replace(event, order="descending", limit=limit)
+        for name, event in spec.sample.events.items()
+    }
+    inputs = dict(spec.batch.inputs)
+    if history := inputs.get("history"):
+        source = replace(history.source, max_events=limit, keep="last", order="ascending")
+        inputs["history"] = replace(history, source=source)
+
+    def limit_layer(layer):
+        return replace(
+            layer,
+            samples=tuple(replace(hop, fanout=min(hop.fanout, limit)) for hop in layer.samples),
+        )
+
+    neighborhoods = {
+        name: replace(graph, layers=tuple(limit_layer(layer) for layer in graph.layers))
+        for name, graph in spec.sample.neighborhoods.items()
+    }
+    sample = replace(spec.sample, events=events, neighborhoods=neighborhoods)
+    return replace(spec, sample=sample, batch=replace(spec.batch, inputs=inputs))
 
 
 def full_tables(binding, files, directory):
@@ -195,10 +222,11 @@ def run_full_binding(binding, e2e_dir, output):
                 fit_split="train",
                 batch_size=batch_size,
                 device=device.type,
+                history_limit=NIGHTLY_HISTORY_EVENTS,
             )
             spec, data, anchors = full_tables(binding, files, work / "prepared")
             engine = api.DiskGraphEngine(index=work / "index", num_threads=4)
-            with api.prepare(spec, data, engine) as plan:
+            with api.prepare(training_contract(spec), data, engine) as plan:
                 metrics["ingestion_seconds"] = staging + (perf_counter() - start)
                 publish("materialization")
                 start = perf_counter()

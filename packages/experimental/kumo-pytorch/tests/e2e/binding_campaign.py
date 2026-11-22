@@ -23,6 +23,7 @@ from tests.e2e.binding_plan import NIGHTLY_TRAINING, nightly_correctness
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.binding_training import run_training, train_full_binding
 from tests.e2e.cuda_metrics import training_gpu_window
+from tests.e2e.full_binding_run import training_contract
 
 
 def _evidence(source, mode, counts=None, targets=None):
@@ -93,16 +94,24 @@ def exercise_binding(task, data, table, engine, work, source):
     binding = source.identity["binding"]
     if device := os.getenv("KUMO_PYTORCH_BINDING_SMOKE_DEVICE"):
         assert binding in NIGHTLY_TRAINING and device in ("cuda", "cpu")
-        result = train_full_binding(
-            task,
-            binding,
-            batch_size=2,
-            device=device,
-            split_batches=lambda split, epoch: task.batches(
-                split=split, epoch=epoch, batch_size=2, drop_last=False, output_format="model"
-            ),
-            train_window=partial(training_gpu_window, device) if device == "cuda" else nullcontext,
-        )
+        cutoff_ns = task.fitted_state.fit["inputs"]["statistics"]["cutoff"]
+        cutoff = None if cutoff_ns is None else cutoff_ns // 10**9
+        with (
+            api.prepare(training_contract(task.contract), data, engine) as plan,
+            plan.materialize(table, fit_split="train", encoder_cutoff=cutoff) as recent,
+        ):
+            result = train_full_binding(
+                recent,
+                binding,
+                batch_size=2,
+                device=device,
+                split_batches=lambda split, epoch: recent.batches(
+                    split=split, epoch=epoch, batch_size=2, drop_last=False, output_format="model"
+                ),
+                train_window=partial(training_gpu_window, device)
+                if device == "cuda"
+                else nullcontext,
+            )
         for row in [*result["epochs"], *result["validation"], result["test"]]:
             assert row["samples"] == source.counts[row["split"]]
             for head, loss in row["heads"].items():

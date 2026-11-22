@@ -206,7 +206,7 @@ jobs:
             env -u KUMO_PYTORCH_DIAGNOSTICS KUMO_PYTORCH_BINDING_SMOKE_DEVICE=cuda \
             python -m pytest -q --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/binding-cuda.xml" \
               tests/e2e/test_synthetic.py::test_registered_history tests/e2e/test_mbd.py::test_mbd_transaction_forecast \
-              tests/e2e/test_aml.py::test_li_medium_l01_combined_forecast
+              tests/e2e/test_aml.py::test_li_medium_l01_combined_forecast tests/e2e/test_aml.py::test_l01_nightly_outlier
       - uses: ./.github/actions/kumo-pytorch-results
         if: always() && steps.cuda_measure.outcome != 'skipped'
         with:

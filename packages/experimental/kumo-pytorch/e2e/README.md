@@ -306,10 +306,18 @@ Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
 loads batches on CPU. Each GPU model trains for two complete passes over its
 registered training split, including the tail. It evaluates validation after
 each epoch and test after epoch two. Batches without eligible targets count
-toward delivery and skip the optimizer update. HI Small retains its source
-and behavior checks. The 25B fixtures and campaigns run on manual dispatch.
+toward delivery and skip the optimizer update. For each anchor, the training
+runner selects the latest 64 history events across its event sources and
+delivers them oldest first. Each graph hop samples up to 64 recent neighbors
+per relation and keeps smaller configured fanouts. These limits apply to model
+inputs for training, validation and test. All 12 L01 count features use their
+original time windows. The package correctness tests use the original histories.
+HI Small retains its source and behavior checks. The 25B fixtures and campaigns
+run on manual dispatch.
 
 Use workflow mode `binding-train` and a binding ID to replay a single job.
+The manual `cuda` job also runs L01 training row 2,172,838 through this model
+context and checks its 12 counts against the pinned transaction source.
 The existing `KUMO_PYTORCH_BINDING_RUNNER` and `KUMO_PYTORCH_BINDING_SCRATCH`
 variables select the Linux CUDA worker and writable volume. From a worker with
 the full source staged in `KUMO_PYTORCH_DATA_ROOT`, the command is

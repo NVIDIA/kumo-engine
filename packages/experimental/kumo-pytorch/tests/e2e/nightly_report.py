@@ -8,7 +8,7 @@ import json
 from math import isclose, isfinite
 
 from e2e.datasets.binding_sources import PINS, _sources
-from tests.e2e.binding_plan import NIGHTLY_TRAINING, binding_heads
+from tests.e2e.binding_plan import NIGHTLY_HISTORY_EVENTS, NIGHTLY_TRAINING, binding_heads
 from tests.e2e.binding_report import require_fields
 
 # Display units are separate from the raw SI measurements retained in JSON.
@@ -41,6 +41,7 @@ def validate_training(data, binding, plan):
             device="cuda",
             fit_split="train",
             workload="binding-train",
+            history_limit=NIGHTLY_HISTORY_EVENTS,
         ),
         binding,
     )
@@ -120,6 +121,9 @@ def training_tables(rows):
     lines = [
         "",
         "### Full-split GPU training",
+        "",
+        f"Each anchor uses up to {NIGHTLY_HISTORY_EVENTS} recent events and up to "
+        f"{NIGHTLY_HISTORY_EVENTS} neighbors per relation. Counts use their full windows.",
         "",
         "| Binding / model | " + " | ".join(label for _, label, _ in METRICS) + " |",
         "| --- " * (1 + len(METRICS)) + "|",

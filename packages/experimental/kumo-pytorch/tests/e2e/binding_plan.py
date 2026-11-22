@@ -6,6 +6,8 @@
 
 import os
 
+NIGHTLY_HISTORY_EVENTS = 64
+
 # Train, validation and test counts from the registered anchor manifests.
 # L01 uses the next-outgoing-amount-currency workload's forecast_split.
 NIGHTLY_TRAINING = {

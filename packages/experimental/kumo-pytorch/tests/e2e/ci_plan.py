@@ -358,6 +358,7 @@ def benchmark_evidence(directory, rows, revision, mode):
                 for r in selections()
                 if r["mode"] == "training" and r["binding"] in NIGHTLY_TRAINING
             ]
+            nodes.append("tests/e2e/test_aml.py::test_l01_nightly_outlier")
             if error := _cuda_junit_error(only(directory, "binding-cuda.xml"), nodes):
                 raise ValueError(error)
         else:

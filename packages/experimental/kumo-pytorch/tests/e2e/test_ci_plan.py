@@ -145,6 +145,7 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
         scope="full_source",
         device="cuda",
         fit_split="train",
+        history_limit=64,
         split_counts=counts,
         expected_eligible={"count": counts},
         source_manifest_sha256=pins["source_manifest"]["sha256"],
@@ -192,6 +193,10 @@ def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
     )
     markdown = ci.render(result)
     assert "Mean loss" in markdown and all(label in markdown for _, label, _ in METRICS)
+    assert "64 recent events" in markdown
+    del data["history_limit"]
+    assert "history_limit" in report()["errors"][0]
+    data["history_limit"] = 64
     data["epochs"][1]["samples"] -= 1
     assert "expected samples=" in report()["errors"][0]
     data["epochs"][1]["samples"] += 1

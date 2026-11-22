@@ -9,10 +9,12 @@ import json
 import os
 from bisect import bisect_right
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
+from heapq import nlargest
 from itertools import accumulate
 from math import log
 from pathlib import Path
@@ -772,6 +774,108 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             )
 
     _check_role_windows(spec.schema, data, table, engine, histories, evidence)
+
+
+@pytest.mark.skipif(
+    not os.getenv("KUMO_PYTORCH_BINDING_SMOKE_DEVICE"), reason="run the binding training probe"
+)
+def test_l01_nightly_outlier(tmp_path, monkeypatch, record_property):
+    from tests.e2e.binding_plan import NIGHTLY_HISTORY_EVENTS
+    from tests.e2e.binding_training import train_full_binding
+    from tests.e2e.cuda_metrics import training_gpu_window
+    from tests.e2e.full_binding_run import training_contract
+
+    # One registered account across all three splits.
+    positions = (2_172_838, 7_178_960, 44_836_871)
+    files, anchors = _source_rows(L01_MANIFEST, "li-medium", positions)
+    spec, data, table = prepare_li_medium(files, tmp_path / "prepared", anchor_rows=positions)
+    accounts, events, _ = _source_history(files, anchors)
+    (root,) = accounts.values()
+    counts, recent, graph_times, samples = {}, {}, {}, {}
+    for row in anchors.values():
+        cutoff = int(row["as_of_time"].replace(tzinfo=UTC).timestamp())
+        sample = samples[row["forecast_split"]] = row["sample_id"]
+        past = {i: e for i, e in events.items() if e.time < cutoff}
+        counts[sample] = _source_counts(spec, root, cutoff, past)
+        recent[sample] = sorted(nlargest(NIGHTLY_HISTORY_EVENTS, (e.time for e in past.values())))
+        graph_times[sample] = {
+            role: sorted(
+                nlargest(
+                    NIGHTLY_HISTORY_EVENTS,
+                    (e.time for e in past.values() if getattr(e, role) == root),
+                )
+            )
+            for role in ("sender", "receiver")
+        }
+    del past
+    assert counts[samples["train"]]["all_history_total_touching_count"] == 475_664
+    device = os.environ["KUMO_PYTORCH_BINDING_SMOKE_DEVICE"]
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=4)
+    train_at = anchors[positions[0]]["as_of_time"].replace(tzinfo=UTC).timestamp()
+    with (
+        api.prepare(training_contract(spec), data, engine) as plan,
+        plan.materialize(table, fit_split="train", encoder_cutoff=int(train_at) - 1) as task,
+    ):
+        source = task._anchors._source
+        build = source.build_model_batch
+        retained = {}
+        graph_sizes = {}
+
+        def observe(spec, runtime, native, compiled):
+            (sample,) = native.sample_ids
+            (sequence,) = runtime["history"]["sequences"]
+            ids = sequence["batch"]["event_id"].to_pylist()
+            history = {i // 2: events[i // 2] for i in ids}
+            assert len(history) == NIGHTLY_HISTORY_EVENTS
+            assert ids == [2 * i + int(e.sender != root) for i, e in history.items()]
+            assert [e.time for e in history.values()] == recent[sample]
+            retained[sample] = history
+            return build(spec, runtime, native, compiled)
+
+        monkeypatch.setattr(source, "build_model_batch", observe)
+
+        def batches(split, epoch):
+            (batch,) = task.batches(split=split, epoch=epoch, batch_size=1, output_format="model")
+            (sample,) = batch.metadata["sample_ids"]
+            assert sample == samples[split]
+            cutoff = batch.metadata["as_of_time"].item() + 1
+            _check_history(task, batch, [(root, cutoff, retained[sample])])
+            check_normalized_aggregates(task, batch, counts, [samples["train"]])
+            ids = batch.inputs["graph"]["nodes"]["transactions"]["ids"].tolist()
+            assert len(ids) == len(set(ids))
+            for role, times in graph_times[sample].items():
+                assert (
+                    sorted(events[i].time for i in ids if getattr(events[i], role) == root) == times
+                )
+            graph_sizes[split] = len(ids)
+            yield batch
+
+        result = train_full_binding(
+            task,
+            "L01",
+            batch_size=1,
+            split_batches=batches,
+            device=device,
+            train_window=partial(training_gpu_window, device) if device == "cuda" else nullcontext,
+        )
+    for epoch in result["epochs"]:
+        assert epoch["optimizer_updates"] == 1
+        assert {h: v["eligible"] for h, v in epoch["heads"].items()} == {"amount": 1, "currency": 1}
+    assert result["epochs"][0]["heads"] != result["epochs"][1]["heads"]
+    record_property(
+        "l01_outlier",
+        json.dumps(
+            dict(
+                position=positions[0],
+                sample=samples["train"],
+                counts=counts[samples["train"]],
+                retained=NIGHTLY_HISTORY_EVENTS,
+                graph_transactions=graph_sizes,
+                device=device,
+                **result,
+            )
+        ),
+    )
 
 
 @pytest.mark.parametrize(
