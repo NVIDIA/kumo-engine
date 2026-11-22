@@ -35,6 +35,7 @@ from kumo_core.diskgraph.batch_contract import (
     HeteroBatchPayload,
     SamplingContractError,
 )
+from kumo_core.diskgraph.hetero_wire import pack_python_hetero, unpack_python_hetero
 
 if TYPE_CHECKING:
     from ray import ObjectRef
@@ -377,8 +378,6 @@ class _SamplerReplica:
             self.contexts.append((options, context))
             if len(self.contexts) > self.config.context_capacity:
                 self.contexts.pop(0)
-        started = time.monotonic()
-        from kumo_core.diskgraph.hetero_wire import pack_python_hetero
 
         batch = context.sample_request(list(request.seed_ids))
         seed_ids = (
@@ -389,7 +388,7 @@ class _SamplerReplica:
         if not seed_ids.equals(pa.array(request.seed_ids, type=pa.uint64())):
             raise SamplingContractError("sample seed membership/order differs")
         metadata, buffers = pack_python_hetero(self.config.batch_encoder(batch))
-        return HeteroBatchPayload(metadata, buffers, time.monotonic() - started)
+        return metadata, buffers
 
 
 def start_sampling_replicas(
@@ -467,7 +466,7 @@ class RayRuntimeIndex:
         self.samplers = _SamplerPool(config)
 
     def iter(self, options: SamplingOptions) -> tuple[Iterator[HeteroData], int]:
-        """Receive sampler-encoded graphs through MessagePack and NumPy buffers.
+        """Receive actor-encoded graphs from dictionary metadata and NumPy buffers.
 
         Args:
             options: DiskGraph sampling configuration and logical shard identity.
@@ -547,9 +546,9 @@ class RayRuntimeIndex:
 
     def _sample(self, request: BatchRequest) -> HeteroData:
         payload = self._receive(request)
-        if not isinstance(payload, HeteroBatchPayload):
+        if not isinstance(payload, tuple) or len(payload) != 2:
             raise SamplingContractError("sampler did not return an encoded graph")
-        return payload.decode()
+        return unpack_python_hetero(*payload)
 
     def _receive(self, request: BatchRequest) -> HeteroBatchPayload:
         ray = _ray()

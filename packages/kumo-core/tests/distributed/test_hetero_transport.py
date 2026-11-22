@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""MessagePack/NumPy graph parity, buffer ownership, and actor integration."""
+"""Dictionary/NumPy graph parity, buffer ownership, and actor integration."""
 
 from __future__ import annotations
 
 import gc
+import sys
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
-import msgpack
 import numpy as np
 import pytest
 
@@ -17,7 +17,6 @@ torch = pytest.importorskip("torch")
 
 from diskgraph.runtime_batch import RuntimeBatch
 from kumo_core.diskgraph.batch_contract import (
-    HeteroBatchPayload,
     SamplingContractError,
 )
 from kumo_core.diskgraph.hetero_wire import (
@@ -99,8 +98,8 @@ def test_wire_preserves_graph_values_and_buffer_ownership() -> None:
     """Metadata stays separate and decoded tensors retain the numeric buffers."""
     graph = _graph()
     metadata, arrays = pack_python_hetero(graph)
-    assert isinstance(metadata, bytes)
-    assert msgpack.unpackb(metadata, raw=False)["version"] == 1
+    assert isinstance(metadata, dict)
+    assert metadata["version"] == 1
     assert any(np.shares_memory(array, graph["nodes"].n_id.numpy()) for array in arrays)
     decoded = unpack_python_hetero(metadata, arrays)
     _assert_graph(decoded, graph)
@@ -127,7 +126,7 @@ def test_wire_copies_strided_views_only() -> None:
 def test_wire_rejects_invalid_layout(failure: str) -> None:
     """Invalid descriptors cannot silently change tensor layout or graph topology."""
     metadata, arrays = pack_python_hetero(_graph())
-    spec = msgpack.unpackb(metadata, raw=False)
+    spec = metadata
     node = spec["nodes"]["nodes"]
     attribute = node["attributes"]["n_id"]
     if failure == "version":
@@ -142,11 +141,13 @@ def test_wire_rejects_invalid_layout(failure: str) -> None:
         arrays.append(np.empty(0, dtype=np.int64))
     elif failure == "offset":
         nested = next(f for f in node["features"] if f["kind"] == "multicategorical")
+        assert nested["offset"] is not None
         arrays[nested["offset"]["buffer"]] = np.array([0, 9, 2], dtype=np.int64)
     else:
-        spec["edges"][0][0][2] = "missing"
+        key, description, counts = spec["edges"][0]
+        spec["edges"][0] = ((key[0], key[1], "missing"), description, counts)
     with pytest.raises((ValueError, TypeError)):
-        unpack_python_hetero(msgpack.packb(spec, use_bin_type=True), arrays)
+        unpack_python_hetero(spec, arrays)
 
 
 def _encode_runtime(batch: RuntimeBatch) -> HeteroData:
@@ -172,9 +173,9 @@ def test_actor_uses_existing_python_encoder_and_emits_separate_buffers() -> None
     context.sample_request.return_value = raw
     replica.index.iter.return_value = (context, 2)
     response = replica.sample(request)
-    assert isinstance(response, HeteroBatchPayload)
-    assert all(isinstance(array, np.ndarray) for array in response.buffers)
-    decoded = response.decode()
+    assert isinstance(response, tuple) and len(response) == 2
+    assert all(isinstance(array, np.ndarray) for array in response[1])
+    decoded = unpack_python_hetero(*response)
     expected = _encode_runtime(raw)
     torch.testing.assert_close(
         decoded["nodes"].tf.feat_dict[Stype.timestamp],
@@ -188,7 +189,7 @@ def test_reference_client_requires_encoded_response() -> None:
     """The trainer consumes encoded graphs and rejects legacy raw responses."""
     request = _request()
     metadata, arrays = pack_python_hetero(_graph())
-    encoded = HeteroBatchPayload(metadata, arrays, 0.1)
+    encoded = (metadata, arrays)
     client = RayRuntimeIndex.__new__(RayRuntimeIndex)
     with patch.object(client, "_receive", return_value=encoded):
         _assert_graph(client._sample(request), _graph())
@@ -205,3 +206,13 @@ def test_wire_rejects_extra_edge_attributes() -> None:
     graph["nodes", "connects", "nodes"].score = torch.ones(2)
     with pytest.raises(NotImplementedError, match="unsupported"):
         pack_python_hetero(graph)
+
+
+def test_dictionary_transport_does_not_require_msgpack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph extraction and reconstruction work without importing MessagePack."""
+    monkeypatch.setitem(sys.modules, "msgpack", None)
+    graph = _graph()
+    metadata, arrays = pack_python_hetero(graph)
+    _assert_graph(unpack_python_hetero(metadata, arrays), graph)

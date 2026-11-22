@@ -4,7 +4,7 @@ The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants need the
 DiskGraph-owned `SamplingPlan`, `SamplingOptions`, and `RuntimeBatch` APIs from
 #454 (stacked on #449 and #445), plus the native stateless sampling operation.
 
-Every remote actor samples and encodes a batch. The trainer receives MessagePack
+Every remote actor samples and encodes a batch. The trainer receives a plain dictionary of
 graph metadata and separate NumPy tensor buffers, then reconstructs `HeteroData`.
 There is no remote raw-batch mode or whole-HeteroData pickle mode. Local DiskGraph
 iteration continues to return typed runtime batches for local collation.
@@ -32,7 +32,7 @@ Actor restart and automatic method retries are disabled.
 ## Requests and consumption
 
 `batch_contract.py` defines artifact identities, explicit seed requests,
-and `HeteroBatchPayload`. DiskGraph owns sampling configuration and raw runtime
+and the `HeteroBatchPayload` tuple type alias. DiskGraph owns sampling configuration and raw runtime
 records; kumo-core defines no duplicate native batch schemas or JSON option
 adapters. Artifact identities stay in replica/backend configuration and are not
 repeated in batch requests. Local manifests are verified during initialization.
@@ -60,10 +60,11 @@ client across processes. Subprocess DataLoader integration is outside this PR.
 
 ## Wire format and ownership
 
-MessagePack contains node/edge types, feature names, sampling counts, tensor
+The metadata dictionary contains node/edge types, feature names, sampling counts, tensor
 shapes/dtypes, and buffer indices. Tensor contents remain separate contiguous
-NumPy arrays. Ray still uses its normal outer-envelope and out-of-band array
-serialization; this format avoids PyTorch tensor pickle reducers for responses.
+NumPy arrays. Actors return `(metadata, buffers)` directly. Ray handles the
+plain tuple, dictionary, and out-of-band array serialization; there is no
+application-level binary metadata codec or response dataclass.
 
 Graph wire version 1 supports CPU int64/float32/float64 tensors and numerical,
 categorical, timestamp, and ragged multi-categorical TensorFrame features.
