@@ -101,6 +101,7 @@ def test_diskgraph_rebuilds_runtime_lookups_from_portable_fitted_state(monkeypat
         assert len(builds) == 2
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize("cardinality", [16, 256, 4096])
 @pytest.mark.parametrize("shared", [False, True], ids=["separate", "shared"])
 def test_fitted_vocabularies_at_scale_preserve_rank_and_validity(cardinality, shared):

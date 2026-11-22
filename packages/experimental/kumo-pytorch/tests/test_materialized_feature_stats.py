@@ -181,6 +181,7 @@ def test_selection_is_train_membership_not_a_global_cutoff(tmp_path):
             plan.materialize(values.anchors, fit_split="valid")
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize("source_rows", [64, 1024, 16384])
 @pytest.mark.parametrize("fit_count", [8, 64, 512])
 def test_native_aggregate_stats_across_source_and_fit_sizes(tmp_path, source_rows, fit_count):

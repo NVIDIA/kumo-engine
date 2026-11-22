@@ -38,6 +38,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
 LOADER_CASE = "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing"
+LOADER_BATCHING = {"split": "train", "batch_size": 5}
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
@@ -86,12 +87,13 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
     return work, seconds
 
 
-def time_loader(plan, table, work: Path, *, batch_size: int, event_tables=()) -> dict:
+def time_loader(plan, table, work: Path, make_batches, **batch_options) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
     from tests.e2e.loader_timing import measure_epoch
 
     work.mkdir(parents=True, exist_ok=True)
+    options = LOADER_BATCHING | batch_options
     results = {}
     artifact = work / "artifact"
     with Path(table.source.path).open("rb") as anchors:
@@ -100,7 +102,7 @@ def time_loader(plan, table, work: Path, *, batch_size: int, event_tables=()) ->
         for mode in ("fresh", "reloaded"):
             started = time.perf_counter_ns()
             fit = (
-                {"fit_split": "train"}
+                {"fit_split": options["split"]}
                 if mode == "fresh"
                 else {"fitted": api.Artifact.load(artifact).fitted_state}
             )
@@ -118,13 +120,7 @@ def time_loader(plan, table, work: Path, *, batch_size: int, event_tables=()) ->
                     task.to_artifact().save(artifact)
                 for epoch in range(2):
                     results[mode]["epochs"].append(
-                        measure_epoch(
-                            task,
-                            split="train",
-                            epoch=epoch,
-                            batch_size=batch_size,
-                            event_tables=event_tables,
-                        )
+                        measure_epoch(task, make_batches, epoch=epoch, **options)
                     )
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
@@ -195,8 +191,7 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
     metadata = {
         "workload": LOADER_CASE,
         "device": "cpu",
-        "split": "train",
-        "batch_size": 5,
+        **LOADER_BATCHING,
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
@@ -218,23 +213,20 @@ def _loader_campaign(directory: Path, repetitions: int) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--e2e-dir", type=Path, required=True)
     if argv[:1] == ["loader"]:
-        parser = argparse.ArgumentParser(description="Time the 33-anchor CPU loader fixture.")
-        parser.add_argument("--e2e-dir", type=Path, required=True)
         parser.add_argument("--repetitions", type=int, default=3)
         args = parser.parse_args(argv[1:])
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
         print(_loader_campaign(args.e2e_dir, args.repetitions))
         return
-    parser = argparse.ArgumentParser(
-        description=__doc__.split("\n")[0],
-        epilog="For CPU loader timing use: loader --e2e-dir DIR [--repetitions N].",
-    )
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))
     parser.add_argument("seed", type=int)
-    parser.add_argument("--e2e-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     tier = BY_NAME[args.tier]
     root = args.e2e_dir / tier.name

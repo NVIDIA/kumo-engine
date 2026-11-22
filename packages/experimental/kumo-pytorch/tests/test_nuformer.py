@@ -6,6 +6,7 @@
 
 from dataclasses import replace
 
+import pytest
 import torch
 
 from kumo.pytorch.api import DataLoaderSpec
@@ -21,7 +22,6 @@ from kumo.pytorch.models.protocols import LabeledBatch
 from tests.helpers import written_state
 from tests.reference_models.batch_definitions import NUFORMER_BATCH
 from tests.reference_models.fixtures import SAMPLES, adapted_batch, architecture_for, model_task
-from tests.test_model import assert_mean_cross_entropy_gradient
 
 
 def test_nuformer_fitted_state_and_contract_round_trip(tmp_path):
@@ -45,36 +45,13 @@ def test_nuformer_pretraining_forward_backward():
         architecture = architecture_for(task, "nuformer")
         batch = adapted_batch(task, "nuformer")
         output = architecture.model(batch)
-        logits = output.predictions["next_token_logits"]
-        assert logits.shape == (
+        assert output.predictions["next_token_logits"].shape == (
             batch.token_count,
             task.spaces["nuformer"].size,
         )
         assert torch.isfinite(output.loss)
-        targets = batch.target_ids[batch.token_mask]
-        torch.testing.assert_close(output.predictions["next_token_targets"], targets)
-        logits.retain_grad()
         output.loss.backward()
-        assert_mean_cross_entropy_gradient(logits, targets)
         assert architecture.model.encoder.embedding.weight.grad is not None
-
-
-def test_future_token_cannot_change_earlier_or_other_sample_logits():
-    with model_task("nuformer") as task, torch.no_grad():
-        model = architecture_for(task, "nuformer").model.eval()
-        batch = adapted_batch(task, "nuformer")
-        before = model(batch).predictions["next_token_logits"]
-        positions = batch.token_mask[0].nonzero().flatten()
-        assert len(positions) > 1 and batch.token_mask[1].any()
-        changed = batch.input_ids.clone()
-        last = positions[-1]
-        changed[0, last] = (changed[0, last] + 1) % task.spaces["nuformer"].size
-        after = model(replace(batch, input_ids=changed)).predictions["next_token_logits"]
-        # Logits contain the valid positions of each sample consecutively.
-        row = len(positions) - 1
-        assert not torch.equal(before[row], after[row])
-        torch.testing.assert_close(after[:row], before[:row], rtol=0, atol=0)
-        torch.testing.assert_close(after[row + 1 :], before[row + 1 :], rtol=0, atol=0)
 
 
 def test_nuformer_uses_declared_direction_instead_of_positive_amount_sign():
@@ -185,3 +162,58 @@ def test_nuformer_lora_joint_fusion():
         assert model.encoder.sequence.transformer.blocks[0].attention.qkv.up.weight.grad is not None
         assert model.encoder.tabular_features.frequencies.grad is not None
         assert model.encoder.tabular_features.categorical[0].weight.grad is not None
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_nuformer_supervision_and_causality(tmp_path):
+    from conformance.assertions import bound_tables
+    from kumo.pytorch import api
+    from tests.helpers import parquet_anchors
+    from tests.reference_models.batch_adapters import MODEL_BATCH_ADAPTERS
+    from tests.reference_models.data_schema import SYNTHETIC_SCHEMA
+    from tests.reference_models.fixtures import _tables
+    from tests.test_model import assert_mean_cross_entropy_gradient
+
+    tables = {
+        name: rows for name, rows in _tables().items() if name in ("users", "banking_transactions")
+    }
+    clocks = {"users": "signup_at", "banking_transactions": "occurred_at"}
+    schema = api.DataSchema(
+        tuple(
+            replace(t, time_column=clocks[t.name])
+            for t in SYNTHETIC_SCHEMA.tables
+            if t.name in tables
+        ),
+        tuple(r for r in SYNTHETIC_SCHEMA.relations if r.name == "user_banking_transactions"),
+    )
+    contract = api.DataLoaderSpec(schema, SAMPLES["nuformer"], NUFORMER_BATCH)
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"id": [1, 2], "time": [100, 100]}, "id", "time"
+    )
+    with (
+        bound_tables(contract, tables, "diskgraph") as (dataset, engine),
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        (public,) = task.batches(batch_size=2, output_format="model")
+        model = architecture_for(task, "nuformer").model.eval()
+        batch = MODEL_BATCH_ADAPTERS["nuformer"](public)
+        output = model(batch)
+        before = output.predictions["next_token_logits"]
+        targets = batch.target_ids[batch.token_mask]
+        torch.testing.assert_close(output.predictions["next_token_targets"], targets)
+        before.retain_grad()
+        output.loss.backward()
+        assert_mean_cross_entropy_gradient(before, targets)
+
+        positions = batch.token_mask[0].nonzero().flatten()
+        assert len(positions) > 1 and batch.token_mask[1].any()
+        changed = batch.input_ids.clone()
+        last = positions[-1]
+        changed[0, last] = (changed[0, last] + 1) % task.spaces["nuformer"].size
+        after = model(replace(batch, input_ids=changed)).predictions["next_token_logits"]
+        # Logits contain the valid positions of each sample consecutively.
+        row = len(positions) - 1
+        assert not torch.equal(before[row], after[row])
+        torch.testing.assert_close(after[:row], before[:row], rtol=0, atol=0)
+        torch.testing.assert_close(after[row + 1 :], before[row + 1 :], rtol=0, atol=0)

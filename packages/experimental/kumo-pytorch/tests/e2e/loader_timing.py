@@ -34,39 +34,28 @@ def _dimensions(task, batch, event_tables):
     for name, spec in task.contract.batch.inputs.items():
         output = batch.inputs[name]
         if isinstance(spec.representation, api.Graph):
-            counts["nodes"] += sum(len(node["ids"]) for node in output["nodes"].values())
+            nodes = {table: len(node["ids"]) for table, node in output["nodes"].items()}
+            counts["nodes"] += sum(nodes.values())
             counts["edges"] += sum(edge["index"].shape[1] for edge in output["edges"].values())
             if event_tables:
-                counts["events"] += sum(
-                    len(node["ids"])
-                    for name, node in output["nodes"].items()
-                    if name in event_tables
-                )
+                counts["events"] += sum(nodes[table] for table in nodes.keys() & event_tables)
         elif not isinstance(spec.representation.row, api.Columns):
             counts["tokens"] += int(output["valid"].sum())
     return counts
 
 
-def measure_epoch(task, *, split, epoch, batch_size, event_tables=()):
+def measure_epoch(task, make_batches, *, split, epoch, batch_size, event_tables=()):
     """Count returned batches once. Terminal exhaustion contributes only to elapsed and wait."""
     source = task._assembler._source
     requests, sizes, profiles = [], [], []
     totals = Counter(samples=0, padded=0)
     start = perf_counter_ns()
-    batches = task.batches(
-        split=split,
-        epoch=epoch,
-        batch_size=batch_size,
-        shuffle=False,
-        drop_last=False,
-        output_format="model",
+    batches = make_batches(
+        task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
     )
     startup = perf_counter_ns() - start
     while True:
         previous = source.last_sampling_profile
-        if len(requests) == 2:
-            warmup_end = perf_counter_ns()
-            warmup_samples = totals["samples"]
         request = perf_counter_ns()
         batch = next(batches, None)
         end = perf_counter_ns()
@@ -74,6 +63,9 @@ def measure_epoch(task, *, split, epoch, batch_size, event_tables=()):
             break
         if not requests:
             first_batch = end - start
+        elif len(requests) == 2:
+            warmup_end = request
+            warmup_samples = totals["samples"]
         requests.append(end - request)
         sizes.append(batch.batch_size)
         profile = source.last_sampling_profile

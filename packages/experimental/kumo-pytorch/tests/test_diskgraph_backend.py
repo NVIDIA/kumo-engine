@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ import pytest
 import torch
 
 from kumo.pytorch import api
+from tests.helpers import parquet_anchors
 
 FIXTURE = Path(__file__).parent / "data" / "synthetic_banking_subset.json"
 
@@ -791,15 +793,6 @@ def test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible(
         ],
         "users": [(2, 0), (3, 1)],
     }
-    selected = {key for key, _ in expected_graph["nodes"]["card_transactions"]}
-    assert expected_graph["edges"] == {
-        "user_accounts": sorted((r["user_id"], r["account_id"]) for r in rows["accounts"]),
-        "account_card_transactions": sorted(
-            (r["account_id"], r["card_transaction_id"])
-            for r in rows["card_transactions"]
-            if r["card_transaction_id"] in selected
-        ),
-    }
     assert [_canonical_graph(batch.inputs["graph"]) for batch in batches] == [
         expected_graph,
         expected_graph,
@@ -1209,7 +1202,7 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
     finally:
         reference_source.close()
         diskgraph_source.close()
-    for request, expected_sample, actual_sample in zip(requests, expected, actual, strict=True):
+    for expected_sample, actual_sample in zip(expected, actual, strict=True):
         assert actual_sample.history.events == expected_sample.history.events
         expected_values = {
             value.key: value.value for value in expected_sample.history.entity.values
@@ -1223,17 +1216,6 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
                 assert actual_values[name] == expected_value
         expected_targets = {target.name: target.value for target in expected_sample.targets}
         actual_targets = {target.name: target.value for target in actual_sample.targets}
-        transactions = [r for r in rows["card_transactions"] if r["user_id"] == request.entity_id]
-        history = [r["amount"] for r in transactions if r["occurred_at"] <= request.as_of_time]
-        future = [
-            r["amount"]
-            for r in transactions
-            if request.as_of_time < r["occurred_at"] <= request.as_of_time + timedelta(days=7)
-        ]
-        assert actual_sample.sample_id == request.sample_id
-        assert actual_values["spend_across_account_groups"] == pytest.approx(sum(history))
-        assert actual_targets["future_count"] == len(future)
-        assert actual_targets["future_spend"] == pytest.approx(sum(future))
         assert actual_targets.keys() == expected_targets.keys()
         assert actual_targets["future_spend"] == pytest.approx(expected_targets["future_spend"])
         assert actual_targets["future_count"] == expected_targets["future_count"]
@@ -1377,10 +1359,6 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
         reference_task = reference_plan.materialize(requests, fit_split="train")
         diskgraph_task = diskgraph_plan.materialize(requests, fit_split="train")
         assert diskgraph_task.fitted_state == reference_task.fitted_state
-        state = diskgraph_task.fitted_state.to_dict()
-        key = '["shared","categories"]'
-        shared_ids = dict(state["spaces"]["pragma"]["members"][key])
-        categories = {value: shared_ids[i] for value, i in state["encoders"][key]["entries"]}
         assert diskgraph_plan._source.last_temporal_profile["output_format"] == "model"
         expected = list(reference_task.batches(requests, seed=17, epoch=3))
         inspectable = list(diskgraph_task.batches(requests, seed=17, epoch=3))
@@ -1401,53 +1379,6 @@ def test_diskgraph_pragma_batches_match_reference_without_record_adaptation(tmp_
         assert_equal(inspectable_batch.targets, expected_batch.targets)
         assert_equal(model_batch.inputs, expected_batch.inputs)
         assert_equal(model_batch.targets, expected_batch.targets)
-        history = model_batch.inputs["history"]
-        targets = model_batch.targets["masked_values"]
-        users = {r["user_id"]: r for r in rows["users"]}
-        by_id = {r.sample_id: r for r in requests}
-        for owner, sample_id in enumerate(model_batch.metadata["sample_ids"]):
-            request = by_id[sample_id]
-            user = users[request.entity_id]
-            assert model_batch.inputs["entity"]["value_ids"][owner, :2].tolist() == [
-                categories[user[field]] for field in ("country", "risk_segment")
-            ]
-            events = sorted(
-                (
-                    r
-                    for r in rows["card_transactions"]
-                    if r["user_id"] == request.entity_id and r["occurred_at"] <= request.as_of_time
-                ),
-                key=lambda r: r["occurred_at"],
-            )
-            times = [r["occurred_at"] for r in events]
-            ages = model_batch.inputs["history_timing"]["age_seconds"]
-            assert ages["values"][owner, ages["valid"][owner]].tolist() == [
-                (request.as_of_time - time).total_seconds() for time in times
-            ]
-            calendar = model_batch.inputs["history_calendar"]
-            for name, values in (
-                ("hour", [t.hour for t in times]),
-                ("weekday", [t.weekday() for t in times]),
-                ("day", [t.day for t in times]),
-            ):
-                assert (
-                    calendar[name]["values"][owner, calendar[name]["valid"][owner]].tolist()
-                    == values
-                )
-            slots = history["owner"] == owner
-            assert history["history_position"][slots].tolist() == list(range(len(events)))
-            offsets = history["field_offsets"]
-            assert any(
-                targets["valid"][offsets[i] : offsets[i + 1]].any()
-                for i in slots.nonzero().flatten().tolist()
-            )
-            # Channel is the second token in every event, immediately after amount.
-            channels = offsets[:-1][slots] + 1
-            for position, event in zip(channels.tolist(), events, strict=True):
-                if targets["valid"][position]:
-                    assert targets["values"][position].item() == categories[event["channel"]]
-                elif not targets["corruption"][position]:
-                    assert history["value_ids"][position].item() == categories[event["channel"]]
 
 
 def test_diskgraph_model_uses_shared_anchor_shuffle(tmp_path: Path) -> None:
@@ -1573,3 +1504,139 @@ def test_diskgraph_reads_parquet_anchor_tables_with_external_labels(tmp_path: Pa
             assert got[0].targets["is_fraud"]["values"].tolist() == [1.0, 0.0]
             test_batch = next(iter(from_table.batches(split="test", output_format=output_format)))
             assert test_batch.targets["is_fraud"]["values"].tolist() == [1.0]
+
+
+def _banking_anchors(directory):
+    requests = _requests()
+    return parquet_anchors(
+        directory / "anchors.parquet",
+        {
+            "id": [r.entity_id for r in requests],
+            "time": [r.as_of_time for r in requests],
+            "sample": [r.sample_id for r in requests],
+            "split": [r.split for r in requests],
+            "label": [r.targets[0].value for r in requests],
+        },
+        "id",
+        "time",
+        sample_id="sample",
+        split="split",
+        targets={"transactions_next_7d": "label"},
+    )
+
+
+def _native_pragma_contract():
+    contract = _pragma_contract(_schema())
+    return replace(contract, batch=replace(contract.batch, batching=api.Batching(max_samples=2)))
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_banking_pragma_supervision(tmp_path):
+    pytest.importorskip("diskgraph")
+    contract = _native_pragma_contract()
+    rows = _fixture_rows()
+    dataset = _write_parquet(rows, tmp_path / "parquet")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    requests = _requests()
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task:
+            state = task.fitted_state.to_dict()
+            key = '["shared","categories"]'
+            shared_ids = dict(state["spaces"]["pragma"]["members"][key])
+            categories = {value: shared_ids[i] for value, i in state["encoders"][key]["entries"]}
+            (model_batch,) = task.batches(output_format="model", seed=17, epoch=3)
+
+    history = model_batch.inputs["history"]
+    targets = model_batch.targets["masked_values"]
+    users = {r["user_id"]: r for r in rows["users"]}
+    by_id = {r.sample_id: r for r in requests}
+    for owner, sample_id in enumerate(model_batch.metadata["sample_ids"]):
+        request = by_id[sample_id]
+        user = users[request.entity_id]
+        assert model_batch.inputs["entity"]["value_ids"][owner, :2].tolist() == [
+            categories[user[field]] for field in ("country", "risk_segment")
+        ]
+        events = sorted(
+            (
+                r
+                for r in rows["card_transactions"]
+                if r["user_id"] == request.entity_id and r["occurred_at"] <= request.as_of_time
+            ),
+            key=lambda r: r["occurred_at"],
+        )
+        times = [r["occurred_at"] for r in events]
+        ages = model_batch.inputs["history_timing"]["age_seconds"]
+        assert ages["values"][owner, ages["valid"][owner]].tolist() == [
+            (request.as_of_time - time).total_seconds() for time in times
+        ]
+        calendar = model_batch.inputs["history_calendar"]
+        for name, values in (
+            ("hour", [t.hour for t in times]),
+            ("weekday", [t.weekday() for t in times]),
+            ("day", [t.day for t in times]),
+        ):
+            assert (
+                calendar[name]["values"][owner, calendar[name]["valid"][owner]].tolist() == values
+            )
+        slots = history["owner"] == owner
+        assert history["history_position"][slots].tolist() == list(range(len(events)))
+        offsets = history["field_offsets"]
+        assert any(
+            targets["valid"][offsets[i] : offsets[i + 1]].any()
+            for i in slots.nonzero().flatten().tolist()
+        )
+        # Channel is the second token in every event, immediately after amount.
+        channels = offsets[:-1][slots] + 1
+        for position, event in zip(channels.tolist(), events, strict=True):
+            if targets["valid"][position]:
+                assert targets["values"][position].item() == categories[event["channel"]]
+            elif not targets["corruption"][position]:
+                assert history["value_ids"][position].item() == categories[event["channel"]]
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_banking_edges_and_forecasts(tmp_path):
+    pytest.importorskip("diskgraph")
+    rows = _fixture_rows()
+    base = _temporal_contract(_schema())
+    spend = "spend_across_account_groups"
+    # Project the grouped scalar and the two forward-window labels as model tensors.
+    entity = api.Input(
+        api.EntitySource(), api.Fields((api.Encode(spend, api.Raw()),)), api.Separate()
+    )
+    contract = replace(
+        base,
+        batch=api.BatchSpec(
+            inputs={"entity": entity, "graph": base.batch.inputs["graph"]},
+            targets={
+                name: api.LabelTarget(name, api.Raw()) for name in ("future_count", "future_spend")
+            },
+        ),
+    )
+    dataset = _write_parquet(rows, tmp_path / "data")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with api.prepare(contract, dataset, engine) as plan:
+        with plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task:
+            (batch,) = task.batches(batch_size=2, output_format="model")
+    for i, request in enumerate(_requests()):
+        assert batch.metadata["sample_ids"][i] == request.sample_id
+        transactions = [r for r in rows["card_transactions"] if r["user_id"] == request.entity_id]
+        history = [r["amount"] for r in transactions if r["occurred_at"] <= request.as_of_time]
+        future = [
+            r["amount"]
+            for r in transactions
+            if request.as_of_time < r["occurred_at"] <= request.as_of_time + timedelta(days=7)
+        ]
+        assert batch.inputs["entity"][spend]["values"][i].item() == pytest.approx(sum(history))
+        assert batch.targets["future_count"]["values"][i].item() == len(future)
+        assert batch.targets["future_spend"]["values"][i].item() == pytest.approx(sum(future))
+    graph = _canonical_graph(batch.inputs["graph"])
+    selected = {key for key, _ in graph["nodes"]["card_transactions"]}
+    assert graph["edges"] == {
+        "user_accounts": sorted((r["user_id"], r["account_id"]) for r in rows["accounts"]),
+        "account_card_transactions": sorted(
+            (r["account_id"], r["card_transaction_id"])
+            for r in rows["card_transactions"]
+            if r["card_transaction_id"] in selected
+        ),
+    }
