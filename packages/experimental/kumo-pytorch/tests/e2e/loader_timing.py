@@ -6,7 +6,7 @@
 
 import os
 from collections import Counter
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import wraps
 from math import ceil
 from statistics import mean, median, pstdev
@@ -245,7 +245,13 @@ def _rates(counts, elapsed):
     }
 
 
-def measure_epoch(task, make_batches, record, observer, *, split, batch_size, event_tables=()):
+def memory_interval(memory, record, operation):
+    return memory.measure(record, operation) if memory is not None else nullcontext()
+
+
+def measure_epoch(
+    task, make_batches, record, observer, *, split, batch_size, event_tables=(), memory=None
+):
     """Count returned batches once. Terminal exhaustion contributes only to elapsed and wait."""
     install_native(observer)
     source = task._assembler._source
@@ -259,18 +265,27 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
     totals = Counter(samples=0, padded=0)
     epoch = record["epoch"]
     start = perf_counter_ns()
-    batches = make_batches(
-        task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
-    )
-    record["startup_ns"] = perf_counter_ns() - start
+    with memory_interval(memory, record, "iterator.startup"):
+        startup = perf_counter_ns()
+        batches = make_batches(
+            task, split=split, epoch=epoch, batch_size=batch_size, shuffle=False, drop_last=False
+        )
+        record["startup_ns"] = perf_counter_ns() - startup
     while True:
         previous = source.last_sampling_profile
         observer.native = []
         request = perf_counter_ns()
+        end = None
         try:
-            batch = next(batches, None)
+            with memory_interval(memory, record, "batch.request"):
+                request = perf_counter_ns()
+                try:
+                    batch = next(batches, None)
+                finally:
+                    end = perf_counter_ns()
         except Exception as error:
-            end = perf_counter_ns()
+            if end is None:  # Collection failed before the request started.
+                end = perf_counter_ns()
             failed_wait = end - request
             record.update(
                 totals,
@@ -281,7 +296,6 @@ def measure_epoch(task, make_batches, record, observer, *, split, batch_size, ev
                 elapsed_ns=end - start,
             )
             raise
-        end = perf_counter_ns()
         if batch is None:
             break
         if not requests:
