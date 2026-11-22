@@ -224,13 +224,12 @@ class _SamplerPool:
             Ray result reference for the submitted request.
 
         Raises:
-            SamplingContractError: If the request uses incompatible artifacts/RNG.
+            SamplingContractError: If the request uses incompatible RNG settings.
             SamplingUnavailableError: If closed or all actors have outstanding work.
         """
         request.validate()
         if (
-            request.artifacts != self.config.artifacts
-            or request.engine_seed != self.config.engine_seed
+            request.engine_seed != self.config.engine_seed
             or request.num_threads != self.config.num_threads
         ):
             raise SamplingContractError("request differs from sampler configuration")
@@ -362,11 +361,10 @@ class _SamplerReplica:
     def sample(self, request: BatchRequest) -> HeteroBatchPayload:
         """Sample and encode a graph before returning metadata and NumPy buffers."""
         if (
-            request.artifacts != self.config.artifacts
-            or request.engine_seed != self.config.engine_seed
+            request.engine_seed != self.config.engine_seed
             or request.num_threads != self.config.num_threads
         ):
-            raise SamplingContractError("request does not match replica artifacts/RNG")
+            raise SamplingContractError("request does not match replica RNG settings")
         request.validate()
         options = request.options
         for index, (cached_options, context) in enumerate(self.contexts):
@@ -536,7 +534,6 @@ class RayRuntimeIndex:
         ordinal = 0
         while (seeds := schedule.next_seed_ids()) is not None:
             yield BatchRequest(
-                self.config.artifacts,
                 options.epoch,
                 options.worker_id,
                 options.num_workers,

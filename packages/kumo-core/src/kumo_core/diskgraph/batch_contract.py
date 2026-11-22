@@ -33,7 +33,6 @@ class ArtifactIdentity:
 class BatchRequest:
     """An explicit logical batch; actor placement never participates in its RNG."""
 
-    artifacts: ArtifactIdentity
     epoch: int
     logical_shard: int
     logical_shard_count: int

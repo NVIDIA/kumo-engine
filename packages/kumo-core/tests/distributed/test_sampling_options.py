@@ -12,7 +12,6 @@ import pytest
 from diskgraph.sampling_options import SamplingOptions
 from diskgraph.sampling_plan import LayerSpec, SamplingPlan
 from kumo_core.diskgraph.batch_contract import (
-    ArtifactIdentity,
     BatchRequest,
     SamplingContractError,
 )
@@ -22,7 +21,6 @@ def test_request_compares_typed_options_and_rejects_wrong_plan() -> None:
     """Request identity includes structural options instead of a serialized plan digest."""
     options = SamplingOptions(stage="train", batch_size=2)
     request = BatchRequest(
-        ArtifactIdentity("snapshot", "task", "mapping"),
         0,
         0,
         1,
@@ -38,6 +36,7 @@ def test_request_compares_typed_options_and_rejects_wrong_plan() -> None:
     assert type(request.options) is SamplingOptions
     restored = pickle.loads(pickle.dumps(request))
     assert restored == request
+    assert not hasattr(restored, "artifacts")
     assert (
         replace(
             request, options=replace(options, sampling_plan=SamplingPlan([LayerSpec()]))
