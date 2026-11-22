@@ -32,6 +32,8 @@ The same worker runs the three CUDA regressions and records their JUnit results.
 Use ``l01`` with the pinned LI Medium files in ``KUMO_PYTORCH_DATA_ROOT`` to time
 two CPU loader epochs per fit. Each repetition fits in one worker and reloads
 its artifact in another. The workers share the prepared 512 anchors per split.
+``l01 --index-lifecycle`` builds one index and reopens it twice in separate
+CPU workers. Each fits fresh and runs both epochs.
 ``l01 --cuda --cgroup-parent DIR`` trains on those batches with sampled host
 memory and verified cold/warm index pages on a Linux GPU worker.
 """
@@ -241,6 +243,7 @@ def _timing_campaign(
     host_memory=None,
     cgroup_parent=None,
     cuda=False,
+    index_lifecycle=False,
 ) -> Path:
     e2e_dir.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=e2e_dir.resolve()))
@@ -251,6 +254,7 @@ def _timing_campaign(
     env = {**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"}
     env.pop("KUMO_PYTORCH_HOST_MEMORY", None)
     env.pop("KUMO_PYTORCH_L01_CUDA", None)
+    env.pop("KUMO_PYTORCH_L01_INDEX_ACTION", None)
     if cuda:
         env["KUMO_PYTORCH_L01_CUDA"] = "1"
     modes = ("",)
@@ -262,7 +266,7 @@ def _timing_campaign(
         started = time.perf_counter_ns()
         prepare_l01_benchmark(Path(env["KUMO_PYTORCH_DATA_ROOT"]), prepared)
         setup = {"shared_population_prepare_ns": time.perf_counter_ns() - started}
-        modes = ("fresh", "reloaded")
+        modes = ("fresh",) if index_lifecycle else ("fresh", "reloaded")
     if host_memory:
         from tests.e2e.memory_worker import run_isolated, worker_identity
 
@@ -276,6 +280,8 @@ def _timing_campaign(
                     os.chown(path, -1, gid)
                     path.chmod(0o750 if path.is_dir() else 0o640)
     for index, mode in product(range(repetitions), modes):
+        if index_lifecycle:
+            env["KUMO_PYTORCH_L01_INDEX_ACTION"] = "build" if index == 0 else "reopen"
         work = root / str(index) / mode
         node = f"{case}[{mode}]" if mode else case
         command = [sys.executable, "-m", "pytest", "-q", node, "--e2e-dir", str(work)]
@@ -306,6 +312,8 @@ def _timing_campaign(
         result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
         evidence = {"pair": index, "fit": mode} if mode else {}
+        if index_lifecycle:
+            evidence = {"index_action": env["KUMO_PYTORCH_L01_INDEX_ACTION"], "fit": mode}
         if workload == "cuda" or cuda:
             evidence["junit"] = str(junit.relative_to(root))
             if error := _cuda_junit_error(junit, expected_cases):
@@ -398,7 +406,9 @@ def main(argv: list[str] | None = None) -> None:
     if argv and argv[0] in TIMING_CASES:
         parser.add_argument("--repetitions", type=int, default=3)
         if argv[0] == "l01":
-            parser.add_argument("--cuda", action="store_true")
+            group = parser.add_mutually_exclusive_group()
+            group.add_argument("--cuda", action="store_true")
+            group.add_argument("--index-lifecycle", action="store_true")
         if argv[0] in ("loader", "l01"):
             parser.add_argument(
                 "--cgroup-parent", type=Path, help="delegated Linux cgroup v2 parent"
@@ -414,6 +424,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.repetitions < 1:
             parser.error("--repetitions must be positive")
         options = vars(args)
+        if options.get("index_lifecycle") and args.repetitions != 3:
+            parser.error("--index-lifecycle requires three workers (one build and two reopens)")
         if options.get("cuda"):
             options.update(host_memory="sampled", cold_warm_cache=True)
         if bool(options.get("host_memory")) != bool(options.get("cgroup_parent")):

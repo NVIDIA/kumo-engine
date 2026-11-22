@@ -429,9 +429,12 @@ def _source_counts(spec, root, cutoff, history):
 @pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_L01") != "1", reason="run the l01 benchmark")
 @pytest.mark.parametrize("mode", ["fresh", "reloaded"])
 def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
+    import diskgraph
+
+    from kumo.pytorch.engines import diskgraph as backend
     from tests.e2e.file_cache import IndexPageCache
     from tests.e2e.host_memory import memory_interval
-    from tests.e2e.loader_timing import parquet_metadata
+    from tests.e2e.loader_timing import parquet_metadata, stage_observer
     from tests.e2e.runs import L01_BATCHING, time_loader
 
     work = request.config.getoption("--e2e-dir")
@@ -467,7 +470,14 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
 
         make_step = make_l01_step
         assert os.environ["KUMO_PYTORCH_HOST_MEMORY"] == "sampled"
-    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=4, profile=True)
+    action = os.getenv("KUMO_PYTORCH_L01_INDEX_ACTION")
+    index = (prepared.parent if action else tmp_path) / "index"
+    engine = api.DiskGraphEngine(
+        index=index,
+        ingest="never" if action == "reopen" else "if_missing",
+        num_threads=4,
+        profile=True,
+    )
     setup = {
         "pid": os.getpid(),
         "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
@@ -476,8 +486,23 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         "split_counts": splits,
     }
     with ExitStack() as stack:
-        with memory_interval(setup, "index.prepare"):
+        with memory_interval(setup, "index.prepare"), stage_observer() as observer:
+            if action:
+                observer.wrap(backend, "ensure_diskgraph_index", "index.ensure")
+                observer.wrap(diskgraph, "ingest", "index.ingest")
             plan = stack.enter_context(api.prepare(spec, data, engine))
+        if action:
+            assert observer.stages["index.ensure"]["calls"] == 1
+            ingests = observer.stages.get("index.ingest", {}).get("calls", 0)
+            assert ingests == int(action == "build"), (
+                f"expected {action}, observed {ingests} ingests"
+            )
+            setup.update(
+                index_path=str(index),
+                index_action=action,
+                index_ingests=ingests,
+                index_ensure_ns=observer.stages["index.ensure"]["elapsed_ns"],
+            )
         fit = time_loader(
             plan,
             table,
@@ -486,7 +511,7 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
             setup=setup,
             modes=(mode,),
             artifact=fresh / "artifact",
-            cache=IndexPageCache(tmp_path / "index") if cuda else None,
+            cache=IndexPageCache(index) if cuda else None,
             make_step=make_step,
             event_tables=("transactions",),
             **L01_BATCHING,
