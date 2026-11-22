@@ -4,7 +4,7 @@
 """Completion-order, credit ownership, and cancellation at the Ray boundary."""
 
 from collections.abc import Generator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Condition, Event, Thread
 from types import SimpleNamespace
 from typing import cast
@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 from diskgraph.sampling_options import SamplingOptions
+from diskgraph.sampling_plan import SamplingPlan
 from kumo_core.diskgraph import ray_sampling, remote_loader
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
@@ -20,8 +21,12 @@ from kumo_core.diskgraph.batch_contract import (
     HeteroBatchPayload,
 )
 from kumo_core.diskgraph.hetero_wire import pack_python_hetero
+from kumo_core.diskgraph.lightning_data import (
+    DiskgraphTaskBatchIterable,
+    RemoteDataLoader,
+    _ShuffleStreamState,
+)
 from kumo_core.diskgraph.ray_sampling import RayBackendConfig, RayConnection
-from kumo_core.diskgraph.remote_loader import RemoteDataLoader
 from torch_frame import TensorFrame
 from torch_geometric.data import HeteroData
 
@@ -34,10 +39,22 @@ class _Ref:
     ordinal: int = -1
 
 
-@dataclass
-class _Source:
-    count: int = 8
-    finalized: Event = field(default_factory=Event)
+class _Source(DiskgraphTaskBatchIterable):
+    def __init__(self, config: RayBackendConfig, count: int = 8) -> None:
+        super().__init__(
+            manifest_path="unused",
+            stage="train",
+            sampling_plan=SamplingPlan(),
+            batch_size=1,
+            shuffle=False,
+            drop_last=False,
+            base_seed=42,
+            shuffle_state=_ShuffleStreamState(),
+            num_seeds=count,
+            sampling_backend=config,
+        )
+        self.count = count
+        self.finalized = Event()
 
     def __len__(self) -> int:
         return self.count
@@ -136,12 +153,12 @@ def test_completion_order_and_refill_without_another_next(
 ) -> None:
     """Bound all stages by actor count and overlap sampling with model work."""
     transport = _Transport(monkeypatch)
-    source = _Source()
+    source = _Source(transport.config)
     encoder = Mock(side_effect=AssertionError("trainer must not encode"))
     monkeypatch.setattr(
         "kumo_core.diskgraph.runtime_adapter.runtime_batch_to_hetero", encoder
     )
-    with RemoteDataLoader(source, transport.config) as loader:
+    with RemoteDataLoader(source) as loader:
         iterator = iter(loader)
         with transport.changed:
             assert transport.changed.wait_for(
@@ -178,7 +195,7 @@ def test_reconstruction_retains_credit_until_delivery(
         return unpack(*cast(HeteroBatchPayload, payload))
 
     monkeypatch.setattr(remote_loader, "unpack_python_hetero", blocked_unpack)
-    with RemoteDataLoader(_Source(), transport.config) as loader:
+    with RemoteDataLoader(_Source(transport.config)) as loader:
         iterator = iter(loader)
         results: list[HeteroData] = []
         consumer = Thread(target=lambda: results.append(next(iterator)))
@@ -200,8 +217,8 @@ def test_close_wakes_consumer_and_drains_before_epoch_replacement(
     """Drain outstanding serial calls before a new epoch can reuse its actors."""
     transport = _Transport(monkeypatch)
     transport.pause = True
-    source = _Source()
-    with RemoteDataLoader(source, transport.config) as loader:
+    source = _Source(transport.config)
+    with RemoteDataLoader(source) as loader:
         iterator = iter(loader)
         transport.await_submitted(3)
         stopped = Event()
@@ -218,7 +235,7 @@ def test_close_wakes_consumer_and_drains_before_epoch_replacement(
         assert len(transport.cancelled) >= 3
         assert transport.drain.call_count == 3
         assert source.finalized.is_set()
-        active = loader._remote_dataset.active
+        active = loader._batch_dataset._remote_iterator
         assert active is not None
         assert not active._dispatcher.is_alive()
         # Starting another iterator must also close an abandoned previous epoch.
@@ -233,7 +250,7 @@ def test_failures_propagate_and_stop_receiver(
 ) -> None:
     """Forward errors to the trainer and release all owned actor requests."""
     transport = _Transport(monkeypatch)
-    source = _Source()
+    source = _Source(transport.config)
     error = ValueError(f"{where} failed")
     if where == "receive":
         transport.failure = error
@@ -248,10 +265,10 @@ def test_failures_propagate_and_stop_receiver(
             raise error
 
         monkeypatch.setattr(source, "iter_requests", fail_schedule)
-    with RemoteDataLoader(source, transport.config) as loader:
+    with RemoteDataLoader(source) as loader:
         with pytest.raises(ValueError, match=f"{where} failed"):
             next(iter(loader))
-        active = loader._remote_dataset.active
+        active = loader._batch_dataset._remote_iterator
         assert active is not None
         assert not active._dispatcher.is_alive()
 
@@ -261,10 +278,10 @@ def test_empty_epoch_and_abandoned_iterator(
 ) -> None:
     """Support empty ranks and close an unconsumed iterator on epoch reset."""
     transport = _Transport(monkeypatch)
-    with RemoteDataLoader(_Source(0), transport.config) as loader:
+    with RemoteDataLoader(_Source(transport.config, 0)) as loader:
         assert list(loader) == []
     transport.pause = True
-    with RemoteDataLoader(_Source(), transport.config) as loader:
+    with RemoteDataLoader(_Source(transport.config)) as loader:
         first = iter(loader)
         transport.await_submitted(3)
         second = iter(loader)
@@ -277,7 +294,7 @@ def test_drain_timeout_can_be_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed drain retains ownership until a subsequent close succeeds."""
     transport = _Transport(monkeypatch)
     transport.pause = True
-    loader = RemoteDataLoader(_Source(), transport.config)
+    loader = RemoteDataLoader(_Source(transport.config))
     iter(loader)
     transport.await_submitted(3)
     transport.drain.side_effect = TimeoutError("drain timed out")
@@ -311,10 +328,60 @@ def test_confirmed_transport_loss_retries_same_request(
 
     monkeypatch.setattr(_Transport, "get", lose_once)
     transport = _Transport(monkeypatch)
-    with RemoteDataLoader(_Source(), transport.config) as loader:
+    with RemoteDataLoader(_Source(transport.config)) as loader:
         received = list(loader)
     assert sorted(int(batch["nodes"].n_id.item()) for batch in received) == list(
         range(8)
     )
     assert len(transport.submitted) == 9
     assert sum(request.batch_ordinal == lost[0] for request in transport.submitted) == 2
+
+
+def test_task_dataset_owns_direct_remote_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct dataset users receive graphs and cannot pickle a live receiver."""
+    transport = _Transport(monkeypatch)
+    source = _Source(transport.config)
+    try:
+        first = iter(source)
+        assert isinstance(next(first), HeteroData)
+        previous = source._remote_iterator
+        assert previous is not None
+        source.__dict__["_runtime_index_handle"] = object()
+        state = source.__getstate__()
+        assert state["_remote_iterator"] is None
+        assert "_runtime_index_handle" not in state
+        # Replacing the dataset iterator drains its previous receiver directly.
+        second = iter(source)
+        assert previous.closed
+        assert not previous._dispatcher.is_alive()
+        assert next(first, None) is None
+        assert len(list(second)) == len(source)
+    finally:
+        source.close()
+
+
+def test_remote_dataset_rejects_subprocess_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject a forked remote dataset before it can connect or submit requests."""
+    transport = _Transport(monkeypatch)
+    source = _Source(transport.config)
+    monkeypatch.setattr(
+        "kumo_core.diskgraph.lightning_data.get_worker_info", lambda: object()
+    )
+    with pytest.raises(ValueError, match="in-process DataLoader"):
+        iter(source)
+    assert not transport.submitted
+
+
+def test_remote_loader_requires_a_remote_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent an unencoded local schedule from entering the remote-only loader."""
+    transport = _Transport(monkeypatch)
+    source = _Source(transport.config)
+    source.sampling_backend = None
+    with pytest.raises(ValueError, match="remote sampling backend"):
+        RemoteDataLoader(source)

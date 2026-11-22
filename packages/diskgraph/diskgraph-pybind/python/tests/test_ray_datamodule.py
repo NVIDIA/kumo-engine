@@ -8,6 +8,8 @@ from collections.abc import Iterator
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
+from unittest.mock import patch
 
 import pytest
 from test_runtime_batch_iterator_e2e import (
@@ -23,7 +25,11 @@ import ray
 import torch
 from diskgraph import RuntimeIndex, SamplingOptions
 from kumo_core.diskgraph.batch_contract import BatchRequest, SamplingContractError
-from kumo_core.diskgraph.lightning_data import DiskgraphLightningDataModule
+from kumo_core.diskgraph.lightning_data import (
+    DiskgraphLightningDataModule,
+    DiskgraphTaskBatchIterable,
+    RemoteDataLoader,
+)
 from kumo_core.diskgraph.ray_sampling import (
     ArtifactIdentity,
     RayBackendConfig,
@@ -34,7 +40,6 @@ from kumo_core.diskgraph.ray_sampling import (
     start_sampling_replicas,
     stop_sampling_replicas,
 )
-from kumo_core.diskgraph.remote_loader import RemoteDataLoader
 from kumo_core.encoders.tensor_mapper import NumericalTensorMapper
 from kumo_core.task_dataset import DiskgraphTaskManifest
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
@@ -148,7 +153,8 @@ def test_remote_training_batches_match_local_and_evaluation_stays_local(
     loader = module.train_dataloader()
     assert isinstance(loader, RemoteDataLoader)
     assert loader.num_workers == 0
-    source = loader._remote_dataset.source
+    source = cast(DiskgraphTaskBatchIterable, loader.dataset)
+    assert source is loader._batch_dataset
     requests = list(source.iter_requests())
     assert len(requests) == len(loader) > 0
     index = RuntimeIndex(
@@ -160,7 +166,12 @@ def test_remote_training_batches_match_local_and_evaluation_stays_local(
         tuple(request.seed_ids): encoder(context.sample_request(list(request.seed_ids)))
         for request in requests
     }
-    received = list(loader)
+    with patch(
+        "kumo_core.diskgraph.lightning_data.runtime_batch_to_hetero",
+        side_effect=AssertionError("remote batches must not be re-encoded"),
+    ) as trainer_encode:
+        received = list(loader)
+    trainer_encode.assert_not_called()
     assert len(received) == len(references)
     for actual in received:
         key = tuple(actual["users"].input_id.tolist())
@@ -256,5 +267,5 @@ def test_lightning_fit_restarts_remote_epochs_and_drains_on_limit(
     assert model.validation_batches == 2
     assert remote_module.active_dataloader_worker_pids == ()
     for loader in remote_module._remote_loaders:
-        active = loader._remote_dataset.active
+        active = loader._batch_dataset._remote_iterator
         assert active is None or (active.closed and not active._dispatcher.is_alive())

@@ -71,8 +71,17 @@ before constructing a training iterator, or supply it to the constructor. Engine
 seed and DataModule base seed must match. Actor CPU/thread settings belong to
 the backend and need not equal the trainer's local evaluation thread settings.
 
-The train loader becomes `RemoteDataLoader`, with `num_workers=0` regardless of
-the local worker setting. One receiver thread issues requests and uses
+`DiskgraphTaskBatchIterable` is the common dataset for both paths: its iterator
+returns local `RuntimeBatch` values or already encoded remote `HeteroData` values.
+The shared DataModule collator encodes native batches and passes encoded graphs
+through unchanged. The dataset owns its remote iterator and closes the previous
+receiver before starting another epoch; no separate remote dataset wrapper is
+needed.
+
+The train loader becomes `RemoteDataLoader` from `lightning_data`, with
+`num_workers=0` regardless of the local worker setting. This thin loader uses the
+same dataset/collator and delegates remote shutdown to the dataset. One receiver
+thread issues requests and uses
 `ray.wait(..., num_returns=1)` to receive whichever actor finishes first. The
 trainer main thread reconstructs `HeteroData` using NumPy-backed tensors; it does
 not encode columns or send tensors through a multiprocessing queue. Ordinary

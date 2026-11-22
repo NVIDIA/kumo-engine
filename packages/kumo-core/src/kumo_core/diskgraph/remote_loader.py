@@ -10,10 +10,8 @@ from collections import deque
 from collections.abc import Generator, Iterator
 from queue import Empty, Queue
 from threading import Event, Lock, Semaphore, Thread
-from typing import Protocol, Self
 
 from diskgraph import DiskgraphConfigError
-from torch.utils.data import DataLoader, IterableDataset
 from torch_geometric.data import HeteroData
 
 from kumo_core.diskgraph.batch_contract import BatchRequest, HeteroBatchPayload
@@ -27,22 +25,12 @@ from kumo_core.diskgraph.ray_sampling import (
 logger = logging.getLogger(__name__)
 
 
-class RequestSource(Protocol):
-    """Trainer-owned epoch schedule without sampling or column encoding."""
-
-    def iter_requests(self) -> Generator[BatchRequest, None, None]:
-        """Return this epoch's logical requests; closing releases its schedule."""
-        ...
-
-    def __len__(self) -> int:
-        """Return the number of batches in this rank's epoch."""
-        ...
-
-
 class _RemoteIterator(Iterator[HeteroData]):
-    def __init__(self, source: RequestSource, config: RayBackendConfig) -> None:
+    def __init__(
+        self, requests: Generator[BatchRequest, None, None], config: RayBackendConfig
+    ) -> None:
         self.samplers = _SamplerPool(config)
-        self.requests = source.iter_requests()
+        self.requests = requests
         self.depth = len(self.samplers.replicas)
         self._credits = Semaphore(self.depth)
         self._credit_available = Event()
@@ -206,74 +194,3 @@ class _RemoteIterator(Iterator[HeteroData]):
                     except Empty:
                         break
             self._close_complete = True
-
-
-class _RemoteDataset(IterableDataset[HeteroData]):
-    def __init__(self, source: RequestSource, config: RayBackendConfig) -> None:
-        self.source = source
-        self.config = config
-        self.active: _RemoteIterator | None = None
-
-    def __iter__(self) -> _RemoteIterator:
-        if self.active is not None:
-            self.active.close()
-        self.active = _RemoteIterator(self.source, self.config)
-        return self.active
-
-    def __len__(self) -> int:
-        return len(self.source)
-
-
-class RemoteDataLoader(DataLoader[HeteroData]):
-    """Receive actor-encoded graphs without trainer worker subprocesses.
-
-    One slot per actor covers pending RPCs, received buffers, and reconstruction
-    until the graph is handed to DataLoader. A receiver thread immediately refills
-    released slots independently of model computation. Results use completion
-    order, so actor timing can change optimizer batch order.
-
-    Args:
-        dataset: Epoch schedule shared with local DiskGraph training.
-        config: Exclusively owned sampler pool and its connection settings.
-        phase: Lifecycle name used by the DataModule shutdown barrier.
-        pin_memory: Pin reconstructed CPU tensors using ordinary DataLoader logic.
-    """
-
-    def __init__(
-        self,
-        dataset: RequestSource,
-        config: RayBackendConfig,
-        *,
-        phase: str = "train",
-        pin_memory: bool = False,
-    ) -> None:
-        self.phase = phase
-        self._remote_dataset = _RemoteDataset(dataset, config)
-        super().__init__(
-            self._remote_dataset,
-            batch_size=None,
-            num_workers=0,
-            pin_memory=pin_memory,
-        )
-        self.in_order = False
-
-    def close(self) -> None:
-        """Cancel and drain active requests, including after early termination.
-
-        Raises:
-            RuntimeError: If outstanding remote work cannot drain before its deadline.
-        """
-        if self._remote_dataset.active is not None:
-            self._remote_dataset.active.close()
-
-    def __enter__(self) -> Self:
-        """Return a loader whose requests will be drained on context exit."""
-        return self
-
-    def __exit__(self, *_exc: object) -> None:
-        """Close the loader on normal exit or an exception.
-
-        Args:
-            *_exc: Context manager exception information.
-        """
-        self.close()
