@@ -14,7 +14,6 @@ from diskgraph.sampling_plan import LayerSpec, SamplingPlan
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
     BatchRequest,
-    ConsumerToken,
     SamplingContractError,
 )
 
@@ -24,7 +23,6 @@ def test_request_compares_typed_options_and_rejects_wrong_plan() -> None:
     options = SamplingOptions(stage="train", batch_size=2)
     request = BatchRequest(
         ArtifactIdentity("snapshot", "task", "mapping"),
-        ConsumerToken("job", 0, "train", 0),
         0,
         0,
         1,
@@ -35,6 +33,7 @@ def test_request_compares_typed_options_and_rejects_wrong_plan() -> None:
         1,
     )
     request.validate()
+    assert not hasattr(request, "consumer")
     assert request.options is options
     assert type(request.options) is SamplingOptions
     restored = pickle.loads(pickle.dumps(request))

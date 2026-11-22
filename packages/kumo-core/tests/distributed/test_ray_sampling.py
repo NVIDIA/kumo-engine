@@ -27,7 +27,6 @@ from kumo_core.diskgraph.batch_contract import (
     WIRE_VERSION,
     ArtifactIdentity,
     BatchRequest,
-    ConsumerToken,
     HeteroBatchPayload,
     SamplingContractError,
 )
@@ -55,7 +54,6 @@ pytest.importorskip("ray", reason="Install kumo-core[ray] for backend tests")
 def _request() -> BatchRequest:
     return BatchRequest(
         ArtifactIdentity("snapshot", "task", "mapping"),
-        ConsumerToken("job", 0, "optimization", 0),
         3,
         0,
         1,
@@ -257,7 +255,6 @@ def test_backend_descriptor_delays_actor_handle_deserialization(
         _request().artifacts,
         42,
         2,
-        "job",
     )
     assert isinstance(config.replicas, bytes)
     child = """
@@ -267,7 +264,7 @@ import sys
 assert not ray.is_initialized()
 config, request = ray.cloudpickle.loads(sys.stdin.buffer.read())
 assert not ray.is_initialized()
-client = RayRuntimeIndex('metadata-only.json', config, request.consumer)
+client = RayRuntimeIndex('metadata-only.json', config)
 batch = client._sample(request)
 assert batch["nodes"].n_id.tolist() == [9, 14]
 ray.shutdown()
@@ -316,7 +313,6 @@ def test_request_lookahead_does_not_start_sampling(
     client.config.artifacts = _request().artifacts
     client.config.engine_seed = 42
     client.config.num_threads = 2
-    client.consumer = _request().consumer
     schedule = MagicMock()
     schedule.next_seed_ids.side_effect = [[9, 14], [17], None]
     with (
@@ -457,7 +453,6 @@ def _backend(
         _request().artifacts,
         42,
         2,
-        "job",
         request_timeout=request_timeout,
     )
 
@@ -502,9 +497,7 @@ def test_real_actor_death_retries_on_survivor(ray_cluster: ModuleType) -> None:
         ray.remote(_FailingReplica).options(max_restarts=0, max_task_retries=0).remote()
     )
     replicas = failed, survivor
-    client = RayRuntimeIndex(
-        "metadata-only.json", _backend(replicas), _request().consumer
-    )
+    client = RayRuntimeIndex("metadata-only.json", _backend(replicas))
     try:
         batch = client._sample(_request())
         assert batch["nodes"].n_id.tolist() == [9, 14]
@@ -523,7 +516,7 @@ def test_direct_call_has_no_control_rpcs() -> None:
     ray.cloudpickle.loads.return_value = (actor,)
     ray.get.return_value = _payload(_request())
     config = RayBackendConfig(
-        RayConnection("unused", "unused"), b"actors", _request().artifacts, 42, 2, "job"
+        RayConnection("unused", "unused"), b"actors", _request().artifacts, 42, 2
     )
     with patch("kumo_core.diskgraph.ray_sampling._ray", return_value=ray):
         pool = _SamplerPool(config)

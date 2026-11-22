@@ -39,7 +39,7 @@ def remote_index(
 ) -> Iterator[RayRuntimeIndex]:
     """Open two native samplers on a local Ray cluster; close only owned actors."""
     backend = pytest.importorskip("kumo_core.diskgraph.ray_sampling")
-    from kumo_core.diskgraph.batch_contract import ArtifactIdentity, ConsumerToken
+    from kumo_core.diskgraph.batch_contract import ArtifactIdentity
 
     ray = pytest.importorskip("ray")
     from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
@@ -78,11 +78,8 @@ def remote_index(
                 artifacts,
                 42,
                 1,
-                "native-test",
             )
-            yield backend.RayRuntimeIndex(
-                manifest, config, ConsumerToken("native-test", 0, "train", 0)
-            )
+            yield backend.RayRuntimeIndex(manifest, config)
         finally:
             backend.stop_sampling_replicas(actors)
     finally:
