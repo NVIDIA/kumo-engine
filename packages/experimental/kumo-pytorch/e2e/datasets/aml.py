@@ -4,6 +4,7 @@
 
 """Native histories and targets for AML v8 account-daily anchors."""
 
+import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -241,10 +242,13 @@ def prepare_hi_small(
     files: Mapping[str, Path], directory: Path, *, anchor_rows: Sequence[int], binding="E01"
 ):
     """Prepare HI Small graph, combined, masked, next-token or involvement inputs."""
+    return _prepare_aml(files, directory, anchor_rows, _hi_targets(binding), binding)
+
+
+def _hi_targets(binding):
     if binding not in {"E01", "E02", "E03", "E04", "E05"}:
         raise ValueError(f"Unknown HI Small binding: {binding}")
-    targets = {} if binding in {"E03", "E04"} else {"label": ("involvement", "float32", api.Raw())}
-    return _prepare_aml(files, directory, anchor_rows, targets, binding)
+    return {} if binding in {"E03", "E04"} else {"label": ("involvement", "float32", api.Raw())}
 
 
 prepare_e01 = prepare_hi_small
@@ -314,6 +318,37 @@ def l01_loss(batch, amount_prediction, currency_logits):
     return loss, sums, counts
 
 
+def _accounts(files):
+    mapping = pq.read_table(files["mapping"], columns=["entity_id", "first_observed_time"])
+    mapping = mapping.sort_by("entity_id")
+    return mapping, {key: i for i, key in enumerate(mapping["entity_id"].to_pylist())}
+
+
+def _write_source_tables(files, directory, mapping, account_ids, roots, *, history):
+    ids, fanout = _write_transactions(
+        files["transactions"], directory / "transactions.parquet", roots, account_ids
+    )
+    if history:
+        _write_account_events(directory)
+    mapping = mapping.take(ids)
+    accounts = pa.table(
+        {
+            "account_id": ids,
+            "entity_id": mapping["entity_id"],
+            "first_observed_time": mapping["first_observed_time"].cast(_CLOCK),
+        }
+    )
+    pq.write_table(accounts, directory / "accounts.parquet")
+    return fanout
+
+
+def _binding_contract(fanout, binding, targets, graph_clock):
+    contract = _contract(fanout, targets)
+    if binding not in {"E01", "L03"}:
+        contract = _history_contract(contract, fanout, binding, graph_clock)
+    return contract
+
+
 def _prepare_aml(files, directory, anchor_rows, targets, binding):
     """Write a bounded native view for verified input files into a fresh directory.
 
@@ -322,9 +357,7 @@ def _prepare_aml(files, directory, anchor_rows, targets, binding):
     """
     if directory.exists():
         raise FileExistsError(directory)
-    mapping = pq.read_table(files["mapping"], columns=["entity_id", "first_observed_time"])
-    mapping = mapping.sort_by("entity_id")
-    account_ids = {key: i for i, key in enumerate(mapping["entity_id"].to_pylist())}
+    mapping, account_ids = _accounts(files)
     graph_clock = binding in {"E01", "E02", "L01", "L03"}
     selection, roots = _select_anchors(
         files["anchors"], anchor_rows, account_ids, targets, graph_clock
@@ -332,22 +365,62 @@ def _prepare_aml(files, directory, anchor_rows, targets, binding):
     directory.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(dir=directory.parent) as tmp:
         work = Path(tmp)
-        ids, fanout = _write_transactions(
-            files["transactions"], work / "transactions.parquet", roots, account_ids
+        fanout = _write_source_tables(
+            files, work, mapping, account_ids, roots, history=binding not in {"E01", "L03"}
         )
-        contract = _contract(fanout, targets)
-        if binding not in {"E01", "L03"}:
-            _write_account_events(work)
-            contract = _history_contract(contract, fanout, binding, graph_clock)
-        mapping = mapping.take(ids)
-        accounts = pa.table(
-            {
-                "account_id": ids,
-                "entity_id": mapping["entity_id"],
-                "first_observed_time": mapping["first_observed_time"].cast(_CLOCK),
-            }
-        )
-        pq.write_table(accounts, work / "accounts.parquet")
+        contract = _binding_contract(fanout, binding, targets, graph_clock)
         pq.write_table(selection, work / "anchors.parquet")
         work.rename(directory)
     return bind_tables(directory, contract, "entity_id", targets)
+
+
+def prepare_hi_small_benchmark(source_root, directory):
+    """Prepare the full HI Small tables once and two nested training populations per binding."""
+    files = verify(source_root, E01_MANIFEST)
+    mapping, account_ids = _accounts(files)
+    directory.mkdir(parents=True)
+    fanout = _write_source_tables(files, directory, mapping, account_ids, account_ids, history=True)
+
+    def digest(path):
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+
+    identity = {
+        "source_manifest_sha256": digest(E01_MANIFEST),
+        "tables": {p.stem: digest(p) for p in directory.glob("*.parquet")},
+        "bindings": {},
+    }
+    for binding in ("E01", "E02", "E03", "E04", "E05"):
+        targets = _hi_targets(binding)
+        graph_clock = binding in {"E01", "E02"}
+        spec = _binding_contract(fanout, binding, targets, graph_clock)
+        spec, _, _ = bind_tables(directory, spec, "entity_id", targets)
+        contract_path = directory / f"{binding}.json"
+        contract_path.write_text(spec.to_json())
+        split = "forecast_split" if targets else "split"
+        splits = pq.read_table(files["anchors"], columns=[split])[split]
+        positions = pc.indices_nonzero(pc.equal(splits, "train")).slice(0, 400_000)
+        rows, _ = _select_anchors(
+            files["anchors"], positions.to_pylist(), account_ids, targets, graph_clock
+        )
+        if len(rows) != 400_000 or pc.count_distinct(rows["sample_id"]).as_py() != len(rows):
+            raise ValueError(f"{binding} needs 400,000 distinct training anchors")
+        hashes = {}
+        for count in (25_000, 400_000):
+            path = directory / f"{binding}-{count}.parquet"
+            pq.write_table(rows.slice(0, count), path)
+            hashes[str(count)] = digest(path)
+        small = pq.read_table(directory / f"{binding}-25000.parquet")
+        if not small.equals(ds.dataset(directory / f"{binding}-400000.parquet").head(25_000)):
+            raise ValueError(f"{binding} 25k anchors differ from the 400k prefix")
+        prefix = hashlib.sha256()
+        for sid in small["sample_id"].to_pylist():
+            prefix.update(json.dumps(sid, ensure_ascii=False).encode() + b"\n")
+        identity["bindings"][binding] = {
+            "encoder_cutoff_seconds": pc.max(rows["prediction_time_ns"]).as_py() // 10**9 - 1,
+            "contract_sha256": digest(contract_path),
+            "anchors_sha256": hashes,
+            "prefix_sha256": prefix.hexdigest(),
+        }
+    (directory / "identity.json").write_text(json.dumps(identity) + "\n")
+    return identity

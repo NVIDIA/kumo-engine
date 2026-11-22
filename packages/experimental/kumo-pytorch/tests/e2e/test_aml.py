@@ -426,6 +426,78 @@ def _source_counts(spec, root, cutoff, history):
     return counts
 
 
+@pytest.mark.skipif(
+    os.getenv("KUMO_PYTORCH_PROFILE_HI_SMALL") != "1", reason="run the HI Small benchmark"
+)
+def test_hi_small_fitting_memory(request):
+    from e2e.datasets.aml import prepare_hi_small_benchmark
+    from tests.e2e.host_memory import memory_interval
+    from tests.e2e.loader_timing import parquet_metadata
+
+    work = request.config.getoption("--e2e-dir")
+    work.mkdir(parents=True, exist_ok=True)
+    binding = work.parents[1].name
+    prepared = work.parents[2] / "prepared"
+    index = work.parent / "index"
+    build = work.name == "index-setup"
+    if build and not prepared.exists():
+        prepare_hi_small_benchmark(Path(os.environ["KUMO_PYTORCH_DATA_ROOT"]), prepared)
+    identity = json.loads((prepared / "identity.json").read_text())
+    info = identity["bindings"][binding]
+    spec_file = (prepared / f"{binding}.json").read_bytes()
+    assert hashlib.sha256(spec_file).hexdigest() == info["contract_sha256"]
+    spec = api.DataLoaderSpec.from_json(spec_file.decode())
+    _, dataset, anchors = bind_tables(prepared, spec, "entity_id", spec.sample.targets)
+    torch.set_num_threads(1)
+    assert index.exists() == (not build), f"unexpected index state for {work.name}: {index}"
+    engine = api.DiskGraphEngine(
+        index=index, ingest="if_missing" if build else "never", num_threads=1
+    )
+    with api.prepare(spec, dataset, engine) as plan:
+        report = {
+            "binding": binding,
+            "pid": os.getpid(),
+            "prefix_sha256": info["prefix_sha256"],
+            "contract": plan.contract.fingerprint,
+            "source_sha256": json.loads((index / "index_manifest.json").read_text())[
+                "dataset_fingerprint"
+            ],
+            "encoder_cutoff": info["encoder_cutoff_seconds"],
+        }
+        output = work / "results.json"
+        request.addfinalizer(lambda: output.write_text(json.dumps(report) + "\n"))
+        if build:
+            return
+        count = int(work.name)
+        path = prepared / f"{binding}-{count}.parquet"
+        metadata = parquet_metadata(path)
+        assert (metadata["rows"], metadata["sha256"]) == (count, info["anchors_sha256"][work.name])
+        anchors = replace(anchors, source=api.Parquet(str(path)))
+        assert os.environ["KUMO_PYTORCH_HOST_MEMORY"] in ("kernel", "sampled")
+        with ExitStack() as stack:
+            with memory_interval(report, "materialization", sample_interval_ns=50_000_000):
+                task = stack.enter_context(
+                    plan.materialize(
+                        anchors, fit_split="train", encoder_cutoff=report["encoder_cutoff"]
+                    )
+                )
+            assert task.count() == task.count("train") == count
+            for half in ("inputs", "targets"):
+                fit = task.fitted_state.fit[half]
+                assert (
+                    fit["fit_split"] == ["train"] and fit["anchors"] == task.fingerprints["anchors"]
+                )
+            statistics = task.fitted_state.fit["inputs"].get("statistics")
+            if statistics:
+                assert statistics["cutoff"] == report["encoder_cutoff"] * 10**9
+            report.update(
+                anchors=count,
+                anchor_sha256=metadata["sha256"],
+                fitted_state=task.fitted_state.fingerprint,
+            )
+        assert report["host_memory"]["complete"]
+
+
 @pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_L01") != "1", reason="run the l01 benchmark")
 @pytest.mark.parametrize("mode", ["fresh", "reloaded"])
 def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):

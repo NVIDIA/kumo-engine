@@ -38,6 +38,8 @@ CPU workers. Each fits fresh and runs both epochs.
 checks native cache reuse on uncontrolled file pages.
 ``l01 --cuda --cgroup-parent DIR`` trains on those batches with sampled host
 memory and verified cold/warm index pages on a Linux GPU worker.
+Use ``hi-small --host-memory sampled --cgroup-parent DIR`` to compare fresh fits
+on 25k and 400k train anchors for all five HI Small bindings (three pairs each).
 """
 
 from __future__ import annotations
@@ -68,6 +70,7 @@ MARKER = "run.json"
 TIMING_CASES = {
     "loader": "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing",
     "l01": "tests/e2e/test_aml.py::test_li_medium_l01_loader",
+    "hi-small": "tests/e2e/test_aml.py::test_hi_small_fitting_memory",
     "cuda": "tests/test_native_anchor_handoff.py::test_native_cuda_epochs",
     "banking": "tests/test_diskgraph_backend.py::"
     "test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible",
@@ -247,6 +250,126 @@ def _cuda_junit_error(path, expected):
     return None
 
 
+def _revision():
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True
+        ).strip()
+        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPOSITORY)
+    except (OSError, subprocess.CalledProcessError):
+        return {"revision": None, "tracked_diff_sha256": None}
+    return {
+        "revision": revision,
+        "tracked_diff_sha256": hashlib.sha256(diff).hexdigest() if diff else None,
+    }
+
+
+def _versions():
+    return {
+        d.name: d.version
+        for d in distributions()
+        if d.name in ("torch", "pyarrow", "diskgraph", "torch-geometric")
+    }
+
+
+def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
+    from e2e.datasets.aml import E01_MANIFEST
+    from tests.e2e.memory_worker import run_isolated, worker_identity
+
+    e2e_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="hi-small-", dir=e2e_dir.resolve()))
+    report = root / "timings.json"
+    output = report.open("x")
+    cleanup_user = {}
+    if os.geteuid() == 0:
+        uid, gid = worker_identity()
+        os.fchown(output.fileno(), uid, gid)
+        os.chown(root, uid, gid)
+        cleanup_user = {"user": uid, "group": gid, "extra_groups": []}
+    env = dict(os.environ, KUMO_PYTORCH_PROFILE_HI_SMALL="1")
+    case = TIMING_CASES["hi-small"]
+    data = {
+        **_revision(),
+        "workload": case,
+        "platform": platform.platform(),
+        "versions": _versions(),
+        "num_threads": 1,
+        "source_pin_sha256": hashlib.sha256(E01_MANIFEST.read_bytes()).hexdigest(),
+        "host_memory": host_memory,
+        "sample_interval_ns": 50_000_000,
+        "complete": False,
+        "workers": [],
+        "summary": {},
+    }
+    groups = set()
+    sizes = (25_000, 400_000)
+    metrics = ("peak_host_bytes", "peak_anonymous_bytes")
+    try:
+        for binding in ("E01", "E02", "E03", "E04", "E05"):
+            identity = None
+            peaks = {size: [] for size in sizes}
+            for repeat in range(3):
+                pair = root / binding / str(repeat)
+                for size in ("index-setup", *(sizes if repeat % 2 == 0 else reversed(sizes))):
+                    work = pair / str(size)
+                    result = work / "results.json"
+                    command = [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work)]
+                    print(f"{binding} pair {repeat + 1}, {size}", flush=True)
+                    worker = run_isolated(
+                        command,
+                        parent=cgroup_parent,
+                        method=host_memory,
+                        cwd=REPOSITORY,
+                        env=env,
+                        timeout=7200,
+                    )
+                    data["workers"].append(
+                        {"results": str(result.relative_to(root)), "returncode": worker.returncode}
+                    )
+                    if worker.returncode or not result.is_file():
+                        raise RuntimeError(
+                            f"Missing successful {binding}/{repeat}/{size} worker: {report}"
+                        )
+                    row = json.loads(result.read_text())
+                    common = tuple(
+                        row[k]
+                        for k in ("source_sha256", "contract", "prefix_sha256", "encoder_cutoff")
+                    )
+                    if identity is None:
+                        identity = common
+                    assert row["binding"] == binding and identity == common
+                    if size == "index-setup":
+                        expected = json.loads((root / "prepared/identity.json").read_text())[
+                            "bindings"
+                        ][binding]
+                        assert row["prefix_sha256"] == expected["prefix_sha256"]
+                        assert row["encoder_cutoff"] == expected["encoder_cutoff_seconds"]
+                        continue
+                    assert (
+                        row["anchors"] == size
+                        and row["anchor_sha256"] == expected["anchors_sha256"][str(size)]
+                    )
+                    memory = row["host_memory"]
+                    assert memory["complete"] and memory["method"] == host_memory
+                    assert memory["sample_interval_ns"] == data["sample_interval_ns"]
+                    assert memory["cgroup"] not in groups
+                    groups.add(memory["cgroup"])
+                    assert all(memory[k] > 0 for k in metrics)
+                    peaks[size].append({k: memory[k] for k in metrics})
+                subprocess.run(["/bin/rm", "-r", "--", pair / "index"], check=True, **cleanup_user)
+            small, large = (_ranges(peaks[size]) for size in sizes)
+            data["summary"][binding] = {
+                "25000": small,
+                "400000": large,
+                "growth_ratio": {k: large[k]["median"] / small[k]["median"] for k in metrics},
+            }
+        data["complete"] = True
+    finally:
+        with output:
+            json.dump(data, output, indent=2)
+    return report
+
+
 def _timing_campaign(
     workload: str,
     e2e_dir: Path,
@@ -373,15 +496,6 @@ def _timing_campaign(
         sources.extend(REPOSITORY / node.split("::")[0] for node in CUDA_REGRESSIONS)
     if host_memory:
         sources.extend(Path(__file__).with_name(f) for f in ("host_memory.py", "memory_worker.py"))
-    revision = tracked_diff = None
-    try:
-        revision = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True
-        ).strip()
-        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPOSITORY)
-        tracked_diff = hashlib.sha256(diff).hexdigest() if diff else None
-    except (OSError, subprocess.CalledProcessError):
-        pass  # Source distributions can run outside a Git checkout.
     metadata = {
         "workload": case,
         **({"length_planning": True, "training": False} if length_planning else {}),
@@ -392,16 +506,11 @@ def _timing_campaign(
         "device": "cuda" if workload == "cuda" or cuda else "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
         **({"banking": {"batch_size": 2}, "l01": L01_BATCHING}.get(workload, LOADER_BATCHING)),
-        "revision": revision,
-        "tracked_diff_sha256": tracked_diff,
+        **_revision(),
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "versions": {
-            d.name: d.version
-            for d in distributions()
-            if d.name in ("torch", "pyarrow", "diskgraph", "torch-geometric")
-        },
+        "versions": _versions(),
         "workers": workers,
         "summary": summary,
     }
@@ -425,12 +534,15 @@ def main(argv: list[str] | None = None) -> None:
             group.add_argument("--cuda", action="store_true")
             group.add_argument("--index-lifecycle", action="store_true")
             group.add_argument("--length-planning", action="store_true")
-        if argv[0] in ("loader", "l01"):
+        if argv[0] in ("loader", "l01", "hi-small"):
             parser.add_argument(
                 "--cgroup-parent", type=Path, help="delegated Linux cgroup v2 parent"
             )
+        if argv[0] in ("loader", "hi-small"):
+            parser.add_argument(
+                "--host-memory", choices=("kernel", "sampled"), required=argv[0] == "hi-small"
+            )
         if argv[0] == "loader":
-            parser.add_argument("--host-memory", choices=("kernel", "sampled"))
             parser.add_argument(
                 "--cold-warm-cache",
                 action="store_true",
@@ -448,6 +560,11 @@ def main(argv: list[str] | None = None) -> None:
             parser.error("--cgroup-parent must accompany --host-memory or l01 --cuda")
         if options.get("host_memory") and sys.platform != "linux":
             parser.error("--host-memory requires a delegated Linux cgroup")
+        if argv[0] == "hi-small":
+            if args.repetitions != 3:
+                parser.error("hi-small requires three pairs per binding")
+            print(_hi_small_fits(args.e2e_dir, args.cgroup_parent, args.host_memory))
+            return
         print(_timing_campaign(argv[0], **options))
         return
     parser.add_argument("tier", choices=sorted(BY_NAME))

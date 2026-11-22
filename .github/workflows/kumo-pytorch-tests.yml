@@ -30,11 +30,11 @@ on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
     inputs:
       mode:
-        description: Package suite, CUDA measurements or Streaming 25B campaign
+        description: Package suite, opt-in benchmarks or Streaming 25B campaign
         type: choice
         required: true
         default: package
-        options: [package, cuda, l01-cuda, all, smoke, training, lifecycle, full]
+        options: [package, cuda, l01-cuda, hi-small-memory, all, smoke, training, lifecycle, full]
   schedule:
     - cron: '17 10 * * *'
 
@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ endsWith(inputs.mode, 'cuda') && 'cuda' || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ endsWith(inputs.mode, 'cuda') && 'cuda' || inputs.mode == 'hi-small-memory' && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -137,8 +137,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - *checkout
-      - &cuda_setup
-        uses: ./.github/actions/kumo-pytorch-setup
+      - uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
           torch-backend: cu130
@@ -152,15 +151,17 @@ jobs:
             ${{ runner.temp }}/cuda/**/*.xml
           if-no-files-found: error
 
-  l01-source:
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'l01-cuda' && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
+  aml-source:
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'l01-cuda' || inputs.mode == 'hi-small-memory') && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
     runs-on: ubuntu-24.04
     permissions: {contents: read, pull-requests: read}
     outputs: {policy: '${{ steps.source.outputs.policy }}'}
     steps:
       - *checkout
       - id: source
-        env: {GH_TOKEN: '${{ github.token }}'}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DATASET_PIN: &aml_pin ${{ inputs.mode == 'l01-cuda' && 'e2e/datasets/pins/aml-l01.json' || 'e2e/datasets/pins/aml-e01.json' }}
         run: |
           if [[ "$GITHUB_REF" != refs/heads/main ]]; then
             gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
@@ -168,42 +169,50 @@ jobs:
           fi
           jq -c '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
             Resource:[.objects[].key | "arn:aws:s3:::kumo-engine-arena/" + .]}]}' \
-            e2e/datasets/pins/aml-l01.json | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
+            "$DATASET_PIN" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
 
-  l01-cuda:
-    needs: [diskgraph-wheel, l01-source]
+  aml-benchmark:
+    name: ${{ inputs.mode }}
+    needs: [diskgraph-wheel, aml-source]
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: 90
+    timeout-minutes: ${{ inputs.mode == 'l01-cuda' && 90 || 720 }}
     environment: {name: gha-kumo-workflow-tests, deployment: false}
     permissions: {contents: read, id-token: write}
     env:
       STAGE_PINNED_DATASETS: 'true'
-      DATASET_PIN: e2e/datasets/pins/aml-l01.json
-      DATASET_SESSION_POLICY: ${{ needs.l01-source.outputs.policy }}
+      DATASET_PIN: *aml_pin
+      DATASET_SESSION_POLICY: ${{ needs.aml-source.outputs.policy }}
+      WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || 'hi-small' }}
     steps:
       - *checkout
       - run: test -n "$DATASET_SESSION_POLICY"
       - *dataset_credentials
       - *stage_datasets
-      - *cuda_setup
-      - name: Run paired CUDA fits
+      - uses: ./.github/actions/kumo-pytorch-setup
+        with:
+          diskgraph-wheel-artifact: diskgraph-wheel
+          torch-backend: ${{ inputs.mode == 'l01-cuda' && 'cu130' || 'cpu' }}
+      - name: Run paired AML fits
         run: |
+          args=(--host-memory sampled)
+          if [[ "$WORKLOAD" == l01 ]]; then args=(--cuda); fi
           sudo -n -- env PATH="$PATH" KUMO_PYTORCH_DATA_ROOT="$KUMO_PYTORCH_DATA_ROOT" \
-            "$(command -v python)" -m tests.e2e.runs l01 --cuda --cgroup-parent /sys/fs/cgroup \
-            --e2e-dir "$RUNNER_TEMP/l01" --repetitions 3
+            "$(command -v python)" -m tests.e2e.runs "$WORKLOAD" "${args[@]}" \
+            --cgroup-parent /sys/fs/cgroup --e2e-dir "$RUNNER_TEMP/$WORKLOAD"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7
         if: always()
         with:
-          name: l01-cuda-measurements
+          name: ${{ inputs.mode }}-measurements
           path: |
-            ${{ runner.temp }}/l01/*/timings.json
-            ${{ runner.temp }}/l01/*/*/*/l01/results.json
-            ${{ runner.temp }}/l01/*/*/*/cuda.xml
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/timings.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/prepared/identity.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/*/*/*/results.json
+            ${{ runner.temp }}/${{ env.WORKLOAD }}/*/*/*/cuda.xml
           if-no-files-found: error
 
   streaming-25b:
     if: >-
-      github.event_name == 'workflow_dispatch' && inputs.mode != 'package' && !endsWith(inputs.mode, 'cuda') &&
+      github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","smoke","training","lifecycle","full"]'), inputs.mode) &&
       github.repository == 'NVIDIA/kumo-engine' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
     needs: diskgraph-wheel
