@@ -579,6 +579,33 @@ def test_independent_builds_keep_node_indexed_caches_separate(indexed, tmp_path)
     assert roots[0] != roots[1]
 
 
+@pytest.mark.parametrize("from_snapshot", [False, True])
+def test_engine_keeps_managed_root_after_reconfigure(indexed, tmp_path, from_snapshot):
+    import kumo.settings
+
+    index, _, dataset, spec, anchors = indexed
+    engine = (
+        api.DiskGraphEngine.from_snapshot(snapshot(index), num_threads=1)
+        if from_snapshot else api.DiskGraphEngine(num_threads=1)
+    )
+    base = engine.index
+    new_root = tmp_path / "new-root"
+    kumo.settings.configure(scratch_dir=new_root)
+
+    prepare_options = {} if from_snapshot else {"dataset": dataset}
+    with api.prepare(contract=spec, engine=engine, **prepare_options) as plan:
+        plan._source.column_stats([("events", "value", "categorical")], 20 * 10**9)
+        assert (tmp_path / "cache" / engine.index_build_id / "col_stats").is_dir()
+        with plan.materialize(anchors) as task:
+            task_root = tmp_path / "tasks" / engine.index_build_id
+            assert any(task_root.iterdir())
+            assert next(iter(task.batches(output_format="columnar"))).inputs["graph"]
+    assert base.parent == tmp_path / "indexes"
+    assert base.is_dir()
+    assert not new_root.exists()
+    assert api.DiskGraphEngine().index.parent == new_root / "indexes"
+
+
 def test_snapshot_binding_detects_replaced_metadata(indexed):
     index, _, _, spec, _ = indexed
     engine = api.DiskGraphEngine.from_snapshot(snapshot(index))

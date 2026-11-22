@@ -324,8 +324,9 @@ and row labels, recent or uniform graph neighborhoods with node fields, and colu
 step, before any data is read.
 
 Configure storage once with `kumo.settings.configure(scratch_dir=...)`.
-Kumo allocates build IDs and paths internally. Reuse this engine with its
-dataset, or consume a completed snapshot with `from_snapshot(snapshot)`.
+Each engine keeps the root configured at its construction. Kumo allocates
+build IDs and paths internally. Reuse this engine with its dataset, or
+consume a completed snapshot with `from_snapshot(snapshot)`.
 
 **Parameters**
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import kumo.settings
 from kumo._managed_paths import _ManagedIndexPaths
 
 
@@ -20,7 +21,10 @@ def managed_paths(index_build_id: str | None = None):
             "Managed indexes require DiskGraph build-identity support; install "
             "DiskGraph from the matching kumo-engine revision"
         ) from error
-    return _ManagedIndexPaths(new_index_build_id() if index_build_id is None else index_build_id)
+    return _ManagedIndexPaths(
+        new_index_build_id() if index_build_id is None else index_build_id,
+        root=kumo.settings.scratch_dir().resolve(),
+    )
 
 
 def verify_managed_roots(paths, index: str | Path) -> None:

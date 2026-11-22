@@ -206,8 +206,9 @@ class DiskGraphEngine:
     step, before any data is read.
 
     Configure storage once with ``kumo.settings.configure(scratch_dir=...)``.
-    Kumo allocates build IDs and paths internally. Reuse this engine with its
-    dataset, or consume a completed snapshot with ``from_snapshot(snapshot)``.
+    Each engine keeps the root configured at its construction. Kumo allocates
+    build IDs and paths internally. Reuse this engine with its dataset, or
+    consume a completed snapshot with ``from_snapshot(snapshot)``.
 
     :param num_threads: native sampling threads.
     :param random_seed: native uniform-neighbor sampling seed; defaults to zero.
@@ -266,13 +267,14 @@ class DiskGraphEngine:
         base = Path(snapshot.index_path).resolve()
         import kumo.settings
 
-        if not base.is_relative_to(kumo.settings.scratch_dir().resolve()):
+        root = kumo.settings.scratch_dir().resolve()
+        if not base.is_relative_to(root):
             raise ValueError(
                 "snapshot must belong to the configured Kumo root; cross-root import is unsupported"
             )
         binding = open_index(base, snapshot_id=snapshot.id)
         result = cls(ingest="never", num_threads=num_threads)
-        result._paths = _ManagedIndexPaths(binding.identity)
+        result._paths = _ManagedIndexPaths(binding.identity, root=root)
         result.index_build_id = binding.identity
         result.index = base
         result._binding = binding
