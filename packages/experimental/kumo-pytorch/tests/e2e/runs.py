@@ -10,6 +10,9 @@ under ``DIR/<tier>`` and trains into ``DIR/<tier>/<flow>-seed<seed>``, the layou
 training anchors is reused, not retrained: after changing a flow, use a fresh
 ``DIR``. With ``KUMO_PYTORCH_E2E_REUSE_ONLY=1`` (the CI checks job) a missing run
 is an error instead.
+
+``python -m tests.e2e.runs loader --e2e-dir DIR [--repetitions N]`` times the
+33-anchor CPU fixture in fresh pytest workers and prints the timing report path.
 """
 
 from __future__ import annotations
@@ -18,10 +21,14 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import shutil
+import statistics
 import subprocess
 import sys
+import tempfile
 import time
+from importlib.metadata import distributions
 from pathlib import Path
 
 from e2e.datasets.hm import HMDataset, generate, sample_anchors
@@ -30,6 +37,7 @@ from tests.e2e.tiers import BY_NAME, Tier
 REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
+LOADER_CASE = "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing"
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
@@ -78,8 +86,151 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
     return work, seconds
 
 
+def time_loader(plan, table, work: Path, *, batch_size: int, event_tables=()) -> dict:
+    """Measure two complete train epochs for a fresh fit and its saved artifact."""
+    from kumo.pytorch import api
+    from tests.e2e.loader_timing import measure_epoch
+
+    work.mkdir(parents=True, exist_ok=True)
+    results = {}
+    artifact = work / "artifact"
+    with Path(table.source.path).open("rb") as anchors:
+        anchor_sha = hashlib.file_digest(anchors, "sha256").hexdigest()
+    try:
+        for mode in ("fresh", "reloaded"):
+            started = time.perf_counter_ns()
+            fit = (
+                {"fit_split": "train"}
+                if mode == "fresh"
+                else {"fitted": api.Artifact.load(artifact).fitted_state}
+            )
+            with plan.materialize(table, **fit) as task:
+                results[mode] = {
+                    "materialize_ns": time.perf_counter_ns() - started,
+                    "fitted_state": task.fitted_state.fingerprint,
+                    "anchors": task.fingerprints["anchors"],
+                    "anchor_sha256": anchor_sha,
+                    "contract": task.fingerprints["contract"],
+                    "num_threads": plan.engine.num_threads,
+                    "epochs": [],
+                }
+                if mode == "fresh":
+                    task.to_artifact().save(artifact)
+                for epoch in range(2):
+                    results[mode]["epochs"].append(
+                        measure_epoch(
+                            task,
+                            split="train",
+                            epoch=epoch,
+                            batch_size=batch_size,
+                            event_tables=event_tables,
+                        )
+                    )
+    finally:
+        (work / "results.json").write_text(json.dumps(results) + "\n")
+    return results
+
+
+def _ranges(rows):
+    """Summarize numeric metrics shared by the workers. Raw observations stay per worker."""
+    metrics = {}
+    for key in rows[0]:
+        values = [row.get(key) for row in rows]
+        if all(isinstance(v, dict) for v in values):
+            metrics[key] = _ranges(values)
+        elif all(isinstance(v, (int, float)) for v in values):
+            metrics[key] = {
+                "median": statistics.median(values),
+                "range": [min(values), max(values)],
+            }
+    return metrics
+
+
+def _loader_campaign(directory: Path, repetitions: int) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="loader-", dir=directory.resolve()))
+    report = root / "timings.json"
+    completed = []
+    workers = []
+    for index in range(repetitions):
+        work = root / str(index)
+        worker = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", LOADER_CASE, "--e2e-dir", str(work)],
+            cwd=REPOSITORY,
+        )
+        result = work / "loader" / "results.json"
+        ok = worker.returncode == 0 and result.is_file()
+        workers.append(
+            {
+                "worker": index,
+                "returncode": worker.returncode,
+                "complete": ok,
+                "results": str(result.relative_to(root)) if result.is_file() else None,
+            }
+        )
+        if ok:
+            completed.append(json.loads(result.read_text()))
+
+    summary = {}
+    for mode in completed[0] if completed else ():
+        fits = [run[mode] for run in completed]
+        summary[mode] = _ranges(fits)
+        summary[mode]["epochs"] = [
+            _ranges(rows) for rows in zip(*(fit["epochs"] for fit in fits), strict=True)
+        ]
+    sources = [
+        Path(__file__),
+        Path(__file__).with_name("loader_timing.py"),
+        REPOSITORY / LOADER_CASE.split("::")[0],
+    ]
+    revision = tracked_diff = None
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True
+        ).strip()
+        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=REPOSITORY)
+        tracked_diff = hashlib.sha256(diff).hexdigest() if diff else None
+    except (OSError, subprocess.CalledProcessError):
+        pass  # Source distributions can run outside a Git checkout.
+    metadata = {
+        "workload": LOADER_CASE,
+        "device": "cpu",
+        "split": "train",
+        "batch_size": 5,
+        "revision": revision,
+        "tracked_diff_sha256": tracked_diff,
+        "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "versions": {
+            d.name: d.version
+            for d in distributions()
+            if d.name in ("torch", "pyarrow", "diskgraph")
+        },
+        "workers": workers,
+        "summary": summary,
+    }
+    report.write_text(json.dumps(metadata, indent=2) + "\n")
+    if len(completed) != repetitions:
+        raise SystemExit(f"{len(completed)}/{repetitions} workers completed. See {report}")
+    return report
+
+
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["loader"]:
+        parser = argparse.ArgumentParser(description="Time the 33-anchor CPU loader fixture.")
+        parser.add_argument("--e2e-dir", type=Path, required=True)
+        parser.add_argument("--repetitions", type=int, default=3)
+        args = parser.parse_args(argv[1:])
+        if args.repetitions < 1:
+            parser.error("--repetitions must be positive")
+        print(_loader_campaign(args.e2e_dir, args.repetitions))
+        return
+    parser = argparse.ArgumentParser(
+        description=__doc__.split("\n")[0],
+        epilog="For CPU loader timing use: loader --e2e-dir DIR [--repetitions N].",
+    )
     parser.add_argument("tier", choices=sorted(BY_NAME))
     parser.add_argument("flow", choices=sorted(FLOWS))
     parser.add_argument("seed", type=int)

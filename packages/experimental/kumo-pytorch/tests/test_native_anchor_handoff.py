@@ -419,19 +419,21 @@ def test_cross_split_shuffle_keeps_complete_native_stage_batches(
     assert orders[0] == orders[2]
 
 
+def _anchor_population(table, path, count):
+    data = pq.read_table(table.source.path)
+    template = data.to_pylist()[0]
+    rows = [{**template, "sid": f"s{i}", "label": 100.0 + i} for i in range(count)]
+    pq.write_table(pa.Table.from_pylist(rows, schema=data.schema), path)
+    return replace(table, source=api.Parquet(str(path))), rows
+
+
 @pytest.mark.parametrize(
     "count,kept_with_drop", [(0, 0), (1, 0), (15, 0), (16, 16), (17, 16), (32, 32), (33, 32)]
 )
 def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count, kept_with_drop):
     plan, task, table = native_task
-    data = pq.read_table(table.source.path)
-    template = data.to_pylist()[0]
-    rows = [{**template, "sid": f"s{i}", "label": 100.0 + i} for i in range(count)]
-    path = tmp_path / "population.parquet"
-    pq.write_table(pa.Table.from_pylist(rows, schema=data.schema), path)
-    with plan.materialize(
-        replace(table, source=api.Parquet(str(path))), fitted=task.fitted_state
-    ) as population:
+    table, rows = _anchor_population(table, tmp_path / "population.parquet", count)
+    with plan.materialize(table, fitted=task.fitted_state) as population:
         assert isinstance(population._anchors, NativeAnchors)
         assert population.count() == count
         for drop_last, kept in ((False, count), (True, kept_with_drop)):
@@ -441,6 +443,34 @@ def test_native_anchor_batch_boundaries_and_cleanup(native_task, tmp_path, count
                 assert batch.metadata["sample_ids"] == tuple(row["sid"] for row in group)
                 assert batch.targets["label"]["values"].tolist() == [row["label"] for row in group]
     assert plan._source._sampler is not None
+
+
+def test_native_cpu_loader_timing(native_task, tmp_path, request):
+    from tests.e2e import runs
+
+    plan, _, table = native_task
+    table, _ = _anchor_population(table, tmp_path / "population.parquet", 33)
+    work = (request.config.getoption("--e2e-dir") or tmp_path) / "loader"
+    results = runs.time_loader(plan, table, work, batch_size=5, event_tables=("events",))
+    fitted = api.Artifact.load(work / "artifact").fitted_state
+    assert set(results) == {"fresh", "reloaded"}
+    for run in results.values():
+        assert run["fitted_state"] == fitted.fingerprint
+        assert run["contract"] == plan.contract.fingerprint
+        for record in fitted.fit.values():
+            assert record["anchors"] == run["anchors"] and record["fit_split"] == ["train"]
+        assert [row["epoch"] for row in run["epochs"]] == [0, 1]
+        for row in run["epochs"]:
+            assert row["batch_sizes"] == [5] * 6 + [3]
+            assert (row["samples"], row["padded"], row["profiled_batches"]) == (33, 0, 7)
+            assert (row["nodes"], row["edges"], row["events"]) == (33 * 3, 33 * 2, 33 * 2)
+            assert row["latency"]["p95_ns"] == max(row["request_ns"])
+            assert row["wait_ns"] == sum(row["request_ns"]) + row["terminal_ns"]
+            assert (row["post_warmup"]["batches"], row["post_warmup"]["samples"]) == (5, 23)
+            # Every batch decodes the shared root and two events, and examines each seed.
+            profile = row["native_profile"]
+            assert (profile["rows_examined"], profile["rows_decoded"]) == (33 + 7 * 3, 7 * 3)
+            assert profile["sampling_ns"] > 0 and profile["retrieval_ns"] > 0
 
 
 @pytest.mark.parametrize(
