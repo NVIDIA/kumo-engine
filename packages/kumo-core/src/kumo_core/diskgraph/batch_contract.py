@@ -30,21 +30,10 @@ class ArtifactIdentity:
 
 
 @dataclass(frozen=True)
-class ConsumerToken:
-    """Independently fenced consumer within a job and trainer rank."""
-
-    job: str
-    trainer_rank: int
-    consumer_kind: str
-    generation: int
-
-
-@dataclass(frozen=True)
 class BatchRequest:
     """An explicit logical batch; actor placement never participates in its RNG."""
 
     artifacts: ArtifactIdentity
-    consumer: ConsumerToken
     epoch: int
     logical_shard: int
     logical_shard_count: int
@@ -74,8 +63,6 @@ class BatchRequest:
             self.num_threads,
             self.epoch,
             self.batch_ordinal,
-            self.consumer.generation,
-            self.consumer.trainer_rank,
         )
         if (
             not isinstance(self.seed_ids, tuple)
@@ -95,8 +82,6 @@ class BatchRequest:
                 self.epoch,
                 self.logical_shard,
                 self.batch_ordinal,
-                self.consumer.generation,
-                self.consumer.trainer_rank,
             )
             < 0
         ):

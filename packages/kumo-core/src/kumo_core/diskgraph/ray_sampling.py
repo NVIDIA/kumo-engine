@@ -32,7 +32,6 @@ from torch_geometric.data import HeteroData
 from kumo_core.diskgraph.batch_contract import (
     ArtifactIdentity,
     BatchRequest,
-    ConsumerToken,
     HeteroBatchPayload,
     SamplingContractError,
 )
@@ -167,16 +166,12 @@ class RayBackendConfig:
     artifacts: ArtifactIdentity
     engine_seed: int
     num_threads: int
-    job: str
-    generation: int = 0
     request_timeout: float = 300.0
     max_retries: int = 1
 
     def __post_init__(self) -> None:
         if (
-            not self.job
-            or self.generation < 0
-            or self.max_retries < 0
+            self.max_retries < 0
             or self.engine_seed < 0
             or self.num_threads < 1
             or not math.isfinite(self.request_timeout)
@@ -466,12 +461,9 @@ def stop_sampling_replicas(replicas: tuple[SamplerActor, ...]) -> None:
 class RayRuntimeIndex:
     """Process-local client sharing the native seed schedule with local iteration."""
 
-    def __init__(
-        self, manifest_path: str, config: RayBackendConfig, consumer: ConsumerToken
-    ) -> None:
+    def __init__(self, manifest_path: str, config: RayBackendConfig) -> None:
         self.manifest_path = manifest_path
         self.config = config
-        self.consumer = consumer
         self.pid = os.getpid()
         self._manifest_verified = False
         self.samplers = _SamplerPool(config)
@@ -545,7 +537,6 @@ class RayRuntimeIndex:
         while (seeds := schedule.next_seed_ids()) is not None:
             yield BatchRequest(
                 self.config.artifacts,
-                self.consumer,
                 options.epoch,
                 options.worker_id,
                 options.num_workers,
@@ -571,8 +562,7 @@ class RayRuntimeIndex:
                 payload = self.samplers.get(ref)
             except (ray.exceptions.ActorDiedError, ray.exceptions.ObjectLostError):
                 logger.error(
-                    "Sampling attempt failed: consumer=%s epoch=%d shard=%d batch=%d",
-                    request.consumer,
+                    "Sampling attempt failed: epoch=%d shard=%d batch=%d",
                     request.epoch,
                     request.logical_shard,
                     request.batch_ordinal,

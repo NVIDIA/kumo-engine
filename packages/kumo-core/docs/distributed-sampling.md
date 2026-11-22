@@ -31,7 +31,7 @@ Actor restart and automatic method retries are disabled.
 
 ## Requests and consumption
 
-`batch_contract.py` defines artifact/consumer identities, explicit seed requests,
+`batch_contract.py` defines artifact identities, explicit seed requests,
 and `HeteroBatchPayload`. DiskGraph owns sampling configuration and raw runtime
 records; kumo-core defines no duplicate native batch schemas or JSON option
 adapters. `BatchRequest.validate()` checks validity and returns `None`.
@@ -44,7 +44,7 @@ the trainer and are reset in actor-side options. Options are shallow frozen:
 callers must not mutate their projection/selection containers during iteration.
 
 Create `RayBackendConfig` from the replica handles, artifact identities, and a
-`RayConnection`, then construct `RayRuntimeIndex` with a `ConsumerToken`.
+`RayConnection`, then construct `RayRuntimeIndex(manifest_path, config)`.
 `iter(options)` returns a synchronous `HeteroData` iterator and sample/bucket
 count. The trainer associates each response with its pending Ray request; the
 response does not echo request metadata. It reconstructs tensors using
