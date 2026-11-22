@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Dictionary graph metadata with out-of-band NumPy tensor buffers."""
+"""Typed graph metadata with out-of-band NumPy tensor buffers."""
 
 from __future__ import annotations
 
-from typing import TypedDict
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -15,7 +15,8 @@ from torch_geometric.data import HeteroData
 TensorBuffer = NDArray[np.int64 | np.float32 | np.float64]
 
 
-class _TensorSpec(TypedDict):
+@dataclass(frozen=True, slots=True)
+class _TensorSpec:
     """Tensor descriptor in the graph metadata."""
 
     buffer: int
@@ -23,7 +24,8 @@ class _TensorSpec(TypedDict):
     shape: list[int]
 
 
-class _FeatureSpec(TypedDict):
+@dataclass(frozen=True, slots=True)
+class _FeatureSpec:
     """Feature names and positions of value and optional ragged-offset buffers."""
 
     kind: str
@@ -32,7 +34,8 @@ class _FeatureSpec(TypedDict):
     offset: _TensorSpec | None
 
 
-class _NodeSpec(TypedDict):
+@dataclass(frozen=True, slots=True)
+class _NodeSpec:
     """Node attributes, encoded features, and sampling metadata."""
 
     attributes: dict[str, _TensorSpec]
@@ -42,8 +45,18 @@ class _NodeSpec(TypedDict):
     empty_pkey: bool
 
 
-class HeteroMetadata(TypedDict):
-    """Plain dictionary describing graph stores and separate NumPy buffers."""
+@dataclass(frozen=True, slots=True)
+class HeteroMetadata:
+    """Graph layout with frozen fields and batch-owned nested containers.
+
+    Args:
+        version: Graph layout schema version.
+        batch_size: Number of seeds in the logical batch.
+        nodes: Node stores, feature layouts, and tensor buffer positions.
+        edges: Edge types, tensor buffer positions, and sampling counts.
+
+    Nested dictionaries and lists must not be mutated during delivery.
+    """
 
     version: int
     batch_size: int
@@ -58,7 +71,7 @@ def pack_python_hetero(data: HeteroData) -> tuple[HeteroMetadata, list[TensorBuf
         data: HeteroData produced by the shared Python runtime adapter.
 
     Returns:
-        Dictionary metadata and contiguous NumPy views retaining tensor owners.
+        Dataclass metadata and contiguous NumPy views retaining tensor owners.
         Only noncontiguous tensors require a buffer copy.
 
     Raises:
@@ -77,11 +90,9 @@ def pack_python_hetero(data: HeteroData) -> tuple[HeteroMetadata, list[TensorBuf
         ):
             raise ValueError("Wire tensors must be CPU int64/float32/float64")
         array = tensor.detach().contiguous().numpy()
-        spec: _TensorSpec = {
-            "buffer": len(buffers),
-            "dtype": str(array.dtype),
-            "shape": list(array.shape),
-        }
+        spec = _TensorSpec(
+            buffer=len(buffers), dtype=str(array.dtype), shape=list(array.shape)
+        )
         buffers.append(array.reshape(-1))
         return spec
 
@@ -120,20 +131,20 @@ def pack_python_hetero(data: HeteroData) -> tuple[HeteroMetadata, list[TensorBuf
                 )
             nested = isinstance(tensor, MultiNestedTensor)
             features.append(
-                {
-                    "kind": kind.value,
-                    "columns": block.tf.col_names_dict[kind],
-                    "value": describe(tensor.values if nested else tensor),
-                    "offset": describe(tensor.offset) if nested else None,
-                }
+                _FeatureSpec(
+                    kind=kind.value,
+                    columns=block.tf.col_names_dict[kind],
+                    value=describe(tensor.values if nested else tensor),
+                    offset=describe(tensor.offset) if nested else None,
+                )
             )
-        nodes[name] = {
-            "attributes": attributes,
-            "features": features,
-            "rows": block.tf.num_rows,
-            "counts": block.get("num_sampled_nodes"),
-            "empty_pkey": "pkey" in block,
-        }
+        nodes[name] = _NodeSpec(
+            attributes=attributes,
+            features=features,
+            rows=block.tf.num_rows,
+            counts=block.get("num_sampled_nodes"),
+            empty_pkey="pkey" in block,
+        )
     edges: list[tuple[tuple[str, str, str], _TensorSpec, list[int]]] = []
     for key in data.edge_types:
         block = data[key]
@@ -142,12 +153,9 @@ def pack_python_hetero(data: HeteroData) -> tuple[HeteroMetadata, list[TensorBuf
                 "Extra edge attributes are unsupported by this wire format"
             )
         edges.append((key, describe(block.edge_index), block.num_sampled_edges))
-    metadata: HeteroMetadata = {
-        "version": 1,
-        "batch_size": batch_size or 0,
-        "nodes": nodes,
-        "edges": edges,
-    }
+    metadata = HeteroMetadata(
+        version=1, batch_size=batch_size or 0, nodes=nodes, edges=edges
+    )
     return metadata, buffers
 
 
@@ -157,7 +165,7 @@ def unpack_python_hetero(
     """Reconstruct CPU graph containers directly from version-1 NumPy wire data.
 
     Args:
-        metadata: Dictionary emitted by the Python graph encoder.
+        metadata: Typed metadata emitted by the Python graph encoder.
         buffers: Contiguous numeric arrays whose owners are retained by Torch.
             Received read-only Ray arrays must not be modified through the tensors.
 
@@ -174,18 +182,18 @@ def unpack_python_hetero(
     from torch_frame import TensorFrame
     from torch_frame.data import MultiNestedTensor
 
-    if not isinstance(metadata, dict) or not isinstance(buffers, list):
+    if not isinstance(metadata, HeteroMetadata) or not isinstance(buffers, list):
         raise TypeError(
-            "Heterogeneous wire data requires dictionary metadata and a buffer list"
+            "Heterogeneous wire data requires HeteroMetadata and a buffer list"
         )
     spec = metadata
-    if spec["version"] != 1:
+    if spec.version != 1:
         raise ValueError("Unsupported heterogeneous wire version")
     used: set[int] = set()
     supported_dtypes = (np.dtype("int64"), np.dtype("float32"), np.dtype("float64"))
 
     def restore(description: _TensorSpec) -> torch.Tensor:
-        index = description["buffer"]
+        index = description.buffer
         if not isinstance(index, int) or not 0 <= index < len(buffers) or index in used:
             raise ValueError("Missing or repeated heterogeneous buffer index")
         array = buffers[index]
@@ -198,9 +206,9 @@ def unpack_python_hetero(
             or array.dtype not in supported_dtypes
         ):
             raise TypeError("Expected contiguous native-endian numeric buffers")
-        shape = description["shape"]
+        shape = description.shape
         if (
-            str(array.dtype) != description["dtype"]
+            str(array.dtype) != description.dtype
             or not 1 <= len(shape) <= 4
             or any(not isinstance(size, int) or size < 0 for size in shape)
             or math.prod(shape) != array.size
@@ -212,19 +220,19 @@ def unpack_python_hetero(
         return torch.from_numpy(array).reshape(shape)
 
     data = HeteroData()
-    for name, node in spec["nodes"].items():
+    for name, node in spec.nodes.items():
         block = data[name]
-        for key, description in node["attributes"].items():
+        for key, description in node.attributes.items():
             block[key] = restore(description)
         values, names = {}, {}
-        rows = node["rows"]
-        for feature in node["features"]:
-            kind = Stype(feature["kind"])
-            columns = feature["columns"]
+        rows = node.rows
+        for feature in node.features:
+            kind = Stype(feature.kind)
+            columns = feature.columns
             if kind in values or not columns:
                 raise ValueError("Duplicate feature kind or empty feature columns")
-            tensor = restore(feature["value"])
-            offset_spec = feature["offset"]
+            tensor = restore(feature.value)
+            offset_spec = feature.offset
             if kind.value == "multicategorical" and offset_spec is not None:
                 offset = restore(offset_spec)
                 offsets = offset.numpy()
@@ -255,20 +263,20 @@ def unpack_python_hetero(
                 raise ValueError("Unsupported heterogeneous feature kind/layout")
             names[kind] = columns
         block.tf = TensorFrame(values, names, num_rows=rows)
-        block.batch_size = spec["batch_size"]
-        if node["empty_pkey"]:
+        block.batch_size = spec.batch_size
+        if node.empty_pkey:
             block.pkey = np.empty(0, dtype=object)
-        if node["counts"] is not None:
-            block.num_sampled_nodes = node["counts"]
+        if node.counts is not None:
+            block.num_sampled_nodes = node.counts
     seen_edges: set[tuple[str, ...]] = set()
-    for edge_type, description, counts in spec["edges"]:
+    for edge_type, description, counts in spec.edges:
         edge_key = tuple(edge_type)
         tensor = restore(description)
         if (
             len(edge_key) != 3
             or edge_key in seen_edges
-            or edge_key[0] not in spec["nodes"]
-            or edge_key[2] not in spec["nodes"]
+            or edge_key[0] not in spec.nodes
+            or edge_key[2] not in spec.nodes
             or tensor.ndim != 2
             or tensor.shape[0] != 2
             or tensor.dtype != torch.int64

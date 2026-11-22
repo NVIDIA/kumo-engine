@@ -4,7 +4,7 @@ The optional `kumo-core[ray]` extra pins Ray 2.59.0. All participants need the
 DiskGraph-owned `SamplingPlan`, `SamplingOptions`, and `RuntimeBatch` APIs from
 #454 (stacked on #449 and #445), plus the native stateless sampling operation.
 
-Every remote actor samples and encodes a batch. The trainer receives a plain dictionary of
+Every remote actor samples and encodes a batch. The trainer receives frozen dataclass
 graph metadata and separate NumPy tensor buffers, then reconstructs `HeteroData`.
 There is no remote raw-batch mode or whole-HeteroData pickle mode. Local DiskGraph
 iteration continues to return typed runtime batches for local collation.
@@ -60,11 +60,12 @@ client across processes. Subprocess DataLoader integration is outside this PR.
 
 ## Wire format and ownership
 
-The metadata dictionary contains node/edge types, feature names, sampling counts, tensor
+The metadata records contain node/edge types, feature names, sampling counts, tensor
 shapes/dtypes, and buffer indices. Tensor contents remain separate contiguous
 NumPy arrays. Actors return `(metadata, buffers)` directly. Ray handles the
-plain tuple, dictionary, and out-of-band array serialization; there is no
-application-level binary metadata codec or response dataclass.
+tuple, frozen metadata dataclasses, and out-of-band array serialization.
+Metadata uses Ray's default Python-object serialization; buffers remain separate.
+There is no application-level binary metadata codec or outer response wrapper.
 
 Graph wire version 1 supports CPU int64/float32/float64 tensors and numerical,
 categorical, timestamp, and ragged multi-categorical TensorFrame features.

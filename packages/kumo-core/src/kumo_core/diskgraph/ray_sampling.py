@@ -466,7 +466,7 @@ class RayRuntimeIndex:
         self.samplers = _SamplerPool(config)
 
     def iter(self, options: SamplingOptions) -> tuple[Iterator[HeteroData], int]:
-        """Receive actor-encoded graphs from dictionary metadata and NumPy buffers.
+        """Receive actor-encoded graphs from typed metadata and NumPy buffers.
 
         Args:
             options: DiskGraph sampling configuration and logical shard identity.
