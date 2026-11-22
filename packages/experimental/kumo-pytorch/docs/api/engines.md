@@ -309,10 +309,11 @@ prediction, such as event histories and graph neighborhoods, without keeping
 the full index in RAM.
 
 The base index is built from local Parquet files and is independent of
-anchors, fitted encoders and output layout, so several contracts can reuse
-it. Its manifest binds the schema, physical file metadata (not a content
-snapshot) and resolved types; every file's declared columns and physical
-types are checked before ingestion. Native ingestion rules apply: rows with
+anchors, fitted encoders and output layout. Several contracts can reuse it
+through the same engine instance or a snapshot binding. Its manifest binds
+the schema, physical file metadata (not a content snapshot) and resolved
+types; every file's declared columns and physical types are checked before
+ingestion. Native ingestion rules apply: rows with
 NULL clocks and other rejected rows are dropped and counted.
 
 Supported: direct entity fields, historical event fields, typed scalar
@@ -326,6 +327,9 @@ Configure storage once with `kumo.settings.configure(scratch_dir=...)`.
 Each engine keeps the root configured at its construction. Kumo allocates
 build IDs and paths internally. Reuse this engine with its dataset, or
 consume a completed snapshot with `from_snapshot(snapshot)`.
+Fresh dataset engines ingest independently, even for identical data. Base
+indexes and derived caches persist after task cleanup; no automatic garbage
+collection removes unused builds.
 
 **Parameters**
 

@@ -188,7 +188,8 @@ The January 12 order is after the January 10 prediction time, so it is not
 read.
 
 The index holds rows, key maps and relations. It holds no anchors, labels or
-fitted encoders, so several contracts can share one base. The managed layout is:
+fitted encoders, so several contracts can share one base through the same engine
+instance or snapshot binding. The managed layout is:
 
 ```text
 <scratch_root>/indexes/<index_build_id>/
@@ -197,9 +198,13 @@ fitted encoders, so several contracts can share one base. The managed layout is:
 ```
 
 The build ID identifies one physical ingest, independently of schema and data
-version. New engines ingesting the same data get different IDs. Kumo allocates
-IDs and chooses index, task and cache paths internally; callers configure only
-the process-wide scratch root.
+version. Each fresh dataset engine allocates a different ID and ingests its own
+base, even for identical data. There is no automatic reuse across engines by
+graph or data version, so each adds ingestion time and disk usage. Reuse a core
+`Graph.snapshot()` through `DiskGraphEngine.from_snapshot(snapshot)` to share
+the producer's base across engines or processes. Kumo allocates IDs and chooses
+index, task and cache paths internally; callers configure only the process-wide
+scratch root.
 
 Fitting reads any statistics already stored under the base's `col_stats/` and
 writes missing statistics, tokenizers and token lengths under the managed
@@ -214,6 +219,19 @@ from the dataset and schema you pass, `prepare` refuses reuse. The shard count
 is not part of that check; an existing index keeps the shard count it was built
 with. Use `DiskGraphEngine.from_snapshot(snapshot)` to prepare an existing index
 without source ingestion.
+
+### Storage lifetime and cleanup
+
+Closing a plan or task keeps `indexes/<index_build_id>/` and
+`cache/<index_build_id>/`. Task cleanup removes its own task directory;
+empty parent directories can remain. There is no automatic garbage collection
+for unused bases, caches or abandoned builds, so repeated runs accumulate disk
+usage.
+
+For a managed build you no longer need, manually remove its matching index,
+cache and leftover task directories only after all engines, tasks and processes
+using it have stopped and no retained snapshot needs its base. Keep builds and
+caches needed for later reuse.
 
 ### Open an existing snapshot
 
