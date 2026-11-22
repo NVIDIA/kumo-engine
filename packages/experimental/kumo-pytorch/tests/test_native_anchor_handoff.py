@@ -473,13 +473,10 @@ def test_native_cuda_epochs(native_task, native_anchor_delivery, tmp_path, reque
             torch.cuda.empty_cache()
             losses, ids = [], []
             with cuda_epoch(device, record) as gpu:
-                for index, batch in enumerate(
-                    native_anchor_delivery(task, epoch=epoch, **LOADER_BATCHING)
-                ):
-                    if index == 2:
-                        gpu.mark_steady()
+                batches = native_anchor_delivery(task, epoch=epoch, **LOADER_BATCHING)
+                for index, batch in enumerate(batches):
+                    batch = gpu.transfer(batch, start_steady=index == 2)
                     ids.extend(batch.metadata["sample_ids"])
-                    batch = gpu.transfer(batch)
                     size = batch.batch_size
                     record["batch_sizes"].append(size)
                     features = batch.inputs["graph"]["nodes"]["events"]["features"]

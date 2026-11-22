@@ -10,7 +10,6 @@ from itertools import pairwise
 from statistics import mean
 from threading import Event, Lock
 from time import perf_counter_ns
-from uuid import UUID
 
 import torch
 
@@ -20,12 +19,11 @@ class _Window:
         self.device, self.data, self.sample = device, data, sample
         self.events = []
 
-    def mark_steady(self):
-        self.data["steady_start_ns"] = perf_counter_ns()
-        self.sample("steady_start")
-
-    def transfer(self, batch):
+    def transfer(self, batch, *, start_steady=False):
         """Measure the host dispatch and queue an event pair on the actual copy stream."""
+        if start_steady:
+            self.data["steady_start_ns"] = perf_counter_ns()
+            self.sample("steady_start")
         if len(self.events) >= 10_000:
             raise RuntimeError("CUDA transfer event capacity exceeded")
         stream = torch.cuda.current_stream(self.device)
@@ -61,10 +59,7 @@ def cuda_epoch(device, row):
         device = torch.cuda.current_stream(device).device
         props = torch.cuda.get_device_properties(device)
         raw = props.uuid
-        if hasattr(raw, "bytes"):
-            raw = str(UUID(bytes=bytes(raw.bytes)))
-        if isinstance(raw, bytes):
-            raw = raw.decode("ascii")
+        raw = raw.decode("ascii") if isinstance(raw, bytes) else str(raw)
         uuid = raw if raw.startswith(("GPU-", "MIG-")) else "GPU-" + raw
         allocator = torch.cuda.get_allocator_backend()
         data.update(
