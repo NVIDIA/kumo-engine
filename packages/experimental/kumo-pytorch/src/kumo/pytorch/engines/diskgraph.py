@@ -411,8 +411,8 @@ class DiskGraphEngine:
             artifact,
             schema,
             num_threads=self.num_threads,
-            profile=self.profile,
             random_seed=self.random_seed,
+            **({"profile": True} if self.profile else {}),
         )
 
     def materialize_anchors(self, table: AnchorTable) -> AnchorTask:
