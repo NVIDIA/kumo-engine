@@ -987,6 +987,13 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     }
     let resume_from_phase = options.resume_from_phase.filter(|_| !restart);
     let recorded_id = if let OutputTarget::Local { root, .. } = &*target {
+        ensure!(
+            resume_from_phase != Some(IngestPhase::Encode)
+                || (!root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
+                    && !root.join("index_metadata.json").exists()),
+            "cannot resume Encode over a completed index at {}; choose a new ID and output path for a fresh ingest",
+            root.display()
+        );
         let recorded_id = if resume_from_phase.is_some() {
             recorded_index_build_id(root)?
         } else {
@@ -1000,7 +1007,8 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
                 "resumed index_build_id does not match existing index"
             );
         }
-        let matching_partial_restart = restart
+        let matching_partial_restart = options.index_build_id.is_some()
+            && restart
             && !root.join(crate::success_marker::SUCCESS_MARKER_FILENAME).exists()
             && !root.join("index_metadata.json").exists()
             && options.index_build_id.as_deref() == encoded_index_build_id(root)?.as_deref();
@@ -1674,6 +1682,57 @@ mod tests_resume_phase {
             fs::read(output.join("index_metadata.json")).unwrap(),
             br#"{"index_build_id":"build-a"}"#
         );
+    }
+
+    #[test]
+    fn encode_resume_rejects_completed_output_before_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut table = tests_repopulate_helpers::node_table("nodes", Some("id"));
+        table.source = crate::graph_config::DataSource::Parquet {
+            paths: vec![directory.path().join("new-source.parquet").to_string_lossy().into_owned()],
+        };
+        let source = GraphConfig {
+            timestamp_unit: Default::default(),
+            dataset_name: "test".to_owned(),
+            tables: vec![table],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        };
+        for publication_file in ["index_metadata.json", "_SUCCESS"] {
+            for supplied_id in [None, Some("build-a")] {
+                let directory_name = if supplied_id.is_some() {
+                    "supplied"
+                } else {
+                    "automatic"
+                };
+                let output = directory.path().join(publication_file).join(directory_name);
+                fs::create_dir_all(&output).unwrap();
+                fs::write(output.join(publication_file), b"published").unwrap();
+                fs::write(output.join("sentinel"), b"keep").unwrap();
+                let error = ingest_with_stats_from_source(
+                    source.clone(),
+                    None,
+                    output.to_str().unwrap(),
+                    Dest::Local,
+                    IngestOptions {
+                        index_build_id: supplied_id.map(str::to_owned),
+                        resume_from_phase: Some(IngestPhase::Encode),
+                        ..IngestOptions::default()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("cannot resume Encode over a completed index"));
+                assert_eq!(fs::read(output.join(publication_file)).unwrap(), b"published");
+                assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+                assert!(!output.join("_tmp").exists());
+            }
+        }
     }
 
     #[test]

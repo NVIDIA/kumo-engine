@@ -778,6 +778,77 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
 }
 
 #[test]
+fn shard_resize_restarts_version_2_encode_state_without_a_supplied_id() -> Result<()> {
+    let tmp = tempdir()?;
+    let config_path = write_synthetic_graph(&tmp.path().join("input"), "restart_v2")?;
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+    let encoded_config = serde_json::to_vec(&config)?;
+    config["num_shards"] = 4.into();
+    fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    let options = |resume_from_phase| IngestOptions {
+        resume_from_phase,
+        source_loader_threads: Some(1),
+        source_encoder_threads: Some(1),
+        pk_map_threads: Some(1),
+        edges_map_threads: Some(1),
+        index_threads: Some(1),
+        ..Default::default()
+    };
+    let baseline_root = tmp.path().join("baseline");
+    let (baseline, _) = ingest_with_stats(
+        &config_path,
+        baseline_root.to_str().unwrap(),
+        Dest::Local,
+        options(None),
+    )?;
+    for supplied_id in [Some("build-a"), None] {
+        let directory_name = if supplied_id.is_some() {
+            "supplied"
+        } else {
+            "automatic"
+        };
+        let output = tmp.path().join(directory_name);
+        fs::create_dir_all(output.join("_tmp"))?;
+        let marker = marker_path(&output, IngestPhase::Encode);
+        fs::write(&marker, &encoded_config)?;
+        let state_path = output.join("_tmp/encode_state.json");
+        let state = serde_json::to_vec(&serde_json::json!({
+            "version": 2,
+            "source": serde_json::from_slice::<serde_json::Value>(&encoded_config)?,
+        }))?;
+        fs::write(&state_path, &state)?;
+        let sentinel = output.join("sentinel");
+        fs::write(&sentinel, b"old partial output")?;
+        let result = ingest_with_stats(
+            &config_path,
+            output.to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                index_build_id: supplied_id.map(str::to_owned),
+                ..options(Some(IngestPhase::PkMap))
+            },
+        );
+        if supplied_id.is_some() {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported Encode state version"));
+            assert_eq!(fs::read(&marker)?, encoded_config);
+            assert_eq!(fs::read(&state_path)?, state);
+            assert_eq!(fs::read(&sentinel)?, b"old partial output");
+        } else {
+            let (metadata, _) = result?;
+            assert!(metadata.index_build_id.is_some());
+            assert_ne!(metadata.index_build_id, baseline.index_build_id);
+            assert_eq!(metadata.node_types[0].shards.len(), 4);
+            assert!(!sentinel.exists());
+            assert_indexes_equivalent(&baseline_root, &output)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
     let tmp = tempdir()?;
     let baseline_root = tmp.path().join("baseline");
