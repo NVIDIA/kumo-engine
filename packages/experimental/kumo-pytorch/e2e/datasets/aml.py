@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 from torch.nn import functional as F
 
 from e2e.datasets import CALENDAR, bind_tables, history_batch
+from e2e.datasets.staging import verify
 from kumo.pytorch import api
 
 E01_MANIFEST = Path(__file__).parent / "pins" / "aml-e01.json"
@@ -265,6 +266,26 @@ def prepare_li_medium(
 
 
 prepare_l01 = prepare_li_medium
+
+
+def prepare_l01_benchmark(source_root, directory):
+    """Prepare the first 512 forecast anchors per split from the verified source."""
+    files = verify(source_root, L01_MANIFEST)
+    remaining = dict.fromkeys(("train", "valid", "test"), 512)
+    positions = []
+    offset = 0
+    for batch in pq.ParquetFile(files["anchors"]).iter_batches(columns=["forecast_split"]):
+        for position, split in enumerate(batch.column(0).to_pylist(), offset):
+            if remaining.get(split, 0):
+                positions.append(position)
+                remaining[split] -= 1
+        if not any(remaining.values()):
+            break
+        offset += len(batch)
+    else:
+        raise ValueError(f"Incomplete L01 benchmark population: missing {remaining}")
+    spec, _, _ = prepare_li_medium(files, directory, anchor_rows=positions)
+    (directory / "contract.json").write_text(spec.to_json())
 
 
 def li_head_loss(batch, binding, prediction, name="label"):

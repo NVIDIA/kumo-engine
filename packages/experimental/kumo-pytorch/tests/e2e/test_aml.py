@@ -4,6 +4,7 @@
 
 """AML account-day histories and forecasts checked against original transaction rows."""
 
+import hashlib
 import json
 import os
 from bisect import bisect_right
@@ -23,6 +24,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
+from e2e.datasets import bind_tables
 from e2e.datasets.aml import (
     E01_MANIFEST,
     L01_MANIFEST,
@@ -421,6 +423,70 @@ def _source_counts(spec, root, cutoff, history):
             )
             counts[name] = count
     return counts
+
+
+@pytest.mark.skipif(os.getenv("KUMO_PYTORCH_PROFILE_L01") != "1", reason="run the l01 benchmark")
+@pytest.mark.parametrize("mode", ["fresh", "reloaded"])
+def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
+    from tests.e2e.loader_timing import parquet_metadata
+    from tests.e2e.runs import L01_BATCHING, time_loader
+
+    work = request.config.getoption("--e2e-dir")
+    prepared = work.parents[1] / "prepared"
+    fresh = work.parent / "fresh" / "l01"
+    spec = api.DataLoaderSpec.from_json((prepared / "contract.json").read_text())
+    _, data, table = bind_tables(prepared, spec, "entity_id", spec.batch.targets)
+    anchors = pq.read_table(table.source.path, columns=["sample_id", "split"])
+    splits = Counter(anchors["split"].to_pylist())
+    assert splits == dict.fromkeys(("train", "valid", "test"), 512)
+    assert pc.count_distinct(anchors["sample_id"]).as_py() == len(anchors)
+    expected = anchors.filter(pc.equal(anchors["split"], "train"))["sample_id"].to_pylist()
+    delivered = []
+
+    def observe(batch):
+        delivered[-1].extend(batch.metadata["sample_ids"])
+        return batch
+
+    def batches(task, **options):
+        delivered.append([])
+        return map(observe, native_anchor_delivery(task, seed=0, **options))
+
+    torch.set_num_threads(4)
+    torch.manual_seed(0)
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=4, profile=True)
+    setup = {
+        "pid": os.getpid(),
+        "source_sha256": hashlib.sha256(L01_MANIFEST.read_bytes()).hexdigest(),
+        "anchor_sha256": parquet_metadata(table.source.path)["sha256"],
+        "split_counts": splits,
+    }
+    with api.prepare(spec, data, engine) as plan:
+        fit = time_loader(
+            plan,
+            table,
+            work / "l01",
+            batches,
+            setup=setup,
+            modes=(mode,),
+            artifact=fresh / "artifact",
+            event_tables=("transactions",),
+            **L01_BATCHING,
+        )[mode]
+    assert delivered == [expected, expected]
+    for epoch in fit["epochs"]:
+        assert epoch["complete"] and epoch["batch_sizes"] == [4] * 128
+        assert (epoch["samples"], epoch["padded"], epoch["post_warmup"]["batches"]) == (512, 0, 126)
+        assert epoch["native_totals"]
+    for stage in ("input.fit", "target.fit"):
+        assert fit["stages"].get(stage, {}).get("calls", 0) == int(mode == "fresh")
+    assert fit["stages"].get("artifact.load", {}).get("calls", 0) == int(mode == "reloaded")
+    if mode == "reloaded":
+        prior = json.loads((fresh / "results.json").read_text())
+        assert prior["setup"]["pid"] != setup["pid"]
+        for key in ("source_sha256", "anchor_sha256", "split_counts"):
+            assert prior["setup"][key] == setup[key]
+        for key in ("anchors", "fitted_state", "contract"):
+            assert prior["fresh"][key] == fit[key]
 
 
 def test_li_medium_l01_combined_forecast(tmp_path):

@@ -29,6 +29,9 @@ worker on the package banking fixture. Its step includes batch adaptation throug
 the optimizer update and excludes model initialization and batch delivery.
 Use ``cuda`` to profile two native 33-anchor training epochs on the current GPU.
 The same worker runs the three CUDA regressions and records their JUnit results.
+Use ``l01`` with the pinned LI Medium files in ``KUMO_PYTORCH_DATA_ROOT`` to time
+two CPU loader epochs per fit. Each repetition fits in one worker and reloads
+its artifact in another. The workers share the prepared 512 anchors per split.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ import tempfile
 import time
 from contextlib import ExitStack
 from importlib.metadata import distributions
+from itertools import product
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -57,6 +61,7 @@ FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
 MARKER = "run.json"
 TIMING_CASES = {
     "loader": "tests/test_native_anchor_handoff.py::test_native_cpu_loader_timing",
+    "l01": "tests/e2e/test_aml.py::test_li_medium_l01_loader",
     "cuda": "tests/test_native_anchor_handoff.py::test_native_cuda_epochs",
     "banking": "tests/test_diskgraph_backend.py::"
     "test_synthetic_banking_materialization_sampling_and_reopen_are_reproducible",
@@ -67,6 +72,7 @@ CUDA_REGRESSIONS = (
     "tests/test_varlen_metadata.py::test_varlen_attention_consumes_the_metadata_directly",
 )
 LOADER_BATCHING = {"split": "train", "batch_size": 5}
+L01_BATCHING = LOADER_BATCHING | {"batch_size": 4}
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
@@ -116,7 +122,16 @@ def run(data: HMDataset, root: Path, flow: str, seed: int) -> tuple[Path, float]
 
 
 def time_loader(
-    plan, table, work: Path, make_batches, *, setup, cache=None, **batch_options
+    plan,
+    table,
+    work: Path,
+    make_batches,
+    *,
+    setup,
+    cache=None,
+    modes=("fresh", "reloaded"),
+    artifact=None,
+    **batch_options,
 ) -> dict:
     """Measure two complete train epochs for a fresh fit and its saved artifact."""
     from kumo.pytorch import api
@@ -126,9 +141,9 @@ def time_loader(
     work.mkdir(parents=True, exist_ok=True)
     options = LOADER_BATCHING | batch_options
     results = {"setup": setup}
-    artifact = work / "artifact"
+    artifact = artifact or work / "artifact"
     try:
-        for mode in ("fresh", "reloaded"):
+        for mode in modes:
             results[mode] = {}
             with ExitStack() as tasks:
                 with (
@@ -219,6 +234,12 @@ def _timing_campaign(
     cache_args = ["--cold-warm-cache"] if cold_warm_cache else []
     env = {**os.environ, f"KUMO_PYTORCH_PROFILE_{workload.upper()}": "1"}
     env.pop("KUMO_PYTORCH_HOST_MEMORY", None)
+    modes = ("",)
+    if workload == "l01":
+        from e2e.datasets.aml import prepare_l01_benchmark
+
+        prepare_l01_benchmark(Path(env["KUMO_PYTORCH_DATA_ROOT"]), root / "prepared")
+        modes = ("fresh", "reloaded")
     if host_memory:
         from tests.e2e.memory_worker import run_isolated, worker_identity
 
@@ -227,9 +248,10 @@ def _timing_campaign(
             _, gid = worker_identity()
             os.chown(root, -1, gid)
             root.chmod(0o710)
-    for index in range(repetitions):
-        work = root / str(index)
-        command = [sys.executable, "-m", "pytest", "-q", case, "--e2e-dir", str(work), *cache_args]
+    for index, mode in product(range(repetitions), modes):
+        work = root / str(index) / mode
+        node = f"{case}[{mode}]" if mode else case
+        command = [sys.executable, "-m", "pytest", "-q", node, "--e2e-dir", str(work), *cache_args]
         if workload == "cuda":
             junit = work / "cuda.xml"
             command.extend([*CUDA_REGRESSIONS, f"--junitxml={junit}"])
@@ -249,7 +271,7 @@ def _timing_campaign(
             worker = subprocess.run(command, cwd=REPOSITORY, env=env)
         result = work / workload / "results.json"
         ok = worker.returncode == 0 and result.is_file()
-        evidence = {}
+        evidence = {"pair": index, "fit": mode} if mode else {}
         if workload == "cuda":
             evidence["junit"] = str(junit.relative_to(root))
             if error := _cuda_junit_error(junit, (case, *CUDA_REGRESSIONS)):
@@ -257,7 +279,7 @@ def _timing_campaign(
                 ok = False
         workers.append(
             {
-                "worker": index,
+                "worker": len(workers),
                 "returncode": worker.returncode,
                 "complete": ok,
                 "results": str(result.relative_to(root)) if result.is_file() else None,
@@ -266,10 +288,12 @@ def _timing_campaign(
         )
         if ok:
             completed.append(json.loads(result.read_text()))
+        elif mode:
+            break  # A failed fit cannot supply its paired worker or a complete campaign.
 
     summary = {}
-    for mode in completed[0] if completed else ():
-        fits = [run[mode] for run in completed]
+    for mode in dict.fromkeys(key for run in completed for key in run):
+        fits = [run[mode] for run in completed if mode in run]
         summary[mode] = _ranges(fits)
         if "epochs" not in fits[0]:
             continue
@@ -283,6 +307,8 @@ def _timing_campaign(
     ]
     if workload == "loader":
         sources.append(Path(__file__).with_name("file_cache.py"))
+    if workload == "l01":
+        sources.append(REPOSITORY / "e2e/datasets/aml.py")
     if workload == "cuda":
         sources.append(Path(__file__).with_name("cuda_metrics.py"))
         sources.extend(REPOSITORY / node.split("::")[0] for node in CUDA_REGRESSIONS)
@@ -303,7 +329,8 @@ def _timing_campaign(
         **({"host_memory": host_memory} if host_memory else {}),
         "device": "cuda" if workload == "cuda" else "cpu",
         "stage_timing": "Inclusive caller wall time. Nested and native timings can overlap.",
-        **({"batch_size": 2} if workload == "banking" else LOADER_BATCHING),
+        **({"banking": {"batch_size": 2}, "l01": L01_BATCHING}.get(workload, LOADER_BATCHING)),
+        **({"seed": 0, "file_page_cache": "uncontrolled"} if workload == "l01" else {}),
         "revision": revision,
         "tracked_diff_sha256": tracked_diff,
         "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
@@ -318,8 +345,9 @@ def _timing_campaign(
         "summary": summary,
     }
     report.write_text(json.dumps(metadata, indent=2) + "\n")
-    if len(completed) != repetitions:
-        raise SystemExit(f"{len(completed)}/{repetitions} workers completed. See {report}")
+    expected = repetitions * len(modes)
+    if len(completed) != expected:
+        raise SystemExit(f"{len(completed)}/{expected} workers completed. See {report}")
     return report
 
 
