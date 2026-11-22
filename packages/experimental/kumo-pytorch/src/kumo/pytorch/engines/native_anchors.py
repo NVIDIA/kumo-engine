@@ -78,23 +78,14 @@ class NativeAnchors:
         self._feature_types = sample_value_types(source.schema, sample)
         self._pa, self._pc = pa, pc
         self._temporary = directory or source.new_task_directory()
-        self._scratch = None
-        if source._paths is not None:
-            self._extension = self._temporary
-            # Native ingest clears its output directory before reading inputs.
-            # Keep scratch beside that output, within the same task build root.
-            self._scratch = tempfile.TemporaryDirectory(
-                prefix=f"scratch-{self._temporary.task_id}-",
-                dir=Path(self._temporary.name).parent,
-            )
-            self.path = Path(self._scratch.name)
-        else:
-            parent = Path(source._index_path) / "train_tables"
-            parent.mkdir(exist_ok=True)
-            self._extension = tempfile.TemporaryDirectory(
-                prefix=Path(self._temporary.name).name + "-", dir=parent
-            )
-            self.path = Path(self._temporary.name)
+        self._extension = self._temporary
+        # Native ingest clears its output directory before reading inputs.
+        # Keep scratch beside that output, within the same task build root.
+        self._scratch = tempfile.TemporaryDirectory(
+            prefix=f"scratch-{self._temporary.task_id}-",
+            dir=Path(self._temporary.name).parent,
+        )
+        self.path = Path(self._scratch.name)
         self._closed = False
         self._length_caches = {}
         self._last_length_planning_stats = (0, 0)
@@ -1112,15 +1103,12 @@ class NativeAnchors:
             self._runtime = None
             self._history_engine = None
             del sampler
-            if self._extension is not self._temporary:
-                self._extension.cleanup()
             self._length_caches.clear()
             getattr(self, "_token_length_arrays", {}).clear()
             self._token_maps = []
             self._event_costs = {}
             self._temporary.cleanup()
-            if self._scratch is not None:
-                self._scratch.cleanup()
+            self._scratch.cleanup()
 
     def validate_columnar(self, assembler, selection):
         """Refuse unsupported contracts before constructing a native iterator."""

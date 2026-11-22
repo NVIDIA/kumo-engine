@@ -505,9 +505,9 @@ class DiskGraphSource:
         schema: DataSchema,
         *,
         num_threads: int | None,
-        random_seed: int | None = 0,
-        paths: Any,
+        paths: _ManagedIndexPaths,
         identity: str | None = None,
+        random_seed: int | None = 0,
     ) -> None:
         try:
             import diskgraph

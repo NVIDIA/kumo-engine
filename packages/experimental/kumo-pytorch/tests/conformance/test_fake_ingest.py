@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from kumo._managed_paths import _ManagedIndexPaths
 
 from conformance.assertions import bound_tables, case_settings, require_engine, write_parquet
 from conformance.cases import REPOSITORY
@@ -92,11 +93,12 @@ class _Source:
         schema: DataSchema,
         *,
         num_threads: int | None,
-        random_seed: int | None,
-        paths=None,
+        paths: _ManagedIndexPaths,
         identity: str | None = None,
+        random_seed: int | None = 0,
     ):
         self.artifact, self.schema, self.num_threads = artifact, schema, num_threads
+        self._paths = paths
         self.random_seed = random_seed
         self.artifact_identity = identity
 
@@ -129,6 +131,8 @@ def _open(
         source = engine.open(dataset, schema)
     assert isinstance(source, _Source)
     assert source.random_seed == engine.random_seed
+    assert source._paths.index_dir == Path(source.artifact.path)
+    assert source.artifact_identity == source._paths.index_build_id
     return source
 
 
