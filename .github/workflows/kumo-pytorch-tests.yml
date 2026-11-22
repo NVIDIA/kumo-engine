@@ -126,15 +126,19 @@ jobs:
         run: |
           python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/pytest.log" \
             python -m pytest -q --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/junit.xml"
+      - name: Style
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/style.log" \
+            bash -ec 'uvx ruff@0.17.3 check . && uvx ruff@0.17.3 format --check .'
+      - name: Package build
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/build.log" \
+            uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
       - uses: ./.github/actions/kumo-pytorch-results
         if: always()
         with: {name: kumo-pytorch-tests}
-      - name: Style
-        run: |
-          uvx ruff@0.17.3 check .
-          uvx ruff@0.17.3 format --check .
-      - name: Package build
-        run: uv build --wheel --out-dir "$RUNNER_TEMP/kumo-pytorch-wheel" .
 
   hm-lifecycle:
     if: github.event_name == 'schedule' || github.event_name == 'pull_request'

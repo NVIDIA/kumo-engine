@@ -120,10 +120,10 @@ class BindingReport:
             modes[mode] = (self, checks or {}, expected_checks or {}, refusal)
 
 
-def finish_binding_reports(item, report):
+def finish_binding_reports(item, report, *, call_passed=True):
     """Require every declared report from a passing call, including after fixture retries."""
     modes = _PENDING.pop(item.nodeid, {})
-    if not report.passed:
+    if not call_passed or not report.passed:
         return
     from tests.e2e.runs import _revision
 
@@ -155,13 +155,25 @@ def finish_binding_reports(item, report):
             )
             if refusal:
                 data["refusal"] = refusal[0]
-            path.write_text(json.dumps(data) + "\n")
-            plan.validate(
-                json.loads(path.read_text()),
-                os.getenv("GITHUB_SHA", source["revision"]),
-                required,
-                allowed_refusal=refusal[1] if refusal else None,
-            )
+            try:
+                plan.validate(
+                    data,
+                    os.getenv("GITHUB_SHA", source["revision"]),
+                    required,
+                    allowed_refusal=refusal[1] if refusal else None,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                data.update(
+                    outcome="invalid",
+                    stage="validation",
+                    full_population_verified=False,
+                    error=str(error),
+                )
+                raise
+            finally:
+                pending = path.with_suffix(".tmp")
+                pending.write_text(json.dumps(data) + "\n")
+                pending.replace(path)
     except (KeyError, OSError, TypeError, ValueError) as error:
         report.outcome = "failed"
         report.longrepr = f"{item.nodeid}: {error}"

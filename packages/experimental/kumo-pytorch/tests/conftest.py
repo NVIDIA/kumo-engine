@@ -54,6 +54,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 E2E_TIERS = ("t2a", "t2b")
+BINDING_CALL_PASSED = pytest.StashKey[bool]()
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -81,14 +82,19 @@ def pytest_runtest_makereport(item, call):
     report = (yield).get_result()
     if not os.getenv("KUMO_PYTORCH_DIAGNOSTICS"):
         return
-    if report.when == "call" and item.get_closest_marker("binding_report"):
+    binding = item.get_closest_marker("binding_report")
+    if binding and report.when == "call":
+        item.stash[BINDING_CALL_PASSED] = report.passed
+    if binding and report.when == "teardown":
         from tests.e2e.binding_report import finish_binding_reports
 
-        finish_binding_reports(item, report)
-    if report.failed and call.excinfo and item.path.parent.name == "e2e":
+        finish_binding_reports(item, report, call_passed=item.stash.get(BINDING_CALL_PASSED, False))
+    if report.failed and (binding or item.path.parent.name == "e2e"):
         from tests.e2e.loader_timing import record_correctness_failure
 
-        record_correctness_failure(call.excinfo.value)
+        record_correctness_failure(
+            call.excinfo.value if call.excinfo else ValueError(str(report.longrepr))
+        )
 
 
 def pytest_configure(config: pytest.Config) -> None:
