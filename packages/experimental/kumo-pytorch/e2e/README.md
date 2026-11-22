@@ -5,10 +5,9 @@ it, and run batch inference and serving in a fresh process. The flows are
 written the way a user would write them; this directory holds what they're
 measured against. It's development tooling, not part of the `kumo.pytorch` wheel.
 
-The end-to-end tests run in two tiers. T2a is the per-commit end-to-end run at
-size S, and T2b is the nightly run at size M (the sizes are in the dataset table
-below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
-`t2b` test markers.
+The H&M end-to-end tests run at sizes S (T2a) and M (T2b) on relevant PRs or
+manual runs. The nightly schedule uses the package correctness suite, the T2b
+conformance shards and the six GPU training bindings below.
 
 | Path | What it is |
 |---|---|
@@ -23,7 +22,7 @@ below). The names match the `--t2a` and `--t2b` pytest options and the `t2a` and
 
 ## Pinned nightly datasets
 
-The CPU suite on same-repository pull requests and scheduled runs on `main` stages every `e2e/datasets/pins/*.json` manifest on the runner before pytest. Fork pull requests run the same pytest command with private staging disabled.
+The CPU suite on same-repository pull requests and scheduled runs on `main` stages the non-25B correctness pins before pytest. Fork pull requests run the same pytest command with private staging disabled.
 For a new dataset, add a manifest with its S3 keys, sizes and SHA-256 hashes. The nightly role needs read access to those keys.
 To fill the local cache, run these commands from the package root with the AWS CLI and read access. A complete cache works offline.
 
@@ -75,7 +74,7 @@ or a trusted `pull-request/<number>` branch.
 
 | Mode | What runs |
 | --- | --- |
-| `smoke` | The full-source replay above. |
+| `smoke` | The four-viewer fixture, the two-viewer private extract and the full-source replay above. |
 | `training` | Two same-seed 100-update CPU GraphSAGE runs on the first 32 training viewers, followed by checkpoint evaluation on validation and test. |
 | `lifecycle` | A fresh process reloads fitted state and weights, checks target-free predictions, fine-tunes with frozen inputs and resumes a partially consumed training epoch. |
 | `full` | Native delivery of all 30,000 anchors in source order, with their original identities, cutoffs, count targets and masks. |
@@ -268,7 +267,7 @@ so fixing one fails its test and the gap is lifted:
   event on both engines, but the flows' models read at least one event per batch, so the flows serve
   only customers who bought before.
 
-## The nightly tier (T2b)
+## The medium H&M tier (T2b)
 
 `pytest --t2b tests/e2e` runs the same flows and checks at M (50,000 customers,
 1.25M purchases) with the M bands in `tests/e2e/tiers.py`. Each flow trains on a
@@ -298,6 +297,35 @@ It trains on all 400,000 train anchors, but its pinned plan caps an epoch at 64
 batches of 512 (10 epochs ran), so it sees fewer examples than the kumo-pytorch GNN's
 125,000-anchor sample over its epochs. kumo-engine's own labels
 equal the generator's at all 700,000 anchors.
+
+## Nightly training and results
+
+The nightly GPU matrix runs S02 (Synthetic nuFormer), L01 (AML LI Medium
+Combined), S01 (Synthetic PRAGMA), M04 (MBD GraphSAGE), S04 (Synthetic
+Combined) and M03 (MBD nuFormer). The package runner prepares DiskGraph and
+loads batches on CPU. Each GPU model trains for two complete passes over its
+registered training split, including the tail. It evaluates validation after
+each epoch and test after epoch two. Batches without eligible targets count
+toward delivery and skip the optimizer update. HI Small retains its source
+and behavior checks. The 25B fixtures and campaigns run on manual dispatch.
+
+Use workflow mode `binding-train` and a binding ID to replay a single job.
+The existing `KUMO_PYTORCH_BINDING_RUNNER` and `KUMO_PYTORCH_BINDING_SCRATCH`
+variables select the Linux CUDA worker and writable volume. From a worker with
+the full source staged in `KUMO_PYTORCH_DATA_ROOT`, the command is
+
+```sh
+python -m tests.e2e.runs binding-train S04 --e2e-dir /scratch/work --output report.json
+```
+
+The combined `results.md` and `results.json` contain per-head eligible counts
+and mean losses for each pass. Ingestion covers staging, source projection and
+index preparation. Materialization covers fitting. Training time and throughput
+cover both training epochs, including CPU batch loading and GPU synchronization.
+Tokens count valid input history tokens (zero for graph-only M04). RAM is peak
+process RSS, GPU utilization is the mean of device-wide NVML samples during
+training, and SSD usage is allocated space for the staged binding and its
+live projected tables and index.
 
 ## Package CI results and required check
 

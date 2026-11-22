@@ -6,7 +6,9 @@
 
 import json
 import os
+from contextlib import nullcontext
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import pyarrow as pa
@@ -17,8 +19,10 @@ import torch
 from e2e.datasets.binding_sources import PINS, _sources
 from kumo.pytorch import api
 from tests.e2e.binding_lifecycle import run_lifecycle
+from tests.e2e.binding_plan import NIGHTLY_TRAINING, nightly_correctness
 from tests.e2e.binding_report import BindingReport
-from tests.e2e.binding_training import run_training
+from tests.e2e.binding_training import run_training, train_full_binding
+from tests.e2e.cuda_metrics import training_gpu_window
 
 
 def _evidence(source, mode, counts=None, targets=None):
@@ -84,7 +88,28 @@ def _lifecycle_table(task, table, binding, root, work):
 
 
 def exercise_binding(task, data, table, engine, work, source):
+    if nightly_correctness():
+        return
     binding = source.identity["binding"]
+    if device := os.getenv("KUMO_PYTORCH_BINDING_SMOKE_DEVICE"):
+        assert binding in NIGHTLY_TRAINING and device in ("cuda", "cpu")
+        result = train_full_binding(
+            task,
+            binding,
+            batch_size=2,
+            device=device,
+            split_batches=lambda split, epoch: task.batches(
+                split=split, epoch=epoch, batch_size=2, drop_last=False, output_format="model"
+            ),
+            train_window=partial(training_gpu_window, device) if device == "cuda" else nullcontext,
+        )
+        for row in [*result["epochs"], *result["validation"], result["test"]]:
+            assert row["samples"] == source.counts[row["split"]]
+            for head, loss in row["heads"].items():
+                expected = source.targets[head]
+                if expected is not None:
+                    assert loss["eligible"] == expected[row["split"]]
+        return
     training = _evidence(source, "training")
     checks = run_training(task, work, training, binding)
     training.publish(checks=checks, expected_checks={"updates": [100, 100], "reproducible": True})

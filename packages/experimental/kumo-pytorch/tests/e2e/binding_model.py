@@ -13,6 +13,7 @@ from torch_geometric.nn import SAGEConv
 
 from e2e.datasets.aml import l01_loss
 from kumo.pytorch.models.causal import CausalEncoderConfig, CausalTokenEncoder
+from tests.e2e.binding_plan import binding_heads
 from tests.reference_models.batch_adapters import nuformer_batch, pragma_batch
 from tests.test_model import _smoke_model
 
@@ -29,15 +30,7 @@ class BindingModel(nn.Module):
     def __init__(self, task, binding):
         super().__init__()
         self.binding = binding
-        self.heads = {
-            "L01": ("amount", "currency"),
-            "M03": ("event_type", "event_subtype"),
-            "M04": ("count",),
-            "E03": ("masked_values",),
-            "S01": ("masked_values",),
-            "E04": ("next_token",),
-            "S02": ("next_token",),
-        }.get(binding, ("label",))
+        self.heads = binding_heads(binding)
         if self.heads == ("masked_values",):
             self.masked = _smoke_model(task.spaces["history"])
             return
@@ -86,7 +79,7 @@ class BindingModel(nn.Module):
         )
         return pragma_batch(replace(batch, inputs=inputs))
 
-    def forward(self, batch):
+    def forward(self, batch, tokens=None):
         if hasattr(self, "masked"):
             adapted = self._masked(batch)
             state = self.masked.encoder(adapted)
@@ -115,10 +108,11 @@ class BindingModel(nn.Module):
                 values.append(torch.stack((x.mean(1), valid.mean(1)), 1)[dst_ids[keep]])
                 owners.append(batch_ids[keep])
             x, dest = torch.cat(values), torch.cat(owners)
-            edge_index = torch.stack((torch.arange(len(x)), dest))
+            edge_index = torch.stack((torch.arange(len(x), device=dest.device), dest))
             vectors.append(self.graph((x, None), edge_index, size=(len(x), batch.batch_size)))
         if hasattr(self, "sequence"):
-            tokens = nuformer_batch(batch)
+            if tokens is None:
+                tokens = nuformer_batch(batch)
             if tokens.input_ids.shape[1]:
                 state = self.sequence(tokens)
                 if self.heads == ("next_token",):
@@ -140,17 +134,34 @@ class BindingModel(nn.Module):
         joined = torch.cat(vectors, -1)
         return torch.cat([layer(joined) for layer in self.predict.values()], 1)
 
-    def loss(self, batch):
+    def loss_terms(self, batch, device=None):
+        """Sum each head's loss over its eligible targets in the native CPU batch."""
+        counts = {name: int(batch.targets[name]["valid"].sum()) for name in self.heads}
+        if not any(counts.values()):
+            zero = next(self.parameters()).flatten()[0] * 0
+            return dict.fromkeys(self.heads, zero), counts
         if hasattr(self, "masked"):
-            return self.masked(self._masked(batch)).loss
-        predicted = self(batch)
+            fields = self._masked(batch)
+            if device is not None:
+                fields = fields.to(device, non_blocking=True)
+            return {"masked_values": self.masked(fields).loss * counts["masked_values"]}, counts
+        tokens = None
+        if device is not None:
+            # Unpack M03 histories on the loader host before transferring the model tensors.
+            if self.binding == "M03":
+                tokens = nuformer_batch(batch).to(device, non_blocking=True)
+                batch = replace(batch, inputs={}, targets={h: batch.targets[h] for h in self.heads})
+            batch = batch.to(device, non_blocking=True)
+        predicted = self(batch, tokens)
         if self.binding == "L01":
-            return l01_loss(batch, predicted[:, 0], predicted[:, 1:])[0]
+            _, sums, eligible = l01_loss(batch, predicted[:, 0], predicted[:, 1:])
+            return sums, eligible
         if self.heads == ("next_token",):
             valid = batch.targets["next_token"]["valid"]
             scores = predicted[valid] @ self.sequence.embedding.weight.T
-            return F.cross_entropy(scores, batch.targets["next_token"]["values"][valid])
-        losses = []
+            labels = batch.targets["next_token"]["values"][valid]
+            return {"next_token": F.cross_entropy(scores, labels, reduction="sum")}, counts
+        sums = {}
         for name, scores in zip(
             self.heads,
             predicted.split([m.out_features for m in self.predict.values()], 1),
@@ -158,12 +169,16 @@ class BindingModel(nn.Module):
         ):
             target = batch.targets[name]
             values, scores = target["values"][target["valid"]], scores[target["valid"]]
-            if not len(values):
-                losses.append(scores.sum() * 0)
-            elif name == "count":
-                losses.append(F.smooth_l1_loss(scores[:, 0], values))
+            if name == "count":
+                sums[name] = F.smooth_l1_loss(scores[:, 0], values, reduction="sum")
             elif name == "label":
-                losses.append(F.binary_cross_entropy_with_logits(scores[:, 0], values))
+                sums[name] = F.binary_cross_entropy_with_logits(
+                    scores[:, 0], values, reduction="sum"
+                )
             else:
-                losses.append(F.cross_entropy(scores, values))
-        return sum(losses)
+                sums[name] = F.cross_entropy(scores, values, reduction="sum")
+        return sums, counts
+
+    def loss(self, batch):
+        sums, counts = self.loss_terms(batch)
+        return sum(total / max(counts[name], 1) for name, total in sums.items())

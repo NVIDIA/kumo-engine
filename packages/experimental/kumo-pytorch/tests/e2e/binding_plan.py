@@ -4,6 +4,39 @@
 
 """Registered selections exercised by package-owned dataset tests."""
 
+import os
+
+# Train, validation and test counts from the registered anchor manifests.
+# L01 uses the next-outgoing-amount-currency workload's forecast_split.
+NIGHTLY_TRAINING = {
+    "S02": (33_579_420, 7_544_348, 17_821_276),
+    "L01": (13_777_229, 8_094_876, 24_381_285),
+    "S01": (33_349_854, 7_436_783, 17_477_364),
+    "M04": (6_600_044, 2_200_000, 2_199_956),
+    "S04": (124_243, 41_332, 41_201),
+    "M03": (6_600_044, 2_200_000, 2_199_956),
+}
+
+
+def binding_heads(binding):
+    return {
+        "L01": ("amount", "currency"),
+        "M03": ("event_type", "event_subtype"),
+        "M04": ("count",),
+        "E03": ("masked_values",),
+        "S01": ("masked_values",),
+        "E04": ("next_token",),
+        "S02": ("next_token",),
+    }.get(binding, ("label",))
+
+
+def nightly_correctness():
+    return (
+        os.getenv("GITHUB_EVENT_NAME") == "schedule"
+        or os.getenv("KUMO_PYTORCH_NIGHTLY_CORRECTNESS") == "1"
+    )
+
+
 # The package test IDs also distinguish the bounded sources from the offline fixtures.
 BINDINGS = {
     "E01": ("aml", "hi_small_account_history[e01-graph]", "aml-e01.json", "graph"),

@@ -14,8 +14,9 @@ from itertools import product
 from pathlib import Path
 from xml.etree import ElementTree
 
-from tests.e2e.binding_plan import BINDINGS, selections
+from tests.e2e.binding_plan import BINDINGS, NIGHTLY_TRAINING, selections
 from tests.e2e.binding_report import BindingReport, require_fields
+from tests.e2e.nightly_report import training_tables, validate_training
 from tests.e2e.runs import (
     AML_MODES,
     CUDA_REGRESSIONS,
@@ -106,14 +107,23 @@ def make_plan(event_name, event, paths, *, ref, **identity):
     seed_start = int(inputs["seed_start"]) if inputs.get("seed_start") not in (None, "") else None
     if seed_start is not None and seed_start < 0:
         raise ValueError("Conformance seed start must be nonnegative")
-    if mode not in ("package", "cuda", "binding-full", *AML, *STREAMING):
+    if mode not in ("package", "cuda", "binding-full", "binding-train", *AML, *STREAMING):
         raise ValueError(f"Unknown package mode {mode}")
     suite = affected and mode == "package"
+    nightly = event_name == "schedule" and ref == "refs/heads/main"
+    binding = inputs.get("binding", "")
+    training = []
+    if nightly or mode == "binding-train":
+        if repository != "NVIDIA/kumo-engine" or not ref.startswith("refs/heads/"):
+            raise ValueError("Full training requires a trusted repository branch")
+        if mode == "binding-train" and binding not in NIGHTLY_TRAINING:
+            raise ValueError(f"Unknown training binding: {binding}")
+        training = list(NIGHTLY_TRAINING) if nightly else [binding]
     private = (
         suite
         and repository == "NVIDIA/kumo-engine"
         and (
-            (event_name == "schedule" and ref == "refs/heads/main")
+            nightly
             or (event_name == "pull_request" and pr["head"]["repo"]["full_name"] == repository)
         )
     )
@@ -123,13 +133,15 @@ def make_plan(event_name, event, paths, *, ref, **identity):
         ref=ref,
         source_revision=pr["head"]["sha"] if pr else identity["revision"],
         mode=mode,
-        torch_backend="cu130" if mode in ("cuda", "aml", "l01-cuda") else "cpu",
-        binding=inputs.get("binding", ""),
+        torch_backend="cu130" if mode in ("cuda", "aml", "l01-cuda", "binding-train") else "cpu",
+        binding=binding,
+        training_bindings=training,
         seed_start=seed_start,
         affected=affected,
         suite=suite,
         private=private,
         t2a=suite
+        and not nightly
         and (
             event_name != "pull_request"
             or paths is None
@@ -149,10 +161,15 @@ def planned_jobs(plan):
         "kumo-pytorch-tests": plan["suite"],
         "cuda": mode == "cuda",
         "binding-full": mode == "binding-full",
-        "dataset-source": mode in (*AML, "binding-full"),
+        "dataset-source": mode in (*AML, *STREAMING, "cuda", "binding-full")
+        or bool(plan["training_bindings"]),
         "aml-benchmark": mode in AML,
         "streaming-25b": mode in STREAMING,
     }
+    if plan["training_bindings"]:
+        expected.update({f"GPU training {b}": True for b in plan["training_bindings"]})
+    else:
+        expected["binding-train"] = False
 
     def reusable(caller, active, children):
         if active:
@@ -179,6 +196,14 @@ def planned_jobs(plan):
             for row in matrix(tier)["include"]
         ]
         if tier == T2B:
+            if plan["event"] == "schedule":
+                children = children[:1]
+                expected.update(
+                    {
+                        "hm-lifecycle / Nightly H&M training": False,
+                        "hm-lifecycle / kumo-pytorch-t2b": False,
+                    }
+                )
             children += CONFORMANCE
         reusable(caller, plan[tier.name], children)
     return expected
@@ -307,6 +332,13 @@ def benchmark_evidence(directory, rows, revision, mode):
             )
             if error:
                 raise ValueError(error)
+            nodes = [
+                r["nodeid"]
+                for r in selections()
+                if r["mode"] == "training" and r["binding"] in NIGHTLY_TRAINING
+            ]
+            if error := _cuda_junit_error(only(directory, "binding-cuda.xml"), nodes):
+                raise ValueError(error)
         else:
             _aml_evidence(name, path, revision)
         for row in rows:
@@ -350,9 +382,23 @@ def selection_rows(plan):
             active = plan["private"]
             row["artifact"] = "kumo-pytorch-tests"
             reason = "private pins" if plan["suite"] else "outside selected mode"
+            if plan["event"] == "schedule" and mode_name in {"training", "lifecycle"}:
+                active, reason = False, "PR probe"
         row["status"] = "required" if active else reason
     if mode == "binding-full" and not any(r["status"] == "required" for r in rows):
         raise ValueError(f"Unknown full-population binding: {plan['binding']}")
+    rows.extend(
+        dict(
+            binding=b,
+            mode="two-epoch-training",
+            representation=BINDINGS[b][-1],
+            group="GPU training",
+            scope="full_source",
+            artifact=f"binding-train-{b}",
+            status="required",
+        )
+        for b in plan["training_bindings"]
+    )
     for campaign in STREAMING[1:]:
         node = (
             "test_streaming_weekly_session_forecast[25b-full]"
@@ -372,6 +418,17 @@ def selection_rows(plan):
                 nodeid="tests/e2e/test_streaming.py::" + node,
             )
         )
+        if campaign == "smoke":
+            for selector in ("bounded", "25b"):
+                rows.append(
+                    dict(
+                        rows[-1],
+                        selector=selector,
+                        nodeid=(
+                            f"tests/e2e/test_streaming.py::test_streaming_weekly_session_forecast[{selector}]"
+                        ),
+                    )
+                )
     for name in (*AML_MODES, "cuda"):
         active = (
             mode == name
@@ -430,7 +487,13 @@ def results(plan, jobs, artifacts, directory):
         group = [r for r in rows if r["status"] == "required" and r["artifact"] == name]
         try:
             source = evidence(name)
-            if group[0]["group"] == "benchmark":
+            if group[0]["group"] == "GPU training":
+                (row,) = group
+                path = only(source, "report.json")
+                data = read_json(path)
+                validate_training(data, row["binding"], plan)
+                row.update(status="executed", report=path.name, training=data)
+            elif group[0]["group"] == "benchmark":
                 benchmark_evidence(source, group, plan["revision"], plan["mode"])
             else:
                 receipt_evidence(source, group, plan["revision"])
@@ -441,6 +504,9 @@ def results(plan, jobs, artifacts, directory):
                         f"{row['binding']} {row['mode']}: {row.get('error', row['status'])}"
                     )
         except (KeyError, TypeError, ValueError, OSError, ElementTree.ParseError) as exc:
+            for row in group:
+                if row["status"] == "required":
+                    row.update(status="missing or invalid", error=str(exc))
             errors.append(f"{name}: {exc}")
     if plan["t2b"]:
         from conformance.shards import verify_shards
@@ -461,8 +527,9 @@ def results(plan, jobs, artifacts, directory):
 
 
 def render(report):
-    rows = [
-        f"### Package suite accounting · {report['status']}",
+    rows = [f"### Package suite accounting · {report['status']}"]
+    rows += training_tables([r for r in report["selections"] if r["group"] == "GPU training"])
+    rows += [
         "",
         "| Job | Outcome |",
         "| --- | --- |",
@@ -519,7 +586,7 @@ def gate(plan, report):
     expected = plan["selections"]
 
     def identity(row):
-        return row["binding"], row["mode"], row.get("repetition")
+        return row["binding"], row["mode"], row.get("selector"), row.get("repetition")
 
     observed = {identity(r): r for r in report["selections"]}
     if len(observed) != len(report["selections"]) or set(observed) != {
@@ -633,7 +700,7 @@ def main():
                 raise ValueError(f"Planned test path is missing: {path}")
         if output := os.getenv("GITHUB_OUTPUT"):
             with open(output, "a") as handle:
-                for key in ("affected", "suite", "t2a", "t2b"):
+                for key in ("affected", "suite", "t2a", "t2b", "training_bindings"):
                     print(f"{key}={json.dumps(data[key])}", file=handle)
                 print(f"plan={json.dumps(data, separators=(',', ':'))}", file=handle)
     else:
@@ -658,9 +725,11 @@ def main():
             for a in page["artifacts"]
         ]
         data = results(plan, jobs, artifacts, args.directory)
+        markdown = render(data)
+        args.output.with_suffix(".md").write_text(markdown + "\n")
         if summary := os.getenv("GITHUB_STEP_SUMMARY"):
             with open(summary, "a") as handle:
-                print(render(data), file=handle)
+                print(markdown, file=handle)
     args.output.write_text(json.dumps(data, indent=2) + "\n")
 
 

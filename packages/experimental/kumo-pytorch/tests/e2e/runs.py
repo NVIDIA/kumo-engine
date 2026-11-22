@@ -43,6 +43,12 @@ on 25k and 400k train anchors for all five HI Small bindings (three pairs each).
 Use ``aml --cgroup-parent DIR`` for all four L01 modes and 15 HI Small pairs
 on one clean candidate revision. Pass ``--sudo`` if the two cgroup supervisors
 require root. The linked measurements are descriptive.
+Use ``binding-train BINDING --e2e-dir DIR --output FILE`` on Linux to train the
+full registered training split for two epochs on CUDA. Stage the verified
+source under ``KUMO_PYTORCH_DATA_ROOT`` first. Ingestion includes source staging
+(``KUMO_PYTORCH_STAGE_SECONDS``, zero for pre-staged sources), re-verification,
+projection and DiskGraph preparation. RAM is process peak RSS.
+SSD usage includes the staged source and live prepared tables and index.
 """
 
 from __future__ import annotations
@@ -695,6 +701,16 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--e2e-dir", type=Path, required=True)
+    if argv and argv[0] == "binding-train":
+        from tests.e2e.binding_plan import NIGHTLY_TRAINING
+        from tests.e2e.full_binding_run import run_full_binding
+
+        parser.add_argument("binding", choices=NIGHTLY_TRAINING)
+        parser.add_argument("--output", type=Path, required=True)
+        args = parser.parse_args(argv[1:])
+        run_full_binding(**vars(args))
+        print(args.output)
+        return
     if argv and argv[0] == "aml":
         parser.add_argument("--cgroup-parent", type=Path, required=True)
         parser.add_argument(

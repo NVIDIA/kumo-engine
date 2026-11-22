@@ -2,12 +2,14 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reproducible CPU optimizer updates on a registered package task."""
+"""Bounded reproducibility checks and full-split training on a registered package task."""
 
-from contextlib import ExitStack
+from collections import Counter
+from contextlib import ExitStack, nullcontext
 from copy import deepcopy
 from itertools import count
 from pathlib import Path
+from time import perf_counter_ns
 
 import torch
 from torch import nn
@@ -15,7 +17,73 @@ from torch import nn
 from e2e.flows.common import BatchDigest
 from kumo.pytorch import api
 from tests.e2e.binding_model import make_model
+from tests.e2e.loader_timing import _rates
 from tests.test_inference_lifecycle import assert_same
+
+
+def train_full_binding(
+    task, binding, *, batch_size, split_batches, device, train_window, on_split=None
+):
+    """Train twice on verified source batches, validate after each epoch and test once."""
+    device = torch.device(device)
+    torch.manual_seed(17)
+    model = make_model(task, binding).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0)
+
+    def run_split(split, epoch):
+        training = split == "train"
+        model.train(training)
+        row = dict(epoch=epoch, split=split, samples=0, tokens=0, optimizer_updates=0)
+        totals = {name: torch.zeros((), dtype=torch.float64, device=device) for name in model.heads}
+        eligible = Counter()
+        with train_window(row) if training else nullcontext(), torch.set_grad_enabled(training):
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            start = perf_counter_ns()
+            for batch in split_batches(split, epoch):
+                if not 0 < batch.batch_size <= batch_size or batch.metadata["is_padding"].any():
+                    raise ValueError(
+                        f"{binding} {split} delivered unexpected padding or batch size"
+                    )
+                row["samples"] += batch.batch_size
+                if "history" in batch.inputs:
+                    row["tokens"] += int(batch.inputs["history"]["valid"].sum())
+                sums, counts = model.loss_terms(batch, device)
+                eligible.update(counts)
+                for name, total in sums.items():
+                    totals[name].add_(total.detach())
+                if training and any(counts.values()):
+                    loss = sum(sums[h] / max(n, 1) for h, n in counts.items())
+                    torch._assert_async(loss.isfinite(), "Nonfinite training loss")
+                    optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    optimizer.step()
+                    row["optimizer_updates"] += 1
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            row["elapsed_ns"] = perf_counter_ns() - start
+        if row["samples"] != task.count(split) or not row["samples"]:
+            raise ValueError(f"{binding} {split} delivered {row['samples']} of {task.count(split)}")
+        if training and not row["optimizer_updates"]:
+            raise ValueError(f"{binding} epoch {epoch} had no eligible optimizer updates")
+        row.update(_rates({k: row[k] for k in ("samples", "tokens")}, row["elapsed_ns"]))
+        row["heads"] = {}
+        for name, total in totals.items():
+            if not total.isfinite():
+                raise ValueError(f"{binding} {split} {name} loss is nonfinite")
+            loss_sum, n = total.item(), eligible[name]
+            row["heads"][name] = dict(
+                loss_sum=loss_sum, eligible=n, mean_loss=loss_sum / n if n else None
+            )
+        if on_split is not None:
+            on_split(row)
+        return row
+
+    epochs, validation = [], []
+    for epoch in (1, 2):
+        epochs.append(run_split("train", epoch))
+        validation.append(run_split("valid", epoch))
+    return dict(epochs=epochs, validation=validation, test=run_split("test", 2))
 
 
 def _train(task, probe, evidence=None, binding=None):

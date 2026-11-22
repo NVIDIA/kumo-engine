@@ -18,12 +18,12 @@ on:  # yamllint disable-line rule:truthy
         type: choice
         required: true
         default: package
-        options: [package, cuda, aml, l01-cuda, hi-small-memory, binding-full, all, smoke, training, lifecycle, full]
+        options: [package, cuda, aml, l01-cuda, hi-small-memory, binding-full, binding-train, all, smoke, training, lifecycle, full]
       seed_start:
         description: First extra conformance seed for the package suite (default derived from date)
         required: false
       binding:
-        description: Binding for the full-population CPU test
+        description: Full-population binding (GPU training supports L01, S01, S02, S04, M03, M04)
         type: choice
         default: E01
         options: [E01, E02, E03, E04, E05, L01, S01, S02, S04, M03, M04]
@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ (endsWith(inputs.mode, 'cuda') || inputs.mode == 'aml') && 'cuda' || contains(fromJSON('["hi-small-memory","binding-full"]'), inputs.mode) && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ (endsWith(inputs.mode, 'cuda') || inputs.mode == 'aml') && 'cuda' || contains(fromJSON('["hi-small-memory","binding-full","binding-train"]'), inputs.mode) && inputs.mode || inputs.mode && inputs.mode != 'package' && '25b' || github.event_name == 'schedule' && format('nightly-{0}', github.run_id) || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -52,6 +52,7 @@ jobs:
       suite: ${{ steps.select.outputs.suite }}
       t2a: ${{ steps.select.outputs.t2a }}
       t2b: ${{ steps.select.outputs.t2b }}
+      training_bindings: ${{ steps.select.outputs.training_bindings }}
     steps:
       - &checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
@@ -83,6 +84,7 @@ jobs:
           'gha-kumo-workflow-tests' || 'kumo-pytorch-public' }}
       deployment: false
     env:
+      KUMO_PYTORCH_NIGHTLY_CORRECTNESS: ${{ github.event_name == 'schedule' && '1' || '' }}
       STAGE_PINNED_DATASETS: >-
         ${{ github.repository == 'NVIDIA/kumo-engine' &&
           ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
@@ -99,9 +101,7 @@ jobs:
           # Intersect the role's existing grants with read-only dataset and anchor access.
           inline-session-policy: >-
             ${{ env.DATASET_SESSION_POLICY || '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:GetObject",
-            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*",
-            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/a585a4d806d51fdcd03ecae37b395a572765e7f9e5edf5c691ea7bd525fb4495/viewers.parquet",
-            "arn:aws:s3:::kumo-test-dataplane-bucket/scale-bench/extracts/kumo-pytorch/streaming-25b/c160/0c5c424f33b3641b17f5584d678475d14373e83b0f85d80d78e40639010c3549/sessions.parquet"]}]}' }}
+            "Resource":["arn:aws:s3:::kumo-engine-arena/datasets/*","arn:aws:s3:::kumo-engine-arena/anchors/*"]}]}' }}
           output-env-credentials: false
           output-credentials: true
           unset-current-credentials: true
@@ -114,8 +114,14 @@ jobs:
           AWS_SESSION_TOKEN: ${{ steps.aws.outputs.aws-session-token }}
         run: |
           root="$RUNNER_TEMP/kumo-pytorch-data"
-          pins=(e2e/datasets/pins/*.json)
-          if [[ -n "${DATASET_PINS:-}" ]]; then read -ra pins <<< "$DATASET_PINS"; fi
+          if [[ -n "${DATASET_PINS:-}" ]]; then
+            read -ra pins <<< "$DATASET_PINS"
+          else
+            pins=()
+            for pin in e2e/datasets/pins/*.json; do
+              [[ $pin == */streaming-25b.json ]] || pins+=("$pin")
+            done
+          fi
           python3 -m e2e.datasets.staging "${pins[@]}" --root "$root"
           echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
           # Bash also reads this before running package code inside the shared setup action.
@@ -167,12 +173,23 @@ jobs:
 
   cuda:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'cuda' && github.repository == 'NVIDIA/kumo-engine'
-    needs: diskgraph-wheel
+    needs: [diskgraph-wheel, dataset-source]
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    timeout-minutes: 45
+    timeout-minutes: 90
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      STAGE_PINNED_DATASETS: 'true'
+      DATASET_PINS: ${{ needs.dataset-source.outputs.pins }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
     steps:
       - *checkout
-      - uses: ./.github/actions/kumo-pytorch-setup
+      - &require_pins
+        run: test -n "$DATASET_SESSION_POLICY" && test -n "$DATASET_PINS"
+      - *dataset_credentials
+      - *stage_datasets
+      - &gpu_setup
+        uses: ./.github/actions/kumo-pytorch-setup
         with:
           diskgraph-wheel-artifact: diskgraph-wheel
           torch-backend: cu130
@@ -181,6 +198,14 @@ jobs:
         run: |
           python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/cuda.log" \
             python -m tests.e2e.runs cuda --e2e-dir "$KUMO_PYTORCH_DIAGNOSTICS/cuda" --repetitions 1
+      - name: Validate the six training models on CUDA
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/binding-cuda.log" \
+            env -u KUMO_PYTORCH_DIAGNOSTICS KUMO_PYTORCH_BINDING_SMOKE_DEVICE=cuda \
+            python -m pytest -q --junitxml="$KUMO_PYTORCH_DIAGNOSTICS/binding-cuda.xml" \
+              tests/e2e/test_synthetic.py::test_registered_history tests/e2e/test_mbd.py::test_mbd_transaction_forecast \
+              tests/e2e/test_aml.py::test_li_medium_l01_combined_forecast
       - uses: ./.github/actions/kumo-pytorch-results
         if: always() && steps.cuda_measure.outcome != 'skipped'
         with:
@@ -190,10 +215,17 @@ jobs:
             ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/cuda/**/*.xml
 
   dataset-source:
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["aml","l01-cuda","hi-small-memory","binding-full"]'), inputs.mode) && github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch'
+    needs: plan
+    if: >-
+      github.repository == 'NVIDIA/kumo-engine' && github.ref_type == 'branch' &&
+      ((github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.mode != 'package'))
     runs-on: ubuntu-24.04
     permissions: {contents: read, pull-requests: read}
-    outputs: {pins: '${{ steps.source.outputs.pins }}', policy: '${{ steps.source.outputs.policy }}'}
+    outputs:
+      pins: ${{ steps.source.outputs.pins }}
+      policy: ${{ steps.source.outputs.policy }}
+      training_policies: ${{ steps.source.outputs.training_policies }}
     steps:
       - *checkout
       - id: source
@@ -201,29 +233,44 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ inputs.mode }}
           BINDING: ${{ inputs.binding }}
+          TRAINING_BINDINGS: ${{ needs.plan.outputs.training_bindings }}
         run: |
           if [[ "$GITHUB_REF" != refs/heads/main ]]; then
             gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq \
               '.[] | select(.state == "open" and .head.repo.full_name == .base.repo.full_name) | .head.sha' | grep -Fx "$GITHUB_SHA"
           fi
-          if [[ "$MODE" == binding-full ]]; then
+          if [[ "$TRAINING_BINDINGS" != '[]' ]]; then
+            python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from e2e.datasets.binding_sources import full_source
+          policies = {b: full_source(b) for b in json.loads(os.environ["TRAINING_BINDINGS"])}
+          print("training_policies=" + json.dumps(policies, separators=(",", ":")))
+          PY
+            exit 0
+          elif [[ "$MODE" == binding-full ]]; then
             policy=$(python3 -m e2e.datasets.binding_sources "$BINDING" --policy)
             echo "policy=$policy" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           pins=(e2e/datasets/pins/aml-{l01,e01}.json)
           case "$MODE" in
+            cuda) pins=(e2e/datasets/pins/{aml-l01,mbd-m0{3,4},synthetic-{medium,weekly-account,weekly-customer,ltv}}.json);;
             l01-cuda) pins=("${pins[0]}");;
             hi-small-memory) pins=("${pins[1]}");;
+            all|smoke) pins=(e2e/datasets/pins/streaming-25b.json);;
+            training|lifecycle|full) exit 0;;
           esac
           echo "pins=${pins[*]}" >> "$GITHUB_OUTPUT"
-          jq -sc '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
-            Resource:([.[].objects[].key | "arn:aws:s3:::kumo-engine-arena/" + .] | unique)}]}' \
+          # The combined CUDA pins exceed STS's 2 KiB limit when listed object by object.
+          jq -sc --arg mode "$MODE" '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:"s3:GetObject",
+            Resource:([.[] | .bucket as $bucket | .objects[].key |
+            if $mode == "cuda" then split("/")[:3] | join("/") + "/*" else . end |
+            "arn:aws:s3:::" + $bucket + "/" + .] | unique)}]}' \
             "${pins[@]}" | sed 's/^/policy=/' >> "$GITHUB_OUTPUT"
 
   aml-benchmark:
     name: aml-benchmark
-    if: inputs.mode != 'binding-full'
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["aml","l01-cuda","hi-small-memory"]'), inputs.mode)
     needs: [diskgraph-wheel, dataset-source]
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     timeout-minutes: ${{ inputs.mode == 'l01-cuda' && 90 || 720 }}
@@ -236,7 +283,7 @@ jobs:
       WORKLOAD: ${{ inputs.mode == 'l01-cuda' && 'l01' || inputs.mode == 'hi-small-memory' && 'hi-small' || 'aml' }}
     steps:
       - *checkout
-      - run: test -n "$DATASET_SESSION_POLICY" && test -n "$DATASET_PINS"
+      - *require_pins
       - *dataset_credentials
       - *stage_datasets
       - uses: ./.github/actions/kumo-pytorch-setup
@@ -283,7 +330,8 @@ jobs:
       - *checkout
       - run: test -n "$DATASET_SESSION_POLICY"
       - *dataset_credentials
-      - name: Stage the complete registered source
+      - &stage_binding
+        name: Stage the complete registered source
         env:
           AWS_ACCESS_KEY_ID: ${{ steps.aws.outputs.aws-access-key-id }}
           AWS_SECRET_ACCESS_KEY: ${{ steps.aws.outputs.aws-secret-access-key }}
@@ -292,7 +340,9 @@ jobs:
           scratch=${SCRATCH:-$RUNNER_TEMP}
           [[ "$scratch" == /* && -d "$scratch" && -w "$scratch" ]]
           root="$scratch/kumo-pytorch-data"
+          start=$(python3 -c 'from time import monotonic; print(monotonic())')
           python3 -m e2e.datasets.binding_sources "$BINDING" --root "$root"
+          python3 -c 'import sys, time; print("KUMO_PYTORCH_STAGE_SECONDS=", time.monotonic() - float(sys.argv[1]), sep="")' "$start" >> "$GITHUB_ENV"
           echo "KUMO_PYTORCH_DATA_ROOT=$root" >> "$GITHUB_ENV"
           echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
           echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
@@ -310,14 +360,53 @@ jobs:
         if: always() && steps.population.outcome != 'skipped'
         with: {name: 'binding-full-${{ inputs.binding }}'}
 
+  binding-train:
+    name: ${{ matrix.binding && format('GPU training {0}', matrix.binding) || 'binding-train' }}
+    if: needs.plan.outputs.training_bindings != '[]'
+    needs: [plan, diskgraph-wheel, dataset-source]
+    strategy:
+      fail-fast: false
+      matrix:
+        binding: ${{ fromJSON(needs.plan.outputs.training_bindings) }}
+    runs-on: ${{ vars.KUMO_PYTORCH_BINDING_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
+    timeout-minutes: 4320
+    environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      BINDING: ${{ matrix.binding }}
+      SCRATCH: ${{ vars.KUMO_PYTORCH_BINDING_SCRATCH }}
+      STAGE_PINNED_DATASETS: 'true'
+      DATASET_SESSION_POLICY: ${{ toJSON(fromJSON(needs.dataset-source.outputs.training_policies)[matrix.binding]) }}
+    steps:
+      - *checkout
+      - run: jq -e '.Statement[0].Resource | length > 0' <<< "$DATASET_SESSION_POLICY"
+      - *dataset_credentials
+      - *stage_binding
+      - *gpu_setup
+      - name: Train for two complete epochs
+        env: *diagnostics
+        run: |
+          python -m tests.e2e.ci_command "$KUMO_PYTORCH_DIAGNOSTICS/training.log" \
+            python -m tests.e2e.runs binding-train "$BINDING" --e2e-dir "$TMPDIR" --output "$KUMO_PYTORCH_DIAGNOSTICS/report.json"
+      - uses: ./.github/actions/kumo-pytorch-results
+        if: always()
+        with:
+          name: binding-train-${{ matrix.binding }}
+          path: ${{ runner.temp }}/pytorch-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+
   streaming-25b:
     if: >-
       github.event_name == 'workflow_dispatch' && contains(fromJSON('["all","smoke","training","lifecycle","full"]'), inputs.mode) &&
       github.repository == 'NVIDIA/kumo-engine' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/pull-request/'))
-    needs: diskgraph-wheel
+    needs: [diskgraph-wheel, dataset-source]
     runs-on: ${{ vars.KUMO_PYTORCH_25B_RUNNER || 'linux-amd64-gpu-rtxpro6000-latest-1' }}
     environment: {name: gha-kumo-workflow-tests, deployment: false}
+    permissions: {contents: read, id-token: write}
+    env:
+      STAGE_PINNED_DATASETS: ${{ (inputs.mode == 'all' || inputs.mode == 'smoke') && 'true' || 'false' }}
+      DATASET_PINS: ${{ needs.dataset-source.outputs.pins }}
+      DATASET_SESSION_POLICY: ${{ needs.dataset-source.outputs.policy }}
     timeout-minutes: 720
     steps:
       - *checkout
@@ -325,6 +414,9 @@ jobs:
         env:
           SCRATCH: ${{ vars.KUMO_PYTORCH_25B_SCRATCH || runner.temp }}
         run: |
+          if [[ "$STAGE_PINNED_DATASETS" == true ]]; then
+            test -n "$DATASET_PINS" && test -n "$DATASET_SESSION_POLICY" || exit 1
+          fi
           [[ "$SCRATCH" == /* && -d "$SCRATCH" && -w "$SCRATCH" ]] || {
             echo "::error::Set KUMO_PYTORCH_25B_SCRATCH to a writable scratch directory"; exit 1;
           }
@@ -333,6 +425,10 @@ jobs:
           mkdir -p "$SCRATCH/kumo-pytorch-25b/tmp"
           echo "TMPDIR=$SCRATCH/kumo-pytorch-25b/tmp" >> "$GITHUB_ENV"
           echo "KUMO_PYTORCH_25B_ROOT=$SCRATCH/kumo-pytorch-25b/cache" >> "$GITHUB_ENV"
+          echo 'unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN' > "$RUNNER_TEMP/without-oidc"
+          echo "BASH_ENV=$RUNNER_TEMP/without-oidc" >> "$GITHUB_ENV"
+      - *dataset_credentials
+      - *stage_datasets
       - *package_setup
       - name: Run the full-source campaign
         id: campaign
@@ -341,7 +437,7 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           suite=tests/e2e/test_streaming.py
-          smoke="$suite::test_streaming_weekly_session_forecast[25b-full]"
+          smoke="$suite::test_streaming_weekly_session_forecast"
           campaign="$suite::test_streaming_campaign"
           case "$MODE" in
             all) nodes=("$smoke" "$campaign") ;;
@@ -358,7 +454,7 @@ jobs:
 
   results:
     if: always()
-    needs: [plan, diskgraph-wheel, cpu, distribution, hm-small, hm-lifecycle, dataset-source, aml-benchmark, binding-full, cuda, streaming-25b]
+    needs: [plan, diskgraph-wheel, cpu, distribution, hm-small, hm-lifecycle, dataset-source, aml-benchmark, binding-full, binding-train, cuda, streaming-25b]
     runs-on: ubuntu-24.04
     permissions: {contents: read, actions: read}
     steps:
@@ -367,7 +463,7 @@ jobs:
         if: needs.plan.outputs.affected == 'true'
         with:
           pattern: >-
-            {kumo-pytorch-tests,kumo-pytorch-t2b-conformance-?,*-measurements,binding-full-*,streaming-25b-*}${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
+            {kumo-pytorch-tests,kumo-pytorch-t2b-conformance-?,*-measurements,binding-full-*,binding-train-*,streaming-25b-*}${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/evidence
       - name: Account for selected jobs and binding results
         if: always()
@@ -379,7 +475,9 @@ jobs:
         if: always()
         with:
           name: kumo-pytorch-results${{ github.run_attempt != 1 && format('-attempt-{0}', github.run_attempt) || '' }}
-          path: ${{ runner.temp }}/results.json
+          path: |
+            ${{ runner.temp }}/results.json
+            ${{ runner.temp }}/results.md
           if-no-files-found: error
 
   gate:

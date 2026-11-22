@@ -28,6 +28,7 @@ jobs:
         with:
           persist-credentials: false
       - id: matrix
+        if: github.event_name != 'schedule'
         run: echo "matrix=$(python3 tests/e2e/tiers.py t2b)" >> "$GITHUB_OUTPUT"
       - name: Pick today's seed batches
         id: seeds
@@ -47,7 +48,8 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
   run:
-    name: Nightly end-to-end ${{ matrix.flow }} seed ${{ matrix.seed }} (size M)
+    name: ${{ github.event_name == 'schedule' && 'Nightly H&M training' || format('Nightly end-to-end {0} seed {1} (size M)', matrix.flow, matrix.seed) }}
+    if: github.event_name != 'schedule'
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 75

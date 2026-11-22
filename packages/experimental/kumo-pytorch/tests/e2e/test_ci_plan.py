@@ -8,6 +8,7 @@ import json
 import pytest
 
 from tests.e2e import ci_plan as ci
+from tests.e2e.nightly_report import METRICS
 
 REPO = "NVIDIA/kumo-engine"
 PR = {"number": 1, "head": {"sha": "head", "repo": {"full_name": REPO}}, "base": {"sha": "base"}}
@@ -83,6 +84,96 @@ def test_gate_checks_attempt_membership_and_explicit_exemption(tmp_path):
     raw[0].update(run_attempt=1)
     _, errors = ci.account_jobs(p, raw + [raw[0]])
     assert any("stale" in e for e in errors)
+
+
+def test_nightly_keeps_correctness_and_trains_only_the_six_full_bindings():
+    p = plan("schedule")
+    assert p["training_bindings"] == ["S02", "L01", "S01", "M04", "S04", "M03"]
+    required = [r for r in p["selections"] if r["status"] == "required"]
+    assert {r["binding"] for r in required if r["mode"] == "correctness"} == set(ci.BINDINGS)
+    assert [r["binding"] for r in required if r["scope"] == "full_source"] == p["training_bindings"]
+    assert not any(
+        r["mode"] in {"training", "lifecycle"} or r["binding"] == "T01" for r in required
+    )
+    assert not p["t2a"] and not p["jobs"]["hm-lifecycle / Nightly H&M training"]
+    assert all(p["jobs"]["hm-lifecycle / " + name] for name in ci.CONFORMANCE)
+    assert plan(paths=None)["training_bindings"] == []
+    with pytest.raises(ValueError, match="Unknown training binding"):
+        plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "E01"})
+
+
+def test_training_report_requires_full_epochs_metrics_and_losses(tmp_path):
+    from e2e.datasets.binding_sources import PINS
+
+    p = plan("workflow_dispatch", inputs={"mode": "binding-train", "binding": "M04"})
+    name = "binding-train-M04-attempt-2"
+    folder = tmp_path / name
+    folder.mkdir()
+    pins = json.loads((PINS / "mbd-m04.json").read_text())["objects"]
+    counts = dict(zip(("train", "valid", "test"), ci.NIGHTLY_TRAINING["M04"], strict=True))
+
+    def split(s, e):
+        n = counts[s]
+        return dict(
+            epoch=e,
+            split=s,
+            samples=n,
+            tokens=0,
+            elapsed_ns=10**9,
+            optimizer_updates=2 if s == "train" else 0,
+            heads={"count": dict(eligible=n, loss_sum=n / 4, mean_loss=0.25)},
+        )
+
+    data = dict(
+        binding="M04",
+        workload="binding-train",
+        revision="candidate",
+        run_id=14,
+        run_attempt=2,
+        stage="complete",
+        tracked_diff_sha256=None,
+        complete=True,
+        scope="full_source",
+        device="cuda",
+        fit_split="train",
+        split_counts=counts,
+        expected_eligible={"count": counts},
+        source_manifest_sha256=pins["source_manifest"]["sha256"],
+        anchor_manifest_sha256=pins["anchor_manifest"]["sha256"],
+        epochs=[
+            dict(split("train", e), gpu=dict(samples=5, mean_percent=15, device_uuid="GPU-1"))
+            for e in (1, 2)
+        ],
+        validation=[split("valid", e) for e in (1, 2)],
+        test=split("test", 2),
+        metrics=dict(
+            ingestion_seconds=5,
+            materialization_seconds=1,
+            training_seconds=2,
+            samples_per_second=counts["train"],
+            tokens_per_second=0,
+            peak_ram_bytes=2048,
+            average_gpu_utilization_percent=15,
+            ssd_bytes=4096,
+        ),
+    )
+    artifacts = [
+        dict(id=1, name=name, expired=False, workflow_run={"id": 14, "head_sha": "candidate"})
+    ]
+
+    def report():
+        (folder / "report.json").write_text(json.dumps(data))
+        return ci.results(p, jobs(p), artifacts, tmp_path)
+
+    result = report()
+    ci.gate(p, result)
+    markdown = ci.render(result)
+    assert "Mean loss" in markdown and all(label in markdown for _, label, _ in METRICS)
+    data["epochs"][1]["samples"] -= 1
+    assert "expected samples=" in report()["errors"][0]
+    data["epochs"][1]["samples"] += 1
+    data["validation"][0]["heads"].clear()
+    assert "loss head" in report()["errors"][0]
 
 
 def test_single_full_binding_requires_successful_full_source_receipt(tmp_path):

@@ -28,6 +28,10 @@ FIRST = int(datetime(2025, 12, 10, tzinfo=UTC).timestamp()) * 1000
 WEEK = 7 * 86400 * 1000
 FULL_PIN = T01_MANIFEST.parents[1] / "streaming-25b-full.json"
 SPLITS = ("train", "valid", "test")
+pytestmark = pytest.mark.skipif(
+    os.getenv("GITHUB_ACTIONS") == "true" and not os.getenv("KUMO_PYTORCH_25B_ROOT"),
+    reason="streaming 25B runs on demand",
+)
 
 
 def _bounded_tables():
