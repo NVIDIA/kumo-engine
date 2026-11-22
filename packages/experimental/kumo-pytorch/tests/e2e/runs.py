@@ -62,10 +62,14 @@ from contextlib import ExitStack, nullcontext
 from importlib.metadata import distributions
 from itertools import product
 from pathlib import Path
+from typing import TYPE_CHECKING
 from xml.etree import ElementTree
 
-from e2e.datasets.hm import HMDataset, generate, sample_anchors
+from e2e import E01_MANIFEST, L01_MANIFEST
 from tests.e2e.tiers import BY_NAME, Tier
+
+if TYPE_CHECKING:
+    from e2e.datasets.hm import HMDataset
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 FLOWS = {"gnn": "e2e.flows.hm_gnn", "pragma": "e2e.flows.hm_pragma"}
@@ -96,6 +100,8 @@ HI_SMALL_BINDINGS = ("E01", "E02", "E03", "E04", "E05")
 
 
 def dataset(root: Path, tier: Tier) -> HMDataset:
+    from e2e.datasets.hm import generate
+
     return generate(tier.scale, 0, root / f"hm-{tier.scale.lower()}")
 
 
@@ -104,6 +110,8 @@ def training_data(hm: HMDataset, root: Path, tier: Tier) -> HMDataset:
 
     if not tier.sample:
         return hm
+    from e2e.datasets.hm import sample_anchors
+
     return sample_anchors(hm, tier.sample, tier.sample_seed, root / "sampled")
 
 
@@ -288,7 +296,6 @@ def _provenance(case):
 
 
 def _hi_small_fits(e2e_dir, cgroup_parent, host_memory):
-    from e2e.datasets.aml import E01_MANIFEST
     from tests.e2e.memory_worker import run_isolated, worker_identity
 
     e2e_dir.mkdir(parents=True, exist_ok=True)
@@ -526,7 +533,6 @@ def _timing_campaign(
 
 
 def _aml_evidence(mode, path, revision):
-    from e2e.datasets.aml import E01_MANIFEST, L01_MANIFEST
     from tests.e2e.binding_report import require_fields
 
     data = json.loads(path.read_text())

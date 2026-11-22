@@ -85,6 +85,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: diskgraph-wheel
+          overwrite: ${{ inputs.diagnostics && github.run_attempt > 1 }}
           path: /tmp/diskgraph-wheel/diskgraph-*.whl
           if-no-files-found: error
           compression-level: 0

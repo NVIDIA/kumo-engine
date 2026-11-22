@@ -11,42 +11,30 @@ name: kumo-pytorch DiskGraph
 # installed with DiskGraph's into a fresh environment. Runs on DiskGraph changes
 # too: the package builds against the workspace DiskGraph.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/actions/kumo-pytorch-results/**'
-      - '.github/workflows/kumo-pytorch-diskgraph.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'packages/experimental/kumo-pytorch/**'
-      - 'packages/diskgraph/**'
-      - 'scripts/diskgraph'
-      - '.github/workflows/_diskgraph-wheel.yml'
-      - '.github/actions/kumo-pytorch-setup/**'
-      - '.github/actions/kumo-pytorch-results/**'
-      - '.github/workflows/kumo-pytorch-diskgraph.yml'
+  workflow_call:
+    inputs:
+      prebuilt-wheel:
+        type: boolean
+        default: false
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: kumo-pytorch-diskgraph-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   diskgraph-wheel:
+    if: ${{ !inputs.prebuilt-wheel }}
     uses: ./.github/workflows/_diskgraph-wheel.yml
     with: {diagnostics: true}
 
   diskgraph:
     name: kumo-pytorch-diskgraph
     needs: diskgraph-wheel
+    if: &wheel_ready ${{ !cancelled() && (inputs.prebuilt-wheel || needs.diskgraph-wheel.result == 'success') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -77,6 +65,7 @@ jobs:
   notebooks:
     name: kumo-pytorch-notebooks
     needs: diskgraph-wheel
+    if: *wheel_ready
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -99,6 +88,7 @@ jobs:
   install:
     name: kumo-pytorch-install
     needs: diskgraph-wheel
+    if: *wheel_ready
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:

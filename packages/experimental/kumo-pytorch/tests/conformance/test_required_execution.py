@@ -4,6 +4,7 @@
 
 """A skipped required test and an empty selection must return a failing exit code."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -19,6 +20,38 @@ from conformance.registry import REPLAYED
 from tests.conformance.conftest import PINNED_DTYPES, PINNED_ENCODERS
 
 
+def test_nightly_shards_cover_the_full_collection_once(tmp_path):
+    from conformance.shards import collection_hash, shard_for, verify_shards
+
+    ids = [f"test_properties.py::test_property[delivery-diskgraph-seed{i}]" for i in range(12)]
+    ids.append("tests/conformance/test_guarantees.py::test_public_behavior[simple]")
+    run = dict(revision="candidate", run_id="1", attempt="2")
+    paths = []
+    for i in range(3):
+        path = tmp_path / f"{i}.json"
+        report = dict(
+            run,
+            shard=i,
+            passed=[n for n in ids if shard_for(n) == i],
+            collection_sha256=collection_hash(ids),
+            engine="all",
+            seeds=12,
+            seed_start=0,
+            complete=True,
+        )
+        path.write_text(json.dumps(report))
+        paths.append(path)
+    assert verify_shards(paths, **run) == len(ids)
+    with pytest.raises(ValueError, match="Expected conformance shards"):
+        verify_shards(paths[:-1], **run)
+    with pytest.raises(ValueError, match="Mismatched conformance run"):
+        verify_shards(paths, **(run | {"attempt": "1"}))
+    report["passed"].pop()
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="union"):
+        verify_shards(paths, **run)
+
+
 def run_pytest(command, directory):
     # A parent's debugging filter must not change the scenario being tested.
     env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
@@ -32,6 +65,23 @@ def run_pytest(command, directory):
     return subprocess.run(
         command, cwd=directory, env=env, capture_output=True, text=True, timeout=30
     )
+
+
+@pytest.mark.parametrize("scenario", ("pass", "xfail", "ignore"))
+def test_package_fixture_profile_requires_whole_modules(tmp_path, monkeypatch, scenario):
+    tests = tmp_path / "tests"
+    (tests / "e2e").mkdir(parents=True)
+    shutil.copy(REPOSITORY / "pyproject.toml", tmp_path)
+    shutil.copy(REPOSITORY / "tests/conftest.py", tests)
+    (tests / "e2e/test_dataset_staging.py").write_text("def test_stage(): pass\n")
+    body = "pytest.xfail('unexpected')" if scenario == "xfail" else "pass"
+    (tests / "test_model.py").write_text(f"import pytest\ndef test_model(): {body}\n")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(REPOSITORY), str(REPOSITORY / "src")]))
+    command = [sys.executable, "-m", "pytest", "-q", "--complete-fixtures"]
+    if scenario == "ignore":
+        command.append("--ignore=tests/test_model.py")
+    result = run_pytest(command, tmp_path)
+    assert result.returncode == {"pass": 0, "xfail": 1, "ignore": 4}[scenario], result.stdout
 
 
 @pytest.mark.parametrize("scenario", ("skip", "empty"))

@@ -43,7 +43,11 @@ def _events(family, raw, tables, roots, entity_type):
     accounts = tables["accounts"]
     account_view = entity_type == "account"
     if account_view and family != "transfers" and "account_id" not in raw.column_names:
-        members = accounts.filter(pc.is_in(accounts["account_id"], value_set=roots))
+        members = (
+            accounts
+            if roots is None
+            else accounts.filter(pc.is_in(accounts["account_id"], value_set=roots))
+        )
         raw = raw.join(
             members.select(["customer_id", "account_id", "slot"]),
             "customer_id",
@@ -81,7 +85,12 @@ def _events(family, raw, tables, roots, entity_type):
         if "account_id" in raw.column_names and not owner("account_id").equals(root):
             raise ValueError(f"Account ownership disagrees with {family}.customer_id")
         events = pa.table(dict(values, root_id=raw["account_id"] if account_view else root))
-    return events.filter(pc.is_in(events["root_id"], value_set=roots))
+    selected = (
+        pc.is_valid(events["root_id"])
+        if roots is None
+        else pc.is_in(events["root_id"], value_set=roots)
+    )
+    return events.filter(selected)
 
 
 def _contract(capacity, entity_type):
@@ -128,6 +137,20 @@ def _contract(capacity, entity_type):
     return ltv_contract(contract, graph_fields, capacity) if ltv else contract
 
 
+def _project_anchors(anchors, entity_type):
+    columns = dict(zip(anchors.column_names, anchors.columns, strict=True))
+    columns.update(
+        registered_entity_id=anchors["entity_id"],
+        prediction_time_ns=anchors["as_of_time"].cast(pa.int64()),
+    )
+    if entity_type == "ltv":
+        del columns["gross_profit"]
+        columns.update(
+            as_of_time=anchors["graph_as_of_time"], label=anchors["label"].cast(pa.float32())
+        )
+    return pa.table(columns)
+
+
 def prepare_synthetic(tables, directory: Path, entity_type):
     """Project verified original tables to a native dataset, contract and anchor table."""
     if directory.exists():
@@ -152,17 +175,7 @@ def prepare_synthetic(tables, directory: Path, entity_type):
             rows = _events(name, tables[name], tables, roots, entity_type)
             pq.write_table(rows, work / f"{name}.parquet")
             capacity += max(Counter(rows["root_id"].to_pylist()).values(), default=1)
-        columns = dict(zip(anchors.column_names, anchors.columns, strict=True))
-        columns.update(
-            registered_entity_id=anchors["entity_id"],
-            prediction_time_ns=anchors["as_of_time"].cast(pa.int64()),
-        )
-        if entity_type == "ltv":
-            del columns["gross_profit"]
-            columns.update(
-                as_of_time=anchors["graph_as_of_time"], label=anchors["label"].cast(pa.float32())
-            )
-        pq.write_table(pa.table(columns), work / "anchors.parquet")
+        pq.write_table(_project_anchors(anchors, entity_type), work / "anchors.parquet")
         work.rename(directory)
     targets = ("label",) if entity_type == "ltv" else ()
     return bind_tables(directory, _contract(capacity, entity_type), root_key, targets)
@@ -171,6 +184,34 @@ def prepare_synthetic(tables, directory: Path, entity_type):
 def load_synthetic(root, entity_type):
     """Load the shared verified source shards and this workload's anchors."""
     return read_synthetic(verify(root, _SOURCE) | verify(root, _ANCHORS[entity_type]), entity_type)
+
+
+def _rank_accounts(accounts):
+    # Rank siblings in the complete ownership table before selecting the cohort.
+    accounts = accounts.sort_by([("customer_id", "ascending"), ("account_id", "ascending")])
+    _, starts, counts = np.unique(
+        accounts["customer_id"].to_numpy(), return_index=True, return_counts=True
+    )
+    accounts = accounts.append_column(
+        "slot", pa.array(np.arange(len(accounts)) - np.repeat(starts, counts))
+    )
+    return accounts, int(counts.max())
+
+
+def _anchor_columns(entity_type):
+    columns = [
+        "sample_id",
+        "entity_id",
+        "customer_id",
+        "as_of_time",
+        "cutoff_epoch_seconds",
+        "split",
+    ]
+    if entity_type == "account":
+        columns.append("account_id")
+    elif entity_type == "ltv":
+        columns.extend(("graph_as_of_time", "gross_profit", "label"))
+    return columns
 
 
 def read_synthetic(files, entity_type):
@@ -195,19 +236,7 @@ def read_synthetic(files, entity_type):
             paths.setdefault(name.split("/")[0], []).append(path)
 
     positions = pin["anchor_rows"]
-    columns = [
-        "sample_id",
-        "entity_id",
-        "customer_id",
-        "as_of_time",
-        "cutoff_epoch_seconds",
-        "split",
-    ]
-    if entity_type == "account":
-        columns.append("account_id")
-    elif entity_type == "ltv":
-        columns.extend(("graph_as_of_time", "gross_profit", "label"))
-    anchors = ds.dataset(files["anchors"]).take(positions, columns=columns)
+    anchors = ds.dataset(files["anchors"]).take(positions, columns=_anchor_columns(entity_type))
     anchors = anchors.append_column("anchor_row_position", pa.array(positions))
     roots = anchors["customer_id"].unique()
     customer = ds.field("customer_id").isin(roots)
@@ -221,15 +250,7 @@ def read_synthetic(files, entity_type):
         columns=["account_id", "customer_id", "opened_at"]
     )
     if entity_type == "account":
-        # Rank siblings in the complete ownership table before selecting the cohort.
-        accounts = accounts.sort_by([("customer_id", "ascending"), ("account_id", "ascending")])
-        _, starts, counts = np.unique(
-            accounts["customer_id"].to_numpy(), return_index=True, return_counts=True
-        )
-        accounts = accounts.append_column(
-            "slot", pa.array(np.arange(len(accounts)) - np.repeat(starts, counts))
-        )
-        tables["fanout"] = int(counts.max())
+        accounts, tables["fanout"] = _rank_accounts(accounts)
         owner_index = pc.index_in(
             anchors["account_id"], value_set=accounts["account_id"].combine_chunks()
         )

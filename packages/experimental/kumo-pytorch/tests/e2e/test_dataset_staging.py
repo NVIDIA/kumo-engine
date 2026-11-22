@@ -7,10 +7,11 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from e2e.datasets.staging import verify
+from e2e.datasets.staging import admit, verify
 
 
 def test_stage_pinned_datasets(tmp_path, monkeypatch):
@@ -40,6 +41,9 @@ def test_stage_pinned_datasets(tmp_path, monkeypatch):
         manifest.write_text(json.dumps(spec))
         manifests.append(manifest)
     with monkeypatch.context() as patch:
+        patch.setattr("shutil.disk_usage", lambda path: SimpleNamespace(free=3))
+        with pytest.raises(OSError, match="3 bytes free, 4 required"):
+            admit(root, manifests)
         patch.setattr(subprocess, "run", fetch)
         with pytest.raises(FileNotFoundError):
             verify(root, manifests[0])
@@ -49,6 +53,9 @@ def test_stage_pinned_datasets(tmp_path, monkeypatch):
         assert not (root / "one").exists()
         payload = b"ok"
         assert verify(root, manifests[0], download=True) == {"table": root / "one"}
+        admit(root, manifests)
+        with pytest.raises(OSError, match="1073741824 required"):
+            admit(root, manifests, minimum_free_gib=1)
     (root / "two").write_bytes(payload)
     assert verify(root, manifests[1]) == {"table": root / "one", "second": root / "two"}
     command = [sys.executable, "-m", "e2e.datasets.staging", *manifests, "--root", root]

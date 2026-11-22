@@ -146,6 +146,12 @@ def finish_binding_reports(item, report, *, call_passed=True):
                 plan.identity,
                 **source,
                 splits=plan.splits,
+                expected=dict(
+                    counts=plan.counts,
+                    targets=plan.targets,
+                    features=sorted(plan.features),
+                    checks=required,
+                ),
                 checks=checks,
                 outcome="refused" if refusal else "executed",
                 stage="prepare" if refusal else "complete",

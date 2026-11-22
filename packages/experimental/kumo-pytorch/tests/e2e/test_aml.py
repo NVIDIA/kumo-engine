@@ -31,11 +31,12 @@ from e2e.datasets.aml import (
     L01_MANIFEST,
     l01_loss,
     li_head_loss,
-    prepare_hi_small,
+    prepare_hi_small_group,
     prepare_li_medium,
 )
 from e2e.datasets.staging import verify
 from kumo.pytorch import api
+from tests.e2e.binding_campaign import exercise_binding
 from tests.e2e.binding_report import BindingReport
 from tests.e2e.history import (
     check_masked_history,
@@ -240,7 +241,7 @@ def li_heads_source(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def hi_small():
+def hi_small(tmp_path_factory):
     positions = (0, 313, 2724, 4245, 11800, 409216)
     files, anchors = _source_rows(E01_MANIFEST, "hi-small", positions, "split", "involvement")
     account_ids, events, ends = _source_history(files, anchors)
@@ -263,7 +264,13 @@ def hi_small():
             assert (row["forecast_split"], row["involvement"]) == (split, label)
         histories[row["sample_id"]] = root, cutoff, past
         registered[row["sample_id"]] = dict(row, anchor_row_position=pos)
-    return files, registered, histories
+    bind = prepare_hi_small_group(
+        files,
+        tmp_path_factory.mktemp("hi-small"),
+        positions,
+        {r["entity_id"] for r in anchors.values()},
+    )
+    return bind, registered, histories
 
 
 @pytest.mark.parametrize(
@@ -273,17 +280,24 @@ def hi_small():
         ("E02", {"graph", "history", "aggregates"}, "label"),
         ("E03", {"history", "history_calendar", "history_timing"}, "masked_values"),
         ("E04", {"history"}, "next_token"),
-        pytest.param("E05", {"history"}, "label", marks=pytest.mark.binding_report("histories")),
+        pytest.param(
+            "E05",
+            {"history"},
+            "label",
+            marks=(
+                pytest.mark.binding_report("histories"),
+                pytest.mark.binding_report("histories-filtered"),
+            ),
+        ),
     ],
     ids=["e01-graph", "e02-combined", "e03-masked-values", "e04-next-token", "e05-involvement"],
 )
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
-    files, anchors, histories = hi_small
-    positions = [row["anchor_row_position"] for row in anchors.values()]
-    spec, data, table = prepare_hi_small(
-        files, tmp_path / "prepared", anchor_rows=positions, binding=binding
-    )
+    bind, anchors, histories = hi_small
+    spec, data, table = bind(binding)
     split_col = "forecast_split" if target == "label" else "split"
     eligible = {s: r[split_col] for s, r in anchors.items() if r[split_col] is not None}
     training = [s for s, split in eligible.items() if split == "train"]
@@ -349,10 +363,11 @@ def test_hi_small_account_history(tmp_path, hi_small, binding, inputs, target):
             if "aggregates" in inputs:
                 check_normalized_aggregates(task, batch, counts, training)
             evidence.observe(batch)
+        exercise_binding(task, data, table, engine, tmp_path, evidence)
     evidence.publish()
     if binding == "E05":
         _check_role_windows(
-            spec.schema, data, table, engine, {s: histories[s] for s in eligible}, population
+            spec.schema, data, table, engine, {s: histories[s] for s in eligible}, evidence
         )
 
 
@@ -652,6 +667,10 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
         )
 
 
+@pytest.mark.binding_report("histories-filtered")
+@pytest.mark.binding_report("histories")
+@pytest.mark.binding_report("training")
+@pytest.mark.binding_report("lifecycle")
 @pytest.mark.binding_report("correctness")
 def test_li_medium_l01_combined_forecast(tmp_path):
     # The two train anchors share an account but differ on all twelve historical counts.
@@ -723,6 +742,7 @@ def test_li_medium_l01_combined_forecast(tmp_path):
             check_normalized_aggregates(task, batch, counts, answers["train"])
             evidence.observe(batch)
         evidence.publish()
+        exercise_binding(task, data, table, engine, tmp_path, evidence)
 
         # The short rank gets a copy with valid labels and zero eligible loss.
         (padded,) = task.batches(split="test", rank=1, world_size=2, output_format="model")
@@ -750,6 +770,8 @@ def test_li_medium_l01_combined_forecast(tmp_path):
                 },
                 currency_ids,
             )
+
+    _check_role_windows(spec.schema, data, table, engine, histories, evidence)
 
 
 @pytest.mark.parametrize(
@@ -845,14 +867,30 @@ def test_li_medium_stored_head(tmp_path, li_heads_source, binding, labels, score
         evidence.publish()
 
 
-def _check_role_windows(schema, data, table, engine, histories, population):
+def _check_role_windows(schema, data, table, engine, histories, source):
+    for filtered in (False, True):
+        _check_role_sweep(schema, data, table, engine, histories, source, filtered)
+
+
+def _check_role_sweep(schema, data, table, engine, histories, source, filtered):
     # At prediction time T, senders use all prior events and receivers use [T-24h, T-1h].
+    shift = int(source.identity["binding"] == "L01")
+    filters = {
+        "sender": api.RowFilter("amount_paid", "greater_than", Decimal(0)),
+        "receiver": api.RowFilter("payment_format", "equal", "ACH"),
+    }
     events = {
         role: api.EventSpec(
-            api.Rows((role,), api.TimeWindow("event_time", *window)),
+            api.Rows(
+                (role,),
+                api.TimeWindow("event_time", *window),
+                filters=(filters[role],) if filtered else (),
+            ),
             {"id": api.Field("transaction_id"), "role": api.Constant(i, api.DType("int64"))},
         )
-        for i, (role, window) in enumerate((("sender", (None, -1)), ("receiver", (-86401, -3600))))
+        for i, (role, window) in enumerate(
+            (("sender", (None, -1 + shift)), ("receiver", (-86401 + shift, -3600 + shift)))
+        )
     }
     fields = api.Fields(tuple(api.Encode(name, api.Raw()) for name in ("role", "id")))
     inputs = {
@@ -870,8 +908,20 @@ def _check_role_windows(schema, data, table, engine, histories, population):
         schema, api.SampleSpec(api.EntitySpec("accounts"), events=events), api.BatchSpec(inputs)
     )
     evidence = BindingReport(
-        "E05", E01_MANIFEST.name, "packed", population, {}, inputs, mode="histories"
+        source.identity["binding"],
+        source.identity["selector"],
+        "packed",
+        source.counts,
+        {},
+        inputs,
+        mode="histories-filtered" if filtered else "histories",
     )
+    issues = api.check(spec, data, engine)
+    if filtered and issues and {issue.code for issue in issues} == {"DG-ROW-FILTER"}:
+        with pytest.raises(ValueError, match=r"\[DG-ROW-FILTER\]"):
+            api.prepare(spec, data, engine)
+        evidence.publish(refusal=(issues[0].code, "DG-ROW-FILTER"))
+        return
     with (
         api.prepare(spec, data, engine) as plan,
         plan.materialize(replace(table, targets={}), fit_split="train") as task,
@@ -883,12 +933,18 @@ def _check_role_windows(schema, data, table, engine, histories, population):
             seen.extend(batch.metadata["sample_ids"])
             for owner, sample in enumerate(batch.metadata["sample_ids"]):
                 root, cutoff, past = histories[sample]
-                times = {(0, i): e.time for i, e in past.items() if e.sender == root}
+                times = {
+                    (0, i): e.time
+                    for i, e in past.items()
+                    if e.sender == root and (not filtered or (e.features["amount_paid"] or 0) > 0)
+                }
                 times.update(
                     {
                         (1, i): e.time
                         for i, e in past.items()
-                        if e.receiver == root and cutoff - 86400 <= e.time <= cutoff - 3600
+                        if e.receiver == root
+                        and cutoff - 86400 <= e.time <= cutoff - 3600
+                        and (not filtered or e.features["payment_format"] == "ACH")
                     }
                 )
                 ordered = sorted(times.values())

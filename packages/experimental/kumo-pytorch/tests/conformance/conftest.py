@@ -4,9 +4,14 @@
 
 """A complete run must actually execute every golden, property and corpus obligation."""
 
+import json
+import os
+from pathlib import Path
+
 import pytest
 
 REQUIRED = pytest.StashKey[set[str]]()
+COLLECTION_SHA = pytest.StashKey[str]()
 PROPERTY_TESTS = "tests/conformance/test_properties.py"
 DTYPE_TESTS = "tests/conformance/test_dtype_matrix.py"
 PINNED_DTYPES = (
@@ -105,6 +110,7 @@ def add_conformance_options(parser):
             help="engine whose goldens and properties must execute (default: in_memory)",
         )
         parser.addoption("--conformance-complete", action="store_true", help="require every case")
+        parser.addoption("--conformance-shard", type=int, choices=range(3))
         parser.addoption(
             "--conformance-seeds",
             type=int,
@@ -138,6 +144,19 @@ def pytest_collection_modifyitems(config, items):
         for item in items
         if all(marker.args[0] in engines for marker in item.iter_markers("engine"))
     ]
+    shard = config.getoption("--conformance-shard")
+    if shard is not None:
+        from conformance.shards import collection_hash, shard_for
+
+        if REQUIRED not in config.stash:
+            raise pytest.UsageError("Conformance sharding requires --conformance-complete")
+        ids = [item.nodeid for item in items]
+        if len(ids) != len(set(ids)):
+            raise pytest.UsageError("Duplicate conformance test IDs")
+        complete = config.stash[REQUIRED].union(ids)
+        config.stash[COLLECTION_SHA] = collection_hash(complete)
+        config.stash[REQUIRED] = {node for node in complete if shard_for(node) == shard}
+        items[:] = [item for item in items if item.nodeid in config.stash[REQUIRED]]
 
 
 def pytest_sessionstart(session):
@@ -224,3 +243,22 @@ def pytest_sessionfinish(session, exitstatus):
             reporter.write_line(nodeid)
     if bad or missing:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    directory = os.environ.get("KUMO_PYTORCH_DIAGNOSTICS")
+    if directory and COLLECTION_SHA in session.config.stash:
+        config = session.config
+        shard = config.getoption("--conformance-shard")
+        receipt = dict(
+            shard=shard,
+            revision=os.environ.get("GITHUB_SHA"),
+            run_id=os.environ.get("GITHUB_RUN_ID"),
+            attempt=os.environ.get("GITHUB_RUN_ATTEMPT"),
+            engine=config.getoption("--conformance-engine"),
+            seeds=config.getoption("--conformance-seeds"),
+            seed_start=config.getoption("--conformance-seed-start"),
+            collection_sha256=config.stash[COLLECTION_SHA],
+            passed=sorted(config.stash[PASSED]),
+            complete=session.exitstatus == pytest.ExitCode.OK,
+        )
+        path = Path(directory) / f"conformance-shard-{shard}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(receipt) + "\n")

@@ -241,14 +241,14 @@ def test_streaming_campaign(streaming_25b, mode, tmp_path):
             _check_population(task, rows, evidence)
             evidence.publish()
         elif mode == "training":
-            from tests.e2e.streaming_training import run_training
+            from tests.e2e.binding_training import run_training
 
             checks = run_training(task, tmp_path, evidence)
             evidence.publish(
                 checks=checks, expected_checks={"updates": [100, 100], "reproducible": True}
             )
         else:
-            from tests.e2e.streaming_lifecycle import run_lifecycle
+            from tests.e2e.binding_lifecycle import run_lifecycle
 
             checks = run_lifecycle(task, plan.dataset, table, plan.engine.index, tmp_path, evidence)
             evidence.publish(

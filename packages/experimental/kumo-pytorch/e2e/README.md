@@ -298,3 +298,29 @@ It trains on all 400,000 train anchors, but its pinned plan caps an epoch at 64
 batches of 512 (10 epochs ran), so it sees fewer examples than the kumo-pytorch GNN's
 125,000-anchor sample over its epochs. kumo-engine's own labels
 equal the generator's at all 700,000 anchors.
+
+## Package CI results and required check
+
+The `kumo-pytorch tests` workflow publishes an attempt-specific
+`kumo-pytorch-results` artifact. Its JSON and job summary identify the tested
+revision, jobs, dataset selections, opt-in modes and missing evidence. A pull
+request can test a merge commit. The report records its source head separately.
+Use **Re-run all jobs** when an entire new attempt needs acceptance.
+
+After merge, download `results.json` from a completed scheduled run on
+`main`. From the package directory, run the following with authenticated
+read access through `gh`.
+
+```sh
+GITHUB_REPOSITORY=NVIDIA/kumo-engine python3 -m tests.e2e.ci_plan scheduled --results results.json
+```
+
+This verifies the actual workflow, revision, attempt and job conclusions. A
+scheduled run that fails its tests still records that the schedule fired.
+
+After relevant and exempt PRs demonstrate reliable reporting, a repository
+administrator can add a branch ruleset targeting `main` with **Require status
+checks to pass**. Select the exact check `kumo-pytorch-gate` from GitHub Actions,
+keep the existing rulesets in force, and enable the new rule when ready.
+The additional required-status-check entry is
+`{"context":"kumo-pytorch-gate","integration_id":15368}`.
