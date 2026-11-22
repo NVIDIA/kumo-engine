@@ -464,6 +464,9 @@ class DiskGraphSource:
         self._last_temporal_profile: Mapping[str, Any] | None = None
         self._last_length_profile: Mapping[str, Any] | None = None
         self._last_graph_profile: Mapping[str, Any] | None = None
+        # Native operation timings and row counts, independent of Python assembly time.
+        self.last_sampling_profile: Mapping[str, int] | None = None
+        self.last_retrieval_profile: Mapping[str, int] | None = None
 
     @property
     def _sampler(self):
@@ -713,6 +716,7 @@ class DiskGraphSource:
         from kumo.pytorch.aggregate_materialization import _ModelValuesSource
 
         bound = copy.copy(self)
+        bound.last_sampling_profile = bound.last_retrieval_profile = None
         bound._materialized_values = values
         # Explicit-request/reference assembly retains its established adapter;
         # native batches consume the typed seed columns directly.
@@ -1535,6 +1539,7 @@ class DiskGraphSource:
         source: str,
         roots: Sequence[GraphRoot],
     ) -> tuple[Any, list[Mapping[str, Any]], Mapping[str, str]]:
+        self.last_sampling_profile = None
         neighborhood = sample.neighborhoods.get(source)
         if neighborhood is None:
             raise ValueError(f"unknown neighborhood {source!r}")
@@ -1545,20 +1550,22 @@ class DiskGraphSource:
             and runtime["_anchor_roots"]
             == tuple((root.sample_id, root.entity_id, root.cutoff) for root in roots)
         ):
-            return self._runtime_graph_events(sample, source, runtime)
+            result = self._runtime_graph_events(sample, source, runtime)
+            self.last_sampling_profile = runtime.get("native_profile")
+            return result
         root_ids = self._root_ids(sample.entity.table, roots)
 
         plan, physical_relations = self._sampling_plan(neighborhood)
-        events = list(
-            self._sampler.sample(
-                {sample.entity.table: root_ids},
-                json.dumps(plan),
-                fused=False,
-                seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
-                swap_edge_direction=False,
-                seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
-            )
+        iterator = self._sampler.sample(
+            {sample.entity.table: root_ids},
+            json.dumps(plan),
+            fused=False,
+            seed_timestamps={sample.entity.table: [root.cutoff for root in roots]},
+            swap_edge_direction=False,
+            seed_timestamp_unit=getattr(self._diskgraph.TimeUnit, self._clock.capitalize()),
         )
+        events = list(iterator)
+        self.last_sampling_profile = getattr(iterator, "native_profile", None)
         return neighborhood, events, physical_relations
 
     def close(self) -> None:
@@ -2323,6 +2330,7 @@ class DiskGraphSource:
         node_ids: Sequence[int],
         names: Sequence[str],
     ) -> dict[str, Any]:
+        self.last_retrieval_profile = None
         runtime = getattr(self, "_runtime_batch", None)
         if runtime is not None and table in runtime["raw_features"]:
             ids = runtime["graphs"]["main"]["node_ids"].get(table)
@@ -2344,9 +2352,10 @@ class DiskGraphSource:
                 for name in names
             }
         chunks: dict[str, list[Any]] = {name: [] for name in names}
-        for event in self._sampler.fetch_features(
+        iterator = self._sampler.fetch_features(
             [{"node_type": table, "node_ids": list(node_ids), "feature_names": list(names)}]
-        ):
+        )
+        for event in iterator:
             if event["type"] == "feature":
                 batch = event["batch"]
                 for name in names:
@@ -2371,6 +2380,7 @@ class DiskGraphSource:
                     f"{len(node_ids)} {table!r} nodes"
                 )
             result[name] = self._decode_decimal_array(table, name, values)
+        self.last_retrieval_profile = getattr(iterator, "native_profile", None)
         return result
 
     @staticmethod

@@ -709,6 +709,8 @@ def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, mon
             monkeypatch.setattr(native._assembler._source, "_sample_graph_events", forbidden)
             batches = list(native.batches(split="train", output_format="model"))
             assert _by_sample(batches) == {"a": 1.0, "b": 2.0, "d": 4.0, "f": 6.0}
+            profile = native._assembler._source.last_sampling_profile
+            assert profile["rows_examined"] >= profile["rows_decoded"] > 0
             for batch in batches:
                 assert len(batch.inputs["small"]["nodes"]["events"]["ids"]) == batch.batch_size
                 assert len(batch.inputs["medium"]["nodes"]["events"]["ids"]) == 2 * batch.batch_size
@@ -719,6 +721,8 @@ def test_three_named_neighborhoods_share_native_anchor_schedule(native_task, mon
                 for name in inputs:
                     values = batch.inputs[name]["nodes"]["events"]["features"]["amount"]["values"]
                     assert torch.isfinite(values).all()
+            assert list(native.batches(split={None}, output_format="model", drop_last=True)) == []
+            assert native._assembler._source.last_sampling_profile is None
 
 
 def test_native_extension_uses_existing_base_directory_without_symlinks(native_task, monkeypatch):

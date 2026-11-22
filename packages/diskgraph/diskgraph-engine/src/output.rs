@@ -7,6 +7,9 @@ use crate::state::SamplingState;
 
 /// Trait for handling the output stream of the sampler.
 pub trait OutputHandler {
+    /// Count source rows decoded before duplicate requested IDs are expanded.
+    fn record_decoded_rows(&mut self, _rows: u64) {}
+
     /// Called when an edge is traversed.
     fn handle_edge(
         &mut self,
@@ -215,6 +218,18 @@ pub struct RuntimeBatch {
     /// (e.g. "tt_id/train_seeds") is included here only when the seed has
     /// feature columns; otherwise `hetero[train_table_name].tf` stays empty.
     pub raw_features: HashMap<String, RawFeatureBank>,
+    pub profile: NativeProfile,
+}
+
+/// Native graph work across all neighborhoods in this batch. Fused sampling
+/// and retrieval share one elapsed interval.
+#[derive(Debug, Default, Clone)]
+pub struct NativeProfile {
+    pub sampling_ns: u64,
+    pub retrieval_ns: u64,
+    pub rows_examined: u64,
+    pub rows_decoded: u64,
+    pub fused: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -300,6 +315,10 @@ impl RuntimeBatchOutput {
 }
 
 impl OutputHandler for RuntimeBatchOutput {
+    fn record_decoded_rows(&mut self, rows: u64) {
+        self.batch.profile.rows_decoded += rows;
+    }
+
     fn handle_edge(
         &mut self,
         _hop: usize,

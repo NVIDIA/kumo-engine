@@ -106,6 +106,7 @@ def test_dgtt_plan_anchor_chunks_preserve_order_duplicates_and_types(
     for name, reference in values(expected).items():
         assert values(actual)[name].equals(reference), name
     assert values(actual)["full:count"].to_pylist() == [600, 3, 600]
+    assert actual["stats"]["rows_considered"] == expected["stats"]["rows_considered"] == 1203
 
 
 def test_plan_does_not_silently_drop_staged_side_effects(numeric_graph):

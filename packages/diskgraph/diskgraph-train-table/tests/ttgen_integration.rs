@@ -10718,6 +10718,7 @@ fn integ_parallel_history_preserves_ragged_batches() {
                     }
                     for pool in &pools[1..] {
                         let actual = prepared.execute(&reader, &roots, &cutoffs, pool).unwrap();
+                        assert_eq!(actual.stats.rows_considered, expected.stats.rows_considered, "{context}");
                         assert_eq!(actual.sequences.len(), expected.sequences.len(), "{context}");
                         for (actual, expected) in actual.sequences.iter().zip(&expected.sequences) {
                             assert_eq!(actual.name, expected.name, "{context}");

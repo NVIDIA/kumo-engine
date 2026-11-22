@@ -1714,6 +1714,10 @@ impl RuntimeBatchIterator {
                     Arc::clone(projection),
                 )
                 .map_err(RuntimeError::from)?;
+            batch.profile.sampling_ns += result.profile.sampling_ns;
+            batch.profile.retrieval_ns += result.profile.retrieval_ns;
+            batch.profile.rows_examined += result.profile.rows_examined;
+            batch.profile.rows_decoded += result.profile.rows_decoded;
             batch.graphs.extend(result.graphs);
             for (table, values) in result.raw_features {
                 batch.raw_features.insert(format!("{name}/{table}"), values);

@@ -1326,6 +1326,10 @@ def test_diskgraph_temporal_sequences_aggregates_and_labels_match_reference(tmp_
         assert_equal(model_batch.metadata, inspectable_batch.metadata)
         assert task._assembler.last_batch_profile["output_format"] == "model"
         assert plan._source.last_temporal_profile["output_format"] == "model"
+        assert plan._source.last_sampling_profile["sampling_ns"] > 0
+        assert plan._source.last_retrieval_profile["rows_decoded"] > 0
+        plan._source._feature_arrays("users", (), ())
+        assert plan._source.last_retrieval_profile is None
         assert set(plan._source.last_graph_profile) == {
             "samples",
             "sampling_ns",

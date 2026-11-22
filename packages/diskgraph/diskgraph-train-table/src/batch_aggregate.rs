@@ -367,6 +367,8 @@ pub struct QueryTimings {
 pub struct QueryStats {
     pub frames_materialized: usize,
     pub rows_materialized: usize,
+    /// Candidate row occurrences returned by traversal, before projection and selection.
+    pub rows_considered: usize,
     pub rows_decoded: usize,
     pub values_decoded: usize,
     pub edges_visited: u64,
@@ -942,6 +944,7 @@ fn materialize_frame(
         .map(|(index, name)| (name.clone(), index))
         .collect::<HashMap<_, _>>();
     let flat_nodes = rows_by_anchor.iter().flatten().copied().collect::<Vec<_>>();
+    stats.rows_considered += flat_nodes.len();
     if !projection_indices.is_empty() {
         stats.rows_decoded += flat_nodes.len();
     }
@@ -1820,6 +1823,7 @@ fn shared_numeric_frame(
     );
     stats.frames_materialized += selection_stats.frames_materialized;
     stats.rows_materialized += selection_stats.rows_materialized;
+    stats.rows_considered += selection_stats.rows_considered;
     stats.rows_decoded += selection_stats.rows_decoded;
     stats.values_decoded += selection_stats.values_decoded;
     stats.edges_visited += selection_stats.edges_visited;
@@ -2222,6 +2226,7 @@ impl PreparedAggregatePlan {
                     output.timings.total += result.timings.total;
                     output.stats.frames_materialized += result.stats.frames_materialized;
                     output.stats.rows_materialized += result.stats.rows_materialized;
+                    output.stats.rows_considered += result.stats.rows_considered;
                     output.stats.rows_decoded += result.stats.rows_decoded;
                     output.stats.values_decoded += result.stats.values_decoded;
                     output.stats.edges_visited += result.stats.edges_visited;
@@ -2397,6 +2402,7 @@ fn execute_prepared_parallel(
             .frames_materialized
             .max(result.stats.frames_materialized);
         output.stats.rows_materialized += result.stats.rows_materialized;
+        output.stats.rows_considered += result.stats.rows_considered;
         output.stats.rows_decoded += result.stats.rows_decoded;
         output.stats.values_decoded += result.stats.values_decoded;
         output.stats.edges_visited += result.stats.edges_visited;

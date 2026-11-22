@@ -10,7 +10,7 @@ Not a pytest test — run directly:
   python3 python/tests/bench_runtime_batch_iterator.py [--n-users N] [--orders-per-user O] \
       [--n-seeds S] [--batch-size B] [--n-iter K]
 
-Reports wall time, batches/sec, batches' avg edge count, and peak RSS
+Reports wall time, batches/sec, batches' avg edge count, peak RSS and native graph work
 for fused vs non-fused dispatch. Establishes a baseline number we can
 defend (and compare against PR 269's TaskBatchIterator if/when we
 resurrect it for a head-to-head — see plan doc §9 Follow-up C).
@@ -220,11 +220,17 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
     )
 
     edge_counts: list[int] = []
+    totals = dict.fromkeys(("sampling_ns", "retrieval_ns", "rows_examined", "rows_decoded"), 0)
+    profiled = 0
     t0 = time.perf_counter()
     n = 0
     for batch in iterator:
         edges = batch["graphs"]["main"]["edge_index_dict"]
         edge_counts.append(sum(len(e["src"]) for e in edges))
+        if (profile := batch.get("native_profile")) is not None:
+            for key in totals:
+                totals[key] += profile[key]
+            profiled += 1
         n += 1
         if n >= n_iter:
             break
@@ -237,6 +243,7 @@ def _run_one(fixture: dict, batch_size: int, n_iter: int, fused: bool) -> dict:
         "batches_per_s": n / wall if wall > 0 else float("inf"),
         "avg_edges_per_batch": (sum(edge_counts) / len(edge_counts)) if edge_counts else 0,
         "peak_rss_mb": _peak_rss_mb(),
+        "native_profile": totals if n and profiled == n else None,
     }
 
 
@@ -276,6 +283,15 @@ def main() -> None:
                 f"avg_edges/batch={stats['avg_edges_per_batch']:>7.1f}, "
                 f"peak_rss={stats['peak_rss_mb']:>6.0f} MB"
             )
+            if (profile := stats["native_profile"]) is not None:
+                if mode:
+                    timing = f"sample+fetch_ns={profile['sampling_ns']}"
+                else:
+                    timing = f"sampling_ns={profile['sampling_ns']}, retrieval_ns={profile['retrieval_ns']}"
+                print(
+                    f"    {timing}, rows_examined={profile['rows_examined']}, "
+                    f"rows_decoded={profile['rows_decoded']}"
+                )
 
 
 if __name__ == "__main__":

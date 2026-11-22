@@ -156,6 +156,7 @@ def test_keyless_count_without_projected_columns(keyless_graph, output_format):
     plan["sequences"] = []
     plan["aggregates"] = plan["aggregates"][:1]
     result = query(engine, plan, output_format)
+    assert result["stats"]["rows_considered"] == 4
     assert result["stats"]["rows_decoded"] == 0
     assert values(result["aggregates"][0]["values"]) == [
         4,

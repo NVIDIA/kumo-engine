@@ -317,6 +317,7 @@ def test_fused_sampling_1hop(orders_graph):
     }
 
     iterator = dg.sample({"users": [0]}, json.dumps(plan), fused=True)
+    assert iterator.native_profile is None  # Several events must cross a one-slot channel.
 
     events = []
     for event in iterator:
@@ -325,6 +326,11 @@ def test_fused_sampling_1hop(orders_graph):
     # Validation
     types = [e["type"] for e in events]
     assert "stats" in types
+
+    profile = iterator.native_profile
+    assert profile["fused"] is True
+    assert profile["sampling_ns"] == profile["retrieval_ns"] > 0
+    assert profile["rows_examined"] > profile["rows_decoded"] > 0
 
     # Check Stats
     stats_event = next(e for e in events if e["type"] == "stats")
@@ -368,6 +374,11 @@ def test_standalone_sampling(orders_graph):
     for event in iterator:
         events.append(event)
 
+    profile = iterator.native_profile
+    assert profile["fused"] is False and "retrieval_ns" not in profile
+    assert profile["sampling_ns"] > 0
+    assert profile["rows_examined"] > 0 and profile["rows_decoded"] == 0
+
     # Verify NO features returned
     feature_events = [e for e in events if e["type"] == "feature"]
     assert len(feature_events) == 0, "Standalone mode should not return features"
@@ -383,12 +394,11 @@ def test_standalone_sampling(orders_graph):
 def test_fetch_features(orders_graph):
     dg = diskgraph_py.SamplerEngine(orders_graph)
 
-    # Fetch features for User 0 and Order 0 (if exists)
-    # We construct a batch request
+    # Repeated IDs produce repeated output rows from a single decode.
     req = [
         {
             "node_type": "users",
-            "node_ids": [0, 1],
+            "node_ids": [0, 0, 1],
             "feature_names": [] # All features
         }
     ]
@@ -406,13 +416,17 @@ def test_fetch_features(orders_graph):
     # Check Batch Content
     batch = feature_events[0]["batch"]
     assert isinstance(batch, pa.RecordBatch)
-    assert batch.num_rows > 0
+    assert batch.num_rows == 3
+    profile = iterator.native_profile
+    assert profile["rows_examined"] == profile["rows_decoded"] == 2
+    assert profile["retrieval_ns"] > 0 and "sampling_ns" not in profile
 
     # Check Error Handling (Bad Type)
     bad_req = [{"node_type": "invalid_type", "node_ids": [0], "feature_names": []}]
     iter_bad = dg.fetch_features(bad_req)
     with pytest.raises(DiskgraphConfigError, match="Unknown node type"):
         for _ in iter_bad: pass
+    assert iter_bad.native_profile is None
 
 def test_fused_sampling_2hop_consistency(orders_graph):
     dg = diskgraph_py.SamplerEngine(orders_graph)

@@ -1293,8 +1293,10 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
+        let sampling_started = Instant::now();
         self.sample_with_cutoff(request, &mut state, &mut output, cutoff)?;
         output.finalize(&state)?;
+        let sampling_ns = sampling_started.elapsed().as_nanos() as u64;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
         // `raw_features` would be empty. Fetch them post-sampling per visited
@@ -1302,7 +1304,11 @@ impl DiskGraphEngine {
         // path already populated `raw_features` via `handle_fused_features`
         // during sampling; we skip the post-fetch in that case to avoid
         // duplicate batches.
-        if !request.flags.fused_feature_fetching {
+        let fused = request.flags.fused_feature_fetching;
+        let retrieval_ns = if fused {
+            sampling_ns
+        } else {
+            let retrieval_started = Instant::now();
             for (type_id, type_state) in &state.type_states {
                 if self
                     .node_decoders
@@ -1334,9 +1340,15 @@ impl DiskGraphEngine {
                 let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
                 self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
             }
-        }
+            retrieval_started.elapsed().as_nanos() as u64
+        };
 
-        Ok(output.into_runtime_batch())
+        let mut batch = output.into_runtime_batch();
+        batch.profile.sampling_ns = sampling_ns;
+        batch.profile.retrieval_ns = retrieval_ns;
+        batch.profile.rows_examined = state.stats.rows_examined + batch.profile.rows_decoded;
+        batch.profile.fused = fused;
+        Ok(batch)
     }
 
     /// Sample another neighborhood for an already resolved native anchor batch.
@@ -2000,9 +2012,6 @@ impl DiskGraphEngine {
         // Already resolved by `sample_runtime_batch`, which is the only caller.
         projection: Arc<ResolvedProjection>,
     ) -> Result<crate::output::RuntimeBatch> {
-        use crate::output::{OutputHandler, RuntimeBatchOutput};
-        use std::collections::HashSet;
-
         // The RHS type must be in the merged catalog (sanity — the pybind layer
         // already validated it to derive the id range).
         if !self.node_type_to_id.contains_key(nr.rhs_node_type) {
@@ -2050,55 +2059,15 @@ impl DiskGraphEngine {
         // Sample + collate via the shared path. No seed-src relation ids to
         // drop, and no stage seed namespaces in this NodeRange path — pass an
         // empty seed_type_ids set.
-        let mut state = SamplingState::default();
-        let mut output = RuntimeBatchOutput::new(
+        let mut runtime_batch = self.sample_runtime_graph(
+            &request,
             "main",
-            HashSet::new(),
+            Default::default(),
             rel_id_to_names,
-            self.id_to_node_type.clone(),
-            HashSet::new(),
-        );
-        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
-        output.finalize(&state)?;
-
-        // Non-fused path: fetch features post-sampling per visited type (same as
-        // the stage-table path) so the dict shape matches.
-        if !flags.fused_feature_fetching {
-            for (type_id, type_state) in &state.type_states {
-                if self
-                    .node_decoders
-                    .get(*type_id)
-                    .and_then(|d| d.as_ref())
-                    .is_none()
-                {
-                    continue;
-                }
-                // The caller consumes NO column of this type: skip BEFORE
-                // `set_namespace`, so no `raw_features` block is emitted for it
-                // at all. The type still appears in the emitted topology --
-                // this declines a type's features, never its participation in
-                // the graph.
-                if projection.skips(*type_id) {
-                    continue;
-                }
-                let node_ids: Vec<u64> =
-                    type_state.nodes.iter().map(|n| n.global_id).collect();
-                if node_ids.is_empty() {
-                    continue;
-                }
-                let type_name = match self.id_to_node_type.get(*type_id) {
-                    Some(n) => n.clone(),
-                    None => continue,
-                };
-                output.set_namespace(type_name);
-                // Feature projection pushdown: only the columns the caller says
-                // it will consume. `None` => select all (pre-pushdown behavior).
-                let feature_names = projection.names_for(*type_id).unwrap_or(&[]);
-                self.fetch_features_for_type(*type_id, &node_ids, feature_names, &mut output)?;
-            }
-        }
-
-        let mut runtime_batch = output.into_runtime_batch();
+            Default::default(),
+            projection,
+            cutoff.as_ref(),
+        )?;
         // Task bag: only the seed identity / count / timestamps are meaningful in
         // NodeRange mode. All LP / negative / target fields stay at their Default
         // (empty / None / 0) — the two-tower MIPS reader uses the RHS embeddings
@@ -2483,7 +2452,7 @@ impl DiskGraphEngine {
         let chunk_size = (num_nodes / ideal_chunks).clamp(2048, 64_000);
         let chunks: Vec<_> = node_ids.chunks(chunk_size).collect();
 
-        let results: Vec<Result<arrow_array::RecordBatch>> = self.thread_pool.install(|| chunks
+        let results: Vec<Result<(arrow_array::RecordBatch, u64)>> = self.thread_pool.install(|| chunks
             .into_par_iter()
             .map(|chunk_ids| {
                 // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
@@ -2571,13 +2540,15 @@ impl DiskGraphEngine {
                     .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
 
                 arrow_array::RecordBatch::try_new(unique_batch.schema(), expanded_columns)
+                    .map(|batch| (batch, unique_batch.num_rows() as u64))
                     .map_err(|e| EngineError::Internal(format!("batch creation failed: {}", e)))
             })
             .collect()
         );
 
         for res in results {
-            let batch = res?;
+            let (batch, decoded_rows) = res?;
+            output.record_decoded_rows(decoded_rows);
             output.handle_feature_batch(batch)?;
         }
 
@@ -2628,6 +2599,7 @@ impl DiskGraphEngine {
             .map_err(|e| EngineError::Internal(e.to_string()))?;
 
         output.handle_fused_features(type_id, batch)?;
+        output.record_decoded_rows(type_state.builder_rows as u64);
         type_state.builder_rows = 0;
         type_state.builder_bytes = 0;
 
@@ -2952,6 +2924,7 @@ impl DiskGraphEngine {
                         EngineError::Internal(format!("no decoder for type {}", src_type_id))
                     })?;
 
+                state.stats.rows_examined += frontier.len() as u64;
                 for node in &frontier {
                     let shard_idx = self.find_shard(shards, node.global_id)?;
                     let shard = &shards[shard_idx];
@@ -3008,6 +2981,7 @@ impl DiskGraphEngine {
             }
 
             // group nodes by shard
+            state.stats.rows_examined += frontier.len() as u64;
             let mut shard_groups: Vec<Vec<&NodeRecord>> = vec![Vec::new(); shards.len()];
             for item in &frontier {
                 let idx = self.find_shard(shards, item.global_id)?;

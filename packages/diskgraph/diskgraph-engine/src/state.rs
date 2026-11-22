@@ -19,6 +19,9 @@ pub struct SamplingStats {
     pub total_nodes: u64,
     /// Total edges sampled.
     pub total_edges: u64,
+    /// Adjacency source-row visits, before edge filtering.
+    #[serde(skip)]
+    pub rows_examined: u64,
 }
 
 impl SamplingStats {
@@ -28,6 +31,7 @@ impl SamplingStats {
             edges_per_type: Vec::new(),
             total_nodes: 0,
             total_edges: 0,
+            rows_examined: 0,
         }
     }
 
@@ -40,6 +44,7 @@ impl SamplingStats {
         }
         self.total_nodes = 0;
         self.total_edges = 0;
+        self.rows_examined = 0;
     }
 
     pub fn resize(&mut self, num_types: usize, num_rels: usize, num_hops: usize) {

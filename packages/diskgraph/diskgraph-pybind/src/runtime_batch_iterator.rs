@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::temporal_query::QueryPython as _;
-use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
+use crate::{DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError, ProfileOperation};
 use arrow::array::{make_array, ArrayData};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, UInt32Array, UInt64Array};
@@ -168,6 +168,10 @@ fn runtime_batch_to_pydict<'py>(
         raw_features.set_item(ns, raw_feature_bank_to_pydict(py, ns, bank)?)?;
     }
     dict.set_item("raw_features", raw_features)?;
+    dict.set_item(
+        "native_profile",
+        ProfileOperation::Batch.to_dict(py, &batch.profile)?,
+    )?;
 
     Ok(dict)
 }

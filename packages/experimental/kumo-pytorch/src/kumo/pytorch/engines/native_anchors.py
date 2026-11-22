@@ -897,6 +897,8 @@ class NativeAnchors:
             anchors = self._batch_values(runtime_stage, runtime)
             if length_planning is None and anchors.batch_size < size and drop_last:
                 continue
+            source.last_sampling_profile = runtime.get("native_profile")
+            source.last_retrieval_profile = None
             if sample.entity.available_from is not None:
                 source._validate_root_ids_availability(
                     sample,
@@ -1149,9 +1151,10 @@ class NativeAnchors:
         from kumo.pytorch.contract.sample import Field
         from kumo.pytorch.task import _mark_padding, _surface_padding
 
+        source = self._source
+        source.last_sampling_profile = source.last_retrieval_profile = None
         if output_format == "columnar":
             self.validate_columnar(assembler, selection)
-        source = self._source
         materialized = getattr(getattr(source, "_materialized_values", None), "features", {})
         entity_columns = [
             value.column
