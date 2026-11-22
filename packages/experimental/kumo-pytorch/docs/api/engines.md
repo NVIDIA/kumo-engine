@@ -296,6 +296,7 @@ class DiskGraphEngine(
     *,
     index: str | Path,
     num_threads: int | None = None,
+    profile: bool = False,
     random_seed: int | None = 0,
     num_shards: int = 1,
     ingest: Literal['if_missing', 'never'] = 'if_missing',
@@ -328,6 +329,7 @@ step, before any data is read.
 
 - `index`: directory of the base index.
 - `num_threads`: native sampling threads.
+- `profile`: collect native DiskGraph work counters and operation times.
 - `random_seed`: native uniform-neighbor sampling seed; defaults to zero. `None` uses fresh randomness. A fixed seed repeats selections for the same index and sampling plan across epochs. This is independent of the seed used by `Task.batches` for anchor shuffling. Rebuilding an index can change selections because native sampling uses physical node IDs.
 - `num_shards`: index shards.
 - `ingest`: `"if_missing"` builds the index when absent; `"never"` requires an existing one. A mismatching manifest is an error, never permission to reuse.
