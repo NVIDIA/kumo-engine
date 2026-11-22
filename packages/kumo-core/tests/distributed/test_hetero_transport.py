@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import gc
+import pickle
 import sys
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -20,6 +21,7 @@ from kumo_core.diskgraph.batch_contract import (
     SamplingContractError,
 )
 from kumo_core.diskgraph.hetero_wire import (
+    HeteroMetadata,
     pack_python_hetero,
     unpack_python_hetero,
 )
@@ -98,8 +100,8 @@ def test_wire_preserves_graph_values_and_buffer_ownership() -> None:
     """Metadata stays separate and decoded tensors retain the numeric buffers."""
     graph = _graph()
     metadata, arrays = pack_python_hetero(graph)
-    assert isinstance(metadata, dict)
-    assert metadata["version"] == 1
+    assert isinstance(metadata, HeteroMetadata)
+    assert metadata.version == 1
     assert any(np.shares_memory(array, graph["nodes"].n_id.numpy()) for array in arrays)
     decoded = unpack_python_hetero(metadata, arrays)
     _assert_graph(decoded, graph)
@@ -127,25 +129,25 @@ def test_wire_rejects_invalid_layout(failure: str) -> None:
     """Invalid descriptors cannot silently change tensor layout or graph topology."""
     metadata, arrays = pack_python_hetero(_graph())
     spec = metadata
-    node = spec["nodes"]["nodes"]
-    attribute = node["attributes"]["n_id"]
+    node = spec.nodes["nodes"]
+    attribute = node.attributes["n_id"]
     if failure == "version":
-        spec["version"] = 2
+        spec = replace(spec, version=2)
     elif failure == "dtype":
-        attribute["dtype"] = "float32"
+        node.attributes["n_id"] = replace(attribute, dtype="float32")
     elif failure == "shape":
-        attribute["shape"] = [999]
+        node.attributes["n_id"] = replace(attribute, shape=[999])
     elif failure == "duplicate":
-        node["attributes"]["duplicate"] = attribute
+        node.attributes["duplicate"] = attribute
     elif failure == "unused":
         arrays.append(np.empty(0, dtype=np.int64))
     elif failure == "offset":
-        nested = next(f for f in node["features"] if f["kind"] == "multicategorical")
-        assert nested["offset"] is not None
-        arrays[nested["offset"]["buffer"]] = np.array([0, 9, 2], dtype=np.int64)
+        nested = next(f for f in node.features if f.kind == "multicategorical")
+        assert nested.offset is not None
+        arrays[nested.offset.buffer] = np.array([0, 9, 2], dtype=np.int64)
     else:
-        key, description, counts = spec["edges"][0]
-        spec["edges"][0] = ((key[0], key[1], "missing"), description, counts)
+        key, description, counts = spec.edges[0]
+        spec.edges[0] = ((key[0], key[1], "missing"), description, counts)
     with pytest.raises((ValueError, TypeError)):
         unpack_python_hetero(spec, arrays)
 
@@ -208,7 +210,7 @@ def test_wire_rejects_extra_edge_attributes() -> None:
         pack_python_hetero(graph)
 
 
-def test_dictionary_transport_does_not_require_msgpack(
+def test_dataclass_transport_does_not_require_msgpack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Graph extraction and reconstruction work without importing MessagePack."""
@@ -216,3 +218,22 @@ def test_dictionary_transport_does_not_require_msgpack(
     graph = _graph()
     metadata, arrays = pack_python_hetero(graph)
     _assert_graph(unpack_python_hetero(metadata, arrays), graph)
+
+
+def test_metadata_is_frozen_slotted_and_pickleable() -> None:
+    """Metadata uses ordinary frozen dataclasses with standard pickle support."""
+    metadata, arrays = pack_python_hetero(_graph())
+    node = metadata.nodes["nodes"]
+    feature = node.features[0]
+    for record, field in (
+        (metadata, "version"),
+        (node, "rows"),
+        (feature, "kind"),
+        (feature.value, "buffer"),
+    ):
+        assert not hasattr(record, "__dict__")
+        with pytest.raises(FrozenInstanceError):
+            setattr(record, field, None)
+    restored = pickle.loads(pickle.dumps(metadata, protocol=5))
+    assert restored == metadata
+    _assert_graph(unpack_python_hetero(restored, arrays), _graph())
