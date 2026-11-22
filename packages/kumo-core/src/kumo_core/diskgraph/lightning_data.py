@@ -25,9 +25,10 @@ from dataclasses import dataclass
 from enum import Enum
 from multiprocessing import queues as mp_queues
 from multiprocessing.reduction import ForkingPickler
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import pytorch_lightning as pl
+import torch
 from diskgraph.runtime_batch import RuntimeBatch
 from diskgraph.sampling_options import SamplingOptions, WeightedSeedSampling
 from diskgraph.sampling_plan import SamplingPlan
@@ -46,9 +47,6 @@ from kumo_core.diskgraph.runtime_adapter import (
 )
 from kumo_core.encoders.target.base import TargetEncoder
 from kumo_core.task_dataset import DiskgraphTaskManifest
-
-if TYPE_CHECKING:
-    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -1227,7 +1225,6 @@ class DiskgraphValidRHS:
         single-time path used by ShallowRHS / Hybrid) or a
         ``TrainingStage`` (range over ``stage_time_dict``).
         """
-        import torch
         from kumoapi.train import TrainingStage
 
         if self.valid_rhs_idx_dict is None:
@@ -2162,7 +2159,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     @staticmethod
     def _array_to_long_tensor(values: Any) -> Any:
-        import torch
         if hasattr(values, "to_pylist"):
             values = values.to_pylist()
         return torch.as_tensor(values, dtype=torch.long)
@@ -2196,7 +2192,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             raise RuntimeError(
                 "DLDM.stage_inputs requires an active explain selection "
                 f"capture for stage={stage!r}")
-        import torch
         input_nodes = (torch.cat(self._explain_capture_input_nodes, dim=0)
                        if self._explain_capture_input_nodes else torch.zeros(
                            0, dtype=torch.long))
@@ -2252,7 +2247,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     def predict_candidates(self) -> "Any | None":
         """RHS node IDs passing the target filter's candidate-table
         conditions; ``None`` admits all."""
-        import torch
 
         from kumo_core.diskgraph.stores import rhs_catalog
         from kumo_core.errors import TrainingValidationError
@@ -2384,7 +2378,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         target type), which differs from the LHS seed type in real two-tower
         topologies (e.g. User -> Item)."""
         import pyarrow as pa
-        import torch
 
         hetero = self._to_hetero(batch)
         seed_ts = batch.task.seed_timestamps
@@ -2931,7 +2924,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         rng = self._stage_time_dict.get(stage)
         if rng is None:
             return None
-        import torch
         _min, _max = rng
         return torch.tensor([int(_max)], dtype=torch.long)
 
@@ -3067,7 +3059,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
         directly comparable to the ns ``seed_time`` and ns ``unix_*_offset`` in
         ``RHSTime.get_valid_nodes`` (all-ns RHS validity)."""
         import pandas as pd
-        import torch
 
         from kumo_core.diskgraph.stores import read_node_column
 
@@ -3159,7 +3150,6 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
 
     def prediction_inputs(self, limit: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Read the first prediction rows without features or model inference."""
-        import torch
 
         batch_size = int(self.eval_loader_kwargs['batch_size'])
         names = {str(entry['name']) for entry in self._load_index_node_types()
