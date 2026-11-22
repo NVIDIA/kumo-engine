@@ -130,7 +130,7 @@ def _latencies(waits):
     return {"p50_ns": median(waits), "p95_ns": sorted(waits)[ceil(0.95 * len(waits)) - 1]}
 
 
-def install_native(observer):
+def install_native(observer, length_record=None):
     from kumo.pytorch.engines.diskgraph import DiskGraphSource
     from kumo.pytorch.engines.native_anchors import NativeAnchors
 
@@ -145,6 +145,8 @@ def install_native(observer):
         record("runtime", runtime.get("native_profile"))
         if "history" in runtime:
             temporal(runtime["history"])
+            if length_record is not None and runtime.get("history_merges"):
+                length_record["merged_history_batches"] += 1
 
     def sample(_result, source, *_args):
         profile = source.last_sampling_profile
@@ -250,7 +252,10 @@ def measure_epoch(
     task, make_batches, record, observer, *, split, batch_size, event_tables=(), gpu=None, step=None
 ):
     """Count returned batches once. Terminal exhaustion contributes only to elapsed and wait."""
-    install_native(observer)
+    length_planning = task.contract.batch.batching.bucket_by_length
+    if length_planning:
+        record["merged_history_batches"] = 0
+    install_native(observer, record if length_planning else None)
     source = task._assembler._source
     requests, sizes, profiles, operations = [], [], [], []
     record.update(

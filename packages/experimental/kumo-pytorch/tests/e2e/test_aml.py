@@ -441,6 +441,10 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
     prepared = work.parents[1] / "prepared"
     fresh = work.parent / "fresh" / "l01"
     spec = api.DataLoaderSpec.from_json((prepared / "contract.json").read_text())
+    length_planning = os.getenv("KUMO_PYTORCH_L01_LENGTH_PLANNING") == "1"
+    if length_planning:
+        batching = replace(spec.batch.batching, length_input="history", bucket_by_length=True)
+        spec = replace(spec, batch=replace(spec.batch, batching=batching))
     _, data, table = bind_tables(prepared, spec, "entity_id", spec.batch.targets)
     anchors = pq.read_table(table.source.path, columns=["sample_id", "split"])
     splits = Counter(anchors["split"].to_pylist())
@@ -516,11 +520,22 @@ def test_li_medium_l01_loader(mode, tmp_path, request, native_anchor_delivery):
             event_tables=("transactions",),
             **L01_BATCHING,
         )[mode]
-    assert delivered == [expected, expected]
+    if length_planning:
+        assert [Counter(ids) for ids in delivered] == [Counter(expected)] * 2
+    else:
+        assert delivered == [expected, expected]
     for epoch in fit["epochs"]:
         assert epoch["complete"] and epoch["batch_sizes"] == [4] * 128
         assert (epoch["samples"], epoch["padded"], epoch["post_warmup"]["batches"]) == (512, 0, 126)
         assert epoch["native_totals"]
+        if length_planning:
+            assert "file_page_cache" not in epoch and "train_step_ns" not in epoch
+            assert (epoch["lengths_computed"], epoch["length_cache_hits"]) == (
+                (512, 0) if epoch["epoch"] == 0 else (0, 512)
+            )
+            assert epoch["length_cache_reused"] == (epoch["epoch"] == 1)
+            assert epoch["merged_history_batches"] == epoch["batches"] == 128
+            assert epoch["events"] == 10_293  # Causal account events for the pinned train anchors.
         if cuda:
             pages = epoch["file_page_cache"]
             assert (

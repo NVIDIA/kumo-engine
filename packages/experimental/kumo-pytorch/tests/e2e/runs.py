@@ -34,6 +34,8 @@ two CPU loader epochs per fit. Each repetition fits in one worker and reloads
 its artifact in another. The workers share the prepared 512 anchors per split.
 ``l01 --index-lifecycle`` builds one index and reopens it twice in separate
 CPU workers. Each fits fresh and runs both epochs.
+``l01 --length-planning`` buckets those CPU batches by history length and
+checks native cache reuse on uncontrolled file pages.
 ``l01 --cuda --cgroup-parent DIR`` trains on those batches with sampled host
 memory and verified cold/warm index pages on a Linux GPU worker.
 """
@@ -174,6 +176,7 @@ def time_loader(
                 }
                 if mode == "fresh":
                     task.to_artifact().save(artifact)
+                previous_caches = None
                 step = None
                 if make_step is not None:
                     import torch
@@ -196,6 +199,15 @@ def time_loader(
                         ):
                             measure_epoch(
                                 task, make_batches, record, profile, gpu=gpu, step=step, **options
+                            )
+                        if task.contract.batch.batching.bucket_by_length:
+                            current = task._anchors._length_caches
+                            record["length_cache_reused"] = (
+                                bool(current) and current == previous_caches
+                            )
+                            previous_caches = current.copy()
+                            record["lengths_computed"], record["length_cache_hits"] = (
+                                task._anchors._last_length_planning_stats
                             )
     finally:
         (work / "results.json").write_text(json.dumps(results) + "\n")
@@ -244,6 +256,7 @@ def _timing_campaign(
     cgroup_parent=None,
     cuda=False,
     index_lifecycle=False,
+    length_planning=False,
 ) -> Path:
     e2e_dir.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=f"{workload}-", dir=e2e_dir.resolve()))
@@ -255,6 +268,7 @@ def _timing_campaign(
     env.pop("KUMO_PYTORCH_HOST_MEMORY", None)
     env.pop("KUMO_PYTORCH_L01_CUDA", None)
     env.pop("KUMO_PYTORCH_L01_INDEX_ACTION", None)
+    env["KUMO_PYTORCH_L01_LENGTH_PLANNING"] = str(int(length_planning))
     if cuda:
         env["KUMO_PYTORCH_L01_CUDA"] = "1"
     modes = ("",)
@@ -370,6 +384,7 @@ def _timing_campaign(
         pass  # Source distributions can run outside a Git checkout.
     metadata = {
         "workload": case,
+        **({"length_planning": True, "training": False} if length_planning else {}),
         **setup,
         **({"seed": 0, "file_page_cache": "uncontrolled"} if workload == "l01" else {}),
         **({"file_page_cache": "cold-warm"} if cold_warm_cache else {}),
@@ -409,6 +424,7 @@ def main(argv: list[str] | None = None) -> None:
             group = parser.add_mutually_exclusive_group()
             group.add_argument("--cuda", action="store_true")
             group.add_argument("--index-lifecycle", action="store_true")
+            group.add_argument("--length-planning", action="store_true")
         if argv[0] in ("loader", "l01"):
             parser.add_argument(
                 "--cgroup-parent", type=Path, help="delegated Linux cgroup v2 parent"
