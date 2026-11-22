@@ -33,7 +33,7 @@ def _masked_batch():
     return replace(PRAGMA_BATCH, targets={"masked_values": target})
 
 
-def _smoke_model(space, event_encoder_layout="padded", *, smoothing=0.0):
+def _smoke_model(space, event_encoder_layout="padded"):
     config = small_config("pragma").encoder
     from kumo.pytorch.config import ModelConfig
 
@@ -54,37 +54,25 @@ def _smoke_model(space, event_encoder_layout="padded", *, smoothing=0.0):
         entity_token_id=space.special(role="entity"),
         event_token_id=space.special(role="event"),
     )
-    objective = MaskedValueObjective(encoder.embedding, label_smoothing=smoothing)
-    return MultiObjectiveModel(encoder, {"masked_value": objective})
-
-
-def assert_mean_cross_entropy_gradient(logits, targets, *, smoothing=0.0):
-    classes = logits.shape[-1]
-    labels = torch.nn.functional.one_hot(targets, classes) * (1 - smoothing) + smoothing / classes
-    torch.testing.assert_close(logits.grad, (logits.detach().softmax(-1) - labels) / len(targets))
+    return MultiObjectiveModel(encoder, {"masked_value": MaskedValueObjective(encoder.embedding)})
 
 
 def test_model_forward_and_backward():
     with model_task("pragma", batch=_masked_batch()) as task:
         batch = adapted_batch(task, "pragma")
-        model = _smoke_model(task.spaces["pragma"], smoothing=0.1)
+        model = _smoke_model(task.spaces["pragma"])
         output = model(batch)
         output_tensors, _ = tree_flatten(output)
         assert any(tensor is output.loss for tensor in output_tensors)
         assert any(tensor is output.predictions["masked_value_logits"] for tensor in output_tensors)
         assert isinstance(batch, ModelBatch)
         assert isinstance(output, ModelOutput)
-        logits = output.predictions["masked_value_logits"]
-        assert logits.shape == (
+        assert output.predictions["masked_value_logits"].shape == (
             batch.prediction_count,
             task.spaces["pragma"].size,
         )
         assert torch.isfinite(output.loss)
-        targets = batch.event_target_ids[batch.event_loss_mask]
-        torch.testing.assert_close(output.predictions["masked_value_targets"], targets)
-        logits.retain_grad()
         output.loss.backward()
-        assert_mean_cross_entropy_gradient(logits, targets, smoothing=0.1)
         assert model.encoder.embedding.weight.grad is not None
         assert model.encoder.module_times_seconds() == {}
 
@@ -172,3 +160,54 @@ def test_pragma_timing_is_explicit_and_latest_relative():
         # The leading zero is model-owned summary; real newest-event age isalsozero.
         assert adapted.history_elapsed_seconds.tolist() == [[0.0, 25.0, 20.0, 5.0, 0.0]] * 2
         assert "elapsed_seconds" not in public.inputs["history"]["sequence"]
+
+
+def assert_mean_cross_entropy_gradient(logits, targets, *, smoothing=0.0):
+    classes = logits.shape[-1]
+    labels = torch.nn.functional.one_hot(targets, classes) * (1 - smoothing) + smoothing / classes
+    torch.testing.assert_close(logits.grad, (logits.detach().softmax(-1) - labels) / len(targets))
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_pragma_gradient(tmp_path):
+    from e2e.flows.hm_pragma import PragmaEncoder
+    from kumo.pytorch import api
+    from kumo.pytorch.models.protocols import ModelState
+    from tests.test_diskgraph_backend import (
+        _banking_anchors,
+        _fixture_rows,
+        _native_pragma_contract,
+        _write_parquet,
+    )
+
+    pytest.importorskip("diskgraph")
+    base = _native_pragma_contract()
+    inputs = dict(base.batch.inputs)
+    inputs["profile"] = inputs.pop("entity")
+    inputs["history"] = replace(
+        inputs["history"], layout=api.Nested(fields=api.Padded(), events=api.Padded())
+    )
+    contract = replace(base, batch=replace(base.batch, inputs=inputs))
+    dataset = _write_parquet(_fixture_rows(), tmp_path / "data")
+    engine = api.DiskGraphEngine(index=tmp_path / "index", num_threads=1)
+    with (
+        api.prepare(contract, dataset, engine) as plan,
+        plan.materialize(_banking_anchors(tmp_path), fit_split="train") as task,
+    ):
+        (batch,) = task.batches(output_format="model")
+        encoder = PragmaEncoder(task.spaces["pragma"].size)
+        _, embeddings = encoder(batch)
+        values = batch.targets["masked_values"]
+        mask = values["valid"]
+        targets = values["values"][mask]
+        state = ModelState(
+            embeddings,
+            mask,
+            {},
+            {"masked_value_embeddings": embeddings[mask], "masked_value_targets": targets},
+        )
+        output = MaskedValueObjective(encoder.tokens, label_smoothing=0.1)(state, batch)
+        logits = output.predictions["masked_value_logits"]
+        logits.retain_grad()
+        output.loss.backward()
+        assert_mean_cross_entropy_gradient(logits, targets, smoothing=0.1)

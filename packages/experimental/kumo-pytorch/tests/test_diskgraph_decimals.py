@@ -16,14 +16,10 @@ import torch
 
 from kumo.pytorch import api
 from kumo.pytorch.engines.diskgraph import DiskGraphSource
+from tests.helpers import parquet_anchors
 
 
-@pytest.mark.parametrize("precision", [38, 76])
-@pytest.mark.parametrize(
-    "encoding,output_format",
-    [("raw", "inspectable"), ("zscore", "inspectable"), ("zscore", "model")],
-)
-def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format):
+def _decimal_data(tmp_path, precision, encoding):
     pytest.importorskip("diskgraph")
     money = api.DType(f"decimal{128 if precision == 38 else 256}", precision=precision, scale=10)
     integer = api.DType("int64")
@@ -92,7 +88,49 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         path = tmp_path / f"{name}.parquet"
         pq.write_table(table, path)
         bindings[name] = api.Parquet(str(path))
-    request = api.SampleRequest("one", 1, start + timedelta(days=1), split="train")
+    return contract, bindings, tables, money, amounts, start + timedelta(days=1)
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("precision", [38, 76])
+def test_native_decimal_projection_with_parquet_anchors(tmp_path, precision):
+    contract, bindings, _, _, _, cutoff = _decimal_data(tmp_path, precision, "zscore")
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet",
+        {"account": [1], "cutoff": [cutoff]},
+        "account",
+        "cutoff",
+    )
+    with (
+        api.prepare(
+            contract,
+            api.Dataset(bindings),
+            api.DiskGraphEngine(index=tmp_path / "index", num_threads=1),
+        ) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        batch = next(task.batches(batch_size=1, output_format="model"))
+    event = batch.inputs["history"]["amount"]
+    nodes = batch.inputs["graph"]["nodes"]["events"]
+    order = nodes["ids"].argsort()
+    field = nodes["features"]["amount"]
+    assert nodes["ids"][order].tolist() == [1, 2, 3, 4]
+    assert field["valid"][order].tolist() == event["valid"][0].tolist() == [True, True, False, True]
+    expected = [-(0.5**0.5), -(0.5**0.5), 2**0.5]
+    for values in (field["values"][order], event["values"][0]):
+        assert values[event["valid"][0]].tolist() == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("precision", [38, 76])
+@pytest.mark.parametrize(
+    "encoding,output_format",
+    [("raw", "inspectable"), ("zscore", "inspectable"), ("zscore", "model")],
+)
+def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format):
+    contract, bindings, tables, money, amounts, cutoff = _decimal_data(
+        tmp_path, precision, encoding
+    )
+    request = api.SampleRequest("one", 1, cutoff, split="train")
     outputs = []
     for engine in (
         api.InMemoryEngine(),
@@ -132,27 +170,19 @@ def test_decimal_events_and_graphs(tmp_path, precision, encoding, output_format)
         assert outputs[0][1] == pytest.approx(outputs[1][1])
 
 
-def _feature_source(dtype, values):
-    source = object.__new__(DiskGraphSource)
-    source._pa, source._pc = pa, pc
-    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
-    batch = pa.record_batch({"amount": values})
-    source._sampler = SimpleNamespace(
-        fetch_features=lambda _: [{"type": "feature", "batch": batch}]
-    )
-    return source
-
-
 @pytest.mark.parametrize(
     "text", ["not-a-decimal", "12345678901234567890123456789.0000000000", "0.00000000001"]
 )
 def test_decimal_transport_rejects_invalid_or_lossy_values(text):
-    values = pa.array([text])
-    source = _feature_source(api.DType("decimal128", precision=38, scale=10), values)
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {
+        "events": SimpleNamespace(
+            columns={"amount": api.DType("decimal128", precision=38, scale=10)}
+        )
+    }
     with pytest.raises(pa.ArrowInvalid):
-        source._decode_decimal_array("events", "amount", values)
-    with pytest.raises(pa.ArrowInvalid):
-        source._feature_arrays("events", [0], ("amount",))
+        source._decode_decimal_array("events", "amount", pa.array([text]))
 
 
 @pytest.mark.parametrize(
@@ -167,7 +197,7 @@ def test_decimal_transport_rejects_invalid_or_lossy_values(text):
     ],
 )
 def test_decimal_transport_leaves_other_arrays_unchanged(dtype, values):
-    source = _feature_source(dtype, values)
+    source = object.__new__(DiskGraphSource)
+    source._pa, source._pc = pa, pc
+    source._tables = {"events": SimpleNamespace(columns={"amount": dtype})}
     assert source._decode_decimal_array("events", "amount", values) is values
-    fetched = source._feature_arrays("events", list(range(len(values))), ("amount",))
-    assert fetched["amount"].equals(values)

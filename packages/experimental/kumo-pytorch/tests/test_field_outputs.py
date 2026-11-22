@@ -733,6 +733,7 @@ def _assert_stored_fields(task, rows, names, vocabularies, *, batch_size):
         assert (sample_id, values) == (str(row["id"]), expected)
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize("width", [32, 128, 512])
 @pytest.mark.parametrize("sparse", [False, True], ids=["dense", "null-heavy-projection"])
 def test_model_batch_projects_physical_columns_and_preserves_nulls(width, sparse):
@@ -760,15 +761,15 @@ def test_model_batch_projects_physical_columns_and_preserves_nulls(width, sparse
         _assert_stored_fields(task, rows, selected, maps, batch_size=3)
 
 
+@pytest.mark.usefixtures("native_anchor_delivery")
 @pytest.mark.parametrize("width", [8, 32, 128])
 def test_wide_derived_outputs_keep_their_own_encodings(tmp_path, width):
     from bisect import bisect_right
 
-    import pyarrow.parquet as pq
-
     from conformance.assertions import bound_tables
     from conformance.generate import contract_for, schema_for
     from kumo.pytorch import api
+    from tests.helpers import parquet_anchors
 
     # The first cutoff sees 10; the second sees 10 and 30. Both exclude the future 999.
     rows = [
@@ -818,12 +819,13 @@ def test_wide_derived_outputs_keep_their_own_encodings(tmp_path, width):
         SampleSpec(EntitySpec("users"), entity_values=values),
         BatchSpec({"entity": Input(EntitySource(), Fields(tuple(fields)), Separate())}),
     )
-    path = tmp_path / "anchors.parquet"
-    pq.write_table(pa.table({"user": [1, 1], "cutoff": [20, 100]}), path)
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"user": [1, 1], "cutoff": [20, 100]}, "user", "cutoff"
+    )
     with (
         bound_tables(contract, tables, "diskgraph") as (dataset, engine),
         prepare(contract, dataset, engine) as plan,
-        plan.materialize(AnchorTable(api.Parquet(str(path)), "user", "cutoff")) as task,
+        plan.materialize(anchors) as task,
     ):
         (batch,) = task.batches(batch_size=2, output_format="model")
     assert set(batch.inputs["entity"]) == set(expected)

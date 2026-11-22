@@ -7,7 +7,7 @@
 import datetime as dt
 import json
 import math
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from decimal import Decimal
 
 import pyarrow as pa
@@ -15,8 +15,10 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
+from conformance.assertions import bound_tables
 from kumo.pytorch import api
 from kumo.pytorch.data import cutoff_to_epoch
+from tests.helpers import parquet_anchors
 
 MODES = ("reference", "native_inspectable", "native_model")
 INT = api.DType("int64")
@@ -585,11 +587,11 @@ def test_fractional_anchor_never_admits_a_later_event(tmp_path, mode, anchor, ev
     assert _list(batch.targets["future"]["values"]) == [1 - past]
 
 
+@pytest.mark.parametrize("filtered", [False, True], ids=["all", "filtered"])
 @pytest.mark.parametrize("grouped", [False, True])
-@pytest.mark.parametrize(
-    "mode,filtered", [("reference", False), ("reference", True), ("native_model", False)]
-)
-def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, grouped):
+def test_windowed_integer_cancellation_keeps_low_bits(
+    tmp_path, grouped, filtered, native_anchor_delivery
+):
     schema = api.DataSchema(
         (
             api.TableSpec("users", "id", {"id": INT}, time_column=api.NON_TEMPORAL),
@@ -609,7 +611,7 @@ def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, 
     window = api.Rows(
         ("accounts", "events"),
         api.TimeWindow("at", -10, 0),
-        filters=(api.RowFilter("v", "not_null"),) if filtered else (),
+        filters=(api.RowFilter("id", "not_in", (2,)),) if filtered else (),
     )
     source = (
         api.GroupBy(window, ("group",), {"part": api.Reduce("sum", "v", dtype=INT)})
@@ -648,11 +650,26 @@ def test_windowed_integer_cancellation_keeps_low_bits(tmp_path, mode, filtered, 
             for i, (user, t, v, group) in enumerate(events)
         ],
     }
-    with _prepared(tmp_path, contract, rows, mode) as plan:
-        out = _batch(plan, tuple(api.SampleRequest(i, i, 100) for i in (1, 2, 3)), mode).inputs["x"]
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"id": [1, 2, 3], "at": [100] * 3}, "id", "at"
+    )
+    with bound_tables(contract, rows, "diskgraph") as (dataset, engine), ExitStack() as stack:
+        try:
+            plan = stack.enter_context(api.prepare(contract, dataset, engine))
+            task = stack.enter_context(plan.materialize(anchors))
+            batches = native_anchor_delivery(task, batch_size=3)
+            batch = next(batches)
+        except api.ValidationError as exc:
+            if filtered and {issue.code for issue in exc.issues} == {"DG-ROW-FILTER"}:
+                return
+            raise
+        assert list(batches) == []
+        assert batch.metadata["entity_ids"].tolist() == [1, 2, 3]
+        out = batch.inputs["x"]
+    # Event 2 contributes one unit between the two large, cancelling values.
     for name, expected in (
-        ("total", [2, 0, 7]),
-        ("difference", [1, -1, 6]),
+        ("total", [1 if filtered else 2, 0, 7]),
+        ("difference", [0 if filtered else 1, -1, 6]),
         ("count", [3 if filtered else 4, 0, 1]),
     ):
         assert out[name]["values"].dtype == torch.int64

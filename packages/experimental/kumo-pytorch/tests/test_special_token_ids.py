@@ -218,13 +218,9 @@ def test_save_load_and_inference_keep_the_explicit_ids(tmp_path: Path) -> None:
     assert torch.equal(emitted[1], trained.inputs["emitted"]["value_ids"][0])
 
 
-@pytest.mark.parametrize(
-    "engine_name,identity",
-    [("in_memory", 1), ("diskgraph", 2**63 - 1), ("diskgraph", 2**63), ("diskgraph", 2**64 - 1)],
-)
-def test_masked_values_use_the_explicit_mask_id(engine_name, identity) -> None:
-    contract = _contract(_blueprint(), id_dtype="uint64" if engine_name == "diskgraph" else "int64")
-    contract = api.DataLoaderSpec(
+def _masked_contract(id_dtype="int64"):
+    contract = _contract(_blueprint(), id_dtype=id_dtype)
+    return api.DataLoaderSpec(
         contract.schema,
         contract.sample,
         api.BatchSpec(
@@ -241,17 +237,24 @@ def test_masked_values_use_the_explicit_mask_id(engine_name, identity) -> None:
             field_names=contract.batch.field_names,
         ),
     )
+
+
+def test_masked_values_use_the_explicit_mask_id() -> None:
+    batch = _batch(_masked_contract())
+    ids = batch.inputs["emitted"]["value_ids"]
+    assert (ids[:2] == BLUEPRINT["mask"]).all()
+
+
+@pytest.mark.usefixtures("native_anchor_delivery")
+@pytest.mark.parametrize("identity", [2**63 - 1, 2**63, 2**64 - 1])
+def test_native_mask_preserves_unsigned_identity_and_label(identity):
+    contract = _masked_contract("uint64")
     ids = [identity, 2, 3]
     rows = [dict(row, id=key) for row, key in zip(ROWS, ids, strict=True)]
-    with bound_tables(contract, {"users": rows}, engine_name) as (dataset, engine):
-        if engine_name == "diskgraph":
-            anchors = api.AnchorTable(dataset.tables["users"], "id")
-            output_format = "model"
-        else:
-            anchors = [api.SampleRequest(i, key, 100) for i, key in enumerate(ids)]
-            output_format = "inspectable"
+    with bound_tables(contract, {"users": rows}, "diskgraph") as (dataset, engine):
+        anchors = api.AnchorTable(dataset.tables["users"], "id")
         with api.prepare(contract, dataset, engine) as plan, plan.materialize(anchors) as task:
-            batch = next(task.batches(batch_size=3, shuffle=False, output_format=output_format))
+            batch = next(task.batches(batch_size=3, output_format="model"))
     assert batch.metadata["sample_ids"] == (0, 1, 2)
     assert batch.inputs["emitted"]["value_ids"][:2].tolist() == [[BLUEPRINT["mask"]]] * 2
     target = batch.targets["masked"]

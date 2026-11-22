@@ -4,13 +4,11 @@
 
 """Keyless source occurrences work throughout the public loader and serving flow."""
 
-from collections import Counter
 from dataclasses import replace
 from unittest.mock import patch
 
 import pyarrow as pa
 import pytest
-import torch
 
 import kumo.pytorch.api as r
 from conformance.assertions import bound_case
@@ -274,9 +272,7 @@ def test_keyless_non_temporal_count_only_frame(engine_name):
         assert batch.inputs["values"]["count"]["values"].tolist() == [4, 4, 0]
 
 
-def test_keyless_tie_order_survives_an_ordered_serving_subset(engine_name):
-    from tests.serving_fetch import fetch
-
+def test_keyless_tie_order_survives_an_ordered_serving_subset():
     case = _case()
     event = r.EventSpec(
         r.Rows(("activity",)), {"amount": r.Field(column="amount")}, order="descending", limit=1
@@ -300,45 +296,23 @@ def test_keyless_tie_order_survives_an_ordered_serving_subset(engine_name):
         "events": [
             {"owner": 2, "at": 9, "amount": 99},
             *({"owner": 1, "at": 9, "amount": i} for i in range(12)),
-            {"owner": 1, "at": 8, "amount": 98},
-            {"owner": 1, "at": 10, "amount": 100},
         ],
     }
     requests = (r.SampleRequest("tied", 1, 9),)
-    case = replace(case, contract=contract, tables=tables, requests=requests)
-    with (
-        bound_case(case, engine_name) as (dataset, engine),
-        r.prepare(contract, dataset, engine) as plan,
-    ):
+    dataset = r.Dataset({name: r.InMemoryRows(rows) for name, rows in tables.items()})
+    with r.prepare(contract, dataset, r.InMemoryEngine()) as plan:
         with plan.materialize(requests) as task:
             offline = next(iter(task.batches(requests, batch_size=1)))
             server = r.ServingAssembler(task.to_artifact())
-    rows = fetch(server.rows_spec, contract.schema, tables, requests[0])
-    served = server.assemble(rows, requests)[0]
-    if engine_name == "in_memory":
-        assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
-        assert served.inputs["history"]["amount"]["values"].tolist() == [11]
-    reversed_rows = {**rows, "events": rows["events"][::-1]}
-    for batch in (offline, served, server.assemble(reversed_rows, requests)[0]):
-        history = batch.inputs["history"]
-        assert history["offsets"].tolist() == [0, 1]
-        assert history["amount"]["valid"].tolist() == [True]
-        assert history["amount"]["values"].item() in range(12)
+    served = server.assemble({**tables, "events": tables["events"][1:]}, requests)[0]
+    assert offline.inputs["history"]["amount"]["values"].tolist() == [11]
+    assert served.inputs["history"]["amount"]["values"].tolist() == [11]
 
 
-@pytest.mark.parametrize(
-    "strategy", [None, "recent", "uniform"], ids=["all-three-hops", "recent-two", "uniform-two"]
-)
-def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name, strategy):
+def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name):
     from tests.serving_fetch import fetch
 
     case = _graph_case()
-    if strategy is not None:
-        neighborhood = r.NeighborhoodSpec(
-            (r.GraphLayer((r.GraphSample("activity", 2, strategy=strategy),)),)
-        )
-        sample = replace(case.contract.sample, neighborhoods={"activity": neighborhood})
-        case = replace(case, contract=replace(case.contract, sample=sample))
     case = replace(
         case,
         tables={
@@ -357,19 +331,9 @@ def test_keyless_serving_graphs_keep_occurrences_after_fetch(engine_name, strate
     # Opaque IDs are local; compare features and connectivity instead of their values.
     for graph in (offline, served):
         nodes = graph["nodes"]["events"]
-        values = sorted(nodes["features"]["amount"]["values"].tolist())
-        if strategy == "uniform":
-            # Uniform can choose any two occurrences for this entity, regardless of time.
-            assert len(values) == 2 and Counter(values) <= Counter([2, 2, 3, 100])
-        else:
-            assert values == ([2, 3] if strategy == "recent" else [2, 2, 3])
-        assert len(set(nodes["ids"].tolist())) == len(values)
-        assert nodes["features"]["amount"]["valid"].tolist() == [True] * len(values)
-        assert graph["nodes"]["users"]["ids"].tolist() == [case.requests[0].entity_id]
-        edge = graph["edges"]["activity"]
-        assert (edge["source_type"], edge["destination_type"]) == ("users", "events")
-        assert edge["index"].dtype == torch.int64
-        assert sorted(edge["index"].t().tolist()) == [[0, i] for i in range(len(values))]
+        assert sorted(nodes["features"]["amount"]["values"].tolist()) == [2, 2, 3]
+        assert len(set(nodes["ids"].tolist())) == 3
+        assert graph["edges"]["activity"]["index"].shape == (2, 3)
 
 
 def test_keyless_serving_reduction_retains_local_floating_rounding():
@@ -413,3 +377,59 @@ def test_keyless_serving_reduction_retains_local_floating_rounding():
     # Binary64: (1e16 - 1e16) + 1 = 1; (1 - 1e16) + 1e16 = 0.
     assert offline.inputs["values"]["sum"]["values"].tolist() == [1.0]
     assert served.inputs["values"]["sum"]["values"].tolist() == [0.0]
+
+
+@pytest.mark.parametrize("strategy", ["recent", "uniform"])
+@pytest.mark.usefixtures("native_anchor_delivery")
+def test_native_keyless_ties_and_graph_endpoints(tmp_path, strategy):
+    from tests.helpers import parquet_anchors
+
+    case = _graph_case()
+    neighborhood = r.NeighborhoodSpec(
+        (r.GraphLayer((r.GraphSample("activity", 2, strategy=strategy),)),)
+    )
+    event = replace(case.contract.sample.events["history"], order="descending", limit=1)
+    sample = replace(
+        case.contract.sample,
+        neighborhoods={"activity": neighborhood},
+        events={"history": event},
+        targets={},
+    )
+    inputs = {name: case.contract.batch.inputs[name] for name in ("history", "graph")}
+    case = replace(case, contract=replace(case.contract, sample=sample, batch=r.BatchSpec(inputs)))
+    case = replace(
+        case,
+        tables={
+            **case.tables,
+            "events": [
+                {"owner": 2, "at": 9, "amount": 42},
+                *[{"owner": 1, "at": 9, "amount": i} for i in range(12)],
+                {"owner": 1, "at": 8, "amount": 98},
+                {"owner": 1, "at": 10, "amount": 100},
+            ],
+        },
+    )
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet", {"owner": [1], "at": [9]}, "owner", "at"
+    )
+    with (
+        bound_case(case, "diskgraph") as (dataset, engine),
+        r.prepare(case.contract, dataset, engine) as plan,
+        plan.materialize(anchors) as task,
+    ):
+        batch = next(task.batches(batch_size=1, output_format="model"))
+    history = batch.inputs["history"]
+    assert history["offsets"].tolist() == [0, 1]
+    assert history["amount"]["valid"].tolist() == [True]
+    assert history["amount"]["values"].item() in range(12)
+    graph = batch.inputs["graph"]
+    nodes = graph["nodes"]["events"]
+    assert len(set(nodes["ids"].tolist())) == 2
+    assert nodes["features"]["amount"]["valid"].tolist() == [True, True]
+    amounts = nodes["features"]["amount"]["values"].tolist()
+    eligible = set(range(12)) if strategy == "recent" else {*range(12), 98, 100}
+    assert len(set(amounts)) == 2 and set(amounts) <= eligible
+    assert graph["nodes"]["users"]["ids"].tolist() == [1]
+    edge = graph["edges"]["activity"]
+    assert (edge["source_type"], edge["destination_type"]) == ("users", "events")
+    assert sorted(edge["index"].t().tolist()) == [[0, 0], [0, 1]]

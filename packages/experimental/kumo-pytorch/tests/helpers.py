@@ -21,11 +21,13 @@ from typing import Any
 
 from kumo.pytorch.anchors import ALL_ANCHORS
 from kumo.pytorch.api import (
+    AnchorTable,
     BatchSpec,
     DataLoaderSpec,
     Dataset,
     InMemoryEngine,
     InMemoryRows,
+    Parquet,
     SampleRequest,
     SampleSpec,
     Task,
@@ -54,6 +56,15 @@ def reorder_dicts(value: Any, *, shuffled: bool = False) -> Any:
         return item
 
     return reorder(value)
+
+
+def parquet_anchors(path, columns, entity_id, as_of_time=None, **bindings):
+    """Write a package test's anchor columns and bind them to the native reader."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    pq.write_table(pa.table(columns), path)
+    return AnchorTable(Parquet(str(path)), entity_id, as_of_time, **bindings)
 
 
 def in_memory_dataset(tables: Mapping[str, Sequence[Mapping[str, Any]]]) -> Dataset:

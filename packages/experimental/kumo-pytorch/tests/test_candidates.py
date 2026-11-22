@@ -6,14 +6,17 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import replace
 
 import pytest
 
+from conformance.assertions import bound_tables
 from kumo.pytorch.api import (
     NON_TEMPORAL,
     Aggregate,
     BatchSpec,
+    CandidateColumn,
     CandidateRequest,
     CandidateSetSpec,
     CandidateSource,
@@ -42,8 +45,9 @@ from kumo.pytorch.api import (
     TimeWindow,
     ValidationError,
     Vocabulary,
+    prepare,
 )
-from tests.helpers import Plans
+from tests.helpers import Plans, parquet_anchors
 
 SCHEMA = DataSchema(
     (
@@ -78,8 +82,6 @@ TABLES = {
         {"item_id": 10, "category": "book"},
         {"item_id": 11, "category": "game"},
         {"item_id": 12, "category": "book"},
-        {"item_id": 13, "category": None},
-        {"item_id": 14, "category": "unseen"},
     ],
     "views": [
         {"view_id": 1, "item_id": 10, "at": 80},
@@ -299,32 +301,89 @@ def test_candidate_contract_round_trips() -> None:
     assert DataLoaderSpec.from_json(contract.to_json()) == contract
 
 
-@pytest.mark.parametrize("layout", [Packed(), Padded()])
-def test_missing_candidate_fields_and_labels_stay_distinct_from_padding(layout):
-    requests = (
-        SampleRequest("empty", 1, 100, candidates={"items": ()}),
-        SampleRequest(
-            "mixed",
-            2,
-            100,
-            candidates={
-                "items": (_candidate(14, False), CandidateRequest(13), _candidate(10, True))
-            },
-        ),
-        SampleRequest("single", 1, 100, candidates={"items": (CandidateRequest(10),)}),
+@pytest.mark.parametrize("layout", [Packed(), Padded()], ids=["packed", "padded"])
+def test_native_candidate_membership_features_and_labels(tmp_path, layout, native_anchor_delivery):
+    base = _contract(layout)
+    contract = replace(
+        base,
+        sample=replace(base.sample, candidate_sets={"items": base.sample.candidate_sets["items"]}),
+        batch=replace(base.batch, inputs={"items": base.batch.inputs["items"]}),
     )
-    with PLANS.prepare(_contract(layout), requests) as task:
-        batch = next(task.batches(requests, batch_size=3))
-    assert batch.metadata["candidate_entity_ids"]["items"] == ((), (14, 13, 10), (10,))
-    items, target = batch.inputs["items"], batch.targets["clicked"]
-    present = items["valid"]
-    if isinstance(layout, Packed):
-        assert items["offsets"].tolist() == target["offsets"].tolist() == [0, 0, 3, 4]
-        assert present.all()
-    else:
-        assert present.tolist() == [[False] * 3, [True] * 3, [True, False, False]]
-        assert not target["valid"][~present].any()
-    assert items["category"]["values"][present].tolist() == [1, 0, 2, 2]
-    assert items["category"]["valid"][present].tolist() == [True, False, True, True]
-    assert target["valid"][present].tolist() == [True, False, True, False]
-    assert target["values"][target["valid"]].tolist() == [0.0, 1.0]
+    tables = {
+        **TABLES,
+        "items": [
+            *TABLES["items"],
+            {"item_id": 13, "category": None},
+            {"item_id": 14, "category": "unseen"},
+        ],
+    }
+    anchors = parquet_anchors(
+        tmp_path / "anchors.parquet",
+        {
+            "sid": ["empty", "mixed", "single"],
+            "user": [1, 2, 1],
+            "at": [100] * 3,
+            "items": [
+                [],
+                [
+                    {"id": 14, "clicked": False},
+                    {"id": 13, "clicked": None},
+                    {"id": 10, "clicked": True},
+                ],
+                [{"id": 10, "clicked": None}],
+            ],
+        },
+        "user",
+        "at",
+        sample_id="sid",
+        candidates={"items": CandidateColumn("items", "id", targets={"clicked": "clicked"})},
+    )
+    with bound_tables(contract, tables, "diskgraph") as bound, ExitStack() as stack:
+        try:
+            plan = stack.enter_context(prepare(contract, *bound))
+            task = stack.enter_context(plan.materialize(anchors))
+            batches = iter(native_anchor_delivery(task, batch_size=3))
+            batch = next(batches)
+        except ValidationError as exc:
+            assert {issue.code for issue in exc.issues} == {"DG-CANDIDATE-SETS"}, exc
+            return
+        except ValueError as exc:
+            if (
+                str(exc)
+                != "input 'items': candidate model output is not supported; use inspectable"
+            ):
+                raise
+            return
+        assert list(batches) == []
+        assert list(batch.metadata["sample_ids"]) == ["empty", "mixed", "single"]
+        assert not any(batch.metadata["is_padding"])
+        assert batch.metadata["candidate_entity_ids"] == {"items": ((), (14, 13, 10), (10,))}
+        items, clicked = batch.inputs["items"], batch.targets["clicked"]
+        present = items["valid"]
+        future = batch.targets["future_views"]
+        for target in (clicked, future):
+            assert target["candidate_valid"].tolist() == present.tolist()
+        if isinstance(layout, Packed):
+            for output in (items, clicked, future):
+                assert output["offsets"].tolist() == [0, 0, 3, 4]
+            assert present.tolist() == [True] * 4
+        else:
+            assert present.tolist() == [[False] * 3, [True] * 3, [True, False, False]]
+            for field in (
+                items["item_id"],
+                items["category"],
+                items["prior_views"],
+                clicked,
+                future,
+            ):
+                assert not field["valid"][~present].any()
+                assert not field["values"][~present].any()
+        assert items["item_id"]["valid"][present].all()
+        assert items["item_id"]["values"][present].tolist() == [1, 1, 2, 2]
+        assert items["category"]["values"][present].tolist() == [1, 0, 2, 2]
+        assert items["category"]["valid"][present].tolist() == [True, False, True, True]
+        assert clicked["valid"][present].tolist() == [True, False, True, False]
+        assert clicked["values"][clicked["valid"]].tolist() == [0.0, 1.0]
+        assert items["prior_views"]["values"][present].tolist() == [0, 0, 1, 1]
+        assert items["prior_views"]["valid"][present].all() and future["valid"][present].all()
+        assert future["values"][present].tolist() == [0, 0, 1, 1]
