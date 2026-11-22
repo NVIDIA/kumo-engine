@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from dataclasses import replace
+from hashlib import sha256
 from types import ModuleType
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
@@ -29,7 +30,6 @@ from kumo_core.diskgraph.batch_contract import (
     ConsumerToken,
     HeteroBatchPayload,
     SamplingContractError,
-    content_digest,
 )
 from kumo_core.diskgraph.ray_sampling import (
     RAY_VERSION,
@@ -141,7 +141,6 @@ def _payload(request: BatchRequest) -> HeteroBatchPayload:
 def test_request_identity_and_envelope_validation() -> None:
     """Only the matching logical request may consume an encoded response."""
     request = _request()
-    assert len(content_digest(b"manifest")) == 64
     assert request == _request()
     assert request != replace(request, consumer=replace(request.consumer, generation=1))
     payload = _payload(request)
@@ -180,7 +179,7 @@ def test_request_rejects_invalid_contract(changes: dict[str, object]) -> None:
 def test_replica_verifies_artifacts_and_budgets() -> None:
     config = _config()
     content = b"immutable manifest"
-    digest = content_digest(content)
+    digest = sha256(content).hexdigest()
     config = replace(config, artifacts=ArtifactIdentity(digest, digest, "mapping"))
     with patch("pathlib.Path.read_bytes", return_value=content):
         config.verify()
@@ -304,7 +303,7 @@ def test_trainer_rejects_mismatched_seed_manifest_before_scheduling() -> None:
     client._manifest_verified = False
     client.manifest_path = "runtime.json"
     client.config = MagicMock()
-    client.config.artifacts.task_digest = content_digest(b"expected")
+    client.config.artifacts.task_digest = sha256(b"expected").hexdigest()
     with (
         patch("pathlib.Path.read_bytes", return_value=b"other task"),
         pytest.raises(SamplingContractError, match="trainer task manifest"),

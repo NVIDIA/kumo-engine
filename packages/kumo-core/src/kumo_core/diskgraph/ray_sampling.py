@@ -17,6 +17,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 from types import ModuleType
@@ -32,7 +33,6 @@ from kumo_core.diskgraph.batch_contract import (
     ConsumerToken,
     HeteroBatchPayload,
     SamplingContractError,
-    content_digest,
 )
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ class ReplicaConfig:
             (self.snapshot_manifest_path, self.artifacts.snapshot_digest),
             (self.manifest_path, self.artifacts.task_digest),
         ):
-            if content_digest(Path(path).read_bytes()) != expected:
+            if sha256(Path(path).read_bytes()).hexdigest() != expected:
                 raise SamplingContractError(
                     "local snapshot/task manifest digest differs"
                 )
@@ -514,7 +514,7 @@ class RayRuntimeIndex:
                 "Ray clients cannot be inherited across processes"
             )
         if not self._manifest_verified:
-            digest = content_digest(Path(self.manifest_path).read_bytes())
+            digest = sha256(Path(self.manifest_path).read_bytes()).hexdigest()
             if digest != self.config.artifacts.task_digest:
                 raise SamplingContractError("trainer task manifest digest differs")
             self._manifest_verified = True
