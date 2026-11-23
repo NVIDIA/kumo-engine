@@ -5,6 +5,58 @@
 use super::{map_kumo_dtype, unify_types, IngestedType};
 
 #[test]
+fn parses_local_root_paths() {
+    let root = tempfile::tempdir().unwrap();
+    for input in [
+        root.path().to_str().unwrap().to_string(),
+        url::Url::from_directory_path(root.path())
+            .unwrap()
+            .to_string(),
+    ] {
+        let crate::RootSource::Local(path) = crate::parse_root_source(&input).unwrap() else {
+            panic!("expected local source for {input}");
+        };
+        assert_eq!(path, root.path());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn preserves_windows_root_paths() {
+    for input in [
+        r"C:\data with spaces\100%raw",
+        "c:/data/input",
+        r"D:relative\input",
+        r"\\server\share\input",
+        r"\\?\C:\long\input",
+        r"\\?\UNC\server\share\input",
+    ] {
+        let crate::RootSource::Local(path) = crate::parse_root_source(input).unwrap() else {
+            panic!("expected local source for {input}");
+        };
+        assert_eq!(path, std::path::Path::new(input));
+    }
+}
+
+#[test]
+fn retains_source_url_schemes() {
+    assert!(
+        matches!(crate::parse_root_source("s3://bucket/input").unwrap(),
+        crate::RootSource::S3 { bucket, prefix } if bucket == "bucket" && prefix == "input")
+    );
+    assert!(
+        matches!(crate::parse_root_source("gs://bucket/input").unwrap(),
+        crate::RootSource::Gcs { bucket, prefix } if bucket == "bucket" && prefix == "input")
+    );
+    assert!(
+        matches!(crate::parse_root_source("az://account/container/input").unwrap(),
+        crate::RootSource::Adls { account, container, prefix }
+            if account == "account" && container == "container" && prefix == "input")
+    );
+    assert!(crate::parse_root_source("https://example.com/input").is_err());
+}
+
+#[test]
 fn test_map_kumo_dtype() {
     assert_eq!(map_kumo_dtype("int"), Ok(IngestedType::Int64));
     assert_eq!(map_kumo_dtype("float"), Ok(IngestedType::Float32));

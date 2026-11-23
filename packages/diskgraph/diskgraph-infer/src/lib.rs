@@ -193,6 +193,13 @@ pub enum RootSource {
 }
 
 pub fn parse_root_source(input: &str) -> Result<RootSource> {
+    // URL parsers treat a Windows drive letter as a scheme.
+    if matches!(
+        Path::new(input).components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) {
+        return Ok(RootSource::Local(PathBuf::from(input)));
+    }
     if let Ok(url) = Url::parse(input) {
         match url.scheme() {
             "s3" => Ok(RootSource::S3 {
