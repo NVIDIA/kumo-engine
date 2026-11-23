@@ -40,6 +40,7 @@ from temporalio_commons.temporal_client import TemporalClient
 from temporalio_commons.worker_registry import WorkerEnv, WorkerOptions
 
 NUM_CHILD_WFS = 3
+CHILD_WF_PREFIX = 'test-child-table-refresh-wf'
 
 
 @workflow.defn
@@ -84,7 +85,8 @@ class DummyParentWorkflow(TableParentWorkflowMixin):
         return task is not None and task.done() and not task.exception()
 
     @workflow.run
-    async def run(self, deploy_config: DeployEnvConfig) -> str:
+    async def run(self, deploy_config: DeployEnvConfig,
+                  child_wf_prefix: str = CHILD_WF_PREFIX) -> str:
         start_child_refresh_coros = []
         for i in range(NUM_CHILD_WFS):
             table_def = TableDefinition(
@@ -106,7 +108,7 @@ class DummyParentWorkflow(TableParentWorkflowMixin):
                     DataBackendContext(deploy_config, DataBackendSettings()),
                     args=[table_def],
                     child_id=table_def.source_table_id,
-                    child_wf_id=f'test-child-table-refresh-wf-{i}',
+                    child_wf_id=f'{child_wf_prefix}-{i}',
                     cancellation_type=ChildWorkflowCancellationType.
                     WAIT_CANCELLATION_COMPLETED,
                     execution_timeout=timedelta(minutes=1),
@@ -221,6 +223,41 @@ async def test_notification():
                                 TableRefreshStage.COMPLETED)
         result = await parent_wf_handle.result()
         assert result == 'Done!'
+
+
+@pytest.mark.asyncio
+async def test_notification_with_child_ids_over_temporal_limit():
+    child_wf_prefix = f'{CHILD_WF_PREFIX}-{"x" * 300}'
+    test_worker_task_queue = 'test-worker-task-queue'
+    worker_options = WorkerOptions(task_queue=test_worker_task_queue)
+    deploy_config = DeployEnvConfig.for_test()
+    worker_env = WorkerEnv('parent-child-test-worker', worker_options,
+                           deploy_config)
+    temporal_client = worker_env.temporal_client
+
+    worker = await worker_env.build_worker(
+        activities=[DataBackendActivities.wait_on_workflow],
+        workflows=[DummyChildWorkflow, DummyParentWorkflow],
+    )
+    async with worker:
+        client = await temporal_client.get()
+        parent_wf_handle = await client.start_workflow(
+            DummyParentWorkflow.run,
+            id='dummy_parent_wf_id',
+            args=[deploy_config, child_wf_prefix],
+            task_queue=test_worker_task_queue,
+            execution_timeout=timedelta(minutes=1),
+        )
+
+        # An intermediate stage completes only if the parent matches the
+        # children's shortened ids to the ids it started them with.
+        await wait_parent_stage(temporal_client, parent_wf_handle,
+                                TableRefreshStage.INGEST_TABLE,
+                                child_wf_prefix=child_wf_prefix)
+        await wait_parent_stage(temporal_client, parent_wf_handle,
+                                TableRefreshStage.COMPLETED,
+                                child_wf_prefix=child_wf_prefix)
+        assert await parent_wf_handle.result() == 'Done!'
 
 
 @pytest.mark.asyncio
@@ -381,6 +418,7 @@ async def wait_parent_stage(
         parent_wf_handle: WorkflowHandle,
         stage: TableRefreshStage,
         *,
+        child_wf_prefix: str = CHILD_WF_PREFIX,
         poll_interval: float = 1.0,
         timeout=timedelta(seconds=30.0),
 ):
@@ -392,7 +430,7 @@ async def wait_parent_stage(
             DummyParentWorkflow.stage_completed, stage)
         if stage_completed:
             return
-        await _tell_child_to_complete(temporal_client, stage)
+        await _tell_child_to_complete(temporal_client, stage, child_wf_prefix)
         await asyncio.sleep(poll_interval)
 
 
@@ -410,8 +448,9 @@ async def _signal_child_wf(child_wf_handle: WorkflowHandle,
 
 
 async def _tell_child_to_complete(temporal_client: TemporalClient,
-                                  stage: TableRefreshStage):
+                                  stage: TableRefreshStage,
+                                  child_wf_prefix: str = CHILD_WF_PREFIX):
     for i in range(NUM_CHILD_WFS):
-        child_wf_id = f'test-child-table-refresh-wf-{i}'
+        child_wf_id = f'{child_wf_prefix}-{i}'
         child_wf_hdl = await temporal_client.get_workflow_handle(child_wf_id)
         await _signal_child_wf(child_wf_hdl, stage)

@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -21,7 +22,7 @@ from rest.config.batch_prediction_job import (
 )
 from rest.config.ml_backend import JobState
 from rest.config.prediction_output import DatabricksPredictionOutput
-from statedb.config.common import ConnectorID
+from statedb.config.common import ConnectorID, JobFailureInfo
 from statedb.utils.errors import PredictionOutputProcessingError
 
 
@@ -94,7 +95,19 @@ def test_aggregate_databricks_uploads_requires_shard_count_abi(
 
 
 @pytest.mark.asyncio
-async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
+@pytest.mark.parametrize('infos,message', [
+    ([
+        JobFailureInfo(message='Out-of-memory (OOM) error: x',
+                       stacktrace='Traceback ...')
+    ], 'Out-of-memory (OOM) error: x'),
+    ([
+        None,
+        JobFailureInfo(message='', stacktrace=''),
+        JobFailureInfo(message='', stacktrace='Traceback ...')
+    ], 'kumo-pred subprocess exited non-zero'),
+])
+async def test_diskgraph_bp_dispatch_uses_long_job_deadline(
+        monkeypatch, caplog, infos, message):
     job_input = SimpleNamespace(
         id='batchpredictionjob-test',
         training_job_id='trainingjob-test',
@@ -102,7 +115,8 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
             name='query', graph=SimpleNamespace(name='prediction-graph')),
         graph_data_compute_input=SimpleNamespace(graph_key='prediction-graph'),
         graph_version_info=SimpleNamespace(graph_data_version='version-1'),
-        config=SimpleNamespace(num_parallel_workers_limit=1, outputs=[]),
+        config=SimpleNamespace(num_parallel_workers_limit=len(infos),
+                               outputs=[]),
     )
     monkeypatch.setattr(
         module, 'deploy_env', lambda: SimpleNamespace(
@@ -116,13 +130,14 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
         lambda name: name == module.PREDICTION_ARTIFACT_OWNERSHIP_PATCH,
     )
     monkeypatch.setattr(module.workflow, 'execute_activity', AsyncMock())
-    run_pooled = AsyncMock(return_value=PredictionShardResult(
-        state=JobState.FAILED))
+    monkeypatch.setattr(module.workflow, 'logger', logging.getLogger(__name__))
+    run_pooled = AsyncMock(side_effect=lambda **kwargs: PredictionShardResult(
+        state=JobState.FAILED, failure_info=infos[kwargs['shard_index']]))
     monkeypatch.setattr(module, 'run_pooled_activity', run_pooled)
 
     workflow = module.BatchPredictionJobWorkflow()
     workflow._save_output = AsyncMock()  # type: ignore[method-assign]
-    await workflow._run(
+    output = await workflow._run(
         cast(BatchPredictionJobInput, job_input),
         cast(MLJobSettings, SimpleNamespace()),
         '/tmp/prediction-config.json',
@@ -132,6 +147,9 @@ async def test_diskgraph_bp_dispatch_uses_long_job_deadline(monkeypatch):
     assert dispatch['schedule_to_close_timeout'] == timedelta(days=21)
     assert dispatch['heartbeat_timeout'] == timedelta(minutes=5)
     assert dispatch['args'][-2:] == [True, True]
+    assert output.failure_info.message.startswith(message)
+    assert output.failure_info.stacktrace == 'Traceback ...'
+    assert caplog.text.count('Traceback ...') == 1
 
 
 @pytest.mark.asyncio

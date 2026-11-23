@@ -126,6 +126,7 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
         'pk_duplicate_counts': {'users:shard-0': 2},
         'pk_null_timestamp_drops': {'orders:shard-0': 3},
         'dropped_rows_counts': {'users': 1, 'orders': 3},
+        'oversized_rows_counts': {'orders': 2},
         'key_failures_by_context': {'pkey:users.USER_ID': {
             'parse_failures': 1}},
     }})
@@ -155,10 +156,12 @@ def test_data_warnings_name_each_table_that_breaks_a_check(tmp_path):
         Note('problems', '`users`: only 9 rows'),
         Note('problems',
              '`orders`: 5.0% of rows have a missing or invalid time'),
+        Note('problems', '`orders`: 2 rows exceeded the 64 MiB node-data '
+             'limit; their features are null'),
         Note('problems', '`orders.AMOUNT`: at least 10% invalid values'),
         Note('problems',
              'link `orders.USER_ID → users`: 10.0% of `orders` rows match'),
-        Tag('kumo.data_warnings', '6'),
+        Tag('kumo.data_warnings', '7'),
     ]
 
 

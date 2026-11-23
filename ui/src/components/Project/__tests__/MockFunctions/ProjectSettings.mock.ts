@@ -31,6 +31,14 @@ export const mockGetProjectResponse = (
             return mockErrorResponse();
         case testResponseType.INVALID:
             return mockInvalidResponse();
+        case testResponseType.ARCHIVED:
+            return Promise.resolve(
+                createMockResponse({
+                    ...mockProjectData,
+                    id: projectId,
+                    status: "archived"
+                })
+            );
         default:
             return Promise.resolve(
                 createMockResponse({ ...mockProjectData, id: projectId })
@@ -57,6 +65,23 @@ export const mockUpdateProjectResponse = () => {
 
 export const setUpdateProjectResponseType = (type: string = "") => {
     updateProjectResponseType = type;
+};
+
+let archiveProjectResponseType = "";
+
+export const mockArchiveProjectResponse = () => {
+    switch (archiveProjectResponseType) {
+        case testResponseType.ERROR:
+            return mockErrorResponse();
+        default:
+            return Promise.resolve(
+                createMockResponse({ ...mockProjectData, status: "archived" })
+            );
+    }
+};
+
+export const setArchiveProjectResponseType = (type: string = "") => {
+    archiveProjectResponseType = type;
 };
 
 const mockErrorResponse = () => {

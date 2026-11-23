@@ -154,16 +154,10 @@ const NewGraph: React.FC = () => {
      *  Function that makes an API call for Edit graph
      */
     const editGraph = useCallback(async () => {
-        const gfc: GraphFlowInfo = { ...graphFlowInfo };
-        if (gfc.flow_type === FlowType.DUPLICATE) {
-            //Update the name if flow is Duplicate
-            gfc.name = name;
-            setGraphFlowInfo(gfc);
-        }
         setLoading(true);
         try {
             const { graphId } = await createGraph(
-                gfc,
+                graphFlowInfo,
                 groups,
                 handleError,
                 true
@@ -172,7 +166,7 @@ const NewGraph: React.FC = () => {
                 setLoading(false);
 
                 if (isValid(graphId)) {
-                    navigate(projectPaths.Graphs + gfc.name);
+                    navigate(projectPaths.Graphs + graphFlowInfo.name);
                 }
             }
         } catch (error) {
@@ -181,7 +175,6 @@ const NewGraph: React.FC = () => {
         }
     }, [
         graphFlowInfo,
-        name,
         createGraph,
         groups,
         handleError,
@@ -304,10 +297,10 @@ const NewGraph: React.FC = () => {
             return;
         }
         if (isObjectNotEmpty(graphFlowInfo) && groups) {
-            if (graphFlowInfo.flow_type === FlowType.CREATE) {
-                onCreateGraph();
-            } else {
+            if (graphFlowInfo.flow_type === FlowType.EDIT) {
                 validateAndEditGraph();
+            } else {
+                onCreateGraph();
             }
         }
     }, [graphFlowInfo, groups, name, onCreateGraph, validateAndEditGraph]);

@@ -20,7 +20,7 @@ from kumo.pytorch.column_stats import StatRequest, stats_request
 from kumo.pytorch.contract._frozen import FrozenMapping
 from kumo.pytorch.contract.dtypes import DType
 from kumo.pytorch.contract.schema import DataSchema, RelationSpec, table_clock
-from kumo.pytorch.dataset import Dataset, Parquet, _local_parquet_files
+from kumo.pytorch.dataset import Dataset, Parquet, _can_coerce_to_int64, _local_parquet_files
 from kumo.pytorch.engines.unsupported import DISKGRAPH_UNSUPPORTED
 
 _MANIFEST = "index_manifest.json"
@@ -178,13 +178,25 @@ def _warn_dropped_rows(root: Path) -> None:
     stats_file = root / "ingest_stats.json"
     if not stats_file.is_file():
         return
-    counts = json.loads(stats_file.read_text()).get("stats", {}).get("dropped_rows_counts", {})
-    dropped = {table: count for table, count in counts.items() if count}
+    stats = json.loads(stats_file.read_text()).get("stats", {})
+    dropped = {
+        table: count for table, count in stats.get("dropped_rows_counts", {}).items() if count
+    }
     if dropped:
         warnings.warn(
             f"DiskGraph index {root} dropped source rows {dropped}; rows with NULL "
             "table clocks are excluded. Counts may include other ingest rejections; "
             "see ingest_stats.json.",
+            UserWarning,
+            stacklevel=3,
+        )
+    oversized = {
+        table: count for table, count in stats.get("oversized_rows_counts", {}).items() if count
+    }
+    if oversized:
+        warnings.warn(
+            f"DiskGraph index {root} has rows over the 64 MiB node-data limit {oversized}; "
+            "their features are stored as null.",
             UserWarning,
             stacklevel=3,
         )
@@ -262,7 +274,11 @@ def _compile_diskgraph_config(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}"
                     )
-                if resolved != declared and not (resolved.name == declared.name == "timestamp"):
+                if (
+                    resolved != declared
+                    and not (resolved.name == declared.name == "timestamp")
+                    and not _can_coerce_to_int64(resolved, declared)
+                ):
                     raise ValueError(
                         f"bind {table.name}.{name} in {path!r}: declared {declared!r}, "
                         f"physical {actual} resolves to {resolved!r}; supply matching typed data"

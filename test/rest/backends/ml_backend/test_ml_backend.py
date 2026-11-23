@@ -984,6 +984,43 @@ async def test_sanitize_job_output_stacktraces(ml_backend: MLJobBackend,
 
 
 @pytest.mark.asyncio
+async def test_batch_prediction_jobs_list_queued_jobs_last(
+        ml_backend: MLJobBackend):
+    ml_job_service = ml_backend._require_ml_job_service()
+    ids = []
+    for status in [JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.RUNNING]:
+        id = BatchPredictionJobID.make_random_id()
+        await ml_job_service.create_batch_prediction_job(
+            id=id,
+            now=now_utc(),
+            config=BatchPredictionJobConfig(
+                PredictiveQueryID('some_pquery'),
+                TrainingJobID.make_random_id(),
+                TaskType.REGRESSION,
+                generate_pred_table_job_id=(
+                    GeneratePredictionTableJobID.as_child_of(id)),
+                graph_id=GraphIDv1('test_graph'),
+            ),
+            project_id=_PROJECT_ID,
+        )
+        entry = (await
+                 ml_job_service.get_batch_prediction_jobs([id],
+                                                          project_ids=None))[0]
+        entry.execution = BatchPredictionJobOutput(
+            status=status,
+            log=JobEventLogEntry.not_started(),
+            start_time=None if status == JobStatus.QUEUED else now_utc(),
+        )
+        await ml_job_service.modify_job_if_open_generic(entry)
+        ids.append(id)
+
+    jobs = await ml_backend.get_batch_prediction_jobs(
+        fake_admin_request_context(), set(ids))
+
+    assert list(jobs) == [ids[0], ids[2], ids[1]]
+
+
+@pytest.mark.asyncio
 async def test_training_responses_preserve_execution_start_time(
     ml_backend: MLJobBackend,
 ) -> None:

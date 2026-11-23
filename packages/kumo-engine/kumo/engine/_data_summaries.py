@@ -210,6 +210,7 @@ def _problems(ingest: Mapping[str, Any], columns: Mapping[str, Any],
     null_time = _by_table(ingest.get('pk_null_timestamp_drops'), ':shard-')
     sources = ingest.get('source_rows_by_table') or {}
     failures = ingest.get('key_failures_by_context') or {}
+    oversized = ingest.get('oversized_rows_counts') or {}
     problems: List[str] = []
     for table in graph_config.get('tables') or ():
         name = table['table_name']
@@ -236,6 +237,9 @@ def _problems(ingest: Mapping[str, Any], columns: Mapping[str, Any],
               if bad_pks else []),
             *([f'`{name}`: {duplicates[name]} duplicate primary keys']
               if duplicates.get(name) else []),
+            *([f'`{name}`: {oversized[name]} rows exceeded the 64 MiB '
+               f'node-data limit; their features are null']
+              if oversized.get(name) else []),
             *(f'`{name}.{column}`: at least {_INVALID_FRACTION:.0%} invalid '
               f'values' for column in sorted(invalid)),
             *([f'`{name}`: only {nodes} rows'] if nodes is not None

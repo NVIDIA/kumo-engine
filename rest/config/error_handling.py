@@ -132,7 +132,9 @@ def extract_failure_info(
     elif err_msg:
         debug_stacktrace = err_msg
 
+    # Postgres JSONB rejects NUL. Keeping it would make every save of the
+    # failed job retry until its timeout and then lose this failure.
     return JobFailureInfo(
-        message=user_message,
-        stacktrace=debug_stacktrace
+        message=user_message.replace('\x00', ''),
+        stacktrace=debug_stacktrace.replace('\x00', '')
     )

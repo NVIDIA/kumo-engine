@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -403,19 +404,20 @@ def holds_export(index: Path, manifest: dict) -> bool:
 def _download(root: str, staging: Path, client: FileSystem,
               item: Tuple[str, int, int], stop: threading.Event) -> None:
     name, offset, length = item
-    with client.open_input_file(f'{root}/index/{name}') as reader:
-        fd = os.open(staging / name, os.O_WRONLY)
-        try:
-            for start in range(offset, offset + length, _CHUNK):
-                _stopped(stop)
-                want = min(_CHUNK, offset + length - start)
-                chunk = reader.read_at(want, start)
-                if len(chunk) != want:
-                    raise ValueError(f'{name} is truncated')
-                os.pwrite(fd, chunk, start)
-            getattr(os, 'fdatasync', os.fsync)(fd)
-        finally:
-            os.close(fd)
+    with (client.open_input_file(f'{root}/index/{name}') as reader,
+          open(staging / name, 'r+b') as writer):
+        # Each range has its own stream, so parallel seeks cannot change
+        # another range's position. Binary writes preserve Windows bytes.
+        writer.seek(offset)
+        for start in range(offset, offset + length, _CHUNK):
+            _stopped(stop)
+            want = min(_CHUNK, offset + length - start)
+            chunk = reader.read_at(want, start)
+            if len(chunk) != want:
+                raise ValueError(f'{name} is truncated')
+            writer.write(chunk)
+        writer.flush()
+        getattr(os, 'fdatasync', os.fsync)(writer.fileno())
 
 
 def _index_files(
@@ -488,16 +490,17 @@ def load_into(connector: Any, path: str, root: str, manifest: dict,
 def _allocate(staging: Path, files: List[Tuple[str, int]]) -> None:
     staging.mkdir(parents=True)
     needed = sum(size for _, size in files)
-    disk = os.statvfs(staging)
-    if disk.f_bavail * disk.f_frsize < needed:
+    if shutil.disk_usage(staging).free < needed:
         raise OSError(f'Loading this snapshot needs {needed} free bytes '
                       f'in {staging}.')
     for name, size in files:
         (staging / name).parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         try:
-            if size:
+            if size and hasattr(os, 'posix_fallocate'):
                 os.posix_fallocate(fd, 0, size)
+            elif size:  # macOS has no posix_fallocate.
+                os.ftruncate(fd, size)
         finally:
             os.close(fd)
 

@@ -24,5 +24,6 @@ pub mod manifest;
 pub mod pseudo_time;
 pub mod split_stats;
 pub mod kumo_contract_bridge;
+pub mod rhs_catalog;
 
 pub mod batch_aggregate;

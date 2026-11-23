@@ -38,10 +38,18 @@ TEMPORAL_READY_TIMEOUT="${TEMPORAL_READY_TIMEOUT:-120}"
 if DEPLOY_STAGE=dev TEMPORAL_SERVER=localhost TEMPORAL_ADDRESS="$TEMPORAL_ADDRESS" TEMPORAL_NAMESPACE="$TEMPORAL_NAMESPACE" "$PYTHON_BIN" temporalio_commons/wait_server_ready.py -t 1; then
     echo "temporal server is already running at ${TEMPORAL_ADDRESS}"
 else
-    if ! command -v temporal &> /dev/null; then
+    temporal_bin=temporal
+    if [ -n "${KUMO_TEMPORAL_CLI_PATH:-}" ]; then
+        if [ ! -f "$KUMO_TEMPORAL_CLI_PATH" ] || [ ! -x "$KUMO_TEMPORAL_CLI_PATH" ]; then
+            echo "KUMO_TEMPORAL_CLI_PATH=$KUMO_TEMPORAL_CLI_PATH is not an executable file." >&2
+            exit 1
+        fi
+        temporal_bin="$KUMO_TEMPORAL_CLI_PATH"
+        echo "Using the Temporal CLI at $temporal_bin"
+    elif ! command -v temporal &> /dev/null; then
         echo "Install Temporal CLI, see https://docs.temporal.io/cli"
         temporal_installer_commit="daa3f466fcb5cc37d5a1081a73106523299e0a56"
-        temporal_cli_version="1.9.1"
+        temporal_cli_version="$(cat "$REPO_ROOT/.temporal-cli-version")"
         for i in 1 2 3 4 5; do
             curl -sSf \
                 "https://raw.githubusercontent.com/temporalio/cli/${temporal_installer_commit}/install.sh" && break
@@ -62,7 +70,7 @@ else
     fi
 
     temporal_command=(
-        temporal server start-dev
+        "$temporal_bin" server start-dev
         --namespace "$TEMPORAL_NAMESPACE"
         --port "$TEMPORAL_PORT"
         --ui-port "$TEMPORAL_UI_PORT"

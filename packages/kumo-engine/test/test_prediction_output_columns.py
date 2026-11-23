@@ -9,6 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from kumo_core.io import filesystem
+from kumoapi.explain.subgraph import SubgraphNode
 from kumoapi.graph import Edge
 from kumoapi.jobs import MetadataField
 from kumoapi.model_plan import ModelPlan
@@ -46,6 +48,12 @@ def graph(tmp_path_factory):
         'V':
         rng.normal(size=3000),
     }).to_parquet(data / 'events.parquet')
+    graph = _source_graph(data)
+    yield graph, graph.snapshot(), root
+    kumo.configure(scratch_dir=previous)
+
+
+def _source_graph(data):
     connector = kumo.FileConnector(root_dir=str(data))
     ents = kumo.Table.from_source_table(connector['ents.parquet'],
                                         primary_key='ID').infer_metadata()
@@ -55,7 +63,7 @@ def graph(tmp_path_factory):
         connector['events.parquet'],
         primary_key='EID', time_column='TS').infer_metadata().with_column(
             'ENT_ID', stype=Stype.ID).with_column('ITEM_ID', stype=Stype.ID)
-    graph = kumo.Graph(
+    return kumo.Graph(
         tables={
             'ents': ents,
             'items': items,
@@ -64,8 +72,6 @@ def graph(tmp_path_factory):
             Edge(src_table='events', fkey='ENT_ID', dst_table='ents'),
             Edge(src_table='events', fkey='ITEM_ID', dst_table='items'),
         ])
-    yield graph, graph.snapshot(), root
-    kumo.configure(scratch_dir=previous)
 
 
 def _fit(graph, query):
@@ -457,3 +463,190 @@ def test_mlops_counts_forecast_horizons_recommended_items_and_top_scores(
         np.searchsorted(edges, top, 'right'), minlength=len(edges) + 1).tolist()
     assert counts.extents['top_score'] == (top.min(), top.max())
     assert score_drift(counts, holdout) is not None
+
+
+@pytest.mark.parametrize('name', ['classifier', 'link'])
+def test_loaded_prediction_explanations_use_current_inputs(graph, name,
+                                                           request, tmp_path):
+    """Real producers must explain the supplied snapshot, not training seeds."""
+    fitted = request.getfixturevalue(name)
+    _, previous_snapshot, root = graph
+    ents_path = root / 'data/ents.parquet'
+    events_path = root / 'data/events.parquet'
+    with filesystem.open_file(str(ents_path), 'rb') as source:
+        ents = pd.read_parquet(source)
+    with filesystem.open_file(str(events_path), 'rb') as source:
+        events = pd.read_parquet(source)
+    current_ents, current_events = ents.copy(), events.copy()
+    current_ents['ID'] += 1000
+    current_events['ENT_ID'] += 1000
+    data = str(tmp_path / 'data')
+    filesystem.makedirs(data, exist_ok=True)
+    with filesystem.open_file(f'{data}/ents.parquet', 'wb') as destination:
+        current_ents.to_parquet(destination)
+    with filesystem.open_file(f'{data}/events.parquet', 'wb') as destination:
+        current_events.to_parquet(destination)
+    filesystem.copy(str(root / 'data/items.parquet'), f'{data}/items.parquet')
+    graph_object = _source_graph(Path(data))
+    snapshot = graph_object.snapshot()
+    assert snapshot.id != previous_snapshot.id
+    trainer = kumo.Trainer.load(fitted[0].result.bundle_dir, accelerator='cpu')
+    query = kumo.PredictiveQuery(graph=graph_object, query=fitted[1].query)
+    table = query.generate_prediction_table(snapshot)
+    result = trainer.predict(
+        table, snapshot=snapshot, explanations=True,
+        num_classes_to_return=3 if name == 'link' else None)
+    xai = result.explanations
+    assert xai.availability['samples'].available
+    references = xai.samples()
+    assert len(references) == len(ents)
+    assert xai.coverage.sampled_graphs == len(ents)
+    assert xai.coverage.cohort_rows_processed == (
+        len(ents) if name == 'classifier' else None)
+    assert xai.coverage.checkpoint_path is not None
+    assert not Path(xai.coverage.checkpoint_path).is_absolute()
+    scored = result.frame
+    for reference in references:
+        assert reference.original_ids['first'] >= 1000
+        sample = xai.sample(reference.artifact_id)
+        store = sample.subgraph_store
+        assert (store.nodes[store.root_id].pkey ==
+                reference.original_ids['first'])
+        if name == 'link':
+            predicted = scored.loc[
+                scored.ENTITY == reference.original_ids['first'], 'CLASS']
+            rhs = {store.nodes[node].pkey for node in store.tables['items']
+                   if isinstance(store.nodes[node], SubgraphNode)}
+            assert set(predicted).issubset(rhs)
+    if name == 'classifier':
+        assert xai.availability['cohorts'].available
+        cohorts = xai.column_analysis().cohorts
+        assert cohorts
+        assert all(cohort.targets is None for cohort in cohorts)
+        # V has no missing values and all roots have historical neighbours.
+        cohort = next(cohort for cohort in cohorts
+                      if cohort.table_name == 'events' and cohort.col_name == 'V'
+                      and cohort.hop == 1)
+        assert isinstance(cohort.predictions, list)
+        explained_mean = np.dot(cohort.populations, cohort.predictions)
+        assert explained_mean == pytest.approx(
+            scored['True_PROB'].mean(), abs=0.005)
+    else:
+        assert xai.availability['cohorts'].reason == 'unsupported'
+    reopened = kumo.PredictionExplanations.load(xai.run_root)
+    assert reopened.samples() == references
+    assert reopened.coverage == xai.coverage
+    assert reopened.sample(references[0].artifact_id) == xai.sample(
+        references[0].artifact_id)
+    assert len(scored) == len(ents) * (3 if name == 'link' else 1)
+
+
+def test_prediction_producer_failure_retains_successful_outputs(
+        graph, classifier, tmp_path, monkeypatch):
+    from kumo_core.explain.column_analysis import ColumnAnalysis
+
+    monkeypatch.setenv('KUMO_EXPLAINER_CONTINUE_ON_ERROR', 'true')
+
+    def fail_numerical(*args, **kwargs):
+        raise RuntimeError('numerical cohort collection failed')
+
+    monkeypatch.setattr(ColumnAnalysis, 'collect_numerical', fail_numerical)
+    trainer, _, table = classifier
+    output = PredictionOutputConfig(
+        connector=kumo.FileConnector(root_dir=str(tmp_path)),
+        output_paths={'predictions': 'predictions/'})
+    result = trainer.predict(table, snapshot=graph[1], output_config=output,
+                             explanations=True)
+    assert len(result.frame) == 50
+    assert result.manifest.status == 'succeeded'
+    assert pd.read_parquet(tmp_path / 'predictions').shape[0] == 50
+    xai = result.explanations
+    assert xai.availability['cohorts'].reason == 'failed'
+    assert 'numerical cohort collection failed' in xai.availability[
+        'cohorts'].generation_failure
+    with pytest.raises(kumo.ExplanationUnavailableError):
+        xai.column_analysis()
+    assert xai.availability['samples'].available
+    assert xai.samples()
+    reopened = kumo.PredictionExplanations.load(xai.run_root)
+    assert reopened.availability == xai.availability
+    assert reopened.samples() == xai.samples()
+    assert reopened.coverage == xai.coverage
+
+
+@pytest.mark.parametrize(('cohort_rows', 'sample_rows'), [(12, 5), (5, 12)])
+def test_prediction_explanation_row_limits(graph, classifier,
+                                           cohort_rows, sample_rows):
+    trainer, _, table = classifier
+    result = trainer.predict(
+        table, snapshot=graph[1], explanations=kumo.PredictionExplanationOptions(
+            cohort_rows=cohort_rows, sample_rows=sample_rows))
+    assert len(result.frame) == 50
+    xai = result.explanations
+    assert len(xai.samples()) == sample_rows
+    assert xai.coverage.cohort_rows_processed == cohort_rows
+    assert xai.coverage.sampled_graphs == sample_rows
+    assert xai.coverage.checkpoint_path is not None
+    cohort = next(cohort for cohort in xai.column_analysis().cohorts
+                  if cohort.table_name == 'events' and cohort.col_name == 'V'
+                  and cohort.hop == 1)
+    assert isinstance(cohort.predictions, list)
+    assert np.dot(cohort.populations, cohort.predictions) == pytest.approx(
+        result.frame.head(cohort_rows)['True_PROB'].mean(), abs=0.005)
+    reopened = kumo.PredictionExplanations.load(xai.run_root)
+    assert reopened.availability == xai.availability
+    assert len(reopened.samples()) == sample_rows
+    assert reopened.coverage == xai.coverage
+
+
+def test_null_prediction_feature_keeps_valid_cohorts(graph, classifier, tmp_path):
+    """An all-null prediction column is omitted without invalidating peers."""
+    _, original_snapshot, root = graph
+    data = str(tmp_path / 'null-data')
+    filesystem.makedirs(data, exist_ok=True)
+    for filename in ['ents.parquet', 'items.parquet', 'events.parquet']:
+        filesystem.copy(str(root / 'data' / filename), f'{data}/{filename}')
+    # Resolve and retain the numeric schema before making this source all null.
+    prediction_graph = _source_graph(Path(data))
+    prediction_graph = replace(
+        prediction_graph, tables={
+            **prediction_graph.tables,
+            'events': prediction_graph.tables['events'].with_column(
+                'V', stype=Stype.numerical),
+        })
+    with filesystem.open_file(str(root / 'data/events.parquet'), 'rb') as source:
+        events = pd.read_parquet(source)
+    events['V'] = pd.Series(np.nan, index=events.index, dtype='float64')
+    with filesystem.open_file(f'{data}/events.parquet', 'wb') as destination:
+        events.to_parquet(destination)
+    snapshot = prediction_graph.snapshot()
+    assert snapshot.id != original_snapshot.id
+    trainer = kumo.Trainer.load(classifier[0].result.bundle_dir, accelerator='cpu')
+    query = kumo.PredictiveQuery(graph=prediction_graph, query=classifier[1].query)
+    result = trainer.predict(
+        query.generate_prediction_table(snapshot), snapshot=snapshot,
+        explanations=kumo.PredictionExplanationOptions(cohort_rows=12,
+                                                       sample_rows=3))
+    assert len(result.frame) == 50
+    xai = result.explanations
+    assert xai.availability['cohorts'].available
+    assert xai.coverage.cohort_rows_processed == 12
+    assert xai.coverage.sampled_graphs == 3
+    assert xai.coverage.checkpoint_path is not None
+    # Verify replay retained the selected model's actual weights.
+    checkpoint = (trainer.scratch_dir / 'runs' / xai.run_id / 'model_bundle'
+                  / 'model' / xai.coverage.checkpoint_path)
+    with filesystem.open_file(str(checkpoint), 'rb') as staged:
+        with filesystem.open_file(
+                trainer.result.artifact_paths['selected_checkpoint'], 'rb') as selected:
+            assert staged.read() == selected.read()
+    cohorts = xai.column_analysis().cohorts
+    assert cohorts
+    assert all(cohort.cohorts for cohort in cohorts)
+    assert not any(cohort.table_name == 'events' and cohort.col_name == 'V'
+                   for cohort in cohorts)
+    assert any(cohort.table_name == 'events' and cohort.col_name == 'COUNT(*)'
+               for cohort in cohorts)
+    reopened = kumo.PredictionExplanations.load(xai.run_root)
+    assert reopened.coverage == xai.coverage
+    assert reopened.column_analysis() == xai.column_analysis()

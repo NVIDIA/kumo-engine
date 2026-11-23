@@ -956,6 +956,29 @@ def test_generation_plan_keeps_its_only_complete_anchor(tmp_path, monkeypatch):
     assert plan.train_table.timestamps == (origin.value, )
 
 
+def test_generation_plan_passes_its_start_time_to_the_builder(
+        tmp_path, monkeypatch):
+    from pandas import Timestamp
+
+    monkeypatch.setattr(
+        "kumo_core.pquery.read_col_stats", lambda *args: json.dumps({
+            "event_time__NA_FRACTION__False": 0.0,
+            "event_time__MIN__False": Timestamp("2024-01-01").value,
+            "event_time__MAX__False": Timestamp("2024-01-20").value,
+        }))
+    graph = normalize_graph(forecasting_graph_config())
+    query = parse_and_validate_query(
+        "PREDICT COUNT(events.*, 0, 90, minutes) FOR EACH articles.aid", graph)
+    plan = build_native_pquery_task_plan(
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            start_time="2024-01-01T01:30+01:00", end_time="2024-01-01T06:00"),
+        run_id="start", graph_index_path=str(tmp_path / "index"),
+        scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
+
+    assert plan.train_table.start_time == Timestamp("2024-01-01T00:30").value
+
+
 @pytest.mark.parametrize("unit", ["days", "hours"])
 def test_generation_plan_non_aligned_step_anchors_at_end(
         tmp_path, monkeypatch, unit):

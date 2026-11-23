@@ -217,6 +217,10 @@ export const invalidateIdentityLists = (queryClient: QueryClient) => {
     });
 };
 
+export const invalidateProjectList = (queryClient: QueryClient) => {
+    queryClient.invalidateQueries({ queryKey: [ReactQueryKeys.ProjectList] });
+};
+
 export const invalidateProjectInfo = (
     queryClient: QueryClient,
     projectId: string

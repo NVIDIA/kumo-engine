@@ -1311,6 +1311,233 @@ export const DeleteProjectsConnectorsByConnectorIdResponse = zod.object({
 });
 
 /**
+ * @summary Copy Connector
+ */
+export const CreateProjectsCopyByConnectorIdParams = zod.object({
+    "project_id": zod.string(),
+    "connector_id": zod.string()
+});
+
+export const CreateProjectsCopyByConnectorIdBody = zod
+    .object({
+        "target_project_id": zod.string(),
+        "name": zod.union([zod.string(), zod.null()]).optional(),
+        "description": zod.union([zod.string(), zod.null()]).optional()
+    })
+    .describe(
+        "Copy one connector's configuration and identity into a project.  ``name`` and ``description`` default to the source connector's values. The identity must be assigned to the target project's group."
+    );
+
+export const createProjectsCopyByConnectorIdResponseConfigOneTypeDefault = `snowflake`;
+export const createProjectsCopyByConnectorIdResponseConfigTwoTypeDefault = `databricks`;
+export const createProjectsCopyByConnectorIdResponseConfigThreeTypeDefault = `bigquery`;
+export const createProjectsCopyByConnectorIdResponseConfigFourTargetOnePrefixDefault = ``;
+export const createProjectsCopyByConnectorIdResponseConfigFourTargetOneModeDefault = `rooted`;
+export const createProjectsCopyByConnectorIdResponseConfigFourTargetTwoModeDefault = `any_uri`;
+export const createProjectsCopyByConnectorIdResponseConfigFourTypeDefault = `s3`;
+export const createProjectsCopyByConnectorIdResponseConfigFiveTargetOnePrefixDefault = ``;
+export const createProjectsCopyByConnectorIdResponseConfigFiveTargetOneModeDefault = `rooted`;
+export const createProjectsCopyByConnectorIdResponseConfigFiveTargetTwoModeDefault = `any_uri`;
+export const createProjectsCopyByConnectorIdResponseConfigFiveTypeDefault = `gcs`;
+export const createProjectsCopyByConnectorIdResponseConfigSixTargetOnePrefixDefault = ``;
+export const createProjectsCopyByConnectorIdResponseConfigSixTargetOneEndpointSuffixDefault = `dfs.core.windows.net`;
+export const createProjectsCopyByConnectorIdResponseConfigSixTargetOneModeDefault = `rooted`;
+export const createProjectsCopyByConnectorIdResponseConfigSixTargetTwoModeDefault = `any_uri`;
+export const createProjectsCopyByConnectorIdResponseConfigSixTypeDefault = `adls`;
+export const createProjectsCopyByConnectorIdResponseDescriptionDefault = ``;
+
+export const CreateProjectsCopyByConnectorIdResponse = zod.object({
+    "id": zod.string(),
+    "project_id": zod.string(),
+    "identity_id": zod.string(),
+    "name": zod.string(),
+    "timestamps": zod.object({
+        "created_at": zod.iso.datetime({ "offset": true, "local": true }),
+        "updated_at": zod.iso.datetime({ "offset": true, "local": true })
+    }),
+    "config": zod.union([
+        zod.object({
+            "warehouse": zod.string(),
+            "database": zod.string(),
+            "schema_name": zod.string(),
+            "role": zod.union([zod.string(), zod.null()]).optional(),
+            "type": zod
+                .literal("snowflake")
+                .default(
+                    createProjectsCopyByConnectorIdResponseConfigOneTypeDefault
+                )
+                .meta({ title: "Type" })
+        }),
+        zod.object({
+            "catalog": zod.string(),
+            "schema_name": zod.string(),
+            "cluster_id": zod.union([zod.string(), zod.null()]).optional(),
+            "warehouse_id": zod.union([zod.string(), zod.null()]).optional(),
+            "type": zod
+                .literal("databricks")
+                .default(
+                    createProjectsCopyByConnectorIdResponseConfigTwoTypeDefault
+                )
+                .meta({ title: "Type" })
+        }),
+        zod.object({
+            "project_id": zod.string(),
+            "dataset_id": zod.string(),
+            "location": zod.string(),
+            "billing_project_id": zod
+                .union([zod.string(), zod.null()])
+                .optional(),
+            "type": zod
+                .literal("bigquery")
+                .default(
+                    createProjectsCopyByConnectorIdResponseConfigThreeTypeDefault
+                )
+                .meta({ title: "Type" })
+        }),
+        zod
+            .object({
+                "target": zod.union([
+                    zod
+                        .object({
+                            "bucket": zod.string(),
+                            "prefix": zod
+                                .string()
+                                .default(
+                                    createProjectsCopyByConnectorIdResponseConfigFourTargetOnePrefixDefault
+                                ),
+                            "region": zod
+                                .union([zod.string(), zod.null()])
+                                .optional(),
+                            "mode": zod
+                                .literal("rooted")
+                                .default(
+                                    createProjectsCopyByConnectorIdResponseConfigFourTargetOneModeDefault
+                                )
+                                .meta({ title: "Mode" })
+                        })
+                        .describe(
+                            "Restrict every S3 operation to one bucket and optional prefix."
+                        ),
+                    zod
+                        .object({
+                            "mode": zod
+                                .literal("any_uri")
+                                .default(
+                                    createProjectsCopyByConnectorIdResponseConfigFourTargetTwoModeDefault
+                                )
+                                .meta({ title: "Mode" })
+                        })
+                        .describe(
+                            "Require a canonical full S3 URI on every object operation.  Region selection is intentionally per request; connector-wide region configuration is forbidden in this mode. Discovery remains unavailable."
+                        )
+                ]),
+                "type": zod
+                    .literal("s3")
+                    .default(
+                        createProjectsCopyByConnectorIdResponseConfigFourTypeDefault
+                    )
+                    .meta({ title: "Type" })
+            })
+            .describe(
+                "Project-owned S3 connector with rooted or rootless any-URI mode."
+            ),
+        zod.object({
+            "target": zod.union([
+                zod
+                    .object({
+                        "bucket": zod.string(),
+                        "prefix": zod
+                            .string()
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigFiveTargetOnePrefixDefault
+                            ),
+                        "mode": zod
+                            .literal("rooted")
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigFiveTargetOneModeDefault
+                            )
+                            .meta({ title: "Mode" })
+                    })
+                    .describe(
+                        "Restrict every GCS operation to one bucket and optional prefix."
+                    ),
+                zod
+                    .object({
+                        "mode": zod
+                            .literal("any_uri")
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigFiveTargetTwoModeDefault
+                            )
+                            .meta({ title: "Mode" })
+                    })
+                    .describe(
+                        "Require one canonical full GCS URI on every object operation."
+                    )
+            ]),
+            "requester_pays_project": zod
+                .union([zod.string(), zod.null()])
+                .optional(),
+            "type": zod
+                .literal("gcs")
+                .default(
+                    createProjectsCopyByConnectorIdResponseConfigFiveTypeDefault
+                )
+                .meta({ title: "Type" })
+        }),
+        zod.object({
+            "target": zod.union([
+                zod
+                    .object({
+                        "storage_account": zod.string(),
+                        "filesystem": zod.string(),
+                        "prefix": zod
+                            .string()
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigSixTargetOnePrefixDefault
+                            ),
+                        "endpoint_suffix": zod
+                            .string()
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigSixTargetOneEndpointSuffixDefault
+                            ),
+                        "mode": zod
+                            .literal("rooted")
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigSixTargetOneModeDefault
+                            )
+                            .meta({ title: "Mode" })
+                    })
+                    .describe(
+                        "Restrict every ADLS operation to one filesystem and prefix."
+                    ),
+                zod
+                    .object({
+                        "mode": zod
+                            .literal("any_uri")
+                            .default(
+                                createProjectsCopyByConnectorIdResponseConfigSixTargetTwoModeDefault
+                            )
+                            .meta({ title: "Mode" })
+                    })
+                    .describe(
+                        "Require one canonical full ADLS URI on every object operation."
+                    )
+            ]),
+            "type": zod
+                .literal("adls")
+                .default(
+                    createProjectsCopyByConnectorIdResponseConfigSixTypeDefault
+                )
+                .meta({ title: "Type" })
+        })
+    ]),
+    "description": zod
+        .string()
+        .default(createProjectsCopyByConnectorIdResponseDescriptionDefault),
+    "created_by": zod.union([zod.string(), zod.null()]).optional()
+});
+
+/**
  * @summary Validate Connector
  */
 export const ValidateProjectsByConnectorIdParams = zod.object({
