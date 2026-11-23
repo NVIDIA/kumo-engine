@@ -120,7 +120,10 @@ def native_task(tmp_path, request):
     variant = getattr(request, "param", None)
     contract, dataset, table = _native_inputs(tmp_path, variant)
     engine = api.DiskGraphEngine(
-        index=tmp_path / "index", num_threads=1, profile=variant == "profile"
+        index=tmp_path / "index",
+        num_threads=1,
+        num_shards=variant if isinstance(variant, int) else 1,
+        profile=variant == "profile",
     )
     with api.prepare(contract, dataset, engine) as plan:
         with plan.materialize(table, fit_split="train") as task:
@@ -178,32 +181,14 @@ def test_unshuffled_mixed_splits_preserve_source_order(native_task, selection, e
         assert list(_by_sample(actual)) == [sid for group in groups for sid in group[rank::3]]
 
 
-@pytest.mark.usefixtures("native_anchor_delivery")
-@pytest.mark.parametrize("num_shards", [1, 2, 3])
-def test_unshuffled_single_split_preserves_source_order_across_storage_shards(
-    monkeypatch, request, num_shards
+@pytest.mark.parametrize("native_task", [1, 2, 3], indirect=True)
+def test_unshuffled_single_split_preserves_source_order_across_graph_shards(
+    native_anchor_delivery, native_task
 ):
-    import diskgraph
-
-    ingest = diskgraph.ingest
-    anchor_ingests = []
-
-    def ingest_with_shards(config, *args, **kwargs):
-        settings = json.loads(config)
-        if settings["dataset_name"] == "anchors":
-            settings["num_shards"] = num_shards
-            anchor_ingests.append(num_shards)
-            config = json.dumps(settings)
-        return ingest(config, *args, **kwargs)
-
-    monkeypatch.setattr(diskgraph, "ingest", ingest_with_shards)
-    _, task, _ = request.getfixturevalue("native_task")
-    assert anchor_ingests == [num_shards]
-    batches = task.batches(split="train", batch_size=2, shuffle=False, output_format="model")
-    groups = [b.metadata["sample_ids"] for b in batches]
-    assert [len(group) for group in groups] == [2, 2]
-    ids = [sid for group in groups for sid in group]
-    assert ids == list("abdf")
+    _, task, _ = native_task
+    batches = list(native_anchor_delivery(task, split="train", batch_size=2, shuffle=False))
+    assert [b.metadata["sample_ids"] for b in batches] == [("a", "b"), ("d", "f")]
+    assert [b.targets["label"]["values"].tolist() for b in batches] == [[1.0, 2.0], [4.0, 6.0]]
 
 
 def _by_sample(batches):
