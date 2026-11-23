@@ -6,7 +6,6 @@ import json
 import threading
 from contextlib import nullcontext
 from contextvars import ContextVar
-from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
@@ -37,7 +36,7 @@ def source_graph(tmp_path, monkeypatch):
         kumo.configure(scratch_dir=previous)
 
 
-def test_graph_captures_root_at_construction_and_reuses_it(
+def test_existing_graph_uses_the_current_root_and_reuses_it(
         tmp_path, source_graph, monkeypatch):
     import kumo_core.diskgraph.ingest as ingest
 
@@ -48,25 +47,17 @@ def test_graph_captures_root_at_construction_and_reuses_it(
 
     def record(graph_config, spec):
         outputs.append(Path(spec.output_dir))
-        assert Path(spec.data_persist_dir).is_relative_to(outputs[-1].parents[1])
+        assert Path(spec.data_persist_dir).is_relative_to(other)
         return execute(graph_config, spec)
 
     monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', record)
     kumo.configure(scratch_dir=other)
     first = source_graph.snapshot()
-    assert first.index_path.is_relative_to(producer / 'indexes')
-    assert not other.exists()
+    assert first.index_path.is_relative_to(other / 'indexes')
     assert source_graph.snapshot() == first
     assert len(outputs) == 1
     assert get_scratch_dir() == other
-
-    new_graph = replace(source_graph)
-    second = new_graph.snapshot()
-    assert second.id == first.id
-    assert second.index_path.is_relative_to(other / 'indexes')
-    assert second.index_path != first.index_path
-    assert len(outputs) == 2
-    assert first.index_path.is_dir()
+    assert not producer.exists()
 
 
 def test_id_only_monitoring_uses_current_root_but_handles_keep_their_paths(
@@ -82,12 +73,15 @@ def test_id_only_monitoring_uses_current_root_but_handles_keep_their_paths(
     assert _local_index(snapshot.id) is None
     assert _reader(None, snapshot.id, None)('col_stats.json') is None
     assert _reader(snapshot, snapshot.id, None)('col_stats.json') == stats
-    assert source_graph.snapshot() == snapshot
+    current = source_graph.snapshot()
+    assert current.id == snapshot.id
+    assert current.index_path.is_relative_to(other)
+    assert _local_index(snapshot.id) == current.index_path
+    assert snapshot.index_path.is_dir()
     assert get_scratch_dir() == other
-    assert not other.exists()
 
 
-def test_loading_uses_current_root_even_when_graph_captured_another(
+def test_loading_and_existing_graph_use_current_root(
         tmp_path, source_graph):
     snapshot = source_graph.snapshot()
     exports = kumo.FileConnector(root_dir=str(tmp_path / 'exports'))
@@ -107,7 +101,7 @@ def test_loading_uses_current_root_even_when_graph_captured_another(
         'index_build_id'] == build_id
     assert {path.relative_to(snapshot.index_path): path.read_bytes()
             for path in snapshot.index_path.rglob('*') if path.is_file()} == before
-    assert source_graph.snapshot() == snapshot
+    assert source_graph.snapshot() == loaded
     assert get_scratch_dir() == other
 
 
@@ -142,9 +136,13 @@ def test_callback_configuration_cannot_split_snapshot_paths(
     first = source_graph.snapshot(callbacks=[configure_other])
     assert validations == [producer]
     assert first.index_path.is_relative_to(producer / 'indexes')
-    assert source_graph.snapshot() == first
     assert get_scratch_dir() == other
     assert not other.exists()
+    monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', execute)
+    second = source_graph.snapshot()
+    assert second.id == first.id
+    assert second.index_path.is_relative_to(other)
+    assert first.index_path.is_dir()
 
 
 def test_failed_snapshot_restores_the_callers_root(
@@ -158,7 +156,7 @@ def test_failed_snapshot_restores_the_callers_root(
             kumo.configure(scratch_dir=other)
 
     def fail_ingest(graph_config, spec):
-        assert Path(spec.output_dir).is_relative_to(tmp_path / 'producer')
+        assert Path(spec.output_dir).is_relative_to(caller_root)
         raise RuntimeError('ingest interrupted')
 
     monkeypatch.setattr(ingest, 'execute_diskgraph_ingest', fail_ingest)
@@ -168,7 +166,7 @@ def test_failed_snapshot_restores_the_callers_root(
             source_graph.snapshot(callbacks=[configure_other])
         assert get_scratch_dir() == caller_root
     assert get_scratch_dir() == other
-    assert not caller_root.exists()
+    assert caller_root.exists()
     assert not other.exists()
 
 

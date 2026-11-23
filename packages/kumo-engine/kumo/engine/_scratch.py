@@ -18,9 +18,9 @@ so scratch-directory names must be collision-free on their own:
   version is what lets `Graph.snapshot()` reuse an existing build instead
   of re-ingesting.
 
-The configured root is `kumo.settings.scratch_dir()`. Each Graph captures its
-root at construction and scopes snapshot work to it; later configuration
-changes affect new graphs.
+The configured root is `kumo.settings.scratch_dir()`. Each snapshot operation
+scopes its work to the root active when the call starts; later calls use the
+current configuration.
 """
 
 import hashlib

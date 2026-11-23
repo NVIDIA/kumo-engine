@@ -45,7 +45,7 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
     connector = kumo.FileConnector(root_dir=str(data))
     previous = get_scratch_dir()
     try:
-        kumo.configure(scratch_dir=tmp_path / 'producer')
+        kumo.configure(scratch_dir=tmp_path / 'previous-root')
         graph = kumo.Graph(
             tables={
                 'users':
@@ -59,7 +59,9 @@ def test_core_snapshot_columnar_reuse_under_one_root(tmp_path, monkeypatch):
             },
             edges=[Edge(src_table='events', fkey='user', dst_table='users')],
         )
+        kumo.configure(scratch_dir=tmp_path / 'producer')
         snapshot = graph.snapshot()
+        assert not (tmp_path / 'previous-root').exists()
         assert not (snapshot.index_path / 'index_manifest.json').exists()
         build_id = json.loads(
             (snapshot.index_path /

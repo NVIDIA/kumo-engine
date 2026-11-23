@@ -551,7 +551,7 @@ A text column `infer_metadata()` reads as categorical (short values from a small
 - **Transfer:** parallel, with a CRC32 per range. Each export commits by writing `kumo_snapshot.json` last, so the previous export stays loadable and concurrent exports never mix: the last commit wins. Superseded generations are removed best-effort. A load completes or leaves nothing, and follows a newer export that commits meanwhile.
 - **Reuse:** a load reuses the local copy only if it holds the export's bytes and passes DiskGraph's integrity check; an export skips the upload when the destination holds a complete export with the same bytes.
 - **Staleness:** `snapshot.source_changes(graph)` reports each table as `unchanged`, `changed` or `unknown`; `load_from_connector(..., graph=graph)` warns about another graph's schema or changed tables.
-- **Local root:** loading imports into the current scratch root, even when `graph=` was constructed under another root. That argument compares schema and sources; it does not choose the destination. Existing Graphs keep producing snapshots under their captured roots, and existing snapshot handles keep their physical paths.
+- **Local root:** loading imports into the current scratch root, even when `graph=` was constructed under another root. That argument compares schema and sources; it does not choose the destination. Snapshot calls also use the current scratch root, while existing snapshot handles keep their physical paths.
 - **Trust:** load only from paths whose writers you trust; checksums detect corruption, not tampering. A warehouse connector cannot hold a snapshot.
 
 ### Drift statistics
@@ -574,7 +574,7 @@ A statistic is absent, with a note, when the two sides counted on different bins
 
 **Input columns vs training data.** `score_drift` compares each column the model encodes using the statistics
 DiskGraph wrote when the training and scoring snapshots were built. ID-only lookup searches the current
-scratch root, then the supplied MLOps artifact root; it does not search a Graph's captured root. After
+scratch root, then the supplied MLOps artifact root. After
 `configure(scratch_dir=...)` changes the root, pass `snapshot=` and `training_snapshot=` handles to read
 their original local statistics, or supply the MLOps root holding their exports. It reads no source data again. A tracked
 `score_drift` writes one table per source table, `drift/inputs/<table>.json`: one row per column, most shifted

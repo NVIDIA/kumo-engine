@@ -466,9 +466,8 @@ class GraphSnapshot:
                             graph: Optional['Graph'] = None) -> 'GraphSnapshot':
         r"""Load an exported snapshot into the current scratch root.
 
-        This destination follows the current scratch scope or configuration,
-        independently of the root captured by a supplied ``graph``. Existing
-        snapshot handles keep their own physical paths.
+        This destination follows the current scratch scope or configuration.
+        Existing snapshot handles keep their own physical paths.
 
         Args:
             connector: a connector, or a `kumo.MLOps` for its artifact root.
@@ -588,16 +587,12 @@ def index_timestamp_precision(index_path: Path) -> TimestampPrecision:
 class Graph:
     r"""An immutable, metadata-only description of a graph: a set of `Table`
     objects plus the edges between them. A table mapping names graph aliases;
-    a sequence uses each source table name as its graph alias. Configure the
-    scratch directory before construction: snapshots keep using that root even
-    if process-wide settings later change. A new Graph captures the new root.
+    a sequence uses each source table name as its graph alias. Each snapshot
+    operation uses the current scratch directory.
     """
 
     tables: Mapping[str, Table] | Sequence[Table]
     edges: Sequence[Edge] = field(default_factory=tuple)
-    _scratch_root: Path = field(
-        default_factory=lambda: get_scratch_dir().resolve(),
-        init=False, repr=False, compare=False)
 
     @cached_property
     def _named_tables(self) -> Dict[str, Table]:
@@ -783,9 +778,7 @@ class Graph:
                  ) -> GraphSnapshot:
         r"""Materialize this graph: read each table's connector, run the
         result through `kumo-core` to build column stats and the on-disk
-        index. New indexes are published under `indexes/<index_build_id>`
-        in the scratch root captured when this Graph was constructed. A
-        reference keyed by both `self.id`
+        index in the current scratch root. A reference keyed by both `self.id`
         and a fingerprint of every table's data version (`data_version`)
         preserves reuse independently of the physical build location. If a
         valid build already exists for that exact key, ingest is skipped and
@@ -803,52 +796,59 @@ class Graph:
                 SQL text.
             callbacks: called with each progress `Event`.
         """
-        with scoped_scratch_dir(self._scratch_root):
-            validate_timestamp_precision(timestamp_precision)
-            self.validate()
-            for table in self._named_tables.values():
-                table.connector.validate_scratch_dir(get_scratch_dir())
-            _warn_if_network_scratch(get_scratch_dir())
+        with scoped_scratch_dir(get_scratch_dir().resolve()):
+            return self._snapshot_in_root(timestamp_precision, record_sources,
+                                          mlops, callbacks)
 
-            graph_key = self.id
-            persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
+    def _snapshot_in_root(
+            self, timestamp_precision: TimestampPrecision, record_sources: bool,
+            mlops: Optional[Any], callbacks: Sequence[Callable[[Event], None]]
+            ) -> GraphSnapshot:
+        validate_timestamp_precision(timestamp_precision)
+        self.validate()
+        for table in self._named_tables.values():
+            table.connector.validate_scratch_dir(get_scratch_dir())
+        _warn_if_network_scratch(get_scratch_dir())
 
-            # Guards two things, both shared across every `snapshot()` call for
-            # this `graph_key` -- different processes, or different threads in
-            # this one: staging (into `persist_dir`, in `_snapshot_no_lock`) and
-            # the check-then-build gap around the final index (`output_dir`,
-            # only known once staging has produced `table_data_versions`, so it
-            # can't be locked on its own any earlier). One lock, held for the
-            # whole staging + build sequence, keyed on `graph_key` alone rather
-            # than `(graph_key, data_version)`: `data_version` isn't known until
-            # staging finishes, and correctness (no concurrent writers into the
-            # same directory) matters more here than letting two different data
-            # versions of the same graph build in parallel. `FileLock`, not
-            # `SoftFileLock`: a real OS-level advisory lock (`flock`/
-            # `LockFileEx`), released by the kernel even if this process crashes
-            # mid-build -- a plain in-memory lock wouldn't coordinate across
-            # processes, and a lock-file-existence mutex would leave a stale
-            # lock behind after a crash.
-            from kumo.engine._mlops import resolve
+        graph_key = self.id
+        persist_dir = snapshot_scratch_dir(graph_key) / 'source_tables'
 
-            settings = resolve(mlops)
-            events = _SnapshotEvents(callbacks)
-            events.emit('snapshot_started', params={
-                'graph': graph_key, 'tables': list(self._named_tables)})
-            with _lock(graph_key):
-                snapshot = self._snapshot_no_lock(graph_key, persist_dir,
-                                                  timestamp_precision,
-                                                  record_sources, events,
-                                                  timed=settings is not None)
-            if settings is not None and settings.wants('snapshot'):
-                from kumo.engine._mlops import raise_on_error
-                from kumo.engine._snapshot_io import store
+        # Guards two things, both shared across every `snapshot()` call for
+        # this `graph_key` -- different processes, or different threads in
+        # this one: staging (into `persist_dir`, in `_snapshot_no_lock`) and
+        # the check-then-build gap around the final index (`output_dir`,
+        # only known once staging has produced `table_data_versions`, so it
+        # can't be locked on its own any earlier). One lock, held for the
+        # whole staging + build sequence, keyed on `graph_key` alone rather
+        # than `(graph_key, data_version)`: `data_version` isn't known until
+        # staging finishes, and correctness (no concurrent writers into the
+        # same directory) matters more here than letting two different data
+        # versions of the same graph build in parallel. `FileLock`, not
+        # `SoftFileLock`: a real OS-level advisory lock (`flock`/
+        # `LockFileEx`), released by the kernel even if this process crashes
+        # mid-build -- a plain in-memory lock wouldn't coordinate across
+        # processes, and a lock-file-existence mutex would leave a stale
+        # lock behind after a crash.
+        from kumo.engine._mlops import resolve
 
-                try:
-                    store(snapshot, settings)
-                except Exception as error:
-                    raise_on_error(settings, error, 'Graph.snapshot')
-            return snapshot
+        settings = resolve(mlops)
+        events = _SnapshotEvents(callbacks)
+        events.emit('snapshot_started', params={
+            'graph': graph_key, 'tables': list(self._named_tables)})
+        with _lock(graph_key):
+            snapshot = self._snapshot_no_lock(graph_key, persist_dir,
+                                              timestamp_precision,
+                                              record_sources, events,
+                                              timed=settings is not None)
+        if settings is not None and settings.wants('snapshot'):
+            from kumo.engine._mlops import raise_on_error
+            from kumo.engine._snapshot_io import store
+
+            try:
+                store(snapshot, settings)
+            except Exception as error:
+                raise_on_error(settings, error, 'Graph.snapshot')
+        return snapshot
 
     def _snapshot_no_lock(
             self, graph_key: str, persist_dir: Path,

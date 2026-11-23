@@ -132,9 +132,7 @@ def test_export_load_round_trip_relocates_and_is_reused(
     monkeypatch.setattr(snapshot_io, 'load_into',
                         Mock(side_effect=AssertionError('already loaded')))
     assert _load(exports, location) == loaded
-    # An existing Graph keeps its producer root; a new one adopts this root.
-    imported_graph = replace(graph)
-    assert imported_graph.snapshot() == loaded
+    assert graph.snapshot() == loaded
 
 
 def test_damaged_index_is_reused_by_snapshot_but_reloaded_by_load(
