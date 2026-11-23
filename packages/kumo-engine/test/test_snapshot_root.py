@@ -129,7 +129,6 @@ def test_failed_snapshot_restores_the_callers_root(
     assert not other.exists()
 
 
-
 def test_snapshot_transfer_workers_keep_the_callers_spool_root(
         tmp_path, monkeypatch):
     from kumo_core.chunked_fs import ChunkedFileHandler
