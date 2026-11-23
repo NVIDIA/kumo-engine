@@ -11,6 +11,7 @@ Python keeps bindings and stage counts, not a second full anchor column store.
 
 from __future__ import annotations
 
+import hashlib
 import heapq
 import json
 import tempfile
@@ -99,6 +100,8 @@ class NativeAnchors:
         physical = _physical(table)
         files = _files(table.source.path)
         schema = pq.read_schema(files[0])
+        projected = sorted(set(physical.values()))
+        snapshot = hashlib.sha256(pa.schema([schema.field(name) for name in projected]).serialize())
         self._types = {name: schema.field(column).type for name, column in physical.items()}
         self._aliases = {name: f"anchor_col_{i}" for i, name in enumerate(table.columns)}
         # RowPack has no struct/map/list scalar. Carry those metadata values in
@@ -117,9 +120,8 @@ class NativeAnchors:
         extension = Path(self._extension.name)
         try:
             for file in files:
-                for batch in pq.ParquetFile(file).iter_batches(
-                    columns=sorted(set(physical.values())), batch_size=32768
-                ):
+                for batch in pq.ParquetFile(file).iter_batches(columns=projected, batch_size=32768):
+                    snapshot.update(batch.serialize())
                     columns = {name: batch.column(column) for name, column in physical.items()}
                     entity = self._source._tables[self._sample.entity.table]
                     dtype = entity.columns[entity.primary_key]
@@ -202,6 +204,7 @@ class NativeAnchors:
         finally:
             for writer in writers.values():
                 writer.close()
+        self.snapshot_digest = snapshot.hexdigest()
         manifest = {
             "kind": "diskgraph_task_dataset",
             "graph": {"index_path": str(view)},
@@ -347,8 +350,6 @@ class NativeAnchors:
             }
             key = (stage["name"], json.dumps(costs, sort_keys=True))
             if key not in self._length_caches:
-                import hashlib
-
                 filename = hashlib.sha256(key[1].encode()).hexdigest()[:24]
                 fields = (
                     1

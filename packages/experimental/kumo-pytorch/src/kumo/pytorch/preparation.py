@@ -319,7 +319,10 @@ class Plan:
                 from kumo.pytorch.engines.parquet_anchors import ParquetAnchors
 
                 task_anchors = ParquetAnchors(anchors)
-            anchors_fingerprint = _fingerprint(logical_anchors)
+            snapshot = getattr(task_anchors, "snapshot_digest", None)
+            anchors_fingerprint = _fingerprint(
+                (logical_anchors, snapshot) if snapshot is not None else logical_anchors
+            )
         else:
             requests = tuple(anchors)
             declares_splits = any(request.split is not None for request in requests)

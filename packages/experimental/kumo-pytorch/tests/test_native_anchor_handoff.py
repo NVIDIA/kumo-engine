@@ -746,7 +746,8 @@ def test_native_scalar_anchor_cursor_survives_fitted_reload(native_task, tmp_pat
             assert last.targets["label"]["values"].tolist() == [4.0, 6.0]
             path = tmp_path / "artifact"
             task.to_artifact().save(path)
-        with prepared.materialize(table, fitted=api.Artifact.load(path).fitted_state) as reloaded:
+        fitted = api.Artifact.load(path).fitted_state
+        with prepared.materialize(table, fitted=fitted) as reloaded:
             resumed = batches(reloaded)
             resumed.load_state_dict(cursor)
             (restored,) = resumed
@@ -754,3 +755,11 @@ def test_native_scalar_anchor_cursor_survives_fitted_reload(native_task, tmp_pat
             torch.testing.assert_close(
                 restored.targets["label"]["values"], last.targets["label"]["values"]
             )
+
+        # The same path and binding now give train order d, b, a, f.
+        rows = pq.read_table(table.source.path)
+        pq.write_table(rows.take([3, 1, 2, 0, 4, 5, 6]), table.source.path)
+        with prepared.materialize(table, fitted=fitted) as changed:
+            resumed = batches(changed)
+            with pytest.raises(ValueError, match="this state was saved for a different task"):
+                resumed.load_state_dict(cursor)
